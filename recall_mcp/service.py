@@ -1203,13 +1203,123 @@ def reasoning_projection(
     )
 
 
-def reasoning_proposals(store: PgVectorStore, *, limit: int = 100) -> ReasoningProposalResult:
+class RewritePlanResult(BaseModel):
+    proposal_id: str = Field(
+        description=(
+            "The store-side proposal this plan describes. NOT usable with `recall rewrite "
+            "apply --proposal`: that resolves ids against the filesystem extractor, and the two "
+            "id spaces are disjoint because provider, tenant, generation and pipeline are all "
+            "hashed into an id. Hand off with `claim` instead."
+        )
+    )
+    claim: str = Field(
+        description=(
+            "Generation independent identity of this claim: relation plus the two normalised "
+            "document names. This is the handoff to the CLI, for the same reason the rejection "
+            "ledger is keyed by it: a proposal id forgets itself at the next re-index."
+        )
+    )
+    relation: str = Field(description="Proposed relationship between subject and object.")
+    key: str = Field(description="Frontmatter or derived-block key that would be declared.")
+    value: str = Field(description="Value that would be written for that key.")
+    edit_file: str = Field(description="Corpus file that would gain the key.")
+    block: str = Field(description="Where it would land: frontmatter or the derived block.")
+    apply_command: str = Field(
+        description="The exact command a human runs to declare this. There is no MCP equivalent."
+    )
+    rejection_checked: bool = Field(
+        description=(
+            "Always false. This surface has no corpus root, so it cannot consult the rejection "
+            "ledger; a claim a reviewer already declined still appears here. The CLI checks it "
+            "before writing and refuses."
+        )
+    )
+
+
+def apply_command_for(claim: str) -> str:
+    """The exact CLI command that declares `claim`.
+
+    A function rather than an inline f-string so a test can assert on the VALUE. Asserting on
+    this module's SOURCE does not work: the surrounding comment explains why a proposal id
+    cannot be handed off, and that explanation contains the very flag name being ruled out.
+    """
+    return (
+        f"recall rewrite apply <corpus> --claim {claim} "
+        f"--reviewer <your-id> --note <why> --apply"
+    )
+
+
+def rewrite_plan(store: PgVectorStore, *, proposal_id: str) -> RewritePlanResult:
+    """Describe what declaring `proposal_id` would write, without writing anything.
+
+    Read only by construction: it routes the relation and reports the result. It never
+    constructs a `PromotedFact`, never touches a file, and imports nothing that writes.
+    """
+    from recall.rewrite import claim_key, destination, route_relation
+
+    graph = project_store_graph(store, include_text=True)
+    proposals = deterministic_inference_proposals(
+        graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
+    )
+    found = next((p for p in proposals if p.id == proposal_id), None)
+    if found is None:
+        # The id is echoed because the caller supplied it; nothing about the corpus leaks.
+        raise ValueError(f"no proposal {proposal_id!r} in this generation")
+    routed = route_relation(found.proposed_relation, found.subject_id, found.object_id)
+    # The CLAIM key, not the proposal id, is what crosses to the CLI. This tool's proposals come
+    # from the deterministic rules over the STORE graph; `recall rewrite apply --proposal`
+    # resolves ids against the filesystem extractor. Provider, tenant, generation and pipeline
+    # are hashed into an id, so the two id spaces are disjoint by construction and every id this
+    # tool emitted was one the CLI exits 2 on. Claim keys are generation independent and match.
+    claim = claim_key(found.proposed_relation, found.subject_id, found.object_id)
+    return RewritePlanResult(
+        proposal_id=found.id,
+        claim=claim,
+        relation=found.proposed_relation,
+        key=routed.key,
+        value=routed.value,
+        edit_file=routed.edit_file,
+        block=destination(routed.key),
+        apply_command=apply_command_for(claim),
+        rejection_checked=False,
+    )
+
+
+def _stored_extracted_proposals(graph: object) -> tuple[object, ...]:
+    """Replay extractions recorded at ingest into the proposal protocol.
+
+    Refuses, because there is nothing to replay. `FileExtraction` is persisted nowhere the query
+    path can read: `recall/truth_extraction/_cache.py` defines `ExtractionCache` as a Protocol
+    with no shipped database implementation, and no module outside `recall.truth_extraction` and
+    `recall.reasoning_proposals._extracted` references the type at all.
+
+    An empty tuple would be the obvious stub and the wrong one. `--include-extracted` would then
+    report "0 proposals", which a caller reads as *the extractor ran and found nothing* when the
+    truth is *nothing was ever recorded*, and those two call for opposite responses from whoever
+    asked. Refusing says which one it is.
+
+    This never builds an engine. Extraction runs on the INGEST path, and constructing one here
+    would put a model backed component on the query path, where `max_model_calls` is 0.
+    """
+    raise ValueError(
+        "no extraction record exists for this generation. Run `recall extract run <path>` on "
+        "the ingest side first; extraction never runs on the query path."
+    )
+
+
+def reasoning_proposals(
+    store: PgVectorStore, *, limit: int = 100, include_extracted: bool = False
+) -> ReasoningProposalResult:
     if limit < 1:
         raise ValueError("proposal limit must be positive")
     graph = project_store_graph(store, include_text=True)
     proposals = deterministic_inference_proposals(
         graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
     )
+    if include_extracted:
+        # Mirrors `include_text`: defaulting to False keeps existing behaviour byte identical,
+        # so no caller that did not ask for this sees any change.
+        proposals = proposals + _stored_extracted_proposals(graph)  # type: ignore[operator]
     returned = proposals[:limit]
     return ReasoningProposalResult(
         tenant_id=graph.tenant_id,

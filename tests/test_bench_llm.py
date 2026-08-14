@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from benchmarks.llm import Completer, OpenRouterLLM, _usage_cost_usd
+from benchmarks.llm import Completer, EmptyCompletion, OpenRouterLLM, _usage_cost_usd
 
 
 def _identity_completer(system: str, user: str) -> str:
@@ -76,13 +76,23 @@ def test_complete_sends_expected_request_payload(monkeypatch: pytest.MonkeyPatch
     ]
 
 
-def test_complete_coalesces_none_content_to_empty_string(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_complete_refuses_a_completion_that_carries_no_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reversed deliberately. This arm used to assert `result == ""`, pinning the coalescing in
+    `content or ""` as intended behaviour, but `None` is what an OpenAI-compatible provider returns
+    for `finish_reason == "content_filter"` and `"tool_calls"`, and an empty answer is
+    indistinguishable in a results artifact from a system that had nothing to say.
+
+    The full reasoning, both classifications and the retry-cost argument live in
+    `tests/test_bench_llm_unusable_response.py`; this is the arm that would otherwise still be
+    green while asserting the opposite.
+    """
     _install_fake_openai(monkeypatch, content=None)
 
     llm = OpenRouterLLM(model="openai/gpt-4o-mini", api_key="sk-test")
-    result = llm.complete("s", "u")
-
-    assert result == ""
+    with pytest.raises(EmptyCompletion):
+        llm.complete("s", "u")
 
 
 def test_openrouter_provider_metadata_records_tokens_revision_latency_and_cost(

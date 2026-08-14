@@ -53,8 +53,9 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from benchmarks.llm import Completer, OpenRouterLLM
+from benchmarks.llm import Completer, OpenRouterLLM, is_terminal
 from benchmarks.pipeline import Outcome, aggregate, judge_correct
+from benchmarks.artifact_contract import load_published_artifact
 
 
 def to_outcome(record: Mapping[str, Any]) -> Outcome:
@@ -112,6 +113,7 @@ def rejudge_outcomes(
     """
     records: list[dict[str, Any]] = []
     disagreements: list[dict[str, Any]] = []
+    failed: list[str] = []
     n_judged = n_agree = flipped_to_correct = flipped_to_incorrect = 0
 
     for record in outcomes:
@@ -124,14 +126,31 @@ def rejudge_outcomes(
             records.append(new_record)
             continue
 
-        n_judged += 1
         old = bool(record["correct"])
-        new = judge_correct(
-            completer,
-            str(record.get("question", "")),
-            str(record.get("gold", "")),
-            str(record["answer"]),
-        )
+        try:
+            new = judge_correct(
+                completer,
+                str(record.get("question", "")),
+                str(record.get("gold", "")),
+                str(record["answer"]),
+            )
+        except Exception as exc:  # noqa: BLE001 - re-raised if terminal, quarantined otherwise
+            if is_terminal(exc):
+                # A dead account re-judges nothing. Quarantining it would report an agreement rate
+                # computed over the handful of records that ran before the credit ran out.
+                raise
+            # ⛔ The record keeps its ORIGINAL verdict and is counted as FAILED, not as agreed.
+            # `n_judged` is the denominator of `agreement_rate`, the number this tool exists to
+            # produce, so leaving the old verdict in place and saying nothing would score a broken
+            # judge as one that agrees with the baseline perfectly. The whole loop used to die
+            # here instead, discarding every record already re-judged, because the output is
+            # written only after it finishes.
+            new_record["rejudge_failed"] = True
+            failed.append(str(record.get("question_id", "")))
+            records.append(new_record)
+            continue
+
+        n_judged += 1
         new_record["correct"] = new
         records.append(new_record)
 
@@ -154,6 +173,11 @@ def rejudge_outcomes(
         "agreement_rate": None if n_judged == 0 else round(n_agree / n_judged, 4),
         "flipped_to_correct": flipped_to_correct,
         "flipped_to_incorrect": flipped_to_incorrect,
+        # Reported, never folded into the rate above. A record whose re-judgment failed kept its
+        # ORIGINAL verdict, so counting it as agreement would be counting the baseline against
+        # itself; it is excluded from `n_judged` and named here instead.
+        "n_failed": len(failed),
+        "failed_question_ids": failed,
         "disagreements": disagreements,
     }
     return records, report
@@ -178,6 +202,21 @@ def rejudge_document(
     payload = dict(doc)
     payload["outcomes"] = records
     payload["aggregate"] = aggregate([to_outcome(r) for r in records])
+    # ⛔ `aggregate` sits at the top of the payload beside `original_aggregate`, and that pair is
+    # exactly what a reader diffs to attribute a change to the judge. A record whose re-judgment
+    # FAILED kept its baseline verdict, so it enters that rate unmarked and the headline becomes a
+    # silent mixture of two judges. `n_failed` was reasoned about for `agreement_rate` and not for
+    # this, which is the number more people will read. Surfaced here so the mixture cannot be read
+    # without it; the per-record `rejudge_failed` flag says which ones.
+    payload["aggregate_mixed_verdicts"] = {
+        "n": report["n_failed"],
+        "question_ids": report["failed_question_ids"],
+        "note": (
+            "records whose re-judgment failed and kept the ORIGINAL judge's verdict. They are "
+            "included in `aggregate` above and excluded from `rejudge.agreement`, so a non-zero "
+            "n here means `aggregate` is not attributable to the new judge alone."
+        ),
+    }
     payload["rejudge"] = {
         "judge_model": judge_model,
         "source": source,
@@ -189,7 +228,7 @@ def rejudge_document(
 
 
 def _load_document(path: Path) -> dict[str, Any]:
-    doc: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    doc: dict[str, Any] = load_published_artifact(path)
     if "outcomes" not in doc:
         raise ValueError(f"{path} has no 'outcomes' array — it is not a results artifact")
     return doc

@@ -444,3 +444,29 @@ def test_cli_requires_something_to_do() -> None:
 def test_cli_rejects_plot_without_curve(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         main(["--plot", str(tmp_path / "out.png")])
+
+
+def test_analyze_refuses_an_artifact_that_was_never_published(tmp_path: Path) -> None:
+    """The in-band mark is a contract, not a comment.
+
+    `benchmarks.run` quarantines a refused artifact outside the `results/*.json` glob AND marks
+    it. Without a reader that honours the mark, a quarantined file reached directly, or by a
+    `results/**/*.json` glob, is byte identical to a real measurement and gets tabulated as one.
+    """
+    from benchmarks.artifact_contract import load_published_artifact
+
+    path = tmp_path / "refused.json"
+    path.write_text(
+        json.dumps(
+            {
+                "arm": "recall",
+                "aggregate": {"answerable_accuracy": {"rate": 0.99, "n": 2}},
+                "unpublished": True,
+                "unpublished_reason": "benchmark cost claims require provider_metadata",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="REFUSED publication"):
+        load_published_artifact(path)

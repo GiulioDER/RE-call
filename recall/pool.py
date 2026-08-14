@@ -220,7 +220,7 @@ class SharedPool:
                 from psycopg_pool import ConnectionPool
             except ImportError as exc:  # pragma: no cover - exercised only without the extra
                 raise ImportError(
-                    "SharedPool requires the pool extra: pip install recall[pool]"
+                    'SharedPool requires the pool extra: pip install "recall-rag[pool]"'
                 ) from exc
             pool = ConnectionPool(
                 self._dsn,

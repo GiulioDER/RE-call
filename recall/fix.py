@@ -31,14 +31,17 @@ reported as needing a human, never guessed at.
 """
 from __future__ import annotations
 
-import os
 import re
-import shutil
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from recall.frontmatter import parse_frontmatter, supersedes_key
+from recall.atomic_write import atomic_write_bytes
+from recall.frontmatter import (
+    has_line_break,
+    insert_frontmatter_line,
+    parse_frontmatter,
+    supersedes_key,
+)
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
 
@@ -73,6 +76,10 @@ _PASSIVE_RE = re.compile(
 _ACTIVE_RE = re.compile(
     rf"\b(?P<marker>{_ACTIVE})[^\n.;]{{0,40}}?(?:{_REF})", re.IGNORECASE
 )
+
+
+class UnreadableMemo(ValueError):
+    """`apply_proposal` was pointed at a memo it will not rewrite, and said which and why."""
 
 
 @dataclass(frozen=True)
@@ -233,6 +240,13 @@ def propose_fixes(
     proposals: list[Proposal] = []
     unfixable: list[Unfixable] = []
     seen: set[tuple[str, str]] = set()
+    #: Edges parked because their value would split the written line. Keyed by the dedup pair AND
+    #: the source memo: the pair is what decides suppression below, and the source is what keeps
+    #: two DIFFERENT malformed files from collapsing into one report. Keying on the pair alone
+    #: named only the first of them, so the operator renamed it, re-ran, and only then learned of
+    #: the second — N bad files costing N runs to surface. `setdefault` still collapses repeats
+    #: of one source naming the same edge twice, which is the case that is genuinely one report.
+    refused: dict[tuple[tuple[str, str], str], tuple[str, str, str]] = {}
 
     for name, body in bodies.items():
         if _is_index(name):
@@ -270,8 +284,42 @@ def propose_fixes(
             pair = (writer, supersedes_key(value))
             if pair in seen:
                 continue
+            if has_line_break(value):
+                # DEFERRED, not decided here. `insert_frontmatter_line` refuses this too, but a
+                # raise at WRITE time is met halfway through the apply loop, once earlier memos
+                # have already been rewritten, so the refusal has to be reportable by the dry run
+                # like every other one here.
+                #
+                # It cannot be decided inline, in either position. Reported before the dedup it
+                # fires for a second spelling of an edge this same run declares correctly, since
+                # `supersedes_key` compares on the stem. Reported after it, without joining
+                # `seen`, the same edge is reported once per spelling AND can be reported
+                # alongside the very proposal that declares it correctly — which prints SKIP for
+                # a memo the next line then writes to. Adding it to `seen` is not the fix either:
+                # that suppresses the correct proposal whenever the bad spelling is iterated
+                # first. `bodies` follows `sorted(root.glob(...))`, so which spelling comes first
+                # is stable but arbitrary — inline would be right for one of the two orders and
+                # wrong for the other, which is not a property worth resting on.
+                #
+                # So the pair is parked and judged once the loop knows every edge it could
+                # declare. The predicate is imported rather than restated, so the reporter and
+                # the writer cannot drift apart.
+                #
+                # `name`, not `writer`, is the file reported: in the passive direction the value
+                # IS the source memo's own path and `writer` is the innocent memo it would be
+                # written into, so blaming `writer` sends the operator to the one file they
+                # cannot fix. Same subject as the refusal above at `names {ref!r}`.
+                refused.setdefault((pair, name), (name, value, writer))
+                continue
             seen.add(pair)
             proposals.append(Proposal(writer, value, name, ref))
+    for (pair, _source_key), (source, value, writer) in refused.items():
+        if pair in seen:
+            continue  # another spelling of this same edge was declared correctly
+        unfixable.append(Unfixable(
+            source,
+            f"names {value!r}, which contains a line break; it would be written into {writer}",
+        ))
     return proposals, unfixable
 
 
@@ -279,50 +327,33 @@ def apply_proposal(root: Path, p: Proposal) -> None:
     """Insert `supersedes: <target>` into `p.edit_file`'s frontmatter, preserving everything else.
 
     Rewrites only the frontmatter block: a file without one gains a minimal block above its
-    existing content, and a file with one keeps its other keys, order and body byte-for-byte.
+    existing content, and a file with one keeps its other keys, order and body BYTE FOR BYTE.
+
+    That last part was a false claim for a long time. This decoded `utf-8-sig` and wrote `utf-8`,
+    which drops a Windows-authored memo's BOM — one `parse_frontmatter` tolerates precisely
+    because editors add it — and split on ``"\\n"``, which normalised every line ending in the
+    file. Both are invisible to a test that reads back through `read_text`, which is why they
+    survived a 28-test suite. The insertion now goes through `recall/frontmatter.py`, so the two
+    writers of the user's own memos and the parser that reads them share one definition of a line
+    and one of a leading BOM.
     """
     f = root / p.edit_file if root.is_dir() else root
-    text = f.read_text(encoding="utf-8-sig")
-    line = f"supersedes: {p.target}"
-    lines = text.split("\n")
-    if lines and lines[0].lstrip("﻿").strip() == "---":
-        for i, ln in enumerate(lines[1:], start=1):
-            if ln.strip() == "---":
-                lines.insert(i, line)
-                break
-        else:  # unclosed block — treat as no frontmatter rather than corrupt it further
-            lines = ["---", line, "---", *lines]
-    else:
-        lines = ["---", line, "---", *lines]
-    _atomic_write_text(f, "\n".join(lines))
-    _log.info("declared %s in %s", line, p.edit_file)
-
-
-def _atomic_write_text(path: Path, data: str) -> None:
-    """Write `data` to `path` atomically: on any failure the original file is left intact.
-
-    `Path.write_text` opens the target with mode ``'w'``, which truncates it to zero bytes at
-    open — before a single byte of new content is written. For `apply_proposal`, the one path in
-    this package that rewrites a user's own memo in place, a crash / disk-full / I/O error in
-    that window leaves the original truncated or half-written and unrecoverable. Instead, stage
-    the new content in a sibling temp file (same directory, so the swap is a same-filesystem
-    atomic rename) and replace the target in a single ``os.replace``. If anything fails, the temp
-    file is removed and the original is never touched.
-    """
-    tmp_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    raw = f.read_bytes()
     try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-        if path.exists():
-            # The temp file is created 0600 by mkstemp; carry the original's permission bits over
-            # so the atomic swap does not silently tighten (or, as root, re-own) the user's memo.
-            shutil.copymode(path, tmp_name)
-        os.replace(tmp_name, path)  # atomic on POSIX and on Windows for a same-directory target
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        # `propose_fixes` skips a file it cannot decode, so such a file never appears in
+        # `existing` and its authored `supersedes:` is invisible to the overwrite refusal — but it
+        # can still be the TARGET of a passive-voice marker in some other memo, and so still be
+        # chosen as `edit_file`. Writing then replaces a declared edge (`parse_frontmatter` is
+        # last-wins) and, because the file still will not decode next run, appends another line
+        # every time. The old `read_text` raised here; keep refusing, with a message that says
+        # which file and why.
+        raise UnreadableMemo(f"{p.edit_file} is not valid UTF-8 ({exc.reason})") from exc
+    if parse_frontmatter(text)[0].get("supersedes"):
+        # Re-checked against THIS file rather than the corpus-wide scan, for the same reason:
+        # the scan's view can be missing a file it could not read at the time.
+        raise UnreadableMemo(f"{p.edit_file} already declares supersedes — refusing to overwrite")
+    line = f"supersedes: {p.target}"
+    atomic_write_bytes(f, insert_frontmatter_line(raw, "supersedes", p.target))
+    _log.info("declared %s in %s", line, p.edit_file)

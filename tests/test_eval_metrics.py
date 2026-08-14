@@ -1,3 +1,4 @@
+import json
 import math
 
 import pytest
@@ -159,3 +160,130 @@ def test_wilson_ci_empty_is_nan():
 
     lo, hi = wilson_ci([])
     assert math.isnan(lo) and math.isnan(hi)
+
+
+def test_nan_to_null_sanitises_the_mapping_types_this_repo_actually_returns():
+    """`proposal_precision_recall` returns a MappingProxyType, not a dict.
+
+    A sanitiser that only recognises `dict` passes the proxy through untouched, so the NaN
+    survives and `json.dumps` then dies on the proxy itself rather than on the NaN.
+    """
+    from types import MappingProxyType
+
+    from recall.eval.metrics import nan_to_null
+    from recall.reasoning_proposals import proposal_precision_recall
+
+    proxy = nan_to_null(MappingProxyType({"precision": float("nan")}))
+    assert proxy == {"precision": None}
+
+    scored = nan_to_null({"precision_recall": proposal_precision_recall([], {("a", "b")})})
+    assert scored["precision_recall"]["precision"] is None
+    assert json.dumps(scored, allow_nan=False)
+
+
+def test_nan_to_null_sanitises_sets_and_nested_tuples():
+    from recall.eval.metrics import nan_to_null
+
+    assert nan_to_null({"counts": (1, float("-inf"))}) == {"counts": [1, None]}
+    assert nan_to_null(frozenset({1, 2})) == [1, 2]
+
+
+def test_nan_to_null_raises_on_a_cycle_rather_than_nulling_it_away():
+    """Loud, not quiet. Returning None for the cyclic member would publish a valid LOOKING
+    artifact with data silently replaced, and `write_json` treats an existing file as a
+    completed corpus. A RecursionError is unacceptable, but so is a plausible wrong file:
+    raise in json.dumps' own vocabulary instead."""
+    from recall.eval.metrics import nan_to_null
+
+    cyclic = {"precision": float("nan")}
+    cyclic["self"] = cyclic
+
+    with pytest.raises(ValueError, match="Circular reference detected"):
+        nan_to_null(cyclic)
+
+
+def test_nan_to_null_keeps_a_shared_subtree_on_both_paths():
+    """The cycle guard is path scoped, so the same object referenced twice as SIBLINGS is not
+    a cycle and must survive on both paths rather than being pruned to None."""
+    from recall.eval.metrics import nan_to_null
+
+    shared = {"rate": float("nan"), "n": 3}
+
+    assert nan_to_null({"a": shared, "b": shared}) == {
+        "a": {"rate": None, "n": 3},
+        "b": {"rate": None, "n": 3},
+    }
+
+
+def test_nan_to_null_keeps_the_order_of_ordered_set_like_views():
+    """`dict.keys()` and `dict.items()` register as collections.abc.Set but are ORDERED.
+    Sorting them buys no determinism they did not already have and destroys insertion order."""
+    from recall.eval.metrics import nan_to_null
+
+    source = {"zeta": 1, "alpha": 2, "mid": float("nan")}
+
+    assert nan_to_null(source.keys()) == ["zeta", "alpha", "mid"]
+    assert nan_to_null(source.items()) == [["zeta", 1], ["alpha", 2], ["mid", None]]
+
+
+def test_nan_to_null_leaves_a_non_finite_mapping_key_for_the_serializer_to_reject():
+    """Keys are out of scope by design: the NaN key survives and `allow_nan=False` rejects it,
+    which is the loud failure we want rather than a silently rewritten key."""
+    from recall.eval.metrics import nan_to_null
+
+    sanitised = nan_to_null({float("nan"): "x"})
+
+    assert [type(k) for k in sanitised] == [float]
+    with pytest.raises(ValueError, match="Out of range float"):
+        json.dumps(sanitised, allow_nan=False)
+
+
+def test_nan_to_null_orders_any_unordered_set_deterministically():
+    """Not just `set`/`frozenset`. A hash backed `collections.abc.Set` has the same per process
+    random order, so the rule keys off "is it an ordered view", not off the concrete type."""
+    import collections.abc
+
+    from recall.eval.metrics import nan_to_null
+
+    class HashBackedSet(collections.abc.Set):
+        def __init__(self, items):
+            self._items = set(items)
+
+        def __contains__(self, item):
+            return item in self._items
+
+        def __iter__(self):
+            return iter(self._items)
+
+        def __len__(self):
+            return len(self._items)
+
+    # Eight members, not four. With four, roughly one process in 4! = 24 hashes them into
+    # already-sorted order and this test would PASS against the unsorted implementation; that
+    # was measured at seeds 30, 36 and 39. Eight drops it to one in 40320.
+    members = ["delta", "beta", "gamma", "alpha", "epsilon", "zeta", "eta", "theta"]
+    assert nan_to_null(HashBackedSet(members)) == sorted(members)
+
+    # `key=repr`, not natural order: repr("10") sorts before repr("9"). An all-string alphabet
+    # would satisfy either rule and so would pin neither.
+    assert nan_to_null(HashBackedSet([9, 10, 8])) == [10, 8, 9]
+
+
+def test_nan_to_null_orders_sets_deterministically():
+    """Set iteration order varies per process under hash randomisation, and both callers write
+    git tracked artifacts, so an unordered list would rewrite the file on every run."""
+    from recall.eval.metrics import nan_to_null
+
+    assert nan_to_null({"d": {"scifact", "nfcorpus", "fiqa"}}) == {
+        "d": ["fiqa", "nfcorpus", "scifact"]
+    }
+
+
+def test_nan_to_null_leaves_strings_and_finite_numbers_alone():
+    from recall.eval.metrics import nan_to_null
+
+    assert nan_to_null({"arm": "recall", "k": 5, "rate": 0.42}) == {
+        "arm": "recall",
+        "k": 5,
+        "rate": 0.42,
+    }

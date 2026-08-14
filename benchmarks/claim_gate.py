@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from benchmarks.artifact_contract import load_published_artifact
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_ROOT = REPO_ROOT / "results"
@@ -478,7 +479,16 @@ def resolve(claim: Claim, results_root: Path) -> None:
         )
     if not path.is_file():
         raise ClaimError(f"{claim.doc}:{claim.line} no such artifact: {marker.artifact}")
-    actual = lookup(json.loads(path.read_text(encoding="utf-8")), marker.key)
+    try:
+        doc = load_published_artifact(path)
+    except (SystemExit, OSError, ValueError) as exc:
+        # `resolve` promises ClaimError, and the caller loops over claims collecting failures.
+        # Anything else escapes that loop and aborts the gate on the first bad file, leaving
+        # every later claim unchecked. SystemExit is the refusal; ValueError covers
+        # JSONDecodeError and UnicodeDecodeError on a malformed or mis-encoded artifact; OSError
+        # covers a file that vanished or locked between `is_file()` and the read.
+        raise ClaimError(f"{claim.doc}:{claim.line} {exc}") from exc
+    actual = lookup(doc, marker.key)
     if not matches(claim.text, actual):
         raise ClaimError(
             f"{claim.doc}:{claim.line} published {claim.text} but "

@@ -14,8 +14,14 @@ import os
 
 import pytest
 
-from recall.fix import Proposal, apply_proposal, extract_edges, propose_fixes
-from recall.frontmatter import parse_frontmatter
+from recall.fix import (
+    Proposal,
+    UnreadableMemo,
+    apply_proposal,
+    extract_edges,
+    propose_fixes,
+)
+from recall.frontmatter import parse_frontmatter, supersedes_key
 
 
 def _write(d, name, text):
@@ -330,3 +336,266 @@ def test_apply_proposal_preserves_the_memo_when_the_write_fails(tmp_path, monkey
     # The original memo must survive the failed write byte-for-byte, and no temp litter is left.
     assert memo.read_text(encoding="utf-8") == original
     assert list(tmp_path.iterdir()) == [memo], "no partial temp file should be left behind"
+
+
+# --- bytes, not text --------------------------------------------------------------------------
+#
+# Every assertion above reads back through `read_text`, whose universal-newline decoding and
+# `utf-8` codec hide exactly the two defects below: a memo can lose its BOM and have every line
+# ending rewritten and still compare equal. These read `read_bytes`.
+
+
+def _write_bytes(d, name, raw):
+    (d / name).write_bytes(raw)
+
+
+def test_apply_proposal_preserves_a_utf8_bom(tmp_path):
+    """`parse_frontmatter` tolerates a leading BOM precisely because Windows editors add one.
+
+    Reading `utf-8-sig` (which strips it) and writing `utf-8` (which does not put it back) means
+    declaring an edge silently re-encodes the user's memo. Nothing warns, and the next time they
+    open it their editor sees a different file than the one it wrote.
+    """
+    _write_bytes(tmp_path, "old_thing_2026.md", b"# old\n\nbody\n")
+    original = "\ufeff# new\n\nThis supersedes [[old_thing_2026]].\n".encode("utf-8")
+    _write_bytes(tmp_path, "new.md", original)
+
+    proposals, _ = propose_fixes(tmp_path)
+    apply_proposal(tmp_path, proposals[0])
+
+    raw = (tmp_path / "new.md").read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf"), "the BOM was eaten"
+    assert raw.count(b"\xef\xbb\xbf") == 1, "the BOM was duplicated"
+    meta, _ = parse_frontmatter(raw.decode("utf-8-sig"))
+    assert meta["supersedes"] == "old_thing_2026"
+
+
+def test_a_created_frontmatter_block_uses_the_memos_own_line_endings(tmp_path):
+    """The other branch, and the common one for `lint --fix`: a memo with no block yet.
+
+    The insert-into-an-existing-block path borrows the closing fence's terminator, so it is CRLF
+    safe almost by accident. The path that CREATES a block writes three lines of its own, and
+    nothing forces those to match the file unless it is asked to — a CRLF memo would open with
+    three LF-only lines above prose that is CRLF throughout.
+    """
+    _write_bytes(tmp_path, "old_thing_2026.md", b"# old\r\n\r\nbody\r\n")
+    original = b"# new\r\n\r\nThis supersedes [[old_thing_2026]].\r\n"
+    _write_bytes(tmp_path, "new.md", original)
+
+    proposals, _ = propose_fixes(tmp_path)
+    apply_proposal(tmp_path, proposals[0])
+
+    raw = (tmp_path / "new.md").read_bytes()
+    assert raw.replace(b"\r\n", b"").count(b"\n") == 0, "a lone LF was introduced"
+    assert raw.count(b"\r\n") == original.count(b"\r\n") + 3, "the opened block is not CRLF"
+    assert raw.endswith(original), "the prose must be untouched"
+
+
+def test_apply_proposal_preserves_crlf_line_endings(tmp_path):
+    """Splitting and rejoining on `"\n"` normalises every line ending in the file.
+
+    The visible damage is one LF-only line inside a CRLF memo, which is invisible in an editor and
+    present in every diff; the full damage is that the whole file is rewritten. The count is
+    asserted both ways: no lone LF anywhere, and exactly the original CRLFs plus the line added.
+    """
+    _write_bytes(tmp_path, "old_thing_2026.md", b"# old\r\n\r\nbody\r\n")
+    original = b"---\r\nvalid_until: 2030-01-01\r\n---\r\n# new\r\n\r\nThis supersedes [[old_thing_2026]].\r\n"
+    _write_bytes(tmp_path, "new.md", original)
+
+    proposals, _ = propose_fixes(tmp_path)
+    apply_proposal(tmp_path, proposals[0])
+
+    raw = (tmp_path / "new.md").read_bytes()
+    assert raw.replace(b"\r\n", b"").count(b"\n") == 0, "a lone LF was introduced"
+    assert raw.count(b"\r\n") == original.count(b"\r\n") + 1
+    meta, _ = parse_frontmatter(raw.decode("utf-8"))
+    assert meta["valid_until"] == "2030-01-01"
+    assert meta["supersedes"] == "old_thing_2026"
+
+
+def test_apply_proposal_refuses_a_memo_it_cannot_decode(tmp_path):
+    """A file `propose_fixes` could not read is exactly the file the overwrite guard cannot see.
+
+    `propose_fixes` skips an undecodable memo, so it never enters `existing` and its authored
+    `supersedes:` is invisible to the "refusing to overwrite" refusal — yet it can still be the
+    TARGET of a passive-voice marker in another memo, and so still be chosen as `edit_file`.
+    Writing then replaces a declared edge, because `parse_frontmatter` is last-wins, and appends
+    another line every run since the file still will not decode. The refusal names the file.
+    """
+    _write_bytes(tmp_path, "evidence_2026.md",
+                 b"# evidence\n\nThis is superseded by [[replacement_2026]].\n")
+    latin1 = "---\nsupersedes: authored_target_2024\n---\ncaf\u00e9 na\u00efve\n".encode("latin-1")
+    _write_bytes(tmp_path, "replacement_2026.md", latin1)
+
+    proposals, _ = propose_fixes(tmp_path)
+    assert [p.edit_file for p in proposals] == ["replacement_2026.md"], (
+        "the undecodable file must still be the one selected, or this proves nothing"
+    )
+
+    with pytest.raises(UnreadableMemo, match="not valid UTF-8"):
+        apply_proposal(tmp_path, proposals[0])
+
+    assert (tmp_path / "replacement_2026.md").read_bytes() == latin1
+
+
+def test_apply_proposal_rechecks_the_target_before_overwriting(tmp_path):
+    """The corpus-wide scan's view of what is declared can be stale or incomplete.
+
+    `propose_fixes` builds `existing` from the files it managed to read, at the time it read them.
+    The re-check is against the file about to be written, immediately before writing it, which is
+    the only view that cannot have gone out of date.
+    """
+    _write_bytes(tmp_path, "old_thing_2026.md", b"# old\n\nbody\n")
+    _write_bytes(tmp_path, "new.md", b"# new\n\nThis supersedes [[old_thing_2026]].\n")
+    proposals, _ = propose_fixes(tmp_path)
+    assert proposals, "no proposal to apply"
+
+    # something else declared the edge between the scan and the write
+    (tmp_path / "new.md").write_bytes(
+        b"---\nsupersedes: someone_elses_choice\n---\n# new\n\nThis supersedes [[old_thing_2026]].\n"
+    )
+    before = (tmp_path / "new.md").read_bytes()
+
+    with pytest.raises(UnreadableMemo, match="already declares"):
+        apply_proposal(tmp_path, proposals[0])
+
+    assert (tmp_path / "new.md").read_bytes() == before
+
+
+def test_a_cr_terminated_memo_keeps_its_authored_frontmatter(tmp_path):
+    """Every reader hands `parse_frontmatter` text from `read_text(newline=None)`, which has
+    already turned a lone CR into LF — so a CR-terminated memo has frontmatter, and treating the
+    file as one long line prepends a second block and orphans the authored `valid_until`."""
+    _write_bytes(tmp_path, "old_thing_2026.md", b"# old\r\rbody\r")
+    original = b"---\rvalid_until: 2020-01-01\r---\r# new\r\rThis supersedes [[old_thing_2026]].\r"
+    _write_bytes(tmp_path, "new.md", original)
+
+    proposals, _ = propose_fixes(tmp_path)
+    apply_proposal(tmp_path, proposals[0])
+
+    raw = (tmp_path / "new.md").read_bytes()
+    assert raw.count(b"---") == 2, "a second frontmatter block was prepended"
+    assert b"supersedes: old_thing_2026\r" in raw, "the inserted line is not CR-terminated"
+    meta, _ = parse_frontmatter((tmp_path / "new.md").read_text(encoding="utf-8-sig"))
+    assert meta["valid_until"] == "2020-01-01", "the authored validity bound was orphaned"
+    assert meta["supersedes"] == "old_thing_2026"
+
+
+# --- a filename that would inject a second line ------------------------------------------------
+
+
+def _crafted_name(tmp_path, template):
+    """A name carrying U+2028, PROVEN to exist on this filesystem under exactly that name.
+
+    Three things this does that a bare `try: write except OSError: skip` did not. It asserts the
+    created entry round-trips, because a mount that MANGLES the character rather than rejecting
+    it would otherwise fail the caller with "not a file in the corpus", a reason that has nothing
+    to do with the guard. It catches `ValueError` as well, since a non-UTF-8
+    `sys.getfilesystemencoding()` raises `UnicodeEncodeError`, which is not an `OSError`. And it
+    refuses to skip on POSIX, where the character is always legal, so the CI runner cannot
+    quietly lose this coverage — a guard whose only test skips is a guard with no test.
+
+    U+2028 is written `chr(0x2028)` because a literal one does not survive a paste: it degrades
+    to a space, and every assertion here would then pass while testing nothing.
+    """
+    name = template.format(sep=chr(0x2028))
+    probe = tmp_path / f"{name}.probe"
+    try:
+        probe.write_text("x", encoding="utf-8")
+    except (OSError, ValueError) as exc:  # pragma: no cover - platform dependent
+        if os.name == "nt":
+            pytest.skip(f"this filesystem will not create a name containing U+2028: {exc}")
+        raise
+    assert probe.name in {p.name for p in tmp_path.iterdir()}, (
+        "the filesystem mangled the crafted name, so this test would measure the wrong refusal"
+    )
+    probe.unlink()
+    return name
+
+
+def test_a_target_name_carrying_a_separator_is_reported_not_written(tmp_path):
+    """A crafted FILENAME must not become a frontmatter line that splits.
+
+    `propose_fixes` derives the written value from the file's own path, so the name is attacker
+    controlled wherever memos are not all hand-authored. U+2028 is legal on NTFS and POSIX, and
+    is spelled with `chr()` here because a literal one does not survive every paste.
+
+    The refusal has to happen at PROPOSE time, reported like every other `Unfixable`, rather than
+    only as the writer's own `ValueError`: `recall lint --fix` prints the plan before `--apply`
+    writes anything, and a refusal the dry run cannot show is one the operator meets halfway
+    through a corpus rewrite.
+    """
+    evil = _crafted_name(tmp_path, "evil{sep}injected_2026")
+    _write(tmp_path, f"{evil}.md", "# evil\n\nthe superseded one")
+    # ACTIVE voice: the referenced NAME becomes the written value, and here the reference and the
+    # file share a name, so the crafted text reaches `insert_frontmatter_line` as the value while
+    # `new.md` is the memo edited. The passive direction is covered below and is the worse of the
+    # two, so neither stands in for the other.
+    _write(tmp_path, "new.md", f"# new\n\nThis supersedes [[{evil}]].")
+
+    proposals, unfixable = propose_fixes(tmp_path)
+
+    assert proposals == [], "a name that would split the line must never reach the writer"
+    assert any("line break" in u.reason for u in unfixable), (
+        f"the refusal must be reported so the dry run can show it, got {unfixable!r}"
+    )
+
+
+def test_the_passive_direction_blames_the_memo_that_can_actually_be_fixed(tmp_path):
+    """The crafted name reaches an INNOCENT memo, and the report must say whose fault it is.
+
+    Passive voice makes the source memo's own path the written value (`value = name`), so the
+    injected line lands in a memo whose author wrote nothing unusual. This is the wider blast
+    radius of the two directions: in the active case the crafted text is at least named in the
+    edited memo's own prose.
+
+    Reporting `writer` here would send the operator to the victim, which is the one file they
+    cannot fix — the offending name belongs to the source, and renaming that is the remedy.
+    """
+    evil = _crafted_name(tmp_path, "evil{sep}src_2026")
+    _write(tmp_path, "victim_2026.md", "# victim\n\nbody")
+    _write(tmp_path, f"{evil}.md", "# evil\n\nThis is superseded by [[victim_2026]].")
+
+    proposals, unfixable = propose_fixes(tmp_path)
+
+    assert proposals == [], "the innocent memo must not be written into"
+    refusals = [u for u in unfixable if "line break" in u.reason]
+    assert [u.file for u in refusals] == [f"{evil}.md"], (
+        f"the refusal must name the memo whose path carries the separator, got {refusals!r}"
+    )
+    assert "victim_2026.md" in refusals[0].reason, "and must say where it would have been written"
+
+
+def test_one_edge_spelled_twice_is_refused_once_and_never_also_proposed(tmp_path):
+    """The refusal is judged against every edge the run could declare, not the ones before it.
+
+    `supersedes_key` compares on the stem, so `sub/alpha_2026` and `alpha_2026` are ONE edge. If
+    one spelling is clean the edge is declarable and the crafted spelling must not be reported at
+    all; reporting it prints SKIP beside the proposal that declares the very same edge. `bodies`
+    is iterated in sorted order, so which spelling comes first is stable but arbitrary, and
+    deciding inline gets it right only for one of the two orders.
+
+    ⚠️ Asserted as `unfixable == []`, flatly. An earlier version of this test compared the writers
+    in `proposals` against the files named in `unfixable`, and that comparison CANNOT FAIL: this
+    commit made the refusal name the SOURCE memo while proposals name the WRITER, so in the
+    passive direction the two sets are disjoint whatever the code does. Deleting the suppression
+    this test exists to protect left it green.
+    """
+    sub = _crafted_name(tmp_path, "0{sep}dir")
+    _write(tmp_path, "target_2026.md", "# t\n\nbody")
+    (tmp_path / sub).mkdir()
+    _write(tmp_path / sub, "alpha_2026.md", "# a\n\nThis is superseded by [[target_2026]].")
+    _write(tmp_path, "alpha_2026.md", "# a\n\nThis is superseded by [[target_2026]].")
+
+    # The premise, asserted rather than assumed: if these two spellings did not collide the
+    # fixture would be testing nothing and the test would pass for the wrong reason.
+    assert supersedes_key(f"{sub}/alpha_2026.md") == supersedes_key("alpha_2026.md")
+
+    proposals, unfixable = propose_fixes(tmp_path)
+
+    assert [p.edit_file for p in proposals] == ["target_2026.md"], (
+        f"the edge is declarable from the clean spelling, got {proposals!r}"
+    )
+    assert unfixable == [], (
+        f"one declarable edge needs no human, so nothing may be reported, got {unfixable!r}"
+    )

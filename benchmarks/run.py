@@ -24,6 +24,14 @@ Two properties of the output exist because the money is real:
   flight, not the six already paid for.
 - the filename carries a UTC timestamp, so a second run never overwrites the first one's artifact.
 
+Exit status: 0 published, 2 a usage error from argparse, and 3 means the run finished but its
+artifact was REFUSED publication (an unauditable cost claim, or a failed write) and quarantined
+somewhere OUTSIDE the publishable glob, with the exact location printed on stderr: normally
+``<out>/unpublished/<stamp>.json``, else a ``.json.txt`` sibling, and if no file could be written
+at all, printed to stdout. 1 means it reached none of those, a genuine loss rather than a
+salvageable one, and is also what the interpreter itself exits with on an uncaught exception. 3 is
+distinct from 1 deliberately, so a wrapper can tell "salvageable, do not re-run" from "crashed".
+
 The artifact also carries the run's full `config` block — retrieval budget, per-arm embedder,
 `mem0ai` version, Mem0's vector-store settings, both system prompts verbatim, temperature and the
 model string — plus the count of `qa` rows the loader could not score. Between them, a reader can
@@ -39,9 +47,9 @@ import warnings
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
-from benchmarks.llm import Completer, OpenRouterLLM
+from benchmarks.llm import Completer, OpenRouterLLM, RunAborted, is_terminal
 from benchmarks.artifact_contract import reject_unauditable_cost_claims
 from benchmarks.usage import install_openai_meter
 from benchmarks.usage import reset as reset_usage
@@ -70,9 +78,16 @@ from recall.eval.locomo import (
 )
 
 
+#: Consecutive per-question failures that stop the run. Same constant and same argument as
+#: `benchmarks/mtrag/generation.py`: one question can fail on its own merits (a content-policy
+#: refusal), five in a row is the whole run being broken, and the difference is worth the
+#: remaining questions' spend AND the difference between a refusal and a published artifact.
+CONSECUTIVE_FAILURE_LIMIT = 5
+
+
 def run_arm(
     system: MemorySystem, completer: Completer, questions: list[dict[str, Any]]
-) -> tuple[list[Outcome], dict[str, Any]]:
+) -> tuple[list[Outcome], dict[str, Any], list[str]]:
     """Score `questions` against whatever `system` currently has ingested.
 
     Deliberately does NOT ingest: `MemorySystem.ingest` is per-conversation and stateful (both
@@ -81,9 +96,58 @@ def run_arm(
     per-conversation outcomes and re-aggregates over the pool rather than averaging the per-call
     aggregates, because conversations carry different question counts and a mean of rates would
     weight a 150-question conversation the same as a 250-question one.
+
+    A question that fails is DROPPED rather than allowed to end the run, and its id comes back in
+    the third return value. This used to be one list comprehension, and `main` calls
+    `_append_records` only AFTER it returns, so a single failure discarded every already-billed
+    question of the conversation, up to ~200 on LOCOMO. `benchmarks/llm.py` now raises where it
+    returned "" for an unusable completion, which made that reachable on ordinary provider
+    behaviour (a content filter) rather than only on a crash.
+
+    ⚠️ The terminal check is not optional decoration. LOCOMO had NO notion of a terminal failure,
+    so a bare `except Exception` here would turn an empty balance into a short artifact and exit
+    0 — `benchmarks/beam/run.py:_run_pool` documents that exact outcome (101 questions "failed",
+    `n: 599`, nothing saying the account was empty) as the reason its own breaker exists.
+
+    ⛔ The terminal check ALONE is not enough either, and this is the second thing a review caught.
+    A fault that is not about the account — a wrong `--model` (404), a 400 on every request — is
+    not terminal by any definition, so every question would be dropped, `aggregate([])` would
+    report rate-None blocks, and the artifact would publish with exit 0. `CONSECUTIVE_FAILURE_LIMIT`
+    is the floor, borrowed from `benchmarks/mtrag/generation.py` where the same argument was made:
+    one question can fail on its own merits, but five in a row is the run being broken.
+
+    Dropped ids are RETURNED, as a third element, rather than tucked into the aggregate. They were
+    in the aggregate first, and both production callers unpack it as `_`, so nothing reached any
+    artifact while this docstring claimed the opposite. A value a caller must name is a value a
+    caller cannot discard by accident.
     """
-    outcomes = [run_question(system.retrieve, completer, q) for q in questions]
-    return outcomes, aggregate(outcomes)
+    outcomes: list[Outcome] = []
+    dropped: list[str] = []
+    consecutive = 0
+    for q in questions:
+        try:
+            outcomes.append(run_question(system.retrieve, completer, q))
+        except Exception as exc:  # noqa: BLE001 - re-raised if terminal, quarantined otherwise
+            if is_terminal(exc):
+                raise RunAborted(
+                    f"{type(exc).__name__}: {exc}. Stopping rather than scoring the remaining "
+                    f"questions, because a whole-run fault (revoked key, exhausted credit) fails "
+                    f"every one of them identically and would still produce an artifact."
+                ) from exc
+            dropped.append(str(q["question_id"]))
+            consecutive += 1
+            print(f"  ! question {q['question_id']} failed, dropped: {exc}", flush=True)
+            if consecutive >= CONSECUTIVE_FAILURE_LIMIT:
+                raise RunAborted(
+                    f"{consecutive} questions failed in a row, the last being "
+                    f"{q['question_id']}: {exc}. Stopping rather than dropping the rest, because "
+                    f"a whole-run fault (wrong model, malformed request, dead retrieval) looks "
+                    f"exactly like this and would otherwise publish an artifact over whatever "
+                    f"happened to succeed first."
+                ) from exc
+            continue
+        consecutive = 0
+    return outcomes, aggregate(outcomes), dropped
 
 
 def _load(
@@ -168,6 +232,12 @@ def _load(
 #: OpenRouter issues keys with this prefix. Checking it is free and turns a placeholder or a
 #: mistyped key into an immediate failure instead of one discovered mid-run.
 OPENROUTER_KEY_PREFIX = "sk-or-"
+
+#: Exit status for "the run finished, its artifact was refused publication and quarantined".
+#: Deliberately not 1: that is the interpreter's own uncaught-exception status, and a wrapper
+#: must be able to tell a salvageable run from a crashed one before deciding to re-run and
+#: re-spend. 2 is taken by argparse's usage error.
+QUARANTINE_EXIT = 3
 
 
 def validate_openrouter_key(key: str | None) -> str:
@@ -305,7 +375,11 @@ def _append_records(path: Path, records: list[dict[str, Any]]) -> None:
 
 
 def _run_stamp(arm: str, model: str, conversations: int, now: datetime) -> str:
-    """The filename stem for one run's artifacts — unique per run because of the timestamp.
+    """The filename stem for one run's artifacts, stamped to the second.
+
+    NOT unique on its own: two replicates of the same arm/model/slice launched within one second
+    collide, so `main` claims the stem by creating the sidecar exclusively and refuses the
+    second run rather than letting them overwrite and interleave each other.
 
     Without it the stem is `{arm}_{model}_{N}conv`, so re-running the same arm/model/slice
     silently overwrites the previous run's results file: an artifact that cost real money and may
@@ -359,6 +433,7 @@ def _results_payload(
     skipped: dict[str, Any],
     usage: dict[str, Any],
     provider_metadata: list[dict[str, object]] | None = None,
+    dropped_question_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """The publishable artifact: run identity, config, the aggregate, and every per-question record.
 
@@ -377,6 +452,14 @@ def _results_payload(
         "provider_metadata": provider_metadata or [],
         "cost_claims": [],
         "aggregate": aggregate_,
+        # Beside the aggregate, not inside it, and ALWAYS present. `n` shrinks silently when a
+        # question is quarantined, so a reader diffing two runs cannot otherwise tell a short
+        # run from a small one. Empty on a clean run, so "no failures" is distinguishable from
+        # "this field predates the guard".
+        "dropped": {
+            "n": len(dropped_question_ids or []),
+            "question_ids": list(dropped_question_ids or []),
+        },
         "outcomes": [_outcome_record(o, text_by_id, gold_by_id) for o in outcomes],
     }
 
@@ -493,56 +576,105 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     text_by_id = _text_by_id(questions)
     gold_by_id = _gold_by_id(questions)
     partial_path = args.out / f"{stamp}.partial.jsonl"
+    # CLAIM the stem, atomically, before a single token is spent. `_run_stamp` resolves to the
+    # second, so two replicates of the same arm launched together share the WHOLE stem, and
+    # sharing it is not a cosmetic clash: both would `os.replace` onto one `<stamp>.json`, so the
+    # loser's complete, paid-for measurement vanishes with exit 0 and a `full results ->` line
+    # naming the other run's data; and both would APPEND to one sidecar, after which
+    # `salvage --merge-only` rebuilds one published artifact out of two interleaved runs. That
+    # last one is invisible to `consistency_report`, because two replicates agree on arm, model
+    # and k. Exclusive create is the check and the claim in one operation, so there is no window
+    # between them, and it fails before the run costs anything.
+    try:
+        with partial_path.open("x", encoding="utf-8"):
+            pass
+    except FileExistsError:
+        raise SystemExit(
+            f"{partial_path} already exists, so another run owns this stem. Artifact stems are "
+            "stamped to the second; wait a second and start again, or pass a different --out."
+        ) from None
+    except OSError as exc:
+        # Every other filesystem failure here — a read-only or full `--out`, an antivirus lock,
+        # a directory at the sidecar's path — gets the same curated treatment the write site
+        # gives OSError, rather than a raw traceback in a function where nothing else produces one.
+        raise SystemExit(
+            f"{partial_path} could not be created, so this run cannot claim its stem: {exc}"
+        ) from None
     if skipped["total"]:
         print(f"skipped {skipped['total']} unscoreable qa rows: {skipped['by_reason']}", flush=True)
 
     outcomes: list[Outcome] = []
+    dropped_ids: list[str] = []
     ablation: list[dict[str, Any]] = []
     # Distinguishes "the preflight ran and found nothing configured" from "the preflight never
     # ran" — both stamp `verdicts: []` otherwise, and the second case would read as clean.
     ablation_ran = False
-    for position, conv in enumerate(convs):
-        sample_id = sample_id_of(conv)
-        conv_questions = [q for q in questions if q["sample_id"] == sample_id]
-        # Ingest THEN score, one conversation at a time: both adapters scope retrieval to the last
-        # conversation ingested, so ingesting all of them up front would answer every question out
-        # of the final conversation's memory.
-        system.ingest(conv)
-        if position == 0 and args.arm == "recall":
-            # `_build_system` always returns a `RecallSystem` for `arm == "recall"` today, so this
-            # is unreachable — but if that ever changed silently, falling through here would skip
-            # the preflight with zero trace: the artifact would stamp `verdicts: []`, indistinguishable
-            # from a preflight that ran and found nothing configured, and the run would read as
-            # clean. Asserting keeps mypy able to see `ablation_preflight` (it is on the
-            # `RecallSystem` adapter, not the shared `MemorySystem` protocol — it is retrieval-only
-            # and has no meaning on the Mem0 arms) while making that failure mode loud instead of
-            # silent.
-            assert isinstance(system, RecallSystem), (
-                f"arm='recall' but _build_system returned {type(system).__name__}; the ablation "
-                f"preflight cannot run and would silently stamp verdicts: []"
+    try:
+        for position, conv in enumerate(convs):
+            sample_id = sample_id_of(conv)
+            conv_questions = [q for q in questions if q["sample_id"] == sample_id]
+            # Ingest THEN score, one conversation at a time: both adapters scope retrieval to the last
+            # conversation ingested, so ingesting all of them up front would answer every question out
+            # of the final conversation's memory.
+            system.ingest(conv)
+            if position == 0 and args.arm == "recall":
+                # `_build_system` always returns a `RecallSystem` for `arm == "recall"` today, so this
+                # is unreachable — but if that ever changed silently, falling through here would skip
+                # the preflight with zero trace: the artifact would stamp `verdicts: []`, indistinguishable
+                # from a preflight that ran and found nothing configured, and the run would read as
+                # clean. Asserting keeps mypy able to see `ablation_preflight` (it is on the
+                # `RecallSystem` adapter, not the shared `MemorySystem` protocol — it is retrieval-only
+                # and has no meaning on the Mem0 arms) while making that failure mode loud instead of
+                # silent.
+                assert isinstance(system, RecallSystem), (
+                    f"arm='recall' but _build_system returned {type(system).__name__}; the ablation "
+                    f"preflight cannot run and would silently stamp verdicts: []"
+                )
+                # After index build, before the FIRST generator call: retrieval-only, so an inert arm
+                # is caught before a single token is spent. BEAM best-config ran out of credits at
+                # 5/60; a post-hoc check would have spent them first.
+                ablation = system.ablation_preflight(
+                    [str(q["question"]) for q in conv_questions],
+                    sample=args.ablation_sample,
+                    metric_class="set",
+                    allow_inert=args.allow_inert_arm,
+                )
+                ablation_ran = True
+                print(f"ablation preflight: {ablation}", flush=True)
+            conv_outcomes, _, conv_dropped = run_arm(system, completer, conv_questions)
+            outcomes.extend(conv_outcomes)
+            # Accumulated for the ARTIFACT, not just the console. A dropped question shrinks
+            # `n` silently otherwise, and a reader cannot tell a short run from a small one.
+            dropped_ids.extend(conv_dropped)
+            # Persist BEFORE the next conversation is touched: everything scored above has already
+            # been paid for in generator and judge calls, and this is the write that keeps it.
+            _append_records(
+                partial_path, [_outcome_record(o, text_by_id, gold_by_id) for o in conv_outcomes]
             )
-            # After index build, before the FIRST generator call: retrieval-only, so an inert arm
-            # is caught before a single token is spent. BEAM best-config ran out of credits at
-            # 5/60; a post-hoc check would have spent them first.
-            ablation = system.ablation_preflight(
-                [str(q["question"]) for q in conv_questions],
-                sample=args.ablation_sample,
-                metric_class="set",
-                allow_inert=args.allow_inert_arm,
+            print(
+                f"  [{position + 1}/{len(convs)}] {sample_id}: {len(conv_outcomes)} questions scored",
+                flush=True,
             )
-            ablation_ran = True
-            print(f"ablation preflight: {ablation}", flush=True)
-        conv_outcomes, _ = run_arm(system, completer, conv_questions)
-        outcomes.extend(conv_outcomes)
-        # Persist BEFORE the next conversation is touched: everything scored above has already
-        # been paid for in generator and judge calls, and this is the write that keeps it.
-        _append_records(
-            partial_path, [_outcome_record(o, text_by_id, gold_by_id) for o in conv_outcomes]
-        )
-        print(
-            f"  [{position + 1}/{len(convs)}] {sample_id}: {len(conv_outcomes)} questions scored",
-            flush=True,
-        )
+    finally:
+        # RELEASE the claim if nothing was ever written AND we are unwinding. Claiming the stem
+        # CREATES the sidecar, so a failure above the first scored conversation — an ablation
+        # refusal, a bad DSN, an ingest error — would otherwise leave a 0-byte corpse that reads
+        # exactly like a crashed run whose records were lost, and `salvage --merge-only`
+        # republishes that as an n=0 artifact. An empty sidecar records nothing, so removing it
+        # loses nothing and frees the stem for a retry.
+        #
+        # `sys.exception()` is what keeps this to the unwinding path. On SUCCESS a run can also
+        # write no records — every qa row unscoreable — and it still publishes a real
+        # `<stamp>.json`. Releasing there would unclaim a stem that a published artifact sits
+        # at, and the next same-second replicate would reclaim it and silently overwrite that
+        # artifact: the precise harm claiming the stem exists to prevent.
+        if sys.exception() is not None:
+            try:
+                if partial_path.stat().st_size == 0:
+                    partial_path.unlink(missing_ok=True)
+            except OSError:  # pragma: no cover - best effort; a live sidecar is never touched
+                pass
+
 
     agg = aggregate(outcomes)
     total_usage = usage_snapshot()
@@ -571,6 +703,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         skipped,
         usage_block,
         provider_metadata,
+        dropped_ids,
     )
     payload["ablation_preflight"] = {
         "verdicts": ablation,
@@ -579,40 +712,227 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         "ran": ablation_ran,
     }
     path = args.out / f"{stamp}.json"
-    # `aggregate` already sanitises its empty rate blocks to None, so this never emits the bare
-    # `NaN` token that no non-Python JSON parser accepts.
-    reject_unauditable_cost_claims(payload)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(json.dumps(agg, indent=2))
-    print(f"full results -> {path}")
-    print(f"incremental  -> {partial_path}")
-    # Release the arm's handles while the interpreter is still healthy. A `Mem0System` holds
-    # exclusive Qdrant locks for as long as it lives (see `Mem0System.close`), including one on a
-    # machine-global telemetry path that no `run_id` disambiguates. Process exit would drop them
-    # anyway; the point is to do it here rather than during finalisation, where qdrant-client's own
-    # finaliser dies with `ModuleNotFoundError: import of msvcrt halted`.
-    #
-    # SUCCESS PATH ONLY, deliberately, and it is not a guarantee: there is no `try/finally`, so an
-    # exception on the way here skips this and falls back to process exit. The honest fix, if that
-    # ever stops being good enough, is `with _build_system(...) as system:` around the body — not a
-    # second close bolted on elsewhere. Duck-typed because `MemorySystem` is a three-member
-    # protocol and `RecallSystem` has nothing to release: it holds a DSN string, not a connection.
-    #
-    # Guarded: by this point the artifact and its sidecar are written and their paths printed, so
-    # a teardown failure must not change the run's verdict. Unguarded, a complete run would exit
-    # non-zero and a wrapper reading that status would re-run it, re-spending LLM credit on work
-    # that already succeeded.
-    close = getattr(system, "close", None)
-    if callable(close):
+    # Everything below runs AFTER the last billed call, so nothing here may throw the artifact
+    # away. What is at stake is narrower than it looks: every scored answer is already in the
+    # incremental sidecar, and `python -m benchmarks.salvage --merge-only` rebuilds a runnable
+    # artifact from it without re-spending a cent. What a dropped artifact really costs is the
+    # envelope the sidecar does NOT carry — the usage block, `provider_metadata`, the config and
+    # the ablation preflight — plus a manual salvage step. Cheap to keep, so keep it.
+    try:
+        # Serialise BEFORE the contract runs, so the bytes are in hand whichever way it goes.
+        # `aggregate` already sanitises its empty rate blocks to None, so this never emits the
+        # bare `NaN` token that no non-Python JSON parser accepts.
+        #
+        # A payload json cannot encode loses to `TypeError` here, before the contract runs, and
+        # that is the right winner: an unencodable payload cannot be quarantined either, so the
+        # serializer's error is the actionable one rather than a contract message chained behind
+        # it. It also means `json.dumps` now detects circular references first.
+        encoded = json.dumps(payload, indent=2)
         try:
-            close()
-        except Exception as exc:  # noqa: BLE001 - a wedged handle is not a failed benchmark run
-            # The REPORT is guarded as carefully as the call, for the two reasons
-            # `Mem0System.close` documents: `warnings.warn` raises under `-W error`, and `repr()`
-            # of an arbitrary exception can raise. Either one, unguarded, would skip `return 0`
-            # and produce exactly the non-zero exit this handler exists to prevent.
-            _warn_teardown_failed(system, exc)
-    return 0
+            reject_unauditable_cost_claims(payload)
+        except ValueError as exc:
+            preserved = _quarantine(
+                args.out, stamp, payload, encoded, partial_path, reason=str(exc)
+            )
+            return QUARANTINE_EXIT if preserved else 1
+        try:
+            _write_atomic(path, encoded)
+        except OSError as exc:
+            # Likelier than the contract firing: a full disk, a >260-char path, an antivirus or
+            # indexer lock. The bytes are already in hand, so losing them here is gratuitous.
+            #
+            # No cleanup needed: `_write_atomic` never touches `path` except by rename, so a
+            # failure here cannot have left a truncated artifact in the publishable glob.
+            preserved = _quarantine(
+                args.out, stamp, payload, encoded, partial_path,
+                reason=f"the published artifact could not be written to {path}: {exc}",
+            )
+            return QUARANTINE_EXIT if preserved else 1
+        print(json.dumps(agg, indent=2))
+        print(f"full results -> {path}")
+        print(f"incremental  -> {partial_path}")
+        return 0
+    finally:
+        # Release the arm's handles while the interpreter is still healthy. A `Mem0System` holds
+        # exclusive Qdrant locks for as long as it lives (see `Mem0System.close`), including one
+        # on a machine-global telemetry path that no `run_id` disambiguates. Process exit would
+        # drop them anyway; the point is to do it here rather than during finalisation, where
+        # qdrant-client's own finaliser dies with `ModuleNotFoundError: import of msvcrt halted`.
+        #
+        # SCOPE: this `finally` covers the write site only, not the whole run. An exception
+        # during ingest or scoring still skips it and falls back to process exit. Widening it is
+        # `with _build_system(...) as system:` around the body, not a second close bolted on
+        # elsewhere. Duck-typed because `MemorySystem` is a three-member protocol and
+        # `RecallSystem` has nothing to release: it holds a DSN string, not a connection.
+        #
+        # Guarded, and doubly so now that this runs on failure paths too. Teardown must never
+        # change the outcome, whether that outcome is a written artifact or an in-flight
+        # exception. Unguarded on success, a complete run would exit non-zero and a wrapper
+        # reading that status would re-run it, re-spending credit on work that already
+        # succeeded; unguarded on failure, a raise in here would MASK the exception that got us
+        # here, which is a possibility that did not exist while this was success-path-only.
+        close = getattr(system, "close", None)
+        if callable(close):
+            try:
+                close()
+            # `Exception`, not `BaseException`, and that asymmetry with the guarded report
+            # below is deliberate: a Ctrl+C landing during `Mem0System.close` (releasing Qdrant
+            # locks is not instantaneous) SHOULD still interrupt the process. It costs at most a
+            # crash status on a run whose artifact is already safely on disk.
+            except Exception as exc:  # noqa: BLE001 - a wedged handle is not a failed run
+                # The REPORT is guarded as carefully as the call, for the two reasons
+                # `Mem0System.close` documents: `warnings.warn` raises under `-W error`, and
+                # `repr()` of an arbitrary exception can raise. The outer `except BaseException`
+                # is belt and braces for being inside a `finally`: the helper is written never
+                # to raise, and if that ever stops being true it must still not replace the
+                # return value, nor mask an exception already on its way out.
+                try:
+                    _warn_teardown_failed(system, exc)
+                except BaseException:  # noqa: BLE001 - nothing in teardown may escape a finally
+                    pass
+
+
+def _quarantine(
+    out: Path,
+    stamp: str,
+    payload: dict[str, Any],
+    encoded: str,
+    partial_path: Path,
+    *,
+    reason: str,
+) -> bool:
+    """Preserve an artifact that must not be published. Returns whether it was preserved.
+
+    A rescue that can itself throw the artifact away is not a rescue, so nothing in here raises:
+    every filesystem call is guarded, every report goes through `_say`, and there is a last
+    resort that needs no filesystem at all.
+
+    WRITE FIRST, REPORT AFTER, and that order is the whole point. Writing touches a directory
+    this process was given; reporting touches a stream it does not own and cannot vouch for. An
+    earlier version announced the refusal before saving anything, so a closed stderr raised
+    straight out of the rescue and destroyed the artifact with a perfectly writable output
+    directory sitting there — and `main` then never returned QUARANTINE_EXIT, so a wrapper read
+    the crash status and re-ran the arm.
+
+    Neither destination may sit in the `results/*.json` glob that feeds `analyze`: not the
+    preferred subdirectory, and not the `.json.txt` fallback. The payload is ALSO marked in band,
+    because the subdirectory only protects the DOCUMENTED glob and a reader handed the file
+    directly would otherwise find it byte identical to a publishable artifact. `analyze` refuses
+    a payload carrying that mark, so it is a contract rather than a decoration. Republishing
+    means fixing the cause and dropping the two marker keys.
+    """
+
+    marked = dict(payload, unpublished=True, unpublished_reason=reason)
+    try:
+        body = json.dumps(marked, indent=2)
+    except (TypeError, ValueError):  # pragma: no cover - `encoded` already proved it serialises
+        body = encoded
+
+    notes = [f"artifact NOT published: {reason}"]
+    written: Path | None = None
+    for candidate in (
+        out / "unpublished" / f"{stamp}.json",
+        out / f"{stamp}.unpublished.json.txt",
+    ):
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            _write_atomic(candidate, body)
+        except OSError as exc:
+            # `exist_ok=True` does NOT tolerate the path existing as a FILE, so the preferred
+            # subdirectory is one `touch` away from being unusable. Fall back, do not give up.
+            notes.append(f"  {candidate} could not be written: {exc}")
+            continue
+        written = candidate
+        break
+
+    preserved = written is not None
+    if written is not None:
+        notes.append(f"unpublished  -> {written}")
+    notes.append(f"incremental  -> {partial_path}")
+    notes.append(
+        "the scored answers are safe either way: they are in that sidecar, and "
+        "`python -m benchmarks.salvage --merge-only` rebuilds an artifact from it without "
+        "re-spending. Fix the cause and republish rather than re-running the arm."
+    )
+    for note in notes:
+        try:
+            _say(note)
+        except BaseException:  # noqa: BLE001 - the artifact is already on disk by this point
+            # `_say` deliberately lets a KeyboardInterrupt through, because the last-resort
+            # dump below is a long write to a pipe and an interrupt is the operator talking.
+            # These notes print AFTER the artifact is safe, so an interrupt here
+            # would throw away the verdict for a run that WAS preserved and hand a wrapper a
+            # crash status — the harm the narrowing was meant to prevent, inverted. Per note, so
+            # a single Ctrl+C costs one line and not the `unpublished -> ...` path with it.
+            pass
+
+    if written is None:
+        # Nowhere on disk would take it. stdout might still be a file or a pipe.
+        preserved = _say(body, stream=sys.stdout)
+        _say(
+            "the artifact reached no file; it was printed to stdout above"
+            if preserved
+            else "the artifact could not be preserved anywhere"
+        )
+    return preserved
+
+
+#: Sentinel for "no stream argument", so `None` can keep its own meaning: THIS STREAM IS
+#: UNUSABLE. Defaulting `stream=None` conflated the two, and the bug that produced was ugly —
+#: `_say(body, stream=sys.stdout)` with a None stdout took the default branch, wrote the artifact
+#: body to STDERR, reported "printed to stdout above", and counted it as preserved.
+_NO_STREAM: Any = object()
+
+
+def _write_atomic(path: Path, body: str) -> None:
+    """Write via a temp file and `os.replace`, so a failed write can neither truncate the target
+    nor destroy what was already there.
+
+    `write_text` opens with mode "w", which has two distinct failure shapes and a naive cleanup
+    gets one of them badly wrong. Fail AFTER open (ENOSPC mid-write) and the target is a
+    half-written corpse that has to go. Fail AT open (an antivirus or indexer lock, EACCES, a
+    read-only mount) and the file sitting there is INTACT and somebody else's, so unlinking it
+    destroys a good artifact this function is not going to replace. Writing to a temp and
+    renaming makes the distinction moot: the target is only ever touched by an atomic rename.
+    """
+
+    # PID in the name: `_run_stamp` resolves to the second, so two replicates of the same arm
+    # launched in the same second would otherwise share one temp, and the loser's `os.replace`
+    # would fail and quarantine a complete, good artifact as refused.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(body, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _say(message: str, stream: TextIO | None = _NO_STREAM) -> bool:
+    """Print without raising on a broken stream. Returns whether the message went anywhere.
+
+    `print(file=None)` writes to STDOUT rather than raising, and `sys.stderr` really is None
+    under pythonw, so a bare `file=sys.stderr` would silently interleave diagnostics into the
+    artifact body. Refusing a None stream is what keeps the last resort's return value honest.
+
+    `Exception`, NOT `BaseException`. A broken pipe is an expected failure of reporting and is
+    swallowed. A `KeyboardInterrupt` is the operator talking, and the last resort dumps the whole
+    payload — every per-question record — to a possibly slow pipe, so an interrupt there is
+    likely rather than exotic. Swallowing it would report "the artifact could not be preserved
+    anywhere" and hand back the exit code that tells a wrapper to re-run and re-spend.
+    """
+
+    target = sys.stderr if stream is _NO_STREAM else stream
+    if target is None:
+        return False
+    try:
+        print(message, file=target, flush=True)
+    except Exception:  # noqa: BLE001 - reporting a failure may not become one
+        return False
+    return True
 
 
 def _warn_teardown_failed(subject: object, exc: BaseException) -> None:

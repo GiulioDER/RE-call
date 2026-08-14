@@ -1,9 +1,11 @@
 """Retrieval metrics (pure functions over id lists) + the guard false-confident rate."""
 from __future__ import annotations
 
+from collections.abc import ItemsView, KeysView, Mapping, Set as AbstractSet
 import math
 import random
 from statistics import NormalDist
+from typing import Any
 
 from recall.observability import percentile
 
@@ -99,6 +101,53 @@ def fraction_true(flags: list[bool]) -> float:
     if not flags:
         return float("nan")
     return sum(1 for f in flags if f) / len(flags)
+
+
+def nan_to_null(value: Any, seen: frozenset[int] = frozenset()) -> Any:
+    """Recursively replace non-finite floats with None, so `allow_nan=False` can stay on.
+
+    The NaN convention above is what makes this necessary: every rate here reports NaN rather
+    than a fake score on no data, and `json.dumps` renders that as a bare `NaN` token which is
+    not valid JSON and which no non-Python parser will read. Sanitise, then serialise strictly,
+    so a missed one is a loud failure instead of an unparseable artifact.
+
+    Matches on the ABCs, not on `dict`/`list`. `proposal_precision_recall` returns a
+    `MappingProxyType`, which is a Mapping but NOT a dict, so a `dict`-only test would hand the
+    proxy straight back with its NaN intact and `json.dumps` would then die on the proxy rather
+    than on the number. Containers are normalised to plain dict/list on the way out.
+
+    `seen` is path scoped, so it records ancestors only: the same object referenced twice as
+    SIBLINGS is not a cycle and survives on both paths. A real cycle RAISES rather than nulling
+    the repeated member away. Returning None there would be the worst outcome available, a
+    valid looking artifact with data silently replaced, and `pending_datasets` treats an
+    existing file as a finished corpus. Stack safety must not be bought with a wrong file.
+
+    Unordered sets are emitted in sorted order. Their iteration order varies per process under
+    hash randomisation, and both callers write git tracked artifacts that would otherwise
+    rewrite themselves on every run. The test is "is this an ordered view", not "is this a
+    `set`": any hash backed `collections.abc.Set` has the same problem. `dict.keys()` and
+    `dict.items()` register as Sets but are already ORDERED, so they keep their order, because
+    sorting them would buy no determinism they did not have and would discard insertion order.
+
+    Mapping KEYS are deliberately out of scope. A non-finite key survives to `json.dumps`, which
+    rejects it under `allow_nan=False`, and a non-scalar key raises there too; both are the loud
+    failure we want. Note `json.dumps` silently stringifies int, float, bool and None keys, and
+    that coercion is accepted here rather than pre-empted.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, (str, bytes, bytearray)):
+        return value
+    if isinstance(value, (Mapping, list, tuple, AbstractSet)):
+        if id(value) in seen:
+            raise ValueError("Circular reference detected")
+        seen = seen | {id(value)}
+        if isinstance(value, Mapping):
+            return {k: nan_to_null(v, seen) for k, v in value.items()}
+        if isinstance(value, AbstractSet) and not isinstance(value, (KeysView, ItemsView)):
+            return [nan_to_null(v, seen) for v in sorted(value, key=repr)]
+        return [nan_to_null(v, seen) for v in value]
+    return value
 
 
 def bootstrap_ci(

@@ -2717,7 +2717,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "2.52.0"
+version = "2.53.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2729,9 +2729,21 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bb/5a/c45fa035cd72c70ebe67c6e079e3adf871492382634f69e3dff62c43597d/openai-2.52.0.tar.gz", hash = "sha256:7c736d592f81471ce1f734838390983c4d8c8aecff23dcd36e600a58e5032d9c", size = 1098876, upload-time = "2026-07-31T15:13:03.228Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/cf/36e3e7235fdf6d125c052acc0970924611b17a20a4fe580596faf4566a65/openai-2.53.0.tar.gz", hash = "sha256:baf5802ad08980e1d9d561e1b996e800c8bcd14af5847c6d0e7a5cc59e4d4116", size = 1099435, upload-time = "2026-08-03T21:42:01.664Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a1/ac/ceb40c995df49533ad4dcff6c37f0d85cf14446a212363fc9d2f927e60b4/openai-2.52.0-py3-none-any.whl", hash = "sha256:f97e231d9a8fa69ab55897df1080f02d99913fb0a30e3ee56ea16a1eb6c2d434", size = 1659569, upload-time = "2026-07-31T15:13:01.145Z" },
+    { url = "https://files.pythonhosted.org/packages/78/0f/cc6afea3542a5142c5d8fc8211c5e059a8375105d004a41dfa2c7948dbb0/openai-2.53.0-py3-none-any.whl", hash = "sha256:c694ffc747a3c4d1663ef2b07b811315a476164ee5efa3a993967349ebca7618", size = 1659829, upload-time = "2026-08-03T21:41:59.581Z" },
+]
+
+[[package]]
+name = "opentelemetry-api"
+version = "1.44.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ee/8b/aa9e2d8b8dfa7c946f7dec5d1f8f6ba8eca062f43509a06bdb5ce93d26c0/opentelemetry_api-1.44.0.tar.gz", hash = "sha256:67647e5e9566edcf421166fdf022b3537f818635daa852b289e34604dc6fb33a", size = 72406, upload-time = "2026-07-16T15:25:32.678Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ca/6f/a04e900f465ff3221ccc395522503e2d10e79fa21f2723c8e177aae1e0d1/opentelemetry_api-1.44.0-py3-none-any.whl", hash = "sha256:94b98c893a91b88657eaac1e3ba89618cdb85be6918196705354f34728b2cdef", size = 60018, upload-time = "2026-07-16T15:25:11.657Z" },
 ]
 
 [[package]]
@@ -3690,7 +3702,7 @@ wheels = [
 
 [[package]]
 name = "recall-rag"
-version = "0.9.2"
+version = "0.9.4"
 source = { editable = "." }
 dependencies = [
     { name = "pgvector" },
@@ -3724,6 +3736,9 @@ eval = [
     { name = "matplotlib" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+extract = [
+    { name = "openai" },
 ]
 fastembed = [
     { name = "fastembed" },
@@ -3781,6 +3796,7 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'eval'" },
     { name = "numpy", marker = "extra == 'finetune'" },
     { name = "openai", marker = "extra == 'bench'", specifier = ">=1.0" },
+    { name = "openai", marker = "extra == 'extract'", specifier = ">=1.0" },
     { name = "pgvector", specifier = ">=0.4" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
     { name = "psycopg-pool", marker = "extra == 'dev'", specifier = ">=3.2" },
@@ -3799,9 +3815,9 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'rerank'", specifier = ">=3.0" },
     { name = "torch", marker = "extra == 'sparse'", specifier = ">=2.0,<3" },
     { name = "transformers", marker = "extra == 'sparse'", specifier = ">=4.40,<6" },
-    { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.2" },
+    { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.2.2" },
 ]
-provides-extras = ["fastembed", "pool", "mcp", "voyage", "s3", "sparse", "rerank", "entail", "eval", "finetune", "langchain", "llamaindex", "bench", "dev"]
+provides-extras = ["fastembed", "pool", "mcp", "voyage", "s3", "sparse", "rerank", "entail", "eval", "extract", "finetune", "langchain", "llamaindex", "bench", "dev"]
 
 [[package]]
 name = "referencing"

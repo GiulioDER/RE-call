@@ -5,8 +5,8 @@
 <!-- mcp-name: io.github.GiulioDER/re-call -->
 
 <p align="center">
-  <b>Trustworthy memory for AI agents.</b><br>
-  RE-call gives retrieval results confidence, provenance, validity, tenant isolation, and an explicit abstention path when the memory does not support an answer.
+  <b>Memory that knows what it no longer believes.</b><br>
+  RE-call is the retrieval engine I extracted from a research agent that had been running for months, after its memory outgrew its context window and it started confidently repeating conclusions it had already disproved.
 </p>
 
 <p align="center">
@@ -34,17 +34,22 @@
 
 ## Why RE-call
 
-Most memory systems optimize for the nearest match. Agent memory needs a stricter contract: the
-retriever must say whether a memory is current, where it came from, how confident it is, and when
-the corpus does not contain an answer.
+Nearest-match retrieval cannot tell the difference between what is true and what merely reads like
+it. When a corpus keeps its history, and real agent memory does, the retracted claim and its
+correction are both retrievable, and the retracted one is often the nearer match. That is not a
+tuning problem. A ranker with no notion of validity has no way to prefer the correction.
 
-RE-call is built around that contract.
+RE-call came out of a production, long-running trading-research agent: months of operation,
+792 <!--@ citation-pending: measured in docs/CASE_STUDY.md, not backed by a committed results artifact -->
+typed memos, 6,469 <!--@ citation-pending: measured in docs/CASE_STUDY.md, not backed by a committed results artifact -->
+chunks, re-indexed daily by a session-end hook. Every guard in this repository
+exists because that agent failed a specific way without it. See
+[docs/CASE_STUDY.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CASE_STUDY.md).
 
-It is for teams putting agent memory behind real applications: support copilots, internal research
-agents, compliance assistants, and long-running workflow agents where a stale or unsupported memory
-is worse than no memory. The buyer story is simple: keep the memory layer local by default, attach
-policy to every hit, calibrate the refusal threshold on your corpus, and let the application decide
-what to do with a result that is not trustworthy enough to answer from.
+It is for teams putting agent memory behind real applications, where a stale or unsupported memory
+is worse than no memory: keep the memory layer local by default, attach policy to every hit,
+calibrate the refusal threshold on your corpus, and let the application decide what to do with a
+result that is not trustworthy enough to answer from.
 
 | Capability | What it means in practice |
 |---|---|
@@ -72,34 +77,77 @@ the full interpretation and limits.
 
 ## Quickstart
 
-Run the guided setup wizard for your own corpus. The wizard records the selected
+RE-call keeps memory in your own PostgreSQL with pgvector, so a database comes first.
+
+**Already running PostgreSQL with pgvector?** Skip ahead and point the DSN at it.
+
+**Want a throwaway one?** Save this as `docker-compose.yml`, then start it:
+
+```yaml
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: recall
+      POSTGRES_PASSWORD: recall
+      POSTGRES_DB: recall
+    volumes:
+      - recall_pgdata:/var/lib/postgresql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recall"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  recall_pgdata:
+```
+
+```bash
+docker compose up -d --wait
+```
+
+Then install, create the schema, and run the guided setup wizard. The wizard records the selected
 embedder, retrieval options, and an optional calibration that is fitted to your labeled queries and
 your corpus.
 
 ```bash
-docker compose up -d --wait
 pip install "recall-rag[fastembed]"
-python -m recall.cli --table recall_quickstart \
-  --migration-dsn postgresql://recall:recall@localhost:5432/recall \
-  schema --dim 384 apply
+python -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply
 python -m recall.cli setup
 ```
 
-PowerShell:
+Those three run unchanged in PowerShell.
 
-```powershell
-docker compose up -d --wait
-pip install "recall-rag[fastembed]"
-python -m recall.cli --table recall_quickstart `
-  --migration-dsn postgresql://recall:recall@localhost:5432/recall `
-  schema --dim 384 apply
-python -m recall.cli setup
+The schema command targets the default `chunks` table deliberately. Global migrations have to be
+applied there before any other table, so starting with `--table something_else` on a fresh database
+stops with `SchemaTooOld`. To add a separate index later, apply the default target first, then pass
+`--table`.
+
+When the wizard asks whether to calibrate, it wants a labeled query file and the corpus those
+queries refer to. You do not have to build either to try it: both ship inside the installed
+package, next to each other.
+
+```bash
+python -c "import recall.eval, pathlib; print(pathlib.Path(recall.eval.__file__).parent)"
 ```
 
-When the wizard asks whether to calibrate, provide a labeled query JSON and the corpus directory.
-Use [recall/eval/queries.json](https://github.com/GiulioDER/RE-call/blob/master/recall/eval/queries.json)
-as the input shape. Calibration is per embedder and per corpus, so a new model or substantially
-changed corpus should be calibrated again.
+That prints a directory holding `queries.json`, a labeled set covering both answerable and
+unanswerable questions, and `corpus/`, the documents those questions are labeled against. Give the
+wizard those two paths and calibration runs end to end. Sources:
+[recall/eval/queries.json](https://github.com/GiulioDER/RE-call/blob/master/recall/eval/queries.json)
+and [recall/eval/corpus/](https://github.com/GiulioDER/RE-call/tree/master/recall/eval/corpus).
+
+A calibration fitted that way belongs to that sample, not to your data. It shows the mechanism
+working and gives you a labeled file to copy the shape of. Calibration is per embedder and per
+corpus, so a new model or a substantially changed corpus needs calibrating again, and a threshold
+fitted on the sample should not be used to judge your own memory.
+
+A labeled file needs at least one answerable and one unanswerable query, and every entry needs a
+`query` and an `answerable` key. Calibration refuses the file rather than fitting a threshold to
+one-sided evidence.
 
 The distribution is `recall-rag`; the import is `recall`. The name `recall` on PyPI belongs to an
 unrelated package, so do not install both into the same environment.
@@ -168,6 +216,20 @@ opt in, citation constrained, and review aware.
 
 The ordered SQL migration path is versioned now, pre-tenancy tables are migrated in place, and runtime
 `CREATE TABLE IF NOT EXISTS` remains bootstrap only.
+
+## When not to use RE-call
+
+Use something else if you need managed hosting, per-chunk ACLs, automatic truth extraction from
+prose, or a memory system that rewrites facts for you. RE-call is a retrieval library over your
+PostgreSQL database, not a hosted memory platform.
+
+## What this does not do
+
+RE-call is a retrieval library with an opt-in reasoning layer, not a general reasoning system. It
+does not infer every missing supersession edge, prove that an on-topic memory answers a near-miss
+question, promote proposals into corpus truth, or replace database operations with a managed
+service. It returns the trust signals the caller needs, and it refuses to pretend that a nearest
+match is always usable evidence.
 
 ## Use it
 

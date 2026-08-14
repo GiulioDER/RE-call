@@ -1,0 +1,79 @@
+"""Reading the assistant text out of an OpenAI-compatible chat completion.
+
+ONE definition, because this repo ships THREE OpenAI-compatible clients and each had its own:
+
+    recall/truth_extraction/_openai_engine.py:_text_of   joined block lists
+    benchmarks/llm.py:_complete_once                     refused block lists
+    benchmarks/mtrag/generation.py:generate_one          crashed on block lists
+
+They were first reconciled by mirroring the rule into a second module and pinning the pair with a
+cross-check test. That was not enough twice over: the test's table held only lists, so two of the
+three branches were unpinned, and a third reader existed that nobody had counted. A rule copied
+into N places is a rule that drifts in N places, and the drift is invisible until something
+reaches the branch nobody mirrored.
+
+⚠️ THIS FUNCTION MUST NEVER RAISE. Every caller invokes it on provider-supplied data, two of them
+inside an `except` block's blast radius, and a reader that raises does not merely misread: in
+`benchmarks/llm.py` it escapes as a bare `TypeError` past the `EmptyCompletion` guard, and in
+`benchmarks/mtrag/generation.py` an `AttributeError` is not in `PERMANENT_ERROR_NAMES`, so the task
+pays four billed attempts before failing. `_text_of` claimed to be "deliberately total" and was
+not: a dict block whose `text` was `None` or a number reached `"".join` unconverted and raised.
+"""
+
+from __future__ import annotations
+
+
+def assistant_text(content: object) -> str:
+    """The text in a completion's `message.content`, or `""` when it carries none.
+
+    Three shapes, because providers disagree and the OpenAI schema permits more than one:
+
+    * a plain `str`, which is returned UNTOUCHED, not stripped. Callers decide about whitespace,
+      and `benchmarks/llm.py` deliberately hands the raw string to its consumers.
+    * a LIST of text blocks, which is joined. A gateway serialising content as blocks is sending a
+      well formed answer, and refusing it would blame the model for its gateway's encoding.
+    * anything else, which reads as `""` so the caller can apply its own policy.
+
+    A block contributes its `text` only when that is genuinely a `str`. Coercion is per BLOCK, not
+    per branch: the earlier `... else getattr(block, "text", "") or ""` guarded only the object
+    branch, and only against FALSY values, so a dict carrying `{"text": None}` or `{"text": 123}`
+    raised `TypeError` inside the join. Both are real wire shapes and neither is an answer.
+
+    What an empty reading MEANS is left to the caller, and the three disagree for good reasons:
+    `_text_of` returns it (the `json` rung refuses `""` as a visible batch rejection), while the
+    benchmark clients raise (nothing downstream re-reads the answer, so `""` was scored).
+    """
+    # ⛔ The `isinstance` calls are INSIDE the guard, and that is not belt-and-braces. `isinstance`
+    # is not inert: when the real type check misses, CPython looks up `inst.__class__`, and that
+    # lookup suppresses only `AttributeError`. Leaving these three outside meant an object whose
+    # `__class__` is a raising property escaped, so the invariant above was false in exactly the
+    # place the previous attempt had declared it fixed.
+    try:
+        return _read(content)
+    except Exception:  # noqa: BLE001 - see the module docstring: this reader must never raise
+        return ""
+
+
+def _read(content: object) -> str:
+    """The reading itself. Split out so ONE `try` in `assistant_text` covers every operation,
+    including the `isinstance` checks, rather than each one needing its own."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in list(content):
+        # Guarded per block, because `get` and `text` come off the wire and can be anything: a
+        # dict subclass with a hostile `get`, an SDK object whose `text` is a computed property.
+        # `getattr(..., None)` swallows only `AttributeError`, so without this the invariant above
+        # was false and the test that claimed to prove it asserted the opposite.
+        try:
+            text = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
+            # ⛔ The narrowing is INSIDE the guard too. `isinstance` consults `__class__`, so a
+            # hostile block VALUE (not just a hostile block) escaped to the outer guard and
+            # collapsed the WHOLE reading to "", turning a mostly-readable answer into an
+            # `EmptyCompletion` — while this module's test asserted the opposite property.
+            parts.append(text if isinstance(text, str) else "")
+        except Exception:  # noqa: BLE001 - a reader must never beat the answer it is reading
+            parts.append("")
+    return "".join(parts)

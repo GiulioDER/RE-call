@@ -313,7 +313,28 @@ def _fastembed_available() -> bool:
 #: intentional CI condition into a red build.
 requires_fastembed = pytest.mark.skipif(
     not _fastembed_available(),
-    reason="needs the fastembed extra (pip install recall[fastembed])",
+    reason='needs the fastembed extra (pip install "recall-rag[fastembed]")',
+)
+
+
+def _openai_available() -> bool:
+    try:
+        import openai  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+#: The same rule as `requires_fastembed`, for the `extract` and `bench` extras that carry the
+#: `openai` SDK. It is stated twice because it was learned twice: six tests in
+#: `test_truth_extraction_engine_openai.py` reached the real package with no guard, so the
+#: deliberate absence of the extras turned the `test` and `floor` jobs red on master itself
+#: rather than skipping. Note what must NOT be guarded this way — that file's
+#: `test_importing_the_package_does_not_import_openai` is only meaningful WITHOUT the extra, so a
+#: module-level skip would silently retire the test that proves the import stays lazy.
+requires_openai = pytest.mark.skipif(
+    not _openai_available(),
+    reason='needs the extract extra (pip install "recall-rag[extract]")',
 )
 
 

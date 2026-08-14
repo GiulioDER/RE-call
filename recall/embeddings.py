@@ -7,6 +7,8 @@ import random
 import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Literal, Protocol, TypeVar, runtime_checkable
@@ -15,26 +17,193 @@ from typing import Literal, Protocol, TypeVar, runtime_checkable
 #: so the retry is transparent to the caller's type rather than widening it to `object`.
 _R = TypeVar("_R")
 
+#: The text fallback's whole vocabulary, hoisted out of `_is_transient` so a test can WALK it.
+#: Inline, each marker could be deleted with the suite staying green, which mattered because this
+#: tuple is the only evidence some callers ever get: an error carrying no numeric status reaches
+#: nothing else.
+#:
+#: ⚠️ These are substrings, not words, and that has bitten twice. `"429"` matches inside any
+#: number containing it — a 400 reading `"…resulted in 10429 tokens"` was classified a rate limit,
+#: and `benchmarks/llm.py`'s `CompletionTruncated` interpolates `max_tokens`, so a ceiling of
+#: 4290, 429 or 1429 read as one too — until that caller put the type in `PERMANENT_ERRORS` and
+#: classified it ahead of this function. That is the lesson, not the leftover: prefer classifying
+#: by TYPE or status where you can. This is the last resort, for errors that offer nothing else.
+_TRANSIENT_MARKERS = (
+    "429", " 500", " 502", " 503", " 504", "rate limit", "too many requests",
+    "timeout", "timed out", "temporarily", "connection", "reset by peer", "unavailable",
+)
+
+
+def _probe(exc: Exception, name: str) -> object | None:
+    """Read ``name`` off an arbitrary exception, refusing to raise while doing it.
+
+    ``getattr(x, name, None)`` swallows only ``AttributeError``, and the thing being probed is an
+    exception from an arbitrary library where the attribute may be a property free to raise
+    anything — a deprecated alias under ``-W error``, a lazy parse of a malformed response. That
+    matters more here than it looks: ``_is_transient`` is called from inside
+    ``retry_with_backoff``'s ``except Exception`` block, so a classifier that raises does not
+    merely misclassify, it REPLACES the provider's error with its own and kills the run with the
+    wrong exception. ``tests/test_bench_systems.py`` reaches for the same guard for the same
+    reason.
+    """
+    try:
+        return getattr(exc, name, None)
+    except Exception:  # noqa: BLE001 - a probe must never beat the error it is probing
+        return None
+
 
 def _is_transient(exc: Exception) -> bool:
     """Heuristic: is this exception worth retrying?
 
-    Covers rate-limit (429), server (5xx) and network/timeout errors WITHOUT importing any
-    provider-specific exception type (voyageai is an optional dependency). Checks a numeric
-    ``status_code``/``status`` attribute first, then falls back to matching well-known markers
-    in the exception text. A non-transient error (e.g. 401 auth) returns False so it fails fast.
+    Covers request-timeout (408), rate-limit (429), server (5xx) and network/timeout errors
+    WITHOUT importing any provider-specific exception type (voyageai is an optional dependency).
+    A non-transient error (e.g. 401 auth) returns False so it fails fast.
+
+    A numeric ``status_code``/``status`` is DECISIVE: when the transport has stated the status,
+    that answer is returned and the text markers below are never consulted. They used to be, and
+    they could overturn a correct verdict — the marker ``"429"`` is a substring of any number
+    containing it, so ``"…your messages resulted in 10429 tokens"`` made a permanent HTTP 400
+    context-length overflow look like a rate limit. That is the worst case to be wrong on:
+    ``retry_with_backoff`` resends the entire payload, so a caller whose payload is a prompt with
+    a whole document body inside it pays for the same refused request on every attempt (three by
+    default, four from ``benchmarks/llm.py``), and no retry can make an over-long prompt fit.
+    ``recall/truth_extraction/_openai_engine.py`` is the case it was found on and the sharpest
+    example: its prompt embeds a whole memo body, which makes a context-length overflow a normal
+    failure of that engine rather than an exotic one. ``benchmarks/llm.py`` is the same shape,
+    sending a retrieved context per question across thousands of calls.
+
+    Three spellings are read, because the SDKs do not agree: ``status_code`` (openai),
+    ``status``, and ``http_status`` (voyageai). The third is not decoration. Until it was added,
+    NO Voyage error reached the numeric branch, so a real ``ServerError`` on an HTTP 500 was not
+    retried at all, and a real ``RateLimitError`` was retried only when the provider's wording
+    happened to hit one of the markers below ("rate limit", "too many requests", "429") — a
+    corpus index dying on the first 500, from a path whose whole point is surviving them.
+
+    The markers remain as a fallback for errors that carry no status at all —
+    ``openai.APIConnectionError``/``APITimeoutError`` carry none — which is the only evidence
+    available there.
+
+    408 is in the numeric branch so that "network/timeout" does not depend on how a provider
+    words its body. A CLIENT-side timeout arrives as an ``APITimeoutError`` carrying no status
+    and is caught by the markers; a server-declared 408 was only ever caught when the body
+    happened to spell "timeout", which is not a contract so much as a coincidence.
+
+    409 is deliberately NOT here, and it is the one status openai's own client retries that
+    nothing retries now. The SDK treats it as a lock timeout, a semantic of its STATEFUL
+    endpoints (vector stores, assistant runs); ``/v1/embeddings`` and ``/v1/chat/completions``
+    are stateless POSTs with no resource to lock, so a 409 from an OpenAI-compatible proxy is a
+    real conflict that resending cannot resolve. Being wrong in that direction costs one request
+    instead of three.
+
+    Every caller now builds its SDK client with ``max_retries=0``, so this function is the single
+    owner of the policy and its numeric contract IS what reaches the provider. That is what makes
+    408 this function's business: with the SDK retrying underneath, a 408 was being retried twice
+    regardless of what was decided here.
     """
-    status = getattr(exc, "status_code", None)
+    status = _probe(exc, "status_code")
     if status is None:
-        status = getattr(exc, "status", None)
-    if isinstance(status, int) and (status == 429 or 500 <= status < 600):
-        return True
-    text = f"{type(exc).__name__} {exc}".lower()
-    markers = (
-        "429", " 500", " 502", " 503", " 504", "rate limit", "too many requests",
-        "timeout", "timed out", "temporarily", "connection", "reset by peer", "unavailable",
-    )
-    return any(m in text for m in markers)
+        status = _probe(exc, "status")
+    if status is None:
+        status = _probe(exc, "http_status")
+    if isinstance(status, int):
+        return status in (408, 429) or 500 <= status < 600
+    try:
+        text = f"{type(exc).__name__} {exc}".lower()
+    except Exception:  # noqa: BLE001 - see `_probe`: a hostile __str__ must not beat the error
+        # `_probe` closes the attribute door and this closes the other one. Formatting an
+        # arbitrary exception runs ITS ``__str__``, which is free to raise — and a body that was
+        # never decoded is a realistic way for that to happen. The class name alone still gives
+        # the markers something to match on.
+        try:
+            text = type(exc).__name__.lower()
+        except Exception:  # noqa: BLE001 - nested, because the fallback can raise too
+            # ``__name__`` resolves through the METACLASS, where a `@property` is a data
+            # descriptor that beats ``type.__name__``. Unnested, this line sits inside the
+            # handler and its exception escapes `_is_transient` — the very outcome the outer
+            # guard exists to stop, one line further down. Empty text classifies as permanent,
+            # which fails fast rather than resending, and is the safe direction for an object
+            # this hostile.
+            text = ""
+    return any(m in text for m in _TRANSIENT_MARKERS)
+
+
+#: Ceiling on a provider's ``Retry-After``, matching the one the openai SDK applies. Past it the
+#: header is ignored rather than obeyed: a proxy answering "3600" would otherwise park a corpus
+#: indexing run for an hour inside what the caller believes is a bounded retry.
+_MAX_RETRY_AFTER_S = 60.0
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """How long the provider asked us to wait, or None if it did not ask for anything usable.
+
+    Read off the exception by duck-typing, on the same rule as ``_is_transient``: no
+    provider-specific exception type is imported. Two shapes, because the two SDKs this repo
+    retries for do not agree — ``openai`` raises an error carrying an httpx ``response``, while
+    ``voyageai`` hangs ``headers`` straight off the exception and has no ``response`` attribute
+    at all. Walking only the first shape would silently cover one of the two cloud embedders
+    while claiming both.
+
+    That ``headers`` is ``requests.Response.headers``, a CASE-INSENSITIVE mapping, which is what
+    makes the lowercase lookups below safe on that path: a provider sending the RFC's canonical
+    ``Retry-After`` is found anyway. Do not "simplify" it to a plain dict in a test and conclude
+    the casing does not matter — under a plain dict it would not be found.
+
+    Both spellings are read. ``retry-after-ms`` is what OpenAI and most of its compatible proxies
+    actually send; ``Retry-After`` is the RFC one and is defined as EITHER a delay in seconds or
+    an HTTP-date, and real providers send both forms. Reading only the integer would leave the
+    pacing gap open for whichever half of them chose the other.
+
+    Anything unparseable, negative, or above the cap returns None, which puts the caller back on
+    its own jittered backoff — the behaviour that was there before, and bounded. That promise is
+    kept with a blanket ``except`` rather than a named tuple on purpose: the header is attacker-
+    adjacent input reached through a mapping this function does not control, and a plain dict can
+    hold a value of any type. ``parsedate_to_datetime`` calls ``.split()`` before it validates, so
+    a non-string raises ``AttributeError`` — which, inside ``retry_with_backoff``'s ``except
+    Exception`` block, would replace the provider's error and kill an indexing run with a stdlib
+    string-method failure instead of retrying it.
+    """
+    try:
+        return _read_retry_after(exc)
+    except Exception:  # noqa: BLE001 - a bad header must never beat the error it arrived on
+        return None
+
+
+def _read_retry_after(exc: Exception) -> float | None:
+    """The parsing half of ``_retry_after_seconds``, free to raise. See its docstring."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        headers = getattr(exc, "headers", None)
+    get = getattr(headers, "get", None)
+    if not callable(get):
+        return None
+
+    raw_ms = get("retry-after-ms")
+    if raw_ms is not None:
+        try:
+            return _capped(float(raw_ms) / 1000.0)
+        except (TypeError, ValueError):
+            # Fall through rather than return: a junk millisecond header must not discard a
+            # perfectly good `Retry-After` sitting beside it, which is what dropping out here
+            # did — straight back onto the 1.5s unpaced budget this function exists to replace.
+            pass
+
+    raw = get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return _capped(float(raw))
+    except (TypeError, ValueError):
+        pass
+    when = parsedate_to_datetime(raw)
+    # A date with no zone is UTC by RFC 9110; without this, subtracting an aware `now` raises.
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return _capped((when - datetime.now(timezone.utc)).total_seconds())
+
+
+def _capped(seconds: float) -> float | None:
+    """The wait if it is both positive and within the cap, else None."""
+    return seconds if 0.0 < seconds <= _MAX_RETRY_AFTER_S else None
 
 
 def retry_with_backoff(
@@ -56,6 +225,20 @@ def retry_with_backoff(
     draw in [0, cap], not the cap itself. A rate-limit or 5xx typically hits every client at
     once, so a deterministic schedule marches the whole fleet back onto the provider in
     lockstep at each step; jitter spreads the retries out instead of reconverging them.
+
+    A ``Retry-After`` the provider actually sent overrides that draw. The unpaced schedule spends
+    every attempt within 1.5s at the defaults, so against a per-minute rate limit all three
+    requests land inside the same closed window and the call fails where it would have recovered.
+    Every caller of this function now builds its SDK client with ``max_retries=0``, which is what
+    makes this the layer that must honour the header: the transport layer it replaced did, and
+    removing that layer without picking the header up here would have traded a cost problem for
+    an availability one. The jitter is added ON TOP of what the provider asked for rather than drawn
+    within it — waiting less than the stated time is what the header exists to prevent, while a
+    fleet handed the same number still needs spreading out.
+
+    ⚠️ A caller that has NOT switched its SDK's retries off would pay this pacing twice, once here
+    and once inside the transport, since ``openai``'s own ``_calculate_retry_timeout`` applies the
+    same 60s rule. No caller here is in that state; keep it that way when adding one.
     """
     last: Exception | None = None
     for i in range(attempts):
@@ -65,7 +248,9 @@ def retry_with_backoff(
             last = exc
             if i == attempts - 1 or not is_transient(exc):
                 raise
-            sleep(random.uniform(0.0, min(max_delay, base_delay * (2 ** i))))
+            jitter = random.uniform(0.0, min(max_delay, base_delay * (2 ** i)))
+            asked = _retry_after_seconds(exc)
+            sleep(jitter if asked is None else asked + jitter)
     assert last is not None  # unreachable: loop either returns or raises
     raise last
 
@@ -442,7 +627,7 @@ def _session_providers(model: object) -> list[str]:
 
 
 class FastEmbedEmbedder:
-    """Real local embeddings (no API key). Requires `pip install recall[fastembed]`."""
+    """Real local embeddings (no API key). Requires `pip install "recall-rag[fastembed]"`."""
 
     def __init__(
         self,
@@ -490,7 +675,8 @@ class FastEmbedEmbedder:
             from fastembed import TextEmbedding
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError(
-                "FastEmbedEmbedder requires the fastembed extra: pip install recall[fastembed]"
+                "FastEmbedEmbedder requires the fastembed extra: "
+                'pip install "recall-rag[fastembed]"'
             ) from exc
         threads = resolve_thread_budget()
         kwargs: dict[str, object] = {"model_name": identity.model_name if identity else model_name}
@@ -621,7 +807,7 @@ class SentenceTransformerEmbedder:
 
         python -m recall.eval.labelled --embedder st:finetune/model ...
 
-    Requires `pip install recall[rerank]` (or `[entail]`) — both pull sentence-transformers.
+    Requires `pip install "recall-rag[rerank]"` (or `[entail]`) — both pull sentence-transformers.
     """
 
     def __init__(self, model: str, batch_size: int = 64) -> None:
@@ -629,7 +815,7 @@ class SentenceTransformerEmbedder:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError(
-                "SentenceTransformerEmbedder requires: pip install recall[rerank]"
+                'SentenceTransformerEmbedder requires: pip install "recall-rag[rerank]"'
             ) from exc
         self._model = SentenceTransformer(model)
         self._name = f"st:{model}"
@@ -687,7 +873,7 @@ class Qwen3EmbeddingEmbedder:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # pragma: no cover
             raise ImportError(
-                "Qwen3EmbeddingEmbedder requires: pip install recall[rerank]"
+                'Qwen3EmbeddingEmbedder requires: pip install "recall-rag[rerank]"'
             ) from exc
         threads = resolve_thread_budget()
         if threads is not None:
@@ -755,7 +941,7 @@ class Qwen3EmbeddingEmbedder:
 
 
 class VoyageEmbedder:
-    """Voyage cloud embeddings. Requires `pip install recall[voyage]` and VOYAGE_API_KEY."""
+    """Voyage cloud embeddings. Requires `pip install "recall-rag[voyage]"` and VOYAGE_API_KEY."""
 
     def __init__(
         self,
@@ -770,8 +956,12 @@ class VoyageEmbedder:
         try:
             import voyageai
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise ImportError("VoyageEmbedder requires: pip install recall[voyage]") from exc
-        self._client = voyageai.Client(api_key=key)
+            raise ImportError('VoyageEmbedder requires: pip install "recall-rag[voyage]"') from exc
+        # Stated rather than inherited: voyageai already defaults `max_retries` to 0, so this
+        # changes nothing today. It pins the same single-owner policy `OpenAICompatEmbedder`
+        # needs explicitly, so that an SDK release which starts retrying cannot quietly
+        # reintroduce the multiplication with `retry_with_backoff` in `embed` below.
+        self._client = voyageai.Client(api_key=key, max_retries=0)
         self._model = model
         self._name = f"voyage:{model}"
         self._batch_size = batch_size
@@ -834,7 +1024,16 @@ class OpenAICompatEmbedder:
             from openai import OpenAI
         except ImportError as exc:  # pragma: no cover - exercised only without the SDK
             raise ImportError("OpenAICompatEmbedder requires: pip install openai") from exc
-        self._client = OpenAI(api_key=key, base_url=base_url)
+        # `max_retries=0` because `retry_with_backoff` in `_embed_one_batch` owns the retry
+        # policy. The SDK default is 2 retries, which does not replace ours but multiplies with
+        # it: one 429 costs 3 x 3 = 9 requests rather than the 3 the policy asks for, and the
+        # outer FULL-jitter backoff (which exists so a fleet does not remarch onto the provider
+        # in lockstep) ends up wrapping an inner loop whose own jitter is only `1 - 0.25 *
+        # random()` on its doubling schedule — a 25% smear, not a spread across the interval, so
+        # the fleet it is meant to separate stays largely in step. This is the
+        # corpus indexing path, so the multiplication lands batch after batch on a provider that
+        # has just said it is overloaded.
+        self._client = OpenAI(api_key=key, base_url=base_url, max_retries=0)
         self._model = model
         self._name = f"openai:{model}"
         self._batch_size = batch_size

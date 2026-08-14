@@ -19,6 +19,10 @@ SETUP_END = "# recall setup end"
 DEFAULT_ENV_PATH = Path(".env")
 DEFAULT_CALIBRATION_PATH = Path("calibration.json")
 MODEL_DOWNLOAD_FLOOR_BYTES = 1_500_000_000
+CLAUDE_MD_BEGIN = "<!-- recall setup begin -->"
+CLAUDE_MD_END = "<!-- recall setup end -->"
+DEFAULT_CLAUDE_MD_PATH = Path("CLAUDE.md")
+DEFAULT_MEMORY_DIR = Path("memory")
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,15 @@ class Choice:
     label: str
     value: str
     description: str
+    #: False when this machine cannot run the option yet. It is still offered, because hiding it
+    #: makes the product look like it does not have the feature, and leaves no way to ask for it.
+    available: bool = True
+    #: What to install to make an unavailable option work. Shown when it is selected.
+    unavailable_note: str = ""
+    #: Vector width this option produces, where it is fixed and known. Declared rather than
+    #: derived, because deriving it means constructing the embedder, and constructing a fastembed
+    #: one downloads its weights. Asking "would this fit your table" must not cost 1.2 GB.
+    dim: int | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +133,7 @@ def embedder_choices(
             label="hashing",
             value="hashing",
             description="No model download, no network, works anywhere",
+            dim=64,
         ),
     ]
     if probe.fastembed_available and _can_download_models(probe):
@@ -128,14 +142,37 @@ def embedder_choices(
                 label="fastembed",
                 value="fastembed",
                 description="Local bge-small embedder, best default when offline matters",
+                dim=384,
             )
         )
+        # Larger bge models, gated on their own download size rather than the shared floor: the
+        # floor is 1.5 GB and bge-large alone is 1.2 GB, so a machine can clear the floor and
+        # still have no room left. Each needs its weights plus headroom to unpack them.
+        if probe.free_bytes >= 2 * 1024**3:
+            choices.append(
+                Choice(
+                    label="fastembed base",
+                    value="fastembed:BAAI/bge-base-en-v1.5",
+                    description="Local bge-base, 768 dims, ~210 MB, the best size for quality",
+                    dim=768,
+                )
+            )
+        if probe.free_bytes >= 4 * 1024**3:
+            choices.append(
+                Choice(
+                    label="fastembed large",
+                    value="fastembed:BAAI/bge-large-en-v1.5",
+                    description="Local bge-large, 1024 dims, ~1.2 GB, best quality and slowest",
+                    dim=1024,
+                )
+            )
     if probe.sentence_transformers_available and _can_download_models(probe):
         choices.append(
             Choice(
                 label="sentence transformers",
                 value="st:sentence-transformers/all-MiniLM-L6-v2",
                 description="Local transformer embedder, good if you already have the extra",
+                dim=384,
             )
         )
     voyage_key = cloud_keys.get("VOYAGE_API_KEY", "")
@@ -153,6 +190,7 @@ def embedder_choices(
                 label="voyage cloud",
                 value="voyage:voyage-3",
                 description="Cloud embedder, only when data may leave the machine",
+                dim=1024,
             )
         )
     if (
@@ -166,31 +204,90 @@ def embedder_choices(
                 label="openai compatible cloud",
                 value="openai:text-embedding-3-small",
                 description="OpenAI compatible cloud path through OpenRouter or OpenAI",
+                dim=1536,
             )
         )
     return choices
 
 
+def _schema_dim_conflict(dsn: str, expected_dim: int, table: str | None = None) -> str | None:
+    """The library's own incompatibility message if `table` disagrees on width, else None.
+
+    Asks `check_schema` rather than reading `pg_attribute` here, so there is one authority on
+    what "compatible" means and this cannot drift from it.
+
+    `table` matters: the wizard must check the table the caller actually uses. Checking a
+    hard-coded `chunks` would report a conflict against a leftover table a `--table` user does
+    not care about, and stay silent about the one they do.
+
+    Only `SchemaIncompatible` is a conflict. Every other failure returns None on purpose: no
+    database yet, no table yet, no psycopg, no permission, and migrations pending, none of which
+    mean the width is wrong, and the wizard has always been runnable before a schema exists.
+    A table that is behind on migrations has an unknown width rather than a wrong one, so it is
+    not grounds for refusing a choice.
+    """
+    try:
+        from recall.schema import SchemaIncompatible
+        from recall.store import DEFAULT_TABLE, PgVectorStore
+    except Exception:
+        return None
+    try:
+        with PgVectorStore(dsn, dim=expected_dim, table=table or DEFAULT_TABLE) as store:
+            store.check_schema()
+    except SchemaIncompatible as exc:
+        return str(exc)
+    except Exception:
+        return None
+    return None
+
+
+def _why_unavailable(probe: HardwareProbe, *, needs_cuda: bool = False) -> str:
+    """The conditions that actually failed, not the one that usually fails.
+
+    These mirror the guards the callers use to compute `runnable`, and must stay in step with
+    them: a note naming sentence-transformers to somebody who already has it, when the real
+    blocker is free disk, sends them to fix the wrong thing.
+    """
+    missing: list[str] = []
+    if needs_cuda and not probe.cuda_available:
+        missing.append("no CUDA device was detected")
+    if not probe.sentence_transformers_available:
+        missing.append("sentence-transformers is not installed")
+    if not _can_download_models(probe):
+        missing.append("there is not enough internet or free disk to download the model")
+    return "; ".join(missing) if missing else "this machine cannot run it"
+
+
 def reranker_choices(
     probe: HardwareProbe, *, security_required: bool
 ) -> list[Choice]:
+    runnable = probe.sentence_transformers_available and _can_download_models(probe)
+    note = (
+        f"Reranking is unavailable here: {_why_unavailable(probe)}. The extra is "
+        'pip install "recall-rag[rerank]". Rerun setup and choose it again once it can run.'
+    )
     choices = [Choice(label="none", value="", description="Skip reranking for speed")]
-    if probe.sentence_transformers_available and _can_download_models(probe):
+    choices.append(
+        Choice(
+            label="ms marco reranker",
+            value="RECALL_RERANK=1",
+            description="Default local cross encoder, the measured rerank win",
+            available=runnable,
+            unavailable_note=note,
+        )
+    )
+    # `security_required` hides bge as a policy decision rather than a capability one, so it stays
+    # hidden rather than being listed as unavailable: nothing the reader installs would reveal it.
+    if not security_required:
         choices.append(
             Choice(
-                label="ms marco reranker",
-                value="RECALL_RERANK=1",
-                description="Default local cross encoder, the measured rerank win",
+                label="bge reranker",
+                value="RECALL_RERANK=1;RECALL_RERANK_MODEL=BAAI/bge-reranker-base",
+                description="Heavier local reranker, available if you want to try it",
+                available=runnable,
+                unavailable_note=note,
             )
         )
-        if not security_required:
-            choices.append(
-                Choice(
-                    label="bge reranker",
-                    value="RECALL_RERANK=1;RECALL_RERANK_MODEL=BAAI/bge-reranker-base",
-                    description="Heavier local reranker, available if you want to try it",
-                )
-            )
     return choices
 
 
@@ -202,14 +299,24 @@ def sparse_choices(probe: HardwareProbe) -> list[Choice]:
             description="Current sparse retrieval path, no extra GPU requirement",
         )
     ]
-    if probe.cuda_available and probe.sentence_transformers_available and _can_download_models(probe):
-        choices.append(
-            Choice(
-                label="splade",
-                value="RECALL_SPARSE=splade",
-                description="CUDA sparse encoder for higher coverage when the machine can run it",
-            )
+    runnable = (
+        probe.cuda_available
+        and probe.sentence_transformers_available
+        and _can_download_models(probe)
+    )
+    choices.append(
+        Choice(
+            label="splade",
+            value="RECALL_SPARSE=splade",
+            description="CUDA sparse encoder for higher coverage when the machine can run it",
+            available=runnable,
+            unavailable_note=(
+                f"SPLADE is unavailable here: {_why_unavailable(probe, needs_cuda=True)}. The "
+                'extra is pip install "recall-rag[sparse]". Rerun setup and choose it again once '
+                "it can run."
+            ),
         )
+    )
     return choices
 
 
@@ -270,12 +377,29 @@ def _choose(
     print_fn: Callable[..., None],
     title: str,
     choices: Sequence[Choice],
+    *,
+    sole_note: str | None = None,
 ) -> Choice:
     if not choices:
         raise ValueError(f"no choices available for {title}")
+    if not choices[0].available:
+        # The fallback below returns choices[0] when someone picks an option this machine cannot
+        # run, so the first entry has to be the runnable baseline. Every builder puts it there.
+        # Failing here is far better than the alternative, which is writing an unrunnable value
+        # into .env under a message announcing it was kept for safety.
+        raise ValueError(f"the first choice for {title} must be runnable")
+    if len(choices) == 1 and sole_note is not None:
+        # A menu of one is not a choice. The hardware probe already decided this, so asking the
+        # reader to type `1` costs a keystroke and tells them nothing. Say what was selected and
+        # why nothing else was offered, which is how the entailment judge already reports its
+        # own absence a few lines below. Only call sites that pass a note opt into this, so
+        # nothing else in the wizard changes shape without saying so.
+        print_fn(sole_note)
+        return choices[0]
     print_fn(title)
     for i, choice in enumerate(choices, 1):
-        print_fn(f"  {i}. {choice.label}: {choice.description}")
+        suffix = "" if choice.available else "  (not installed yet)"
+        print_fn(f"  {i}. {choice.label}: {choice.description}{suffix}")
     while True:
         raw = _prompt(input_fn, print_fn, "Select a number: ")
         try:
@@ -283,7 +407,17 @@ def _choose(
         except ValueError:
             idx = 0
         if 1 <= idx <= len(choices):
-            return choices[idx - 1]
+            picked = choices[idx - 1]
+            if picked.available:
+                return picked
+            # Unavailable options are offered so the reader can see the feature exists and ask
+            # for it. The choice still cannot be written to .env: the module is absent, so it
+            # would fail at query time, long after the person who could fix it walked away.
+            # Falling back to choices[0] relies on the first entry being the always-runnable
+            # baseline, which `reranker_choices` and `sparse_choices` both guarantee.
+            print_fn(picked.unavailable_note)
+            print_fn(f"Keeping {choices[0].label} for now.")
+            return choices[0]
         print_fn(f"Choose one of 1..{len(choices)}.")
 
 
@@ -302,6 +436,110 @@ def _update_env_block(path: Path, values: dict[str, str]) -> None:
             lines.append("")
         lines.extend(block)
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _update_markdown_block(path: Path, begin: str, end: str, content: str) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    start = next((i for i, line in enumerate(lines) if line.strip() == begin), None)
+    stop = next((i for i, line in enumerate(lines) if line.strip() == end), None)
+    block = [begin, *content.splitlines(), end]
+    if start is not None and stop is not None and stop >= start:
+        lines = [*lines[:start], *block, *lines[stop + 1 :]]
+    else:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(block)
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _claude_md_block() -> str:
+    return (
+        "## Using recall\n"
+        "\n"
+        "This project is indexed by recall. Call `recall_search` before proposing an idea, "
+        "forming a hypothesis, or repeating past work. If a closed decision or falsified "
+        "hypothesis surfaces, do not re-litigate it.\n"
+        "\n"
+        "- When `abstained` is true, no hit survived the trust gate (or `decision: abstain` from "
+        "`recall_evidence`) — say you do not know instead of answering from degraded hits.\n"
+        "- Use `recall_evidence` instead of `recall_search` when about to answer from memory "
+        "rather than just consult it; cite only `chunk_id` values from its `items`.\n"
+        "- Write new durable facts to `memory/`, one file per fact, indexed by "
+        "`memory/MEMORY.md` (see that file for the format), then call `recall_index` on "
+        "`memory/` so the new file and the updated index both become searchable.\n"
+    )
+
+
+def scaffold_claude_md(path: Path = DEFAULT_CLAUDE_MD_PATH) -> None:
+    _update_markdown_block(path, CLAUDE_MD_BEGIN, CLAUDE_MD_END, _claude_md_block())
+
+
+def _memory_md_starter() -> str:
+    return (
+        "# Memory index\n"
+        "\n"
+        "This file is the always-loaded index. Each fact below lives in its own file under "
+        "`memory/`, with frontmatter:\n"
+        "\n"
+        "```markdown\n"
+        "---\n"
+        "name: <short-kebab-case-slug>\n"
+        "description: <one-line summary, used to judge relevance>\n"
+        "metadata:\n"
+        "  type: user | feedback | project | reference\n"
+        "---\n"
+        "\n"
+        "<the fact>\n"
+        "```\n"
+        "\n"
+        "Add one line per fact here as you create them:\n"
+        "\n"
+        "`- [Title](file.md) — one-line hook`\n"
+    )
+
+
+def scaffold_memory_index(memory_dir: Path = DEFAULT_MEMORY_DIR) -> bool:
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    index_path = memory_dir / "MEMORY.md"
+    if index_path.exists():
+        return False
+    index_path.write_text(_memory_md_starter(), encoding="utf-8")
+    return True
+
+
+def index_memory_directory(
+    *,
+    dsn: str,
+    embedder_name: str,
+    memory_dir: Path = DEFAULT_MEMORY_DIR,
+    env: dict[str, str] | None = None,
+    print_fn: Callable[..., None] = print,
+) -> None:
+    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+        print_fn(
+            f"Skipping auto-index: RECALL_ENV is production. Index {memory_dir} via your "
+            "production build pipeline instead."
+        )
+        return
+    try:
+        from recall.index import Indexer, chunk_text
+        from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
+
+        embedder = resolve_embedder(embedder_name, env=env)
+        with PgVectorStore(
+            dsn, dim=embedder.dim, table=DEFAULT_TABLE, tenant=DEFAULT_TENANT
+        ) as store:
+            store.check_schema()
+            indexer = Indexer(store, embedder, chunker=chunk_text)
+            stats = indexer.index_path(memory_dir, glob="**/*.md")
+    except Exception as exc:  # best effort: scaffolded files must survive even if this fails
+        print_fn(
+            f"Could not auto-index {memory_dir}: {exc} — run "
+            f"'python -m recall.cli index {memory_dir}' once the schema is applied for this "
+            "embedder's dimension."
+        )
+        return
+    print_fn(f"Indexed {stats.chunks} chunks from {stats.files} files in {memory_dir}")
 
 
 def _quote_env(value: str) -> str:
@@ -391,7 +629,10 @@ def calibrate_from_files(
 def run_setup_wizard(
     *,
     dsn: str,
+    table: str | None = None,
     env_path: Path = DEFAULT_ENV_PATH,
+    claude_md_path: Path = DEFAULT_CLAUDE_MD_PATH,
+    memory_dir: Path = DEFAULT_MEMORY_DIR,
     input_fn: Callable[[str], str] = input,
     print_fn: Callable[..., None] = print,
 ) -> dict[str, str]:
@@ -416,12 +657,44 @@ def run_setup_wizard(
     embedders = embedder_choices(
         probe, security_required=security_required, cloud_keys=cloud_keys
     )
-    embedder = _choose(
-        input_fn,
-        print_fn,
-        "Choose the embedder you want to use:",
-        embedders,
-    )
+    refused: set[int] = set()
+    while True:
+        embedder = _choose(
+            input_fn,
+            print_fn,
+            "Choose the embedder you want to use:",
+            embedders,
+            sole_note=(
+                "Embedder: hashing, the only one this machine can use. It needs no download and "
+                "no network, and it retrieves noticeably worse than a real model. Install one "
+                'with pip install "recall-rag[fastembed]", or set an API key above, then rerun '
+                "setup."
+            ),
+        )
+        # An embedder wider than the table cannot be discovered later without cost: it is found
+        # when something first tries to write a vector, which is after the model has downloaded
+        # and the corpus has been read. These widths differ by design, 384 through 1536, so the
+        # mismatch is ordinary rather than exotic.
+        if embedder.dim is None:
+            break  # width not fixed or not known, so there is nothing to compare
+        conflict = _schema_dim_conflict(dsn, embedder.dim, table)
+        if conflict is None:
+            break
+        print_fn(conflict)
+        print_fn(
+            f"{embedder.label} produces {embedder.dim}-dimension vectors. Either create a table "
+            f"with `recall schema --dim {embedder.dim} apply`, or pick an embedder matching the "
+            "table you have."
+        )
+        refused.add(embedder.dim)
+        # Stop once nothing untried is left. Bounding on the menu size alone was wrong: a table
+        # of any other width, say 512, conflicts with every option, and the loop then re-asked
+        # forever, or ran a scripted caller's answers dry with an unhandled StopIteration.
+        if all(c.dim in refused for c in embedders if c.dim):
+            raise SystemExit(
+                "no embedder on offer matches this table. Create one with "
+                "`recall schema --dim <width> apply`, or point RECALL_DSN at a matching table."
+            )
     rerankers = reranker_choices(probe, security_required=security_required)
     reranker = _choose(
         input_fn,
@@ -453,8 +726,38 @@ def run_setup_wizard(
     else:
         print_fn(
             "Entailment judge is unavailable on this machine. It needs sentence-transformers "
-            "and enough internet and disk to download a model."
+            "and enough internet and disk to download a model. The extra is "
+            'pip install "recall-rag[entail]". Rerun setup and choose it again once it can run.'
         )
+
+    scaffold_requested = _ask_yes_no(
+        input_fn,
+        print_fn,
+        "Scaffold CLAUDE.md and a memory/ directory for this project?",
+        default=True,
+    )
+
+    # Deferred to right before each return, after `.env` is written: `scaffold_claude_md` and
+    # `index_memory_directory` can resolve/download an embedder model and open a DB connection,
+    # and running that BEFORE the answers just gathered are persisted means an interruption
+    # during a long model download loses the whole completed interview, not just the scaffold.
+    def _run_scaffold() -> None:
+        try:
+            scaffold_claude_md(claude_md_path)
+            print_fn(f"Updated {claude_md_path}")
+            if scaffold_memory_index(memory_dir):
+                print_fn(f"Wrote {memory_dir / 'MEMORY.md'}")
+            else:
+                print_fn(f"{memory_dir / 'MEMORY.md'} already exists, left unchanged.")
+            index_memory_directory(
+                dsn=dsn,
+                embedder_name=embedder.value,
+                memory_dir=memory_dir,
+                env=cloud_keys,
+                print_fn=print_fn,
+            )
+        except Exception as exc:
+            print_fn(f"Could not scaffold CLAUDE.md/memory: {exc}")
 
     values: dict[str, str] = {
         "RECALL_DSN": dsn,
@@ -507,6 +810,8 @@ def run_setup_wizard(
             )
             _update_env_block(env_path, values)
             print_fn(f"Wrote {env_path}")
+            if scaffold_requested:
+                _run_scaffold()
             return values
         queries = _require_local_path(queries_raw, label="Path to labeled queries JSON")
         corpus = _require_local_path(corpus_raw, label="Path to your corpus")
@@ -526,6 +831,12 @@ def run_setup_wizard(
             )
         except ValueError as exc:
             print_fn(str(exc))
+            # This path never wrote `.env` even before this function grew a scaffold step — a
+            # bad calibration path aborts the whole wizard. But scaffolding was requested
+            # independently of calibration succeeding, so still attempt it best-effort on the
+            # way out rather than silently dropping a completed part of the interview.
+            if scaffold_requested:
+                _run_scaffold()
             raise SystemExit(2) from exc
         values["RECALL_CALIBRATION"] = str(result.path)
         print_fn(
@@ -539,4 +850,6 @@ def run_setup_wizard(
 
     _update_env_block(env_path, values)
     print_fn(f"Wrote {env_path}")
+    if scaffold_requested:
+        _run_scaffold()
     return values

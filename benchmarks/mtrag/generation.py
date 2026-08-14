@@ -123,6 +123,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+from benchmarks.llm import CompletionTruncated, EmptyCompletion, _safe_reason, _shape_note
+from recall._chat_content import assistant_text
+
+# Private on purpose, and imported rather than reimplemented: there is one definition in this
+# repository of how long a provider asked us to wait, and a second copy here would drift from it
+# exactly as the two retry policies this file just finished collapsing into one did.
+from recall.embeddings import _retry_after_seconds
+
 #: From the official `format_checker.py`. Named here so a violation fails in OUR run, with a
 #: message naming the limit, rather than at submission.
 MAX_CONTEXTS = 10
@@ -421,7 +429,14 @@ def openrouter_client(api_key: str | None = None) -> Any:
             "set OPENROUTER_API_KEY (or pass --api-key-file). Resolved eagerly so a missing key "
             "fails before the first task rather than after the run has started."
         )
-    return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=key)
+    # `max_retries=0` because `generate_one` owns the retry policy. The SDK default is 2 retries,
+    # which does not replace that loop but multiplies with it: at `GENERATION_ATTEMPTS = 4` one
+    # 429 costs 12 billed requests rather than 4, which is 3x the worst-case bill the warning
+    # above `generate_one` quotes. `PERMANENT_ERROR_NAMES` is unaffected either way: the statuses
+    # the SDK retries (408, 409, 429, 5xx, plus ANY status on which the provider sends
+    # `x-should-retry: true`) are all but disjoint from the 400/401/403/404 that set names,
+    # so what is removed here is the multiplication on transient failures and nothing else.
+    return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=key, max_retries=0)
 
 
 GENERATION_ATTEMPTS = 4
@@ -441,6 +456,21 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
     ⚠️ Every attempt is a billed call. Raising `GENERATION_ATTEMPTS` raises the worst-case bill by
     the same factor. An authentication error is not retried: it is not a flaky network, and
     retrying it burns the backoff and reads like one.
+
+    That arithmetic holds only because `client` comes from `openrouter_client`, which builds the
+    SDK with `max_retries=0`. A stock `openai` client retries twice inside its own transport, so
+    the worst case would be `GENERATION_ATTEMPTS` x 3 — 12 requests, not 4 — and the warning
+    above would understate the bill it exists to give by 3x. Pass a client built anywhere else
+    and this loop no longer owns the retry policy.
+
+    A completion that stopped for `length` raises `CompletionTruncated` rather than returning.
+    `--max-tokens` defaults to 512, so this is an everyday outcome, and the returned string is the
+    worst shape a failure can take: a plausible half-answer that the judge scores as if the system
+    had produced it, which is a measurement error of OUR configuration wearing the costume of a
+    model failure. The caller's per-task quarantine then keeps it out of the submission entirely,
+    which is the only safe place for it. It is neither retried nor wrapped: the ceiling that cut
+    this attempt cuts the next three identically, and the operator needs to be told which flag to
+    raise, not "gave up after 4 attempts, re-run to resume", which is the wrong advice here.
     """
     last: Exception | None = None
     for attempt in range(1, GENERATION_ATTEMPTS + 1):
@@ -448,12 +478,73 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             response = client.chat.completions.create(
                 model=model, messages=messages, max_tokens=max_tokens, temperature=0.0
             )
-            return (response.choices[0].message.content or "").strip()
+            # Read once. It was indexed three times below, and the empty-`choices` guard that
+            # `benchmarks/llm.py` has is still missing here (see the branch note in the module
+            # docstring), so this at least keeps the three reads from disagreeing.
+            choice = response.choices[0]
+            # Absence is not evidence: a provider that omits the field is not reporting truncation,
+            # and refusing on a missing attribute would fail every task on such a provider.
+            reason = getattr(choice, "finish_reason", None)
+            if reason == "length":
+                raise CompletionTruncated(
+                    f"completion hit max_tokens={max_tokens} and was cut off. Raise --max-tokens; "
+                    f"do NOT score this answer."
+                )
+            # `assistant_text`, not `content or ""`. A list of text blocks is TRUTHY, so `or ""`
+            # passed it straight through and `.strip()` raised `AttributeError` — a type that is
+            # NOT in `PERMANENT_ERROR_NAMES`, so every affected task paid four BILLED attempts
+            # before failing, and five such tasks in a row aborted the run. Shared with the other
+            # two OpenAI-compatible clients in this repo so the rule cannot drift between them.
+            content = choice.message.content
+            raw = assistant_text(content)
+            answer = raw.strip()
+            if not answer:
+                # ⛔ An empty reading is REFUSED, not returned. `main` writes whatever this
+                # returns straight into `predictions` and counts the task as done, so returning
+                # "" put an unscorable empty answer in the submission with rc=0 — the exact
+                # defect PR #307 fixed in `benchmarks/llm.py`, which nothing here guarded.
+                #
+                # Reading block lists (rather than crashing on them) is what made this urgent:
+                # `(content or "").strip()` raised `AttributeError` on a block list, so the task
+                # was quarantined loudly. Reading it correctly routed every UNREADABLE block list
+                # into the silent hole that `content=None` was already in.
+                # ⚠️ Through `_safe_reason`, and the raw value on the ATTRIBUTE, exactly as
+                # `EmptyCompletion`'s own docstring mandates. Rendering the provider's chosen
+                # string with `!r` put untrusted text into a message, which is the hazard that
+                # docstring exists to close — and a `finish_reason` whose `__repr__` raises turned
+                # this single-billed-call typed refusal into four attempts and an untyped wrapper,
+                # because the f-string is evaluated inside the `try`.
+                #
+                # `_shape_note` distinguishes the three causes this message used to conflate: a
+                # block list this reader could not read, blocks holding only whitespace, and a
+                # shape that is neither. `.failed.jsonl` is the only record of why a task was
+                # quarantined, and on 842 tasks those want different responses.
+                raise EmptyCompletion(
+                    f"the provider returned a completion with no usable text "
+                    f"(finish_reason={_safe_reason(reason)}).{_shape_note(content, raw)} "
+                    f"Writing it would put an unscorable empty prediction in the submission.",
+                    finish_reason=reason,
+                )
+            return answer
+        except (CompletionTruncated, EmptyCompletion):
+            # Re-raised directly, for the reason truncation already is: wrapping these in
+            # "gave up after 4 attempts, re-run to resume" gives the operator advice that cannot
+            # work. Neither a ceiling that cut this attempt nor a body this reader cannot read
+            # changes on the next three, and the caller's per-task quarantine keeps both out of
+            # the submission, which is the only safe place for them.
+            raise
         except Exception as exc:  # noqa: BLE001 - re-raised below once attempts are exhausted
             last = exc
             if type(exc).__name__ in PERMANENT_ERROR_NAMES or attempt == GENERATION_ATTEMPTS:
                 break
-            time.sleep(GENERATION_BACKOFF_S * (2 ** (attempt - 1)))
+            # `+ _retry_after_seconds` for the same reason `retry_with_backoff` does it, and it
+            # is this loop's problem for the same reason: `openrouter_client` passes
+            # `max_retries=0`, so the transport layer that used to obey `Retry-After` is gone and
+            # nothing else here reads it. The fixed ladder spends all four attempts inside 14s,
+            # so a per-minute rate limit the stock client would have waited out fails the task,
+            # and `CONSECUTIVE_FAILURE_LIMIT` turns five such tasks into an aborted run.
+            paced = _retry_after_seconds(exc) or 0.0
+            time.sleep(GENERATION_BACKOFF_S * (2 ** (attempt - 1)) + paced)
     raise RuntimeError(
         f"generation gave up after {GENERATION_ATTEMPTS} attempts "
         f"({type(last).__name__}: {last}). Answers already written are kept; re-run to resume."

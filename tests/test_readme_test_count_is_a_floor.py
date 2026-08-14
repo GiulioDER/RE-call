@@ -26,7 +26,10 @@ def test_the_readme_has_a_clear_quickstart_and_surface_split() -> None:
     assert "## Product surface" in text
     assert "python -m recall.cli setup" in text
     assert "When the wizard asks whether to calibrate" in text
-    assert "Run the guided setup wizard for your own corpus" in text
+    # Matched case-insensitively on the instruction rather than on one sentence's opening words.
+    # The quickstart now leads with the database, because its first command needed a compose file
+    # a pip-only reader did not have, so the wizard sentence moved rather than went away.
+    assert "run the guided setup wizard" in text.lower()
     assert "Declared supersession makes the current memory win" in text
 
 

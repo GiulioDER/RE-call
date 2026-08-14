@@ -50,7 +50,7 @@ class QnliEntailmentJudge:
 
     The decision boundary (sigmoid 0.5) is the model's own trained boundary: fixed per judge
     model, independent of whichever embedder retrieved the candidates. Requires
-    `pip install recall[entail]` (sentence-transformers). The default model is pinned to a
+    `pip install "recall-rag[entail]"` (sentence-transformers). The default model is pinned to a
     Hub revision; if you supply your own `model`, pin your own `revision` too.
     """
 
@@ -59,7 +59,9 @@ class QnliEntailmentJudge:
         try:
             from sentence_transformers import CrossEncoder
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise ImportError("QnliEntailmentJudge requires: pip install recall[entail]") from exc
+            raise ImportError(
+                'QnliEntailmentJudge requires: pip install "recall-rag[entail]"'
+            ) from exc
         if model != DEFAULT_QNLI_MODEL and revision == DEFAULT_QNLI_REVISION:
             revision = None  # the default pin belongs to the default model only
         self._model = CrossEncoder(model, revision=revision)

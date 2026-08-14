@@ -68,6 +68,11 @@ from benchmarks.run import (
     validate_openrouter_key,
 )
 from benchmarks.systems import DEFAULT_K, MemorySystem, sample_id_of
+from benchmarks.artifact_contract import (
+    load_published_artifact,
+    reject_unauditable_cost_claims,
+)
+from benchmarks.run import QUARANTINE_EXIT, _quarantine, _write_atomic
 
 #: The fields of a scored `Outcome`, i.e. the part of a sidecar record that is load-bearing.
 #: ``question`` and ``gold`` are joined in beside them by `benchmarks.run._outcome_record` and are
@@ -302,18 +307,30 @@ def score_missing(
     text_by_id: dict[str, str],
     gold_by_id: dict[str, str],
     sidecar: Path | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Ingest and score only the outstanding questions, appending to a NEW sidecar as we go.
 
     Mirrors `benchmarks.run.main`'s loop — ingest one conversation, score its questions, persist
     before touching the next — because the salvage can crash for exactly the reasons the original
     run did, and a salvage without its own incremental write would need salvaging in turn.
+
+    Returns (records, dropped question ids). The ids are RETURNED rather than only printed: the
+    salvaged artifact carries a `dropped` block, and a caller with no way to fill it published an
+    affirmative `n: 0` over a run that had in fact lost questions. An affirmative zero is worse
+    than an absent key, and not losing paid work silently is this module's entire purpose.
     """
     written: list[dict[str, Any]] = []
+    dropped_all: list[str] = []
     for position, (conv, todo) in enumerate(work):
         sample_id = sample_id_of(conv)
         system.ingest(conv)
-        outcomes, _ = run_arm(system, completer, todo)
+        # The third element is the dropped-question ids. Named rather than `_`, because the
+        # previous version of this line discarded them and nothing downstream could tell a
+        # salvaged run that lost questions from one that never had them.
+        outcomes, _, dropped = run_arm(system, completer, todo)
+        dropped_all.extend(dropped)
+        if dropped:
+            print(f"  ! {len(dropped)} question(s) dropped: {', '.join(dropped)}", flush=True)
         records = [_outcome_record(o, text_by_id, gold_by_id) for o in outcomes]
         if sidecar is not None:
             _append_records(sidecar, records)
@@ -322,7 +339,7 @@ def score_missing(
             f"  [{position + 1}/{len(work)}] {sample_id}: {len(records)} questions re-scored",
             flush=True,
         )
-    return written
+    return written, dropped_all
 
 
 def _ordered(
@@ -342,6 +359,23 @@ def _ordered(
             ordered.append(record)
     ordered.extend(by_id.values())
     return ordered
+
+
+def _scrubbed(exc: BaseException, sibling: Path) -> str:
+    """The exception text with the sibling's full path reduced to its name.
+
+    These notes are copied verbatim into `salvage.consistency` and published, and both the
+    refusal message and an OSError's text carry the absolute path. Leaving it in bakes a local
+    filesystem path into a committed artifact and repeats the filename the caller already added.
+    """
+
+    text = str(exc)
+    # Three spellings, because an OSError's text carries the path REPR, whose backslashes are
+    # doubled on Windows — so scrubbing only `str(sibling)` silently misses the leak it exists
+    # to prevent, and a substring test against the raw path misses it too.
+    for spelling in (str(sibling), str(sibling).replace("\\", "\\\\"), sibling.as_posix()):
+        text = text.replace(spelling, sibling.name)
+    return text
 
 
 def consistency_report(
@@ -392,10 +426,22 @@ def consistency_report(
             )
             continue
         try:
-            doc = json.loads(sibling.read_text(encoding="utf-8"))
+            # Through the publication check, not a bare load: this sibling IS a `benchmarks.run`
+            # results artifact, and its config is cited below as verified provenance. A refused
+            # artifact must not be able to launder its config into a newly published one.
+            doc = load_published_artifact(sibling)
             config = doc["config"]
+            if not isinstance(config, dict):
+                # `config.get(...)` happens below, outside this try. A positive shape check here
+                # beats widening the net to AttributeError.
+                raise TypeError(f"config is {type(config).__name__}, not an object")
+        except SystemExit as exc:
+            unverified.append(f"{sibling.name}: {_scrubbed(exc, sibling)}")
+            continue
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            unverified.append(f"{sibling.name}: unreadable as a results artifact ({exc})")
+            unverified.append(
+                f"{sibling.name}: unreadable as a results artifact ({_scrubbed(exc, sibling)})"
+            )
             continue
         verified.append(
             {
@@ -479,8 +525,13 @@ def resume(
     }
 
     rescored: list[dict[str, Any]] = []
+    # Initialised beside `rescored`, because `--merge-only` skips the scoring branch below
+    # entirely and the payload reads this unconditionally.
+    rescore_dropped: list[str] = []
     if system is not None and completer is not None:
-        rescored = score_missing(system, completer, work, text_by_id, gold_by_id, sidecar)
+        rescored, rescore_dropped = score_missing(
+            system, completer, work, text_by_id, gold_by_id, sidecar
+        )
 
     records = _ordered(merge_records([salvaged, rescored]), questions)
     outcomes: list[Outcome] = [to_outcome(record) for record in records]
@@ -498,6 +549,13 @@ def resume(
         # re-scored questions are only a subset — so a token total here would be a lie. Marked
         # unmetered rather than reported as zero.
         {"note": "usage not metered on salvaged runs"},
+        # BY KEYWORD, and passed at all. This call listed ten positional arguments and stopped,
+        # so the new `dropped_question_ids` parameter defaulted to None and every salvaged
+        # artifact published `dropped: {"n": 0}` — including ones where `score_missing` had just
+        # printed the questions it lost. Keywords mean the next parameter cannot be skipped in
+        # silence the way this one was.
+        provider_metadata=None,
+        dropped_question_ids=rescore_dropped,
     )
 
     known_ids = {str(q["question_id"]) for q in questions}
@@ -665,7 +723,29 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    # The same two steps `benchmarks.run` takes before it will call an artifact published: the
+    # cost-claim contract, then an atomic write. Salvage publishes a real, citable artifact, so
+    # without these it could publish exactly what run would have quarantined, and a failed write
+    # would truncate whatever was at --out.
+    encoded = json.dumps(payload, indent=2)
+    try:
+        reject_unauditable_cost_claims(payload)
+    except ValueError as exc:
+        # Same trade as `benchmarks.run`, through the SAME code: the contract keeps an
+        # unauditable artifact out of the published path, it does not get to destroy the work. A
+        # non-merge-only salvage has just re-bought whole conversations, and an uncaught
+        # ValueError exits 1, the status that tells a wrapper it is safe to pay for them again.
+        #
+        # `run._quarantine` rather than a local copy. Hand-rolling it here reproduced two defects
+        # that had already been found and fixed on run's side: the rescue could itself raise and
+        # lose the work, and it wrote inside the `results/*.json` glob that feeds `analyze`, so a
+        # refused salvage aborted every later curve over that directory.
+        preserved = _quarantine(
+            args.out.parent, args.out.stem, payload, encoded, sidecar or args.partial[0],
+            reason=str(exc),
+        )
+        return QUARANTINE_EXIT if preserved else 1
+    _write_atomic(args.out, encoded)
 
     salvage: dict[str, Any] = payload["salvage"]
     unscored: list[str] = salvage["questions_still_unscored"]

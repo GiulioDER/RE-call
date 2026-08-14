@@ -76,6 +76,10 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
     "recall_reasoning_projection": (SCOPE_READ, "read", {}),
     "recall_reasoning_proposals": (SCOPE_READ, "read", {}),
     "recall_reasoning_audit": (SCOPE_READ, "read", {}),
+    # READ scope, not write: it reports what declaring a proposal WOULD change and writes
+    # nothing. Declaring it needs `recall rewrite apply --reviewer <id> --note <why>` at the
+    # CLI, so no MCP scope grants the ability to edit a memo.
+    "recall_rewrite_plan": (SCOPE_READ, "read", {"proposal_id": "ip_x"}),
     "recall_stats": (SCOPE_READ, "read", {}),
     "recall_index": (SCOPE_WRITE, "write", {"path": "corpus"}),
     "recall_forget": (SCOPE_FORGET, "forget", {"sources": ["f.md"]}),

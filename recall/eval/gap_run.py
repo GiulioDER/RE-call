@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import math
 import re
 import os
 import time
@@ -25,6 +24,7 @@ from typing import Any
 
 from recall.eval.beir import materialize
 from recall.eval.gap_study import POWER_FLOOR as _POWER_FLOOR
+from recall.eval.metrics import nan_to_null
 from recall.eval.gap_study import PRIMARY_ARM as _PRIMARY_ARM
 from recall.eval.vocab import (
     bge_encoder,
@@ -84,23 +84,12 @@ def write_json(path: Path, payload: Any) -> None:
     worse than a missing one because `pending_datasets` treats existence as completion and would
     skip that corpus as done forever.
     """
-    encoded = json.dumps(_nan_to_null(payload), indent=2, allow_nan=False)
+    encoded = json.dumps(nan_to_null(payload), indent=2, allow_nan=False)
     tmp = path.with_name(path.name + ".tmp")
     # newline="\n" explicitly: the default translates on Windows, which would rewrite every line
     # of a committed artifact as CRLF and bury a one-value correction in a whole-file diff.
     tmp.write_text(encoded, encoding="utf-8", newline="\n")
     os.replace(tmp, path)
-
-
-def _nan_to_null(value: Any) -> Any:
-    """Recursively replace non-finite floats with None, so `allow_nan=False` can stay on."""
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if isinstance(value, dict):
-        return {k: _nan_to_null(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_nan_to_null(v) for v in value]
-    return value
 
 
 def pending_datasets(

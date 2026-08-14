@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -24,3 +25,47 @@ def test_citation_version_matches_pyproject():
     m = re.search(r"^version:\s*(\S+)", citation.read_text(encoding="utf-8"), re.M)
     assert m, "no version in CITATION.cff"
     assert m.group(1) == _declared_version()
+
+
+def test_server_json_versions_match_pyproject():
+    """The MCP registry manifest writes the version THREE times and nothing checked any of them.
+
+    One of the three is a hard `==` pin inside the `uvx --from` argument. A stale pin there does
+    not fail loudly the way a bad classifier does: the registry entry keeps resolving and keeps
+    installing, it just installs a version nobody asked for. CITATION.cff already earned its own
+    test by sitting at 0.5.1 through a whole release; this file writes the number three times as
+    often.
+    """
+    server = json.loads(
+        (Path(__file__).parent.parent / "server.json").read_text(encoding="utf-8")
+    )
+    declared = _declared_version()
+
+    assert server["version"] == declared
+    package = server["packages"][0]
+    assert package["version"] == declared
+
+    pins = [
+        arg["value"]
+        for arg in package["runtimeArguments"]
+        if arg.get("name") == "--from"
+    ]
+    assert pins, "no --from argument in server.json to pin the version"
+    assert all(pin.endswith(f"=={declared}") for pin in pins), pins
+
+
+def test_uv_lock_records_this_version():
+    """`uv.lock` is the sixth place the version is written, and CI is where that was learned.
+
+    The lock records the project's own version alongside its dependencies, so bumping anywhere
+    else leaves it stale. CI does catch it, via `uv lock --check`, but only after a push: this
+    turns a lost CI round into a failing test on the machine that made the change.
+    """
+    lock = Path(__file__).parent.parent / "uv.lock"
+    declared = _declared_version()
+    text = lock.read_text(encoding="utf-8")
+
+    # The project's own entry, not one of the 193 dependencies that also carry a `version =`.
+    m = re.search(r'^name = "recall-rag"\nversion = "([^"]+)"', text, re.M)
+    assert m, "no recall-rag entry in uv.lock"
+    assert m.group(1) == declared

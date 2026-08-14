@@ -74,7 +74,8 @@ def test_run_arm_produces_outcomes_and_aggregate() -> None:
             "answer": "",
         },
     ]
-    outcomes, agg = run_arm(_Sys(), _completer, questions)
+    outcomes, agg, dropped = run_arm(_Sys(), _completer, questions)
+    assert dropped == [], "nothing failed, so nothing is quarantined"
     assert len(outcomes) == 2
     assert all(isinstance(o, Outcome) for o in outcomes)
     assert agg["answerable_accuracy"]["n"] == 1
@@ -93,7 +94,7 @@ def test_run_arm_records_context_and_answer_for_the_results_artifact() -> None:
             "answer": "500",
         },
     ]
-    outcomes, _agg = run_arm(_Sys(), _completer, questions)
+    outcomes, _agg, _dropped = run_arm(_Sys(), _completer, questions)
     assert outcomes[0].context == "rate limit is 500 rps"
     assert outcomes[0].answer == "500 rps"
     assert outcomes[0].correct is True
@@ -430,11 +431,12 @@ def test_main_closes_the_system_it_built(
     finalisation, where qdrant-client's own finaliser dies with `ModuleNotFoundError: import of
     msvcrt halted`.
 
-    Scope, stated so nobody reads more into it: this covers the SUCCESS path only. `main` has no
-    `try/finally`, so an exception on the way to `return 0` still skips the close and relies on
-    process exit. That is the deliberate trade — the alternative is re-indenting ~96 lines — and if
-    it ever stops being acceptable the fix is `with _build_system(...) as system:`, not another
-    close call somewhere else.
+    Scope, stated so nobody reads more into it: this is the SUCCESS path. The write site is now
+    wrapped in `try/finally`, so a raise there releases the handles too (see
+    `test_a_rejected_cost_claim_still_releases_the_arms_handles`), but that `finally` starts at
+    the write site — an exception during ingest or scoring still skips the close and relies on
+    process exit. Widening it further is `with _build_system(...) as system:` around the body,
+    not another close call somewhere else.
     """
     from benchmarks.systems import RecallSystem
 
@@ -1065,3 +1067,734 @@ def test_validate_openrouter_key_error_never_echoes_the_key() -> None:
     message = str(excinfo.value)
     assert secret not in message
     assert "supersecret" not in message
+
+
+def test_a_rejected_cost_claim_quarantines_the_run_instead_of_losing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A contract raise must not destroy the artifact it refuses to publish.
+
+    The scored answers themselves are not what is at risk: they are already in the incremental
+    sidecar and `benchmarks.salvage --merge-only` rebuilds a runnable artifact from it without
+    re-spending. What a discarded artifact costs is the envelope the sidecar does NOT hold, the
+    usage block, `provider_metadata`, the config and the ablation preflight, plus a manual
+    salvage step. The contract's job is to keep an unauditable artifact out of the PUBLISHED
+    filename, not to throw that envelope away.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    def _reject(payload: dict[str, Any]) -> None:
+        raise ValueError("benchmark cost claims require provider_metadata")
+
+    monkeypatch.setattr(run_module, "reject_unauditable_cost_claims", _reject)
+
+    out = tmp_path / "results"
+    code = main(
+        ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+         "--conversations", "1", "--out", str(out)],
+        now=_NOW,
+    )
+
+    # The exact code, not merely non-zero: 1 is what the interpreter itself exits with on an
+    # uncaught exception, so a wrapper could not tell "quarantined, salvageable, do NOT re-run"
+    # from "crashed mid-run". A mutant returning 2 also collides with argparse's usage error.
+    assert code == run_module.QUARANTINE_EXIT == 3
+    # Nothing published: the operator's `results/*.json` glob feeds `analyze`, so a quarantined
+    # artifact must not sit beside real ones under a name that glob would pick up.
+    assert list(out.glob("*.json")) == []
+    quarantined = out / "unpublished" / f"{_STAMP_1CONV}.json"
+    assert quarantined.exists(), "the artifact was destroyed rather than quarantined"
+
+    recovered = json.loads(quarantined.read_text(encoding="utf-8"))
+    assert recovered["arm"] == "recall"
+    assert recovered["questions"] == len(recovered["outcomes"]) > 0
+    assert recovered["aggregate"]
+    # In band marker: handed this file directly, a reader must be able to tell it was refused.
+    # Byte-identical to a publishable artifact, it is indistinguishable from one.
+    assert recovered["unpublished"] is True
+    assert "provider_metadata" in recovered["unpublished_reason"]
+    # the incremental sidecar is untouched by the rejection
+    assert (out / f"{_STAMP_1CONV}.partial.jsonl").exists()
+
+    # The operator-facing diagnostics are the whole point of the rescue; without asserting them
+    # a mutant that quarantines in total silence stays green.
+    err = capsys.readouterr().err
+    assert str(quarantined) in err
+    assert "salvage" in err
+    assert "provider_metadata" in err
+
+
+def test_a_rejected_cost_claim_still_releases_the_arms_handles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure path releases handles too, and only after the run is safely on disk."""
+    from benchmarks.systems import RecallSystem
+
+    out = tmp_path / "results"
+    closed: list[bool] = []
+
+    class _ClosableSystem(RecallSystem):
+        name = "recall"
+
+        def ingest(self, conversation: dict[str, Any]) -> None:
+            return None
+
+        def retrieve(self, question: str) -> str:
+            return "ctx"
+
+        def ablation_preflight(
+            self, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        def close(self) -> None:
+            # Records whether the quarantined artifact was ALREADY on disk, so a mutant that
+            # releases before the rescue write does not survive.
+            closed.append((out / "unpublished" / f"{_STAMP_1CONV}.json").exists())
+
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str,
+        embedder: str = "fastembed", **_extra: object,
+    ) -> MemorySystem:
+        return _ClosableSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+    def _reject(payload: dict[str, Any]) -> None:
+        raise ValueError("benchmark cost claims require provider_metadata")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+    monkeypatch.setattr(run_module, "reject_unauditable_cost_claims", _reject)
+
+    code = main(
+        ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+         "--conversations", "1", "--out", str(out)],
+        now=_NOW,
+    )
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert closed == [True]  # released exactly once, and AFTER the rescue write
+
+
+def test_an_unserialisable_payload_still_releases_the_arms_handles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`json.dumps` is the other raise at the write site, and it must not skip teardown either."""
+    from benchmarks.systems import RecallSystem
+
+    out = tmp_path / "results"
+    closed: list[str] = []
+
+    class _ClosableSystem(RecallSystem):
+        name = "recall"
+
+        def ingest(self, conversation: dict[str, Any]) -> None:
+            return None
+
+        def retrieve(self, question: str) -> str:
+            return "ctx"
+
+        def ablation_preflight(
+            self, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        def close(self) -> None:
+            closed.append("released")
+
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str,
+        embedder: str = "fastembed", **_extra: object,
+    ) -> MemorySystem:
+        return _ClosableSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+    real_payload = run_module._results_payload
+
+    def _unserialisable_payload(*args: object, **kwargs: object) -> dict[str, Any]:
+        # A real payload carrying one member json cannot encode. Patching `json.dumps` itself
+        # would not test the write site: `json` is the shared module object, so the stub would
+        # fire earlier in the run and never reach the code under test.
+        payload = real_payload(*args, **kwargs)  # type: ignore[arg-type]
+        payload["config"] = {"unserialisable": {object()}}
+        return payload
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+    monkeypatch.setattr(run_module, "_results_payload", _unserialisable_payload)
+
+    with pytest.raises(TypeError):
+        main(
+            ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+             "--conversations", "1", "--out", str(out)],
+            now=_NOW,
+        )
+
+    assert closed == ["released"]
+
+
+def _quarantine_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    out: Path,
+    *,
+    reject: bool,
+) -> int:
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+    if reject:
+        def _reject(payload: dict[str, Any]) -> None:
+            raise ValueError("benchmark cost claims require provider_metadata")
+
+        monkeypatch.setattr(run_module, "reject_unauditable_cost_claims", _reject)
+    return main(
+        ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+         "--conversations", "1", "--out", str(out)],
+        now=_NOW,
+    )
+
+
+def test_the_rescue_falls_back_when_the_quarantine_directory_cannot_be_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`mkdir(exist_ok=True)` raises FileExistsError when the path exists as a FILE.
+
+    A rescue that can itself throw away the artifact is not a rescue, so it falls back to a
+    sibling name rather than letting the OSError escape.
+    """
+    out = tmp_path / "results"
+    out.mkdir(parents=True)
+    (out / "unpublished").write_text("not a directory", encoding="utf-8")
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    fallback = out / f"{_STAMP_1CONV}.unpublished.json.txt"
+    assert fallback.exists(), "the artifact was lost when the subdirectory was blocked"
+    assert json.loads(fallback.read_text(encoding="utf-8"))["unpublished"] is True
+    assert str(fallback) in capsys.readouterr().err
+    # `.json.txt`, not `.json`: the fallback has to stay out of the publishable glob just as
+    # firmly as the subdirectory does, or the rescue hands `analyze` a refused artifact.
+    assert list(out.glob("*.json")) == []
+
+
+def test_a_failed_published_write_quarantines_the_artifact_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The published write is likelier to fail than the contract is to fire.
+
+    A full disk, a long path or an antivirus lock all raise OSError there, and the encoded bytes
+    are already in hand, so losing them would be gratuitous.
+    """
+    out = tmp_path / "results"
+    out.mkdir(parents=True)
+    (out / f"{_STAMP_1CONV}.json").mkdir()  # a directory where the artifact wants to go
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=False)
+
+    assert code == run_module.QUARANTINE_EXIT
+    quarantined = out / "unpublished" / f"{_STAMP_1CONV}.json"
+    assert quarantined.exists(), "a failed publish threw the artifact away"
+    recovered = json.loads(quarantined.read_text(encoding="utf-8"))
+    assert recovered["unpublished"] is True
+    assert recovered["aggregate"]
+    assert "could not be written" in capsys.readouterr().err.lower()
+
+
+class _BrokenStream:
+    """A stream that refuses everything, the way a closed pipe does."""
+
+    def write(self, _data: str) -> int:
+        raise OSError(32, "Broken pipe")
+
+    def flush(self) -> None:
+        raise OSError(32, "Broken pipe")
+
+
+def test_the_rescue_writes_the_artifact_before_it_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unavailable stderr must not be able to destroy the artifact the rescue exists to save.
+
+    Reporting touches a stream this process does not own. Writing touches a directory it was
+    given. Doing them in that order, and guarding the reports, is what makes the docstring's
+    "never raises" true rather than aspirational.
+    """
+    import sys as _sys
+
+    out = tmp_path / "results"
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+    assert code == run_module.QUARANTINE_EXIT  # sanity: the healthy-stderr baseline
+
+    out2 = tmp_path / "results2"
+    monkeypatch.setattr(_sys, "stderr", _BrokenStream())
+    code2 = _quarantine_case(tmp_path, monkeypatch, out2, reject=True)
+
+    assert code2 == run_module.QUARANTINE_EXIT
+    assert (out2 / "unpublished" / f"{_STAMP_1CONV}.json").exists()
+
+
+def test_the_rescue_falls_back_to_stdout_when_no_file_can_be_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both candidates blocked: the body still has to reach somewhere, and it is still exit 3."""
+    out = tmp_path / "results"
+    real_write = Path.write_text
+
+    def _refuse(self: Path, data: str, *a: object, **k: object) -> int:
+        # `.tmp` too: the rescue writes atomically, so blocking only the final names would
+        # block nothing at all.
+        if "unpublished" in str(self):
+            raise OSError(28, "No space left on device")
+        return real_write(self, data, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _refuse)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    captured = capsys.readouterr()
+    # stdout also carries the run's progress prose, including a dict repr with single quotes,
+    # so anchor on the indented JSON opening rather than on the first brace.
+    body = captured.out[captured.out.rindex('{\n  "') :]
+    assert json.loads(body)["unpublished"] is True
+    assert "stdout" in captured.err
+
+
+def test_a_partially_written_artifact_is_removed_from_the_published_glob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`write_text` opens with mode "w", so the file is truncated before a byte can fail.
+
+    One truncated leftover in the results directory makes every later `analyze` over it die on a
+    JSONDecodeError, so the corpse has to go.
+    """
+    out = tmp_path / "results"
+    real_write = Path.write_text
+
+    def _die_midway(self: Path, data: str, *a: object, **k: object) -> int:
+        if self.name.startswith(_STAMP_1CONV) and self.parent.name == "results":
+            real_write(self, data[:20], encoding="utf-8")  # truncated, like a full disk
+            raise OSError(28, "No space left on device")
+        return real_write(self, data, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _die_midway)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=False)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert list(out.glob("*.json")) == [], "a truncated artifact was left in the published glob"
+    assert list(out.glob("*.tmp")) == [], "the atomic write left its temp behind"
+    assert (out / "unpublished" / f"{_STAMP_1CONV}.json").exists()
+
+
+def test_a_raising_teardown_report_cannot_change_the_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The report is wrapped because it runs inside a `finally` that now covers failure paths."""
+    from benchmarks.systems import RecallSystem
+
+    out = tmp_path / "results"
+
+    class _ClosableSystem(RecallSystem):
+        name = "recall"
+
+        def ingest(self, conversation: dict[str, Any]) -> None:
+            return None
+
+        def retrieve(self, question: str) -> str:
+            return "ctx"
+
+        def ablation_preflight(
+            self, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        def close(self) -> None:
+            raise RuntimeError("teardown exploded")
+
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str,
+        embedder: str = "fastembed", **_extra: object,
+    ) -> MemorySystem:
+        return _ClosableSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+    def _report_explodes(subject: object, exc: BaseException) -> None:
+        raise SystemError("even the reporter is broken")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+    monkeypatch.setattr(run_module, "_warn_teardown_failed", _report_explodes)
+
+    code = main(
+        ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+         "--conversations", "1", "--out", str(out)],
+        now=_NOW,
+    )
+
+    assert code == 0, "a broken teardown reporter must not change a finished run's verdict"
+    assert (out / f"{_STAMP_1CONV}.json").exists()
+
+
+def test_the_rescue_never_leaks_diagnostics_into_stdout_when_stderr_is_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`sys.stderr` really is None under pythonw, and `print(file=None)` writes to STDOUT.
+
+    Unguarded, every diagnostic line would land on stdout — which is where the last-resort
+    artifact body goes — so a reader parsing that stream would find prose wrapped around the
+    JSON. `_say` refuses a None stream instead, and that refusal is also what keeps its return
+    value honest about whether anything was preserved.
+    """
+    import sys as _sys
+
+    out = tmp_path / "results"
+    monkeypatch.setattr(_sys, "stderr", None)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert (out / "unpublished" / f"{_STAMP_1CONV}.json").exists()
+    assert "artifact NOT published" not in capsys.readouterr().out
+
+
+def test_say_refuses_a_stream_that_is_explicitly_none() -> None:
+    """`None` must mean "this stream is unusable", never "use the default".
+
+    Conflating the two is how the last resort ends up writing the artifact body to stderr while
+    reporting it went to stdout and counting it as preserved.
+    """
+    assert run_module._say("x", stream=None) is False
+    assert run_module._say("x") is True  # no argument still defaults to stderr
+
+
+def test_say_lets_a_keyboard_interrupt_through() -> None:
+    """Swallowing Ctrl+C during the multi-MB last-resort dump would report a total loss.
+
+    A broken stream is an expected failure and is swallowed; an interrupt is the operator
+    talking, and must not be turned into "the artifact could not be preserved anywhere".
+    """
+
+    class _Interrupting:
+        def write(self, _data: str) -> int:
+            raise KeyboardInterrupt
+
+        def flush(self) -> None:
+            pass
+
+    assert run_module._say("x", stream=_BrokenStream()) is False  # OSError: swallowed
+    with pytest.raises(KeyboardInterrupt):
+        run_module._say("x", stream=_Interrupting())
+
+
+def test_a_run_whose_artifact_reaches_nowhere_reports_a_genuine_loss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exit 3 claims the work is salvageable. When nothing was saved, that claim is a lie.
+
+    Both file candidates blocked AND stdout unusable: the honest answer is 1.
+    """
+    import sys as _sys
+
+    out = tmp_path / "results"
+    real_write = Path.write_text
+
+    def _refuse(self: Path, data: str, *a: object, **k: object) -> int:
+        if "unpublished" in str(self):
+            raise OSError(28, "No space left on device")
+        return real_write(self, data, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _refuse)
+    # None, the real pythonw shape: `print()` to a None stdout is a silent no-op, so the run's
+    # own progress lines still work and only the last resort is starved. A broken stream would
+    # instead blow up on the first progress print, long before the write site.
+    monkeypatch.setattr(_sys, "stdout", None)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == 1, "nothing was preserved, so this is a loss and not a quarantine"
+
+
+def test_a_partially_written_quarantine_candidate_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The corpse rule applies to the rescue's own writes too.
+
+    A truncated `<out>/unpublished/<stamp>.json` breaks any `results/**/*.json` reader, and
+    `_load_published` parses before it can consult the mark, so the mark cannot rescue it.
+    """
+    out = tmp_path / "results"
+    real_write = Path.write_text
+
+    def _die_midway(self: Path, data: str, *a: object, **k: object) -> int:
+        if self.parent.name == "unpublished":
+            real_write(self, data[:30], encoding="utf-8")
+            raise OSError(28, "No space left on device")
+        return real_write(self, data, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _die_midway)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert not (out / "unpublished" / f"{_STAMP_1CONV}.json").exists(), "truncated corpse left"
+    assert (out / f"{_STAMP_1CONV}.unpublished.json.txt").exists()
+
+
+def test_a_failed_quarantine_write_does_not_destroy_a_pre_existing_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cleanup that guesses is worse than no cleanup.
+
+    `write_text` truncates at open, so a corpse only exists when the failure comes AFTER open.
+    When it comes AT open — an antivirus or indexer lock, EACCES, a read-only mount — the file
+    sitting there is intact and somebody else's, and deleting it destroys a good artifact the
+    rescue then does not replace.
+    """
+    out = tmp_path / "results"
+    victim = out / "unpublished" / f"{_STAMP_1CONV}.json"
+    victim.parent.mkdir(parents=True)
+    victim.write_text('{"real": "a previous artifact"}', encoding="utf-8")
+
+    real_write = Path.write_text
+
+    def _locked(self: Path, data: str, *a: object, **k: object) -> int:
+        if self.parent.name == "unpublished":
+            raise PermissionError(13, "locked by another process")
+        return real_write(self, data, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _locked)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert victim.read_text(encoding="utf-8") == '{"real": "a previous artifact"}'
+    assert (out / f"{_STAMP_1CONV}.unpublished.json.txt").exists()
+
+
+def test_a_failed_write_leaves_no_temporary_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Atomic writes move the corpse problem into a `.tmp` that must be cleaned up itself."""
+    out = tmp_path / "results"
+    real_write = Path.write_text
+
+    def _die_midway(self: Path, data: str, *a: object, **k: object) -> int:
+        if self.parent.name == "unpublished":
+            real_write(self, data[:30], encoding="utf-8")
+            raise OSError(28, "No space left on device")
+        return real_write(self, data, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _die_midway)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert list((out / "unpublished").glob("*")) == [], "a temp or a corpse was left behind"
+    assert (out / f"{_STAMP_1CONV}.unpublished.json.txt").exists()
+
+
+def test_an_interrupt_while_reporting_does_not_lose_a_preserved_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The notes print AFTER the artifact is safe, so an interrupt there must not cost exit 3.
+
+    Letting it propagate would hand a wrapper a crash status for a run that was preserved — the
+    exact harm narrowing `_say` to `except Exception` was meant to prevent, inverted.
+    """
+    import sys as _sys
+
+    class _Interrupting:
+        def write(self, _data: str) -> int:
+            raise KeyboardInterrupt
+
+        def flush(self) -> None:
+            pass
+
+    out = tmp_path / "results"
+    monkeypatch.setattr(_sys, "stderr", _Interrupting())
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert (out / "unpublished" / f"{_STAMP_1CONV}.json").exists()
+
+
+def test_one_interrupt_while_reporting_still_names_where_the_artifact_went(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A single Ctrl+C must cost one diagnostic line, not all of them.
+
+    Guarding the whole loop instead of each note means one interrupt swallows every note,
+    including the only one that tells the operator where the artifact is — silence in place of
+    the wrong path the previous round was fixing.
+    """
+    import sys as _sys
+
+    class _InterruptsOnce:
+        def __init__(self) -> None:
+            self.seen: list[str] = []
+            self.armed = True
+
+        def write(self, data: str) -> int:
+            if self.armed:
+                self.armed = False
+                raise KeyboardInterrupt
+            self.seen.append(data)
+            return len(data)
+
+        def flush(self) -> None:
+            return None
+
+    stream = _InterruptsOnce()
+    out = tmp_path / "results"
+    monkeypatch.setattr(_sys, "stderr", stream)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert any("unpublished  ->" in line for line in stream.seen), (
+        "one interrupt swallowed every note, including the artifact's location"
+    )
+
+
+def test_a_second_run_of_the_same_stem_refuses_before_it_spends_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_run_stamp` resolves to the SECOND, so two replicates of one arm can share a whole stem.
+
+    Sharing it is not a cosmetic clash. Both would `os.replace` onto the same
+    `<stamp>.json`, so the loser's complete, paid-for measurement is destroyed silently with
+    exit 0 and a `full results ->` line naming a file holding the other run's data. Both would
+    also APPEND to one `<stamp>.partial.jsonl`, and `salvage --merge-only` would then rebuild a
+    single published artifact out of two interleaved runs — which `consistency_report` cannot
+    detect, because two replicates agree on arm, model and k.
+
+    The stem is therefore claimed atomically, and the refusal lands before the first token.
+    """
+    out = tmp_path / "results"
+    out.mkdir(parents=True)
+    (out / f"{_STAMP_1CONV}.partial.jsonl").write_text("", encoding="utf-8")
+
+    calls: list[str] = []
+
+    def _counting_complete(self: object, system: str, user: str) -> str:
+        calls.append(user)
+        return _stub_complete(self, system, user)  # type: ignore[arg-type]
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _counting_complete)
+
+    with pytest.raises(SystemExit, match="already exists"):
+        main(
+            ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+             "--conversations", "1", "--out", str(out)],
+            now=_NOW,
+        )
+
+    assert calls == [], "the refusal must come before a single generator or judge call"
+
+
+def test_a_stem_that_cannot_be_claimed_at_all_fails_with_a_clear_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every other filesystem failure here gets a curated message; this one used to traceback.
+
+    A read-only or full `--out`, an antivirus lock, a directory sitting at the sidecar's path:
+    all of them are OSError, none of them is FileExistsError.
+    """
+    out = tmp_path / "results"
+    real_open = Path.open
+
+    def _locked(self: Path, *a: object, **k: object):  # type: ignore[no-untyped-def]
+        if self.name.endswith(".partial.jsonl"):
+            raise PermissionError(13, "locked by another process")
+        return real_open(self, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+    monkeypatch.setattr(Path, "open", _locked)
+
+    with pytest.raises(SystemExit, match="could not be created"):
+        main(
+            ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+             "--conversations", "1", "--out", str(out)],
+            now=_NOW,
+        )
+
+
+def test_a_crash_before_the_first_record_leaves_no_empty_sidecar_corpse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Claiming the stem creates the sidecar, so a crash above the scoring loop leaves a 0-byte
+    file that is indistinguishable from a crashed run whose records were lost — and
+    `salvage --merge-only` will happily publish it as an n=0 artifact."""
+    out = tmp_path / "results"
+
+    def _explodes(self: object, conversation: dict[str, Any]) -> None:
+        raise RuntimeError("ingest died")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+    monkeypatch.setattr(run_module.RecallSystem, "ingest", _explodes)
+
+    with pytest.raises(RuntimeError, match="ingest died"):
+        main(
+            ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+             "--conversations", "1", "--out", str(out)],
+            now=_NOW,
+        )
+
+    assert list(out.glob("*.partial.jsonl")) == [], "an empty sidecar corpse was left behind"
+
+
+def test_a_run_that_scores_nothing_still_keeps_its_stem_claimed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Releasing the claim on the SUCCESS path undoes the guarantee it was added for.
+
+    A run whose every qa row is unscoreable publishes a real `<stamp>.json` and writes no
+    sidecar records. If the release fires there, the stem is unclaimed while a published
+    artifact sits at it, and a same-second replicate reclaims it and silently overwrites that
+    artifact — exactly what claiming the stem exists to prevent. The release is for UNWINDING.
+    """
+    out = tmp_path / "results"
+    data = tmp_path / "unscoreable.json"
+    data.write_text(
+        json.dumps(
+            [{
+                "sample_id": "conv-a",
+                "conversation": {"speaker_a": "A", "speaker_b": "B"},
+                "qa": [{"question": "out of range", "answer": "x", "category": 9}],
+            }]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    argv = ["--arm", "recall", "--data", str(data), "--conversations", "1", "--out", str(out)]
+    assert main(argv, now=_NOW) == 0
+    published = out / f"{_STAMP_1CONV}.json"
+    assert published.exists()
+    before = published.read_text(encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="already exists"):
+        main(argv, now=_NOW)
+
+    assert published.read_text(encoding="utf-8") == before, "the published artifact was clobbered"

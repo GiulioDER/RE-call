@@ -33,7 +33,12 @@ proposals and in band provider failures.
 `InferenceProposal` contains:
 
 * `source_evidence_ids`: concrete projected node ids.
-* `proposed_relation`: `supersedes`, `contradicts`, `same_entity`, or `references`.
+* `proposed_relation`: `supersedes`, `contradicts`, `same_entity`, `references`,
+  `declares_validity`, or `declares_status`. The last two are a document asserting something
+  about itself rather than a relation between two documents; `object_id` carries the asserted
+  value, for example `valid_from:2026-02-01` or `status:deprecated`. They exist as their own
+  relations because recording them as `references` would put a false relation into an audit
+  record. Only `supersedes` proposals can become graph candidate edges.
 * `subject_id` and `object_id`.
 * `explanation`.
 * `provider_id`, `model_id`, `provider_revision`, and `pipeline_id`.
@@ -45,7 +50,25 @@ proposals and in band provider failures.
 * immutable metadata.
 
 Proposal identity is deterministic over schema version, generation identity, provider identity,
-pipeline identity, relation endpoints, evidence ids, rule id, and status.
+pipeline identity, relation endpoints, evidence ids, rule id, and status. `PROPOSAL_SCHEMA_VERSION`
+is `2`; the bump from `1` changed every proposal id, which is intended, because an id minted under
+a relation vocabulary that could not express validity must not be mistaken for one that can.
+
+## Extracted Claims
+
+`recall.truth_extraction` turns memo prose into structured claims on the ingest path, and
+`ExtractedClaimProposalProvider` replays validated claims into this protocol as a
+`ModelBackedProposalProvider`. It calls nothing itself: the engine ran at ingest.
+
+Every extracted proposal is `requires_review` with `confidence` of `None`. The measured prior is
+that the rule based attempt at this problem produced four candidates on a real 792 memo corpus and
+all four were wrong on review, so an extracted proposal is a question for a human, not an answer.
+`metadata["quote"]` carries the verbatim body span the claim was read from, which is what makes the
+review possible at all.
+
+Direction: for a supersession claim read from file F naming target T, `subject_id` is T (the
+superseded document) and `object_id` is F. Reversing it would declare the live memo stale and
+demote it beneath the one it replaced.
 
 ## Deterministic Rules
 
@@ -111,3 +134,27 @@ The reproducible artifact generator is:
 The checked in artifact is `results/reasoning_session3_proposals.json`. It contains the proposal
 protocol reference, precision and recall on authored synthetic missing relationships, rejected
 proposal examples, provider failure matrix, and side effect audit flags.
+
+### How proposals are scored
+
+`proposal_precision_recall` scores one `proposed_relation` at a time, so the four claim kinds are
+never averaged into a single number. Two rules keep the score honest.
+
+**Referrals are not assertions.** Only `candidate` proposals are scored. A `requires_review`
+proposal is reported separately as `referred_proposals`, alongside `asserted_proposals` and a
+`referral_rate`, and is never folded into precision. Counting referrals as predictions would let a
+provider buy precision by relabelling every shaky proposal `requires_review`. The policy is the
+`counted_statuses` and `referred_statuses` parameters rather than a hard coded constant; the two
+must stay disjoint, and an unknown status raises rather than silently scoring zero.
+
+Mind the two denominators. Precision divides by the deduplicated `(subject, object)` pair set,
+while `asserted_proposals` and `referred_proposals` count raw proposals, because several rules can
+fire on the same pair. Session 3 publishes three asserted proposals over two pairs, so
+`true_positive / asserted_proposals` is 0.667 and is **not** the published precision of 1.0. The
+key names carry the unit for exactly this reason.
+
+**A rate with no data is not a score.** Precision is `NaN` when nothing was asserted and recall is
+`NaN` when nothing was expected, matching `recall.eval.metrics.fraction_true`. This matters for the
+rule based baseline, which proposes zero edges: precision `0.0` would read as "the rules were
+wrong" when the truth is "the rules declined to answer", and recall `1.0` against an empty
+expectation set is a perfect score derived from nothing.

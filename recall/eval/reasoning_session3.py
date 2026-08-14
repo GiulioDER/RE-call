@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from recall.eval.metrics import nan_to_null
 from recall.reasoning_graph import ReasoningGraphProjection, build_reasoning_graph
 from recall.reasoning_proposals import (
     ProposalContext,
@@ -203,8 +204,17 @@ def reasoning_session3_artifact() -> dict[str, Any]:
     }
 
 
+def _artifact_json() -> str:
+    """Serialise strictly. `proposal_precision_recall` reports NaN on no data, and `NaN` is not
+    valid JSON, so sanitise to null first and let `allow_nan=False` catch anything missed."""
+
+    return json.dumps(
+        nan_to_null(reasoning_session3_artifact()), indent=2, sort_keys=True, allow_nan=False
+    )
+
+
 def main() -> None:
-    print(json.dumps(reasoning_session3_artifact(), indent=2, sort_keys=True))
+    print(_artifact_json())
 
 
 if __name__ == "__main__":

@@ -189,6 +189,156 @@ label-stratified analysis. The prompt adopted is the paper's own, justified inde
 `neutral` variant that was derived from label stratification is not used — but no dev-set gain that
 depended on label access should be claimed to transfer to the sealed set.
 
+## Truncation audit (added 2026-08-13)
+
+Every run above sent `--max-tokens 512` through a generator that never read `finish_reason`, so a
+completion the ceiling cut off came back as an ordinary string, was written to the submission and
+was judged as if the system had produced it. The code path is fixed (`generate_one` now raises
+`CompletionTruncated`, and the per-task quarantine keeps such a task out of the submission), but
+the fix is forward-only: these runs predate it, and **the stop reason was never recorded**, so for
+the artifacts it has to be reconstructed.
+
+Reconstructed by re-tokenising every stored answer with the generator's own encoding (gpt-4o,
+`o200k_base`). This is close to exact rather than a proxy: a completion stopped by the ceiling
+carries exactly 512 completion tokens, and the only edge case is the trailing whitespace token that
+`.strip()` removes.
+
+| run | rows | mean | p95 | max | at/over 512 |
+|---|---|---|---|---|---|
+| `taskb` (gold, abstain) | 842 | 64.4 | 156 | 330 | **0** |
+| `taskb_official` (gold, official) | 842 | 99.1 | 169 | 239 | **0** |
+| `taskc_benchmark` (benchmark-retrieved, abstain) | 842 | 66.4 | 157 | 304 | **0** |
+| `taskc_recall` (RE-call-retrieved, abstain) | 842 | 78.0 | 194 | 402 | **0** |
+| `taskc_benchmark_official` (benchmark-retrieved, official) | 842 | 97.5 | 169 | 233 | **0** |
+| `taskc_recall_official` (RE-call-retrieved, official) | 842 | 101.2 | 176 | 311 | **0** |
+
+**All six runs are clean.** Nothing came within 12 tokens of the ceiling. The longest answer
+anywhere is 402 tokens, 110 below the limit, and the independent punctuation check agrees: the three
+answers of 5,052 that end without terminal punctuation are all short ones. **No number in this
+document needs a truncation caveat.**
+
+### ✅ The gap, and how it closed
+
+The two official-prompt Task C runs were UNVERIFIED for a while, and they are the pair this document
+calls the comparison that actually measures RE-call, so the gap was on the worst possible pair. It
+is recorded here rather than quietly deleted, because how it closed is the reusable part.
+
+I reported that the payloads were "not on this disk" after searching for them. That was wrong twice
+over, and both mistakes are ordinary ones:
+
+* The search required `mtrag` in the FILENAME. The pack's files are named `taskb_*` and `taskc_*`,
+  so it could not have found them however long it ran. ⚠️ A search that cannot match is not
+  evidence of absence, and it reports exactly like one that found nothing.
+* It never occurred to me to look in git HISTORY for files a commit had deleted. `runs/README.md`
+  says the payloads live "outside the source tree", which is true of the current tree and hides
+  that they were committed before `f83a330` ("Externalize raw benchmark artifacts") removed them.
+  **The archive was in the repository the whole time.**
+
+Restored with `git show f83a330^:results/mtrag_generation/runs/<file>` and verified against
+`runs/SHA256SUMS.txt`: **10 of 10 files match**, which is the check that separates the real archive
+from a plausible lookalike, and is what that file exists for. All five layers of each run
+(`predictions`, `scoring`, `scored`, `algorithmic`, `fixed`) scan identically, as they should, since
+they carry the same predictions.
+
+Superseded, and kept because the reasoning was published: I argued the pair was probably clean
+because its nearest neighbours were, and because the official prompt produced the tightest length
+distribution. That inference held. ⚠️ It was still an inference, it was labelled as one, and it is
+now a measurement. The margins are wider than the ones it reasoned from: 233 and 311 tokens against
+a 512 ceiling.
+#### The command, and why its flags are not ceremony
+
+The scan is `scripts/scan_truncation.py`. It reads `predictions[].text` and needs nothing else.
+This is the invocation that produced the two rows above, against the restored pack:
+
+      python results/mtrag_generation/scripts/scan_truncation.py --expect taskc_benchmark_official,taskc_recall_official --expect-rows 842 <restored>/taskc_*_official.predictions.jsonl
+
+  An unexpanded wildcard is globbed by the script itself, because PowerShell does not expand
+  arguments and the operator would otherwise be told the pattern is ABSENT. ⛔ `--expect` is then
+  REQUIRED, and it names RUNS rather than counting files. That distinction is the whole guard:
+  each run restores five `.jsonl` layers (`runs/SHA256SUMS.txt`), so a count of two is
+  unsatisfiable against a correct restore of both runs, while two layers of ONE run satisfy it
+  perfectly and the other run is never named. A count cannot say "these two runs"; only names can.
+
+  `--expect` is required on EVERY run, not only when the script expands a wildcard. Under bash the
+  shell expands the pattern first, so a gate conditioned on that would be switched off by the
+  operator's choice of shell, which is the same defect one layer out. Nothing here certifies what
+  nobody claimed. Every report also ends with `runs covered: ...`, so the universe a CLEAN refers
+  to is legible in the report itself rather than reconstructed from a command line.
+
+  ⚠️ `--expect-rows 842` is required too, and for the same reason. Coverage matches on the
+  BASENAME, so without a size claim a one-row file called
+  `taskc_recall_official.predictions.jsonl` certifies that run CLEAN while 841 answers go
+  unmeasured; a name is not a size. 842 is the `tasks` field in
+  `manifests/taskc_recall_official.predictions.jsonl.manifest.json`. Because that field counts
+  TASKS and a file holds LINES, the scan also requires the distinct `task_id` count to equal the
+  row count, so a file padded with repeated rows cannot reach the number. `--expect-rows
+  unclaimed` is the explicit opt-out, and the report then prints `rows expected unclaimed`, so a
+  CLEAN can never be mistaken for a size claim nobody made. (This flag was optional for exactly
+  one commit, which left the false clean it was written to close reachable by not typing it. That
+  is why the opt-out is a token rather than silence.)
+
+  What survives even with both flags, so a CLEAN is quoted for what it is:
+
+  * A file carrying the right name and the right row count but copied from somewhere else is taken
+    at face value, because rows record `task_id` and no run identity.
+  * Measurement is over `predictions[].text`. A 520-token answer stored under a sibling key in a
+    prediction object that also carries a readable `text` is not inspected, because in every file
+    this has been pointed at a prediction's other keys are metadata.
+
+  A CLEAN therefore says: **these named files were read in full, and nothing in their
+  `predictions[].text` reached the ceiling the command stated.** It says they are the size their
+  manifest claims ONLY when the command passed a number to `--expect-rows`; under
+  `--expect-rows unclaimed` the verdict word is identical and the header line is the only place
+  the disclaimer appears, so read the header before quoting a CLEAN. The stated ceiling is
+  refused if it is outside 1 to 65,536, but within that range it is the operator's claim, not a
+  fact the scan can check: a ceiling higher than the run actually sent will report no findings.
+
+  🔑 It reports **CLEAN only when every file was fully read and every prediction in every row was
+  measured**, and exits non-zero otherwise. An absent file, an empty one, a line that will not
+  parse, a repeated JSON key, a row with no `predictions`, a prediction this tool cannot read even
+  when a readable one sits beside it, or a scan that raised: none of these can end as CLEAN, they
+  end as UNVERIFIED. A truncation at any prediction index, or a count one token under the ceiling,
+  is not clean either: a finding outranks an unread condition and ends as TRUNCATION FOUND or NEAR
+  THE CEILING, so that the report names what it found rather than hiding it behind the weaker
+  label. A byte-order mark is the one case handled the other way round, deliberately: the file is
+  opened as `utf-8-sig` so the mark is consumed and the first row is READ, rather than dropped as
+  unparseable and the file taken for a shorter one.
+
+  That list is not decoration. Every entry on it was a way an earlier version of this script
+  silently reported "0 truncated" for rows it never read, each found by audit, twice over, before
+  the script had been pointed at anything that mattered.
+
+  Its detector is live rather than assumed: run it with `--ceiling 200` against `taskb` and it
+  reports TRUNCATION FOUND, so the zero at 512 is a measurement and not a dead check. That claim is
+  itself checked, by `scripts/check_scan_truncation.py`: a case per false clean above, plus
+  assertions on the published statistics, the tokenizer and the default ceiling, plus an optional
+  liveness run against a real corpus. It prints its own tally, which is the number to quote rather
+  than one written here, since a count in prose drifts the moment a case is added. Run it after any
+  edit to the scanner:
+
+      python results/mtrag_generation/scripts/check_scan_truncation.py --corpus <a real .jsonl>
+
+  Each case asserts the per-file VERDICT, not just a non-zero exit, because several inputs exit
+  non-zero either way: a byte-order mark that hides an over-ceiling first row exits 1 as
+  UNVERIFIED, so a case demanding only "not clean" passes whether the row was read or dropped.
+  Every mutation of the scanner run against the matrix turned at least one case red, including the
+  ones a weaker earlier version let through: stopping after two lines, shrinking the near band to
+  one token, drifting the default tokenizer or the default ceiling, letting a readable prediction
+  vouch for an unreadable sibling, and accepting a `--expect` that names no run at all.
+
+#### Provenance
+
+Every one of the six rows above was measured on a file restored from `f83a330^` and matched
+against `runs/SHA256SUMS.txt` before it was read: **6 of 6 predictions layers verified, 0
+mismatched**, and for the two official Task C runs all five layers each, 10 of 10.
+
+An earlier version of this section carried a caveat that the four abstain-prompt and Task B rows
+came from leftover intermediates in a temp directory rather than the checksummed archive, and could
+not be matched against it because re-gzipping does not reproduce a byte-identical container. That
+caveat is retired, and usefully so: re-measuring from the verified archive reproduced those four
+rows exactly, to every digit of mean, p50, p95 and max. The leftovers were faithful, which was
+worth confirming rather than assuming.
+
 ## Pending
 
 Awaiting one GPU session (three algorithmic passes, ~8 min each) then the LLM judge on each:
@@ -199,3 +349,7 @@ Awaiting one GPU session (three algorithmic passes, ~8 min each) then the LLM ju
 `taskc_recall_official` vs `taskc_benchmark_official`: same harness, same prompt, same model, only
 the contexts differ. It needs no baseline table to be meaningful, and it is the only row in this
 document where RE-call is the variable.
+
+✅ Both halves of that pair were the two runs the truncation audit could not reach, and both are now
+measured clean: 233 and 311 tokens at the longest, against a 512 ceiling. Nothing in that comparison
+is waiting on a truncation check.

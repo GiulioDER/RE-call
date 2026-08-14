@@ -283,6 +283,9 @@ def test_merge_only_rebuilds_the_artifact_and_its_aggregate_without_scoring(
     assert set(payload) == {
         "arm", "model", "config", "conversations", "questions", "skipped_questions",
         "usage", "provider_metadata", "cost_claims", "aggregate", "outcomes", "salvaged",
+        # Always present, empty on a clean run: `n` shrinks silently when a question is
+        # quarantined, so a reader diffing two artifacts needs the count beside it.
+        "dropped",
         "salvage",
     }
     assert payload["arm"] == "recall"
@@ -528,3 +531,174 @@ def test_resume_refuses_to_append_to_the_partial_it_is_reading(tmp_path: Path) -
                 "--sidecar", str(partial),
             ]
         )
+
+
+def test_a_refused_sibling_is_unverified_not_verified_provenance(tmp_path: Path) -> None:
+    """Salvage cites a sibling `<stem>.json`'s config as VERIFIED provenance for the artifact it
+    publishes, so a refused artifact must not be able to launder its config into a new one."""
+    from benchmarks.salvage import consistency_report
+
+    stem = "recall_openai-gpt-4o-mini_1conv_20260102T030405Z"
+    partial = tmp_path / f"{stem}.partial.jsonl"
+    partial.write_text("", encoding="utf-8")
+    (tmp_path / f"{stem}.json").write_text(
+        json.dumps(
+            {
+                "config": {"arm": "recall", "model": "openai/gpt-4o-mini", "k": 5},
+                "unpublished": True,
+                "unpublished_reason": "benchmark cost claims require provider_metadata",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = consistency_report([partial], "recall", "openai/gpt-4o-mini", 5)
+
+    # The FILENAME is still legitimate provenance for arm and model; the refused sibling's
+    # config is what must not appear.
+    assert not any("(config)" in entry["source"] for entry in report["verified"]), (
+        "a refused sibling's config was cited as verified provenance"
+    )
+    assert any("REFUSED publication" in note for note in report["unverified"])
+    # The refusal message carries the sibling's full path; a published artifact must not embed
+    # an absolute local path, nor repeat the filename twice.
+    assert not any(str(tmp_path) in note for note in report["unverified"])
+
+
+def test_a_sibling_whose_config_is_not_an_object_is_reported_not_raised(tmp_path: Path) -> None:
+    """`config.get(...)` runs outside the try, so a non-mapping config used to crash the CLI."""
+    from benchmarks.salvage import consistency_report
+
+    stem = "recall_openai-gpt-4o-mini_1conv_20260102T030405Z"
+    partial = tmp_path / f"{stem}.partial.jsonl"
+    partial.write_text("", encoding="utf-8")
+    (tmp_path / f"{stem}.json").write_text(json.dumps({"config": "recall"}), encoding="utf-8")
+
+    report = consistency_report([partial], "recall", "openai/gpt-4o-mini", 5)
+
+    assert any("not an object" in note for note in report["unverified"])
+
+
+def _merge_only(partial: Path, out: Path, data: Path) -> int:
+    return main(
+        ["--partial", str(partial), "--arm", "recall", "--data", str(data),
+         "--out", str(out), "--merge-only"]
+    )
+
+
+def test_salvage_quarantines_an_artifact_the_cost_contract_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Behavioural, not a source-text check.
+
+    Asserting that the contract call appears above the write is satisfied by a call sitting in a
+    dead branch — verified: that mutant passed the old version of this test. What matters is
+    that a refused payload does not reach `--out`, and that the re-scored work is not thrown
+    away: by this point salvage may have re-bought whole conversations.
+    """
+    records = [*_conv_a_records(), _record("conv-b:0"), _record("conv-c:0")]
+    partial = _write_partial(tmp_path / f"{_STEM}{salvage_module.PARTIAL_SUFFIX}", records)
+    # A results directory of its own, so the glob assertion below means something.
+    out = tmp_path / "results" / "salvaged.json"
+
+    def _poison(*args: object, **kwargs: object) -> dict[str, Any]:
+        payload = real_payload(*args, **kwargs)  # type: ignore[arg-type]
+        payload["headline"] = "the whole arm for $7.29 of tokens"
+        return payload
+
+    real_payload = salvage_module._results_payload
+    monkeypatch.setattr(salvage_module, "_results_payload", _poison)
+
+    code = _merge_only(partial, out, _write_fixture(tmp_path))
+
+    assert code == salvage_module.QUARANTINE_EXIT
+    assert not out.exists(), "a refused artifact reached the published path"
+    # Outside the `results/*.json` glob that feeds `analyze`, exactly as run's quarantine is.
+    # Landing beside the published artifacts makes every later `analyze --curve` over that
+    # directory abort on the refusal.
+    assert list(out.parent.glob("*.json")) == []
+    quarantined = out.parent / "unpublished" / f"{out.stem}.json"
+    assert quarantined.exists(), "the re-scored work was discarded rather than quarantined"
+    recovered = json.loads(quarantined.read_text(encoding="utf-8"))
+    assert recovered["unpublished"] is True
+    assert "provider_metadata" in recovered["unpublished_reason"]
+
+
+def test_a_salvage_quarantine_that_cannot_be_written_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rescue that can itself throw the work away is not a rescue — salvage's included.
+
+    Hand-rolling the quarantine meant re-learning that lesson; it goes through run's hardened
+    `_quarantine`, which falls back from the subdirectory to a sibling and finally to stdout.
+    """
+    records = [*_conv_a_records(), _record("conv-b:0"), _record("conv-c:0")]
+    partial = _write_partial(tmp_path / f"{_STEM}{salvage_module.PARTIAL_SUFFIX}", records)
+    out = tmp_path / "results" / "salvaged.json"
+    out.parent.mkdir(parents=True)
+    (out.parent / "unpublished").write_text("not a directory", encoding="utf-8")
+
+    real_payload = salvage_module._results_payload
+
+    def _poison(*args: object, **kwargs: object) -> dict[str, Any]:
+        payload = real_payload(*args, **kwargs)  # type: ignore[arg-type]
+        payload["headline"] = "the whole arm for $7.29 of tokens"
+        return payload
+
+    monkeypatch.setattr(salvage_module, "_results_payload", _poison)
+
+    code = _merge_only(partial, out, _write_fixture(tmp_path))
+
+    assert code == salvage_module.QUARANTINE_EXIT
+    fallback = out.parent / f"{out.stem}.json.unpublished.json.txt"
+    assert fallback.exists() or (out.parent / "salvaged.unpublished.json.txt").exists(), (
+        f"the work was lost when the subdirectory was blocked: {list(out.parent.iterdir())}"
+    )
+
+
+def test_a_failed_publish_leaves_no_half_artifact_and_no_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Salvage already refuses to overwrite an existing `--out` (see `p.error` on it), so the
+    atomic write is not protecting a previous artifact — it is making sure a write that dies
+    partway leaves neither a half-written `--out` that reads as a real result, nor its temp."""
+    records = [*_conv_a_records(), _record("conv-b:0"), _record("conv-c:0")]
+    partial = _write_partial(tmp_path / f"{_STEM}{salvage_module.PARTIAL_SUFFIX}", records)
+    out = tmp_path / "salvaged.json"
+
+    real_write = Path.write_text
+
+    def _die_midway(self: Path, data: str, *a: object, **k: object) -> int:
+        if self.name.startswith("salvaged.json"):
+            real_write(self, data[:20], encoding="utf-8")  # truncated, like a full disk
+            raise OSError(28, "No space left on device")
+        return real_write(self, data, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _die_midway)
+
+    with pytest.raises(OSError, match="No space left"):
+        _merge_only(partial, out, _write_fixture(tmp_path))
+
+    assert not out.exists(), "a half-written artifact was left at the published path"
+    assert list(tmp_path.glob("*.tmp")) == [], "the atomic write left its temp behind"
+
+
+def test_an_unreadable_sibling_does_not_leak_an_absolute_path_either(tmp_path: Path) -> None:
+    """The scrubbing has to cover BOTH except branches.
+
+    Compared against the path's PARTS rather than `str(tmp_path)`: an OSError's repr doubles the
+    backslashes on Windows, so a substring check against the raw path silently misses a leak
+    that is plainly there.
+    """
+    from benchmarks.salvage import consistency_report
+
+    stem = "recall_openai-gpt-4o-mini_1conv_20260102T030405Z"
+    partial = tmp_path / f"{stem}.partial.jsonl"
+    partial.write_text("", encoding="utf-8")
+    (tmp_path / f"{stem}.json").mkdir()  # unreadable as a file -> OSError, not SystemExit
+
+    report = consistency_report([partial], "recall", "openai/gpt-4o-mini", 5)
+
+    notes = " ".join(report["unverified"])
+    assert "unreadable as a results artifact" in notes
+    assert tmp_path.name not in notes, f"an absolute path leaked into a published artifact: {notes}"

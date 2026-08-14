@@ -10,13 +10,37 @@ from typing import Any, Literal, Protocol
 
 from recall.reasoning_graph import ReasoningGraphNode, ReasoningGraphProjection
 
-PROPOSAL_SCHEMA_VERSION = 1
+#: Version 2 adds `declares_validity` and `declares_status` to `ProposedRelation`. Every
+#: proposal id is a hash over this constant, so the bump changes every id in existence — that
+#: is the point: an id minted under a vocabulary that could not express validity must not be
+#: mistaken for one minted under a vocabulary that can.
+PROPOSAL_SCHEMA_VERSION = 2
 DETERMINISTIC_PROVIDER_ID = "recall.deterministic"
 DETERMINISTIC_MODEL_ID = "rules"
 DETERMINISTIC_PROVIDER_REVISION = "session3-v1"
 
 ProposalStatus = Literal["candidate", "rejected", "requires_review"]
-ProposedRelation = Literal["supersedes", "contradicts", "same_entity", "references"]
+#: `declares_validity` and `declares_status` are NOT relations between two documents: they
+#: are a document asserting something about itself. Forcing them into `references` would put
+#: a false relation into an audit record, which is worse than having no record of them.
+ProposedRelation = Literal[
+    "supersedes",
+    "contradicts",
+    "same_entity",
+    "references",
+    "declares_validity",
+    "declares_status",
+]
+#: Single source of truth for the vocabulary. `_providers._checked_relation` validates against
+#: this rather than its own literal set, so the two cannot drift apart.
+PROPOSED_RELATIONS: tuple[ProposedRelation, ...] = (
+    "supersedes",
+    "contradicts",
+    "same_entity",
+    "references",
+    "declares_validity",
+    "declares_status",
+)
 ProviderFailureKind = Literal["timeout", "malformed_output", "wrong_cardinality", "provider_error"]
 PROVIDER_FAILURE_KINDS: tuple[ProviderFailureKind, ...] = (
     "timeout",

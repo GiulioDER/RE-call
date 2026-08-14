@@ -35,7 +35,7 @@ def test_proposal_package_preserves_public_imports_after_split() -> None:
 
     assert status == "candidate"
     assert relation == "supersedes"
-    assert PROPOSAL_SCHEMA_VERSION == 1
+    assert PROPOSAL_SCHEMA_VERSION == 2
     assert DETERMINISTIC_PROVIDER_ID == "recall.deterministic"
     assert "malformed_output" in PROVIDER_FAILURE_KINDS
 

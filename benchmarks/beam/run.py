@@ -61,7 +61,7 @@ from benchmarks.beam.prompts import (
     get_beam_nugget_judge_prompt,
 )
 from benchmarks.beam.systems import BEAM_TABLE, DEFAULT_TOP_K, BeamRecallSystem
-from benchmarks.llm import Completer, OpenRouterLLM
+from benchmarks.llm import Completer, OpenRouterLLM, RunAborted, is_terminal
 from benchmarks.run import _positive_int
 from benchmarks.usage import install_openai_meter
 from benchmarks.usage import reset as reset_usage
@@ -97,12 +97,17 @@ def _looks_like_refusal(answer: str) -> bool:
     return normalised.startswith(REFUSAL)
 
 
-def _parse_judge(raw: str) -> tuple[float, str]:
+def _parse_judge(raw: str) -> tuple[float | None, str]:
     """Pull ``{"score", "reason"}`` out of the judge's reply.
 
     A judge reply that cannot be parsed is NOT silently scored 0.0 — that would convert a harness
-    failure into evidence against whichever system happened to be judged. It returns a NaN score
-    and the raw text, and the caller counts it as an error that appears in the artifact.
+    failure into evidence against whichever system happened to be judged. It returns None and the
+    raw text, and the caller counts it as an error that appears in the artifact.
+
+    None rather than NaN, and that is a change: `json.dumps` writes NaN as a bare `NaN` token,
+    which is not valid JSON (jq, `JSON.parse` and Postgres jsonb all reject it), and this value
+    goes straight into `nugget_scores` and out to both the sidecar and the artifact. Every reader
+    of the score goes through `is_number`, which excludes None and NaN alike.
     """
     text = raw.strip()
     match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -112,7 +117,19 @@ def _parse_judge(raw: str) -> tuple[float, str]:
             return _clamp(float(obj.get("score", 0.0))), str(obj.get("reason", ""))
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
-    return float("nan"), text[:300]
+    return None, text[:300]
+
+
+def is_number(score: object) -> bool:
+    """Is `score` a real, finite-enough number to average?
+
+    Excludes both NaN (an unparseable judge reply) and None (a judge call that never returned).
+    A plain `score == score` NaN test does NOT exclude None, since `None == None` is True, and
+    `statistics.mean` raises on it — which is the trap that comes with using None to keep the
+    artifact JSON-valid. `bool` is excluded because it is an `int` subclass and a `True` here would
+    silently average as 1.0.
+    """
+    return isinstance(score, (int, float)) and not isinstance(score, bool) and score == score
 
 
 def judge_answer(
@@ -127,12 +144,36 @@ def judge_answer(
     scores: list[dict[str, Any]] = []
     errors = 0
     for nugget in question.rubric:
-        raw = judge(BEAM_JUDGE_SYSTEM_PROMPT, get_beam_nugget_judge_prompt(question.question, nugget, answer))
-        score, reason = _parse_judge(raw)
-        if score != score:  # NaN
+        try:
+            raw = judge(
+                BEAM_JUDGE_SYSTEM_PROMPT,
+                get_beam_nugget_judge_prompt(question.question, nugget, answer),
+            )
+        except Exception as exc:  # noqa: BLE001 - degraded to NaN below, or re-raised if terminal
+            # The SAME degradation an unparseable reply already gets, reached by a different
+            # route. `benchmarks/llm.py` now raises where it used to return "", and without this
+            # the exception left the loop, escaped `score_question`, and cost `_run_pool` the
+            # whole question — including the generated answer, the expensive half. One nugget
+            # failing is worth one NaN, which `usable` filters and `judge_errors` counts.
+            if _is_terminal(exc):
+                # Not quarantinable: a dead account fails every remaining nugget of every
+                # remaining question, and degrading it would fill the artifact with unscored rows
+                # and still report a completed run.
+                raise
+            # None, not NaN, and for the reason the `--no-judge` path below already gives:
+            # `json.dumps` emits a bare `NaN` token, which is not valid JSON, and `nugget_scores`
+            # goes straight into the sidecar and the artifact. Keeping the paid work is worth
+            # nothing if what gets kept cannot be parsed. One failed nugget out of two is enough.
+            score, reason = None, f"judge call failed: {type(exc).__name__}: {exc}"[:300]
+        else:
+            score, reason = _parse_judge(raw)
+        if not is_number(score):
             errors += 1
         scores.append({"nugget": nugget, "score": score, "reason": reason})
-    usable = [s["score"] for s in scores if s["score"] == s["score"]]
+    # ⚠️ `is_number`, not `s["score"] == s["score"]`. That NaN test admits None, because
+    # `None == None` is True, and `statistics.mean` then raises on it — so the obvious swap of NaN
+    # for None above would have turned a degraded nugget into a crash.
+    usable = [s["score"] for s in scores if is_number(s["score"])]
     return (statistics.mean(usable) if usable else float("nan")), scores, errors
 
 
@@ -202,7 +243,11 @@ def score_question(
         "abstained": _looks_like_refusal(answer),
         "retrieval_empty": not memories,
         "judged": judged,
-        "score": mean,
+        # `mean_number`, not `mean`. The raw value is NaN when every nugget failed, and
+        # `json.dumps` writes that as a bare `NaN` token which is not valid JSON. `aggregate`
+        # at the `scored = [...]` filter below already excludes non-numbers, so None is read
+        # exactly as NaN was.
+        "score": mean_number,
         "judgment": judgment,
         "nugget_scores": nuggets,
         "judge_errors": errors,
@@ -578,24 +623,24 @@ def _already_done(paths: list[Path] | None) -> tuple[list[dict[str, Any]], set[s
     return list(read.rows), set(read.ids)
 
 
-class RunAborted(RuntimeError):
-    """A condition that will fail every remaining question identically, so the run stops."""
+#: `RunAborted` is imported from `benchmarks.llm` at the top of this module rather than defined
+#: here. It moved to sit beside `is_terminal` once four drivers needed both, and importing the
+#: name keeps every existing `except RunAborted` and every `beam.RunAborted` reference bound to
+#: the same class.
 
 
-#: Substrings identifying a failure that is about the ACCOUNT, not about the question. Retrying
-#: these burns the task list producing nothing, and dropping them one-by-one produces a run that
-#: exits 0 with a clean-looking summary over whatever happened to succeed first.
-_TERMINAL_MARKERS = (
-    "402",           # OpenRouter: out of credits / max_tokens unaffordable
-    "401",           # bad or revoked key
-    "insufficient_quota",
-    "requires more credits",
-)
+def _is_terminal(exc: Exception) -> bool:
+    """A failure about the ACCOUNT, not about the question. Kept as a name because `_run_pool`
+    reads it twice, but the policy now lives in `benchmarks.llm` because four drivers need it.
 
-
-def _is_terminal(exc: BaseException) -> bool:
-    text = str(exc).lower()
-    return any(marker.lower() in text for marker in _TERMINAL_MARKERS)
+    This used to be a private tuple of substrings matched against the rendered exception, which
+    had false positives on our OWN errors in both directions: `max_tokens=1402` contains "402" and
+    so did any provider-chosen `finish_reason` carrying it, so one truncation at an unlucky
+    ceiling, or one string the provider picked, aborted the whole run. `benchmarks.llm.is_terminal`
+    excludes our own types, treats a numeric status as decisive, and keeps the markers only for
+    transports that carry no status.
+    """
+    return is_terminal(exc)
 
 
 def _run_pool(tasks: list[Any], work: Any, workers: int) -> list[Any]:
@@ -941,9 +986,11 @@ def _main() -> None:
                 "generated_answer": row["generated_answer"],
                 "abstained": _looks_like_refusal(row["generated_answer"]),
                 "retrieval_empty": (row["memories_evaluated"] or 0) == 0,
-                "score": mean,
+                # Same NaN-to-None rule as `score_question`; `is_number` rather than a
+                # `mean == mean` NaN test, because that test admits None.
+                "score": mean if is_number(mean) else None,
                 "published_score": row["published_score"],
-                "judgment": ("PASS" if mean >= 0.5 else "FAIL") if mean == mean else "ERROR",
+                "judgment": ("PASS" if mean >= 0.5 else "FAIL") if is_number(mean) else "ERROR",
                 "nugget_scores": nuggets,
                 "judge_errors": errors,
             }

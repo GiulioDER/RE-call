@@ -39,6 +39,149 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     return {}, text  # unclosed block: treat the whole text as body
 
 
+# --- writing the block back, on bytes ------------------------------------------------------------
+#
+# These live HERE, beside the parser, rather than in either module that writes memos. Both writers
+# — `recall/fix.py`, declaring an edge a memo already states in prose, and `recall/rewrite.py`,
+# writing back a reviewed promotion — edit the block this file defines, and every byte-level defect
+# either of them has had came from disagreeing with `parse_frontmatter` about what a line is or
+# where a BOM ends. Sharing the definitions is the only version of that fix which stays fixed.
+#
+# `recall/fix.py` is reached from `recall lint --fix`, which `recall/cli.py` documents as a "pure
+# filesystem check — no embedder, no DB". This module imports nothing but `datetime`, so it can be
+# the shared home; `recall/rewrite.py` cannot, because it pulls in `recall.trust` and with it the
+# whole retrieval stack.
+
+BOM = b"\xef\xbb\xbf"
+
+
+def split_bom(raw: bytes) -> tuple[bytes, bytes]:
+    """`(leading BOMs, the rest)`, counting them the way `parse_frontmatter` does.
+
+    `parse_frontmatter` uses ``lstrip("\\ufeff")``, which removes ANY number. A writer that removed
+    exactly one saw the second BOM sitting ahead of the fence, concluded the file had no
+    frontmatter and prepended a fresh block — orphaning the authored `valid_until` into the body,
+    where the trust layer can no longer read it, so an expired memo silently became live again.
+    """
+    end = 0
+    while raw.startswith(BOM, end):
+        end += len(BOM)
+    return raw[:end], raw[end:]
+
+
+def split_lines(data: bytes) -> list[bytes]:
+    """Split on CRLF, LF or a lone CR, keeping terminators. Universal newlines, done on bytes.
+
+    The boundary has to match how the corpus is READ, which is not the same as how
+    `parse_frontmatter` splits the string it is handed. Every reader in the package —
+    `lint.py`, `index.py`, `check.py`, `semantic_lint.py` and `fix.py`'s own `propose_fixes` —
+    calls `Path.read_text` with the default ``newline=None``, so Python translates a lone CR to LF
+    *before* `parse_frontmatter` ever runs. A CR-terminated memo therefore does have frontmatter
+    as far as recall is concerned.
+
+    An LF-only split disagreed with that: it read such a file as one long line, found no block,
+    and prepended a SECOND one — orphaning the authored `valid_until` into the body, where the
+    trust layer cannot see it, so a memo expired since 2020 silently went live again.
+
+    `bytes.splitlines` is exactly that boundary and no more: unlike `str.splitlines` it does NOT
+    break on VT, FF, the ASCII separators or U+0085, which is what makes it safe here — universal
+    newlines does not translate those either, so the two agree. A hand-rolled loop lived here
+    briefly on the mistaken belief that it had to; it was verified equivalent to this call across
+    every candidate separator and 20 000 random byte strings, and a hand-rolled parser nobody
+    needs is just somewhere else for a bug to live.
+
+    `keepends` is the other half: rejoining with ``b"".join`` reproduces the input exactly.
+    """
+    return data.splitlines(keepends=True)
+
+
+def dominant_newline(raw: bytes) -> bytes:
+    """The file's line terminator, taken from its first line rather than from the platform."""
+    for index, char in enumerate(raw):
+        if char == 0x0D:
+            return b"\r\n" if raw[index + 1 : index + 2] == b"\n" else b"\r"
+        if char == 0x0A:
+            return b"\n"
+    return b"\n"
+
+
+def line_terminator(line: bytes, default: bytes) -> bytes:
+    """A line's own ending, so an insertion beside it matches it exactly."""
+    if line.endswith(b"\r\n"):
+        return b"\r\n"
+    if line.endswith(b"\n"):
+        return b"\n"
+    if line.endswith(b"\r"):
+        return b"\r"
+    return default  # the final line of a file with no terminator
+
+
+def is_fence(line: bytes) -> bool:
+    """Whether `line` is a `---` frontmatter fence, judged the way `parse_frontmatter` judges it.
+
+    Compared as TEXT, because `parse_frontmatter` uses `str.strip`, which removes NBSP,
+    U+3000 and the rest of Unicode's whitespace, while `bytes.strip` removes ASCII only. A memo
+    whose fence picked up a trailing NBSP — which is what pasting out of a browser or a word
+    processor does — was seen as a block by the parser and as prose by the byte writer, which then
+    prepended a second block and orphaned the real one.
+    """
+    return line.decode("utf-8", "replace").strip() == "---"
+
+
+def has_line_break(text: str) -> bool:
+    """True when `text` holds anything ``str.splitlines()`` treats as the end of a line.
+
+    Deliberately NOT a hand-listed subset, and deliberately not ``"\\n" in text``. ``\\n`` and
+    ``\\r`` are the notion of a line break `parse_frontmatter` uses, and that notion is too narrow
+    to protect the file: ``str.splitlines()`` honours eight more characters (``\\x0b \\x0c \\x1c
+    \\x1d \\x1e \\x85`` and U+2028, U+2029), so a value carrying one of those is invisible to the
+    parser while still splitting the written line for every reader that uses ``splitlines()``.
+    `recall/context.py:document_title` is one such reader, and it decides a memo's indexed title.
+
+    Phrasing it as "the text must survive ``splitlines()`` unchanged" keeps it correct for any
+    reader on that boundary rather than for a list someone has to remember to extend. Comparing
+    the JOINED result also catches a TRAILING separator, which a ``len(...) > 1`` test misses.
+    """
+    return text != "".join(text.splitlines())
+
+
+def insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
+    """`key: value` into the frontmatter block, adding a block if the file has none.
+
+    Refuses a `value` carrying a line break rather than writing a line that splits. The value
+    reaches here from a FILENAME (see `recall/fix.py`), so it is attacker-controlled wherever a
+    corpus is not entirely hand-authored, and a separator in it writes a second key that the
+    parser cannot see but `splitlines()` readers can. `propose_fixes` reports that case before it
+    gets this far; this is the backstop for any other caller that builds a `Proposal` itself.
+
+    Bytes in, bytes out. Decoding to `str`, splitting on ``"\\n"`` and re-encoding is how a memo
+    loses its BOM and has every line ending in it rewritten — both invisible when the result is
+    read back through `read_text`, and both present in the user's next diff. The BOM prefix is
+    carried across untouched and the inserted line borrows the closing fence's own terminator, so
+    a CRLF memo gains a CRLF line.
+
+    The search for the closing fence is unbounded, and deliberately so. A memo whose body contains
+    a `---` thematic break within what looks like a block gets the key written next to prose,
+    which is startling — but `parse_frontmatter` makes exactly the same reading, and a writer that
+    disagreed with the parser would put the key somewhere the trust layer cannot see it and
+    rewrite it again on every run. The parser defines what the block is; this follows it. Tighten
+    both together or neither.
+    """
+    if has_line_break(value):
+        raise ValueError(f"{key} value {value!r} contains a line break and would split the block")
+    bom, body = split_bom(raw)
+    newline = dominant_newline(body)
+    entry = f"{key}: {value}".encode("utf-8")
+    lines = split_lines(body)
+    if lines and is_fence(lines[0]):
+        for index, line in enumerate(lines[1:], start=1):
+            if is_fence(line):
+                lines.insert(index, entry + line_terminator(line, newline))
+                return bom + b"".join(lines)
+        # unclosed block — treat as no frontmatter rather than corrupt it further
+    return bom + b"---" + newline + entry + newline + b"---" + newline + body
+
+
 def _parse_date(value: str, key: str) -> datetime:
     try:
         d = datetime.strptime(value, "%Y-%m-%d")

@@ -81,7 +81,7 @@ from recall.reasoning_proposals import (
     proposal_to_graph_edge,
 )
 
-__version__ = "0.9.2"
+__version__ = "0.9.4"
 
 __all__ = [
     "AnswerEnvelope",

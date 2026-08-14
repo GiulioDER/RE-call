@@ -48,5 +48,9 @@ trusted metadata.
 Do not broaden beta from these fields alone. Before broader beta, run heldout evaluation with
 nearest neighbor, shuffled edge, removed edge, and unsupported inference controls. Report citation
 precision, unsupported claim rate, correct abstention, false abstention, proposal precision and
-recall, provider failure rates, token counts, latency, and monetary cost only when the provider
-metadata contract can audit the claim.
+recall, proposal referral rate, provider failure rates, token counts, latency, and monetary cost
+only when the provider metadata contract can audit the claim.
+
+Report proposal precision and recall per relation, and report the referral rate beside them. An arm
+that refers everything to review scores `NaN` precision, not a high one, and an arm that proposes
+nothing scores `NaN` rather than `0.0`.

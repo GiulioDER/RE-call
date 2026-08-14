@@ -10,6 +10,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* Added model backed truth extraction: `recall/truth_extraction/`, turning memo prose into
+  structured, quoted claims behind a refusing validation ladder. Off unless
+  `RECALL_TRUTH_EXTRACTION=1`, runs on the ingest path only, never the query path. The
+  extraction engine is a port with two implementations, a deterministic rules reference and an
+  OpenAI compatible model engine (`pip install "recall-rag[extract]"`); whatever an engine returns
+  clears the same ladder, so a model gains no ability to skip a rung.
+* Added `recall extract run|show`, which reads a corpus and writes nothing, and
+  `recall rewrite plan|apply|reject|verify`, which declares reviewed claims in corpus
+  frontmatter. `recall rewrite apply` is a dry run by default and requires `--reviewer` and
+  `--note` as argparse requirements, so the named human gate fires before any code runs.
+* Added the `recall_rewrite_plan` MCP tool, read only. There is deliberately no
+  `recall_rewrite_apply`: the MCP client is the model, and a reviewer id it can type is a field
+  rather than a person. `recall_reasoning_proposals` and `recall reasoning proposals` gain
+  `include_extracted`, defaulting to off so existing behaviour is byte identical.
+
+### Changed
+
+* **BREAKING: `PROPOSAL_SCHEMA_VERSION` moved from 1 to 2**, which rewrites **every** `ip_`
+  proposal id in existence, including the checked in `results/reasoning_session3_proposals.json`.
+  Version 2 adds `declares_validity` and `declares_status` to `ProposedRelation`, because a
+  document asserting something about ITSELF is not a relation between two documents and forcing
+  it into `references` would put a false relation into an audit record. The bump is the point:
+  an id minted under a vocabulary that could not express validity must not be mistaken for one
+  minted under a vocabulary that can. Anyone holding stored `ip_` ids must re-derive them.
+
+### Fixed
+
+* MTRAG Task B and C generation no longer scores an answer that the token ceiling cut off.
+  `benchmarks/mtrag/generation.py` sent `--max-tokens` (512 by default) and never read
+  `finish_reason`, so a truncated completion was written to the submission and judged as if the
+  system had produced it. It now raises `CompletionTruncated`, unretried because the same ceiling
+  cuts every further attempt, and the existing per-task quarantine keeps the task out of the
+  submission and in the failures log.
+
+## [0.9.4] (2026-08-12)
+
+Released straight from 0.9.2. 0.9.3 is deliberately skipped and will never exist.
+
+Most of this release came from walking the documented quickstart on a clean machine as a new
+user would, which found five defects on the path every new user takes.
+
+### Added
+
+* `recall setup` offers bge-base (768 dims) and bge-large (1024 dims) beside bge-small, each
+  gated on having room for its own weights rather than on the shared download floor.
+* `recall setup` refuses an embedder whose vector width does not match the table it will write
+  to, naming the schema command that fixes it. Previously the mismatch surfaced on the first
+  write, after the model had downloaded and the corpus had been read.
+* `recall setup` lists retrieval options this machine cannot run yet, marked `(not installed
+  yet)`, and prints what to install when one is chosen. They were previously hidden, which made
+  the feature look absent and left no way to ask for it.
+* `recall setup` scaffolds a `CLAUDE.md` and a `memory/` directory for the project, and indexes
+  that directory once it exists.
 * Added provider execution metadata for reasoning diagnostics and benchmark artifacts, including
   provider id, model id, model revision when available, token counts, latency, and monetary cost
   when providers expose it.
@@ -25,6 +78,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 * Ported the MCP server to MCP Python SDK 2.x and raised the `mcp` extra floor to `mcp>=2,<3`.
 * Raised the development Ruff range to `ruff>=0.16,<0.17` while keeping the prior lint baseline
   explicit in `pyproject.toml`.
+* The shipped calibration sample now holds twenty answerable and twenty unanswerable queries.
+  It previously held fourteen and five, below the certification floor, so following the
+  documented path produced an explicitly uncertified threshold.
+* The quickstart no longer assumes a clone. The compose file is inline, so `pip install` alone is
+  enough to follow it, and the sample corpus that ships beside `recall/eval/queries.json` is now
+  pointed at rather than left for the reader to discover.
+
+### Fixed
+
+* The quickstart's schema command failed on every fresh database. It passed a custom `--table`,
+  but global migrations must be applied through the default target first, so a new user following
+  the README exactly got `SchemaTooOld` from inside the library.
+* The terminal video renderer writes its GIF before attempting the MP4, so a missing optional
+  dependency no longer discards an asset that never needed it, and reports which file it did not
+  write and why.
 
 ## [0.9.2] (2026-08-10)
 
