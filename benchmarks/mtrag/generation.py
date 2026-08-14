@@ -452,15 +452,48 @@ def already_done(path: Path) -> set[str]:
     if not path.exists():
         return set()
     done: set[str] = set()
-    with path.open(encoding="utf-8") as handle:
+    # `errors="surrogateescape"` so a checkpoint torn mid-character is malformed rather than
+    # FATAL. `main` writes with `ensure_ascii=False`, so every non-ASCII answer is raw multi-byte
+    # UTF-8 and a kill during the per-row flush can split one. Decoding strictly raised
+    # `UnicodeDecodeError`, a `ValueError`, which no caller catches.
+    with path.open(encoding="utf-8", errors="surrogateescape") as handle:
         for line in handle:
             try:
                 row = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 continue
             if isinstance(row, dict) and "task_id" in row and submission_answer(row):
                 done.add(str(row["task_id"]))
     return done
+
+
+def ensure_final_newline(path: Path) -> bool:
+    """Terminate the last line if it is not, so the next appended row starts its own. Returns
+    whether a byte was added.
+
+    ⚠️ On EVERY resume, not only the ones that repair something. A run killed mid-flush leaves a
+    last line without its terminator, and `main` then appends onto the end of it: two rows become
+    one unparseable line, losing the answer already paid for and the one just paid for.
+    `check_submission_size` counts bytes rather than rows, so the run still exits 0. It does not
+    self-heal either, because the glued line reads as malformed on every later resume.
+
+    A pure append of one byte, which is why it needs no staging, no atomicity window and no
+    concurrency check: it cannot truncate, and a second run appending a whole row concurrently
+    still lands on its own line.
+
+    A bare CR does not count. It terminates a line for Python's own readers, which is why this went
+    unnoticed, but not for anything that splits on LF: the official `format_checker.py`, `jq`,
+    `pandas.read_json(lines=True)`.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    with path.open("rb") as handle:
+        handle.seek(-1, os.SEEK_END)
+        if handle.read(1) == b"\n":
+            return False
+    with path.open("ab") as handle:
+        handle.write(b"\n")
+    return True
 
 
 def drop_answerless_rows(path: Path, task_ids: set[str]) -> int:
@@ -510,11 +543,11 @@ def drop_answerless_rows(path: Path, task_ids: set[str]) -> int:
     # `newline=""` so the lines arrive with their own terminators intact. Universal-newline mode
     # strips the CR before the line is kept, which on Windows silently rewrote every CRLF row that
     # `main` had appended into LF, and split any torn line containing a bare CR into two.
-    with path.open(encoding="utf-8", newline="") as handle:
+    with path.open(encoding="utf-8", newline="", errors="surrogateescape") as handle:
         for line in handle:
             try:
                 row = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 kept.append(line)
                 continue
             answerless = (
@@ -536,7 +569,10 @@ def drop_answerless_rows(path: Path, task_ids: set[str]) -> int:
     # line without one glues the next appended row onto it: two rows become one unparseable line,
     # losing both the kept answer and the one just paid for, and it does not self-heal, because the
     # glued line reads as malformed on every later resume.
-    if kept and not kept[-1].endswith(("\n", "\r")):
+    # An LF specifically. A bare CR terminates a line for Python's own readers, which is why this
+    # went unnoticed, but not for anything that splits on LF: the official `format_checker.py`,
+    # `jq`, `pandas.read_json(lines=True)`. A line already ending "\r\n" passes untouched.
+    if kept and not kept[-1].endswith("\n"):
         kept[-1] += "\n"
     if path.stat().st_size != size_before:
         raise CheckpointChanged(
@@ -546,10 +582,21 @@ def drop_answerless_rows(path: Path, task_ids: set[str]) -> int:
         )
     tmp = path.with_name(f"{path.name}.{os.getpid()}.pruned")
     try:
-        with tmp.open("w", encoding="utf-8", newline="") as handle:
+        # `surrogateescape` on BOTH sides or the round trip is not one: it is the only error
+        # handler that writes the undecodable bytes back exactly as they were read.
+        with tmp.open("w", encoding="utf-8", newline="", errors="surrogateescape") as handle:
             handle.write("".join(kept))
             handle.flush()
             os.fsync(handle.fileno())
+        # Re-checked immediately before the swap. The first check closed the READ window and left
+        # this one open, and this is the slow half: it spans the whole write and the fsync. This
+        # narrows the race to the `os.replace` call itself; only a lock would close it, and nothing
+        # under `benchmarks/` has one.
+        if path.stat().st_size != size_before:
+            raise CheckpointChanged(
+                f"{path} changed size while the repair was being written, which means another run "
+                "is appending to it. Give each run its own --out."
+            )
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -942,14 +989,14 @@ def main(argv: list[str] | None = None) -> int:
     failed: list[str] = []
     consecutive = 0
     failures_path = args.out.with_suffix(args.out.suffix + ".failed.jsonl")
-    # Rewritten, not appended across runs: this file describes the run that just happened. Appending
-    # would leave a task that failed once and later succeeded sitting in the log forever, so the
-    # file would over-report while the "done" event under-reported, and the two would disagree.
-    failures_path.unlink(missing_ok=True)
     # Before the file is opened for APPEND, and only for the tasks about to be regenerated. An
     # artifact written before `generate_one` grew its guards can hold rows with an empty
     # `predictions` text; `already_done` no longer counts those as finished, so without this the
     # regenerated answer would land BESIDE the empty row rather than replace it.
+    #
+    # AHEAD of the failure log being cleared, so a run that refuses to proceed has not already
+    # destroyed the previous run's record of what failed. Under the concurrent-run case this guard
+    # exists for, that log belongs to the other run.
     try:
         repaired = drop_answerless_rows(args.out, {str(t["task_id"]) for t in pending})
     except (OSError, CheckpointChanged) as exc:
@@ -962,7 +1009,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps({"event": "repair_failed", "output": str(args.out),
                         "error_type": type(exc).__name__, "error": str(exc), "note":
                         "the existing rows carrying no answer could not be removed, so nothing was "
-                        "appended; the output is unchanged and no task was attempted"}),
+                        "appended; the predictions file is unchanged and no task was attempted"}),
             flush=True,
         )
         return 1
@@ -973,6 +1020,13 @@ def main(argv: list[str] | None = None) -> int:
                         "guards; they are regenerated below rather than left beside the new ones"}),
             flush=True,
         )
+    # Independent of the repair: an unterminated last line glues the first appended row onto it,
+    # and the overwhelmingly common resume repairs nothing at all.
+    ensure_final_newline(args.out)
+    # Rewritten, not appended across runs: this file describes the run that just happened. Appending
+    # would leave a task that failed once and later succeeded sitting in the log forever, so the
+    # file would over-report while the "done" event under-reported, and the two would disagree.
+    failures_path.unlink(missing_ok=True)
     with args.out.open("a", encoding="utf-8") as handle:
         for position, task in enumerate(pending, 1):
             try:

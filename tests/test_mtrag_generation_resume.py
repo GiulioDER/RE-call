@@ -235,6 +235,168 @@ def test_a_file_whose_last_line_lacks_a_newline_does_not_glue_the_next_row_onto_
     assert [r["task_id"] for r in rows] == ["keep<::>1", "new<::>1"]
 
 
+def test_an_ordinary_resume_terminates_the_last_line_even_with_nothing_to_drop(
+    tmp_path, monkeypatch
+) -> None:
+    """⚠️ The gluing is reachable on the path that repairs NOTHING, which is every ordinary resume.
+
+    An earlier revision put the terminator guarantee inside `drop_answerless_rows`, after its
+    `if not dropped: return 0`, so a checkpoint whose last line lacks a newline was only ever fixed
+    when something else happened to need fixing. A run killed mid-flush leaves exactly that shape,
+    and `main` then appends onto the end of the last line: two rows become one unparseable line,
+    losing the answer already paid for and the one just paid for, and `check_submission_size` counts
+    bytes rather than rows so the run still exits 0.
+    """
+    tasks = [_task(task_id="a<::>1"), _task(task_id="b<::>1")]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+    _resumable(out, _row("a<::>1", "already paid for").rstrip("\n"))
+
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+    monkeypatch.setattr(gen, "generate_one", lambda *a, **k: "the new answer")
+
+    rc = gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+
+    assert rc == 0
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert [r["task_id"] for r in rows] == ["a<::>1", "b<::>1"], (
+        "the appended row must not be glued onto an unterminated last line"
+    )
+
+
+@pytest.mark.parametrize(
+    "tail, added",
+    [
+        pytest.param(b"", True, id="no-terminator"),
+        pytest.param(b"\r", True, id="bare-cr-is-not-a-terminator"),
+        pytest.param(b"\n", False, id="already-terminated"),
+        pytest.param(b"\r\n", False, id="crlf-is-terminated"),
+    ],
+)
+def test_the_resume_terminator_accepts_only_a_newline(tmp_path, tail: bytes, added: bool) -> None:
+    """`ensure_final_newline` runs on every resume, including the ones that repair nothing, so it
+    is the guard that decides whether the next appended row starts its own line. A bare CR passes
+    for Python's readers and fails for everything that splits on LF, so accepting it here would
+    leave the glued row for exactly the tools that read the submission."""
+    out = tmp_path / "preds.jsonl"
+    body = _row("a<::>1", "real").rstrip("\n").encode("utf-8")
+    out.write_bytes(body + tail)
+
+    assert gen.ensure_final_newline(out) is added
+    assert out.read_bytes() == body + tail + (b"\n" if added else b"")
+
+
+def test_the_resume_terminator_leaves_an_absent_or_empty_file_alone(tmp_path) -> None:
+    """The first run of a command has no output, and an empty one has no last line to terminate.
+    Appending a newline to either would create a blank first line in the submission."""
+    assert gen.ensure_final_newline(tmp_path / "absent.jsonl") is False
+    empty = tmp_path / "empty.jsonl"
+    empty.write_bytes(b"")
+
+    assert gen.ensure_final_newline(empty) is False
+    assert empty.read_bytes() == b""
+
+
+def test_a_last_line_ending_in_a_bare_cr_still_gets_a_newline(tmp_path) -> None:
+    """A lone CR terminates a line for Python's own readers, which is why nothing noticed, but not
+    for anything that splits on LF: the official `format_checker.py`, `jq`, `pandas`. Accepting it
+    as a terminator leaves the next appended row on the same line for every one of those."""
+    out = tmp_path / "preds.jsonl"
+    out.write_bytes(_row("keep<::>1", "real").rstrip("\n").encode("utf-8") + b"\r"
+                    + _row("redo<::>1", "").encode("utf-8"))
+
+    assert gen.drop_answerless_rows(out, {"redo<::>1"}) == 1
+    assert out.read_bytes().endswith(b"\n")
+    assert len([b for b in out.read_bytes().split(b"\n") if b.strip()]) == 1
+
+
+def test_a_checkpoint_torn_mid_character_does_not_kill_the_resume(tmp_path, monkeypatch) -> None:
+    """⚠️ `main` writes with `ensure_ascii=False`, so every non-ASCII answer is raw multi-byte UTF-8
+    on disk and a kill during the per-row flush can split one. Decoding strictly raised
+    `UnicodeDecodeError`, which is a `ValueError` and so slips past the `OSError` handler: an
+    842-task resume died with a raw traceback before a single task was attempted, from the very
+    shape `already_done` documents as tolerated."""
+    out = tmp_path / "preds.jsonl"
+    whole = json.dumps(
+        {"task_id": "a<::>1", "predictions": [{"text": "Café Busch"}]}, ensure_ascii=False
+    ).encode("utf-8")
+    torn = json.dumps(
+        {"task_id": "b<::>1", "predictions": [{"text": "Café"}]}, ensure_ascii=False
+    ).encode("utf-8")
+    out.write_bytes(whole + b"\n" + torn[: torn.index("é".encode("utf-8")) + 1])
+
+    assert gen.already_done(out) == {"a<::>1"}, "the intact row must still be readable"
+    assert gen.drop_answerless_rows(out, {"a<::>1", "b<::>1"}) == 0
+    assert out.read_bytes().endswith(torn[: torn.index("é".encode("utf-8")) + 1]), (
+        "the undecodable tail must round-trip byte for byte rather than being mangled or dropped"
+    )
+
+
+def test_undecodable_bytes_survive_a_rewrite_that_actually_happens(tmp_path) -> None:
+    """The arm above proves the torn line is READ without dying; this one proves it is WRITTEN back
+    unchanged, which is a separate claim and the one that needs `surrogateescape` on the write. It
+    only bites when something else in the file is dropped, since nothing is rewritten otherwise:
+    without the matching handler the write raises `UnicodeEncodeError` on the surrogates the read
+    produced, so a repair would die on a file it had already decided to change."""
+    out = tmp_path / "preds.jsonl"
+    torn = json.dumps(
+        {"task_id": "c<::>1", "predictions": [{"text": "Café"}]}, ensure_ascii=False
+    ).encode("utf-8")
+    torn = torn[: torn.index("é".encode("utf-8")) + 1]
+    out.write_bytes(_row("redo<::>1", "").encode("utf-8") + torn)
+
+    assert gen.drop_answerless_rows(out, {"redo<::>1"}) == 1
+    assert out.read_bytes() == torn + b"\n", (
+        "the undecodable tail must come back byte for byte, with only its terminator added"
+    )
+
+
+def test_an_unexpected_failure_in_the_repair_is_not_reported_as_a_clean_refusal(
+    tmp_path, monkeypatch
+) -> None:
+    """⚠️ Pins the NARROWNESS of the handler, not just the path. Widened to `Exception` it would
+    report a `NameError` or an `AttributeError` inside the repair as "the predictions file is
+    unchanged and no task was attempted", which is a claim it cannot make about a fault it does not
+    understand. Those must surface."""
+    tasks = [_task(task_id="b<::>1")]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+    _resumable(out, _row("b<::>1", ""))
+
+    def broken(*a, **k):
+        raise ValueError("a defect in the repair itself, not a filesystem or a second run")
+
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+    monkeypatch.setattr(gen, "drop_answerless_rows", broken)
+
+    with pytest.raises(ValueError):
+        gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+
+
+def test_a_row_appended_during_the_write_is_not_swapped_away(tmp_path, monkeypatch) -> None:
+    """The size check closed the read window and left the write window open, and the write window
+    is the slow half: it contains the whole file write and the fsync. A row appended there was
+    still destroyed by the swap, silently."""
+    out = tmp_path / "preds.jsonl"
+    out.write_text(_row("redo<::>1", "") + _row("keep<::>1", "real"), encoding="utf-8")
+    real_fsync = gen.os.fsync
+
+    def append_during_the_write(fd):
+        if not getattr(append_during_the_write, "done", False):
+            append_during_the_write.done = True
+            with out.open("a", encoding="utf-8") as handle:
+                handle.write(_row("paid<::>1", "an answer a second run just paid for"))
+        return real_fsync(fd)
+
+    monkeypatch.setattr(gen.os, "fsync", append_during_the_write)
+
+    with pytest.raises(gen.CheckpointChanged):
+        gen.drop_answerless_rows(out, {"redo<::>1"})
+
+    monkeypatch.undo()
+    assert "paid<::>1" in out.read_text(encoding="utf-8")
+
+
 def test_a_row_with_no_task_id_is_never_matched_by_a_scope_entry(tmp_path) -> None:
     """`str(row.get("task_id"))` renders a missing key as the string "None", so a task whose id is
     null, which `load_generation_tasks` permits since it only checks the key is present, put "None"
@@ -290,7 +452,10 @@ def test_the_scratch_file_cannot_collide_with_a_sibling_or_another_run(tmp_path,
     assert len(seen) == 1
     staged = seen[0]
     assert str(gen.os.getpid()) in staged, "two concurrent runs must not stage into one path"
-    assert not staged.endswith(".failed.jsonl") and not staged.endswith(".manifest.json")
+    # Named explicitly rather than by suffix: a PID-suffixed name cannot END with either sibling's
+    # suffix, so an `endswith` pair here could never fail and would only look like a check.
+    siblings = {str(out.with_suffix(out.suffix + s)) for s in (".failed.jsonl", ".manifest.json")}
+    assert staged not in siblings, "staging must not write over a sibling the run maintains"
 
 
 def test_a_file_that_grew_while_being_read_is_not_rewritten_over(tmp_path, monkeypatch) -> None:
@@ -363,6 +528,51 @@ def test_a_repair_that_cannot_be_written_stops_the_run_instead_of_tracebacking(
 
     assert rc == 1, "a run that could not repair its checkpoint must not report success"
     assert out.read_text(encoding="utf-8") == _row("b<::>1", ""), "the checkpoint is untouched"
+
+
+def test_a_concurrent_run_stops_this_one_by_name_rather_than_by_accident(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Pins the handler's NARROWNESS as well as the path. Widening the except to `Exception` left
+    every arm green while turning a `NameError` inside the repair into "the output is unchanged",
+    and dropping `CheckpointChanged` from the tuple left the concurrent-run case tracebacking."""
+    tasks = [_task(task_id="b<::>1")]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+    _resumable(out, _row("b<::>1", ""))
+    stale = out.with_suffix(out.suffix + ".failed.jsonl")
+    stale.write_text('{"task_id": "from the previous run"}\n', encoding="utf-8")
+
+    # Seamed on `fsync`, which only `drop_answerless_rows` calls. Patching `json.loads` would fire
+    # during `already_done` earlier in `main`, so the growth would be inside the size the repair
+    # then measures and the check could not see it: the test would pass for the wrong reason.
+    real_fsync = gen.os.fsync
+
+    def append_during_the_repair(fd):
+        if not getattr(append_during_the_repair, "done", False):
+            append_during_the_repair.done = True
+            with out.open("a", encoding="utf-8") as handle:
+                handle.write(_row("paid<::>1", "a second run's answer"))
+        return real_fsync(fd)
+
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+    monkeypatch.setattr(gen, "generate_one", lambda *a, **k: "an answer")
+    monkeypatch.setattr(gen.os, "fsync", append_during_the_repair)
+
+    rc = gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+    monkeypatch.undo()
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    reported = [e for e in events if e.get("event") == "repair_failed"]
+    assert rc == 1
+    assert reported and reported[0]["error_type"] == "CheckpointChanged", (
+        "the operator's fix is a separate --out, which only this type says"
+    )
+    assert "paid<::>1" in out.read_text(encoding="utf-8"), "the other run's answer must survive"
+    assert stale.exists(), (
+        "a run that refuses to touch the predictions must not have already deleted the previous "
+        "run's failure log on its way to refusing"
+    )
 
 
 def test_a_rerun_repairs_an_artifact_written_before_the_guards(tmp_path, monkeypatch) -> None:
