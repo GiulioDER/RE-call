@@ -123,7 +123,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from benchmarks.llm import CompletionTruncated, EmptyCompletion, _safe_reason, _shape_note
+from benchmarks.llm import (
+    CompletionTruncated,
+    EmptyCompletion,
+    NoCompletionChoices,
+    _safe_reason,
+    _shape_note,
+)
 from recall._chat_content import assistant_text
 
 # Private on purpose, and imported rather than reimplemented: there is one definition in this
@@ -478,10 +484,25 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             response = client.chat.completions.create(
                 model=model, messages=messages, max_tokens=max_tokens, temperature=0.0
             )
-            # Read once. It was indexed three times below, and the empty-`choices` guard that
-            # `benchmarks/llm.py` has is still missing here (see the branch note in the module
-            # docstring), so this at least keeps the three reads from disagreeing.
-            choice = response.choices[0]
+            # Read the list ONCE, and defensively. OpenRouter answers 200 with an empty `choices`
+            # array when the upstream it routed to faults, and indexing it blind raised
+            # `IndexError: list index out of range` — a message naming a list operation rather
+            # than the provider, which is what an operator found in `.failed.jsonl`.
+            #
+            # ⚠️ `NoCompletionChoices` is TRANSIENT, unlike the two refusals below it, and that is
+            # why it is absent from both `PERMANENT_ERROR_NAMES` and the
+            # `except (CompletionTruncated, EmptyCompletion): raise` tuple. This loop retries
+            # anything not named permanent, which is the behaviour wanted: the request is well
+            # formed and a re-route can serve it. `benchmarks/llm.py` classifies the same type the
+            # same way in `TRANSIENT_ERRORS`, so there is one answer to this question repo-wide.
+            choices = response.choices
+            if not choices:
+                raise NoCompletionChoices(
+                    "the provider returned a 200 with an empty `choices` list, so there is no "
+                    "completion to read. This is an upstream fault on the provider's side, not a "
+                    "property of the request."
+                )
+            choice = choices[0]
             # Absence is not evidence: a provider that omits the field is not reporting truncation,
             # and refusing on a missing attribute would fail every task on such a provider.
             reason = getattr(choice, "finish_reason", None)
