@@ -6,7 +6,12 @@ from collections.abc import Callable
 from typing import Protocol
 
 from recall._chat_content import assistant_text
-from recall.embeddings import _is_transient, _probe, retry_with_backoff
+from recall.embeddings import (
+    NonTransientError,
+    _is_transient,
+    _probe,
+    retry_with_backoff,
+)
 from recall.provider_metadata import ProviderMetadata
 
 #: The injected-LLM seam: (system_prompt, user_prompt) -> completion text. Everything downstream
@@ -27,7 +32,7 @@ Completer = Callable[[str, str], str]
 DEFAULT_MAX_TOKENS = 16384
 
 
-class CompletionTruncated(RuntimeError):
+class CompletionTruncated(NonTransientError, RuntimeError):
     """A completion stopped because it hit `max_tokens` rather than finishing.
 
     Raised rather than returned, because the alternative is worse than the error: a truncated
@@ -47,7 +52,7 @@ class CompletionTruncated(RuntimeError):
     """
 
 
-class EmptyCompletion(RuntimeError):
+class EmptyCompletion(NonTransientError, RuntimeError):
     """A completion came back carrying no text at all.
 
     Distinct from `CompletionTruncated` on purpose, and the distinction is the operator's next
@@ -112,6 +117,10 @@ class NoCompletionChoices(RuntimeError):
 #: text is written for a human: `CompletionTruncated` interpolates the ceiling, and
 #: `EmptyCompletion` interpolates `finish_reason`, which is a string the PROVIDER chooses. Leaving
 #: the classification to phrasing means a provider can flip our retry policy from the wire.
+#: Both members ALSO inherit `recall.embeddings.NonTransientError`, which is what makes them
+#: permanent for a caller using the DEFAULT classifier. This tuple is not thereby redundant: it
+#: is the half of `_classify` that pairs with `TRANSIENT_ERRORS`, which has no marker equivalent
+#: because `_is_transient`'s default for an unrecognised error is already "not transient".
 PERMANENT_ERRORS: tuple[type[Exception], ...] = (CompletionTruncated, EmptyCompletion)
 
 #: ⚠️ Stated explicitly because the default here is the OPPOSITE of the one in
@@ -204,7 +213,9 @@ def is_terminal(exc: Exception) -> bool:
     evidence a status cannot override, because the status is about the REQUEST and the phrase is
     about the ACCOUNT.
     """
-    if isinstance(exc, PERMANENT_ERRORS + TRANSIENT_ERRORS):
+    # `issubclass(type(exc), ...)`: see `_classify` below. `isinstance` consults
+    # `exc.__class__`, which can raise, and this runs inside every driver's `except`.
+    if issubclass(type(exc), PERMANENT_ERRORS + TRANSIENT_ERRORS):
         return False
     # Guarded for the same reason `_probe` exists, and it is the OTHER door: formatting an
     # arbitrary exception runs ITS `__str__`, which is free to raise — an undecoded response body
@@ -253,7 +264,13 @@ def is_terminal(exc: Exception) -> bool:
     for spelling in ("status", "http_status"):
         if status is None:
             status = _probe(exc, spelling)
-    if isinstance(status, int):
+    # `issubclass(type(status), int)`, not `isinstance`. `_probe` guards READING the attribute;
+    # the value it hands back is still arbitrary provider data, and `isinstance` reads ITS
+    # `__class__`, which can raise — the same argument as the marker check above, one
+    # indirection in, and the door that stayed open when that one was closed. `issubclass`
+    # on `type(...)` also keeps int-SUBCLASS semantics (an `IntEnum` status), which
+    # `type(status) is int` would silently drop.
+    if issubclass(type(status), int):
         return status in TERMINAL_STATUS_CODES
     return any(marker in text for marker in _AMBIGUOUS_MARKERS)
 
@@ -332,9 +349,14 @@ def _classify(exc: Exception) -> bool:
     `benchmarks/llm.py` as a caller it reasons about, so the two are already coupled by design, and
     reimplementing the heuristic to avoid an underscore would give this repo two of them.
     """
-    if isinstance(exc, PERMANENT_ERRORS):
+    # `issubclass(type(exc), ...)`, not `isinstance`, for the reason `recall.embeddings`
+    # gives at its own marker check: `isinstance` reads `exc.__class__` when the type check
+    # misses, and that can raise. Both classifiers here are called from inside an `except`
+    # block, so a raise REPLACES the provider's error. Fixing only the library's default
+    # classifier left this one — the one `complete()` actually installs — still raising.
+    if issubclass(type(exc), PERMANENT_ERRORS):
         return False
-    if isinstance(exc, TRANSIENT_ERRORS):
+    if issubclass(type(exc), TRANSIENT_ERRORS):
         return True
     return _is_transient(exc)
 

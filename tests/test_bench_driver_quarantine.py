@@ -991,3 +991,46 @@ def test_a_failed_item_is_excluded_from_the_published_accept_rate() -> None:
     )
     assert scorecard["judge_failures"][VERBATIM] == 1, "and the shrunken n has to say why"
     assert scorecard["judge_errors"][VERBATIM] == 0, "a call that never returned is not an error"
+
+
+def test_neither_local_classifier_beats_the_error_it_is_classifying() -> None:
+    """⛔ The SAME hole as `_is_transient`'s, one layer up, in the two classifiers this module
+    installs. `_classify` is what `OpenRouterLLM.complete` actually passes to
+    `retry_with_backoff`, and `is_terminal` is what all four drivers consult, so fixing only the
+    library's default classifier left the benchmark path still replacing the provider's error.
+
+    `isinstance` reads `exc.__class__` when the type check misses — which is every exception that
+    is not one of ours — and `__class__` is free to raise. Both of these run inside an `except`
+    block, so a raise here is not a misclassification: it is the provider's error being thrown
+    away and a `ValueError` surfacing in its place.
+
+    Measured before the fix: `_is_transient` returned False while `_classify` and `is_terminal`
+    both raised on the identical object.
+    """
+    from benchmarks.llm import _classify, is_terminal
+
+    class _HostileClass(Exception):
+        @property
+        def __class__(self) -> type:  # type: ignore[override]
+            raise ValueError("hostile __class__")
+
+    hostile = _HostileClass.__new__(_HostileClass)
+
+    assert is_terminal(hostile) is False
+    assert _classify(hostile) is False, (
+        "the DIRECTION, not merely a bool: True is the expensive side, where `retry_with_backoff` "
+        "buys four billed attempts at a failure nothing could classify. The `is_terminal` "
+        "assertion beside this one already pins its direction; this one asserted only the type."
+    )
+
+    # ⛔ The never-raise property of BOTH classifiers rests on these tuples' members having a plain
+    # metaclass, exactly as `_is_transient`'s rests on `NonTransientError` having one. That premise
+    # is pinned there and was not pinned here — the same "fixed it in one file" shape. Measured:
+    # giving a `PERMANENT_ERRORS` member a raising `__subclasscheck__` makes both raise again.
+    from benchmarks.llm import PERMANENT_ERRORS, TRANSIENT_ERRORS
+
+    for cls in PERMANENT_ERRORS + TRANSIENT_ERRORS:
+        assert type(cls) is type, (
+            f"{cls.__name__} has a custom metaclass; `issubclass` would run its "
+            f"`__subclasscheck__` and the classifiers could raise again"
+        )

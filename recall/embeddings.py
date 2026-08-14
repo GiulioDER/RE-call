@@ -34,6 +34,39 @@ _TRANSIENT_MARKERS = (
 )
 
 
+class NonTransientError(Exception):
+    """Marker: ``retry_with_backoff`` must never retry this, whatever the message happens to say.
+
+    ``_is_transient`` classifies by heuristic, and its last resort is substring-matching the
+    exception's rendered text. That text is written for a human, so any wording that happens to
+    contain a marker is read as retryable and the caller silently pays ``attempts`` times for a
+    failure guaranteed to repeat. Measured cases: a ceiling of 4,290 tokens contains "429"; a path
+    containing "timeout"; a host named "connection-broker".
+
+    ``benchmarks/llm.py:CompletionTruncated`` is what this was found on. Measured against THIS
+    FUNCTION, the property held only for ceilings spelled without a marker: 16,384 classifies
+    permanent, while 4,290 and 429 and 1,429 all classify transient.
+
+    ⚠️ What that did NOT cost, stated precisely because an earlier draft of this docstring
+    overclaimed it: no bill was ever paid for it. BOTH callers that raise this type were already
+    protected, by two different mechanisms, and each billed ONE request rather than four.
+    ``OpenRouterLLM.complete`` passes ``is_transient=_classify``, which short-circuits on its own
+    ``PERMANENT_ERRORS`` tuple; ``benchmarks/mtrag/generation.py`` runs its own retry loop and
+    re-raises this type out of it directly. The 4x is what a caller using the DEFAULT classifier
+    would pay — a hazard for the next such caller, not a measured historical loss.
+
+    ⚠️ Fixed HERE rather than in the wording. Rewording relocates the coincidence instead of
+    removing it, and leaves the same fragility for every other caller of ``retry_with_backoff``:
+    the two sites in this module and ``recall/truth_extraction/_openai_engine.py``, none of which
+    passes a custom classifier. ``benchmarks/llm.py`` had already protected its own path with a
+    ``PERMANENT_ERRORS`` tuple. Both callers had a fix, by two different mechanisms, which is why
+    this went unnoticed: the hazard lives in the DEFAULT classifier, which neither of them uses.
+
+    Inherited ALONGSIDE the exception's own base, never instead of it, so existing
+    ``except RuntimeError`` still catches.
+    """
+
+
 def _probe(exc: Exception, name: str) -> object | None:
     """Read ``name`` off an arbitrary exception, refusing to raise while doing it.
 
@@ -100,12 +133,37 @@ def _is_transient(exc: Exception) -> bool:
     408 this function's business: with the SDK retrying underneath, a 408 was being retried twice
     regardless of what was decided here.
     """
+    # 🔑 Ahead of EVERY heuristic below, including the numeric one. A status describes what the
+    # transport saw; the marker describes what the RAISER knows, and only the raiser can know that
+    # resending reproduces the failure at full price. A wrapper carrying an upstream 500 alongside
+    # its own "do not retry" verdict must be believed about its own verdict.
+    #
+    # ⛔ `issubclass(type(exc), ...)`, NOT `isinstance`. `isinstance` falls back to reading
+    # `exc.__class__` whenever the fast type check misses — which is every exception that is not a
+    # marker, i.e. all of them today — and `__class__` is free to raise. This function is called
+    # from inside `retry_with_backoff`'s `except Exception`, so a raise here does not misclassify:
+    # it REPLACES the provider's error. `type()` cannot be intercepted, and
+    # `type.__subclasscheck__` on a plain metaclass runs no user code. The first draft of this
+    # line used `isinstance` and re-opened, as the FIRST statement of the function, the exact hole
+    # that `_probe` and the guarded `str(exc)` below exist to close.
+    if issubclass(type(exc), NonTransientError):
+        return False
     status = _probe(exc, "status_code")
     if status is None:
         status = _probe(exc, "status")
     if status is None:
         status = _probe(exc, "http_status")
-    if isinstance(status, int):
+    # `issubclass(type(status), int)`, not `isinstance`. `_probe` guards READING the attribute;
+    # the value it hands back is still arbitrary provider data, and `isinstance` reads ITS
+    # `__class__`, which can raise — the same argument as the marker check above, one
+    # indirection in, and the door that stayed open when that one was closed. `issubclass`
+    # on `type(...)` also keeps int-SUBCLASS semantics (an `IntEnum` status), which
+    # `type(status) is int` would silently drop.
+    # The second `isinstance` is for the TYPE CHECKER, not the runtime, and it is safe: it runs
+    # only once `issubclass` has proved `type(status)` is an int subclass, so CPython's
+    # `PyType_IsSubtype` fast path answers it without ever consulting `__class__`. Written the
+    # other way round it would be the unguarded read again.
+    if issubclass(type(status), int) and isinstance(status, int):
         return status in (408, 429) or 500 <= status < 600
     try:
         text = f"{type(exc).__name__} {exc}".lower()
