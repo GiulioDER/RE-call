@@ -6,9 +6,11 @@ import pytest
 from recall.setup import (
     HardwareProbe,
     LOCAL_PROVIDER,
+    MANUAL_MODEL,
     OPENAI_BASE_URL,
     OPENROUTER_BASE_URL,
     embedder_choices,
+    reasoning_model_choices,
     reasoning_provider_choices,
     run_setup_wizard,
 )
@@ -1259,3 +1261,39 @@ def test_the_first_reasoning_provider_is_always_runnable(monkeypatch):
     )
     choices = reasoning_provider_choices(probe, security_required=False)
     assert choices[0].available is True
+
+
+def test_openrouter_reasoning_models_lead_with_gpt_4o_mini():
+    """The first entry is what a reader gets by pressing Enter, so it must be the safe
+    inexpensive default rather than the best or the cheapest."""
+    choices = reasoning_model_choices(OPENROUTER_BASE_URL)
+    assert choices[0].value == "openai/gpt-4o-mini"
+    assert choices[0].available is True
+    assert "deepseek/deepseek-chat" in [c.value for c in choices]
+    assert "anthropic/claude-sonnet-4.5" in [c.value for c in choices]
+
+
+def test_openai_reasoning_models_carry_no_vendor_prefix():
+    """api.openai.com serves only OpenAI's own models and rejects OpenRouter's vendor/model
+    form, so offering `deepseek/deepseek-chat` there would be a menu entry that cannot work."""
+    choices = reasoning_model_choices(OPENAI_BASE_URL)
+    ids = [c.value for c in choices if c.value != MANUAL_MODEL]
+    assert ids == ["gpt-4o-mini", "gpt-4o"]
+    assert all("/" not in i for i in ids)
+
+
+def test_every_reasoning_model_menu_offers_manual_entry():
+    """The catalogue is a static list in a released artifact and will go stale. Manual entry is
+    what stops that being fatal, so it is not optional on any provider."""
+    for base_url in (OPENROUTER_BASE_URL, OPENAI_BASE_URL):
+        choices = reasoning_model_choices(base_url)
+        assert choices[-1].value == MANUAL_MODEL
+        assert choices[-1].available is True
+
+
+def test_reasoning_model_descriptions_quote_no_prices():
+    """A price baked into a shipped menu is a measurement nothing re-checks, and it goes stale on
+    somebody else's release schedule."""
+    for base_url in (OPENROUTER_BASE_URL, OPENAI_BASE_URL):
+        for choice in reasoning_model_choices(base_url):
+            assert "$" not in choice.description

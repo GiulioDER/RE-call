@@ -606,6 +606,71 @@ def reasoning_provider_choices(
     return choices
 
 
+#: Sentinel value for the "type an id yourself" entry. The empty string cannot collide with a
+#: real model id, so it needs no separate flag on `Choice`.
+MANUAL_MODEL = ""
+
+
+def reasoning_model_choices(base_url: str) -> list[Choice]:
+    """Models offered for a cloud provider, cheapest first, always ending in manual entry.
+
+    The OpenRouter ids were verified against its live catalogue on 2026-08-14, which is how a
+    sixth candidate that no longer exists was caught before shipping. They will still go stale:
+    this is a static list inside a released artifact, and the provider's roster is not ours. The
+    manual entry is the mitigation and must stay last on every provider.
+
+    Descriptions carry no prices. Prices were read during design and left out on purpose, because
+    a number in a shipped menu is a measurement nothing re-checks.
+    """
+    manual = Choice(
+        label="enter a model id",
+        value=MANUAL_MODEL,
+        description="Type an id yourself, for anything not listed",
+    )
+    if base_url == OPENAI_BASE_URL:
+        return [
+            Choice(
+                label="gpt-4o mini",
+                value="gpt-4o-mini",
+                description="Cheap and fast, a good default",
+            ),
+            Choice(
+                label="gpt-4o",
+                value="gpt-4o",
+                description="Higher quality and several times the price",
+            ),
+            manual,
+        ]
+    return [
+        Choice(
+            label="gpt-4o mini",
+            value="openai/gpt-4o-mini",
+            description="Small, fast and inexpensive, the default",
+        ),
+        Choice(
+            label="deepseek chat",
+            value="deepseek/deepseek-chat",
+            description="Low cost general model, strong for the price",
+        ),
+        Choice(
+            label="deepseek r1",
+            value="deepseek/deepseek-r1",
+            description="Reasoning tuned, slower and dearer than chat",
+        ),
+        Choice(
+            label="llama 3.3 70b",
+            value="meta-llama/llama-3.3-70b-instruct",
+            description="Open weights, the cheapest option here",
+        ),
+        Choice(
+            label="claude sonnet 4.5",
+            value="anthropic/claude-sonnet-4.5",
+            description="Best quality and the dearest, matching the truth extraction default",
+        ),
+        manual,
+    ]
+
+
 def _prompt(
     input_fn: Callable[[str], str],
     print_fn: Callable[..., None],
