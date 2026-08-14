@@ -364,6 +364,8 @@ class IndexStats:
     chunks: int   # chunks written
     skipped: int = 0   # files unchanged since last index, so not re-read or re-embedded
     deleted: int = 0   # files gone from disk whose rows were pruned
+    undecodable: int = 0   # files still on disk whose bytes are not valid UTF-8, so not read
+    unrepresentable: int = 0   # files whose NAME is not valid UTF-8, so it cannot be stored
 
 
 @dataclass(frozen=True)
@@ -521,9 +523,30 @@ class Indexer:
         pending_embedding_texts: list[str] = []
         pending_shadow_chunks: list[Chunk] = []
         pending_shadow_texts: list[str] = []
-        indexed = skipped = written = vanished_before_read = 0
+        indexed = skipped = written = vanished_before_read = undecodable = 0
+        unrepresentable = 0
 
         for f in files:
+            try:
+                str(f).encode("utf-8")
+            except UnicodeEncodeError:
+                # A name this package cannot REPRESENT, refused before it is read, because the
+                # damage starts as soon as it flows onward: the chunk id hashed it, and `source`
+                # and `file` are bound to TEXT columns psycopg encodes as UTF-8. Previously the
+                # id crashed first and took the whole corpus with it.
+                #
+                # Skipped rather than given the `encodable_name` stand-in the other consumers
+                # use, and the prune path is why. `source` is not an identifier here, it is the
+                # path `_prune_vanished` calls `os.stat` on to answer "is this file gone?". A
+                # stand-in cannot be stat'd, so that question would answer "I could not look"
+                # forever, and the row would survive the file's deletion permanently: a deleted
+                # memory served with verdict `ok`, which is the failure the prune path exists to
+                # prevent. Refusing one file is the smaller harm, and it is visible.
+                _log.warning(
+                    "skipping %r: its name is not valid UTF-8, so it cannot be stored", str(f)
+                )
+                unrepresentable += 1
+                continue
             try:
                 raw = f.read_text(encoding="utf-8-sig")  # BOM must not disable frontmatter parsing
             except (FileNotFoundError, NotADirectoryError) as exc:
@@ -538,6 +561,21 @@ class Indexer:
                 # into "indexed 0 files", exit 0. Logged, because the file WAS paid for.
                 _log.warning("skipping %s: it vanished before it could be read (%s)", f, exc)
                 vanished_before_read += 1
+                continue
+            except UnicodeDecodeError as exc:
+                # `UnicodeDecodeError` is a ValueError, NOT an OSError, so it fell through the
+                # clause above and aborted the run: one memo that is not UTF-8 discarded every
+                # file already read, and on a corpus where it sorted first, all of them.
+                # `cli.py`, `lint.py`, `fix.py` and `rewrite.py` each catch it per file for
+                # exactly this reason; `index`, the command that actually writes, was the one
+                # place that did not.
+                #
+                # Counted apart from `vanished_before_read`: a file that is still sitting there
+                # in an encoding this package cannot read is a different thing to tell an
+                # operator than a file that disappeared, and only one of them is fixed by
+                # re-running.
+                _log.warning("skipping %s: it is not valid UTF-8 (%s)", f, exc)
+                undecodable += 1
                 continue
             raw = _strip_nul(raw, f)
             content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -619,6 +657,11 @@ class Indexer:
             for i, (ct, structured_chunk, embedding_text) in enumerate(
                 zip(raw_chunks, structured, embedding_texts)
             ):
+                # Plain `.encode("utf-8")` is safe here ONLY because the loop refuses a name
+                # that does not encode, above. It used to raise, and this line runs before
+                # anything is committed, so one such file discarded the whole corpus. Left
+                # unhardened deliberately: a `surrogatepass` here would be a guard nothing can
+                # reach, which the next reader cannot tell from dead code.
                 cid = hashlib.md5(f"{f}:{i}".encode("utf-8")).hexdigest()
                 pending_chunks.append(
                     Chunk(
@@ -685,11 +728,21 @@ class Indexer:
         # Counted against what was ASKED FOR, not against what survived confinement: on the
         # `files=` path the disappearances are absorbed above, so `len(files)` is already 0 and
         # comparing against it would make this check unfireable exactly where it is needed.
+        # `undecodable` counts here too. Tolerating a file whose bytes are not UTF-8 is right
+        # per file and wrong for a whole corpus: without it, pointing `index` at a directory of
+        # latin-1 memos reported "indexed 0 files" and exited 0, which is the same silence this
+        # check exists to break — and worse than the crash it replaced, because a crash at least
+        # said something. The message names the two counts separately, since "they vanished" and
+        # "I cannot read their encoding" call for different responses from whoever ran this.
         candidates = len(files) + dropped
-        if candidates and (vanished_before_read + dropped) == candidates:
+        if candidates and (
+            vanished_before_read + undecodable + unrepresentable + dropped
+        ) == candidates:
             raise FileNotFoundError(
                 f"none of the {candidates} candidate file(s) under {root} could be read: "
-                f"every one of them vanished between the scan and the read"
+                f"{vanished_before_read} vanished between the scan and the read, "
+                f"{undecodable} are not valid UTF-8, "
+                f"{unrepresentable} have a name that is not valid UTF-8"
             )
         # Hand the planner statistics for the rows this run just wrote, before anyone queries
         # them. Without this the table a first run builds is never-analyzed until autovacuum
@@ -708,7 +761,10 @@ class Indexer:
         # autovacuum, which is the safe direction for a foreground cost.
         if written or deleted:
             self._store.analyze_if_stale(written)
-        return IndexStats(files=indexed, chunks=written, skipped=skipped, deleted=deleted)
+        return IndexStats(
+            files=indexed, chunks=written, skipped=skipped, deleted=deleted,
+            undecodable=undecodable, unrepresentable=unrepresentable,
+        )
 
     def _flush(
         self,

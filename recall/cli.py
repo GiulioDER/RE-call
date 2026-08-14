@@ -30,6 +30,7 @@ from recall.trust import terminal_safe, trusted_search
 from recall.types import TrustedResult
 
 if TYPE_CHECKING:
+    from recall.index import IndexStats
     from recall.reasoning import ReasoningResponse
 
 # `recall setup` writes its answers to .env, so the file has to be read BEFORE the DSN
@@ -327,6 +328,32 @@ def _positive_int(value: str) -> int:
     if number < 1:
         raise argparse.ArgumentTypeError(f"must be at least 1, got {number}")
     return number
+
+
+def _index_summary(stats: "IndexStats") -> str:
+    """The one line `recall index` prints. A pure function so it can be pinned without a database.
+
+    `files` counts what was RE-indexed, not what is in the index, so an unchanged re-run reports
+    0/0 — which reads as "the index is empty" unless `skipped` is shown beside it. `deleted`
+    matters more: pruning is the destructive half of `index`, and reporting it only through a log
+    record meant a deletion could happen in silence.
+
+    The two unreadable counts are here for that same reason. A file the run REFUSED is invisible
+    to an operator who sees only `indexed N chunks from M files`, and a corpus quietly missing a
+    memo is the failure this whole command exists to avoid. They are named separately because
+    only one of them is fixed by re-running: bytes that are not UTF-8 need the file re-saved, a
+    name that is not UTF-8 needs the file renamed.
+    """
+    summary = f"indexed {stats.chunks} chunks from {stats.files} files"
+    if stats.skipped:
+        summary += f", {stats.skipped} unchanged"
+    if stats.deleted:
+        summary += f", pruned {stats.deleted} source(s) no longer on disk"
+    if stats.undecodable:
+        summary += f", skipped {stats.undecodable} file(s) whose contents are not UTF-8"
+    if stats.unrepresentable:
+        summary += f", skipped {stats.unrepresentable} file(s) whose NAME is not UTF-8"
+    return summary
 
 
 def _rejected_claims(ledger_path: Path) -> frozenset[str]:
@@ -1863,12 +1890,7 @@ def main(argv: list[str] | None = None) -> None:
             # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown
             # beside it. `deleted` matters more: pruning is the destructive half of `index`, and
             # reporting it only through a log record meant a deletion could happen in silence.
-            summary = f"indexed {stats.chunks} chunks from {stats.files} files"
-            if stats.skipped:
-                summary += f", {stats.skipped} unchanged"
-            if stats.deleted:
-                summary += f", pruned {stats.deleted} source(s) no longer on disk"
-            print(summary)
+            print(_index_summary(stats))
     elif args.cmd == "forget":
         from recall.generation_store import GenerationStore
         from recall.generations import NoActiveGeneration
