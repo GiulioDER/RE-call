@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Build Your Corpus · RE-call Setup Manual</title>
+  <meta name="description" content="How to build a RE-call corpus from your own data, structure memory files, and calibrate retrieval correctly.">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="page-shell site-header-inner">
+      <a class="brand" href="index.html">
+        <span class="brand-mark">RE-call Setup Manual</span>
+        <span class="brand-note">Beginner path for Windows and macOS</span>
+      </a>
+      <nav class="top-nav" aria-label="Primary">
+        <a href="index.html">Home</a>
+        <a href="requirements.html">Requirements</a>
+        <a href="installation.html">Installation</a>
+        <a class="active" href="corpus.html">Build Your Corpus</a>
+        <a href="claude-code.html">Claude Code</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page-shell layout">
+    <div class="content-grid">
+      <section class="page-section" id="what-a-corpus-is">
+        <p class="eyebrow">Your data</p>
+        <h1>Turn your own notes, decisions, and project memory into a searchable corpus.</h1>
+        <p class="lede">
+          A RE-call corpus is not just “some files in a folder.” It is a set of markdown documents
+          whose text, validity hints, and metadata are worth trusting enough to retrieve later.
+        </p>
+        <div class="callout">
+          <div class="callout-title">Simple mental model</div>
+          <p>Each markdown file is a memory unit. RE-call chunks it, embeds it, stores the vectors in PostgreSQL, and later decides whether any retrieved chunk is trustworthy enough to answer from.</p>
+        </div>
+      </section>
+
+      <section class="page-section" id="good-corpus-shape">
+        <p class="eyebrow">Corpus shape</p>
+        <h2>What good source material looks like</h2>
+        <div class="card-grid">
+          <article>
+            <p class="kicker">Good candidates</p>
+            <ul>
+              <li>Project decisions with dates and clear outcomes.</li>
+              <li>Research notes that record what changed and why.</li>
+              <li>Customer specific facts you need to retrieve later.</li>
+              <li>One fact per file when the fact should be independently discoverable.</li>
+            </ul>
+          </article>
+          <article>
+            <p class="kicker">Weak candidates</p>
+            <ul>
+              <li>Huge mixed notes files that bundle unrelated topics together.</li>
+              <li>Temporary scratch text with no durable value.</li>
+              <li>Files whose wording is vague enough that you cannot tell whether the idea is still valid.</li>
+              <li>Data you are not allowed to send through your chosen embedder path.</li>
+            </ul>
+          </article>
+        </div>
+        <div class="note">
+          <div class="note-title">A practical beginner rule</div>
+          <p>If you want to ask a future agent “what did we decide about X?”, X should probably live in its own markdown file or in a very tightly scoped note.</p>
+        </div>
+      </section>
+
+      <section class="page-section" id="memory-layout">
+        <p class="eyebrow">Recommended layout</p>
+        <h2>Start with the Claude memory pattern if you are unsure</h2>
+        <p>The setup wizard can scaffold a `memory/` folder and a starter `memory/MEMORY.md`. That is the easiest structure to grow from.</p>
+        <div class="command-card">
+          <div class="command-top">
+            <span class="command-label">Example structure</span>
+            <button class="copy-button" data-copy-target="#memory-layout-tree">Copy</button>
+          </div>
+          <pre id="memory-layout-tree">memory/
+  MEMORY.md
+  pricing-model-decision.md
+  retrieval-threshold-study.md
+  customer-acme-onboarding.md</pre>
+        </div>
+        <div class="note">
+          <div class="note-title">What `MEMORY.md` does</div>
+          <p>It acts as the always loaded index of your memory folder. Individual facts still live in their own markdown files, but `MEMORY.md` points to them and documents the convention.</p>
+        </div>
+        <div class="screenshot">
+          <div class="screenshot-title">Screenshot to add later</div>
+          <p>Asset hint: `corpus-memory-folder-layout.png`</p>
+        </div>
+      </section>
+
+      <section class="page-section" id="indexing">
+        <p class="eyebrow">Indexing</p>
+        <h2>How to load your corpus into RE-call</h2>
+        <p>Once your files are ready, index the folder you want RE-call to search.</p>
+        <div class="command-card">
+          <div class="command-top">
+            <span class="command-label">Windows PowerShell and macOS shell</span>
+            <button class="copy-button" data-copy-target="#index-own-corpus">Copy</button>
+          </div>
+          <pre id="index-own-corpus">python -m recall.cli index memory/</pre>
+        </div>
+        <div class="callout">
+          <div class="callout-title">What happens during indexing</div>
+          <p>RE-call reads the markdown, splits it into chunks, generates vectors with your chosen embedder, and writes the searchable representation into PostgreSQL.</p>
+        </div>
+      </section>
+
+      <section class="page-section" id="calibration">
+        <p class="eyebrow">Calibration</p>
+        <h2>Calibration is specific to your corpus and your embedder</h2>
+        <p>The repo ships a demo query set and demo corpus. That is useful because it shows the workflow end to end. It is not enough to certify your own memory store.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Calibration type</th>
+              <th>What it proves</th>
+              <th>What it does not prove</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Bundled demo calibration</td>
+              <td>The command flow works and the labeled JSON format is correct.</td>
+              <td>That the threshold transfers to your own corpus.</td>
+            </tr>
+            <tr>
+              <td>Your own labeled calibration</td>
+              <td>That this exact corpus and embedder path were measured together.</td>
+              <td>That the threshold will still hold after major corpus or model changes.</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="warning">
+          <div class="warning-title">Important rule</div>
+          <p>If you switch embedder, change the corpus substantially, or rebuild the generation, assume you need to calibrate again.</p>
+        </div>
+      </section>
+
+      <section class="page-section" id="make-labeled-set">
+        <p class="eyebrow">Labeled queries</p>
+        <h2>How to create a usable calibration set</h2>
+        <p>Your JSON file needs at least one answerable query and at least one unanswerable query. Each entry needs a `query` and an `answerable` key.</p>
+        <div class="command-card">
+          <div class="command-top">
+            <span class="command-label">Minimal example</span>
+            <button class="copy-button" data-copy-target="#queries-example">Copy</button>
+          </div>
+          <pre id="queries-example">[
+  {"query": "What is our current API limit?", "answerable": true},
+  {"query": "Which habitat do we use on Mars?", "answerable": false}
+]</pre>
+        </div>
+        <div class="note">
+          <div class="note-title">How to think about “unanswerable”</div>
+          <p>An unanswerable query is a question your corpus should refuse because the answer is not there. Those examples are essential because RE-call is designed to abstain rather than hallucinate a nearest match.</p>
+        </div>
+      </section>
+
+      <section class="page-section" id="run-calibration">
+        <p class="eyebrow">Run it</p>
+        <h2>Practice with the bundled sample, then measure your own data</h2>
+        <p>First, locate the bundled sample files if you want a safe practice run:</p>
+        <div class="command-card">
+          <div class="command-top">
+            <span class="command-label">Windows PowerShell and macOS shell</span>
+            <button class="copy-button" data-copy-target="#find-sample">Copy</button>
+          </div>
+          <pre id="find-sample">python -c "import recall.eval, pathlib; print(pathlib.Path(recall.eval.__file__).parent)"</pre>
+        </div>
+        <p>Then build your real calibration set and run the generation bound calibration flow from the technical docs. The pattern looks like this:</p>
+        <div class="card-grid">
+          <article>
+            <p class="kicker">Create a draft measurement</p>
+            <div class="command-card">
+              <div class="command-top">
+                <span class="command-label">One line example</span>
+                <button class="copy-button" data-copy-target="#calibration-draft">Copy</button>
+              </div>
+              <pre id="calibration-draft">recall --tenant acme --serving-dsn "postgresql://user:pass@host:5432/dbname" calibrate --generation gen_... --queries queries.json</pre>
+            </div>
+          </article>
+          <article>
+            <p class="kicker">Create and publish</p>
+            <div class="command-card">
+              <div class="command-top">
+                <span class="command-label">One line example</span>
+                <button class="copy-button" data-copy-target="#calibration-publish">Copy</button>
+              </div>
+              <pre id="calibration-publish">recall --tenant acme --serving-dsn "postgresql://user:pass@host:5432/dbname" calibrate --generation gen_... --queries queries.json --publish</pre>
+            </div>
+          </article>
+        </div>
+        <div class="note">
+          <div class="note-title">What “publish” means here</div>
+          <p>A measured artifact is not automatically active. The technical docs say publication is explicit, which is what makes a certified calibration become the one the tenant serves.</p>
+        </div>
+        <div class="warning">
+          <div class="warning-title">Do not ship the sample threshold as your production truth</div>
+          <p>The docs are explicit: calibration belongs to the corpus and embedder it was measured on. The sample is only a tutorial scaffold.</p>
+        </div>
+        <div class="screenshot">
+          <div class="screenshot-title">Screenshot to add later</div>
+          <p>Asset hint: `corpus-calibration-sample-path.png`</p>
+        </div>
+      </section>
+    </div>
+
+    <aside class="side-panel">
+      <div class="side-card">
+        <h3>On this page</h3>
+        <ul>
+          <li><a href="#what-a-corpus-is">What a corpus is</a></li>
+          <li><a href="#good-corpus-shape">Good corpus shape</a></li>
+          <li><a href="#memory-layout">Memory layout</a></li>
+          <li><a href="#indexing">Indexing</a></li>
+          <li><a href="#calibration">Calibration</a></li>
+          <li><a href="#make-labeled-set">Labeled queries</a></li>
+          <li><a href="#run-calibration">Run it</a></li>
+        </ul>
+      </div>
+      <div class="side-card">
+        <h3>Deeper technical docs</h3>
+        <ul>
+          <li><a href="https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md">Calibration guide</a></li>
+          <li><a href="https://github.com/GiulioDER/RE-call/blob/master/recall/eval/queries.json">Bundled sample queries</a></li>
+          <li><a href="https://github.com/GiulioDER/RE-call/tree/master/recall/eval/corpus">Bundled sample corpus</a></li>
+        </ul>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="footer page-shell">
+    <div class="footer-card">
+      <p class="muted">Next, go to <a href="claude-code.html">Claude Code</a> if you want RE-call to act as a memory tool inside Claude.</p>
+    </div>
+  </footer>
+</body>
+</html>

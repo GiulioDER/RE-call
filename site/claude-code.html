@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude Code · RE-call Setup Manual</title>
+  <meta name="description" content="How to connect RE-call to Claude Code and what the scaffolded files do.">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="page-shell site-header-inner">
+      <a class="brand" href="index.html">
+        <span class="brand-mark">RE-call Setup Manual</span>
+        <span class="brand-note">Beginner path for Windows and macOS</span>
+      </a>
+      <nav class="top-nav" aria-label="Primary">
+        <a href="index.html">Home</a>
+        <a href="requirements.html">Requirements</a>
+        <a href="installation.html">Installation</a>
+        <a href="corpus.html">Build Your Corpus</a>
+        <a class="active" href="claude-code.html">Claude Code</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page-shell layout">
+    <div class="content-grid">
+      <section class="page-section" id="why-connect">
+        <p class="eyebrow">Claude integration</p>
+        <h1>Connect RE-call so Claude can check memory before it acts.</h1>
+        <p class="lede">
+          This is the practical goal: Claude asks RE-call what the memory already says, then uses
+          that answer to avoid repeating a dead idea or trusting a weak match.
+        </p>
+        <div class="callout">
+          <div class="callout-title">What changes after connection</div>
+          <p>RE-call becomes an MCP tool server. Claude can call tools like `recall_search` and `recall_evidence` directly instead of relying on pasted notes.</p>
+        </div>
+      </section>
+
+      <section class="page-section" id="install-mcp-extra">
+        <p class="eyebrow">Step 1</p>
+        <h2>Install the MCP extra</h2>
+        <p>If you installed only the base local path earlier, add the `mcp` extra now.</p>
+        <div class="command-card">
+          <div class="command-top">
+            <span class="command-label">Windows PowerShell and macOS shell</span>
+            <button class="copy-button" data-copy-target="#mcp-install">Copy</button>
+          </div>
+          <pre id="mcp-install">pip install -e ".[fastembed,mcp]"</pre>
+        </div>
+      </section>
+
+      <section class="page-section" id="mcp-config">
+        <p class="eyebrow">Step 2</p>
+        <h2>Add the RE-call MCP server to Claude Code</h2>
+        <p>The repo docs show this `mcpServers` block for local development mode:</p>
+        <div class="command-card">
+          <div class="command-top">
+            <span class="command-label">.mcp.json snippet</span>
+            <button class="copy-button" data-copy-target="#mcp-json">Copy</button>
+          </div>
+          <pre id="mcp-json">{
+  "mcpServers": {
+    "recall": {
+      "command": "python",
+      "args": ["-m", "recall_mcp.server"],
+      "env": {
+        "RECALL_SERVING_DSN": "postgresql://recall:recall@localhost:5432/recall",
+        "RECALL_TENANT": "default",
+        "RECALL_TRUST_MODE": "development"
+      }
+    }
+  }
+}</pre>
+        </div>
+        <div class="note">
+          <div class="note-title">Where this goes</div>
+          <p>For Claude Code, save it as `.mcp.json` in the project root, or use the documented CLI command:
+          <code>claude mcp add recall -- python -m recall_mcp.server</code>.</p>
+        </div>
+        <div class="warning">
+          <div class="warning-title">Why development mode is here</div>
+          <p>This local example is for an uncalibrated development setup. The technical docs say to remove `RECALL_TRUST_MODE` in production after you have an active generation with a published certified calibration.</p>
+        </div>
+        <div class="screenshot">
+          <div class="screenshot-title">Screenshot to add later</div>
+          <p>Asset hint: `claude-mcp-json-project-root.png`</p>
+        </div>
+      </section>
+
+      <section class="page-section" id="what-setup-writes">
+        <p class="eyebrow">Scaffolded files</p>
+        <h2>What `recall setup` writes for Claude projects</h2>
+        <p>The setup wizard can scaffold two things after its embedder and retrieval prompts:</p>
+        <table>
+          <thead>
+            <tr>
+              <th>File</th>
+              <th>What it does</th>
+              <th>Important behavior</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>`CLAUDE.md` block</td>
+              <td>Adds a `<!-- recall setup begin -->` to `<!-- recall setup end -->` section that tells Claude when to call RE-call tools and how to record new durable facts.</td>
+              <td>Re-running setup replaces only that marked block, not the rest of your file.</td>
+            </tr>
+            <tr>
+              <td>`memory/MEMORY.md`</td>
+              <td>Creates the starter memory index and documents the expected frontmatter and one line per fact pattern.</td>
+              <td>It is only created if it does not already exist.</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="note">
+          <div class="note-title">Why this matters</div>
+          <p>These files teach Claude that memory is a tool driven workflow: search first, answer carefully, and write durable facts back into the memory folder in a consistent format.</p>
+        </div>
+      </section>
+
+      <section class="page-section" id="auto-index">
+        <p class="eyebrow">Auto-index</p>
+        <h2>What the setup wizard tries to do next</h2>
+        <p>After scaffolding, the wizard tries to index `memory/` immediately so Claude can search it from the first turn.</p>
+        <ol class="steps">
+          <li>
+            <h3>It only works if the schema already matches the chosen embedder width</h3>
+            <p>If the schema is missing or at the wrong dimension, setup prints remediation instead of blocking forever.</p>
+          </li>
+          <li>
+            <h3>Production mode skips local auto-index</h3>
+            <p>The docs note that under `RECALL_ENV=production`, this local filesystem indexing step is skipped entirely.</p>
+          </li>
+          <li>
+            <h3>Default tenant and table are used</h3>
+            <p>If your project uses non-default values, index the folder yourself against the correct target later.</p>
+          </li>
+        </ol>
+        <div class="warning">
+          <div class="warning-title">One subtle beginner surprise</div>
+          <p>The first auto-index can index `memory/MEMORY.md` itself. The docs say that is usually harmless, but if Claude surfaces that file, this is why.</p>
+        </div>
+      </section>
+
+      <section class="page-section" id="tool-behavior">
+        <p class="eyebrow">Tool behavior</p>
+        <h2>How Claude should use RE-call</h2>
+        <div class="card-grid">
+          <article>
+            <p class="kicker">Use `recall_search` first</p>
+            <p>Claude should call it before proposing an idea, revisiting prior work, or repeating a hypothesis.</p>
+          </article>
+          <article>
+            <p class="kicker">Use `recall_evidence` before answering from memory</p>
+            <p>This path is for citation ready evidence, not only a quick “have we seen this?” check.</p>
+          </article>
+          <article>
+            <p class="kicker">Respect abstentions</p>
+            <p>If RE-call abstains, Claude should say it does not know instead of manufacturing certainty from low quality hits.</p>
+          </article>
+          <article>
+            <p class="kicker">Write durable facts into `memory/`</p>
+            <p>Keep stable, valuable knowledge in files that can be re-indexed, not only in chat history.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="page-section" id="download-claude">
+        <p class="eyebrow">Official Claude links</p>
+        <h2>Where to get Claude Code and MCP docs</h2>
+        <ul>
+          <li><a href="https://docs.anthropic.com/en/docs/claude-code/overview">Claude Code overview</a></li>
+          <li><a href="https://docs.anthropic.com/en/docs/claude-code/mcp">Connect Claude Code to tools via MCP</a></li>
+          <li><a href="https://docs.anthropic.com/en/docs/claude-code/setup">Claude Code setup</a></li>
+          <li><a href="https://claude.com/download">Claude Desktop download</a></li>
+        </ul>
+      </section>
+    </div>
+
+    <aside class="side-panel">
+      <div class="side-card">
+        <h3>On this page</h3>
+        <ul>
+          <li><a href="#why-connect">Why connect</a></li>
+          <li><a href="#install-mcp-extra">Install MCP extra</a></li>
+          <li><a href="#mcp-config">MCP config</a></li>
+          <li><a href="#what-setup-writes">Scaffolded files</a></li>
+          <li><a href="#auto-index">Auto-index</a></li>
+          <li><a href="#tool-behavior">Tool behavior</a></li>
+          <li><a href="#download-claude">Official links</a></li>
+        </ul>
+      </div>
+      <div class="side-card">
+        <h3>Deeper technical docs</h3>
+        <ul>
+          <li><a href="https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md">Using with Claude</a></li>
+          <li><a href="https://github.com/GiulioDER/RE-call/blob/master/examples/self_recall_agent.py">Self recall example</a></li>
+          <li><a href="https://github.com/GiulioDER/RE-call/blob/master/docs/PRODUCTION.md">Production notes</a></li>
+        </ul>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="footer page-shell">
+    <div class="footer-card">
+      <p class="muted">Once this is connected, Claude can treat memory as a live tool path rather than a static note dump.</p>
+    </div>
+  </footer>
+</body>
+</html>
