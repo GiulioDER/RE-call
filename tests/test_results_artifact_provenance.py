@@ -36,14 +36,25 @@ def _artifacts() -> list[Path]:
         *(RESULTS / "locomo_rerank").glob("*.json"),
         *(RESULTS / "cosine").glob("*.json"),
         *(RESULTS / "wrrf").glob("*.json"),
-        *(RESULTS / "beam_voyage").glob("*.json"),
+        # Listed once. It was globbed twice, which parametrised `ksweep.json` twice (ids
+        # `ksweep.json0` / `ksweep.json1`) and double-counted it toward the >= 12 floor below.
         *(RESULTS / "beam_voyage").glob("*.json"),
         # `splits.json` by name, not `*.json`: the benchmark writes its generated corpus
         # (including a `queries.json`) under the same tree, and those are INPUTS, not
         # artifacts. A wider glob makes this suite red on any machine that has run it.
         *(RESULTS / "store_latency").rglob("splits.json"),
+        # Same reasoning, taken all the way to an exact name. `benchmarks/enterprise_rag.py`
+        # writes its answer stream and its `--calibrate-retrieval-out` sweeps into this directory,
+        # and `.gitignore` covers `results/**/*.jsonl` but not `.json`, so a `*.json` glob would go
+        # red for files nobody committed. `dense_floor_*` is not narrow enough either: that is the
+        # obvious name for a RE-RUN of this same probe, so an uncommitted
+        # `dense_floor_strat100_rerun.retrieval.json` would fail the suite for doing the right
+        # thing. Only the committed artifact is named.
+        *(RESULTS / "enterprise_rag").glob("dense_floor_strat100.retrieval.json"),
     ]
-    return sorted(p for p in paths if p.is_file())
+    # `sorted(set(...))`: the globs above can overlap, and a duplicate silently inflates both the
+    # parametrised test count and the vacuity floor.
+    return sorted({p for p in paths if p.is_file()})
 
 
 def test_there_are_artifacts_to_check() -> None:
@@ -62,7 +73,10 @@ def test_artifact_declares_its_configuration(path: Path) -> None:
 
 @pytest.mark.parametrize("path", _artifacts(), ids=lambda p: p.name)
 def test_superseded_artifacts_name_their_successor(path: Path) -> None:
-    prov = json.loads(path.read_text(encoding="utf-8"))["_provenance"]
+    # `.get`, not `[...]`: a file that reaches this suite without a block should fail
+    # naming itself, not with a bare KeyError from a test that never mentions it.
+    prov = json.loads(path.read_text(encoding="utf-8")).get("_provenance")
+    assert prov is not None, f"{path.name} has no _provenance block"
     successor = prov.get("superseded_by")
     if prov["status"] == "superseded":
         assert successor, f"{path.name} is superseded but names no successor"
@@ -83,7 +97,8 @@ def test_the_pre_fix_artifacts_are_the_ones_this_repo_documents() -> None:
     pre = {
         p.name
         for p in _artifacts()
-        if json.loads(p.read_text(encoding="utf-8"))["_provenance"]["generation"] == "pre-#81/#84"
+        if json.loads(p.read_text(encoding="utf-8")).get("_provenance", {}).get("generation")
+        == "pre-#81/#84"
     }
     assert pre == {
         "locomo_abstention.json",

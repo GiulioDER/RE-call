@@ -28,6 +28,10 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, cast
 
+from benchmarks.enterprise_rag_contract import (
+    summarize,
+    write_dense_floor_artifact,
+)
 from recall._env import load_dotenv
 from recall.embeddings import Embedder, embed_query, embedding_profile_id, resolve_embedder
 from recall.guards import DEFAULT_GAP_THRESHOLD
@@ -663,12 +667,30 @@ def retrieval_calibration(
             reranker=reranker,
             gap_threshold=DEFAULT_GAP_THRESHOLD,
         )
+        best = best_dense_score(store, embedder, question.question)
+        if best is None:
+            # `best_dense_score` returns None only when `query_dense(k=1)` comes back empty, and
+            # that query filters on tenant alone — no per-question predicate. So an empty result
+            # is a property of the TABLE, not of the question: if one question has no dense hit,
+            # none of them do. A null therefore never means "hard question", it means the tenant
+            # is empty or misnamed and the index this run is measuring is not there.
+            #
+            # Raised on the FIRST one rather than recorded, because every later number would be
+            # meaningless and the run would spend an embedding call per remaining question before
+            # `write_dense_floor_artifact` refused the payload at the very end. Fail on question 1,
+            # not after the bill.
+            raise RuntimeError(
+                f"no dense hit for {question.question_id!r} in tenant {store.tenant!r}: "
+                f"query_dense filters on tenant only, so an empty result means the table or "
+                f"tenant holds no rows, not that this question is hard. Check --table and "
+                f"--tenant against the index you meant to measure."
+            )
         rows.append(
             {
                 "question_id": question.question_id,
                 "question_type": _question_type(question),
                 "expected_docs": sorted(_expected_docs(question)),
-                "best_dense_score": best_dense_score(store, embedder, question.question),
+                "best_dense_score": best,
                 "doc_ids_by_k": {str(k): _doc_ids_from_hits(hits, k=k) for k in k_values},
             }
         )
@@ -738,6 +760,11 @@ def retrieval_calibration(
         "reranker": type(reranker).__name__ if reranker is not None else None,
         "k_metrics": k_metrics,
         "threshold_metrics": threshold_metrics,
+        # Derived here rather than by hand later. A summary written beside the rows by a human is
+        # the same fact twice, and the first one that was drifted silently: every median was
+        # `median_high`. `summarize` is the single definition and the write below refuses a
+        # mismatch, so this cannot be stale relative to `rows`.
+        "dense_floor_summary": summarize(rows),
         "rows": rows,
     }
 
@@ -974,10 +1001,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                 sparse_encoder=sparse_encoder,
                 reranker=reranker,
             )
-            args.calibrate_retrieval_out.parent.mkdir(parents=True, exist_ok=True)
-            args.calibrate_retrieval_out.write_text(
-                json.dumps(calibration, indent=2), encoding="utf-8"
-            )
+            # Validate, then write: a payload whose summary disagrees with its rows leaves no
+            # file behind. `write_text` here was the hole that let a hand-written summary drift.
+            write_dense_floor_artifact(args.calibrate_retrieval_out, calibration)
             written = 0
         else:
             sparse_encoder = build_sparse_encoder(
