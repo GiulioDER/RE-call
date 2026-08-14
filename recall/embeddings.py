@@ -48,11 +48,12 @@ class NonTransientError(Exception):
     permanent, while 4,290 and 429 and 1,429 all classify transient.
 
     ⚠️ What that did NOT cost, stated precisely because an earlier draft of this docstring
-    overclaimed it: no bill was ever paid for it. ``OpenRouterLLM.complete`` passes
-    ``is_transient=_classify``, which short-circuits on its own ``PERMANENT_ERRORS`` tuple, so the
-    one caller that raises this type was already protected and billed ONE request, not four. The
-    4x is what a caller using the DEFAULT classifier would pay — a hazard for the next such
-    caller, not a measured historical loss.
+    overclaimed it: no bill was ever paid for it. BOTH callers that raise this type were already
+    protected, by two different mechanisms, and each billed ONE request rather than four.
+    ``OpenRouterLLM.complete`` passes ``is_transient=_classify``, which short-circuits on its own
+    ``PERMANENT_ERRORS`` tuple; ``benchmarks/mtrag/generation.py`` runs its own retry loop and
+    re-raises this type out of it directly. The 4x is what a caller using the DEFAULT classifier
+    would pay — a hazard for the next such caller, not a measured historical loss.
 
     ⚠️ Fixed HERE rather than in the wording. Rewording relocates the coincidence instead of
     removing it, and leaves the same fragility for every other caller of ``retry_with_backoff``:

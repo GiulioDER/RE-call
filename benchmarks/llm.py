@@ -213,7 +213,9 @@ def is_terminal(exc: Exception) -> bool:
     evidence a status cannot override, because the status is about the REQUEST and the phrase is
     about the ACCOUNT.
     """
-    if isinstance(exc, PERMANENT_ERRORS + TRANSIENT_ERRORS):
+    # `issubclass(type(exc), ...)`: see `_classify` below. `isinstance` consults
+    # `exc.__class__`, which can raise, and this runs inside every driver's `except`.
+    if issubclass(type(exc), PERMANENT_ERRORS + TRANSIENT_ERRORS):
         return False
     # Guarded for the same reason `_probe` exists, and it is the OTHER door: formatting an
     # arbitrary exception runs ITS `__str__`, which is free to raise — an undecoded response body
@@ -341,9 +343,14 @@ def _classify(exc: Exception) -> bool:
     `benchmarks/llm.py` as a caller it reasons about, so the two are already coupled by design, and
     reimplementing the heuristic to avoid an underscore would give this repo two of them.
     """
-    if isinstance(exc, PERMANENT_ERRORS):
+    # `issubclass(type(exc), ...)`, not `isinstance`, for the reason `recall.embeddings`
+    # gives at its own marker check: `isinstance` reads `exc.__class__` when the type check
+    # misses, and that can raise. Both classifiers here are called from inside an `except`
+    # block, so a raise REPLACES the provider's error. Fixing only the library's default
+    # classifier left this one — the one `complete()` actually installs — still raising.
+    if issubclass(type(exc), PERMANENT_ERRORS):
         return False
-    if isinstance(exc, TRANSIENT_ERRORS):
+    if issubclass(type(exc), TRANSIENT_ERRORS):
         return True
     return _is_transient(exc)
 

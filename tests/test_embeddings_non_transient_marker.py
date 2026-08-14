@@ -190,6 +190,36 @@ def test_the_marker_check_does_not_beat_the_error_it_is_classifying() -> None:
     assert isinstance(_is_transient(_HostileGetattr.__new__(_HostileGetattr)), bool)
 
 
+def _all_marker_subclasses() -> list[type]:
+    """Every marker subclass, TRANSITIVELY. `__subclasses__()` is direct-only, so a subclass of a
+    subclass is invisible to it — and `class TruncatedAtCeiling(CompletionTruncated)` carrying a
+    429 is exactly the hazard the walk below exists to catch. The direct-only version reported
+    green on that, while the class was permanently unretryable."""
+    seen: list[type] = []
+    work = list(NonTransientError.__subclasses__())
+    while work:
+        cls = work.pop()
+        if cls not in seen:
+            seen.append(cls)
+            work.extend(cls.__subclasses__())
+    return seen
+
+
+def test_the_never_raise_property_rests_on_a_plain_metaclass() -> None:
+    """`issubclass(type(exc), NonTransientError)` is total ONLY because `NonTransientError` has a
+    plain metaclass: CPython then takes the `PyType_CheckExact` fast path and walks `tp_mro` in C,
+    consulting nothing on the exception's side. Give the MARKER a metaclass with a
+    `__subclasscheck__` and that runs Python again, so the guard can raise once more.
+
+    Nothing pinned that premise: switching the marker to `metaclass=abc.ABCMeta` left every test
+    green, and `ABCMeta.__subclasscheck__` runs a `__subclasshook__` that is free to raise.
+    """
+    assert type(NonTransientError) is type, (
+        "the never-raise property of `_is_transient`'s marker check holds only for a plain "
+        "metaclass; a `__subclasscheck__` on this class would run Python code again"
+    )
+
+
 def test_no_marker_subclass_smuggles_in_a_retryable_status() -> None:
     """The precedence puts the marker ahead of the numeric status, which is right today because no
     marker subclass carries one. That is an assumption, not a guarantee, and nothing was watching
@@ -207,14 +237,30 @@ def test_no_marker_subclass_smuggles_in_a_retryable_status() -> None:
     than about import order.
     """
     shipped = [
-        cls for cls in NonTransientError.__subclasses__()
+        cls for cls in _all_marker_subclasses()
         if cls.__module__.split(".")[0] in {"recall", "recall_mcp", "benchmarks"}
     ]
-    assert shipped, "the walk found nothing to check; the filter or the import set is wrong"
+    # ⛔ Membership, not mere non-emptiness. `assert shipped` fires only when the filter matches
+    # NOTHING, so a partial loss — a subclass moved to another package, or one whose module this
+    # file stops importing — stayed green on the strength of the two that remained.
+    assert {c.__name__ for c in shipped} >= {"CompletionTruncated", "EmptyCompletion"}, (
+        f"the walk lost a known marker subclass; it found {sorted(c.__name__ for c in shipped)}"
+    )
 
     for cls in shipped:
         for spelling in ("status_code", "status", "http_status"):
             assert getattr(cls, spelling, None) is None, (
-                f"{cls.__name__} declares itself non-transient AND carries {spelling}; the marker "
-                f"would override a status that may well be retryable"
+                f"{cls.__name__} declares itself non-transient AND carries {spelling} on the "
+                f"CLASS; the marker would override a status that may well be retryable"
+            )
+        # ⛔ And on an INSTANCE. `_probe` reads the instance, and every SDK sets its status in
+        # `__init__`, so that is where a real wrapper would carry one — invisible to a class-level
+        # read. Adding `self.status_code = 429` to `EmptyCompletion.__init__` was green before.
+        try:
+            probe = cls("probe")
+        except Exception:  # noqa: BLE001 - a subclass needing other arguments is not a failure
+            continue
+        for spelling in ("status_code", "status", "http_status"):
+            assert getattr(probe, spelling, None) is None, (
+                f"{cls.__name__} instances carry {spelling} behind the marker"
             )

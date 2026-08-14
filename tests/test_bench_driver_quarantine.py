@@ -991,3 +991,32 @@ def test_a_failed_item_is_excluded_from_the_published_accept_rate() -> None:
     )
     assert scorecard["judge_failures"][VERBATIM] == 1, "and the shrunken n has to say why"
     assert scorecard["judge_errors"][VERBATIM] == 0, "a call that never returned is not an error"
+
+
+def test_neither_local_classifier_beats_the_error_it_is_classifying() -> None:
+    """⛔ The SAME hole as `_is_transient`'s, one layer up, in the two classifiers this module
+    installs. `_classify` is what `OpenRouterLLM.complete` actually passes to
+    `retry_with_backoff`, and `is_terminal` is what all four drivers consult, so fixing only the
+    library's default classifier left the benchmark path still replacing the provider's error.
+
+    `isinstance` reads `exc.__class__` when the type check misses — which is every exception that
+    is not one of ours — and `__class__` is free to raise. Both of these run inside an `except`
+    block, so a raise here is not a misclassification: it is the provider's error being thrown
+    away and a `ValueError` surfacing in its place.
+
+    Measured before the fix: `_is_transient` returned False while `_classify` and `is_terminal`
+    both raised on the identical object.
+    """
+    from benchmarks.llm import _classify, is_terminal
+
+    class _HostileClass(Exception):
+        @property
+        def __class__(self) -> type:  # type: ignore[override]
+            raise ValueError("hostile __class__")
+
+    hostile = _HostileClass.__new__(_HostileClass)
+
+    assert is_terminal(hostile) is False
+    assert isinstance(_classify(hostile), bool), (
+        "it must reach a verdict from the evidence that remains, not escape the handler"
+    )
