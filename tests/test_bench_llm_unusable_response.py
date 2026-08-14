@@ -67,6 +67,12 @@ class _RateLimited(Exception):
     status_code = 429
 
 
+#: What the last faked `create` actually handed back as `choices`. Without this, an arm asserting
+#: "absent" could be silently exercising "empty": the stub used to coerce `None` to `[]`, which
+#: takes the same branch and produces the same message, so the arm passed either way.
+_SCRIPTED: list[object] = []
+
+
 def _install_fake_openai(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -85,15 +91,33 @@ def _install_fake_openai(
     make these guards silently absent wherever the extra is not installed.
     """
     calls: list[dict[str, Any]] = []
+    # Cleared per install: `_SCRIPTED` is module-global, and an arm reading `[-1]` off a
+    # session-wide list is coupled to whether the system under test reached the transport
+    # at all. Today no arm can false-green on it; this removes the coupling anyway.
+    _SCRIPTED.clear()
 
     class _FakeCompletions:
         def create(self, **kwargs: Any) -> types.SimpleNamespace:
             calls.append(kwargs)
             if raises is not None:
                 raise raises
-            return types.SimpleNamespace(
-                choices=list(choices if choices is not None else []), usage=usage
-            )
+            # NOT `list(...)`: one arm scripts `choices=None`, the shape the SDK surfaces when the
+            # body omits the field.
+            #
+            # ⚠️ The justification here is WEAKER than the identical comment in the mtrag stub, and
+            # copying that one over unexamined overstated it. There, `list(None)` raises, so the
+            # coercion genuinely breaks the arm. Here the old form was
+            # `list(choices if choices is not None else [])`, which maps `None` to `[]` — the same
+            # `not choices` branch, the same message — so restoring it left the suite green while
+            # the arm silently exercised the EMPTY shape under a name claiming the ABSENT one.
+            #
+            # ⛔ `_SCRIPTED` records what the RESPONSE actually carries, not the parameter. The
+            # first version recorded the parameter, so a mutation that coerced only the response
+            # left the recorder reading `None` and the guard still could not see it: a recorder
+            # watching the input while the defect lives in the output.
+            response = types.SimpleNamespace(choices=choices, usage=usage)
+            _SCRIPTED.append(response.choices)
+            return response
 
     class _FakeOpenAI:
         def __init__(self, **_: Any) -> None:
@@ -121,6 +145,11 @@ def _choice(
     if carry_reason:
         attrs["finish_reason"] = finish_reason
     return types.SimpleNamespace(**attrs)
+
+
+def _choice_without_message() -> object:
+    """A choice whose `message` is null, which is what a malformed 200 carries."""
+    return types.SimpleNamespace(message=None, finish_reason="stop")
 
 
 def _llm(**kwargs: Any) -> OpenRouterLLM:
@@ -413,3 +442,110 @@ def test_a_no_choices_response_is_still_counted_as_spend(monkeypatch: pytest.Mon
 
     assert llm.usage() == {"calls": 1, "prompt_tokens": 9, "completion_tokens": 0}
     assert llm.provider_metadata().latency_ms is not None, "the call took time and it was billed"
+
+
+def test_an_absent_choices_field_is_named_as_such(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⛔ The `llm.py` HALF of a wording a comment claims is "kept word-for-word in step" with
+    `benchmarks/mtrag/generation.py`. Only the mtrag half was pinned, so reverting this side alone
+    left the suite green: a claimed invariant with a test on one of its two sides.
+
+    The shape matters as well as the wording. `not choices` takes the branch for `None`, which is
+    what the SDK surfaces when the body omits `choices` entirely — OpenRouter's documented failure
+    shape, and the one this stub had no arm for.
+    """
+    _install_fake_openai(monkeypatch, choices=None)
+
+    with pytest.raises(NoCompletionChoices) as caught:
+        _llm().complete("s", "u")
+
+    assert _SCRIPTED[-1] is None, (
+        "the stub coerced the shape away, so this arm would be exercising an EMPTY list while its "
+        "name and message claim an ABSENT field"
+    )
+    assert "absent" in str(caught.value), (
+        "the message must name the shape that arrived, and stay in step with the mtrag raise site"
+    )
+
+
+def test_a_choice_carrying_no_message_names_the_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⛔ The sibling of the mtrag guard, and the asymmetry a docstring had started DESCRIBING
+    instead of closing.
+
+    `benchmarks/mtrag/generation.py` reads `message.content` through a sentinel so a 200 whose
+    first choice carries `message: null` is named as a provider fault. This client still
+    dereferenced it blind, so the same body escaped `complete()` as
+
+        AttributeError: 'NoneType' object has no attribute 'content'
+
+    across the `Completer` seam into the BEAM answerer and the judge — an untyped Python error
+    where every other unusable shape here raises a named one. Cheap (it fails fast, one call), but
+    it is the exact "names a Python operation rather than the provider" failure `NoCompletionChoices`
+    exists to abolish, and all three OpenAI-compatible clients should answer it the same way.
+    """
+    _install_fake_openai(monkeypatch, choices=[_choice_without_message()])
+
+    with pytest.raises(NoCompletionChoices) as caught:
+        _llm().complete("s", "u")
+
+    assert "message" in str(caught.value)
+
+
+def test_a_present_but_null_content_is_still_a_permanent_empty_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards the guard above, and pins the same two-way split mtrag makes: a MISSING `message` is
+    a malformed body (the provider's fault, transient), while a `content` that arrived and is null
+    is an empty ANSWER (permanent). Hardening the first must not swallow the second."""
+    calls = _install_fake_openai(monkeypatch, choices=[_choice(None, "content_filter")])
+
+    with pytest.raises(EmptyCompletion):
+        _llm().complete("s", "u")
+
+    assert len(calls) == 1, (
+        "the docstring says PERMANENT, so the arm has to pin the price: an empty answer repeats "
+        "and must not be retried. Its mtrag sibling asserts this; this one asserted only the type."
+    )
+
+
+def test_a_message_null_response_is_still_counted_as_spend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ THE THIRD APPEARANCE OF THIS MUTATION SHAPE, and the third guard to need its own arm.
+
+    Both earlier guards on this path have one: `test_an_empty_completion_is_still_counted_as_spend`
+    and `test_a_no_choices_response_is_still_counted_as_spend`, the latter added precisely because
+    hoisting a guard above the usage block survived a whole mutation run. The new `message.content`
+    sentinel arrived without one, so the same hoist would lose the spend of a billed call silently.
+
+    The tokens were spent whatever the body turned out to carry, and `benchmarks.usage` subtracts
+    this figure to publish `memory_layer`, so an undercount invents cost that was never incurred.
+    """
+    usage = types.SimpleNamespace(prompt_tokens=9, completion_tokens=0)
+    _install_fake_openai(monkeypatch, choices=[_choice_without_message()], usage=usage)
+    llm = _llm(max_attempts=1)
+
+    with pytest.raises(NoCompletionChoices):
+        llm.complete("s", "u")
+
+    assert llm.usage() == {"calls": 1, "prompt_tokens": 9, "completion_tokens": 0}
+    assert llm.provider_metadata().latency_ms is not None, "the call took time and it was billed"
+
+
+def test_a_message_object_lacking_a_content_field_is_named_the_same_way(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ The sentinel's STATED purpose, which no arm exercised in either client.
+
+    `_NO_CONTENT_FIELD` exists to tell "the field is not there" from "the field is there and null".
+    Every existing arm scripts `message=None`, which reaches the sentinel through the OUTER
+    `getattr(choice, "message", None)` — so the inner half, a present `message` carrying no
+    `content` attribute at all, was untested. Narrowing the read so the sentinel fires only for a
+    null message left the whole suite green in BOTH clients.
+    """
+    _install_fake_openai(
+        monkeypatch, choices=[types.SimpleNamespace(message=types.SimpleNamespace(),
+                                                    finish_reason="stop")]
+    )
+
+    with pytest.raises(NoCompletionChoices):
+        _llm().complete("s", "u")

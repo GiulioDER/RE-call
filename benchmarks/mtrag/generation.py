@@ -123,7 +123,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from benchmarks.llm import CompletionTruncated, EmptyCompletion, _safe_reason, _shape_note
+from benchmarks.llm import (
+    CompletionTruncated,
+    EmptyCompletion,
+    NoCompletionChoices,
+    _safe_reason,
+    _shape_note,
+)
 from recall._chat_content import assistant_text
 
 # Private on purpose, and imported rather than reimplemented: there is one definition in this
@@ -439,6 +445,12 @@ def openrouter_client(api_key: str | None = None) -> Any:
     return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=key, max_retries=0)
 
 
+#: Distinguishes "the field is not there" from "the field is there and null". `getattr(..., None)`
+#: cannot: a missing `message` is a MALFORMED BODY (the provider's fault, transient, worth another
+#: route) while a `content` that arrived null is an EMPTY ANSWER (permanent, one billed call).
+#: Collapsing the two would price a malformed body at one attempt, or an empty answer at four.
+_NO_CONTENT_FIELD = object()
+
 GENERATION_ATTEMPTS = 4
 GENERATION_BACKOFF_S = 2.0
 #: Consecutive per-task failures that stop the run. One task can fail on its own merits (a
@@ -473,15 +485,36 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
     raise, not "gave up after 4 attempts, re-run to resume", which is the wrong advice here.
     """
     last: Exception | None = None
+    spent = 0
     for attempt in range(1, GENERATION_ATTEMPTS + 1):
+        spent = attempt
         try:
             response = client.chat.completions.create(
                 model=model, messages=messages, max_tokens=max_tokens, temperature=0.0
             )
-            # Read once. It was indexed three times below, and the empty-`choices` guard that
-            # `benchmarks/llm.py` has is still missing here (see the branch note in the module
-            # docstring), so this at least keeps the three reads from disagreeing.
-            choice = response.choices[0]
+            # Read the list ONCE, and defensively. OpenRouter answers 200 with an empty `choices`
+            # array when the upstream it routed to faults, and indexing it blind raised
+            # `IndexError: list index out of range` — a message naming a list operation rather
+            # than the provider, which is what an operator found in `.failed.jsonl`.
+            #
+            # ⚠️ `NoCompletionChoices` is TRANSIENT, unlike the two refusals below it, and that is
+            # why it is absent from both `PERMANENT_ERROR_NAMES` and the
+            # `except (CompletionTruncated, EmptyCompletion): raise` tuple. This loop retries
+            # anything not named permanent, which is the behaviour wanted: the request is well
+            # formed and a re-route can serve it. `benchmarks/llm.py` classifies the same type the
+            # same way in `TRANSIENT_ERRORS`, so there is one answer to this question repo-wide.
+            choices = response.choices
+            if not choices:
+                raise NoCompletionChoices(
+                    # "empty OR ABSENT": `not choices` also takes this branch for `None`, which is
+                    # what the SDK surfaces when the body omits `choices` entirely — OpenRouter's
+                    # documented failure shape, so the realistic case rather than the exotic one.
+                    # Naming only "empty" asserted a shape that was never observed.
+                    "the provider returned a 200 with an empty or absent `choices` list, so there "
+                    "is no completion to read. This is an upstream fault on the provider's side, "
+                    "not a property of the request."
+                )
+            choice = choices[0]
             # Absence is not evidence: a provider that omits the field is not reporting truncation,
             # and refusing on a missing attribute would fail every task on such a provider.
             reason = getattr(choice, "finish_reason", None)
@@ -495,7 +528,29 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             # NOT in `PERMANENT_ERROR_NAMES`, so every affected task paid four BILLED attempts
             # before failing, and five such tasks in a row aborted the run. Shared with the other
             # two OpenAI-compatible clients in this repo so the rule cannot drift between them.
-            content = choice.message.content
+            # ⛔ ONE FIELD FURTHER than the `choices` guard above, because stopping there left the
+            # next dereference blind: a 200 whose first choice carries `message: null` raised
+            # `AttributeError: 'NoneType' object has no attribute 'content'` at four billed calls,
+            # which is the failure class this guard exists to abolish, reached through the field
+            # along. `assistant_text` is total, so `message` was the only crash surface a
+            # WELL FORMED SDK response object could still present here — narrower than the
+            # first wording, which claimed it was the only one at all. `getattr(..., default)`
+            # suppresses only `AttributeError`, so a descriptor raising anything else still
+            # escapes, and `not choices`, `choices[0]` and `reason == "length"` all run
+            # provider-supplied code inside this same `try`. The real SDK exposes these as
+            # plain pydantic attributes, and the enclosing retry bounds the cost either way.
+            #
+            # A SENTINEL, not `getattr(..., None)`, because the two cases must not merge. A missing
+            # `message` is a malformed body: the provider's fault, transient, worth another route.
+            # A `content` that arrived and is null is an empty ANSWER: permanent, and it has to
+            # keep falling through to the `EmptyCompletion` below at one billed call, not four.
+            content = getattr(getattr(choice, "message", None), "content", _NO_CONTENT_FIELD)
+            if content is _NO_CONTENT_FIELD:
+                raise NoCompletionChoices(
+                    "the provider returned a 200 whose first choice carries no `message.content` "
+                    "field at all, so there is no completion to read. This is an upstream fault "
+                    "on the provider's side, not a property of the request."
+                )
             raw = assistant_text(content)
             answer = raw.strip()
             if not answer:
@@ -546,7 +601,11 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             paced = _retry_after_seconds(exc) or 0.0
             time.sleep(GENERATION_BACKOFF_S * (2 ** (attempt - 1)) + paced)
     raise RuntimeError(
-        f"generation gave up after {GENERATION_ATTEMPTS} attempts "
+        # `spent`, not `GENERATION_ATTEMPTS`. A permanent cause BREAKS at the first attempt, so
+        # interpolating the budget priced every early break at 4x what it cost — and with
+        # `cause_type` now recorded beside it, the row read `cause_type=BadRequestError` next to
+        # "after 4 attempts" for a failure that billed once: two accurate fields and one wrong.
+        f"generation gave up after {spent} attempt{'' if spent == 1 else 's'} "
         f"({type(last).__name__}: {last}). Answers already written are kept; re-run to resume."
     ) from last
 
@@ -719,13 +778,22 @@ def main(argv: list[str] | None = None) -> int:
                 # recorded so a systematic fault is legible rather than hidden as "some failures".
                 failed.append(str(task["task_id"]))
                 consecutive += 1
+                # ⚠️ `cause_type` beside `error_type`, because `generate_one` WRAPS every retried
+                # failure in a `RuntimeError`. That makes `error_type` the word "RuntimeError" for
+                # essentially every generation failure, which defeats the comment above ("the type
+                # is recorded so a systematic fault is legible") for the whole class. The typed
+                # cause is what tells an empty `choices` array apart from a dead key, and it was
+                # otherwise present only inside the free-text `error` string, where nothing can
+                # count it.
+                cause = type(exc.__cause__).__name__ if exc.__cause__ is not None else None
                 with failures_path.open("a", encoding="utf-8") as fh:
                     fh.write(json.dumps({"task_id": task["task_id"],
                                          "error_type": type(exc).__name__,
+                                         "cause_type": cause,
                                          "error": str(exc)}) + "\n")
                 print(
                     json.dumps({"event": "task_failed", "task_id": task["task_id"],
-                                "error_type": type(exc).__name__,
+                                "error_type": type(exc).__name__, "cause_type": cause,
                                 "consecutive": consecutive, "error": str(exc)[:200]}),
                     flush=True,
                 )
