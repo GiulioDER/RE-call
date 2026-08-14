@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting · RE-call setup</title>
+<meta name="description" content="The errors a RE-call install produces most often, what each one actually means, and the command that fixes it: Python, Docker, the database, the package, the schema, the wizard, indexing, and the Claude Code server.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="index.html">RE-call <span>Setup</span></a>
+    <nav>
+      <a href="start.html">Install</a>
+      <a href="corpus.html">Your memory</a>
+      <a href="claude-code.html">Claude Code</a>
+      <a href="calibration.html">Calibration</a>
+      <a href="troubleshooting.html" aria-current="page">Troubleshooting</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="shell" style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(2rem, 5vw, 3.5rem);">
+  <p class="eyebrow">When something breaks</p>
+  <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 20ch; margin-bottom: 1.5rem;">The errors this install produces, and what each one means.</h1>
+  <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
+  <p class="lede">Find the message you are looking at, not the step you are on. Each entry shows the symptom first, says in plain language what it means, and ends with the command or the action that clears it.</p>
+</section>
+
+<div class="shell guide-layout" style="padding-bottom: clamp(4rem, 9vw, 7rem);">
+
+  <!-- Progress rail -->
+  <aside class="rail" data-rail>
+    <p class="rail-title">Sections</p>
+    <ol>
+      <li><a href="#python">Python and Docker</a></li>
+      <li><a href="#database">Database problems</a></li>
+      <li><a href="#install">Install problems</a></li>
+      <li><a href="#schema">Schema problems</a></li>
+      <li><a href="#setup">Setup wizard problems</a></li>
+      <li><a href="#indexing">Indexing and search</a></li>
+      <li><a href="#mcp">Claude Code problems</a></li>
+    </ol>
+    <p class="rail-progress" data-rail-progress="Section">Section 1 of 7</p>
+  </aside>
+
+  <div>
+
+    <div class="steps">
+
+      <!-- ============================================ Python and Docker -->
+      <section id="python" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">01</span>
+          <h2>Python and Docker</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Everything else depends on these two answering. If the very first check in the guide gave you nothing back, start here.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">The shell says it does not know what <code>python</code> is</h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="warn">python : The term 'python' is not recognized as the name of a cmdlet, function, script file, or operable program.</span>
+<span class="dim">At line:1 char:1</span>
+<span class="dim">or, on macOS and Linux:</span>
+<span class="warn">command not found: python</span></pre></div>
+          </div>
+
+          <p>Two different things produce this. Either Python is not installed, or it is installed and the shell was never told where to find it. On Windows the installer only puts Python on your PATH when you tick the box during installation, and there is a second launcher called <code>py</code> that often works when <code>python</code> does not. On macOS and Linux the command is <code>python3</code>, and plain <code>python</code> may not exist at all.</p>
+
+          <p>Find out which case you are in.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">py --version</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 --version</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 --version</span></pre></div>
+            </div>
+          </div>
+
+          <p>If that prints a version, Python is on the machine and only the name was wrong. On macOS and Linux, use <code>python3</code> everywhere this guide writes it and you are done. On Windows you can keep typing <code>py</code>, but I recommend reinstalling from <a href="https://www.python.org/downloads/">python.org</a> with the <strong>Add python.exe to PATH</strong> box ticked, because the rest of the guide, and every tool that shells out to Python, expects the plain name to work.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">The version is below 3.11</h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="warn">Python 3.9.13</span></pre></div>
+          </div>
+
+          <p>Not an error message, but it stops you all the same. RE-call's floor is 3.11, and 3.12 to 3.14 are supported. An older interpreter will fail somewhere during the install with a syntax or dependency error that does not name the real cause.</p>
+
+          <p>Install a current version from <a href="https://www.python.org/downloads/">python.org</a> and check again before continuing. You do not have to remove the old one.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">On Windows: Python works, but indexing a folder finds nothing</h3>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">The Microsoft Store build is the usual cause</p>
+            <p>Python installed from the Microsoft Store runs inside a sandbox that rewrites file paths. Commands run, versions print, and then <code>index</code> reads a folder that is not the folder you meant. Install from <a href="https://www.python.org/downloads/">python.org</a> instead.</p>
+          </div>
+
+          <p>You can confirm which build you have. A path containing <code>WindowsApps</code> is the Store build.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -c "import sys; print(sys.executable)"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -c "import sys; print(sys.executable)"</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -c "import sys; print(sys.executable)"</span></pre></div>
+            </div>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;"><code>docker</code> is not recognised, or the daemon will not answer</h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="warn">docker : The term 'docker' is not recognized as the name of a cmdlet, function, script file, or operable program.</span>
+<span class="dim">or</span>
+<span class="warn">Cannot connect to the Docker daemon. Is the docker daemon running?</span></pre></div>
+          </div>
+
+          <p>The first message means Docker Desktop is not installed, or its command line tool was never added to your PATH. The second is the more common one, and it means something quite specific: the <code>docker</code> command exists and ran, but the engine behind it is not up. Installing Docker Desktop does not start it.</p>
+
+          <p>Open Docker Desktop from your applications and wait until it reports that the engine is running. Then check from the terminal.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">docker ps</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">docker ps</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">docker ps</span></pre></div>
+            </div>
+          </div>
+
+          <p class="muted" style="font-size: 0.9375rem;">An empty table with column headings is a success. It means the engine answered and has nothing running yet.</p>
+        </div>
+      </section>
+
+      <!-- ============================================ Database -->
+      <section id="database" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">02</span>
+          <h2>Database problems</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Everything in step 1 of the install guide, and every later error that says the word "refused".</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Port 5432 is already allocated</h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="dim">docker: Error response from daemon: driver failed programming external</span>
+<span class="dim">connectivity on endpoint recall-db:</span>
+<span class="warn">Bind for 0.0.0.0:5432 failed: port is already allocated</span></pre></div>
+          </div>
+
+          <p>Something else on your machine is already listening on 5432, and it is almost always another PostgreSQL: one you installed years ago, one a different project started, or a second copy of this container. Docker will not put two things on one port.</p>
+
+          <p>You have two ways out. Stop whatever is holding the port, or leave it alone and give RE-call a different door into the same container.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">docker run -d --name recall-db -e POSTGRES_USER=recall -e POSTGRES_PASSWORD=recall -e POSTGRES_DB=recall -p 5433:5432 pgvector/pgvector:pg18</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">docker run -d --name recall-db -e POSTGRES_USER=recall -e POSTGRES_PASSWORD=recall -e POSTGRES_DB=recall -p 5433:5432 pgvector/pgvector:pg18</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">docker run -d --name recall-db -e POSTGRES_USER=recall -e POSTGRES_PASSWORD=recall -e POSTGRES_DB=recall -p 5433:5432 pgvector/pgvector:pg18</span></pre></div>
+            </div>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">If you take the second route, one thing changes everywhere</p>
+            <p>Every connection string in the rest of the guide becomes <code>postgresql://recall:recall@localhost:5433/recall</code>, including the one inside <code>.mcp.json</code>. The <code>5433:5432</code> means "reach the container's 5432 by knocking on 5433 here", so only the number you type changes.</p>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">The container name is already in use</h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="dim">docker: Error response from daemon:</span>
+<span class="warn">Conflict. The container name "/recall-db" is already in use</span>
+<span class="dim">You have to remove (or rename) that container to be able to reuse that name.</span></pre></div>
+          </div>
+
+          <p>An earlier attempt created a container called <code>recall-db</code>. It may be stopped, it may be broken, but the name is taken. Remove it and run the command again.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">docker rm -f recall-db</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">docker rm -f recall-db</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">docker rm -f recall-db</span></pre></div>
+            </div>
+          </div>
+
+          <p>If the old container was working and only the name collided, check first whether you simply want to start it again rather than throw it away. The next entry covers that.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Connection refused</h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="warn">connection to server at "localhost" (::1), port 5432 failed: Connection refused</span>
+<span class="dim">  Is the server running on that host and accepting TCP/IP connections?</span></pre></div>
+          </div>
+
+          <p>Nothing is listening. The database is not running, which after a reboot is the ordinary state of affairs: a stopped container stays stopped until you start it. This is the error behind most failures in <code>schema</code>, <code>index</code> and <code>search</code>, so if you see it there, you are in the right section.</p>
+
+          <p><code>docker ps</code> lists what is running. <code>docker ps -a</code> also lists what has stopped, which is where a container you made yesterday will be hiding.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">docker ps -a</span><span class="line">docker start recall-db</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">docker ps -a</span><span class="line">docker start recall-db</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">docker ps -a</span><span class="line">docker start recall-db</span></pre></div>
+            </div>
+          </div>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">You should see</p>
+            <div class="terminal terminal--output">
+              <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+              <div class="terminal-body"><pre><span class="dim">CONTAINER ID   IMAGE                    STATUS         PORTS                    NAMES</span>
+<span class="ok">a1b2c3d4e5f6   pgvector/pgvector:pg18   Up 2 seconds   0.0.0.0:5432-&gt;5432/tcp   recall-db</span></pre></div>
+            </div>
+          </div>
+
+          <p>If <code>docker ps -a</code> lists no container at all, there is nothing to start. Go back to step 1 of the <a href="start.html#step-1">install guide</a> and run the <code>docker run</code> command.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Your memory disappeared between sessions</h3>
+
+          <p>Searches that worked before now return nothing, or <code>schema status</code> reports that nothing is installed, and you know you indexed those files. What happened is that the container was removed and recreated. Its data lived inside it, so removing it removed your rows too.</p>
+
+          <p>Recreate the container with a named volume, so the data lives outside the container and survives being rebuilt.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">docker run -d --name recall-db -e POSTGRES_USER=recall -e POSTGRES_PASSWORD=recall -e POSTGRES_DB=recall -p 5432:5432 -v recall_pgdata:/var/lib/postgresql pgvector/pgvector:pg18</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">docker run -d --name recall-db -e POSTGRES_USER=recall -e POSTGRES_PASSWORD=recall -e POSTGRES_DB=recall -p 5432:5432 -v recall_pgdata:/var/lib/postgresql pgvector/pgvector:pg18</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">docker run -d --name recall-db -e POSTGRES_USER=recall -e POSTGRES_PASSWORD=recall -e POSTGRES_DB=recall -p 5432:5432 -v recall_pgdata:/var/lib/postgresql pgvector/pgvector:pg18</span></pre></div>
+            </div>
+          </div>
+
+          <p>The data already lost is gone, so apply the schema and index your memory once more. From then on, rebuilding the container costs you nothing.</p>
+        </div>
+      </section>
+
+      <!-- ============================================ Install -->
+      <section id="install" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">03</span>
+          <h2>Install problems</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Getting the package onto your machine, and getting the right one.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">The install succeeded but the import fails</h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="dim">Traceback (most recent call last):</span>
+<span class="warn">ModuleNotFoundError: No module named 'recall.cli'</span></pre></div>
+          </div>
+
+          <p>You installed <code>recall</code> rather than <code>recall-rag</code>. The name <code>recall</code> on PyPI belongs to an unrelated project, and it happens to occupy the same import name, so having both in one environment leaves Python finding the wrong one.</p>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">The package is recall-rag, the command is recall</p>
+            <p>You install <code>recall-rag</code>. In code and on the command line it is spelled <code>recall</code>. That asymmetry is the single most common install mistake.</p>
+          </div>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m pip uninstall recall</span><span class="line">python -m pip install "recall-rag[fastembed]"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m pip uninstall recall</span><span class="line">python3 -m pip install "recall-rag[fastembed]"</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m pip uninstall recall</span><span class="line">python3 -m pip install "recall-rag[fastembed]"</span></pre></div>
+            </div>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;"><code>pip</code> is not recognised</h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="warn">pip : The term 'pip' is not recognized as the name of a cmdlet, function, script file, or operable program.</span>
+<span class="dim">or</span>
+<span class="warn">command not found: pip</span></pre></div>
+          </div>
+
+          <p>pip lives inside Python as a module. A standalone <code>pip</code> command is a convenience shim that is not always installed, and when several Pythons share a machine it is not always the shim for the interpreter you mean. Calling it through Python removes the guesswork, because the pip you reach is by definition the pip belonging to the Python you named.</p>
+
+          <p>That is why every install line in this guide is written <code>python -m pip</code> rather than <code>pip</code>. Use that form and this error cannot occur.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Permission denied while installing</h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="warn">ERROR: Could not install packages due to an OSError: [Errno 13] Permission denied</span>
+<span class="dim">Consider using the `--user` option or check the permissions.</span></pre></div>
+          </div>
+
+          <p>You are installing into a Python that the operating system owns, and it is protecting itself. Running the install as an administrator would work and I do not recommend it: it mixes your project's dependencies into the interpreter your system relies on, and uninstalling later gets messy.</p>
+
+          <p>Create a virtual environment instead. It is a private copy of Python inside a folder, and it needs no special permissions.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m venv .venv</span><span class="line">.venv\Scripts\Activate.ps1</span><span class="line">python -m pip install "recall-rag[fastembed]"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m venv .venv</span><span class="line">source .venv/bin/activate</span><span class="line">python3 -m pip install "recall-rag[fastembed]"</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m venv .venv</span><span class="line">source .venv/bin/activate</span><span class="line">python3 -m pip install "recall-rag[fastembed]"</span></pre></div>
+            </div>
+          </div>
+
+          <div class="notice">
+            <p class="notice-title">You have to activate it in every new terminal</p>
+            <p>The activation line is the second one above. Open a fresh terminal and RE-call will look missing again until you run it. If a command that worked an hour ago suddenly reports that the module is not found, this is usually why.</p>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Results are meaningless, or the wizard offers you nothing</h3>
+
+          <p>If you installed plain <code>recall-rag</code> without the square brackets, you installed no embedding model at all. What you have instead is a placeholder that turns text into vectors by hashing it, which is useful for checking that the plumbing runs and useless for finding anything by meaning. The wizard will notice, and it will fall back to that placeholder rather than offering you a real choice.</p>
+
+          <p>The extra is what supplies the local model. Re-run the install with it.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m pip install "recall-rag[fastembed]"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m pip install "recall-rag[fastembed]"</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m pip install "recall-rag[fastembed]"</span></pre></div>
+            </div>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">The first index sits there doing nothing</h3>
+
+          <div class="notice">
+            <p class="notice-title">This one is not a fault</p>
+            <p>The first time you index anything, the local model has to be downloaded, roughly 130 MB. It happens once, during a command that otherwise finishes in a second, so it reads as a hang. Give it a few minutes on a normal connection. Every index after that starts immediately.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================ Schema -->
+      <section id="schema" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">04</span>
+          <h2>Schema problems</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Creating the tables, and keeping their shape agreeing with your embedding model.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Connection refused during <code>schema apply</code></h3>
+
+          <p>The command never reached a database. This is not a schema fault at all, and applying it again will not help. Your container is not running: go to <a href="#database">database problems</a>, get <code>docker ps</code> showing <code>recall-db</code>, then run the <code>schema apply</code> line again unchanged.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;"><code>vector type not found in the database</code></h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="warn">psycopg.ProgrammingError: vector type not found in the database</span></pre></div>
+          </div>
+
+          <p>This is what skipping step 3 looks like. The database is running and reachable, but nothing has ever set it up: the <code>vector</code> extension that stores and compares embeddings is not installed, so the very first query that mentions a vector column fails. It usually appears from <code>index</code> or <code>search</code>, not from the step that was actually missed, which is what makes it confusing.</p>
+
+          <p>You do not need to install the extension by hand. Applying the schema does it for you, as the first thing it does.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span></pre></div>
+            </div>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;"><code>SchemaTooOld</code></h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="warn">recall.schema.SchemaTooOld: table 'chunks' needs schema migration(s)</span>
+<span class="warn">['0001', '0002', ...]; run `recall schema apply`</span></pre></div>
+          </div>
+
+          <p>Almost always this simply means step 3 has not run yet against this database. Apply the schema and the message goes away.</p>
+
+          <p>There is a second, rarer form of it, which names global generation migrations instead. RE-call's migrations are global: they set up the extension, the shared machinery, and the default <code>chunks</code> table that everything else is layered on. Until those have run once, the database has no foundation to build a custom table on, and any command that expects one refuses.</p>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">Never start with a custom table on a fresh database</p>
+            <p>Apply the global migrations against the default <code>chunks</code> table first, exactly as step 3 of the install guide does. Custom tables are an addition to a migrated database, not a substitute for migrating it.</p>
+          </div>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span><span class="line">python -m recall.cli schema status</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span><span class="line">python3 -m recall.cli schema status</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span><span class="line">python3 -m recall.cli schema status</span></pre></div>
+            </div>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">The table and the embedder disagree about width</h3>
+
+          <p>An embedding model turns a piece of text into a list of numbers, and every model produces a list of one fixed length. The table's vector column is created at one specific width, and it will accept nothing else. If the two do not match, nothing can be written and nothing can be searched.</p>
+
+          <p>The local <code>fastembed</code> default produces 384 numbers, which is why the install guide builds the table with <code>--dim 384</code>. Here is what the others produce.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Embedder</th><th>Vector width</th><th>Note</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>fastembed, default</td><td>384</td><td>What the install guide uses. Runs locally.</td></tr>
+                <tr><td>fastembed, base</td><td>768</td><td>Larger local model, larger download.</td></tr>
+                <tr><td>fastembed, large</td><td>1024</td><td>Larger still.</td></tr>
+                <tr><td>voyage</td><td>1024</td><td>Cloud embedder. Your text leaves the machine.</td></tr>
+                <tr><td>openai</td><td>1536</td><td>Cloud embedder. Your text leaves the machine.</td></tr>
+                <tr><td>hashing</td><td>64</td><td>Placeholder. No meaning, useful only for testing plumbing.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p>Changing embedder therefore means rebuilding the table at the new width. There is no conversion: the numbers a different model produces are not a translation of the old ones, so the old rows have to be indexed again.</p>
+
+          <details class="why">
+            <summary>Why RE-call refuses rather than padding the vectors to fit</summary>
+            <div class="why-body">
+              <p>A vector is only meaningful against other vectors from the same model. Two lists of 384 numbers from different models are not comparable, and padding a 384 wide vector out to 768 would produce something a database will happily store and index, and that will return confident nonsense forever afterwards.</p>
+              <p>Refusing at the point of the mismatch is the cheap failure. The alternative is a corpus that looks healthy, answers every question, and is wrong in a way no error message will ever tell you about.</p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- ============================================ Setup wizard -->
+      <section id="setup" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">05</span>
+          <h2>Setup wizard problems</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">The wizard asks its questions, checks your answers against the database, and refuses to write a configuration it knows will not work. Most of what looks like it going wrong is that check firing.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">It keeps re-asking the embedder question</h3>
+
+          <p>You choose an embedder, and instead of moving on the wizard asks again. It is not stuck. The embedder you picked produces vectors of one width, the table you built has another, and rather than writing a <code>.env</code> that fails on your first index it puts the question back to you along with the exact command that would reconcile the two. The message has this shape.</p>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="warn">table 'chunks' uses vector(384), requested dimension is 768</span>
+<span class="dim">fastembed base produces 768-dimension vectors. Either create a table with</span>
+<span class="dim">`recall schema --dim 768 apply`, or pick an embedder matching the table you have.</span></pre></div>
+          </div>
+
+          <p>Both answers are legitimate, and which one is right depends on what you want.</p>
+
+          <ul>
+            <li><strong>Keep the table.</strong> Choose the embedder whose width matches it. On a first install that is <code>fastembed</code> at 384, and it is the answer the install guide expects.</li>
+            <li><strong>Keep the embedder.</strong> Leave the wizard and rebuild the table at the new width, then start <code>setup</code> again. Note that the command the wizard prints is abbreviated: <code>schema apply</code> performs DDL, so it needs <code>--migration-dsn</code> added, exactly as <a href="#schema">the schema section</a> shows. Anything already indexed has to be indexed again afterwards.</li>
+          </ul>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">It exits saying no embedder matches this table</h3>
+
+          <p>The same check, with nothing left to offer. Every embedder available in your environment produces a width the table cannot hold, so there is no answer you could give that would work, and the wizard stops rather than looping forever.</p>
+
+          <p>Two ways forward. Install the extra that provides an embedder of the right width, most often <code>[fastembed]</code> for a 384 wide table. Or rebuild the table at a width one of your installed embedders uses, with the <code>schema --dim &lt;n&gt; apply</code> command and the table in <a href="#schema">schema problems</a>.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">It picks the <code>hashing</code> placeholder by itself</h3>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">This means the fastembed extra is missing</p>
+            <p>The wizard auto selects <code>hashing</code> only when nothing else can run. It is a placeholder that turns text into vectors without understanding any of it, so search will match on nothing you would recognise as meaning. Install <code>"recall-rag[fastembed]"</code> and run <code>setup</code> again.</p>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Every database command refuses, and your <code>.env</code> looks odd</h3>
+
+          <p>A <code>.env</code> file can be damaged, most often by a write that was interrupted partway and left a NUL byte in the middle of it. RE-call will not read a configuration it cannot trust, so every command that touches the database stops, which looks like a database fault and is not one.</p>
+
+          <p>There is an escape hatch, and <code>setup</code> is deliberately exempt from the guard so that you can always run it to write a clean file. Repairing is the better fix.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli setup</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli setup</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli setup</span></pre></div>
+            </div>
+          </div>
+
+          <p>If you need another command to run before you have repaired the file, override the guard for that one invocation.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">$env:RECALL_IGNORE_BROKEN_DOTENV = "1"</span><span class="line">python -m recall.cli schema status</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">RECALL_IGNORE_BROKEN_DOTENV=1 python3 -m recall.cli schema status</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">RECALL_IGNORE_BROKEN_DOTENV=1 python3 -m recall.cli schema status</span></pre></div>
+            </div>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">It refuses the connection string as insecure</h3>
+
+          <p>The credential this guide uses is <code>recall:recall</code>, which is a published username and password. That is fine against <code>localhost</code>, where nothing outside your machine can reach the port. Point the same credential at a host that is not local and RE-call refuses, because a database on the network with a password anyone can read in a setup guide is not a database, it is an open door.</p>
+
+          <p>The right fix is a real credential on the server, and the guard then stays out of your way. For <code>setup</code> specifically, pass the connection string on the command line.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli --dsn postgresql://myuser:mypassword@db.example.com:5432/recall setup</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --dsn postgresql://myuser:mypassword@db.example.com:5432/recall setup</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --dsn postgresql://myuser:mypassword@db.example.com:5432/recall setup</span></pre></div>
+            </div>
+          </div>
+
+          <details class="why">
+            <summary>The override exists, and I would not reach for it first</summary>
+            <div class="why-body">
+              <p><code>RECALL_ALLOW_INSECURE_DSN=1</code> switches the guard off. It is there for the cases where you genuinely know better, such as a throwaway container on a private network during a test.</p>
+              <p>Reaching for it on a real deployment converts a loud refusal into a silent risk, and the refusal is cheaper to fix now than the exposure is to discover later. Change the password instead.</p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- ============================================ Indexing and search -->
+      <section id="indexing" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">06</span>
+          <h2>Indexing and search</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Getting your files into the database, and getting sensible answers back out. The first entry here is the one people hit most.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;"><code>search</code> ends in a Python traceback</h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="dim">Traceback (most recent call last):</span>
+<span class="dim">  ...</span>
+<span class="warn">recall.trust_policy.TrustRefusal: INDEX_NOT_READY: refused in strict trust mode (tenant='default', generation=None, calibration_status='missing')</span></pre></div>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">This is the most common failure in the whole install</p>
+            <p>Strict mode is the default, and in strict mode RE-call will not answer from a corpus whose confidence threshold has never been measured. It raises rather than quietly degrading, because a threshold nobody measured is not a threshold, and answering anyway would be exactly the behaviour the product exists to prevent. You have not measured one yet, so the very first search stops here.</p>
+          </div>
+
+          <p>The fix is the line from step 5 of the install guide. It says "I know this threshold is a placeholder, show me the results anyway", and everything you get back is stamped as uncertified so you cannot forget.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">Add-Content .env "RECALL_TRUST_MODE=development"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">echo "RECALL_TRUST_MODE=development" &gt;&gt; .env</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">echo "RECALL_TRUST_MODE=development" &gt;&gt; .env</span></pre></div>
+            </div>
+          </div>
+
+          <p>That gets you moving today. The real answer is to measure a threshold on your own corpus, which replaces the placeholder with a number that means something and lets you drop development mode entirely. That is the <a href="calibration.html">calibration page</a>, and it is worth doing once your memory holds material you care about being right.</p>
+
+          <p class="muted" style="font-size: 0.9375rem;">If you added the line and the traceback persists, check you are running the command in the same folder as the <code>.env</code> file. The setting is read from the working directory.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Every result is flagged <code>DEGRADED</code></h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+            <div class="terminal-body"><pre><span class="warn">[development] using an UNCERTIFIED demonstration threshold of 0.5. This is not a
+calibration: it is bound to no tenant, generation or corpus, and production
+refuses rather than assuming it.</span>
+<span class="dim">[DEGRADED:INDEX_NOT_READY] query='how many requests per minute can a client make?'</span></pre></div>
+          </div>
+
+          <div class="notice">
+            <p class="notice-title">Not an error. It is the label doing its job.</p>
+            <p>In development mode the threshold in use is an uncertified demonstration value, bound to no corpus and no model. The flag is RE-call telling you so on every single result, so that nothing downstream can present these answers as measured ones. It disappears when you calibrate, and not before.</p>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Nothing was indexed</h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+            <div class="terminal-body"><pre><span class="warn">indexed 0 chunks from 0 files</span></pre></div>
+          </div>
+
+          <p>The folder was found and read, and nothing in it matched. The default pattern is <code>**/*.md</code>, so a directory of <code>.txt</code> notes, <code>.py</code> source or <code>.rst</code> documents is skipped in silence: from <code>index</code>'s point of view the folder is empty of things it was asked for.</p>
+
+          <p>Say what you want with <code>--glob</code>.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli index notes/ --glob "**/*.txt"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli index notes/ --glob "**/*.txt"</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli index notes/ --glob "**/*.txt"</span></pre></div>
+            </div>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">A re-index stops, saying it would remove most of your corpus</h3>
+
+          <p>When you index a folder again, RE-call removes rows whose source files have gone. If a run is about to delete a large share of what is there, it stops instead. The usual cause is not a deletion at all: you pointed the command at the wrong folder, or a drive was not mounted, or you ran it from a different working directory, and the files look missing because the command cannot see them.</p>
+
+          <p>Check the path first. If the files really are gone and you meant it, the override is deliberate and explicit.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli index memory/ --allow-prune</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli index memory/ --allow-prune</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli index memory/ --allow-prune</span></pre></div>
+            </div>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Indexing refuses under <code>RECALL_ENV=production</code></h3>
+
+          <p>Intended, not broken. In production RE-call does not build an index from whatever happens to be on a disk at the moment a command runs. It builds from an immutable manifest, so that what is being served is a thing somebody chose and can point to afterwards. Indexing a live folder would make the corpus depend on the state of a filesystem nobody recorded.</p>
+
+          <p>On your own machine, leave <code>RECALL_ENV</code> unset or set to development. If you meant to be in production, build the manifest rather than turning the guard off.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Searches run, but the answers are not useful</h3>
+
+          <p>No error, no abstention, just results that are technically related and practically useless. This is almost never a configuration problem. It is what happens when the memory files are too broad: a long document covering six subjects produces chunks that are a bit about all of them and precisely about none, so nothing scores clearly against a specific question.</p>
+
+          <p>The fix is editorial rather than technical. One file, one subject, stated plainly, with the specifics in it. <a href="corpus.html">Your memory</a> covers what makes a file findable and what to keep out of the corpus.</p>
+        </div>
+      </section>
+
+      <!-- ============================================ Claude Code -->
+      <section id="mcp" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">07</span>
+          <h2>Claude Code problems</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">The MCP server is a separate process with its own configuration. Most problems here come from assuming it shares something with your terminal that it does not.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">The server does not appear in Claude at all</h3>
+
+          <p>You run <code>/mcp</code>, and there is no <code>recall</code> server listed. Three things to check, in this order.</p>
+
+          <ul>
+            <li><strong>The <code>[mcp]</code> extra is installed.</strong> The server component is not part of the base install. Run the install again with <code>"recall-rag[fastembed,mcp]"</code>.</li>
+            <li><strong><code>.mcp.json</code> is in the folder Claude Code was started from.</strong> Not your home directory, not the folder above. Claude reads it from the working directory it was launched in, so a file in the right project and the wrong folder is invisible.</li>
+            <li><strong>Claude Code has been restarted.</strong> The file is read when the session starts. Editing it while Claude is running changes nothing until you quit and start again.</li>
+          </ul>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">The server command fails to start</h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="warn">No module named recall_mcp.__main__; 'recall_mcp' is a package and cannot be directly executed</span></pre></div>
+          </div>
+
+          <p>The module name in <code>.mcp.json</code> is one word short. <code>recall_mcp</code> is the package; the server inside it is <code>recall_mcp.server</code>, and that is what has to be run.</p>
+
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-label">.mcp.json</span>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body"><pre>"args": ["-m", "recall_mcp.server"]</pre></div>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">The server starts, but every search abstains or errors</h3>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">The MCP server does not read your <code>.env</code></p>
+            <p>Your terminal picks up <code>.env</code> from the working directory. The server is launched by Claude, not by your shell, and it does not read that file. Any setting you rely on has to be repeated inside the <code>env</code> block of <code>.mcp.json</code>, including the connection string and the trust mode. A missing <code>RECALL_TRUST_MODE</code> there is the usual reason searches work in the terminal and fail in Claude.</p>
+          </div>
+
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-label">.mcp.json</span>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body"><pre>{
+  "mcpServers": {
+    "recall": {
+      "command": "python",
+      "args": ["-m", "recall_mcp.server"],
+      "env": {
+        "RECALL_SERVING_DSN": "postgresql://recall:recall@localhost:5432/recall",
+        "RECALL_TENANT": "default",
+        "RECALL_TRUST_MODE": "development"
+      }
+    }
+  }
+}</pre></div>
+          </div>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">On macOS and Linux, the command name is wrong</h3>
+
+          <p>The example above says <code>"command": "python"</code>, which is the Windows spelling. On macOS and Linux change it to <code>"python3"</code>, the same name you type in your own terminal. A wrong command name here shows up as a server that fails to start with no obvious explanation, because the failure happens inside Claude rather than in front of you.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Claude Desktop ignores your edit</h3>
+
+          <p>Claude Desktop reads <code>claude_desktop_config.json</code> when it launches. Closing the window is not enough on either platform, because the application keeps running. Quit it fully and open it again, then check that the server is listed before you conclude the configuration is wrong.</p>
+
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Claude cannot see rows you indexed yourself</h3>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">The table is fixed. The tenant is not.</p>
+            <p>The server always uses table <code>chunks</code>, and there is no setting that points it at another one. The tenant is different: it reads <code>RECALL_TENANT</code> from the <code>env</code> block of your configuration and falls back to <code>default</code> only when you have not set it.</p>
+          </div>
+
+          <p>So there are two distinct causes, with two different fixes.</p>
+
+          <ul>
+            <li><strong>You indexed under another tenant</strong>, for example with <code>--tenant work</code>. Do not re-index. Add <code>"RECALL_TENANT": "work"</code> to the <code>env</code> block in <code>.mcp.json</code> and restart Claude, and the existing rows become visible.</li>
+            <li><strong>You indexed into a custom table</strong>, with <code>--table</code>. Here re-indexing is the only route, because the server cannot be pointed at a different table. Index the material again without <code>--table</code> so it lands in <code>chunks</code>.</li>
+          </ul>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- ============================================ Not here -->
+    <section class="band" data-reveal style="padding-bottom: 0;">
+      <h2 style="font-size: clamp(1.5rem, 3vw, 2.25rem);">If your problem is not on this page</h2>
+      <p>Open an issue. Include the exact command you ran, the full message you got back, your operating system, and the output of <code>python -m recall.cli schema status</code>. Those four things are usually enough to identify the cause without a conversation.</p>
+      <p><a href="https://github.com/GiulioDER/RE-call/issues">github.com/GiulioDER/RE-call/issues</a></p>
+
+      <ul class="routes" style="margin-top: 2.5rem;">
+        <li>
+          <a href="start.html">
+            <strong>Back to the install</strong>
+            <span>Eight steps from nothing to a memory that answers you, each with something you can check.</span>
+            <em>→</em>
+          </a>
+        </li>
+        <li>
+          <a href="calibration.html">
+            <strong>Measure your threshold</strong>
+            <span>The long term answer to the trust refusal, and the way out of development mode.</span>
+            <em>→</em>
+          </a>
+        </li>
+        <li>
+          <a href="corpus.html">
+            <strong>Fill your memory</strong>
+            <span>What makes a memory file findable, and why broad documents return unusable answers.</span>
+            <em>→</em>
+          </a>
+        </li>
+      </ul>
+    </section>
+
+  </div>
+</div>
+
+</main>
+
+<footer class="footer">
+  <div class="shell footer-inner">
+    <nav>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+      <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
+    </nav>
+    <small>Apache 2.0</small>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calibration · RE-call setup</title>
+<meta name="description" content="Optional, and after your install already works: measure how confident a result must be before RE-call answers instead of abstaining, then stop running in development mode.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="index.html">RE-call <span>Setup</span></a>
+    <nav>
+      <a href="start.html">Install</a>
+      <a href="corpus.html">Your memory</a>
+      <a href="claude-code.html">Claude Code</a>
+      <a href="calibration.html" aria-current="page">Calibration</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="shell" style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(2rem, 5vw, 3.5rem);">
+  <p class="eyebrow">Optional, and after the install works</p>
+  <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 20ch; margin-bottom: 1.5rem;">Measure the number that decides when to refuse.</h1>
+  <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
+  <p class="lede">Nobody needs this page to get RE-call working. You need it when you want the answers to be trustworthy rather than merely plausible, and when you are ready to stop running in development mode.</p>
+</section>
+
+<div class="shell guide-layout" style="padding-bottom: clamp(4rem, 9vw, 7rem);">
+
+  <!-- Progress rail -->
+  <aside class="rail" data-rail>
+    <p class="rail-title">On this page</p>
+    <ol>
+      <li><a href="#what">What calibration measures</a></li>
+      <li><a href="#payoff">What you get for doing it</a></li>
+      <li><a href="#queries">Write the labelled queries</a></li>
+      <li><a href="#practice">Practise on the sample</a></li>
+      <li><a href="#your-corpus">Calibrate your own corpus</a></li>
+      <li><a href="#trust-mode">Leave development mode</a></li>
+      <li><a href="#again">When to do it again</a></li>
+      <li><a href="#advanced">Advanced: bound to a generation</a></li>
+    </ol>
+    <p class="rail-progress" data-rail-progress="Section">Section 1 of 8</p>
+  </aside>
+
+  <div>
+
+    <div class="steps">
+
+      <!-- ============================================ 1 -->
+      <section id="what" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">01</span>
+          <h2>What calibration measures</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Every search produces a best match and a similarity score. Calibration decides where the line sits: above it, RE-call answers from the match; below it, RE-call says it does not know. Calibration is the measurement that puts the line somewhere defensible instead of somewhere convenient.</p>
+
+          <p>You give it questions you already know the answers to, and questions you already know your memory cannot answer. It runs both sets against your corpus, looks at how the two score distributions sit relative to each other, and picks the threshold that separates them best. It also reports how well they separate at all, which is the part that tells you whether the number is worth having.</p>
+
+          <div class="notice">
+            <p class="notice-title">This is optional, and it comes last</p>
+            <p>If you followed <a href="start.html">the install path</a>, you already have a working memory that indexes and searches. Nothing here is required to keep that working. Come back when the corpus holds material you would be unhappy to see answered wrongly.</p>
+          </div>
+
+          <details class="why">
+            <summary>Why a fixed default cannot do this job</summary>
+            <div class="why-body">
+              <p>The threshold is an absolute cosine similarity, and cosine levels are a property of how an embedding model was trained, not a quantity that means the same thing across models. A number that is a sensible floor for one embedder sits below every score another embedder ever produces, where it can never fire, or above a sixth of them, where it discards real answers as though the corpus were empty.</p>
+              <p>That is why the shipped default is labelled a demonstration value rather than a setting, and why RE-call would rather refuse than quietly assume it applies to you.</p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- ============================================ 2 -->
+      <section id="payoff" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">02</span>
+          <h2>What you get for doing it</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Three things change, and the third is the one that matters.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Before</th><th>After</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Every result carries a <code>DEGRADED</code> tag, <code>INDEX_NOT_READY</code> on a fresh install and <code>CALIBRATION_MISSING</code> once a generation exists, and the CLI prints that it is using an uncertified demonstration threshold bound to no tenant, no generation and no corpus.</td>
+                  <td>The results carry a threshold measured on your own material, with your own embedder, and the degraded flag is gone.</td>
+                </tr>
+                <tr>
+                  <td><code>RECALL_TRUST_MODE=development</code> has to be set or searching stops. You are telling RE-call to answer despite having no evidence that it should.</td>
+                  <td>You can take that line out. Strict is the default, and it is the mode the product was designed for.</td>
+                </tr>
+                <tr>
+                  <td>An abstention means the guessed threshold was not cleared. It is not evidence that your corpus lacks the answer.</td>
+                  <td>An abstention becomes a measured decision, with a false confident rate you have seen a number for.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">The refusal is the product</p>
+            <p>An uncalibrated abstention tells you nothing, because you cannot tell a real gap in your memory from a threshold that was never right for your data. Calibration is what turns "it refused" into information you can act on.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================ 3 -->
+      <section id="queries" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">03</span>
+          <h2>Write the labelled queries</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">One JSON file, one array, one object per question. This is the only part that takes real thought, and it is worth the hour.</p>
+
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-label">queries.json</span>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body"><pre>[
+  {"query": "What is our current API rate limit?", "answerable": true},
+  {"query": "What is our refund policy?", "answerable": false}
+]</pre></div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Key</th><th>Required</th><th>What it does</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>query</code></td>
+                  <td>Yes</td>
+                  <td>The question, phrased the way someone would actually ask it. Not the words in your note.</td>
+                </tr>
+                <tr>
+                  <td><code>answerable</code></td>
+                  <td>Yes</td>
+                  <td><code>true</code> when your corpus really does contain the answer, <code>false</code> when it really does not. This is the label the measurement is built on, so a wrong one poisons the threshold.</td>
+                </tr>
+                <tr>
+                  <td><code>relevant_ids</code></td>
+                  <td>No</td>
+                  <td>The chunk ids that hold the answer. The command in section 05 does not need them. The generation bound flow in section 08 canonicalises them into the query set digest.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">You need both kinds, and the command enforces it</p>
+            <p>A file with only answerable questions is refused, and so is a file with only unanswerable ones. Calibration will not fit a threshold to one sided evidence, because a line drawn from examples that are all on the same side of it is not a measurement of anything. Every entry also needs both keys, or the file is refused before any work starts.</p>
+          </div>
+
+          <p>The unanswerable questions are not padding to satisfy that rule. They are the half of the file that teaches the threshold where to refuse, and refusing correctly is the whole point of the product. Write them the way your own users will stumble into them: plausible questions about your project, in the same vocabulary as the rest, that your memory simply has no answer for.</p>
+
+          <details class="why">
+            <summary>How many questions, and what makes a bad set</summary>
+            <div class="why-body">
+              <p>More is better, and balance between the two classes matters more than the total. The report you get back names how many of each it measured, and gives a separability interval rather than a single number, because the certification decision is applied to the lower bound of that interval. A thin or overlapping set produces an artifact that records why it was not certified rather than a threshold that pretends to be one.</p>
+              <p>The commonest mistake is writing the answerable questions by looking at the notes. That measures whether the embedder can match a paraphrase you wrote thirty seconds ago, not whether it can find the note from a question asked cold. Write the questions first, then check which ones your corpus can answer.</p>
+              <p>The second commonest is making the unanswerable questions obviously foreign, about the weather or a different industry. Those are easy to refuse and they flatter the threshold. Keep them close to home.</p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- ============================================ 4 -->
+      <section id="practice" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">04</span>
+          <h2>Practise on the sample</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">The package ships a small corpus and a matching labelled query file, so you can see the shape of both and prove the command runs before you build data of your own. First, find where they live.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -c "import recall.eval, pathlib; print(pathlib.Path(recall.eval.__file__).parent)"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -c "import recall.eval, pathlib; print(pathlib.Path(recall.eval.__file__).parent)"</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -c "import recall.eval, pathlib; print(pathlib.Path(recall.eval.__file__).parent)"</span></pre></div>
+            </div>
+          </div>
+
+          <p>That prints one directory. Inside it are <code>queries.json</code> and <code>corpus/</code>. Open the query file: it is the same format as section 03, at the size a real one should be. Now run the calibration against the pair, writing the result somewhere you will not confuse with your own.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli calibrate PASTE_PATH\queries.json --corpus PASTE_PATH\corpus --out sample-calibration.json</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli calibrate PASTE_PATH/queries.json --corpus PASTE_PATH/corpus --out sample-calibration.json</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli calibrate PASTE_PATH/queries.json --corpus PASTE_PATH/corpus --out sample-calibration.json</span></pre></div>
+            </div>
+          </div>
+
+          <p class="muted" style="font-size: 0.9375rem;">Replace <code>PASTE_PATH</code> with the directory the first command printed.</p>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">The threshold this produces is not yours</p>
+            <p>It belongs to the sample corpus and the sample questions. It is a demonstration that the mechanism works, not a measurement of your memory, and using it to judge your own answers would be worse than having no calibration at all, because the degraded flag would be gone and the number would still be wrong. Write it to <code>sample-calibration.json</code> as above, look at it, and then leave it alone.</p>
+          </div>
+
+          <details class="why">
+            <summary>What the command does to your database while it runs</summary>
+            <div class="why-body">
+              <p>It creates a throwaway table with a random name, indexes the corpus directory you pointed it at into that table, measures the top score for every labelled query, then drops the table again. Your real index is not read and not written. That is also why the corpus you pass does not have to be indexed beforehand: calibration indexes it itself, so the measurement is taken against exactly the material you named.</p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- ============================================ 5 -->
+      <section id="your-corpus" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">05</span>
+          <h2>Calibrate your own corpus</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Same command, your two paths. Run it from the folder that holds your <code>.env</code>, so the connection string and the embedder come from the answers you already gave the wizard.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli calibrate queries.json --corpus memory/ --out calibration.json</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli calibrate queries.json --corpus memory/ --out calibration.json</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli calibrate queries.json --corpus memory/ --out calibration.json</span></pre></div>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Part</th><th>What it is</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>queries.json</code></td>
+                  <td>Positional, and required. The labelled file from section 03. It is not a flag, so it takes no <code>--queries</code> in front of it.</td>
+                </tr>
+                <tr>
+                  <td><code>--corpus</code></td>
+                  <td>The directory to measure against. Pass it. Left out, it falls back to the corpus bundled with the package, and you would be calibrating the sample without meaning to.</td>
+                </tr>
+                <tr>
+                  <td><code>--out</code></td>
+                  <td>Where to write the artifact. The default is <code>calibration.json</code> in the current folder, and if you write it elsewhere the command prints the name of the environment variable to set. Do not read that as the search path picking it up: it does not, which is what section 06 is about. The file is read by <code>lint --semantic</code> and by the enterprise readiness check.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">You should see, in this shape</p>
+            <div class="terminal terminal--output">
+              <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+              <div class="terminal-body"><pre><span class="dim">embedder:  BAAI/bge-small-en-v1.5</span>
+<span class="ok">threshold: 0.615 (scale 0.05)</span>
+<span class="dim">separability (AUC): 0.941 [0.857, 1.000] over 24 answerable / 21 unanswerable</span>
+<span class="dim">FCR at default 0.50: 0.36 -&gt; at calibrated: 0.00</span>
+<span class="ok">saved: calibration.json</span></pre></div>
+            </div>
+            <p class="muted" style="font-size: 0.9375rem;">Your numbers will be different, because they are a measurement of your corpus and not of anyone else's.</p>
+          </div>
+
+          <p>Read the middle two lines rather than the threshold. Separability is how far apart the two groups of questions scored, reported as an interval because the certification decision is applied to its lower bound. The false confident rate is how often an unanswerable question would have been answered anyway, first at the shipped default and then at the threshold just measured.</p>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">If it says NOT CERTIFIED</p>
+            <p>The file is still written, and the command exits non zero. That is deliberate: the artifact records <code>certified: false</code> along with the reason, because deleting the evidence of why a measurement failed would leave you with nothing to act on. What it means in practice is that abstention on this corpus is not yet trustworthy, and you should not read a refusal as proof that the answer is absent. The usual cause is too few questions, or two groups that overlap. Add more of both kinds and measure again.</p>
+          </div>
+
+          <p class="escape">Command exits with a usage error, or cannot reach the database? <a href="troubleshooting.html#indexing">Search and calibration problems</a>.</p>
+        </div>
+      </section>
+
+      <!-- ============================================ 6 -->
+      <section id="trust-mode" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">06</span>
+          <h2>Leave development mode</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Step 5 of the install told you to add <code>RECALL_TRUST_MODE=development</code> to <code>.env</code>. This is where you take it back out. Delete that line, and delete it from the <code>env</code> block of <code>.mcp.json</code> too if you connected Claude Code.</p>
+
+          <div class="notice">
+            <p class="notice-title">Strict is what you get by leaving it out</p>
+            <p>There is no <code>RECALL_TRUST_MODE=strict</code> to type. Anything that is not the word <code>development</code> is strict, including a typo and including the variable being absent, so the gate cannot be opened by accident. Surrounding spaces and capitalisation are ignored, so <code>Development</code> does open it.</p>
+          </div>
+
+          <p>What changes: the banner about an uncertified demonstration threshold stops appearing, results stop carrying the degraded flag, and a search that cannot be backed by a calibration is refused before retrieval runs rather than answered with a warning attached. The refusal happens above the retrieval call, so a refused search never fetched any chunk text to leak in the first place.</p>
+
+          <p>A strict refusal names its reason with a stable code. These are an interface, meant to be automated on, so they are worth recognising.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Code</th><th>Meaning</th><th>What to do</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>INDEX_NOT_READY</code></td>
+                  <td>No active generation for this tenant.</td>
+                  <td>Build and promote a generation.</td>
+                </tr>
+                <tr>
+                  <td><code>CALIBRATION_MISSING</code></td>
+                  <td>No artifact bound to this tenant and generation.</td>
+                  <td>Calibrate against a labelled query set and publish it.</td>
+                </tr>
+                <tr>
+                  <td><code>CALIBRATION_UNCERTIFIED</code></td>
+                  <td>An artifact exists but was never certified. A draft counts here: it is statistically certified but is not the artifact anyone chose to serve.</td>
+                  <td>Certify and publish a replacement. The rejected evidence is kept.</td>
+                </tr>
+                <tr>
+                  <td><code>CALIBRATION_STALE</code></td>
+                  <td>A certified artifact no longer binds to the current lineage.</td>
+                  <td>Recalibrate. A rebuild or a privacy erasure changed the corpus fingerprint.</td>
+                </tr>
+                <tr>
+                  <td><code>LINEAGE_MISMATCH</code></td>
+                  <td>The generation's pipeline or corpus fingerprint is not what the artifact bound to.</td>
+                  <td>Recalibrate against the current generation.</td>
+                </tr>
+                <tr>
+                  <td><code>DEPENDENCY_UNAVAILABLE</code></td>
+                  <td>Something the gate needed was unreachable. The gate could not run, which is not the same as the gate finding nothing.</td>
+                  <td>Retry once the dependency is healthy.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">If strict refuses with INDEX_NOT_READY even though you just calibrated</p>
+            <p>That is expected on a plain local install, and it is not a mistake you made. The strict gate resolves calibration through the binding between a tenant and an active index generation, and the <code>calibration.json</code> written in section 05 has no such binding: it cannot prove which corpus, which pipeline or which labelled question set it was measured on. The file is a real measurement of your data and the numbers in it are yours to act on. What makes strict mode pass is publishing an artifact bound to a generation, which is section 08.</p>
+          </div>
+
+          <details class="why">
+            <summary>Why an unbound file is never loaded silently</summary>
+            <div class="why-body">
+              <p>Because the alternative is worse than refusing. If a threshold measured on last month's corpus were picked up automatically after a rebuild, every search would look certified and none of them would be. The binding exists so that "this result was calibrated" is a claim about an exact tenant, generation, pipeline fingerprint, corpus fingerprint and query set, all of which have to agree before the claim is made.</p>
+              <p>An old unbound file can still be brought in for audit continuity. It is stored as <code>legacy_unbound</code>, and no search path will ever select it on its own.</p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- ============================================ 7 -->
+      <section id="again" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">07</span>
+          <h2>When to do it again</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">A calibration is a measurement of one embedder against one corpus. Change either, and the number you measured is describing something that no longer exists.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>What changed</th><th>Recalibrate?</th><th>Why</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>A new embedding model</td>
+                  <td>Always</td>
+                  <td>Cosine levels belong to the model. A threshold measured for one embedder says nothing about another, and matching vector widths do not make it transferable.</td>
+                </tr>
+                <tr>
+                  <td>The corpus changed substantially</td>
+                  <td>Always</td>
+                  <td>New material shifts what the closest match to a question looks like, on both sides of the line. The old threshold was fitted to a distribution you no longer have.</td>
+                </tr>
+                <tr>
+                  <td>A generation was rebuilt</td>
+                  <td>Always</td>
+                  <td>The rebuild changes the corpus fingerprint, so any artifact bound to the previous one goes stale and cannot be republished against the new one.</td>
+                </tr>
+                <tr>
+                  <td>A privacy erasure ran</td>
+                  <td>Always</td>
+                  <td>An erasure changes the effective corpus fingerprint of every affected generation, and carries that change into replacements built from the old manifest.</td>
+                </tr>
+                <tr>
+                  <td>You edited or added a handful of notes</td>
+                  <td>No</td>
+                  <td>Ordinary growth. Revisit when the corpus looks materially different from the one you measured, or when abstentions start feeling wrong.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p>Keep the labelled query file under version control beside your corpus. The human labels are the expensive part and they stay reusable; it is the retrieval measurement that has to be taken again.</p>
+        </div>
+      </section>
+
+      <!-- ============================================ 8 -->
+      <section id="advanced" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">08</span>
+          <h2>Advanced: bound to a generation</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Everything above this line is the single machine path. What follows is a different subcommand for a different job: measuring a calibration that is bound to one immutable index generation, and deciding explicitly when it starts being served. If you are calibrating your own notes on your own laptop, you do not need it.</p>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">Two commands with the same name, and one of them is documented wrongly</p>
+            <p>The top level <code>calibrate</code> in section 05 takes a positional queries file with <code>--corpus</code> and <code>--out</code>. It has no <code>--generation</code> and no <code>--queries</code>. The generation bound command is <code>calibration calibrate</code>, and that one does take <code>--generation</code> and <code>--queries</code>. The repository's <code>docs/CALIBRATION.md</code> prints the generation bound flags against the top level command, which fails with a usage error. Use the forms on this page.</p>
+          </div>
+
+          <p>The measurement requires a generation in state <code>ready</code>, <code>active</code> or <code>retired</code>, and the embedder you select has to match the model and dimension that generation stored.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli --tenant acme calibration calibrate --generation gen_0a1b2c --queries queries.json</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --tenant acme calibration calibrate --generation gen_0a1b2c --queries queries.json</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --tenant acme calibration calibrate --generation gen_0a1b2c --queries queries.json</span></pre></div>
+            </div>
+          </div>
+
+          <p>That measures and stores. It does not put anything into service. Adding <code>--publish</code> attempts publication after the measurement is stored, so a failed certification still leaves the evidence behind to inspect.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli --tenant acme calibration calibrate --generation gen_0a1b2c --queries queries.json --publish</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --tenant acme calibration calibrate --generation gen_0a1b2c --queries queries.json --publish</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --tenant acme calibration calibrate --generation gen_0a1b2c --queries queries.json --publish</span></pre></div>
+            </div>
+          </div>
+
+          <p>Publication is a separate decision from measurement, and I would keep it that way even where one person does both. A measured artifact is evidence; a published artifact is the one a tenant is serving, and at most one artifact is published per tenant and generation. Superseded artifacts and their audit events stay available, and uncertified evidence is retained as rejected rather than deleted.</p>
+
+          <p>The rest of the group inspects and moves those artifacts.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli --tenant acme calibration list</span><span class="line">python -m recall.cli --tenant acme calibration show cal_0a1b2c</span><span class="line">python -m recall.cli --tenant acme calibration export cal_0a1b2c --output calibration-v2.json</span><span class="line">python -m recall.cli --tenant acme calibration import calibration-v2.json</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --tenant acme calibration list</span><span class="line">python3 -m recall.cli --tenant acme calibration show cal_0a1b2c</span><span class="line">python3 -m recall.cli --tenant acme calibration export cal_0a1b2c --output calibration-v2.json</span><span class="line">python3 -m recall.cli --tenant acme calibration import calibration-v2.json</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --tenant acme calibration list</span><span class="line">python3 -m recall.cli --tenant acme calibration show cal_0a1b2c</span><span class="line">python3 -m recall.cli --tenant acme calibration export cal_0a1b2c --output calibration-v2.json</span><span class="line">python3 -m recall.cli --tenant acme calibration import calibration-v2.json</span></pre></div>
+            </div>
+          </div>
+
+          <div class="notice">
+            <p class="notice-title">Exports are corpus data</p>
+            <p>An export carries the questions and the raw retrieval scores, plus checksums over the artifact and over the whole bundle. Treat the file with the same care as the memory it was measured against. An imported artifact comes back as a draft or as rejected; import never publishes anything by itself.</p>
+          </div>
+
+          <p class="escape">The full treatment, including states, search resolution and the grants a serving role needs: <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md">docs/CALIBRATION.md</a>.</p>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- ============================================ Where next -->
+    <section class="band" data-reveal style="padding-bottom: 0;">
+      <h2 style="font-size: clamp(1.5rem, 3vw, 2.25rem);">Where to go from here</h2>
+      <ul class="routes">
+        <li>
+          <a href="corpus.html">
+            <strong>Fill your memory</strong>
+            <span>A bigger corpus makes a better calibration, and the labelled questions are easier to write once the material is there.</span>
+            <em>→</em>
+          </a>
+        </li>
+        <li>
+          <a href="claude-code.html">
+            <strong>Work with Claude</strong>
+            <span>What a measured threshold changes about the results the MCP tools hand back.</span>
+            <em>→</em>
+          </a>
+        </li>
+        <li>
+          <a href="start.html">
+            <strong>Back to the install path</strong>
+            <span>The eight steps, including the development mode line this page takes away again.</span>
+            <em>→</em>
+          </a>
+        </li>
+        <li>
+          <a href="troubleshooting.html">
+            <strong>Something broke</strong>
+            <span>Usage errors, refused query files, and what each strict failure code is really telling you.</span>
+            <em>→</em>
+          </a>
+        </li>
+      </ul>
+    </section>
+
+  </div>
+</div>
+
+</main>
+
+<footer class="footer">
+  <div class="shell footer-inner">
+    <nav>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+      <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
+    </nav>
+    <small>Apache 2.0</small>
+  </div>
+</footer>
+
+</body>
+</html>

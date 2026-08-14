@@ -121,9 +121,9 @@ def _warn_uncalibrated(embedder_name: str) -> None:
         "no calibration found for embedder %r — abstention will use the UNTUNED default cosine "
         "floor %.2f. That constant is not comparable across embedders (measured: 0th percentile "
         "of five top-1 distributions, 16th of a sixth), so on some models it never fires and on "
-        "others it discards a sixth of queries as empty retrieval. Run `recall calibrate "
-        "--generation G --queries FILE --publish` for the active tenant generation to replace "
-        "the guess with an exact measurement.",
+        "others it discards a sixth of queries as empty retrieval. Run `recall calibration "
+        "calibrate --generation G --queries FILE --publish` for the active tenant generation to "
+        "replace the guess with an exact measurement.",
         embedder_name,
         DEFAULT_GAP_THRESHOLD,
     )

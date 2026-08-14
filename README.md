@@ -33,7 +33,7 @@
 </p>
 
 <p align="center">
-  <a href="https://giulioder.github.io/RE-call/">Beginner setup site, test version</a>
+  <a href="https://giulioder.github.io/RE-call/">Setup guide: install, configure and run RE-call</a>
 </p>
 
 ## Why RE-call

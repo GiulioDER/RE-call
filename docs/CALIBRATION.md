@@ -47,10 +47,10 @@ must match its stored model and dimension.
 
 ```bash
 recall --tenant acme --serving-dsn "$RECALL_SERVING_DSN" \
-  calibrate --generation gen_... --queries queries.json
+  calibration calibrate --generation gen_... --queries queries.json
 
 recall --tenant acme --serving-dsn "$RECALL_SERVING_DSN" \
-  calibrate --generation gen_... --queries queries.json --publish
+  calibration calibrate --generation gen_... --queries queries.json --publish
 ```
 
 Publishing is explicit. Creating a certified draft does not make it active. Creating with

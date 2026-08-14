@@ -1,26 +1,50 @@
+/* ==========================================================================
+   RE-call setup guide, design system.
+
+   Palette is inherited from docs/banner.html so this site reads as the same
+   object as the README header: near-black ground, one ink, one signal, and the
+   cyan/teal/purple rule used exactly once per page as a graphic element rather
+   than as an atmosphere. Three hues total.
+   ========================================================================== */
+
 :root {
-  --bg-0: #04060c;
-  --bg-1: #05080f;
-  --bg-2: #070c1a;
-  --bg-3: #0a1226;
-  --panel: rgba(8, 15, 27, 0.86);
-  --panel-strong: rgba(6, 12, 22, 0.96);
-  --panel-soft: rgba(10, 18, 34, 0.76);
+  /* Ground and elevated surfaces. Not pure black: #04060c holds a gradient. */
+  --ground: #04060c;
+  --surface-1: #080d17;
+  --surface-2: #0b1120;
+  --surface-3: #0f1728;
+
+  /* Ink */
   --ink: #f4f9ff;
   --ink-soft: #93aac8;
-  --ink-muted: #4c5f7a;
-  --cyan: #22d3ee;
-  --cyan-soft: #67e8f9;
-  --teal: #5eead4;
-  --purple: #8b5cf6;
+  --ink-muted: #5b6f8c;
+
+  /* The one signal colour. Actions, current state, warnings. */
   --signal: #f5a524;
-  --signal-soft: rgba(245, 165, 36, 0.12);
-  --line: rgba(103, 232, 249, 0.16);
-  --line-strong: rgba(103, 232, 249, 0.26);
-  --shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
-  --radius: 24px;
-  --radius-small: 14px;
-  --content: 74rem;
+  --signal-dim: rgba(245, 165, 36, 0.14);
+
+  /* The identity rule. Used once per page, as a line, never as a wash. */
+  --rule-a: #22d3ee;
+  --rule-b: #5eead4;
+  --rule-c: #8b5cf6;
+  --rule: linear-gradient(90deg, var(--rule-a) 0%, var(--rule-b) 42%, var(--rule-c) 100%);
+
+  /* Lines */
+  --line: rgba(147, 170, 200, 0.14);
+  --line-strong: rgba(147, 170, 200, 0.26);
+
+  /* Type */
+  --font-display: "Geist", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  /* Rhythm */
+  --shell: 72rem;
+  --shell-narrow: 46rem;
+  --radius: 14px;
+  --radius-sm: 8px;
+
+  /* Motion */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 * {
@@ -29,621 +53,1170 @@
 
 html {
   scroll-behavior: smooth;
+  /* Anchored steps must not hide under the sticky masthead. */
+  scroll-padding-top: 6rem;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   margin: 0;
+  background: var(--ground);
   color: var(--ink);
-  background:
-    radial-gradient(560px 460px at 74% 18%, rgba(34, 211, 238, 0.18) 0%, rgba(34, 211, 238, 0) 68%),
-    radial-gradient(420px 380px at 96% 2%, rgba(139, 92, 246, 0.18) 0%, rgba(139, 92, 246, 0) 70%),
-    radial-gradient(380px 320px at 72% 100%, rgba(94, 234, 212, 0.09) 0%, rgba(94, 234, 212, 0) 72%),
-    radial-gradient(560px 360px at 10% 92%, rgba(34, 211, 238, 0.06) 0%, rgba(34, 211, 238, 0) 72%),
-    linear-gradient(104deg, var(--bg-0) 0%, var(--bg-1) 44%, var(--bg-2) 68%, var(--bg-3) 100%);
-  font-family: "Segoe UI", system-ui, sans-serif;
-  line-height: 1.55;
+  font-family: var(--font-display);
+  font-size: 1.0625rem;
+  line-height: 1.65;
+  font-synthesis-weight: none;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* Film grain. Fixed, so it never repaints on scroll, and non-interactive.
+   0.035 is the threshold where it is felt but does not touch legibility. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+}
+
+/* --------------------------------------------------------------------------
+   Primitives
+   -------------------------------------------------------------------------- */
+
+.shell {
+  width: min(calc(100% - 2.5rem), var(--shell));
+  margin-inline: auto;
+}
+
+.shell-narrow {
+  width: min(calc(100% - 2.5rem), var(--shell-narrow));
+  margin-inline: auto;
 }
 
 a {
-  color: var(--cyan-soft);
+  color: var(--ink);
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 0.25em;
+  transition: color 0.3s var(--ease), text-decoration-color 0.3s var(--ease);
 }
 
 a:hover {
   color: var(--signal);
+  text-decoration-color: var(--signal);
 }
 
-img {
-  max-width: 100%;
+:where(a, button, summary, input):focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 3px;
+  border-radius: 3px;
 }
 
-.page-shell {
-  width: min(calc(100% - 2rem), var(--content));
-  margin: 0 auto;
-}
-
-.site-header {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  backdrop-filter: blur(18px);
-  background: rgba(4, 6, 12, 0.78);
-  border-bottom: 1px solid var(--line);
-}
-
-.site-header-inner {
-  display: flex;
-  gap: 1rem;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 0;
-}
-
-.brand {
-  display: flex;
-  flex-direction: column;
-  text-decoration: none;
-}
-
-.brand-mark {
-  font-size: 1.25rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  text-transform: uppercase;
-}
-
-.brand-note {
-  font-size: 0.83rem;
-  color: var(--ink-muted);
-}
-
-.top-nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.65rem;
-  justify-content: flex-end;
-}
-
-.top-nav a {
-  padding: 0.45rem 0.85rem;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  text-decoration: none;
-  font-size: 0.92rem;
-  color: var(--ink-soft);
-}
-
-.top-nav a.active,
-.top-nav a:hover,
-.top-nav a:focus-visible {
-  border-color: var(--line-strong);
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--ink);
-  outline: none;
-}
-
-.hero {
-  padding: 3rem 0 1.5rem;
-}
-
-.hero-panel,
-.content-grid,
-.card-grid,
-.page-card {
-  background: var(--panel);
-  border: 1px solid rgba(103, 232, 249, 0.12);
-  box-shadow: var(--shadow);
-}
-
-.hero-panel {
-  border-radius: 36px;
-  padding: 1.8rem;
-  overflow: hidden;
-  position: relative;
-}
-
-.hero-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(18rem, 0.85fr);
-  gap: 1.2rem;
-  align-items: start;
-}
-
-.hero-copy {
-  max-width: 46rem;
-}
-
-.hero-side {
-  align-self: stretch;
-}
-
-.hero-panel::after {
-  content: "";
-  position: absolute;
-  inset: auto -7% -18% auto;
-  width: 20rem;
-  height: 20rem;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(34, 211, 238, 0.24), rgba(34, 211, 238, 0) 72%);
-  pointer-events: none;
-}
-
-.eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin: 0 0 1rem;
-  font-size: 0.74rem;
+h1, h2, h3, h4 {
   font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--signal);
-}
-
-.eyebrow::before {
-  content: "";
-  width: 1.75rem;
-  height: 1px;
-  background: currentColor;
-}
-
-h1,
-h2,
-h3 {
-  line-height: 1.08;
-  margin: 0 0 0.75rem;
-  text-wrap: balance;
-}
-
-h1 {
-  font-size: clamp(2.4rem, 4vw, 4.2rem);
-  max-width: 16ch;
-  letter-spacing: -0.04em;
-}
-
-h2 {
-  font-size: clamp(1.65rem, 2.7vw, 2.2rem);
   letter-spacing: -0.03em;
+  line-height: 1.05;
+  text-wrap: balance;
+  margin: 0;
 }
 
-h3 {
-  font-size: 1.08rem;
-  letter-spacing: -0.01em;
+p {
+  margin: 0 0 1.1em;
+  max-width: 62ch;
 }
 
-.lede,
-.hero-summary {
-  font-size: 1rem;
+.lede {
+  font-size: clamp(1.125rem, 1.6vw, 1.375rem);
+  line-height: 1.55;
   color: var(--ink-soft);
-  max-width: 60ch;
-}
-
-.hero-summary,
-.content-grid p,
-.content-grid li,
-.card-grid p,
-.side-card li,
-.callout p,
-.warning p,
-.note p,
-.footer-card p,
-.signal-item div:last-child {
-  text-align: justify;
-  text-justify: inter-word;
-  text-wrap: pretty;
-  hyphens: auto;
-}
-
-.hero-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.9rem;
-  margin-top: 1.25rem;
-}
-
-.button,
-.button-secondary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.78rem 1.05rem;
-  border-radius: 999px;
-  text-decoration: none;
-  font-weight: 700;
-  border: 1px solid transparent;
-}
-
-.button {
-  background: linear-gradient(90deg, var(--cyan) 0%, var(--teal) 55%, var(--purple) 100%);
-  color: #041018;
-  box-shadow: 0 0 18px rgba(34, 211, 238, 0.22);
-}
-
-.button:hover,
-.button:focus-visible {
-  filter: brightness(1.05);
-  color: #041018;
-  outline: none;
-}
-
-.button-secondary {
-  background: rgba(255, 255, 255, 0.03);
-  border-color: var(--line);
-  color: var(--ink);
-}
-
-.button-secondary:hover,
-.button-secondary:focus-visible {
-  outline: none;
-  border-color: rgba(103, 232, 249, 0.34);
-}
-
-.signal-strip {
-  margin-top: 0;
-  padding: 1rem;
-  border: 1px solid var(--line);
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.03);
-  display: grid;
-  gap: 0.65rem;
-}
-
-.signal-item {
-  display: grid;
-  grid-template-columns: 6.25rem 1fr;
-  gap: 0.75rem;
-}
-
-.signal-label {
-  font-size: 0.78rem;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-}
-
-.card-grid {
-  display: grid;
-  gap: 0.9rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  padding: 0.9rem;
-  border-radius: 26px;
-}
-
-.card-grid article,
-.page-card {
-  border: 1px solid var(--line);
-  border-radius: 22px;
-  padding: 1.05rem;
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.card-grid p,
-.page-card p,
-.content-grid p,
-.content-grid li {
-  color: var(--ink-soft);
-}
-
-.card-grid article {
-  display: flex;
-  flex-direction: column;
-}
-
-.card-grid article .button-secondary {
-  margin-top: auto;
-}
-
-.kicker {
-  margin: 0 0 0.5rem;
-  font-size: 0.74rem;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--signal);
-  font-weight: 700;
-}
-
-.layout {
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(16rem, 1fr);
-  gap: 1.2rem;
-  padding: 1.6rem 0 3rem;
-}
-
-.content-grid {
-  border-radius: 28px;
-  padding: 1.2rem;
-}
-
-.page-card + .page-card,
-.page-section + .page-section {
-  margin-top: 1rem;
-}
-
-.page-section {
-  border-top: 1px solid var(--line);
-  padding-top: 0.9rem;
-}
-
-.page-section:first-child {
-  border-top: none;
-  padding-top: 0;
-}
-
-.side-panel {
-  position: sticky;
-  top: 5.8rem;
-  align-self: start;
-}
-
-.side-card {
-  border-radius: 24px;
-  padding: 1rem;
-  background: var(--panel-soft);
-  border: 1px solid rgba(103, 232, 249, 0.1);
-  box-shadow: var(--shadow);
-}
-
-.side-card + .side-card {
-  margin-top: 1rem;
-}
-
-.side-card h3 {
-  margin-bottom: 0.6rem;
-}
-
-.side-card ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.side-card li + li {
-  margin-top: 0.45rem;
-}
-
-.side-card a {
-  text-decoration: none;
-}
-
-.callout,
-.warning,
-.note,
-.screenshot {
-  border-radius: 18px;
-  padding: 0.9rem 1rem;
-  margin: 0.9rem 0;
-  border: 1px solid var(--line);
-}
-
-.callout {
-  background: rgba(34, 211, 238, 0.08);
-}
-
-.warning {
-  background: rgba(245, 165, 36, 0.1);
-}
-
-.note {
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.screenshot {
-  border-style: dashed;
-  background:
-    linear-gradient(135deg, rgba(34, 211, 238, 0.08), rgba(139, 92, 246, 0.08)),
-    rgba(255, 255, 255, 0.02);
-}
-
-.screenshot-title,
-.callout-title,
-.warning-title,
-.note-title {
-  font-weight: 700;
-  color: var(--ink);
-}
-
-.steps {
-  counter-reset: step;
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.steps li {
-  position: relative;
-  padding-left: 3.4rem;
-  min-height: 2.5rem;
-}
-
-.steps li + li {
-  margin-top: 1rem;
-}
-
-.steps li::before {
-  counter-increment: step;
-  content: counter(step);
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 2.3rem;
-  height: 2.3rem;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: linear-gradient(160deg, var(--cyan) 0%, #175360 100%);
-  color: #041018;
-  font-weight: 700;
-  font-family: "Consolas", "SFMono-Regular", "Courier New", monospace;
-  box-shadow: 0 0 16px rgba(34, 211, 238, 0.2);
-}
-
-.command-card {
-  border-radius: 20px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(6, 22, 30, 0.96) 0%, rgba(5, 15, 22, 0.98) 100%);
-  color: #f5f8f8;
-  margin: 0.9rem 0;
-  box-shadow: inset 0 1px 0 rgba(103, 232, 249, 0.06);
-}
-
-.command-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 0.7rem 0.95rem;
-  background: rgba(255, 255, 255, 0.04);
-  border-bottom: 1px solid rgba(103, 232, 249, 0.12);
-}
-
-.command-label {
-  font-size: 0.74rem;
-  text-transform: uppercase;
-  letter-spacing: 0.11em;
-  color: var(--ink-muted);
-}
-
-.copy-button {
-  border: 1px solid rgba(103, 232, 249, 0.2);
-  background: transparent;
-  color: var(--ink);
-  border-radius: 999px;
-  padding: 0.35rem 0.75rem;
-  cursor: pointer;
-}
-
-.copy-button:hover,
-.copy-button:focus-visible {
-  outline: none;
-  border-color: rgba(103, 232, 249, 0.5);
-}
-
-pre {
-  margin: 0;
-  overflow-x: auto;
-  padding: 0.95rem;
-  font-family: "Consolas", "SFMono-Regular", "Courier New", monospace;
-  font-size: 0.88rem;
-}
-
-code {
-  font-family: "Consolas", "SFMono-Regular", "Courier New", monospace;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 1rem 0;
-}
-
-th,
-td {
-  text-align: left;
-  vertical-align: top;
-  padding: 0.72rem;
-  border-top: 1px solid var(--line);
-}
-
-th {
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.11em;
-  color: var(--ink-muted);
-}
-
-.pill-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.55rem;
-  margin-top: 1rem;
-}
-
-.pill {
-  border-radius: 999px;
-  border: 1px solid rgba(103, 232, 249, 0.18);
-  padding: 0.4rem 0.75rem;
-  background: rgba(255, 255, 255, 0.04);
-  font-size: 0.86rem;
-}
-
-.mini-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.mini-list li + li {
-  margin-top: 0.75rem;
-}
-
-.footer {
-  padding: 0 0 3rem;
-}
-
-.footer-card {
-  border-radius: 24px;
-  padding: 1.05rem;
-  border: 1px solid var(--line);
-  background: var(--panel-soft);
-  box-shadow: var(--shadow);
+  max-width: 54ch;
 }
 
 .muted {
   color: var(--ink-soft);
 }
 
-@media (max-width: 960px) {
-  .hero-grid {
-    grid-template-columns: 1fr;
+/* Monospace metadata label, lifted from the banner's chips. */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin: 0 0 1rem;
+}
+
+.eyebrow--signal {
+  color: var(--signal);
+}
+
+/* The identity rule. One per page. */
+.rule {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--rule);
+  border: 0;
+  margin: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Masthead
+   -------------------------------------------------------------------------- */
+
+.masthead {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  background: color-mix(in srgb, var(--ground) 88%, transparent);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.3s var(--ease), background 0.3s var(--ease);
+}
+
+.masthead[data-scrolled="true"] {
+  border-bottom-color: var(--line);
+}
+
+.masthead-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2rem;
+  height: 4.5rem;
+}
+
+.wordmark {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  font-weight: 800;
+  font-size: 1.0625rem;
+  letter-spacing: -0.035em;
+  text-decoration: none;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.wordmark:hover {
+  color: var(--ink);
+}
+
+.wordmark span {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.masthead nav {
+  display: flex;
+  align-items: center;
+  gap: 1.75rem;
+  font-size: 0.875rem;
+}
+
+.masthead nav a {
+  color: var(--ink-soft);
+  text-decoration: none;
+  position: relative;
+  padding-block: 0.35rem;
+  white-space: nowrap;
+}
+
+.masthead nav a::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--signal);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.4s var(--ease);
+}
+
+.masthead nav a:hover,
+.masthead nav a[aria-current="page"] {
+  color: var(--ink);
+}
+
+.masthead nav a[aria-current="page"]::after,
+.masthead nav a:hover::after {
+  transform: scaleX(1);
+}
+
+/* Mobile nav collapses to a horizontally scrollable strip rather than a
+   hamburger: five links, all worth showing, no JS needed. */
+@media (max-width: 860px) {
+  .masthead-inner {
+    height: auto;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding-block: 0.75rem;
   }
 
-  .layout {
-    grid-template-columns: 1fr;
+  .wordmark {
+    padding-block: 0.35rem;
   }
 
-  .side-panel {
-    position: static;
+  .masthead nav {
+    gap: 1.25rem;
+    overflow-x: auto;
+    padding-block: 0.5rem;
+    scrollbar-width: none;
   }
 
-  .card-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .signal-item {
-    grid-template-columns: 1fr;
-  }
-
-  .hero-summary,
-  .content-grid p,
-  .content-grid li,
-  .card-grid p,
-  .side-card li,
-  .callout p,
-  .warning p,
-  .note p,
-  .footer-card p,
-  .signal-item div:last-child {
-    text-align: left;
-    hyphens: manual;
+  .masthead nav::-webkit-scrollbar {
+    display: none;
   }
 }
 
-@media (max-width: 640px) {
-  .site-header-inner {
-    flex-direction: column;
-    align-items: flex-start;
-  }
+/* --------------------------------------------------------------------------
+   Hero, Architecture D: the typographic poster.
+   Type is the graphic. No imagery, no scroll cue, one CTA.
+   -------------------------------------------------------------------------- */
 
-  .top-nav {
-    width: 100%;
-    justify-content: flex-start;
-  }
+.hero {
+  position: relative;
+  min-height: calc(100dvh - 4.5rem);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-block: clamp(4rem, 10vh, 8rem) clamp(2rem, 6vh, 4rem);
+  overflow: hidden;
+}
 
-  .hero-panel,
-  .content-grid,
-  .card-grid {
-    padding: 1rem;
+/* Single ambient light source, felt not seen. This is the only gradient on the
+   page body, and at 0.04 it reads as depth rather than as a glow blob. */
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse 55% 45% at 18% 32%, rgba(147, 170, 200, 0.055) 0%, transparent 72%);
+}
+
+.hero-inner {
+  position: relative;
+  z-index: 1;
+}
+
+.hero h1 {
+  font-size: clamp(2.75rem, 8.2vw, 7.5rem);
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 0.92;
+  max-width: 15ch;
+  margin-bottom: 1.75rem;
+}
+
+.hero h1 em {
+  font-style: normal;
+  color: var(--ink-muted);
+}
+
+.hero .rule {
+  width: min(100%, 30rem);
+  margin-bottom: 2rem;
+}
+
+.hero-lede {
+  font-size: clamp(1.0625rem, 1.5vw, 1.3125rem);
+  line-height: 1.55;
+  color: var(--ink-soft);
+  max-width: 48ch;
+  margin-bottom: 2.5rem;
+}
+
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 1.75rem;
+  flex-wrap: wrap;
+}
+
+/* Bottom-edge metadata strip, echoing the banner's monospace chips. */
+.hero-meta {
+  position: relative;
+  z-index: 1;
+  margin-top: auto;
+  padding-top: clamp(2.5rem, 8vh, 5rem);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 2.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+}
+
+.hero-meta b {
+  font-weight: 400;
+  color: var(--ink-soft);
+}
+
+/* --------------------------------------------------------------------------
+   Buttons
+   -------------------------------------------------------------------------- */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 44px;
+  padding: 0.75rem 1.6rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--signal);
+  color: #1a1204;
+  font-family: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform 0.5s var(--ease), box-shadow 0.5s var(--ease), background 0.3s var(--ease);
+}
+
+.button:hover {
+  color: #1a1204;
+  transform: translateY(-2px);
+  box-shadow: 0 10px 34px rgba(245, 165, 36, 0.22);
+}
+
+.button:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.button-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  color: var(--ink-soft);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.button-ghost::after {
+  content: "→";
+  transition: transform 0.4s var(--ease);
+}
+
+.button-ghost:hover {
+  color: var(--ink);
+}
+
+.button-ghost:hover::after {
+  transform: translateX(4px);
+}
+
+/* --------------------------------------------------------------------------
+   Section rhythm
+   -------------------------------------------------------------------------- */
+
+.band {
+  padding-block: clamp(4rem, 10vw, 7.5rem);
+  position: relative;
+}
+
+.band--tint {
+  background: var(--surface-1);
+  border-block: 1px solid var(--line);
+}
+
+.band--tight {
+  padding-block: clamp(2.5rem, 5vw, 4rem);
+}
+
+.band h2 {
+  font-size: clamp(1.75rem, 3.4vw, 3rem);
+  margin-bottom: 1.25rem;
+}
+
+.band--tint h2 {
+  font-size: clamp(1.5rem, 2.6vw, 2.25rem);
+}
+
+.section-head {
+  max-width: 40rem;
+  margin-bottom: clamp(2.5rem, 5vw, 4rem);
+}
+
+/* --------------------------------------------------------------------------
+   Terminal. The page's one object with depth, because it is the only thing
+   the reader acts on. Tab strip, prompt glyph, dimmed output.
+   -------------------------------------------------------------------------- */
+
+.terminal {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  margin-bottom: 1.5rem;
+}
+
+.terminal-bar {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 1rem;
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--line);
+  min-height: 2.75rem;
+}
+
+.terminal-tabs {
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.terminal-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.terminal-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  padding: 0 1rem;
+  cursor: pointer;
+  white-space: nowrap;
+  position: relative;
+  transition: color 0.3s var(--ease);
+}
+
+.terminal-tab::after {
+  content: "";
+  position: absolute;
+  left: 0.75rem;
+  right: 0.75rem;
+  bottom: 0;
+  height: 2px;
+  background: var(--signal);
+  transform: scaleX(0);
+  transition: transform 0.35s var(--ease);
+}
+
+.terminal-tab:hover {
+  color: var(--ink-soft);
+}
+
+.terminal-tab[aria-selected="true"] {
+  color: var(--ink);
+}
+
+.terminal-tab[aria-selected="true"]::after {
+  transform: scaleX(1);
+}
+
+/* A static label used where there is nothing to switch between. */
+.terminal-label {
+  display: flex;
+  align-items: center;
+  padding: 0 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.copy-button {
+  appearance: none;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0 1.1rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.3s var(--ease), background 0.3s var(--ease);
+}
+
+.copy-button:hover {
+  color: var(--ink);
+  background: rgba(147, 170, 200, 0.06);
+}
+
+.copy-button[data-state="done"] {
+  color: var(--signal);
+}
+
+.terminal-body {
+  padding: 1.1rem 1.25rem;
+  overflow-x: auto;
+}
+
+.terminal pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.75;
+  color: var(--ink);
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* The prompt glyph is generated, so it is never copied with the command. */
+.terminal--command pre > .line::before {
+  content: "$ ";
+  color: var(--signal);
+}
+
+/* Keyed off the root, not the block: a command block with no OS tab strip
+   (docker ps, which is identical everywhere) must still show the Windows
+   reader a PowerShell prompt like every block around it. */
+:root[data-shell="powershell"] .terminal--command pre > .line::before {
+  content: "PS> ";
+}
+
+.terminal pre > .line {
+  display: block;
+}
+
+/* Continuation lines of a wrapped command carry no prompt. */
+.terminal--command pre > .line--cont::before {
+  content: "   ";
+}
+
+/* Belt and braces over the user agent's own [hidden] rule, so a future display
+   declaration on these panes cannot silently reveal every OS variant at once. */
+[data-os-pane][hidden] {
+  display: none;
+}
+
+/* Output transcript: dimmer than the command, so the eye separates what you
+   type from what the machine says back. */
+.terminal--output {
+  box-shadow: none;
+  background: var(--surface-1);
+}
+
+.terminal--output pre {
+  color: var(--ink-soft);
+  font-size: 0.78125rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.terminal--output .ok {
+  color: var(--rule-b);
+}
+
+.terminal--output .warn {
+  color: var(--signal);
+}
+
+.terminal--output .dim {
+  color: var(--ink-muted);
+}
+
+.terminal--output .hit {
+  color: var(--ink);
+}
+
+/* --------------------------------------------------------------------------
+   Steps
+   -------------------------------------------------------------------------- */
+
+.steps {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(3.5rem, 7vw, 6rem);
+  counter-reset: step;
+}
+
+.step {
+  position: relative;
+  scroll-margin-top: 6rem;
+}
+
+.step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.step-number {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  color: var(--ink-muted);
+  padding-top: 0.4rem;
+}
+
+.step h2 {
+  font-size: clamp(1.5rem, 3vw, 2.25rem);
+  margin: 0;
+}
+
+.step-body {
+  padding-left: 0;
+}
+
+@media (min-width: 900px) {
+  .step-body {
+    padding-left: 4.25rem;
   }
+}
+
+.step-what {
+  color: var(--ink-soft);
+  max-width: 58ch;
+}
+
+/* --------------------------------------------------------------------------
+   Progress rail. Answers "how much longer", which is the question a reader
+   actually has mid-install.
+   -------------------------------------------------------------------------- */
+
+.guide-layout {
+  display: block;
+}
+
+@media (min-width: 1080px) {
+  .guide-layout {
+    display: grid;
+    grid-template-columns: 15rem minmax(0, 1fr);
+    gap: 4rem;
+    align-items: start;
+  }
+}
+
+.rail {
+  display: none;
+}
+
+@media (min-width: 1080px) {
+  .rail {
+    display: block;
+    position: sticky;
+    top: 7rem;
+    max-height: calc(100dvh - 10rem);
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+}
+
+.rail-title {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin-bottom: 1.25rem;
+}
+
+.rail ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-left: 1px solid var(--line);
+}
+
+.rail li {
+  position: relative;
+}
+
+.rail a {
+  display: block;
+  padding: 0.5rem 0 0.5rem 1.25rem;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--ink-muted);
+  text-decoration: none;
+  transition: color 0.3s var(--ease);
+}
+
+.rail a::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 0.5rem;
+  bottom: 0.5rem;
+  width: 2px;
+  background: var(--signal);
+  transform: scaleY(0);
+  transform-origin: top;
+  transition: transform 0.4s var(--ease);
+}
+
+.rail a:hover {
+  color: var(--ink-soft);
+}
+
+.rail a[data-active="true"] {
+  color: var(--ink);
+}
+
+.rail a[data-active="true"]::before {
+  transform: scaleY(1);
+}
+
+.rail-progress {
+  margin-top: 1.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.1em;
+  color: var(--ink-muted);
+}
+
+/* --------------------------------------------------------------------------
+   Notices. Three weights: neutral, signal, checkpoint.
+   -------------------------------------------------------------------------- */
+
+.notice {
+  border-left: 2px solid var(--line-strong);
+  padding: 0.25rem 0 0.25rem 1.25rem;
+  margin-block: 1.75rem;
+  max-width: 62ch;
+}
+
+.notice p:last-child {
+  margin-bottom: 0;
+}
+
+.notice-title {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin-bottom: 0.5rem;
+}
+
+.notice--signal {
+  border-left-color: var(--signal);
+  background: var(--signal-dim);
+  padding: 1rem 1.25rem;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.notice--signal .notice-title {
+  color: var(--signal);
+}
+
+/* "You should see this" checkpoint. */
+.checkpoint {
+  margin-block: 1.75rem;
+}
+
+.checkpoint-title {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin-bottom: 0.75rem;
+}
+
+.checkpoint-title::before {
+  content: "";
+  width: 1.25rem;
+  height: 2px;
+  background: var(--rule);
+  border-radius: 1px;
+}
+
+/* Failure escape hatch under each step. */
+.escape {
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+  margin-top: 1.5rem;
+}
+
+.escape a {
+  color: var(--ink-soft);
+}
+
+/* --------------------------------------------------------------------------
+   Disclosure. Nuance that must not block a first run.
+   -------------------------------------------------------------------------- */
+
+.why {
+  margin-block: 1.75rem;
+  max-width: 62ch;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.why > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.9rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.875rem;
+  color: var(--ink-soft);
+  transition: color 0.3s var(--ease);
+}
+
+.why > summary::-webkit-details-marker {
+  display: none;
+}
+
+.why > summary::before {
+  content: "+";
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--signal);
+  transition: transform 0.35s var(--ease);
+}
+
+.why[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.why > summary:hover {
+  color: var(--ink);
+}
+
+.why-body {
+  padding-bottom: 1.25rem;
+  font-size: 0.9375rem;
+  color: var(--ink-soft);
+}
+
+.why-body p:last-child {
+  margin-bottom: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Prose bits
+   -------------------------------------------------------------------------- */
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  color: var(--ink);
+  background: rgba(147, 170, 200, 0.09);
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
+  overflow-wrap: break-word;
+}
+
+.notice code,
+.why-body code {
+  color: var(--ink);
+}
+
+ul, ol {
+  padding-left: 1.25rem;
+  max-width: 62ch;
+}
+
+li {
+  margin-bottom: 0.5rem;
+}
+
+.plain-list {
+  list-style: none;
+  padding: 0;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  margin-block: 1.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 34rem;
+  font-size: 0.9375rem;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.85rem 1.1rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+thead th {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  background: var(--surface-1);
+}
+
+tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+td:first-child {
+  color: var(--ink);
+}
+
+td {
+  color: var(--ink-soft);
+}
+
+/* --------------------------------------------------------------------------
+   Landing page compositions
+   -------------------------------------------------------------------------- */
+
+/* Asymmetric split: heading anchored left, evidence right. */
+.split {
+  display: grid;
+  gap: clamp(2rem, 5vw, 4rem);
+}
+
+@media (min-width: 900px) {
+  .split {
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+    align-items: start;
+  }
+}
+
+/* Requirements strip: real facts, no invented metrics. */
+.facts {
+  display: grid;
+  gap: 1px;
+  background: var(--line);
+  border-block: 1px solid var(--line);
+}
+
+@media (min-width: 720px) {
+  .facts {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.fact {
+  background: var(--ground);
+  padding: 1.75rem 1.5rem;
+}
+
+.fact dt {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin-bottom: 0.6rem;
+}
+
+.fact dd {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.fact dd small {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--ink-muted);
+  margin-top: 0.35rem;
+}
+
+/* Route list: where to go after the guide. Deliberately not a card grid. */
+.routes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-width: none;
+  border-top: 1px solid var(--line);
+}
+
+.routes li {
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.routes a {
+  display: grid;
+  gap: 0.35rem 2rem;
+  padding: 1.5rem 0;
+  text-decoration: none;
+  transition: padding-left 0.4s var(--ease);
+}
+
+@media (min-width: 760px) {
+  .routes a {
+    grid-template-columns: 14rem minmax(0, 1fr) 2rem;
+    align-items: baseline;
+  }
+}
+
+.routes a:hover {
+  padding-left: 0.75rem;
+  color: var(--ink);
+}
+
+.routes strong {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.routes span {
+  color: var(--ink-soft);
+  font-size: 0.9375rem;
+}
+
+.routes em {
+  font-style: normal;
+  color: var(--ink-muted);
+  justify-self: end;
+  transition: transform 0.4s var(--ease), color 0.3s var(--ease);
+}
+
+.routes a:hover em {
+  transform: translateX(4px);
+  color: var(--signal);
+}
+
+/* Closing call. One heading, one button. */
+.closer {
+  text-align: center;
+  padding-block: clamp(4rem, 9vw, 7rem);
+  border-top: 1px solid var(--line);
+}
+
+.closer h2 {
+  font-size: clamp(1.875rem, 4.2vw, 3.25rem);
+  margin-bottom: 1rem;
+}
+
+.closer p {
+  margin-inline: auto;
+  margin-bottom: 2rem;
+  color: var(--ink-soft);
+}
+
+/* --------------------------------------------------------------------------
+   Footer
+   -------------------------------------------------------------------------- */
+
+.footer {
+  border-top: 1px solid var(--line);
+  padding-block: 2.5rem 3.5rem;
+  font-size: 0.875rem;
+}
+
+.footer-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem 2rem;
+}
+
+.footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+}
+
+.footer a {
+  color: var(--ink-soft);
+  text-decoration: none;
+}
+
+.footer a:hover {
+  color: var(--signal);
+}
+
+.footer small {
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+}
+
+/* --------------------------------------------------------------------------
+   Motion. Transform and opacity only.
+   -------------------------------------------------------------------------- */
+
+/* The hidden state is applied only once JS has confirmed it can un-apply it.
+   Without this gate, a failed script or an observer that never delivers would
+   leave the page permanently blank, which on an install guide is a far worse
+   outcome than losing an animation. */
+.reveal-ready [data-reveal] {
+  opacity: 0;
+  transform: translateY(18px);
+}
+
+.reveal-ready [data-reveal][data-shown="true"] {
+  opacity: 1;
+  transform: none;
+  transition: opacity 0.7s var(--ease), transform 0.7s var(--ease);
+}
+
+/* Hero entry: background settles, then heading, rule, lede, CTA. Under 800ms. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(22px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes widen {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: none;
+  }
+}
+
+.hero-inner > * {
+  animation: rise 0.7s var(--ease) both;
+}
+
+.hero-inner > :nth-child(1) { animation-delay: 0.05s; }
+.hero-inner > :nth-child(2) { animation-delay: 0.12s; }
+.hero-inner > :nth-child(3) { animation-delay: 0.22s; }
+.hero-inner > :nth-child(4) { animation-delay: 0.3s; }
+.hero-inner > :nth-child(5) { animation-delay: 0.38s; }
+
+.hero .rule {
+  transform-origin: left;
+  animation: widen 0.8s var(--ease) 0.22s both;
+}
+
+.hero-meta {
+  animation: rise 0.7s var(--ease) 0.46s both;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -654,7 +1227,52 @@ th {
   *,
   *::before,
   *::after {
-    animation: none !important;
-    transition: none !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .reveal-ready [data-reveal] {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Print: someone following an install guide may well print it.
+   -------------------------------------------------------------------------- */
+
+@media print {
+  body {
+    background: #fff;
+    color: #000;
+  }
+
+  body::after,
+  .masthead,
+  .rail,
+  .copy-button,
+  .closer {
+    display: none !important;
+  }
+
+  .terminal {
+    box-shadow: none;
+    border-color: #999;
+  }
+
+  .terminal pre,
+  .terminal--output pre {
+    color: #000;
+  }
+
+  .why[open] .why-body,
+  .why-body {
+    display: block;
+  }
+
+  [data-reveal] {
+    opacity: 1;
+    transform: none;
   }
 }

@@ -1,244 +1,524 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Build Your Corpus · RE-call Setup Manual</title>
-  <meta name="description" content="How to build a RE-call corpus from your own data, structure memory files, and calibrate retrieval correctly.">
-  <link rel="stylesheet" href="styles.css">
-  <script src="app.js" defer></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your memory · RE-call setup</title>
+<meta name="description" content="How to go from one example memory file to a real RE-call corpus: one durable fact per file, the frontmatter convention, a folder layout that survives growth, and how to keep it current.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
 </head>
 <body>
-  <header class="site-header">
-    <div class="page-shell site-header-inner">
-      <a class="brand" href="index.html">
-        <span class="brand-mark">RE-call Setup Manual</span>
-        <span class="brand-note">Beginner path for Windows and macOS</span>
-      </a>
-      <nav class="top-nav" aria-label="Primary">
-        <a href="index.html">Home</a>
-        <a href="requirements.html">Requirements</a>
-        <a href="installation.html">Installation</a>
-        <a class="active" href="corpus.html">Build Your Corpus</a>
-        <a href="claude-code.html">Claude Code</a>
-      </nav>
-    </div>
-  </header>
 
-  <main class="page-shell layout">
-    <div class="content-grid">
-      <section class="page-section" id="what-a-corpus-is">
-        <p class="eyebrow">Your data</p>
-        <h1>Turn your own notes, decisions, and project memory into a searchable corpus.</h1>
-        <p class="lede">
-          A RE-call corpus is not just “some files in a folder.” It is a set of markdown documents
-          whose text, validity hints, and metadata are worth trusting enough to retrieve later.
-        </p>
-        <div class="callout">
-          <div class="callout-title">Simple mental model</div>
-          <p>Each markdown file is a memory unit. RE-call chunks it, embeds it, stores the vectors in PostgreSQL, and later decides whether any retrieved chunk is trustworthy enough to answer from.</p>
-        </div>
-      </section>
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="index.html">RE-call <span>Setup</span></a>
+    <nav>
+      <a href="start.html">Install</a>
+      <a href="corpus.html" aria-current="page">Your memory</a>
+      <a href="claude-code.html">Claude Code</a>
+      <a href="calibration.html">Calibration</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+    </nav>
+  </div>
+</header>
 
-      <section class="page-section" id="good-corpus-shape">
-        <p class="eyebrow">Corpus shape</p>
-        <h2>What good source material looks like</h2>
-        <div class="card-grid">
-          <article>
-            <p class="kicker">Good candidates</p>
-            <ul>
-              <li>Project decisions with dates and clear outcomes.</li>
-              <li>Research notes that record what changed and why.</li>
-              <li>Customer specific facts you need to retrieve later.</li>
-              <li>One fact per file when the fact should be independently discoverable.</li>
-            </ul>
-          </article>
-          <article>
-            <p class="kicker">Weak candidates</p>
-            <ul>
-              <li>Huge mixed notes files that bundle unrelated topics together.</li>
-              <li>Temporary scratch text with no durable value.</li>
-              <li>Files whose wording is vague enough that you cannot tell whether the idea is still valid.</li>
-              <li>Data you are not allowed to send through your chosen embedder path.</li>
-            </ul>
-          </article>
-        </div>
-        <div class="note">
-          <div class="note-title">A practical beginner rule</div>
-          <p>If you want to ask a future agent “what did we decide about X?”, X should probably live in its own markdown file or in a very tightly scoped note.</p>
-        </div>
-      </section>
+<main>
 
-      <section class="page-section" id="memory-layout">
-        <p class="eyebrow">Recommended layout</p>
-        <h2>Start with the Claude memory pattern if you are unsure</h2>
-        <p>The setup wizard can scaffold a `memory/` folder and a starter `memory/MEMORY.md`. That is the easiest structure to grow from.</p>
-        <div class="command-card">
-          <div class="command-top">
-            <span class="command-label">Example structure</span>
-            <button class="copy-button" data-copy-target="#memory-layout-tree">Copy</button>
+<section class="shell" style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(2rem, 5vw, 3.5rem);">
+  <p class="eyebrow">Your memory</p>
+  <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 20ch; margin-bottom: 1.5rem;">One file taught you the mechanism. Now fill it without regretting the shape.</h1>
+  <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
+  <p class="lede">You have a working install and one example memory. Everything below is about the decisions that are cheap now and expensive in six months: what goes in a file, how many facts it holds, and how you find it again.</p>
+</section>
+
+<div class="shell guide-layout" style="padding-bottom: clamp(4rem, 9vw, 7rem);">
+
+  <!-- Contents rail -->
+  <aside class="rail" data-rail>
+    <p class="rail-title">On this page</p>
+    <ol>
+      <li><a href="#memory">What a memory is</a></li>
+      <li><a href="#one-fact">One fact per file</a></li>
+      <li><a href="#frontmatter">The frontmatter</a></li>
+      <li><a href="#index-file">The MEMORY.md index</a></li>
+      <li><a href="#layout">A layout worth copying</a></li>
+      <li><a href="#weak">What makes a weak memory</a></li>
+      <li><a href="#current">Keeping it current</a></li>
+      <li><a href="#checks">Checking your corpus</a></li>
+      <li><a href="#next">Where to go next</a></li>
+    </ol>
+    <p class="rail-progress" data-rail-progress="Section">Section 1 of 9</p>
+  </aside>
+
+  <div>
+
+    <div class="steps">
+
+      <!-- ============================================ 1 -->
+      <section id="memory" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">01</span>
+          <h2>What a memory actually is</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">A memory is a markdown file whose text is worth trusting later. That is the whole definition, and it is stricter than it sounds. The test is not "did I write this down", it is "would I be comfortable if this paragraph came back to me in six months as the answer to a question, with no chance to explain it".</p>
+
+          <p>A folder of scratch notes fails that test. Notes are written to get something out of your head today; a memory is written to be read by someone who has forgotten the context, which includes you.</p>
+
+          <p>RE-call reads each markdown file, splits it into chunks of a few sentences, turns each chunk into a vector with your embedder, and stores the text and the vector together. A search compares your question against those vectors and then decides whether anything it found is good enough to answer from. Text that is vague, undated or half about something else survives the first two stages and fails the third.</p>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">Only markdown is picked up</p>
+            <p>The default file pattern is <code>**/*.md</code>, so a PDF, a text file or a spreadsheet sitting in the same folder is ignored. <code>--glob</code> overrides the pattern when you want something else, and a glob ending in <code>.py</code> switches RE-call to code chunking automatically, which splits on function boundaries rather than on prose.</p>
           </div>
-          <pre id="memory-layout-tree">memory/
+        </div>
+      </section>
+
+      <!-- ============================================ 2 -->
+      <section id="one-fact" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">02</span>
+          <h2>One durable fact per file</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">This is the single most useful rule on the page, and it is the one people break first. If you follow nothing else here, follow this.</p>
+
+          <p>The reason is mechanical. A file is split into chunks, and each chunk is stored as one point of meaning. When a file bundles ten unrelated topics, the split lands wherever the character count says it should, not where the topics change, so several chunks end up half about one thing and half about another. Each of those is a middling match for all ten questions and a strong match for none of them. The gate that decides whether to answer sees a middling score, abstains, and you get nothing back from a file that genuinely contained the answer.</p>
+
+          <p>A file about one thing does not have that problem. Every chunk in it is about the same subject, so a question on that subject matches strongly and clears the threshold, and a question on any other subject matches weakly enough that RE-call correctly declines to use it.</p>
+
+          <div class="split">
+            <div>
+              <p class="eyebrow eyebrow--signal">Good</p>
+              <div class="terminal">
+                <div class="terminal-bar">
+                  <span class="terminal-label">memory/rate-limits.md</span>
+                  <button class="copy-button" type="button">Copy</button>
+                </div>
+                <div class="terminal-body"><pre>---
+name: api-rate-limit
+description: The request ceiling we agreed for the public API.
+metadata:
+  type: project
+---
+
+Clients may issue 100 requests per minute against the public API.
+We agreed this on 12 August 2026, after the load test showed the
+gateway degrading above 140. Bursts up to 150 are tolerated for
+10 seconds before throttling starts.</pre></div>
+              </div>
+              <p class="muted" style="font-size: 0.9375rem;">One subject. A number, a date, and the reason the number is what it is. Every chunk of it answers the same question.</p>
+            </div>
+
+            <div>
+              <p class="eyebrow">Bad</p>
+              <div class="terminal">
+                <div class="terminal-bar">
+                  <span class="terminal-label">memory/notes.md</span>
+                  <button class="copy-button" type="button">Copy</button>
+                </div>
+                <div class="terminal-body"><pre>---
+name: notes
+description: Notes.
+---
+
+API limit is 100/min I think, ask Sam to confirm.
+Postgres 16 is the floor now. 15 was dropped.
+TODO: check whether the retry backoff is still 2s.
+Sam is in GMT+1 and prefers asynchronous review.
+The staging box ran out of disk on Tuesday.
+Retry policy: three attempts, then dead letter.</pre></div>
+              </div>
+              <p class="muted" style="font-size: 0.9375rem;">Six subjects, one description that describes none of them, and a hedge ("I think") that makes the first line unusable. Ask about rate limits and you get a chunk that is also about Postgres versions. Split it into six files, drop the TODO, and every one of them becomes retrievable.</p>
+            </div>
+          </div>
+
+          <div class="notice">
+            <p class="notice-title">A test you can apply while writing</p>
+            <p>Say out loud the question this file should answer. If you need the word "and" to say it, you have two files.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================ 3 -->
+      <section id="frontmatter" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">03</span>
+          <h2>The frontmatter convention</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">The block at the top of the file, between the two lines of dashes, is frontmatter. <code>memory/MEMORY.md</code> documents the convention the setup wizard scaffolds, and it is three keys.</p>
+
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-label">memory/api-rate-limit.md</span>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body"><pre>---
+name: api-rate-limit
+description: The request ceiling we agreed for the public API.
+metadata:
+  type: project
+---</pre></div>
+          </div>
+
+          <p><code>name</code> is a short kebab case slug. <code>description</code> is a summary of one line, and it is the line used to judge whether this file is relevant, so write it as the answer to "what is this file for" rather than as a title. <code>metadata.type</code> is one of four values, and the four are worth using consistently.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>type</th><th>What it holds</th><th>Use it when</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>project</code></td>
+                  <td>Decisions, constraints and agreements that belong to one piece of work.</td>
+                  <td>The fact would stop being true if the project ended. This is the most common type by a wide margin.</td>
+                </tr>
+                <tr>
+                  <td><code>user</code></td>
+                  <td>Facts about the person the work is for: preferences, working hours, constraints they have stated.</td>
+                  <td>The fact would still be true on a completely different project.</td>
+                </tr>
+                <tr>
+                  <td><code>feedback</code></td>
+                  <td>Something you were told about your own output: a correction, a rejected approach, a standard imposed after the fact.</td>
+                  <td>You want the next attempt to avoid a mistake the last one made.</td>
+                </tr>
+                <tr>
+                  <td><code>reference</code></td>
+                  <td>Durable background nobody decided: environment facts, external specifications, a distilled version of documentation you keep looking up.</td>
+                  <td>You would go and look it up otherwise, and looking it up is slow.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="notice">
+            <p class="notice-title">Nothing enforces the vocabulary</p>
+            <p>RE-call will index a file whose <code>type</code> says anything at all, and a file with no frontmatter is indexed too. The value earns its keep by being consistent: it tells a later reader what kind of claim the file makes, and it is the difference between "the project decided this" and "this is just how the world is", which is exactly the distinction you lose first.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================ 4 -->
+      <section id="index-file" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">04</span>
+          <h2>The MEMORY.md index</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">The wizard scaffolds <code>memory/</code> and <code>memory/MEMORY.md</code>. That second file is an always loaded index: one line per memory, pointing at the file that holds it. The facts themselves stay in their own files.</p>
+
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-label">memory/MEMORY.md</span>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body"><pre># Memory index
+
+- [API rate limit](project/api-rate-limit.md): 100 per minute, agreed 12 August 2026.
+- [Postgres version floor](project/postgres-floor.md): 16 is the oldest supported.
+- [Retry policy](project/retry-policy.md): three attempts, then dead letter.
+- [Review preferences](user/review-preferences.md): asynchronous, small pull requests.
+- [Deploy environments](reference/deploy-environments.md): what staging and prod actually run.</pre></div>
+          </div>
+
+          <p>A line is a pointer and a hook, never the fact itself. The hook exists so that a reader scanning the index can tell whether the file behind it is the one they want.</p>
+
+          <p>Keeping the index separate from the facts matters because the two are read in completely different ways. The index is loaded in full, every time, so its cost is paid on every single turn and it has to stay short. The facts are retrieved on demand, only when a question makes them relevant, and only if they clear the confidence threshold. Move a fact up into the index and you pay for it constantly and you bypass the gate that decides whether it should have been used at all. Move the index down into the files and nothing knows what exists.</p>
+
+          <div class="notice">
+            <p class="notice-title">MEMORY.md gets indexed too</p>
+            <p>It is itself a markdown file inside <code>memory/</code>, so <code>index</code> picks it up along with everything else. That is harmless. It is why the install guide's first index reported two files when you had written one.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================ 5 -->
+      <section id="layout" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">05</span>
+          <h2>A layout worth copying</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">A flat <code>memory/</code> folder is fine for a handful of files and unreadable at forty. This is the shape I use once a corpus starts growing, and it costs nothing to adopt on day one.</p>
+
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-label">Folder layout</span>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body"><pre>memory/
   MEMORY.md
-  pricing-model-decision.md
-  retrieval-threshold-study.md
-  customer-acme-onboarding.md</pre>
-        </div>
-        <div class="note">
-          <div class="note-title">What `MEMORY.md` does</div>
-          <p>It acts as the always loaded index of your memory folder. Individual facts still live in their own markdown files, but `MEMORY.md` points to them and documents the convention.</p>
-        </div>
-        <div class="screenshot">
-          <div class="screenshot-title">Screenshot to add later</div>
-          <p>Asset hint: `corpus-memory-folder-layout.png`</p>
-        </div>
-      </section>
-
-      <section class="page-section" id="indexing">
-        <p class="eyebrow">Indexing</p>
-        <h2>How to load your corpus into RE-call</h2>
-        <p>Once your files are ready, index the folder you want RE-call to search.</p>
-        <div class="command-card">
-          <div class="command-top">
-            <span class="command-label">Windows PowerShell and macOS shell</span>
-            <button class="copy-button" data-copy-target="#index-own-corpus">Copy</button>
+  project/
+    api-rate-limit.md
+    postgres-floor.md
+    retry-policy.md
+  user/
+    review-preferences.md
+    working-hours.md
+  feedback/
+    rejected-batch-import.md
+  reference/
+    deploy-environments.md
+    gateway-error-codes.md</pre></div>
           </div>
-          <pre id="index-own-corpus">python -m recall.cli index memory/</pre>
-        </div>
-        <div class="callout">
-          <div class="callout-title">What happens during indexing</div>
-          <p>RE-call reads the markdown, splits it into chunks, generates vectors with your chosen embedder, and writes the searchable representation into PostgreSQL.</p>
-        </div>
-      </section>
 
-      <section class="page-section" id="calibration">
-        <p class="eyebrow">Calibration</p>
-        <h2>Calibration is specific to your corpus and your embedder</h2>
-        <p>The repo ships a demo query set and demo corpus. That is useful because it shows the workflow end to end. It is not enough to certify your own memory store.</p>
-        <table>
-          <thead>
-            <tr>
-              <th>Calibration type</th>
-              <th>What it proves</th>
-              <th>What it does not prove</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Bundled demo calibration</td>
-              <td>The command flow works and the labeled JSON format is correct.</td>
-              <td>That the threshold transfers to your own corpus.</td>
-            </tr>
-            <tr>
-              <td>Your own labeled calibration</td>
-              <td>That this exact corpus and embedder path were measured together.</td>
-              <td>That the threshold will still hold after major corpus or model changes.</td>
-            </tr>
-          </tbody>
-        </table>
-        <div class="warning">
-          <div class="warning-title">Important rule</div>
-          <p>If you switch embedder, change the corpus substantially, or rebuild the generation, assume you need to calibrate again.</p>
-        </div>
-      </section>
+          <p>The subfolders mirror the four <code>type</code> values, so the folder a file sits in and the frontmatter inside it say the same thing, and a wrong filing is visible without opening anything. Indexing does not change: the default pattern recurses, so one command still covers the whole tree.</p>
 
-      <section class="page-section" id="make-labeled-set">
-        <p class="eyebrow">Labeled queries</p>
-        <h2>How to create a usable calibration set</h2>
-        <p>Your JSON file needs at least one answerable query and at least one unanswerable query. Each entry needs a `query` and an `answerable` key.</p>
-        <div class="command-card">
-          <div class="command-top">
-            <span class="command-label">Minimal example</span>
-            <button class="copy-button" data-copy-target="#queries-example">Copy</button>
-          </div>
-          <pre id="queries-example">[
-  {"query": "What is our current API limit?", "answerable": true},
-  {"query": "Which habitat do we use on Mars?", "answerable": false}
-]</pre>
-        </div>
-        <div class="note">
-          <div class="note-title">How to think about “unanswerable”</div>
-          <p>An unanswerable query is a question your corpus should refuse because the answer is not there. Those examples are essential because RE-call is designed to abstain rather than hallucinate a nearest match.</p>
-        </div>
-      </section>
-
-      <section class="page-section" id="run-calibration">
-        <p class="eyebrow">Run it</p>
-        <h2>Practice with the bundled sample, then measure your own data</h2>
-        <p>First, locate the bundled sample files if you want a safe practice run:</p>
-        <div class="command-card">
-          <div class="command-top">
-            <span class="command-label">Windows PowerShell and macOS shell</span>
-            <button class="copy-button" data-copy-target="#find-sample">Copy</button>
-          </div>
-          <pre id="find-sample">python -c "import recall.eval, pathlib; print(pathlib.Path(recall.eval.__file__).parent)"</pre>
-        </div>
-        <p>Then build your real calibration set and run the generation bound calibration flow from the technical docs. The pattern looks like this:</p>
-        <div class="card-grid">
-          <article>
-            <p class="kicker">Create a draft measurement</p>
-            <div class="command-card">
-              <div class="command-top">
-                <span class="command-label">One line example</span>
-                <button class="copy-button" data-copy-target="#calibration-draft">Copy</button>
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
               </div>
-              <pre id="calibration-draft">recall --tenant acme --serving-dsn "postgresql://user:pass@host:5432/dbname" calibrate --generation gen_... --queries queries.json</pre>
+              <button class="copy-button" type="button">Copy</button>
             </div>
-          </article>
-          <article>
-            <p class="kicker">Create and publish</p>
-            <div class="command-card">
-              <div class="command-top">
-                <span class="command-label">One line example</span>
-                <button class="copy-button" data-copy-target="#calibration-publish">Copy</button>
-              </div>
-              <pre id="calibration-publish">recall --tenant acme --serving-dsn "postgresql://user:pass@host:5432/dbname" calibrate --generation gen_... --queries queries.json --publish</pre>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli index memory/</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli index memory/</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli index memory/</span></pre></div>
             </div>
-          </article>
-        </div>
-        <div class="note">
-          <div class="note-title">What “publish” means here</div>
-          <p>A measured artifact is not automatically active. The technical docs say publication is explicit, which is what makes a certified calibration become the one the tenant serves.</p>
-        </div>
-        <div class="warning">
-          <div class="warning-title">Do not ship the sample threshold as your production truth</div>
-          <p>The docs are explicit: calibration belongs to the corpus and embedder it was measured on. The sample is only a tutorial scaffold.</p>
-        </div>
-        <div class="screenshot">
-          <div class="screenshot-title">Screenshot to add later</div>
-          <p>Asset hint: `corpus-calibration-sample-path.png`</p>
+          </div>
+
+          <details class="why">
+            <summary>Two naming habits that pay off later</summary>
+            <div class="why-body">
+              <p>Name the file after the fact, not after the occasion. <code>api-rate-limit.md</code> is findable by anyone; <code>meeting-2026-08-12.md</code> is findable only by someone who already remembers the meeting. The date belongs in the body, where it is part of the claim, and the body is what gets searched.</p>
+              <p>Match the filename to the <code>name</code> in the frontmatter. They serve different systems, you reading a directory listing and RE-call describing a hit, and keeping them identical means you never have to hold two names for one fact in your head.</p>
+            </div>
+          </details>
         </div>
       </section>
+
+      <!-- ============================================ 6 -->
+      <section id="weak" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">06</span>
+          <h2>What makes a weak memory</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">These four are the ones I see most. All of them index perfectly happily. That is the problem: a weak memory does not fail loudly, it just quietly makes your corpus less trustworthy.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Weak</th><th>Why it fails</th><th>Write instead</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>"The rate limit is fairly high, I think."</td>
+                  <td>You cannot tell whether the claim still holds, or whether it ever did. Retrieved in six months it is worse than nothing, because it looks like an answer.</td>
+                  <td>The number, and the evidence behind the number.</td>
+                </tr>
+                <tr>
+                  <td>"We decided to use Postgres."</td>
+                  <td>An undated decision cannot be superseded, because nothing tells you which of two contradicting files is the newer one.</td>
+                  <td>The decision, the date it was taken, and what it replaced.</td>
+                </tr>
+                <tr>
+                  <td>"TODO: check the backoff, ping Sam."</td>
+                  <td>Temporary scratch text. It is a task, not a fact, it is stale within a week, and it stays retrievable long after it stops being true.</td>
+                  <td>Nothing. Tasks belong in your tracker. Write the memory once the answer exists.</td>
+                </tr>
+                <tr>
+                  <td>Anything you are not permitted to send through your embedder path.</td>
+                  <td>Indexing is the point at which the text leaves your control, and there is no way to unsend it.</td>
+                  <td>Nothing, until you have checked. Decide before you index, not after.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">Where your text goes depends on the embedder you chose</p>
+            <p>With the default local embedder, indexing sends nothing off the machine. The model runs on your own hardware and the vectors land in your own database. That changes the moment you switch to a cloud embedder: the text of every chunk is sent to a third party to be turned into a vector. If you are indexing anything you would not paste into a web form, that switch is the decision to think hard about, and it is worth deciding before the corpus is large enough that re-indexing it is a chore.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================ 7 -->
+      <section id="current" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">07</span>
+          <h2>Keeping it current</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">A corpus you never revisit decays into a corpus you cannot trust. Three things keep it honest: re-indexing after edits, understanding the guard that stops a bad re-index, and knowing how to delete.</p>
+
+          <p>Re-running <code>index</code> on the same folder is the normal way to pick up edits. An edited file is updated in place rather than duplicated, and files that have not changed are skipped.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli index memory/</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli index memory/</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli index memory/</span></pre></div>
+            </div>
+          </div>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">You should see</p>
+            <div class="terminal terminal--output">
+              <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+              <div class="terminal-body"><pre><span class="ok">indexed 4 chunks from 2 files, 9 unchanged</span></pre></div>
+            </div>
+          </div>
+
+          <p class="muted" style="font-size: 0.9375rem;">The counts are of what was re-indexed, not of what is in the index, so a run where you changed nothing reports zero files and a large unchanged count. If a source has disappeared from disk, the summary also reports how many were pruned, because a deletion should never happen silently.</p>
+
+          <h3 style="font-size: 1.125rem; margin-top: 2.5rem; margin-bottom: 0.75rem;">The prune guard</h3>
+
+          <p>Re-indexing removes rows for files that are gone from disk. That is correct when you really deleted a memo, and catastrophic when the corpus merely was not there: an unmounted drive, a half finished sync, a path that still resolves to an empty folder. At the filesystem level those look identical to "the author deleted everything", so a run that would drop most of the corpus is refused outright and nothing is deleted.</p>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+            <div class="terminal-body"><pre><span class="warn">refusing to prune 7 of 9 indexed source(s) (78%) under 'memory'</span>
+<span class="dim">  nothing was deleted. Confirm the files really are gone, then re-run</span>
+<span class="dim">  with --allow-prune.</span></pre></div>
+          </div>
+
+          <p><code>--allow-prune</code> is the deliberate override, and the right response to seeing this message is to look at the folder first. If the files are genuinely gone, pass the flag once and the prune goes through. If they are not, you have just been saved from wiping your memory.</p>
+
+          <h3 style="font-size: 1.125rem; margin-top: 2.5rem; margin-bottom: 0.75rem;">Deleting on purpose</h3>
+
+          <p><code>forget</code> removes indexed memory for the sources you name. Run it without <code>--yes</code> and it only previews: it prints what it would delete, changes nothing, and tells you so.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli forget memory/notes.md</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli forget memory/notes.md</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli forget memory/notes.md</span></pre></div>
+            </div>
+          </div>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">The preview, which deletes nothing</p>
+            <div class="terminal terminal--output">
+              <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+              <div class="terminal-body"><pre><span class="dim">DRY RUN: would forget 1 source(s): memory/notes.md</span>
+<span class="warn">nothing deleted. Re-run with --yes to actually delete.</span></pre></div>
+            </div>
+          </div>
+
+          <p>Read that list before you add <code>--yes</code>. A source you named that is not in the index is reported as not found, which is almost always a typo rather than a fact about your corpus. With <code>--yes</code> the deletion happens and it is irreversible.</p>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">Name the source exactly as it is stored</p>
+            <p><code>forget</code> matches the <code>source</code> value that appears in <code>search</code> output, not a path you retype from memory, and not a glob. It is also scoped to the current tenant: it deletes nothing outside the one you are operating on, so a right to erasure request against another tenant needs <code>--tenant</code> before the subcommand.</p>
+          </div>
+
+          <details class="why">
+            <summary>Which table and tenant your memory is actually in</summary>
+            <div class="why-body">
+              <p>The wizard's automatic index at the end of <code>setup</code> always writes to table <code>chunks</code>, tenant <code>default</code>. It ignores any table or tenant flags you pass it, so the memory it created is in that one place regardless.</p>
+              <p>Global flags go before the subcommand: <code>--table</code> takes a throwaway name when you want an experiment kept out of your real memory, and <code>--tenant</code> selects the namespace. If you index into one tenant and search another, you get no results and no error, because both are behaving correctly.</p>
+              <p>Indexing from the local filesystem is refused entirely when <code>RECALL_ENV</code> is set to <code>production</code>. A production deployment builds from an immutable manifest instead, which is a different workflow and not one you need on a laptop.</p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- ============================================ 8 -->
+      <section id="checks" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">08</span>
+          <h2>Checking your corpus</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Two commands exist to tell you when a corpus is drifting out of shape. Both are about supersession: whether a file that closes an older decision actually says which one.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli lint memory/</span><span class="line">python -m recall.cli check memory/project/retry-policy.md</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli lint memory/</span><span class="line">python3 -m recall.cli check memory/project/retry-policy.md</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli lint memory/</span><span class="line">python3 -m recall.cli check memory/project/retry-policy.md</span></pre></div>
+            </div>
+          </div>
+
+          <p><code>lint</code> looks over a whole corpus for broken or missing supersession edges. <code>--fix</code> proposes the frontmatter edge for each closure it can prove, and it is a dry run by default, printing the plan and changing nothing until you add <code>--apply</code>.</p>
+
+          <p><code>check</code> is the write time version, and it needs no database at all. You point it at the files you are about to commit and it asks for the supersession edge while you still know the answer. <code>--strict</code> makes it exit with a failure when a memo needs an edge, which is what turns it into a pre-commit hook.</p>
+
+          <p class="escape">Neither command is required to have a working corpus. Reach for them when you have enough files that you can no longer remember what supersedes what.</p>
+        </div>
+      </section>
+
+      <!-- ============================================ 9 -->
+      <section id="next" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">09</span>
+          <h2>Where to go next</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Your memory now holds real material, which unlocks the two things it was too small for before.</p>
+
+          <ul class="routes">
+            <li>
+              <a href="calibration.html">
+                <strong>Measure your threshold</strong>
+                <span>The confidence number RE-call uses to decide whether to answer is still the placeholder from the install. Now that the corpus is real, it can be measured on your own material instead.</span>
+                <em>→</em>
+              </a>
+            </li>
+            <li>
+              <a href="claude-code.html">
+                <strong>Let Claude write memories</strong>
+                <span>How to have Claude search memory before it acts, and write new durable facts back into <code>memory/</code> itself, following the conventions on this page.</span>
+                <em>→</em>
+              </a>
+            </li>
+          </ul>
+        </div>
+      </section>
+
     </div>
 
-    <aside class="side-panel">
-      <div class="side-card">
-        <h3>On this page</h3>
-        <ul>
-          <li><a href="#what-a-corpus-is">What a corpus is</a></li>
-          <li><a href="#good-corpus-shape">Good corpus shape</a></li>
-          <li><a href="#memory-layout">Memory layout</a></li>
-          <li><a href="#indexing">Indexing</a></li>
-          <li><a href="#calibration">Calibration</a></li>
-          <li><a href="#make-labeled-set">Labeled queries</a></li>
-          <li><a href="#run-calibration">Run it</a></li>
-        </ul>
-      </div>
-      <div class="side-card">
-        <h3>Deeper technical docs</h3>
-        <ul>
-          <li><a href="https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md">Calibration guide</a></li>
-          <li><a href="https://github.com/GiulioDER/RE-call/blob/master/recall/eval/queries.json">Bundled sample queries</a></li>
-          <li><a href="https://github.com/GiulioDER/RE-call/tree/master/recall/eval/corpus">Bundled sample corpus</a></li>
-        </ul>
-      </div>
-    </aside>
-  </main>
+  </div>
+</div>
 
-  <footer class="footer page-shell">
-    <div class="footer-card">
-      <p class="muted">Next, go to <a href="claude-code.html">Claude Code</a> if you want RE-call to act as a memory tool inside Claude.</p>
-    </div>
-  </footer>
+</main>
+
+<footer class="footer">
+  <div class="shell footer-inner">
+    <nav>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+      <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
+    </nav>
+    <small>Apache 2.0</small>
+  </div>
+</footer>
+
 </body>
 </html>

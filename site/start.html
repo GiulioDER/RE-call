@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install RE-call · Setup guide</title>
+<meta name="description" content="The complete RE-call install path in eight steps: start the database, install the package, create the tables, run the wizard, index your first memory, and connect Claude Code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="index.html">RE-call <span>Setup</span></a>
+    <nav>
+      <a href="start.html" aria-current="page">Install</a>
+      <a href="corpus.html">Your memory</a>
+      <a href="claude-code.html">Claude Code</a>
+      <a href="calibration.html">Calibration</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="shell" style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(2rem, 5vw, 3.5rem);">
+  <p class="eyebrow">The install path</p>
+  <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 18ch; margin-bottom: 1.5rem;">Eight steps from nothing to a memory that answers you.</h1>
+  <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
+  <p class="lede">Do them in order. Each one gives you something you can check before moving on, so you never get three steps deep before finding out something went wrong.</p>
+</section>
+
+<div class="shell guide-layout" style="padding-bottom: clamp(4rem, 9vw, 7rem);">
+
+  <!-- Progress rail -->
+  <aside class="rail" data-rail>
+    <p class="rail-title">Progress</p>
+    <ol>
+      <li><a href="#step-1">Start the database</a></li>
+      <li><a href="#step-2">Install RE-call</a></li>
+      <li><a href="#step-3">Create the tables</a></li>
+      <li><a href="#step-4">Run the setup wizard</a></li>
+      <li><a href="#step-5">Let it answer you</a></li>
+      <li><a href="#step-6">Give it a memory</a></li>
+      <li><a href="#step-7">Ask, and watch it refuse</a></li>
+      <li><a href="#step-8">Connect Claude Code</a></li>
+    </ol>
+    <p class="rail-progress" data-rail-progress>Step 1 of 8</p>
+  </aside>
+
+  <div>
+
+    <!-- ============================================ Before you start -->
+    <section id="before" class="step" data-reveal style="margin-bottom: clamp(3.5rem, 7vw, 6rem);">
+      <div class="step-head">
+        <span class="step-number">00</span>
+        <h2>Before you start</h2>
+      </div>
+      <div class="step-body">
+        <p class="step-what">You need two things installed, and a terminal open. On Windows that is PowerShell, on macOS and Linux it is Terminal. Everything below is typed there.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>What</th><th>Why RE-call needs it</th><th>Where</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Python 3.11 or newer</td>
+                <td>RE-call is a Python package. 3.11 is the floor, and 3.12 to 3.14 are supported.</td>
+                <td><a href="https://www.python.org/downloads/">python.org</a></td>
+              </tr>
+              <tr>
+                <td>Docker Desktop</td>
+                <td>Your memory is stored in PostgreSQL with the pgvector extension. Docker gives you both, correctly configured, in one command.</td>
+                <td><a href="https://www.docker.com/products/docker-desktop/">docker.com</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="notice notice--signal">
+          <p class="notice-title">On Windows, install Python from python.org</p>
+          <p>Not from the Microsoft Store. The Store build sandboxes file paths in ways that break indexing a folder on disk.</p>
+        </div>
+
+        <p>Check both are ready. Two commands, two version numbers back.</p>
+
+        <div class="terminal terminal--command" data-os-group data-shell="posix">
+          <div class="terminal-bar">
+            <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+              <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+              <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+              <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+            </div>
+            <button class="copy-button" type="button">Copy</button>
+          </div>
+          <div class="terminal-body">
+            <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python --version</span><span class="line">docker --version</span></pre></div>
+            <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 --version</span><span class="line">docker --version</span></pre></div>
+            <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 --version</span><span class="line">docker --version</span></pre></div>
+          </div>
+        </div>
+
+        <div class="checkpoint">
+          <p class="checkpoint-title">You should see</p>
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+            <div class="terminal-body"><pre><span class="ok">Python 3.12.7</span>
+<span class="ok">Docker version 27.3.1, build ce12230</span></pre></div>
+          </div>
+        </div>
+
+        <div class="notice">
+          <p class="notice-title">One convention for the whole page</p>
+          <p>Windows uses <code>python</code>, macOS and Linux use <code>python3</code>. Pick your tab once at the top of any command block and every other block on the site switches with it.</p>
+        </div>
+
+        <p class="escape">Version number missing or too old? <a href="troubleshooting.html#python">Fixing Python and Docker</a>.</p>
+      </div>
+    </section>
+
+    <div class="steps">
+
+      <!-- ============================================ 1 -->
+      <section id="step-1" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">01</span>
+          <h2>Start the database</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">RE-call keeps your memory in PostgreSQL and searches it with pgvector. This one command downloads a PostgreSQL 18 image that already has pgvector built in, and starts it on your machine.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">docker run -d --name recall-db -e POSTGRES_USER=recall -e POSTGRES_PASSWORD=recall -e POSTGRES_DB=recall -p 5432:5432 pgvector/pgvector:pg18</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">docker run -d --name recall-db -e POSTGRES_USER=recall -e POSTGRES_PASSWORD=recall -e POSTGRES_DB=recall -p 5432:5432 pgvector/pgvector:pg18</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">docker run -d --name recall-db -e POSTGRES_USER=recall -e POSTGRES_PASSWORD=recall -e POSTGRES_DB=recall -p 5432:5432 pgvector/pgvector:pg18</span></pre></div>
+            </div>
+          </div>
+
+          <p>The first run downloads the image, which takes a minute or two. After that it starts instantly.</p>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">Check it is running</p>
+            <div class="terminal terminal--command" data-shell="posix">
+              <div class="terminal-bar">
+                <span class="terminal-label">Any shell</span>
+                <button class="copy-button" type="button">Copy</button>
+              </div>
+              <div class="terminal-body"><pre><span class="line">docker ps</span></pre></div>
+            </div>
+            <div class="terminal terminal--output">
+              <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+              <div class="terminal-body"><pre><span class="dim">CONTAINER ID   IMAGE                    STATUS         PORTS                    NAMES</span>
+<span class="ok">a1b2c3d4e5f6   pgvector/pgvector:pg18   Up 4 seconds   0.0.0.0:5432-&gt;5432/tcp   recall-db</span></pre></div>
+            </div>
+          </div>
+
+          <details class="why">
+            <summary>Why a container instead of installing PostgreSQL properly</summary>
+            <div class="why-body">
+              <p>Because pgvector is an extension, and installing it against a native PostgreSQL means matching compiler toolchains to server versions. The container ships the pair already working. If you already run PostgreSQL and know how you want to add the <code>vector</code> extension, use your own instance and substitute its connection string everywhere this guide writes <code>postgresql://recall:recall@localhost:5432/recall</code>.</p>
+              <p>Your data lives inside the container. To keep it across a container rebuild, add <code>-v recall_pgdata:/var/lib/postgresql</code> to the command above.</p>
+            </div>
+          </details>
+
+          <p class="escape">Port already in use, or Docker not running? <a href="troubleshooting.html#database">Database problems</a>.</p>
+        </div>
+      </section>
+
+      <!-- ============================================ 2 -->
+      <section id="step-2" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">02</span>
+          <h2>Install RE-call</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">One package from PyPI. The <code>fastembed</code> part pulls in a small embedding model that runs on your own machine, so building and searching memory never sends your text anywhere.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m pip install "recall-rag[fastembed]"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m pip install "recall-rag[fastembed]"</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m pip install "recall-rag[fastembed]"</span></pre></div>
+            </div>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">The package is recall-rag, not recall</p>
+            <p>The name <code>recall</code> on PyPI belongs to an unrelated project. Installing both into the same environment breaks the import. You install <code>recall-rag</code>, and in code and commands it is spelled <code>recall</code>.</p>
+          </div>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">Check it installed</p>
+            <div class="terminal terminal--command" data-os-group data-shell="posix">
+              <div class="terminal-bar">
+                <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                  <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                  <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                  <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+                </div>
+                <button class="copy-button" type="button">Copy</button>
+              </div>
+              <div class="terminal-body">
+                <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli --help</span></pre></div>
+                <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --help</span></pre></div>
+                <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --help</span></pre></div>
+              </div>
+            </div>
+            <p class="muted" style="font-size: 0.9375rem;">A usage message listing commands such as <code>setup</code>, <code>schema</code>, <code>index</code> and <code>search</code> means you are ready.</p>
+          </div>
+
+          <details class="why">
+            <summary>What the square brackets mean, and the other options</summary>
+            <div class="why-body">
+              <p>The brackets are optional extras. Plain <code>recall-rag</code> installs with no embedding model at all, which leaves you with a placeholder that is only useful for testing plumbing. <code>[fastembed]</code> adds the local model this guide uses, roughly 130 MB, downloaded the first time you index something.</p>
+              <p>Others exist for later: <code>[mcp]</code> for the Claude Code server in step 8, <code>[rerank]</code> for a quality upgrade on results, <code>[voyage]</code> for a cloud embedder. You can add them at any time by re-running the install with a longer bracket list.</p>
+            </div>
+          </details>
+
+          <p class="escape">Command not found, or a permissions error? <a href="troubleshooting.html#install">Install problems</a>.</p>
+        </div>
+      </section>
+
+      <!-- ============================================ 3 -->
+      <section id="step-3" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">03</span>
+          <h2>Create the tables</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">The database is running but empty. This creates the tables RE-call stores memory in, and switches on the <code>vector</code> extension for you.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span></pre></div>
+            </div>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">384 is not a number you may change freely</p>
+            <p>It is the width of the vectors the local <code>fastembed</code> model produces. The table has to be exactly that wide. If you later switch to a different embedding model, its width changes and the table has to be rebuilt to match. Step 4 checks this for you and will refuse to continue if the two disagree.</p>
+          </div>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">Confirm the schema landed</p>
+            <div class="terminal terminal--command" data-os-group data-shell="posix">
+              <div class="terminal-bar">
+                <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                  <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                  <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                  <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+                </div>
+                <button class="copy-button" type="button">Copy</button>
+              </div>
+              <div class="terminal-body">
+                <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli schema status</span></pre></div>
+                <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli schema status</span></pre></div>
+                <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli schema status</span></pre></div>
+              </div>
+            </div>
+            <p class="muted" style="font-size: 0.9375rem;">The installed version should match the required version, with nothing pending.</p>
+          </div>
+
+          <details class="why">
+            <summary>Why there are two different connection strings</summary>
+            <div class="why-body">
+              <p><code>--migration-dsn</code> is the account allowed to change the shape of the database. Everything after this step uses a serving connection instead, which can read and write rows but cannot alter tables. On your laptop both are the same <code>recall</code> user, so the distinction looks pointless. It exists so that a deployed installation can hand the application an account that cannot drop a table, and this guide uses the same flag names so that what you learn here still applies there.</p>
+            </div>
+          </details>
+
+          <p class="escape">Connection refused, or <code>SchemaTooOld</code>? <a href="troubleshooting.html#schema">Schema problems</a>.</p>
+        </div>
+      </section>
+
+      <!-- ============================================ 4 -->
+      <section id="step-4" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">04</span>
+          <h2>Run the setup wizard</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">This asks you a short series of questions, then writes your answers to a <code>.env</code> file in the current folder so you never have to repeat them. Run it from whichever folder you want your memory to live in.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli setup</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli setup</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli setup</span></pre></div>
+            </div>
+          </div>
+
+          <p>It opens by measuring your machine, then asks its questions. Here is every one of them, with the answer to give on a first install.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>It asks</th><th>Answer</th><th>Because</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Is data security necessary for this installation?</td>
+                  <td><strong>Y</strong></td>
+                  <td>Keeps every cloud option hidden, so nothing you index can leave the machine.</td>
+                </tr>
+                <tr>
+                  <td>Choose the embedder</td>
+                  <td><strong>2</strong>, fastembed</td>
+                  <td>The local model you installed in step 2, and the one your 384-wide table was built for.</td>
+                </tr>
+                <tr>
+                  <td>Choose whether to enable reranking</td>
+                  <td><strong>1</strong>, none</td>
+                  <td>Reranking improves result quality but downloads another model and slows each search. Add it once the basics work.</td>
+                </tr>
+                <tr>
+                  <td>Choose the sparse retrieval backend</td>
+                  <td><strong>1</strong>, postgres fts</td>
+                  <td>Uses the database you already have. The alternative needs an NVIDIA GPU.</td>
+                </tr>
+                <tr>
+                  <td>Enable the entailment judge?</td>
+                  <td><strong>N</strong></td>
+                  <td>An extra check on whether a result really supports an answer. Useful later, another model download now. You may not be asked this at all.</td>
+                </tr>
+                <tr>
+                  <td>Scaffold CLAUDE.md and a memory/ directory?</td>
+                  <td><strong>Y</strong></td>
+                  <td>Creates the folder your memory files go in, and the instructions Claude reads. Step 6 uses both.</td>
+                </tr>
+                <tr>
+                  <td>Calibrate the threshold now?</td>
+                  <td><strong>N</strong></td>
+                  <td>Calibration measures how confident a result must be before RE-call will answer from it. It needs example questions you have not written yet. <a href="calibration.html">Come back to it</a> once you have real memory.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">You should see, at the end</p>
+            <div class="terminal terminal--output">
+              <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+              <div class="terminal-body"><pre><span class="dim">Calibration skipped. Run recall calibrate later with a labeled query file when you have one.</span>
+<span class="ok">Wrote .env</span>
+<span class="ok">Updated CLAUDE.md</span>
+<span class="ok">Wrote memory\MEMORY.md</span>
+<span class="dim">Indexed 1 chunks from 1 files in memory</span></pre></div>
+            </div>
+          </div>
+
+          <div class="notice">
+            <p class="notice-title">What you now have on disk</p>
+            <p><code>.env</code> holds your choices. <code>memory/</code> is where your memory files go. <code>memory/MEMORY.md</code> is a starter index explaining the file format. <code>CLAUDE.md</code> tells Claude to search memory before it answers, which matters in step 8.</p>
+          </div>
+
+          <details class="why">
+            <summary>What happens if you answer differently</summary>
+            <div class="why-body">
+              <p>Answering <strong>n</strong> to the security question unlocks cloud embedders and offers to store API keys. Those send your text to a third party, which is a decision worth making deliberately rather than during a first install.</p>
+              <p>Choosing a different embedder changes the vector width, and the wizard will notice it does not match the table you built in step 3. Rather than failing later, it re-asks and tells you the exact <code>schema</code> command that would make the two agree.</p>
+              <p>You can re-run <code>setup</code> at any time. It rewrites only its own block in <code>.env</code>, so anything you added yourself survives.</p>
+            </div>
+          </details>
+
+          <p class="escape">Wizard exited early, or looped on the embedder question? <a href="troubleshooting.html#setup">Setup wizard problems</a>.</p>
+        </div>
+      </section>
+
+      <!-- ============================================ 5 -->
+      <section id="step-5" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">05</span>
+          <h2>Let it answer you</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">One line to add to <code>.env</code>. Skip it and your first search will fail with a Python error rather than a useful message, so do it now.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">Add-Content .env "RECALL_TRUST_MODE=development"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">echo "RECALL_TRUST_MODE=development" &gt;&gt; .env</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">echo "RECALL_TRUST_MODE=development" &gt;&gt; .env</span></pre></div>
+            </div>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">This is the step people miss</p>
+            <p>Out of the box RE-call refuses to answer from a corpus whose confidence threshold has never been measured. That is deliberate: it is the whole point of the product. But you have not measured one yet, so without this line every search stops. Development mode says "I know this threshold is a placeholder, show me the results anyway", and every result you get back will be stamped as uncertified so you cannot forget.</p>
+          </div>
+
+          <details class="why">
+            <summary>What you are trading away, and how to get it back</summary>
+            <div class="why-body">
+              <p>In development mode RE-call falls back to a demonstration threshold that is bound to no tenant, no generation and no corpus. It is a placeholder chosen to let you see the machinery work, not a measurement of your data. Every search prints a warning saying exactly that, and every result is tagged <code>DEGRADED</code> with the reason. On a fresh install the reason is <code>INDEX_NOT_READY</code>, because no immutable generation has been built yet; <code>CALIBRATION_MISSING</code> is the related code you see once that part is in place but the threshold still has not been measured.</p>
+              <p>Measuring a threshold against your own corpus is the <a href="calibration.html">calibration page</a>, and it is worth doing once your memory holds something you care about being right. Read that page before you remove this line: leaving development mode needs more than running the calibration command once.</p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- ============================================ 6 -->
+      <section id="step-6" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">06</span>
+          <h2>Give it a memory</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">A memory is a markdown file. Save this one as <code>memory/rate-limits.md</code>, in the <code>memory/</code> folder the wizard created.</p>
+
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-label">memory/rate-limits.md</span>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body"><pre>---
+name: api-rate-limit
+description: The request ceiling we agreed for the public API.
+metadata:
+  type: project
+---
+
+Clients may issue 100 requests per minute against the public API.
+We agreed this on 12 August 2026, after the load test showed the
+gateway degrading above 140. Bursts up to 150 are tolerated for
+10 seconds before throttling starts.</pre></div>
+          </div>
+
+          <p>Then load it into the database.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli index memory/</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli index memory/</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli index memory/</span></pre></div>
+            </div>
+          </div>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">You should see</p>
+            <div class="terminal terminal--output">
+              <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+              <div class="terminal-body"><pre><span class="ok">indexed 1 chunks from 1 files, 1 unchanged</span></pre></div>
+            </div>
+          </div>
+
+          <div class="notice">
+            <p class="notice-title">What "1 unchanged" means</p>
+            <p>The wizard already indexed <code>memory/MEMORY.md</code> when it created the folder, and that file has not changed since, so this run skips it. The one new chunk is your rate-limit note. Re-running <code>index</code> only does work for files that actually changed, which is why it is safe to run again whenever you edit something.</p>
+          </div>
+
+          <details class="why">
+            <summary>What indexing actually does to your file</summary>
+            <div class="why-body">
+              <p>RE-call reads the markdown, splits it into chunks of a few sentences, converts each chunk into a vector using the local model, and stores the text and the vector together. Searching later compares your question against those vectors to find text that means something similar, which is why it can answer a question phrased quite differently from the note.</p>
+              <p>The block at the top between the dashes is frontmatter. <code>name</code> and <code>description</code> help you find the file again, and <code>type</code> records what kind of memory it is. Re-running <code>index</code> after editing a file updates it rather than duplicating it.</p>
+            </div>
+          </details>
+
+          <p class="escape">Dimension mismatch, or nothing indexed? <a href="troubleshooting.html#indexing">Indexing problems</a>.</p>
+        </div>
+      </section>
+
+      <!-- ============================================ 7 -->
+      <section id="step-7" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">07</span>
+          <h2>Ask, and watch it refuse</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Two questions. The first is answerable from what you just indexed. The second is not, and what RE-call does with it is the reason the project exists.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli search "how many requests per minute can a client make?"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli search "how many requests per minute can a client make?"</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli search "how many requests per minute can a client make?"</span></pre></div>
+            </div>
+          </div>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">You should see something like</p>
+            <div class="terminal terminal--output">
+              <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+              <div class="terminal-body"><pre><span class="warn">[development] using an UNCERTIFIED demonstration threshold of 0.5. This is not a
+calibration: it is bound to no tenant, generation or corpus, and production
+refuses rather than assuming it.</span>
+<span class="dim">[DEGRADED:INDEX_NOT_READY] query='how many requests per minute can a client make?'</span>
+<span class="dim">  index: embedding=bge-small-symmetric-v1 retrieval=legacy generation=legacy</span>
+<span class="hit">  ok             conf=1.00 cos=0.802  rate-limits.md  'Clients may issue 100 requests per minute against th'</span>
+<span class="dim">                 chunk_id='cdf9da4656aa6aef8b0af6a739d63fe2' ordinal=0 valid_from=-</span></pre></div>
+            </div>
+          </div>
+
+          <p>Notice that you asked about "requests per minute" and the note says "issue 100 requests per minute". It matched on meaning, not on the words. The <code>DEGRADED</code> tag is expected here and is not an error: it is RE-call recording that it is running on a placeholder threshold rather than one measured on your corpus.</p>
+
+          <p>Now ask something your memory has no answer to at all.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli search "how do we handle penguins on Mars?"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli search "how do we handle penguins on Mars?"</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli search "how do we handle penguins on Mars?"</span></pre></div>
+            </div>
+          </div>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">You should see an abstention</p>
+            <div class="terminal terminal--output">
+              <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+              <div class="terminal-body"><pre><span class="warn">[ABSTAIN GAP DEGRADED:INDEX_NOT_READY] query='how do we handle penguins on Mars?'</span>
+<span class="dim">  index: embedding=bge-small-symmetric-v1 retrieval=legacy generation=legacy</span>
+<span class="dim">  reason: no hit above the calibrated confidence threshold (probable corpus gap)</span>
+<span class="dim">  low_confidence conf=0.30 cos=0.458  rate-limits.md  'Clients may issue 100 requests per minute against th'</span>
+<span class="dim">                 chunk_id='cdf9da4656aa6aef8b0af6a739d63fe2' ordinal=0 valid_from=-</span></pre></div>
+            </div>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">That refusal is the feature</p>
+            <p>Your rate-limit note is still the closest thing in the corpus to that question, and an ordinary vector search would have handed it back as the answer. Closest is not the same as correct. RE-call scored it, found nothing clearing the threshold, and abstained instead. Note that the note is still listed, marked <code>low_confidence</code>: you are told what was found and why it was not good enough, rather than being given a bare refusal.</p>
+          </div>
+
+          <details class="why">
+            <summary>Try a harder question, and watch this get less impressive</summary>
+            <div class="why-body">
+              <p>Ask <code>what is our refund policy?</code> instead and you will probably not get an abstention. On a corpus this small that question scores about 0.58 against the rate-limit note, which clears the placeholder threshold of 0.5, so RE-call answers with a note that has nothing to do with refunds.</p>
+              <p>That is not a bug, and it is worth understanding before you trust this on real material. The threshold in use was not measured on your corpus; it is a demonstration value. Deciding where that line actually belongs, for your data and your embedder, is what <a href="calibration.html">calibration</a> does. Until then, expect the boundary between answering and abstaining to be approximate.</p>
+            </div>
+          </details>
+
+          <p>Your install works. What follows is optional, and this is a reasonable place to stop and go <a href="corpus.html">fill your memory with real material</a>.</p>
+        </div>
+      </section>
+
+      <!-- ============================================ 8 -->
+      <section id="step-8" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">08</span>
+          <h2>Connect Claude Code</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">This turns your memory into a tool Claude can call by itself, so it checks what you have already decided before it answers, instead of you pasting context into a chat.</p>
+
+          <p>First add the server component.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m pip install "recall-rag[fastembed,mcp]"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m pip install "recall-rag[fastembed,mcp]"</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m pip install "recall-rag[fastembed,mcp]"</span></pre></div>
+            </div>
+          </div>
+
+          <p>Then save this as <code>.mcp.json</code>, in the same folder as your <code>.env</code>.</p>
+
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-label">.mcp.json</span>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body"><pre>{
+  "mcpServers": {
+    "recall": {
+      "command": "python",
+      "args": ["-m", "recall_mcp.server"],
+      "env": {
+        "RECALL_SERVING_DSN": "postgresql://recall:recall@localhost:5432/recall",
+        "RECALL_TENANT": "default",
+        "RECALL_TRUST_MODE": "development"
+      }
+    }
+  }
+}</pre></div>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">The settings have to be repeated here</p>
+            <p>The MCP server does not read your <code>.env</code> file. That is why the connection string and the development mode appear again inside this JSON. On macOS and Linux, change <code>"command": "python"</code> to <code>"python3"</code>.</p>
+          </div>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">Confirm Claude can see it</p>
+            <p class="muted" style="font-size: 0.9375rem;">Start Claude Code in that folder and ask it to list its tools, or run <code>/mcp</code>. You are looking for a server named <code>recall</code> offering <code>recall_search</code>, <code>recall_index</code> and <code>recall_stats</code> among others.</p>
+          </div>
+
+          <details class="why">
+            <summary>What Claude will now do differently</summary>
+            <div class="why-body">
+              <p>The <code>CLAUDE.md</code> the wizard wrote tells Claude to call <code>recall_search</code> before answering questions about your project, to respect an abstention rather than guessing around it, and to write durable facts into <code>memory/</code> as it learns them. That last part is what makes the memory grow without you maintaining it by hand.</p>
+              <p>There is more to this than one step can hold: what each tool returns, how to make Claude cite its evidence, and how to stop it writing junk into your corpus. That is the <a href="claude-code.html">Claude Code page</a>.</p>
+            </div>
+          </details>
+
+          <p class="escape">Server not appearing in Claude? <a href="troubleshooting.html#mcp">Claude Code problems</a>.</p>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- ============================================ Where next -->
+    <section class="band" data-reveal style="padding-bottom: 0;">
+      <h2 style="font-size: clamp(1.5rem, 3vw, 2.25rem);">Where to go from here</h2>
+      <ul class="routes">
+        <li>
+          <a href="corpus.html">
+            <strong>Fill your memory</strong>
+            <span>What makes a good memory file, how to organise a corpus that grows, and what not to put in it.</span>
+            <em>→</em>
+          </a>
+        </li>
+        <li>
+          <a href="claude-code.html">
+            <strong>Work with Claude</strong>
+            <span>Every tool the server exposes, and how to get Claude checking memory before it acts.</span>
+            <em>→</em>
+          </a>
+        </li>
+        <li>
+          <a href="calibration.html">
+            <strong>Measure your threshold</strong>
+            <span>Replace the placeholder confidence number with one measured on your own corpus, and drop development mode.</span>
+            <em>→</em>
+          </a>
+        </li>
+        <li>
+          <a href="troubleshooting.html">
+            <strong>Something broke</strong>
+            <span>The errors this install produces most often, and what each one actually means.</span>
+            <em>→</em>
+          </a>
+        </li>
+      </ul>
+    </section>
+
+  </div>
+</div>
+
+</main>
+
+<footer class="footer">
+  <div class="shell footer-inner">
+    <nav>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+      <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
+    </nav>
+    <small>Apache 2.0</small>
+  </div>
+</footer>
+
+</body>
+</html>
