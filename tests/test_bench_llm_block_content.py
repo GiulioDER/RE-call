@@ -143,6 +143,20 @@ def test_the_shared_reader_survives_a_hostile_block() -> None:
         def __iter__(self) -> Any:
             raise RuntimeError("hostile iter")
 
+    class _HostileClass:
+        """⛔ The hole the FIRST attempt at this invariant left open, and the reason the guards
+        now wrap the `isinstance` calls too. `isinstance` is not inert: when the real type check
+        misses, CPython looks up `inst.__class__`, and that lookup suppresses only
+        `AttributeError`. So the three `isinstance` calls sitting outside the guard made the
+        function raise on an object that is neither `str` nor `list` — while the docstring said
+        MUST NEVER RAISE and this very test claimed to prove it."""
+
+        @property
+        def __class__(self) -> type:  # type: ignore[override]
+            raise RuntimeError("hostile __class__")
+
+    assert assistant_text(_HostileClass()) == ""
+    assert assistant_text([{"text": _HostileClass()}]) == ""
     assert assistant_text([_HostileDict()]) == ""
     assert assistant_text([_HostileBlock()]) == ""
     assert assistant_text(_HostileList([1])) == ""
@@ -252,7 +266,12 @@ def test_an_empty_reading_is_tolerated_by_the_extraction_client() -> None:
     assert "json" in str(caught.value)
 
 
-def test_mtrag_refuses_an_empty_reading_instead_of_submitting_it() -> None:
+@pytest.mark.parametrize(
+    "label,content", [pytest.param(c[0], c[1], id=c[0]) for c in _SHAPES if not c[2].strip()]
+)
+def test_mtrag_refuses_an_empty_reading_instead_of_submitting_it(
+    label: str, content: Any
+) -> None:
     """⛔ THE REGRESSION READING BLOCKS INTRODUCED, and the reason this file exists at all.
 
     `generate_one` returns straight into `predictions`, and `main` counts the task as done, so an
@@ -283,9 +302,84 @@ def test_mtrag_refuses_an_empty_reading_instead_of_submitting_it() -> None:
 
         def create(self, **_: Any) -> object:
             calls["n"] += 1
-            return _reply([{"type": "reasoning", "reasoning": "thinking..."}])
+            return _reply(content)
 
     with pytest.raises(EmptyCompletion):
         generate_one(_Client(), "m", [{"role": "user", "content": "x"}], 128)
 
     assert calls["n"] == 1, "a shape that cannot be read repeats; it must not be retried"
+
+
+def test_the_shape_note_survives_a_hostile_class() -> None:
+    """`_shape_note` runs while an `EmptyCompletion` is being CONSTRUCTED, so a raise there
+    replaces the typed error with an untyped one and loses the classification that keeps it out of
+    the retry loop. `isinstance` consults `__class__` when the type check misses, so that call had
+    to move inside the guard too."""
+    from benchmarks.llm import _shape_note
+
+    class _HostileClass:
+        @property
+        def __class__(self) -> type:  # type: ignore[override]
+            raise RuntimeError("hostile __class__")
+
+    assert "could not describe" in _shape_note(_HostileClass(), "")
+
+
+def _mtrag_refusal(content: Any, reason: Any = "stop") -> EmptyCompletion:
+    """Drive mtrag's refusal and hand back the exception, so its MESSAGE can be asserted."""
+    from benchmarks.mtrag.generation import generate_one
+
+    calls = {"n": 0}
+
+    class _Client:
+        @property
+        def chat(self) -> "_Client":
+            return self
+
+        @property
+        def completions(self) -> "_Client":
+            return self
+
+        def create(self, **_: Any) -> object:
+            calls["n"] += 1
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(
+                message=types.SimpleNamespace(content=content), finish_reason=reason)])
+
+    with pytest.raises(EmptyCompletion) as caught:
+        generate_one(_Client(), "m", [{"role": "user", "content": "x"}], 128)
+    assert calls["n"] == 1, "a shape that cannot be read repeats; it must not be retried"
+    return caught.value
+
+
+def test_the_mtrag_refusal_names_the_cause_not_just_the_emptiness() -> None:
+    """⛔ The message was byte-identical for three causes the repo treats as distinguishable, and
+    `.failed.jsonl` is the ONLY record of why a task was quarantined. On 842 tasks a systematic
+    gateway encoding fault and a model emitting whitespace want different responses."""
+    blocks = str(_mtrag_refusal([{"type": "reasoning", "reasoning": "x"}]))
+    whitespace = str(_mtrag_refusal("   \n  "))
+
+    assert "text blocks" in blocks
+    assert blocks != whitespace, "two causes, two messages"
+
+
+def test_the_mtrag_refusal_keeps_provider_text_out_of_its_message() -> None:
+    """⛔ It rendered the provider-chosen `finish_reason` with `!r`, which is precisely what
+    `EmptyCompletion`'s docstring forbids: that message is substring-matched by `is_terminal` on
+    the bare markers "401" and "402". The raw value belongs on the attribute."""
+    exc = _mtrag_refusal(None, reason="upstream 402 refused")
+
+    assert "402" not in str(exc), "a provider string must not reach a substring classifier"
+    assert "unrecognised" in str(exc)
+    assert exc.finish_reason == "upstream 402 refused", "withheld from the message, not discarded"
+
+
+def test_a_hostile_finish_reason_repr_costs_one_call_not_four() -> None:
+    """The f-string is evaluated INSIDE the `try`, so a `finish_reason` whose `__repr__` raises
+    turned this single-billed-call typed refusal into four attempts and an untyped wrapper."""
+
+    class _HostileRepr:
+        def __repr__(self) -> str:
+            raise RuntimeError("hostile repr")
+
+    exc = _mtrag_refusal(None, reason=_HostileRepr())  # asserts calls == 1 internally
+    assert "unrecognised" in str(exc)

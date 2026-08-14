@@ -43,16 +43,26 @@ def assistant_text(content: object) -> str:
     `_text_of` returns it (the `json` rung refuses `""` as a visible batch rejection), while the
     benchmark clients raise (nothing downstream re-reads the answer, so `""` was scored).
     """
+    # ⛔ The `isinstance` calls are INSIDE the guard, and that is not belt-and-braces. `isinstance`
+    # is not inert: when the real type check misses, CPython looks up `inst.__class__`, and that
+    # lookup suppresses only `AttributeError`. Leaving these three outside meant an object whose
+    # `__class__` is a raising property escaped, so the invariant above was false in exactly the
+    # place the previous attempt had declared it fixed.
+    try:
+        return _read(content)
+    except Exception:  # noqa: BLE001 - see the module docstring: this reader must never raise
+        return ""
+
+
+def _read(content: object) -> str:
+    """The reading itself. Split out so ONE `try` in `assistant_text` covers every operation,
+    including the `isinstance` checks, rather than each one needing its own."""
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
         return ""
     parts: list[str] = []
-    try:
-        blocks = list(content)
-    except Exception:  # noqa: BLE001 - see the module docstring: this reader must never raise
-        return ""
-    for block in blocks:
+    for block in list(content):
         # Guarded per block, because `get` and `text` come off the wire and can be anything: a
         # dict subclass with a hostile `get`, an SDK object whose `text` is a computed property.
         # `getattr(..., None)` swallows only `AttributeError`, so without this the invariant above

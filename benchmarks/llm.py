@@ -263,9 +263,12 @@ def _shape_note(content: object, answer: str) -> str:
     the retry loop. `len()` and `type().__name__` can both raise on a hostile object, which is the
     same reason `is_terminal` guards `str(exc)`.
     """
-    if content is None or isinstance(content, str):
-        return ""
     try:
+        # Inside the guard with everything else: `isinstance` consults `__class__` when the type
+        # check misses, and that can raise. This line sat outside and made the "never raises"
+        # claim below false.
+        if content is None or isinstance(content, str):
+            return ""
         if isinstance(content, list):
             # `not content` calls `__bool__`, which calls `__len__` — so even the emptiness test
             # runs code the provider supplied. That is why the whole body is inside the guard
