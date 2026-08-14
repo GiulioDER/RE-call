@@ -1,5 +1,0 @@
-{
-    "embedding_dimension": 384,
-    "pooling_mode": "mean",
-    "include_prompt": true
-}

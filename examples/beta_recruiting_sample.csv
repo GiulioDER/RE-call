@@ -1,5 +1,0 @@
-platform,community,url,title,body,author_handle,posted_at,replies,reactions,tags
-reddit,r/LocalLLaMA,https://example.com/reddit-1,Agent memory keeps going stale,Our agent hallucinates after long chats and loses provenance,user1,2026-08-10T10:00:00Z,12,35,"agent memory,provenance"
-discord,AI Founders,https://example.com/discord-1,Looking for better retrieval guardrails,Need tenant isolation and compliance guardrails for a customer facing agent,builder,2026-08-11T08:00:00Z,4,6,"retrieval,compliance"
-forum,Hacker News,https://example.com/forum-1,How are you handling unsupported answers,Current stack guesses instead of abstaining when memory is weak,founder42,2026-08-09T12:00:00Z,9,14,"abstention,memory"
-reddit,r/python,https://example.com/reddit-2,Packaging question,Need help with pyproject extras,user2,2026-05-01T10:00:00Z,1,1,packaging

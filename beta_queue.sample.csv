@@ -1,4 +1,0 @@
-score,platform,community,url,title,author_handle,posted_at,matched_terms,action,reason,message_angle
-15.84,reddit,r/LocalLLaMA,https://example.com/reddit-1,Agent memory keeps going stale,user1,2026-08-10T10:00:00Z,"agent memory, stale, hallucinates, provenance",public_reply,"4 topic match(es), engagement 47, community r/LocalLLaMA",Lead with abstention and trust boundaries instead of more generation.
-9.40,discord,AI Founders,https://example.com/discord-1,Looking for better retrieval guardrails,builder,2026-08-11T08:00:00Z,"tenant isolation, compliance",community_post,"2 topic match(es), engagement 10, community AI Founders","Lead with tenant isolation, provenance, and policy controls."
-7.62,forum,Hacker News,https://example.com/forum-1,How are you handling unsupported answers,founder42,2026-08-09T12:00:00Z,abstaining,thread_reply,"1 topic match(es), engagement 23, community Hacker News","Lead with trustworthy memory, provenance, and explicit abstention."

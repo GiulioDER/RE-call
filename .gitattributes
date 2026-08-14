@@ -18,4 +18,3 @@ Makefile text eol=lf
 *.jpeg binary
 *.ico binary
 *.gz binary
-*.safetensors binary delta=false
