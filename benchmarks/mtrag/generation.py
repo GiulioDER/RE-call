@@ -498,9 +498,13 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             choices = response.choices
             if not choices:
                 raise NoCompletionChoices(
-                    "the provider returned a 200 with an empty `choices` list, so there is no "
-                    "completion to read. This is an upstream fault on the provider's side, not a "
-                    "property of the request."
+                    # "empty OR ABSENT": `not choices` also takes this branch for `None`, which is
+                    # what the SDK surfaces when the body omits `choices` entirely — OpenRouter's
+                    # documented failure shape, so the realistic case rather than the exotic one.
+                    # Naming only "empty" asserted a shape that was never observed.
+                    "the provider returned a 200 with an empty or absent `choices` list, so there "
+                    "is no completion to read. This is an upstream fault on the provider's side, "
+                    "not a property of the request."
                 )
             choice = choices[0]
             # Absence is not evidence: a provider that omits the field is not reporting truncation,
@@ -740,13 +744,22 @@ def main(argv: list[str] | None = None) -> int:
                 # recorded so a systematic fault is legible rather than hidden as "some failures".
                 failed.append(str(task["task_id"]))
                 consecutive += 1
+                # ⚠️ `cause_type` beside `error_type`, because `generate_one` WRAPS every retried
+                # failure in a `RuntimeError`. That makes `error_type` the word "RuntimeError" for
+                # essentially every generation failure, which defeats the comment above ("the type
+                # is recorded so a systematic fault is legible") for the whole class. The typed
+                # cause is what tells an empty `choices` array apart from a dead key, and it was
+                # otherwise present only inside the free-text `error` string, where nothing can
+                # count it.
+                cause = type(exc.__cause__).__name__ if exc.__cause__ is not None else None
                 with failures_path.open("a", encoding="utf-8") as fh:
                     fh.write(json.dumps({"task_id": task["task_id"],
                                          "error_type": type(exc).__name__,
+                                         "cause_type": cause,
                                          "error": str(exc)}) + "\n")
                 print(
                     json.dumps({"event": "task_failed", "task_id": task["task_id"],
-                                "error_type": type(exc).__name__,
+                                "error_type": type(exc).__name__, "cause_type": cause,
                                 "consecutive": consecutive, "error": str(exc)[:200]}),
                     flush=True,
                 )

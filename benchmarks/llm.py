@@ -493,8 +493,11 @@ class OpenRouterLLM:
         choices = resp.choices
         if not choices:
             raise NoCompletionChoices(
-                "the provider returned a 200 with an empty `choices` list, so there is no "
-                "completion to read. This is an upstream fault on the provider's side, not a "
+                # "empty OR ABSENT": `not choices` also takes this branch for `None`, which is what
+                # the SDK surfaces when the body omits `choices` entirely. Kept word-for-word in
+                # step with `benchmarks/mtrag/generation.py`, which raises the same type.
+                "the provider returned a 200 with an empty or absent `choices` list, so there is "
+                "no completion to read. This is an upstream fault on the provider's side, not a "
                 "property of the request."
             )
         choice = choices[0]
