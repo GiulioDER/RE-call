@@ -582,7 +582,10 @@ p {
   color: var(--signal);
 }
 
-.terminal--command[data-shell="powershell"] pre > .line::before {
+/* Keyed off the root, not the block: a command block with no OS tab strip
+   (docker ps, which is identical everywhere) must still show the Windows
+   reader a PowerShell prompt like every block around it. */
+:root[data-shell="powershell"] .terminal--command pre > .line::before {
   content: "PS> ";
 }
 

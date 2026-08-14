@@ -381,10 +381,11 @@
             <p class="checkpoint-title">You should see, at the end</p>
             <div class="terminal terminal--output">
               <div class="terminal-bar"><span class="terminal-label">Output</span></div>
-              <div class="terminal-body"><pre><span class="ok">Wrote .env</span>
+              <div class="terminal-body"><pre><span class="dim">Calibration skipped. Run recall calibrate later with a labeled query file when you have one.</span>
+<span class="ok">Wrote .env</span>
 <span class="ok">Updated CLAUDE.md</span>
 <span class="ok">Wrote memory\MEMORY.md</span>
-<span class="dim">Indexed 3 chunks from 1 files in memory</span></pre></div>
+<span class="dim">Indexed 1 chunks from 1 files in memory</span></pre></div>
             </div>
           </div>
 
@@ -439,7 +440,7 @@
           <details class="why">
             <summary>What you are trading away, and how to get it back</summary>
             <div class="why-body">
-              <p>In development mode RE-call falls back to a demonstration threshold that is bound to no tenant, no generation and no corpus. It is a placeholder chosen to let you see the machinery work, not a measurement of your data. Every search prints a warning saying exactly that, and every result carries a <code>DEGRADED:CALIBRATION_MISSING</code> flag.</p>
+              <p>In development mode RE-call falls back to a demonstration threshold that is bound to no tenant, no generation and no corpus. It is a placeholder chosen to let you see the machinery work, not a measurement of your data. Every search prints a warning saying exactly that, and every result is tagged <code>DEGRADED</code> with the reason. On a fresh install the reason is <code>INDEX_NOT_READY</code>, because no immutable generation has been built yet; <code>CALIBRATION_MISSING</code> is the related code you see once that part is in place but the threshold still has not been measured.</p>
               <p>Measuring a threshold against your own corpus is the <a href="calibration.html">calibration page</a>, and it is worth doing once your memory holds something you care about being right. Read that page before you remove this line: leaving development mode needs more than running the calibration command once.</p>
             </div>
           </details>
@@ -495,13 +496,13 @@ gateway degrading above 140. Bursts up to 150 are tolerated for
             <p class="checkpoint-title">You should see</p>
             <div class="terminal terminal--output">
               <div class="terminal-bar"><span class="terminal-label">Output</span></div>
-              <div class="terminal-body"><pre><span class="ok">indexed 4 chunks from 2 files</span></pre></div>
+              <div class="terminal-body"><pre><span class="ok">indexed 1 chunks from 1 files, 1 unchanged</span></pre></div>
             </div>
           </div>
 
           <div class="notice">
-            <p class="notice-title">Two files, because MEMORY.md counts</p>
-            <p>The starter index the wizard wrote is itself a markdown file in <code>memory/</code>, so it gets indexed too. That is harmless. Your own file is the one that matters.</p>
+            <p class="notice-title">What "1 unchanged" means</p>
+            <p>The wizard already indexed <code>memory/MEMORY.md</code> when it created the folder, and that file has not changed since, so this run skips it. The one new chunk is your rate-limit note. Re-running <code>index</code> only does work for files that actually changed, which is why it is safe to run again whenever you edit something.</p>
           </div>
 
           <details class="why">
@@ -545,13 +546,19 @@ gateway degrading above 140. Bursts up to 150 are tolerated for
             <p class="checkpoint-title">You should see something like</p>
             <div class="terminal terminal--output">
               <div class="terminal-bar"><span class="terminal-label">Output</span></div>
-              <div class="terminal-body"><pre><span class="warn">[development] using an UNCERTIFIED demonstration threshold of 0.5.</span>
-<span class="dim">[DEGRADED:CALIBRATION_MISSING] query='how many requests per minute can a client make?'</span>
-<span class="hit">  ok    conf=0.81  rate-limits.md  'Clients may issue 100 requests per minute...'</span></pre></div>
+              <div class="terminal-body"><pre><span class="warn">[development] using an UNCERTIFIED demonstration threshold of 0.5. This is not a
+calibration: it is bound to no tenant, generation or corpus, and production
+refuses rather than assuming it.</span>
+<span class="dim">[DEGRADED:INDEX_NOT_READY] query='how many requests per minute can a client make?'</span>
+<span class="dim">  index: embedding=bge-small-symmetric-v1 retrieval=legacy generation=legacy</span>
+<span class="hit">  ok             conf=1.00 cos=0.802  rate-limits.md  'Clients may issue 100 requests per minute against th'</span>
+<span class="dim">                 chunk_id='cdf9da4656aa6aef8b0af6a739d63fe2' ordinal=0 valid_from=-</span></pre></div>
             </div>
           </div>
 
-          <p>Notice that you asked about "requests per minute" and the note says "issue 100 requests per minute". It matched on meaning, not on the words. Now ask something your memory has no answer to.</p>
+          <p>Notice that you asked about "requests per minute" and the note says "issue 100 requests per minute". It matched on meaning, not on the words. The <code>DEGRADED</code> tag is expected here and is not an error: it is RE-call recording that it is running on a placeholder threshold rather than one measured on your corpus.</p>
+
+          <p>Now ask something your memory has no answer to at all.</p>
 
           <div class="terminal terminal--command" data-os-group data-shell="posix">
             <div class="terminal-bar">
@@ -563,9 +570,9 @@ gateway degrading above 140. Bursts up to 150 are tolerated for
               <button class="copy-button" type="button">Copy</button>
             </div>
             <div class="terminal-body">
-              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli search "what is our refund policy?"</span></pre></div>
-              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli search "what is our refund policy?"</span></pre></div>
-              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli search "what is our refund policy?"</span></pre></div>
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli search "how do we handle penguins on Mars?"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli search "how do we handle penguins on Mars?"</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli search "how do we handle penguins on Mars?"</span></pre></div>
             </div>
           </div>
 
@@ -573,15 +580,24 @@ gateway degrading above 140. Bursts up to 150 are tolerated for
             <p class="checkpoint-title">You should see an abstention</p>
             <div class="terminal terminal--output">
               <div class="terminal-bar"><span class="terminal-label">Output</span></div>
-              <div class="terminal-body"><pre><span class="warn">[ABSTAIN] query='what is our refund policy?'</span>
-<span class="dim">  reason: no valid result cleared the threshold</span></pre></div>
+              <div class="terminal-body"><pre><span class="warn">[ABSTAIN GAP DEGRADED:INDEX_NOT_READY] query='how do we handle penguins on Mars?'</span>
+<span class="dim">  reason: no hit above the calibrated confidence threshold (probable corpus gap)</span>
+<span class="dim">  low_confidence conf=0.30 cos=0.458  rate-limits.md  'Clients may issue 100 requests per minute against th'</span></pre></div>
             </div>
           </div>
 
           <div class="notice notice--signal">
             <p class="notice-title">That refusal is the feature</p>
-            <p>An ordinary vector search would have returned your rate-limit note, because it is the closest thing in the corpus to any question you could ask it. Closest is not the same as correct. RE-call would rather tell the caller it does not know than hand back the nearest paragraph and let something downstream present it as an answer.</p>
+            <p>Your rate-limit note is still the closest thing in the corpus to that question, and an ordinary vector search would have handed it back as the answer. Closest is not the same as correct. RE-call scored it, found nothing clearing the threshold, and abstained instead. Note that the note is still listed, marked <code>low_confidence</code>: you are told what was found and why it was not good enough, rather than being given a bare refusal.</p>
           </div>
+
+          <details class="why">
+            <summary>Try a harder question, and watch this get less impressive</summary>
+            <div class="why-body">
+              <p>Ask <code>what is our refund policy?</code> instead and you will probably not get an abstention. On a corpus this small that question scores about 0.58 against the rate-limit note, which clears the placeholder threshold of 0.5, so RE-call answers with a note that has nothing to do with refunds.</p>
+              <p>That is not a bug, and it is worth understanding before you trust this on real material. The threshold in use was not measured on your corpus; it is a demonstration value. Deciding where that line actually belongs, for your data and your embedder, is what <a href="calibration.html">calibration</a> does. Until then, expect the boundary between answering and abstaining to be approximate.</p>
+            </div>
+          </details>
 
           <p>Your install works. What follows is optional, and this is a reasonable place to stop and go <a href="corpus.html">fill your memory with real material</a>.</p>
         </div>

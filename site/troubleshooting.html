@@ -49,7 +49,7 @@
       <li><a href="#indexing">Indexing and search</a></li>
       <li><a href="#mcp">Claude Code problems</a></li>
     </ol>
-    <p class="rail-progress" data-rail-progress>Python and Docker</p>
+    <p class="rail-progress" data-rail-progress="Section">Section 1 of 7</p>
   </aside>
 
   <div>
@@ -433,15 +433,44 @@
 
           <p>The command never reached a database. This is not a schema fault at all, and applying it again will not help. Your container is not running: go to <a href="#database">database problems</a>, get <code>docker ps</code> showing <code>recall-db</code>, then run the <code>schema apply</code> line again unchanged.</p>
 
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;"><code>vector type not found in the database</code></h3>
+
+          <div class="terminal terminal--output">
+            <div class="terminal-bar"><span class="terminal-label">Error</span></div>
+            <div class="terminal-body"><pre><span class="warn">psycopg.ProgrammingError: vector type not found in the database</span></pre></div>
+          </div>
+
+          <p>This is what skipping step 3 looks like. The database is running and reachable, but nothing has ever set it up: the <code>vector</code> extension that stores and compares embeddings is not installed, so the very first query that mentions a vector column fails. It usually appears from <code>index</code> or <code>search</code>, not from the step that was actually missed, which is what makes it confusing.</p>
+
+          <p>You do not need to install the extension by hand. Applying the schema does it for you, as the first thing it does.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span></pre></div>
+            </div>
+          </div>
+
           <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;"><code>SchemaTooOld</code></h3>
 
           <div class="terminal terminal--output">
             <div class="terminal-bar"><span class="terminal-label">Error</span></div>
-            <div class="terminal-body"><pre><span class="warn">SchemaTooOld</span>
-<span class="dim">the installed schema is behind the version this build requires</span></pre></div>
+            <div class="terminal-body"><pre><span class="warn">recall.schema.SchemaTooOld: table 'chunks' needs schema migration(s)</span>
+<span class="warn">['0001', '0002', ...]; run `recall schema apply`</span></pre></div>
           </div>
 
-          <p>RE-call's migrations are global: they set up the extension, the shared machinery, and the default <code>chunks</code> table that everything else is layered on. Until those have run once, the database has no foundation to build a custom table on, and any command that expects one refuses.</p>
+          <p>Almost always this simply means step 3 has not run yet against this database. Apply the schema and the message goes away.</p>
+
+          <p>There is a second, rarer form of it, which names global generation migrations instead. RE-call's migrations are global: they set up the extension, the shared machinery, and the default <code>chunks</code> table that everything else is layered on. Until those have run once, the database has no foundation to build a custom table on, and any command that expects one refuses.</p>
 
           <div class="notice notice--signal">
             <p class="notice-title">Never start with a custom table on a fresh database</p>
@@ -513,17 +542,16 @@
 
           <div class="terminal terminal--output">
             <div class="terminal-bar"><span class="terminal-label">Error</span></div>
-            <div class="terminal-body"><pre><span class="warn">the chosen embedder does not match this table's vector width</span>
-<span class="dim">table: 384    embedder: 768</span>
-<span class="dim">to rebuild the table at the embedder's width, run:</span>
-<span class="dim">  recall --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 768 apply</span></pre></div>
+            <div class="terminal-body"><pre><span class="warn">table 'chunks' uses vector(384), requested dimension is 768</span>
+<span class="dim">fastembed base produces 768-dimension vectors. Either create a table with</span>
+<span class="dim">`recall schema --dim 768 apply`, or pick an embedder matching the table you have.</span></pre></div>
           </div>
 
           <p>Both answers are legitimate, and which one is right depends on what you want.</p>
 
           <ul>
             <li><strong>Keep the table.</strong> Choose the embedder whose width matches it. On a first install that is <code>fastembed</code> at 384, and it is the answer the install guide expects.</li>
-            <li><strong>Keep the embedder.</strong> Leave the wizard, run the <code>schema</code> command it printed to rebuild the table at the new width, then start <code>setup</code> again. Anything already indexed has to be indexed again afterwards.</li>
+            <li><strong>Keep the embedder.</strong> Leave the wizard and rebuild the table at the new width, then start <code>setup</code> again. Note that the command the wizard prints is abbreviated: <code>schema apply</code> performs DDL, so it needs <code>--migration-dsn</code> added, exactly as <a href="#schema">the schema section</a> shows. Anything already indexed has to be indexed again afterwards.</li>
           </ul>
 
           <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">It exits saying no embedder matches this table</h3>
@@ -626,7 +654,7 @@
             <div class="terminal-bar"><span class="terminal-label">Error</span></div>
             <div class="terminal-body"><pre><span class="dim">Traceback (most recent call last):</span>
 <span class="dim">  ...</span>
-<span class="warn">recall.trust_policy.TrustRefusal: CALIBRATION_MISSING: refused in strict trust mode (tenant='default', generation=None, calibration_status='missing')</span></pre></div>
+<span class="warn">recall.trust_policy.TrustRefusal: INDEX_NOT_READY: refused in strict trust mode (tenant='default', generation=None, calibration_status='missing')</span></pre></div>
           </div>
 
           <div class="notice notice--signal">
@@ -656,12 +684,14 @@
 
           <p class="muted" style="font-size: 0.9375rem;">If you added the line and the traceback persists, check you are running the command in the same folder as the <code>.env</code> file. The setting is read from the working directory.</p>
 
-          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Every result is flagged <code>DEGRADED:CALIBRATION_MISSING</code></h3>
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Every result is flagged <code>DEGRADED</code></h3>
 
           <div class="terminal terminal--output">
             <div class="terminal-bar"><span class="terminal-label">Output</span></div>
-            <div class="terminal-body"><pre><span class="warn">[development] using an UNCERTIFIED demonstration threshold of 0.7.</span>
-<span class="dim">[DEGRADED:CALIBRATION_MISSING] query='how many requests per minute can a client make?'</span></pre></div>
+            <div class="terminal-body"><pre><span class="warn">[development] using an UNCERTIFIED demonstration threshold of 0.5. This is not a
+calibration: it is bound to no tenant, generation or corpus, and production
+refuses rather than assuming it.</span>
+<span class="dim">[DEGRADED:INDEX_NOT_READY] query='how many requests per minute can a client make?'</span></pre></div>
           </div>
 
           <div class="notice">
@@ -806,11 +836,16 @@
           <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Claude cannot see rows you indexed yourself</h3>
 
           <div class="notice notice--signal">
-            <p class="notice-title">The server reads and writes one table and one tenant</p>
-            <p>It uses table <code>chunks</code> and tenant <code>default</code>, and it ignores settings that would point it elsewhere. If you indexed from the command line into a custom table or under another tenant, those rows exist and the server will never return them.</p>
+            <p class="notice-title">The table is fixed. The tenant is not.</p>
+            <p>The server always uses table <code>chunks</code>, and there is no setting that points it at another one. The tenant is different: it reads <code>RECALL_TENANT</code> from the <code>env</code> block of your configuration and falls back to <code>default</code> only when you have not set it.</p>
           </div>
 
-          <p>Index the material again into <code>chunks</code> under <code>default</code>, which is what a plain <code>index</code> command does when you have not overridden either. Then ask Claude the same question and the rows will be there.</p>
+          <p>So there are two distinct causes, with two different fixes.</p>
+
+          <ul>
+            <li><strong>You indexed under another tenant</strong>, for example with <code>--tenant work</code>. Do not re-index. Add <code>"RECALL_TENANT": "work"</code> to the <code>env</code> block in <code>.mcp.json</code> and restart Claude, and the existing rows become visible.</li>
+            <li><strong>You indexed into a custom table</strong>, with <code>--table</code>. Here re-indexing is the only route, because the server cannot be pointed at a different table. Index the material again without <code>--table</code> so it lands in <code>chunks</code>.</li>
+          </ul>
         </div>
       </section>
 

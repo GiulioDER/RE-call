@@ -50,7 +50,7 @@
       <li><a href="#again">When to do it again</a></li>
       <li><a href="#advanced">Advanced: bound to a generation</a></li>
     </ol>
-    <p class="rail-progress" data-rail-progress>Section 1 of 8</p>
+    <p class="rail-progress" data-rail-progress="Section">Section 1 of 8</p>
   </aside>
 
   <div>
@@ -99,7 +99,7 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>Every result carries <code>DEGRADED:CALIBRATION_MISSING</code>, and the CLI prints that it is using an uncertified demonstration threshold bound to no tenant, no generation and no corpus.</td>
+                  <td>Every result carries a <code>DEGRADED</code> tag, <code>INDEX_NOT_READY</code> on a fresh install and <code>CALIBRATION_MISSING</code> once a generation exists, and the CLI prints that it is using an uncertified demonstration threshold bound to no tenant, no generation and no corpus.</td>
                   <td>The results carry a threshold measured on your own material, with your own embedder, and the degraded flag is gone.</td>
                 </tr>
                 <tr>
@@ -284,7 +284,7 @@
                 </tr>
                 <tr>
                   <td><code>--out</code></td>
-                  <td>Where to write the artifact. The default is <code>calibration.json</code> in the current folder, which is also the path RE-call looks for. If you write it anywhere else, the command prints the name of the environment variable to set.</td>
+                  <td>Where to write the artifact. The default is <code>calibration.json</code> in the current folder, and if you write it elsewhere the command prints the name of the environment variable to set. Do not read that as the search path picking it up: it does not, which is what section 06 is about. The file is read by <code>lint --semantic</code> and by the enterprise readiness check.</td>
                 </tr>
               </tbody>
             </table>
@@ -296,7 +296,7 @@
               <div class="terminal-bar"><span class="terminal-label">Output</span></div>
               <div class="terminal-body"><pre><span class="dim">embedder:  BAAI/bge-small-en-v1.5</span>
 <span class="ok">threshold: 0.615 (scale 0.05)</span>
-<span class="dim">separability (AUC): 0.941 [0.872, 0.989] over 18 answerable / 14 unanswerable</span>
+<span class="dim">separability (AUC): 0.941 [0.857, 1.000] over 24 answerable / 21 unanswerable</span>
 <span class="dim">FCR at default 0.50: 0.36 -&gt; at calibrated: 0.00</span>
 <span class="ok">saved: calibration.json</span></pre></div>
             </div>
@@ -325,7 +325,7 @@
 
           <div class="notice">
             <p class="notice-title">Strict is what you get by leaving it out</p>
-            <p>There is no <code>RECALL_TRUST_MODE=strict</code> to type. Anything other than the exact string <code>development</code> is strict, including a typo and including the variable being absent, so the gate cannot be opened by accident.</p>
+            <p>There is no <code>RECALL_TRUST_MODE=strict</code> to type. Anything that is not the word <code>development</code> is strict, including a typo and including the variable being absent, so the gate cannot be opened by accident. Surrounding spaces and capitalisation are ignored, so <code>Development</code> does open it.</p>
           </div>
 
           <p>What changes: the banner about an uncertified demonstration threshold stops appearing, results stop carrying the degraded flag, and a search that cannot be backed by a calibration is refused before retrieval runs rather than answered with a warning attached. The refusal happens above the retrieval call, so a refused search never fetched any chunk text to leak in the first place.</p>
@@ -373,7 +373,7 @@
           </div>
 
           <div class="notice notice--signal">
-            <p class="notice-title">If strict refuses with CALIBRATION_MISSING even though you just calibrated</p>
+            <p class="notice-title">If strict refuses with INDEX_NOT_READY even though you just calibrated</p>
             <p>That is expected on a plain local install, and it is not a mistake you made. The strict gate resolves calibration through the binding between a tenant and an active index generation, and the <code>calibration.json</code> written in section 05 has no such binding: it cannot prove which corpus, which pipeline or which labelled question set it was measured on. The file is a real measurement of your data and the numbers in it are yours to act on. What makes strict mode pass is publishing an artifact bound to a generation, which is section 08.</p>
           </div>
 
