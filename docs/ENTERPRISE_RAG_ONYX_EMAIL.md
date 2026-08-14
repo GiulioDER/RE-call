@@ -1,7 +1,8 @@
 # EnterpriseRAG-Bench Onyx Email Draft
 
-This is the submission email context for Onyx. Fill in the final default
-evaluator score after the in progress VPS2 run finishes.
+This is the submission email context for Onyx. It discloses the local mixed
+judge run and asks Onyx to rerun the public answer file if they prefer a
+homogeneous judge configuration.
 
 ## Recipient
 
@@ -25,6 +26,7 @@ Public verification material:
 | Submission guide | `https://github.com/GiulioDER/RE-call/blob/codex/enterprise-rag-bench/docs/ENTERPRISE_RAG_SUBMISSION.md` |
 | Answer file | `https://github.com/GiulioDER/RE-call/blob/codex/enterprise-rag-bench/benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.answers.jsonl` |
 | Answer manifest | `https://github.com/GiulioDER/RE-call/blob/codex/enterprise-rag-bench/benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.answers.manifest.json` |
+| Local score summary | `https://github.com/GiulioDER/RE-call/blob/codex/enterprise-rag-bench/benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.judge_gpt54_mixed_default.summary.json` |
 | Evaluation cache builder | `https://github.com/GiulioDER/RE-call/blob/codex/enterprise-rag-bench/scripts/enterprise_rag_build_eval_cache.py` |
 | OpenRouter scoring helper | `https://github.com/GiulioDER/RE-call/blob/codex/enterprise-rag-bench/scripts/enterprise_rag_score_openrouter.sh` |
 
@@ -46,23 +48,27 @@ Answer artifact provenance:
 
 Evaluation disclosure:
 
-The full default evaluator run uses the official EnterpriseRAG metrics based
-evaluation flow, including citation stripping and document correction. For cost
-control, I ran the judge as `openai/gpt-5.4` through OpenRouter with reasoning
-disabled and single worker execution. I am declaring that judge setting so you
-can decide whether to accept this score directly or rerun the public answer file
-with your preferred judge settings.
+The local score below uses the official EnterpriseRAG metrics based evaluation
+flow, including citation stripping and document correction. I need to disclose
+one caveat: because of budget constraints, the local score is a mixed judge run.
+Rows `qst_0001` through `qst_0214` were scored with `openai/gpt-5.4` medium
+reasoning through OpenRouter. Rows `qst_0215` through `qst_0500` were scored
+with `openai/gpt-5.4` through OpenRouter with reasoning disabled. The answer
+file itself is public, so please rerun it under your preferred homogeneous judge
+configuration if that is required for leaderboard inclusion.
 
 Submitted score:
 
 | Metric | Value |
 | --- | ---: |
-| Average correctness | `TODO_FINAL_CORRECTNESS` |
-| Average completeness | `TODO_FINAL_COMPLETENESS` |
-| Combined correctness and completeness | `TODO_FINAL_COMBINED` |
-| Average document recall | `TODO_FINAL_RECALL` |
-| Average invalid extra documents | `TODO_FINAL_INVALID_EXTRA_DOCS` |
-| Corrected questions | `TODO_FINAL_CORRECTED_QUESTIONS` |
+| Average correctness | `65.60` |
+| Average completeness | `53.48` |
+| Combined correctness and completeness | `48.03` |
+| Average document recall | `77.48` |
+| Average invalid extra documents | `6.94` |
+| Corrected questions | `16` |
+| Completed questions | `500 / 500` |
+| Local result SHA256 | `7692d4936a54d57c15c4d2fe30f93acdc0418193b802430e560ba1b018b9dd31` |
 
 The answer file is public and should be directly evaluable with your official
 benchmark release plus the reproduction commands in the guide above.
@@ -74,7 +80,6 @@ Giulio
 
 Before sending:
 
-1. Replace every `TODO_FINAL_*` value with the finished default evaluator score.
-2. Push the branch so all links resolve.
-3. If the PR is merged first, replace branch links with `main` links.
-4. Attach or link the final sanitized summary JSON if it is committed.
+1. Push the branch so all links resolve.
+2. If the PR is merged first, replace branch links with `main` links.
+3. Optionally attach the final sanitized summary JSON.

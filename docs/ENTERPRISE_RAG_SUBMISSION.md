@@ -15,6 +15,7 @@ Committed artifacts:
 | --- | --- |
 | `benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.answers.jsonl` | 500 answer rows for official evaluation. |
 | `benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.answers.manifest.json` | RE-call answer run provenance. |
+| `benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.judge_gpt54_mixed_default.summary.json` | Sanitized local score summary, official default evaluator, disclosed mixed GPT 5.4 judge settings. |
 | `benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.judge_gpt54_medium.no_correction.summary.json` | Sanitized local score summary, official evaluator, GPT 5.4 medium reasoning, no correction. |
 | `benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.no_correction.summary.json` | Sanitized local comparison score summary, GPT 4o judge, no correction. |
 
@@ -49,13 +50,15 @@ The leaderboard ranks by average correctness.
 
 | Run | Judge | Evaluator options | Correctness | Completeness | Overall score | Recall |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
+| Default local score | `openai/gpt-5.4`, mixed reasoning disclosed | default correction and citation stripping | `65.60` | `53.48` | `48.03` | `77.48` |
 | Official shaped local score | `openai/gpt-5.4`, medium reasoning | `--no-correction --skip-citation-stripping` | `63.80` | `53.23` | `46.16` | `77.34` |
 | Comparison score | `openai/gpt-4o` | `--no-correction --skip-citation-stripping` | `63.20` | `63.79` | `54.85` | `77.34` |
 
-The fully default local evaluator run is in progress on VPS2 with correction
-and citation stripping enabled. The run is using `openai/gpt-5.4` through
-OpenRouter with judge reasoning disabled for cost control. This must be
-declared with any submitted score.
+The default local score must be disclosed as mixed judge mode. Rows `qst_0001`
+through `qst_0214` used `openai/gpt-5.4` medium reasoning through OpenRouter.
+Rows `qst_0215` through `qst_0500` used `openai/gpt-5.4` through OpenRouter
+with reasoning disabled. The public answer file can be rerun by Onyx with any
+preferred homogeneous judge configuration.
 
 ## Reproduction
 
