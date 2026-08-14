@@ -91,6 +91,10 @@ def _install_fake_openai(
     make these guards silently absent wherever the extra is not installed.
     """
     calls: list[dict[str, Any]] = []
+    # Cleared per install: `_SCRIPTED` is module-global, and an arm reading `[-1]` off a
+    # session-wide list is coupled to whether the system under test reached the transport
+    # at all. Today no arm can false-green on it; this removes the coupling anyway.
+    _SCRIPTED.clear()
 
     class _FakeCompletions:
         def create(self, **kwargs: Any) -> types.SimpleNamespace:
@@ -492,7 +496,56 @@ def test_a_present_but_null_content_is_still_a_permanent_empty_completion(
     """Guards the guard above, and pins the same two-way split mtrag makes: a MISSING `message` is
     a malformed body (the provider's fault, transient), while a `content` that arrived and is null
     is an empty ANSWER (permanent). Hardening the first must not swallow the second."""
-    _install_fake_openai(monkeypatch, choices=[_choice(None, "content_filter")])
+    calls = _install_fake_openai(monkeypatch, choices=[_choice(None, "content_filter")])
 
     with pytest.raises(EmptyCompletion):
+        _llm().complete("s", "u")
+
+    assert len(calls) == 1, (
+        "the docstring says PERMANENT, so the arm has to pin the price: an empty answer repeats "
+        "and must not be retried. Its mtrag sibling asserts this; this one asserted only the type."
+    )
+
+
+def test_a_message_null_response_is_still_counted_as_spend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ THE THIRD APPEARANCE OF THIS MUTATION SHAPE, and the third guard to need its own arm.
+
+    Both earlier guards on this path have one: `test_an_empty_completion_is_still_counted_as_spend`
+    and `test_a_no_choices_response_is_still_counted_as_spend`, the latter added precisely because
+    hoisting a guard above the usage block survived a whole mutation run. The new `message.content`
+    sentinel arrived without one, so the same hoist would lose the spend of a billed call silently.
+
+    The tokens were spent whatever the body turned out to carry, and `benchmarks.usage` subtracts
+    this figure to publish `memory_layer`, so an undercount invents cost that was never incurred.
+    """
+    usage = types.SimpleNamespace(prompt_tokens=9, completion_tokens=0)
+    _install_fake_openai(monkeypatch, choices=[_choice_without_message()], usage=usage)
+    llm = _llm(max_attempts=1)
+
+    with pytest.raises(NoCompletionChoices):
+        llm.complete("s", "u")
+
+    assert llm.usage() == {"calls": 1, "prompt_tokens": 9, "completion_tokens": 0}
+    assert llm.provider_metadata().latency_ms is not None, "the call took time and it was billed"
+
+
+def test_a_message_object_lacking_a_content_field_is_named_the_same_way(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ The sentinel's STATED purpose, which no arm exercised in either client.
+
+    `_NO_CONTENT_FIELD` exists to tell "the field is not there" from "the field is there and null".
+    Every existing arm scripts `message=None`, which reaches the sentinel through the OUTER
+    `getattr(choice, "message", None)` — so the inner half, a present `message` carrying no
+    `content` attribute at all, was untested. Narrowing the read so the sentinel fires only for a
+    null message left the whole suite green in BOTH clients.
+    """
+    _install_fake_openai(
+        monkeypatch, choices=[types.SimpleNamespace(message=types.SimpleNamespace(),
+                                                    finish_reason="stop")]
+    )
+
+    with pytest.raises(NoCompletionChoices):
         _llm().complete("s", "u")

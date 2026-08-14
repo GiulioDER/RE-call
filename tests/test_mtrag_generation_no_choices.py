@@ -307,3 +307,65 @@ def test_the_give_up_message_prices_the_attempts_actually_spent() -> None:
     )
     assert "1 attempts" not in str(caught.value), "singular count, plural noun"
     assert "4 attempts" not in str(caught.value)
+
+
+def test_a_message_object_lacking_a_content_field_is_named_the_same_way() -> None:
+    """The mtrag half of the sentinel's stated purpose. Narrowing the read so the sentinel fires
+    only for a null `message` left this client green too, so the inner half was untested on both
+    sides of a construct whose whole job is that distinction."""
+    client = _Client([types.SimpleNamespace(message=types.SimpleNamespace(), finish_reason="stop")])
+
+    with pytest.raises(RuntimeError) as caught:
+        generate_one(client, "openai/gpt-4o", [{"role": "user", "content": "x"}], 128)
+
+    assert type(caught.value.__cause__) is NoCompletionChoices
+
+
+def test_both_benchmark_clients_word_the_missing_content_fault_identically() -> None:
+    """⛔ A cross-module wording invariant created and pinned on NEITHER side — the same defect
+    shape this branch already fixed once for the `choices` message ("a claimed invariant with a
+    test on one of its two sides"). The two strings are byte-identical today and nothing notices
+    if one drifts."""
+    import types as _t
+
+    from benchmarks.llm import NoCompletionChoices as _Shared
+    from benchmarks.llm import OpenRouterLLM
+
+    class _FakeCompletions:
+        def create(self, **_: Any) -> object:
+            return _t.SimpleNamespace(
+                choices=[_t.SimpleNamespace(message=None, finish_reason="stop")], usage=None
+            )
+
+    class _FakeOpenAI:
+        def __init__(self, **_: Any) -> None:
+            self.chat = _t.SimpleNamespace(completions=_FakeCompletions())
+
+    import sys
+
+    module = _t.ModuleType("openai")
+    module.OpenAI = _FakeOpenAI  # type: ignore[attr-defined]
+    saved = sys.modules.get("openai")
+    sys.modules["openai"] = module
+    try:
+        try:
+            OpenRouterLLM(model="m", api_key="k", max_attempts=1, sleep=lambda _: None).complete(
+                "s", "u"
+            )
+            raise AssertionError("expected the llm client to refuse")
+        except _Shared as exc:
+            from_llm = str(exc)
+    finally:
+        if saved is not None:
+            sys.modules["openai"] = saved
+        else:
+            del sys.modules["openai"]
+
+    client = _Client([types.SimpleNamespace(message=None, finish_reason="stop")])
+    with pytest.raises(RuntimeError) as caught:
+        generate_one(client, "openai/gpt-4o", [{"role": "user", "content": "x"}], 128)
+    from_mtrag = str(caught.value.__cause__)
+
+    assert from_llm == from_mtrag, (
+        "the two clients state the same fault in different words; one of them drifted"
+    )
