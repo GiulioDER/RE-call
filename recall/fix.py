@@ -36,7 +36,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from recall.atomic_write import atomic_write_bytes
-from recall.frontmatter import insert_frontmatter_line, parse_frontmatter, supersedes_key
+from recall.frontmatter import (
+    has_line_break,
+    insert_frontmatter_line,
+    parse_frontmatter,
+    supersedes_key,
+)
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
 
@@ -235,6 +240,13 @@ def propose_fixes(
     proposals: list[Proposal] = []
     unfixable: list[Unfixable] = []
     seen: set[tuple[str, str]] = set()
+    #: Edges parked because their value would split the written line. Keyed by the dedup pair AND
+    #: the source memo: the pair is what decides suppression below, and the source is what keeps
+    #: two DIFFERENT malformed files from collapsing into one report. Keying on the pair alone
+    #: named only the first of them, so the operator renamed it, re-ran, and only then learned of
+    #: the second — N bad files costing N runs to surface. `setdefault` still collapses repeats
+    #: of one source naming the same edge twice, which is the case that is genuinely one report.
+    refused: dict[tuple[tuple[str, str], str], tuple[str, str, str]] = {}
 
     for name, body in bodies.items():
         if _is_index(name):
@@ -272,8 +284,42 @@ def propose_fixes(
             pair = (writer, supersedes_key(value))
             if pair in seen:
                 continue
+            if has_line_break(value):
+                # DEFERRED, not decided here. `insert_frontmatter_line` refuses this too, but a
+                # raise at WRITE time is met halfway through the apply loop, once earlier memos
+                # have already been rewritten, so the refusal has to be reportable by the dry run
+                # like every other one here.
+                #
+                # It cannot be decided inline, in either position. Reported before the dedup it
+                # fires for a second spelling of an edge this same run declares correctly, since
+                # `supersedes_key` compares on the stem. Reported after it, without joining
+                # `seen`, the same edge is reported once per spelling AND can be reported
+                # alongside the very proposal that declares it correctly — which prints SKIP for
+                # a memo the next line then writes to. Adding it to `seen` is not the fix either:
+                # that suppresses the correct proposal whenever the bad spelling is iterated
+                # first. `bodies` follows `sorted(root.glob(...))`, so which spelling comes first
+                # is stable but arbitrary — inline would be right for one of the two orders and
+                # wrong for the other, which is not a property worth resting on.
+                #
+                # So the pair is parked and judged once the loop knows every edge it could
+                # declare. The predicate is imported rather than restated, so the reporter and
+                # the writer cannot drift apart.
+                #
+                # `name`, not `writer`, is the file reported: in the passive direction the value
+                # IS the source memo's own path and `writer` is the innocent memo it would be
+                # written into, so blaming `writer` sends the operator to the one file they
+                # cannot fix. Same subject as the refusal above at `names {ref!r}`.
+                refused.setdefault((pair, name), (name, value, writer))
+                continue
             seen.add(pair)
             proposals.append(Proposal(writer, value, name, ref))
+    for (pair, _source_key), (source, value, writer) in refused.items():
+        if pair in seen:
+            continue  # another spelling of this same edge was declared correctly
+        unfixable.append(Unfixable(
+            source,
+            f"names {value!r}, which contains a line break; it would be written into {writer}",
+        ))
     return proposals, unfixable
 
 
