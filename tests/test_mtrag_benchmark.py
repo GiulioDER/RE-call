@@ -562,7 +562,10 @@ def test_an_exhausted_retry_still_reports_the_whole_budget(monkeypatch) -> None:
 
     arm = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
     dead = Dead()
-    with _pytest.raises(RuntimeError, match=r"after 4 attempts\b"):
+    # Derived from the constant rather than written as "4": the claim is "the whole budget", and
+    # hard-coding it would turn this arm red on the regex for a legitimate change to
+    # `RETRIEVAL_ATTEMPTS` while the assertion below still passed.
+    with _pytest.raises(RuntimeError, match=rf"after {run.RETRIEVAL_ATTEMPTS} attempts\b"):
         run.search_with_retry(dead, "q", arm)
 
     assert dead.calls == run.RETRIEVAL_ATTEMPTS, "the count in the message must be the real bill"
