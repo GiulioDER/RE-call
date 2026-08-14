@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 
+import recall_consistency.history_corpus as history_corpus
 from recall_consistency.history_corpus import (
+    Revision,
     memo_stem,
     revisions,
     tracked_markdown,
@@ -99,3 +101,44 @@ def test_a_git_failure_names_the_failing_command_and_the_repository(tmp_path: Pa
 
     assert "git log" in str(excinfo.value)
     assert str(not_a_repo) in str(excinfo.value)
+
+
+def test_memo_stem_refuses_a_path_that_would_split_frontmatter() -> None:
+    with pytest.raises(ValueError) as excinfo:
+        memo_stem(f"notes{chr(0x2028)}pwned.md", "2026-08-14", "abc1234")
+
+    assert "line break" in str(excinfo.value)
+
+
+def test_write_history_corpus_skips_one_poisoned_path_without_aborting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def _revisions(_repo: Path, rel_path: str) -> list[Revision]:
+        return [
+            Revision(
+                path=rel_path,
+                sha="1111111",
+                date="2026-08-13",
+                body="recall@5 is 0.92\n",
+            ),
+            Revision(
+                path=rel_path,
+                sha="2222222",
+                date="2026-08-14",
+                body="recall@5 is 0.945\n",
+            ),
+        ]
+
+    monkeypatch.setattr(history_corpus, "revisions", _revisions)
+    out = tmp_path / "corpus"
+
+    written = write_history_corpus(
+        tmp_path,
+        [f"bad{chr(0x2028)}path.md", "good.md"],
+        out,
+    )
+
+    assert len(written) == 2
+    assert all(path.name.startswith("good__") for path in written)
+    assert not list(out.glob(f"*{chr(0x2028)}*"))
+    assert "skipping history corpus" in capsys.readouterr().err

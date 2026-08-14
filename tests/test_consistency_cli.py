@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
+import recall_consistency.history_corpus as history_corpus
 from recall_consistency.__main__ import _load_questions, _run_probe, main
+from recall_consistency.history_corpus import Revision
 from tests.consistency_helpers import two_commit_repo
 
 
@@ -178,9 +180,47 @@ def test_the_cli_creates_the_out_directory_if_missing(tmp_path: Path) -> None:
     out = tmp_path / "nested" / "dir" / "report.md"
 
     rc = main([str(repo), "--out", str(out)])
+    assert rc == 0
+    assert out.exists()
+
+
+def test_the_cli_still_writes_the_report_when_corpus_emission_refuses_one_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    out = tmp_path / "report.md"
+    corpus = tmp_path / "corpus"
+    bad = f"notes{chr(0x2028)}pwned.md"
+
+    monkeypatch.setattr("recall_consistency.__main__.tracked_markdown", lambda *_a, **_k: [bad])
+
+    def _revisions(_repo: Path, rel_path: str) -> list[Revision]:
+        return [
+            Revision(
+                path=rel_path,
+                sha="1111111",
+                date="2026-08-13",
+                body="recall at 5 scored 0.92 on known-item queries\n",
+            ),
+            Revision(
+                path=rel_path,
+                sha="2222222",
+                date="2026-08-14",
+                body="recall at 5 scored 0.945 on known-item queries\n",
+            ),
+        ]
+
+    monkeypatch.setattr("recall_consistency.__main__.revisions", _revisions)
+    monkeypatch.setattr(history_corpus, "revisions", _revisions)
+
+    rc = main([str(repo), "--out", str(out), "--corpus-out", str(corpus)])
 
     assert rc == 0
     assert out.exists()
+    assert "0.945" in out.read_text(encoding="utf-8")
+    assert not list(corpus.glob("*.md"))
+    assert "skipping history corpus" in capsys.readouterr().err
 
 
 def test_a_questions_file_carrying_contact_fields_is_refused(tmp_path: Path) -> None:
