@@ -106,7 +106,7 @@ than skip.
 | `benchmarks/labelling/truth_extraction/build_trust_queries.py` | writes `recall/eval/peps_trust_queries.json` |
 | `benchmarks/labelling/truth_extraction/fixtures/*.md` | 4 transplanted negatives from `fix.py`'s private failures |
 | `tests/test_truth_extraction_peps_header.py` | parsing unit tests |
-| `tests/test_truth_extraction_contract.py` | the boundary contract |
+| `tests/test_truth_extraction_census_contract.py` | the boundary contract |
 | `tests/test_truth_extraction_census.py` | row-count guard, digest verification, blinding assertions |
 | `tests/test_truth_extraction_fixtures.py` | the four transplanted fixtures behave as negatives |
 
@@ -443,7 +443,7 @@ git add benchmarks/labelling/truth_extraction/__init__.py benchmarks/labelling/t
 **Files:**
 - Create: `benchmarks/labelling/truth_extraction/artifact_contract.py`
 - Create: `benchmarks/labelling/truth_extraction/census.py`
-- Test: `tests/test_truth_extraction_contract.py`
+- Test: `tests/test_truth_extraction_census_contract.py`
 
 **Interfaces:**
 - Consumes: Task 1's `split_header`, `header_fields`, `edges_from_fields`, `restates`, `Edge`; `recall.eval.provenance.generated_at`, `.model_stack`; `recall.lint.CLOSURE_MARKERS`
@@ -456,7 +456,7 @@ git add benchmarks/labelling/truth_extraction/__init__.py benchmarks/labelling/t
 
 - [ ] **Step 1: Write the failing contract test**
 
-Create `tests/test_truth_extraction_contract.py`:
+Create `tests/test_truth_extraction_census_contract.py`:
 
 ```python
 """The census artifact boundary.
@@ -595,7 +595,7 @@ def test_writer_emits_lf_not_crlf(tmp_path: Path):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-python -m pytest tests/test_truth_extraction_contract.py -q
+python -m pytest tests/test_truth_extraction_census_contract.py -q
 ```
 
 Expected: collection error, `ModuleNotFoundError: ... artifact_contract`.
@@ -853,7 +853,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run tests to verify they pass**
 
 ```bash
-python -m pytest tests/test_truth_extraction_contract.py -q
+python -m pytest tests/test_truth_extraction_census_contract.py -q
 ```
 
 Expected: `10 passed`.
@@ -894,7 +894,7 @@ python -m ruff check benchmarks tests && python -m mypy benchmarks/labelling/tru
 ```
 
 ```bash
-git add benchmarks/labelling/truth_extraction/artifact_contract.py benchmarks/labelling/truth_extraction/census.py tests/test_truth_extraction_contract.py results/truth_extraction/census.json && git commit -m "feat(truth-extraction): census with a 17% prose recall ceiling on 47 header edges"
+git add benchmarks/labelling/truth_extraction/artifact_contract.py benchmarks/labelling/truth_extraction/census.py tests/test_truth_extraction_census_contract.py results/truth_extraction/census.json && git commit -m "feat(truth-extraction): census with a 17% prose recall ceiling on 47 header edges"
 ```
 
 ---
@@ -1346,7 +1346,7 @@ git add benchmarks/labelling/truth_extraction/build_gold.py benchmarks/labelling
 - Create: `benchmarks/labelling/truth_extraction/build_adjudication.py`
 - Create (generated): `benchmarks/labelling/truth_extraction/adjudication.csv`
 - Create (generated): `benchmarks/labelling/truth_extraction/adjudication_key.json`
-- Test: extends `tests/test_truth_extraction_contract.py`
+- Test: extends `tests/test_truth_extraction_census_contract.py`
 
 **Interfaces:**
 - Consumes: Task 2's `compute_census`; Task 1's `sentences`, `pep_refs`, `CLOSURE_MARKERS`
@@ -1378,7 +1378,7 @@ docstring property list with:
  14. The committed row count recomputes from the corpus (skips loudly without RECALL_PEPS_DIR).
 ```
 
-Then append to `tests/test_truth_extraction_contract.py`:
+Then append to `tests/test_truth_extraction_census_contract.py`:
 
 ```python
 _TE = Path(__file__).resolve().parents[1] / "benchmarks" / "labelling" / "truth_extraction"
@@ -1438,7 +1438,7 @@ def test_row_count_recomputes_from_the_corpus():
 - [ ] **Step 2: Run and watch it fail**
 
 ```bash
-python -m pytest tests/test_truth_extraction_contract.py -q
+python -m pytest tests/test_truth_extraction_census_contract.py -q
 ```
 
 Expected: 6 FAILs / errors — the CSV does not exist.
@@ -1574,7 +1574,7 @@ prints 54, it is using the pre-fix sentence splitter that glues across paragraph
 - [ ] **Step 5: Run tests to verify they pass**
 
 ```bash
-RECALL_PEPS_DIR=/tmp/peps/peps python -m pytest tests/test_truth_extraction_contract.py -q
+RECALL_PEPS_DIR=/tmp/peps/peps python -m pytest tests/test_truth_extraction_census_contract.py -q
 ```
 
 Expected: `16 passed`. Then run without the env var and confirm `15 passed, 1 skipped` — the
@@ -1595,7 +1595,7 @@ Regenerate with the committed builder and confirm `16 passed`.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add benchmarks/labelling/truth_extraction/build_adjudication.py benchmarks/labelling/truth_extraction/adjudication.csv benchmarks/labelling/truth_extraction/adjudication_key.json tests/test_truth_extraction_contract.py && git commit -m "feat(truth-extraction): blind adjudication pack over 175 unconfirmed prose markers"
+git add benchmarks/labelling/truth_extraction/build_adjudication.py benchmarks/labelling/truth_extraction/adjudication.csv benchmarks/labelling/truth_extraction/adjudication_key.json tests/test_truth_extraction_census_contract.py && git commit -m "feat(truth-extraction): blind adjudication pack over 175 unconfirmed prose markers"
 ```
 
 ---
@@ -1938,7 +1938,7 @@ python -m ruff check . && python -m mypy benchmarks/labelling/truth_extraction r
 ```
 
 ```bash
-RECALL_PEPS_DIR=/tmp/peps/peps python -m pytest tests/test_truth_extraction_peps_header.py tests/test_truth_extraction_contract.py tests/test_truth_extraction_census.py tests/test_truth_extraction_fixtures.py -q
+RECALL_PEPS_DIR=/tmp/peps/peps python -m pytest tests/test_truth_extraction_peps_header.py tests/test_truth_extraction_census_contract.py tests/test_truth_extraction_census.py tests/test_truth_extraction_fixtures.py -q
 ```
 
 Expected: `52 passed` (15 peps_header + 16 contract + 12 census + 9 fixtures). Then run the full
