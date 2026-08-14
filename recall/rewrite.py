@@ -65,6 +65,7 @@ from typing import Literal
 
 from recall.atomic_write import atomic_write_bytes
 from recall.frontmatter import (
+    NAME_STAND_IN_MARK,
     VALIDITY_KEYS,
     dominant_newline,
     encodable_name,
@@ -429,7 +430,7 @@ def _refuse_unwritable_value(value: str) -> None:
         )
 
 
-def _refuse_unnamable_reference(root: Path, value: str) -> None:
+def _refuse_stand_in_reference(value: str) -> None:
     """A written reference must name a file every reader of the corpus can find.
 
     A filename that is not valid UTF-8 has no spelling a memo can carry: the memo is written as
@@ -441,28 +442,19 @@ def _refuse_unnamable_reference(root: Path, value: str) -> None:
     with the trust layer never demoting the memo it supersedes. Teaching one of those readers
     the stand-in would only make it the one that disagrees with the other four.
 
-    The rule is "the corpus name is not the file's name", not "the file's name is not UTF-8".
-    Those come apart for the second kind of name `encodable_name` diverts, one carrying the
-    escape's own characters, and that name is unresolvable for the reader in exactly the same
-    way — so the check is a comparison against the real name rather than a re-test of validity.
-
-    Scoped to a value that could BE a stand-in — `encodable_name` always leaves ``\\u`` behind —
-    so the ordinary case costs a substring test and never walks the corpus. A value carrying
-    those characters that names no such file is left alone: it may well be a real filename, and
-    refusing it would be this function inventing a rule about backslashes.
+    The marker is proof on its own — no corpus walk, because `NAME_STAND_IN_MARK` holds a NUL
+    and no real name can. `_refuse_unwritable_value` would refuse this value too, for its NUL,
+    and this runs first for the message: "contains a NUL byte" is true and tells a reviewer
+    nothing about the file they would have to rename.
     """
-    if "\\u" not in value:
+    if not value.startswith(NAME_STAND_IN_MARK):
         return
-    key = supersedes_key(value)
-    for path in root.rglob("*.md"):
-        stand_in = encodable_name(path.name)
-        if stand_in != path.name and supersedes_key(stand_in) == key:
-            raise RewriteRefused(
-                f"refusing to write: {value!r} is this corpus's stand-in for a file whose real "
-                f"name it does not spell, and no reader of the corpus resolves a stand-in. "
-                f"Rename the file first; the edge can be declared once it has a name a memo "
-                f"can hold."
-            )
+    raise RewriteRefused(
+        f"refusing to write: {value[len(NAME_STAND_IN_MARK):]!r} is this corpus's stand-in for "
+        f"a file whose name is not valid UTF-8, and no reader of the corpus resolves a "
+        f"stand-in. Rename the file first; the edge can be declared once it has a name a memo "
+        f"can hold."
+    )
 
 
 def _readable_text(raw: bytes, rel: str) -> str:
@@ -633,8 +625,8 @@ def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:
     # equal their key names, and it raised `unknown_key` for every relation v2 added.
     routed = route_relation(checked.relation, checked.subject_id, checked.object_id)
     block = destination(routed.key)
+    _refuse_stand_in_reference(routed.value)
     _refuse_unwritable_value(routed.value)
-    _refuse_unnamable_reference(root if root.is_dir() else root.parent, routed.value)
     return RewritePlan(
         edit_file=_resolve(root, routed.edit_file),
         key=routed.key,

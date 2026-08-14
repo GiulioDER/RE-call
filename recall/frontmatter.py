@@ -204,8 +204,15 @@ def supersedes_key(value: str) -> str:
     return v.rsplit("/", 1)[-1].strip()
 
 
+#: Prefix for the stand-in. NUL cannot occur in a path on either platform — Python refuses to
+#: build a `Path` from one — so no real corpus name can be mistaken for a stand-in, and no name
+#: that needs no stand-in ever gets one. `recall/truth_extraction/_cache.py` marks its own for
+#: the same reason; the two markers differ because that one stands in for file CONTENT too.
+NAME_STAND_IN_MARK = "\x00name:"
+
+
 def encodable_name(name: str) -> str:
-    """``name`` itself when it encodes as UTF-8, and a readable stand-in when it does not.
+    """``name`` itself when it encodes as UTF-8, and a marked stand-in when it does not.
 
     A POSIX filename is bytes, not text. One that is not valid UTF-8 arrives as a lone
     surrogate through `Path.glob`'s surrogateescape, and everything downstream of a corpus name
@@ -218,26 +225,31 @@ def encodable_name(name: str) -> str:
 
     Two properties, and the second is the one that is easy to lose:
 
-    **A name that needs no stand-in gets none.** The output is hashed into the proposal ids a
-    reviewer types into `recall rewrite apply`, so rewriting every name would renumber every
-    queue that already exists. `caffè.md` is good UTF-8 and is returned untouched.
+    **A name that encodes gets no stand-in, with no exceptions.** The output is hashed into the
+    proposal ids a reviewer types into `recall rewrite apply`, so rewriting names that do not
+    need it would renumber queues that already exist. `caffè.md` is good UTF-8 and is returned
+    untouched, and so is the POSIX-legal `policy\\update.md`, whose backslash makes it look like
+    an escape without making it one.
 
-    **INJECTIVE**, or the guard against a crash quietly costs a document. The stand-in is the
-    backslash escape a reader already sees, because `recall`'s streams print with
-    ``errors="backslashreplace"`` and a mangled name beats no name. But a file may legitimately
-    be NAMED ``bad\\udcff.md``, and mapping the surrogate onto it would give two documents one
-    key in the caller's dict and one node id in the graph — the same collision the
-    corpus-relative key exists to prevent. So a name already carrying that escape's own
-    characters is diverted too, and its backslashes are doubled: a diverted output always
-    contains ``\\u``, a passed-through one never does, and doubling makes the escape reversible.
-    That is the single case where an ordinary name's id changes, and it is a name that cannot
-    be told apart from an escape.
+    **INJECTIVE**, or the guard against a crash quietly costs a document. Two documents sharing
+    one key in the caller's dict and one node id in the graph is the collision the
+    corpus-relative key exists to prevent, and an earlier version of this function reintroduced
+    it: the stand-in was the bare backslash escape, which a file may legitimately be NAMED. The
+    marker is what separates the two ranges, and it holds a NUL precisely because no filename
+    can. Backslashes are doubled INSIDE the stand-in as well, so the escape stays reversible
+    and the map is one to one over arbitrary strings rather than only over real paths.
+
+    The stand-in stays readable after the marker, spelled the way `recall`'s streams already
+    print such a name — they reconfigure with ``errors="backslashreplace"`` — because a mangled
+    name beats no name. It is a name for the queue and never one for the corpus: `rewrite`
+    refuses to write it into a memo, where no other reader would resolve it.
     """
     try:
         name.encode("utf-8")
     except UnicodeEncodeError:
         pass
     else:
-        if "\\u" not in name:
+        if NAME_STAND_IN_MARK not in name:
             return name
-    return name.replace("\\", "\\\\").encode("utf-8", "backslashreplace").decode("utf-8")
+    escaped = name.replace("\\", "\\\\").encode("utf-8", "backslashreplace").decode("utf-8")
+    return NAME_STAND_IN_MARK + escaped

@@ -286,27 +286,6 @@ def test_an_applied_edge_on_an_unnamable_file_does_not_come_back_as_unreviewed(
     assert "review  " not in out
 
 
-def test_verify_reports_an_edge_that_names_a_file_only_by_its_stand_in(
-    unnamable_corpus, capsys
-):
-    """The stand-in is a name for the QUEUE, never a name for the corpus.
-
-    `lint`, `check`, `fix` and the store all resolve a declared edge by comparing raw
-    filenames, so a memo carrying the escape states an edge no reader in this package
-    resolves. `verify` says so, and `rewrite apply` refuses to write one in the first place —
-    see `test_a_reference_to_a_file_named_only_by_a_stand_in_is_refused_before_any_write` in
-    test_corpus_rewrite_contract.py. Teaching this one command to resolve the escape would have
-    made it the only reader in the package that did.
-    """
-    (unnamable_corpus / NEW).write_text(
-        "---\nsupersedes: bad\\udcff.md\n---\n# new\n\nBody.\n", encoding="utf-8", newline="\n"
-    )
-    with pytest.raises(SystemExit) as exc:
-        main(["rewrite", "verify", str(unnamable_corpus)])
-    assert exc.value.code == 1
-    assert "UNRESOLVED" in capsys.readouterr().out
-
-
 def test_verify_refuses_an_ambiguous_target(tmp_path, capsys):
     """Two files sharing a basename resolve to two files and therefore to none.
 
