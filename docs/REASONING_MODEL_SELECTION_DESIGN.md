@@ -121,8 +121,12 @@ Default no, matching the entailment judge (`_ask_yes_no(..., default=False)`). A
 ### 2. Provider
 
 Built by a new `reasoning_provider_choices(probe, *, security_required, cloud_keys)` returning
-`list[Choice]`, following `embedder_choices` (`recall/setup.py:125-210`) exactly, including the
-`available` flag and `unavailable_note` composed by `_why_unavailable`.
+`list[Choice]`, following `embedder_choices` (`recall/setup.py:125-210`) in shape, including the
+`available` flag and an `unavailable_note`. The note is composed locally rather than by
+`_why_unavailable` (`recall/setup.py:437`), because that helper reports on
+sentence-transformers, CUDA and free disk, none of which is why an API provider is
+unreachable. Reusing it would send the reader to fix the wrong thing, which is the exact
+failure its own docstring warns about.
 
 | Order | label | value | Gate |
 |---|---|---|---|
