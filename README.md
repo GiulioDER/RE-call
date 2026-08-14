@@ -361,7 +361,6 @@ Core documents:
 | [docs/CALIBRATION.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md) | Calibration workflow and generation-aware serving. |
 | [docs/CASE_STUDY.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CASE_STUDY.md) | Where the system came from and what is public versus private. |
 | [docs/RESEARCH_PROTOCOL.md](https://github.com/GiulioDER/RE-call/blob/master/docs/RESEARCH_PROTOCOL.md) | How benchmark runs are controlled and audited. |
-| [docs/BETA_RECRUITING.md](https://github.com/GiulioDER/RE-call/blob/master/docs/BETA_RECRUITING.md) | Public-discussion beta recruiting workflow with opt-in conversion, not email harvesting. |
 
 Release notes and upgrade warnings live in [CHANGELOG.md](https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md).
 
