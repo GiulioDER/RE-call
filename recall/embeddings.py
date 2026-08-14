@@ -34,6 +34,32 @@ _TRANSIENT_MARKERS = (
 )
 
 
+class NonTransientError(Exception):
+    """Marker: ``retry_with_backoff`` must never retry this, whatever the message happens to say.
+
+    ``_is_transient`` classifies by heuristic, and its last resort is substring-matching the
+    exception's rendered text. That text is written for a human, so any wording that happens to
+    contain a marker is read as retryable and the caller silently pays ``attempts`` times for a
+    failure guaranteed to repeat. Measured cases: a ceiling of 4,290 tokens contains "429"; a path
+    containing "timeout"; a host named "connection-broker".
+
+    ``benchmarks/llm.py:CompletionTruncated`` is what this was found on. It documented itself as
+    "deliberately NOT transient" and nothing enforced it, so the property held only for ceilings
+    spelled without a marker: 16,384 was permanent, 4,290 and 429 and 1,429 were all retried, four
+    billed requests each for an over-long request no retry can make fit.
+
+    ⚠️ Fixed HERE rather than in the wording. Rewording relocates the coincidence instead of
+    removing it, and leaves the same fragility for every other caller of ``retry_with_backoff``:
+    the two sites in this module and ``recall/truth_extraction/_openai_engine.py``, none of which
+    passes a custom classifier. ``benchmarks/llm.py`` had already protected its own path with a
+    ``PERMANENT_ERRORS`` tuple, which is precisely why this went unnoticed — the one caller with a
+    fix was the one everybody read.
+
+    Inherited ALONGSIDE the exception's own base, never instead of it, so existing
+    ``except RuntimeError`` still catches.
+    """
+
+
 def _probe(exc: Exception, name: str) -> object | None:
     """Read ``name`` off an arbitrary exception, refusing to raise while doing it.
 
@@ -100,6 +126,12 @@ def _is_transient(exc: Exception) -> bool:
     408 this function's business: with the SDK retrying underneath, a 408 was being retried twice
     regardless of what was decided here.
     """
+    # 🔑 Ahead of EVERY heuristic below, including the numeric one. A status describes what the
+    # transport saw; the marker describes what the RAISER knows, and only the raiser can know that
+    # resending reproduces the failure at full price. A wrapper carrying an upstream 500 alongside
+    # its own "do not retry" verdict must be believed about its own verdict.
+    if isinstance(exc, NonTransientError):
+        return False
     status = _probe(exc, "status_code")
     if status is None:
         status = _probe(exc, "status")

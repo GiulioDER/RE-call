@@ -6,7 +6,12 @@ from collections.abc import Callable
 from typing import Protocol
 
 from recall._chat_content import assistant_text
-from recall.embeddings import _is_transient, _probe, retry_with_backoff
+from recall.embeddings import (
+    NonTransientError,
+    _is_transient,
+    _probe,
+    retry_with_backoff,
+)
 from recall.provider_metadata import ProviderMetadata
 
 #: The injected-LLM seam: (system_prompt, user_prompt) -> completion text. Everything downstream
@@ -27,7 +32,7 @@ Completer = Callable[[str, str], str]
 DEFAULT_MAX_TOKENS = 16384
 
 
-class CompletionTruncated(RuntimeError):
+class CompletionTruncated(NonTransientError, RuntimeError):
     """A completion stopped because it hit `max_tokens` rather than finishing.
 
     Raised rather than returned, because the alternative is worse than the error: a truncated
@@ -47,7 +52,7 @@ class CompletionTruncated(RuntimeError):
     """
 
 
-class EmptyCompletion(RuntimeError):
+class EmptyCompletion(NonTransientError, RuntimeError):
     """A completion came back carrying no text at all.
 
     Distinct from `CompletionTruncated` on purpose, and the distinction is the operator's next
@@ -112,6 +117,10 @@ class NoCompletionChoices(RuntimeError):
 #: text is written for a human: `CompletionTruncated` interpolates the ceiling, and
 #: `EmptyCompletion` interpolates `finish_reason`, which is a string the PROVIDER chooses. Leaving
 #: the classification to phrasing means a provider can flip our retry policy from the wire.
+#: Both members ALSO inherit `recall.embeddings.NonTransientError`, which is what makes them
+#: permanent for a caller using the DEFAULT classifier. This tuple is not thereby redundant: it
+#: is the half of `_classify` that pairs with `TRANSIENT_ERRORS`, which has no marker equivalent
+#: because `_is_transient`'s default for an unrecognised error is already "not transient".
 PERMANENT_ERRORS: tuple[type[Exception], ...] = (CompletionTruncated, EmptyCompletion)
 
 #: ⚠️ Stated explicitly because the default here is the OPPOSITE of the one in
