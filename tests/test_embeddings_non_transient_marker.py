@@ -15,10 +15,14 @@ only for ceilings spelled without a marker. Measured against `_is_transient` bef
     max_tokens=1429    True    retried
     max_tokens=42900   True    retried
 
-End to end at `benchmarks/llm.py`'s shipped `max_attempts=4`, a `finish_reason="length"` response
-at `max_tokens=4290` cost FOUR billed requests instead of one, for a failure guaranteed to repeat:
-the ceiling that cut this attempt cuts the next three identically. `DEFAULT_MAX_TOKENS`'s own
-docstring invites the edit that lands on such a ceiling ("Raise it if that ever happens").
+⚠️ That table is about `_is_transient` ALONE, and an earlier version of this docstring turned it
+into an end-to-end cost claim it does not support. No bill was ever paid: `OpenRouterLLM.complete`
+passes `is_transient=_classify`, which short-circuits on its own `PERMANENT_ERRORS` tuple, so the
+one caller that raises this type already billed ONE request rather than four. The 4x is what a
+caller using the DEFAULT classifier would pay, which is the hazard being closed here, not a loss
+already taken. `DEFAULT_MAX_TOKENS`'s own docstring invites the edit that lands on such a ceiling
+("Raise it if that ever happens"), and the next caller of `retry_with_backoff` has no reason to
+know it needs a bespoke classifier.
 
 ⚠️ **FIXED AT THE CLASSIFIER, NOT IN THE WORDING.** Rewording the message would only relocate the
 coincidence, and would leave the same fragility for every other caller of `retry_with_backoff` —
@@ -151,3 +155,66 @@ def test_retry_with_backoff_still_retries_an_undeclared_rate_limit() -> None:
         retry_with_backoff(_fn, attempts=4, sleep=lambda _: None)
 
     assert len(calls) == 4
+
+
+def test_the_marker_check_does_not_beat_the_error_it_is_classifying() -> None:
+    """⛔ THE REGRESSION THIS COMMIT INTRODUCED, in the one function built around not doing it.
+
+    `isinstance(exc, NonTransientError)` falls back to reading `exc.__class__` whenever the fast
+    type check misses — which is EVERY exception that is not a marker, i.e. all of them today —
+    and `__class__` is free to raise. `_is_transient` is called from inside `retry_with_backoff`'s
+    `except Exception`, so a raise there does not misclassify: it REPLACES the provider's error.
+
+    Master returns False for these objects. This commit made them raise, and it did so as the
+    FIRST statement of a function whose every other line (`_probe`, the guarded `str(exc)`, the
+    nested `type(exc).__name__` fallback) exists precisely to prevent that. `tests/
+    test_embeddings_retry_classifier.py` already pins the same property for all three of those.
+
+    `issubclass(type(exc), ...)` is the fix: `type()` cannot be intercepted, and
+    `type.__subclasscheck__` on a plain metaclass runs no user code.
+    """
+
+    class _HostileClass(Exception):
+        @property
+        def __class__(self) -> type:  # type: ignore[override]
+            raise ValueError("hostile __class__")
+
+    class _HostileGetattr(Exception):
+        def __getattribute__(self, name: str) -> object:
+            if name == "__class__":
+                raise RuntimeError("hostile __getattribute__")
+            return object.__getattribute__(self, name)
+
+    # Neither may escape, and each must still get a real verdict from the evidence that remains.
+    assert _is_transient(_HostileClass.__new__(_HostileClass)) is False
+    assert isinstance(_is_transient(_HostileGetattr.__new__(_HostileGetattr)), bool)
+
+
+def test_no_marker_subclass_smuggles_in_a_retryable_status() -> None:
+    """The precedence puts the marker ahead of the numeric status, which is right today because no
+    marker subclass carries one. That is an assumption, not a guarantee, and nothing was watching
+    it: the day someone mixes the marker into a wrapper that carries an upstream 429, that wrapper
+    becomes permanently unretryable and SILENTLY.
+
+    This walks the actual subclasses rather than naming them, so a new one is covered on the day
+    it is written.
+
+    ⚠️ SHIPPED MODULES ONLY. `__subclasses__()` reports whatever is currently imported, which
+    includes test doubles — `test_the_marker_outranks_even_a_numeric_status` in this very file
+    defines a marker subclass carrying `status_code = 500` ON PURPOSE. Walking unfiltered made
+    this arm pass alone and fail in a full-suite run, i.e. order-dependent on which test had
+    already defined its double. The filter is what makes it a statement about the codebase rather
+    than about import order.
+    """
+    shipped = [
+        cls for cls in NonTransientError.__subclasses__()
+        if cls.__module__.split(".")[0] in {"recall", "recall_mcp", "benchmarks"}
+    ]
+    assert shipped, "the walk found nothing to check; the filter or the import set is wrong"
+
+    for cls in shipped:
+        for spelling in ("status_code", "status", "http_status"):
+            assert getattr(cls, spelling, None) is None, (
+                f"{cls.__name__} declares itself non-transient AND carries {spelling}; the marker "
+                f"would override a status that may well be retryable"
+            )
