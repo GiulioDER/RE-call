@@ -23,7 +23,8 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-from recall.frontmatter import VALIDITY_KEYS, parse_frontmatter, supersedes_key
+from recall.document import parse_document
+from recall.frontmatter import VALIDITY_KEYS, supersedes_key
 from recall.truth_extraction.types import (
     MAX_CLAIMS_PER_FILE,
     STATUS_VOCABULARY,
@@ -63,8 +64,7 @@ def human_body_of(text: str) -> str:
     frontmatter would be able to justify `supersedes: X` with the string `supersedes: X`,
     which proves only that the block it is supposed to be inferring already exists.
     """
-    _meta, body = parse_frontmatter(text)
-    return body
+    return parse_document(text).human_body
 
 
 def normalize_extraction(

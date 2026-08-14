@@ -14,8 +14,8 @@ import psycopg
 from pgvector import Vector
 
 from recall.generations import NoActiveGeneration
+from recall.store import DEFAULT_TABLE
 from recall.store import (
-    DEFAULT_TABLE,
     EdgeCandidates,
     PgVectorStore,
     resolve_supersession_candidates,

@@ -342,7 +342,9 @@ def insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
     newline = dominant_newline(body)
     entry = f"{key}: {value}".encode("utf-8")
     lines = split_lines(body)
-    text = body.decode("utf-8")
+    # Match the text boundary every reader reaches `frontmatter_span` through: universal newlines
+    # have already translated CRLF and a lone CR to LF by the time the parser sees the text.
+    text = body.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
     span = frontmatter_span(text)
     if span is not None:
         closing = lines[span] if span < len(lines) else b""

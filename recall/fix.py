@@ -42,7 +42,6 @@ from recall.frontmatter import (
     encodable_name,
     has_line_break,
     insert_frontmatter_line,
-    parse_frontmatter,
     supersedes_key,
     writable_reference,
 )
@@ -416,7 +415,7 @@ def apply_proposal(root: Path, p: Proposal) -> None:
         # every time. The old `read_text` raised here; keep refusing, with a message that says
         # which file and why.
         raise UnreadableMemo(f"{p.edit_file} is not valid UTF-8 ({exc.reason})") from exc
-    if parse_frontmatter(text)[0].get("supersedes"):
+    if parse_document(text).meta.get("supersedes"):
         # Re-checked against THIS file rather than the corpus-wide scan, for the same reason:
         # the scan's view can be missing a file it could not read at the time.
         raise UnreadableMemo(f"{p.edit_file} already declares supersedes — refusing to overwrite")
