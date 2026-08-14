@@ -299,7 +299,11 @@ def test_the_give_up_message_prices_the_attempts_actually_spent() -> None:
         generate_one(_Failing(), "openai/gpt-4o", [{"role": "user", "content": "x"}], 128)
 
     assert calls["n"] == 1, "a permanent error must break at the first attempt"
-    assert "1 attempt" in str(caught.value), (
+    # ⛔ The TOKEN, not a prefix. `"1 attempt" in "1 attempts"` is True, so the obvious assertion
+    # was satisfied by the ungrammatical string and the pluralisation conditional could be deleted
+    # with the suite green — a guard on the count that could not see the plural.
+    assert "after 1 attempt " in str(caught.value), (
         f"priced the budget rather than the spend: {caught.value}"
     )
+    assert "1 attempts" not in str(caught.value), "singular count, plural noun"
     assert "4 attempts" not in str(caught.value)

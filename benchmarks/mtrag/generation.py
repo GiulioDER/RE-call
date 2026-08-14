@@ -532,7 +532,13 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             # next dereference blind: a 200 whose first choice carries `message: null` raised
             # `AttributeError: 'NoneType' object has no attribute 'content'` at four billed calls,
             # which is the failure class this guard exists to abolish, reached through the field
-            # along. `assistant_text` is total, so `message` was the only crash surface left here.
+            # along. `assistant_text` is total, so `message` was the only crash surface a
+            # WELL FORMED SDK response object could still present here — narrower than the
+            # first wording, which claimed it was the only one at all. `getattr(..., default)`
+            # suppresses only `AttributeError`, so a descriptor raising anything else still
+            # escapes, and `not choices`, `choices[0]` and `reason == "length"` all run
+            # provider-supplied code inside this same `try`. The real SDK exposes these as
+            # plain pydantic attributes, and the enclosing retry bounds the cost either way.
             #
             # A SENTINEL, not `getattr(..., None)`, because the two cases must not merge. A missing
             # `message` is a malformed body: the provider's fault, transient, worth another route.

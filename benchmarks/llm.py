@@ -120,6 +120,13 @@ PERMANENT_ERRORS: tuple[type[Exception], ...] = (CompletionTruncated, EmptyCompl
 #: what `NoCompletionChoices` is, so omitting it would silently make it fail fast.
 TRANSIENT_ERRORS: tuple[type[Exception], ...] = (NoCompletionChoices,)
 
+#: Distinguishes "the field is not there" from "the field is there and null". `getattr(..., None)`
+#: cannot, and the two are priced differently: a missing `message` is a MALFORMED BODY (the
+#: provider's fault, transient) while a `content` that arrived null is an EMPTY ANSWER
+#: (permanent). Shared in spirit with `benchmarks/mtrag/generation.py`, which reads the same
+#: field the same way.
+_NO_CONTENT_FIELD = object()
+
 #: The values the OpenAI wire format actually defines for `finish_reason`. Anything else is text
 #: the provider chose, and only these are safe to render into an exception message: see
 #: `EmptyCompletion`, and `benchmarks/beam/run.py:_is_terminal`, which substring-matches that
@@ -524,7 +531,24 @@ class OpenRouterLLM:
         # a Python operation rather than the provider, which is what `NoCompletionChoices` exists
         # to abolish. Narrowing by `isinstance` below is also what makes the `return` a genuine
         # `str`, rather than the `Any` a bare read leaks out of a signature declaring `str`.
-        content: object = choice.message.content
+        #
+        # Read through a SENTINEL, matching `benchmarks/mtrag/generation.py`. `choice.message` was
+        # dereferenced blind, so a 200 whose first choice carries `message: null` escaped this seam
+        # as `AttributeError: 'NoneType' object has no attribute 'content'` — an untyped Python
+        # error crossing into the BEAM answerer and the judge, where every other unusable shape
+        # here raises a named one.
+        #
+        # The sentinel is what keeps the two cases apart, and they are priced differently: a
+        # MISSING `message` is a malformed body (the provider's fault, transient, `NoCompletionChoices`)
+        # while a `content` that arrived and is null is an empty ANSWER (permanent,
+        # `EmptyCompletion`). `getattr(..., None)` would merge them and charge one as the other.
+        content: object = getattr(getattr(choice, "message", None), "content", _NO_CONTENT_FIELD)
+        if content is _NO_CONTENT_FIELD:
+            raise NoCompletionChoices(
+                "the provider returned a 200 whose first choice carries no `message.content` "
+                "field at all, so there is no completion to read. This is an upstream fault on "
+                "the provider's side, not a property of the request."
+            )
         # Emptiness is decided on the STRIPPED text but the value handed back is untouched.
         # `generate_one` returns `.strip()`ed text because a stripped string is what it writes to a
         # submission; this is the `Completer` seam feeding arbitrary consumers, so stripping here
