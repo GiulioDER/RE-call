@@ -453,18 +453,46 @@ def already_done(path: Path) -> set[str]:
         return set()
     done: set[str] = set()
     # `errors="surrogateescape"` so a checkpoint torn mid-character is malformed rather than
-    # FATAL. `main` writes with `ensure_ascii=False`, so every non-ASCII answer is raw multi-byte
+    # FATAL. It has to be the OPEN, not an `except UnicodeDecodeError` below: strict decoding
+    # raises from the file ITERATOR, outside the `try`, so no handler here could ever catch it. `main` writes with `ensure_ascii=False`, so every non-ASCII answer is raw multi-byte
     # UTF-8 and a kill during the per-row flush can split one. Decoding strictly raised
     # `UnicodeDecodeError`, a `ValueError`, which no caller catches.
     with path.open(encoding="utf-8", errors="surrogateescape") as handle:
         for line in handle:
             try:
                 row = json.loads(line)
-            except (json.JSONDecodeError, UnicodeDecodeError):
+            except json.JSONDecodeError:
                 continue
             if isinstance(row, dict) and "task_id" in row and submission_answer(row):
                 done.add(str(row["task_id"]))
     return done
+
+
+def unparsable_rows(path: Path) -> int:
+    """How many lines of `path` are not readable JSON.
+
+    A fragment left by a kill mid-write is KEPT by `drop_answerless_rows`, deliberately, so it
+    survives every later resume. Nothing else in this module parses what it wrote back:
+    `check_submission_size` counts bytes, and the `incomplete` gate reports tasks that failed IN
+    THIS RUN. So a run could hand back a file the official checker rejects and still exit 0, which
+    is the contract `main` closes with: exit code 0 has to mean the submission is whole.
+
+    Counted rather than deleted. Removing the fragment would silently drop whatever partial row it
+    holds, and the operator is the one who should decide that; saying it is there costs nothing and
+    is the part that was missing.
+    """
+    if not path.exists():
+        return 0
+    bad = 0
+    with path.open(encoding="utf-8", errors="surrogateescape") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                json.loads(line)
+            except json.JSONDecodeError:
+                bad += 1
+    return bad
 
 
 def ensure_final_newline(path: Path) -> bool:
@@ -547,7 +575,7 @@ def drop_answerless_rows(path: Path, task_ids: set[str]) -> int:
         for line in handle:
             try:
                 row = json.loads(line)
-            except (json.JSONDecodeError, UnicodeDecodeError):
+            except json.JSONDecodeError:
                 kept.append(line)
                 continue
             answerless = (
@@ -1044,6 +1072,19 @@ def main(argv: list[str] | None = None) -> int:
                     build_messages(task, contexts, PROMPTS[args.prompt], layout),
                     args.max_tokens
                 )
+                # ⚠️ INSIDE the guard, because writing the row is part of doing the task and can
+                # fail on its own. The handle encodes strictly, so one unencodable character (a
+                # lone surrogate, which `json.loads` accepts from any third-party file that
+                # `load_generation_tasks` or `load_recall_contexts` reads, and which
+                # `submission_row` copies straight through) raised `UnicodeEncodeError` out of
+                # `main` and abandoned every remaining task. Nothing is written on that error,
+                # since the encode completes before any byte reaches the buffer.
+                handle.write(
+                    json.dumps(submission_row(task, contexts, answer), ensure_ascii=False) + "\n"
+                )
+                # Flushed per answer, not per batch. The file IS the checkpoint: a crash costs the
+                # call in flight, never the ones already paid for.
+                handle.flush()
             except MemoryError:
                 # Not quarantinable. `MemoryError` is an `Exception`, so the handler below would
                 # otherwise catch it and loop straight into the next allocation-heavy iteration,
@@ -1079,10 +1120,6 @@ def main(argv: list[str] | None = None) -> int:
                     ) from exc
                 continue
             consecutive = 0
-            handle.write(json.dumps(submission_row(task, contexts, answer), ensure_ascii=False) + "\n")
-            # Flushed per answer, not per batch. The file IS the checkpoint: a crash costs the
-            # call in flight, never the ones already paid for.
-            handle.flush()
             written += 1
             if position % 25 == 0:
                 print(
@@ -1107,6 +1144,19 @@ def main(argv: list[str] | None = None) -> int:
     # fails almost everything and still finishes "cleanly": measured at 30 of 40 tasks failed with
     # rc=0. `check_submission_size` counts bytes and never completeness, so nothing downstream
     # catches it either. Exit code 0 has to mean the submission is whole.
+    # A fragment left by an interrupted write is kept by the repair, deliberately, so it outlives
+    # every resume. Nothing above parses the file back, so without this a run hands over a file the
+    # official checker rejects and still reports success.
+    fragments = unparsable_rows(args.out)
+    if fragments:
+        print(
+            json.dumps({"event": "unparsable_rows", "count": fragments, "output": str(args.out),
+                        "note": "line(s) that are not readable JSON, which an interrupted write "
+                                "leaves behind. The official format checker rejects the file. The "
+                                "answers around them are intact: delete those line(s) and re-run, "
+                                "which regenerates only what they were holding"}),
+            flush=True,
+        )
     if failed:
         print(
             json.dumps({"event": "incomplete", "note":
@@ -1115,8 +1165,7 @@ def main(argv: list[str] | None = None) -> int:
                         f"completed ones are skipped."}),
             flush=True,
         )
-        return 1
-    return 0
+    return 1 if (failed or fragments) else 0
 
 
 if __name__ == "__main__":

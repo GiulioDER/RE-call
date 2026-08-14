@@ -326,10 +326,9 @@ def test_a_checkpoint_torn_mid_character_does_not_kill_the_resume(tmp_path, monk
     out.write_bytes(whole + b"\n" + torn[: torn.index("é".encode("utf-8")) + 1])
 
     assert gen.already_done(out) == {"a<::>1"}, "the intact row must still be readable"
+    # Only that the READ survives it. A byte-level claim here could not fail, because a return of
+    # 0 means nothing was written at all; that claim belongs to the rewrite arm below.
     assert gen.drop_answerless_rows(out, {"a<::>1", "b<::>1"}) == 0
-    assert out.read_bytes().endswith(torn[: torn.index("é".encode("utf-8")) + 1]), (
-        "the undecodable tail must round-trip byte for byte rather than being mangled or dropped"
-    )
 
 
 def test_undecodable_bytes_survive_a_rewrite_that_actually_happens(tmp_path) -> None:
@@ -371,6 +370,64 @@ def test_an_unexpected_failure_in_the_repair_is_not_reported_as_a_clean_refusal(
 
     with pytest.raises(ValueError):
         gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+
+
+def test_an_answer_that_cannot_be_encoded_fails_its_task_and_not_the_run(
+    tmp_path, monkeypatch
+) -> None:
+    """⚠️ Introduced by making the READERS surrogate-tolerant while the writer stayed strict.
+
+    The append handle encodes with the default strict handler, and the write sits OUTSIDE the
+    per-task quarantine, so one unencodable answer raised `UnicodeEncodeError` out of `main` and
+    abandoned every remaining task. It is not only a model behaviour: `json.loads` accepts an
+    escaped lone surrogate, and both `load_generation_tasks` and `load_recall_contexts` parse
+    third-party files whose fields `submission_row` copies straight through, so such a row would
+    kill every resume of that artifact forever.
+
+    Writing the row is part of doing the task, so failing to write it is a task failure."""
+    tasks = [_task(task_id="a<::>1"), _task(task_id="b<::>1")]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+
+    # Counted rather than matched on the task: `build_messages` deliberately never puts the
+    # `task_id` in the prompt, so there is nothing in `messages` to key off.
+    def answers(*a, **k):
+        answers.n += 1
+        return "a good answer" if answers.n == 1 else "bad \ud800 answer"
+
+    answers.n = 0
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+    monkeypatch.setattr(gen, "generate_one", answers)
+
+    rc = gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert rc == 1, "the submission is missing a task, so it is not whole"
+    assert [r["task_id"] for r in rows] == ["a<::>1"], "the other task must still be written"
+    failures = out.with_suffix(out.suffix + ".failed.jsonl")
+    assert "b<::>1" in failures.read_text(encoding="utf-8")
+
+
+def test_a_checkpoint_holding_an_unparseable_fragment_does_not_report_success(
+    tmp_path, monkeypatch
+) -> None:
+    """⚠️ Gluing is fixed; the false green it caused is not. A fragment left by a kill mid-write is
+    kept verbatim by the prune, by design, so it survives every later resume, and nothing in the
+    module parses the file it wrote: `check_submission_size` counts bytes. The run therefore
+    reported success over a file the official checker rejects, which is the same contract this
+    whole change set exists to hold, stated at the end of `main`: exit code 0 has to mean the
+    submission is whole."""
+    tasks = [_task(task_id="a<::>1")]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+    _resumable(out, '{"task_id": "b<::>1", "input": [], "contexts": [], "predi')
+
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+    monkeypatch.setattr(gen, "generate_one", lambda *a, **k: "an answer")
+
+    rc = gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+
+    assert rc == 1, "a submission carrying an unparseable line is not submittable"
 
 
 def test_a_row_appended_during_the_write_is_not_swapped_away(tmp_path, monkeypatch) -> None:
@@ -478,7 +535,9 @@ def test_a_file_that_grew_while_being_read_is_not_rewritten_over(tmp_path, monke
                 handle.write(_row("paid<::>1", "an answer a second run just paid for"))
         return real_loads(*a, **k)
 
+    staged: list[int] = []
     monkeypatch.setattr(gen.json, "loads", append_a_row_mid_read)
+    monkeypatch.setattr(gen.os, "fsync", lambda fd: staged.append(fd))
 
     with pytest.raises(RuntimeError):
         gen.drop_answerless_rows(out, {"redo<::>1"})
@@ -486,6 +545,11 @@ def test_a_file_that_grew_while_being_read_is_not_rewritten_over(tmp_path, monke
     monkeypatch.undo()
     assert "paid<::>1" in out.read_text(encoding="utf-8"), "the concurrent row must survive"
     assert "keep<::>1" in out.read_text(encoding="utf-8")
+    # ⚠️ The READ-window check is what this arm pins, and only this assertion can tell it apart
+    # from the second check before the swap, which catches the same growth a whole file write
+    # later. Both refuse, so the outcome is identical and the scratch file is cleaned up either
+    # way; what differs is whether the body was written at all. Refusing early is the behaviour.
+    assert staged == [], "the refusal must come before anything is staged, not after"
 
 
 def test_an_already_duplicated_task_is_repaired_even_though_it_is_not_pending(tmp_path) -> None:
