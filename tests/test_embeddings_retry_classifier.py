@@ -98,7 +98,9 @@ def test_the_real_sdk_400_that_was_reported_is_not_retried() -> None:
     the stub's `status_code` is an assumption about someone else's library, and this is the only
     thing that would notice if that assumption stopped holding.
     """
-    openai = pytest.importorskip("openai", reason="needs the bench extra (pip install recall[bench])")
+    openai = pytest.importorskip(
+        "openai", reason='needs the bench extra (pip install "recall-rag[bench]")'
+    )
     httpx = pytest.importorskip("httpx", reason="openai's transport dep; only missing if it drops it")
 
     body = {
@@ -352,7 +354,7 @@ def test_the_real_voyage_errors_reach_the_numeric_branch() -> None:
     match, so a pass here means the numeric branch answered.
     """
     if voyageai is None:
-        pytest.skip("needs the voyage extra (pip install recall[voyage])")
+        pytest.skip('needs the voyage extra (pip install "recall-rag[voyage]")')
     voyageai_error = voyageai.error
 
     server = voyageai_error.ServerError(

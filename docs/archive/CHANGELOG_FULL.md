@@ -1933,7 +1933,7 @@ run RE-call inside a third party's benchmark harness, and its own module docstri
   which only exists from **1.27.2**. On 1.10–1.27.1 the package installed cleanly and then failed
   on every authenticated call, because pydantic dropped the unknown `claims` field at
   construction. Below 1.10 the server fails loudly at import instead. Upgrade with
-  `pip install -U "recall[mcp]"`.
+  `pip install -U "recall-rag[mcp]"`.
 - **`pgvector>=0.4`** (was `>=0.3`). `recall/store.py` does `from pgvector import Vector`, and
   that top-level export only exists from 0.4.0 — on 0.3.x the package installs and then
   `import recall.store` raises `ImportError`. Same defect as the `mcp` floor above, found the

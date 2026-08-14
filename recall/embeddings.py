@@ -627,7 +627,7 @@ def _session_providers(model: object) -> list[str]:
 
 
 class FastEmbedEmbedder:
-    """Real local embeddings (no API key). Requires `pip install recall[fastembed]`."""
+    """Real local embeddings (no API key). Requires `pip install "recall-rag[fastembed]"`."""
 
     def __init__(
         self,
@@ -675,7 +675,8 @@ class FastEmbedEmbedder:
             from fastembed import TextEmbedding
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError(
-                "FastEmbedEmbedder requires the fastembed extra: pip install recall[fastembed]"
+                "FastEmbedEmbedder requires the fastembed extra: "
+                'pip install "recall-rag[fastembed]"'
             ) from exc
         threads = resolve_thread_budget()
         kwargs: dict[str, object] = {"model_name": identity.model_name if identity else model_name}
@@ -806,7 +807,7 @@ class SentenceTransformerEmbedder:
 
         python -m recall.eval.labelled --embedder st:finetune/model ...
 
-    Requires `pip install recall[rerank]` (or `[entail]`) — both pull sentence-transformers.
+    Requires `pip install "recall-rag[rerank]"` (or `[entail]`) — both pull sentence-transformers.
     """
 
     def __init__(self, model: str, batch_size: int = 64) -> None:
@@ -814,7 +815,7 @@ class SentenceTransformerEmbedder:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError(
-                "SentenceTransformerEmbedder requires: pip install recall[rerank]"
+                'SentenceTransformerEmbedder requires: pip install "recall-rag[rerank]"'
             ) from exc
         self._model = SentenceTransformer(model)
         self._name = f"st:{model}"
@@ -872,7 +873,7 @@ class Qwen3EmbeddingEmbedder:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # pragma: no cover
             raise ImportError(
-                "Qwen3EmbeddingEmbedder requires: pip install recall[rerank]"
+                'Qwen3EmbeddingEmbedder requires: pip install "recall-rag[rerank]"'
             ) from exc
         threads = resolve_thread_budget()
         if threads is not None:
@@ -940,7 +941,7 @@ class Qwen3EmbeddingEmbedder:
 
 
 class VoyageEmbedder:
-    """Voyage cloud embeddings. Requires `pip install recall[voyage]` and VOYAGE_API_KEY."""
+    """Voyage cloud embeddings. Requires `pip install "recall-rag[voyage]"` and VOYAGE_API_KEY."""
 
     def __init__(
         self,
@@ -955,7 +956,7 @@ class VoyageEmbedder:
         try:
             import voyageai
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise ImportError("VoyageEmbedder requires: pip install recall[voyage]") from exc
+            raise ImportError('VoyageEmbedder requires: pip install "recall-rag[voyage]"') from exc
         # Stated rather than inherited: voyageai already defaults `max_retries` to 0, so this
         # changes nothing today. It pins the same single-owner policy `OpenAICompatEmbedder`
         # needs explicitly, so that an SDK release which starts retrying cannot quietly

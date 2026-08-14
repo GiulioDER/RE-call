@@ -151,7 +151,7 @@ def test_a_voyage_error_is_paced_too_though_it_carries_no_response() -> None:
     reader looks up lowercase keys only.
     """
     if voyageai is None:
-        pytest.skip("needs the voyage extra (pip install recall[voyage])")
+        pytest.skip('needs the voyage extra (pip install "recall-rag[voyage]")')
     from requests.structures import CaseInsensitiveDict
 
     exc = voyageai.error.RateLimitError(
@@ -175,7 +175,7 @@ def test_a_header_value_that_is_not_a_string_falls_back_instead_of_raising() -> 
     an indexing run dies on a stdlib string-method error instead of retrying.
     """
     if voyageai is None:
-        pytest.skip("needs the voyage extra (pip install recall[voyage])")
+        pytest.skip('needs the voyage extra (pip install "recall-rag[voyage]")')
     exc = voyageai.error.RateLimitError("rate limit exceeded", headers={"retry-after": ["20"]})
 
     delays = _delays(exc)

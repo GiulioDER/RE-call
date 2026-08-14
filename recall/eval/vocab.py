@@ -60,7 +60,7 @@ def bge_encoder(model_name: str = DEFAULT_LOCAL_MODEL) -> Callable[[str], list[s
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(
             "bge_encoder requires the fastembed extra (it brings `tokenizers`): "
-            "pip install recall[fastembed]"
+            'pip install "recall-rag[fastembed]"'
         ) from exc
 
     tokenizer = Tokenizer.from_pretrained(model_name)
@@ -190,7 +190,7 @@ def crowding(vectors: Sequence[Sequence[float]], *, sample: int | None = None, s
         # `eval` extra, i.e. by luck. Unguarded, this handed a library user a bare
         # ModuleNotFoundError raised from inside the package.
         raise ImportError(
-            "crowding requires the eval extra (it brings `numpy`): pip install recall[eval]"
+            'crowding requires the eval extra (it brings `numpy`): pip install "recall-rag[eval]"'
         ) from exc
 
     if len(vectors) < 2:
