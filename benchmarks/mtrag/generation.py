@@ -751,22 +751,22 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             # NOT in `PERMANENT_ERROR_NAMES`, so every affected task paid four BILLED attempts
             # before failing, and five such tasks in a row aborted the run. Shared with the other
             # two OpenAI-compatible clients in this repo so the rule cannot drift between them.
-            # ⛔ ONE FIELD FURTHER than the `choices` guard above, because stopping there left the
-            # next dereference blind: a 200 whose first choice carries `message: null` raised
-            # `AttributeError: 'NoneType' object has no attribute 'content'` at four billed calls,
-            # which is the failure class this guard exists to abolish, reached through the field
-            # along. `assistant_text` is total, so `message` was the only crash surface a
-            # WELL FORMED SDK response object could still present here — narrower than the
-            # first wording, which claimed it was the only one at all. `getattr(..., default)`
-            # suppresses only `AttributeError`, so a descriptor raising anything else still
-            # escapes, and `not choices`, `choices[0]` and `reason == "length"` all run
-            # provider-supplied code inside this same `try`. The real SDK exposes these as
-            # plain pydantic attributes, and the enclosing retry bounds the cost either way.
+            # ⚠️ ORDER. `finish_reason` is asked ABOVE, before the body is read, because it is
+            # the most specific thing known about the response and the only one of these causes
+            # that names a fix. Reading the body first sends a truncated completion whose `message`
+            # also failed to arrive to the retried class: four billed attempts against a ceiling no
+            # retry can move, in a message that contradicts itself.
             #
-            # A SENTINEL, not `getattr(..., None)`, because the two cases must not merge. A missing
-            # `message` is a malformed body: the provider's fault, transient, worth another route.
-            # A `content` that arrived and is null is an empty ANSWER: permanent, and it has to
-            # keep falling through to the `EmptyCompletion` below at one billed call, not four.
+            # Against a sentinel, because `message` can fail to arrive as an object in three ways
+            # (key omitted, set to null, holding something that is not an object) and a `None`
+            # check catches one. A message object with no `content` KEY is not among them: the SDK
+            # normalises that to `content=None`, which is the permanent `EmptyCompletion` path
+            # below, and rightly so, since the field did arrive. Verified against the pinned SDK: a
+            # body sending `"message": "the answer"` constructs `Choice(message='the answer')`,
+            # passes a `None` check, and raises `AttributeError: 'str' object has no attribute
+            # 'content'`. `None` cannot be the sentinel: a `content` that arrived carrying null is
+            # a completion with no text, which is `EmptyCompletion` below and permanent, while no
+            # `content` field at all is a malformed body, which is retried.
             content = getattr(getattr(choice, "message", None), "content", _NO_CONTENT_FIELD)
             if content is _NO_CONTENT_FIELD:
                 raise NoCompletionChoices(
@@ -939,18 +939,6 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
 
-    # To DISK, not only to stdout. A console line does not survive a lost terminal, and the prompt
-    # is the difference between two artifacts that are otherwise indistinguishable.
-    # NOT on a dry run. A dry run writes no rows, and `tasks` here is post-`--limit`, so a
-    # limited preview against an in-progress output would overwrite a real run's manifest with a
-    # partial count and a description of a run that produced nothing.
-    if not args.dry_run:
-        write_run_manifest(
-            args.out, prompt=args.prompt, layout=layout, model=args.model, task=args.task,
-            contexts_from=args.contexts_from if args.task == "c" else "reference",
-            max_tokens=args.max_tokens, tasks=len(tasks), limit=args.limit,
-        )
-
     if args.dry_run:
         chars = missing = 0
         for task in pending:
@@ -1008,6 +996,18 @@ def main(argv: list[str] | None = None) -> int:
     # Independent of the repair: an unterminated last line glues the first appended row onto it,
     # and the overwhelmingly common resume repairs nothing at all.
     ensure_final_newline(args.out)
+    # To DISK, not only to stdout. A console line does not survive a lost terminal, and the prompt
+    # is the difference between two artifacts that are otherwise indistinguishable.
+    #
+    # AFTER the repair, for the same reason the failure log is cleared after it: a run that refuses
+    # to touch the predictions must not already have replaced the record of what produced them. A
+    # dry run never reaches here, so the old `args.dry_run` guard is now the control flow itself;
+    # that guard existed because a limited preview would otherwise describe a run producing nothing.
+    write_run_manifest(
+        args.out, prompt=args.prompt, layout=layout, model=args.model, task=args.task,
+        contexts_from=args.contexts_from if args.task == "c" else "reference",
+        max_tokens=args.max_tokens, tasks=len(tasks), limit=args.limit,
+    )
     # Rewritten, not appended across runs: this file describes the run that just happened. Appending
     # would leave a task that failed once and later succeeded sitting in the log forever, so the
     # file would over-report while the "done" event under-reported, and the two would disagree.

@@ -34,7 +34,8 @@ from benchmarks.mtrag import generation as gen
 from tests.test_mtrag_generation import _mtrag_root, _task
 
 
-def _resumable(out, rows: str, prompt: str = gen.DEFAULT_PROMPT) -> None:
+def _resumable(out, rows: str, prompt: str = gen.DEFAULT_PROMPT,
+               model: str = "openai/gpt-4o-mini") -> None:
     """An output file AND the manifest a resume requires beside it.
 
     Resuming without one is refused outright, on the grounds that rows of unknown provenance must
@@ -42,7 +43,7 @@ def _resumable(out, rows: str, prompt: str = gen.DEFAULT_PROMPT) -> None:
     has to supply the manifest, exactly as the run that wrote those rows would have.
     """
     out.write_text(rows, encoding="utf-8")
-    gen.write_run_manifest(out, prompt=prompt)
+    gen.write_run_manifest(out, prompt=prompt, model=model)
 
 
 def _row(task_id: str, answer: object = "an answer", *, carry_predictions: bool = True) -> str:
@@ -736,6 +737,14 @@ def test_a_repair_that_cannot_be_written_stops_the_run_instead_of_tracebacking(
 
     assert rc == 1, "a run that could not repair its checkpoint must not report success"
     assert out.read_text(encoding="utf-8") == _row("b<::>1", ""), "the checkpoint is untouched"
+    # ⚠️ The sidecar too. `write_run_manifest` records "what produced this artifact", and a run
+    # that wrote none of it must not be what the artifact claims produced it. The manifest was
+    # being replaced before the repair could refuse, so a refusing run left the previous run's
+    # predictions described by a model, ceiling and task count that never produced a byte of them.
+    manifest = json.loads(gen.run_manifest_path(out).read_text(encoding="utf-8"))
+    assert manifest["model"] == "openai/gpt-4o-mini", (
+        "the provenance of the rows on disk must survive a run that refused to touch them"
+    )
 
 
 def test_a_concurrent_run_stops_this_one_by_name_rather_than_by_accident(
