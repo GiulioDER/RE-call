@@ -416,8 +416,9 @@ def test_a_unicode_line_separator_cannot_smuggle_a_title_past_the_guard(tmp_path
     assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == before
 
 
+@pytest.mark.parametrize("folder", ["", "sub/"])
 def test_a_reference_to_a_file_named_only_by_a_stand_in_is_refused_before_any_write(
-    tmp_path: Path,
+    tmp_path: Path, folder: str
 ) -> None:
     """A file the corpus names by a stand-in has no spelling a memo can carry.
 
@@ -428,14 +429,15 @@ def test_a_reference_to_a_file_named_only_by_a_stand_in_is_refused_before_any_wr
     one to every reader in this package, with the trust layer never demoting the memo the edge
     supersedes. Silence is the one outcome worse than a refusal here.
 
-    The check is a comparison against the real name rather than a re-test of UTF-8 validity,
-    because `encodable_name` also diverts a VALID name carrying the escape's own characters,
-    and that one is unresolvable for the reader in exactly the same way. One code path, no
-    branch on the reason: a filename holding a backslash cannot exist on Windows, so a second
-    case here would be a test that only ever runs on half the machines that read it.
+    The refusal is decided by the marker alone, which is why it needs no corpus walk: a NUL
+    cannot occur in a path, so a value carrying one is a stand-in and nothing else. At the
+    corpus root and one directory down, because the marker rides on the path SEGMENT that needs
+    it: a guard testing the START of the value would pass this at the root and let a nested
+    stand-in through, which is exactly how the same reduction bit `_resolve`.
     """
     _corpus(tmp_path)
-    awkward = "bad\udcff_2026-01-01.md"
+    awkward = f"{folder}bad\udcff_2026-01-01.md"
+    (tmp_path / folder).mkdir(parents=True, exist_ok=True)
     _memo(tmp_path, awkward, _OLD)
     before = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
 

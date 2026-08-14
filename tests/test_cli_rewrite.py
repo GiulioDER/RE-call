@@ -236,35 +236,41 @@ def test_an_unnamable_file_does_not_renumber_its_neighbours_proposals(corpus):
     assert [p.id for p in corpus_proposals(corpus)] == before, "the ids churned"
 
 
-@pytest.fixture
-def unnamable_corpus(tmp_path):
+@pytest.fixture(params=["", "sub/"])
+def unnamable_corpus(tmp_path, request):
     """A corpus whose SUPERSEDING memo is the one that cannot be named in UTF-8.
 
     So the proposal's edit target is the awkward file itself, which is what makes the write
     path answer rather than route around it.
+
+    At the corpus root and one directory down, because `supersedes_key` keeps only the last
+    path segment: a stand-in spelled onto the whole relative path lost its marker in that
+    reduction, and every property below held at the root and failed one directory in.
+
+    Yields `(root, awkward_file)`.
     """
     (tmp_path / OLD).write_text("# old\n\nThe original call.\n", encoding="utf-8", newline="\n")
-    (tmp_path / "bad\udcff.md").write_bytes(
-        f"# bad\n\nThis memo supersedes {OLD} after review.\n".encode()
-    )
-    return tmp_path
+    awkward = tmp_path / f"{request.param}bad\udcff.md"
+    awkward.parent.mkdir(parents=True, exist_ok=True)
+    awkward.write_bytes(f"# bad\n\nThis memo supersedes {OLD} after review.\n".encode())
+    return tmp_path, awkward
 
 
 def test_a_proposal_from_an_unnamable_file_can_still_be_applied(unnamable_corpus, capsys):
     """A queue item that can never be applied is not much better than the crash it replaced.
 
-    The corpus name is now the escape `bad\\udcff.md`, while the file on disk is still named
-    with the surrogate, so `_resolve` matched the escape against raw names, found nothing, and
-    refused with "matches 0 files in the corpus" about a file sitting right there. That is the
-    fabricated refusal `supersedes_key` was written to end, in a second place.
+    The corpus names the file by a stand-in while the file on disk still carries the surrogate,
+    so `_resolve` matched the stand-in against raw names, found nothing, and refused with
+    "matches 0 files in the corpus" about a file sitting right there. That is the fabricated
+    refusal `supersedes_key` was written to end, in a second place.
     """
-    found = [p for p in corpus_proposals(unnamable_corpus) if p.proposed_relation == "supersedes"]
+    root, awkward = unnamable_corpus
+    found = [p for p in corpus_proposals(root) if p.proposed_relation == "supersedes"]
     assert found, "the awkward memo states a supersession"
-    main(["rewrite", "apply", str(unnamable_corpus), "--proposal", found[0].id,
+    main(["rewrite", "apply", str(root), "--proposal", found[0].id,
           "--reviewer", "gde", "--note", "Read both memos.", "--apply"])
-    written = (unnamable_corpus / "bad\udcff.md").read_text(encoding="utf-8")
-    assert "supersedes:" in written, "the edit was refused about the file it names"
-    assert "supersedes:" not in (unnamable_corpus / OLD).read_text(encoding="utf-8")
+    assert "supersedes:" in awkward.read_text(encoding="utf-8"), "refused about the file it names"
+    assert "supersedes:" not in (root / OLD).read_text(encoding="utf-8")
 
 
 def test_an_applied_edge_on_an_unnamable_file_does_not_come_back_as_unreviewed(
@@ -272,15 +278,16 @@ def test_an_applied_edge_on_an_unnamable_file_does_not_come_back_as_unreviewed(
 ):
     """`plan` marks a proposal the memo already states DECLARED, by opening that memo.
 
-    It opened `root / <corpus name>`, which for this file is the escape and not a path that
+    It opened `root / <corpus name>`, which for this file is the stand-in and not a path that
     exists, so the read failed and every run offered the same accepted proposal again as
     unreviewed work. A queue that never converges is the defect the DECLARED mark exists for.
     """
-    found = [p for p in corpus_proposals(unnamable_corpus) if p.proposed_relation == "supersedes"]
-    main(["rewrite", "apply", str(unnamable_corpus), "--proposal", found[0].id,
+    root, _awkward = unnamable_corpus
+    found = [p for p in corpus_proposals(root) if p.proposed_relation == "supersedes"]
+    main(["rewrite", "apply", str(root), "--proposal", found[0].id,
           "--reviewer", "gde", "--note", "Read both memos.", "--apply"])
     capsys.readouterr()
-    main(["rewrite", "plan", str(unnamable_corpus)])
+    main(["rewrite", "plan", str(root)])
     out = capsys.readouterr().out
     assert "DECLARED" in out, "an accepted proposal came back as unreviewed"
     assert "review  " not in out

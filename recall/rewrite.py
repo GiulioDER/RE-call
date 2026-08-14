@@ -446,14 +446,18 @@ def _refuse_stand_in_reference(value: str) -> None:
     and no real name can. `_refuse_unwritable_value` would refuse this value too, for its NUL,
     and this runs first for the message: "contains a NUL byte" is true and tells a reviewer
     nothing about the file they would have to rename.
+
+    Tested with `in` rather than `startswith`: the marker rides on the path SEGMENT that needs
+    it, so `sub/<marker>bad.md` carries it in the middle, and a value a provider wrapped in
+    wikilink brackets carries it one character in.
     """
-    if not value.startswith(NAME_STAND_IN_MARK):
+    if NAME_STAND_IN_MARK not in value:
         return
     raise RewriteRefused(
-        f"refusing to write: {value[len(NAME_STAND_IN_MARK):]!r} is this corpus's stand-in for "
-        f"a file whose name is not valid UTF-8, and no reader of the corpus resolves a "
-        f"stand-in. Rename the file first; the edge can be declared once it has a name a memo "
-        f"can hold."
+        f"refusing to write: {value.replace(NAME_STAND_IN_MARK, '')!r} is this corpus's "
+        f"stand-in for a file whose name is not valid UTF-8, and no reader of the corpus "
+        f"resolves a stand-in. Rename the file first; the edge can be declared once it has a "
+        f"name a memo can hold."
     )
 
 

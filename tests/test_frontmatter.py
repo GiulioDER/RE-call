@@ -4,7 +4,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from recall.frontmatter import encodable_name, parse_frontmatter, validity_bounds
+from recall.frontmatter import (
+    encodable_name,
+    parse_frontmatter,
+    supersedes_key,
+    validity_bounds,
+)
 
 DOC = """---
 valid_from: 2026-06-01
@@ -111,6 +116,31 @@ def test_encodable_name_does_not_collapse_two_names_onto_one():
     impostor = "bad\\udcff.md"
     assert surrogate != impostor
     assert encodable_name(surrogate) != encodable_name(impostor)
+
+
+def test_a_stand_in_is_still_a_stand_in_after_the_name_normaliser():
+    """`supersedes_key` reduces a name to the stem of its LAST path segment.
+
+    A marker prepended to the whole relative path is thrown away by that reduction, so a
+    nested memo was `\\x00name:sub/bad\\udcff` as a reference and `\\x00name:bad\\udcff` as a
+    file, the two could never meet, and `_resolve` refused to write about a file sitting right
+    there. The marker travels with the segment that needs it, which is the only part of a path
+    the normaliser keeps.
+    """
+    assert supersedes_key(encodable_name("sub/bad\udcff.md")) == supersedes_key(
+        encodable_name("bad\udcff.md")
+    )
+
+
+def test_the_normaliser_does_not_collapse_a_nested_stand_in_onto_its_impostor():
+    """Injectivity has to survive normalisation too, or `claim_key` re-merges what it separated.
+
+    Both names reduce through `supersedes_key` before they are hashed into a claim, so a
+    stripped marker meant a reviewer's rejection of one silently suppressed the other.
+    """
+    surrogate = encodable_name("sub/bad\udcff.md")
+    impostor = encodable_name("sub/bad\\udcff.md")
+    assert supersedes_key(surrogate) != supersedes_key(impostor)
 
 
 def test_encodable_name_survives_a_name_wearing_the_marker():
