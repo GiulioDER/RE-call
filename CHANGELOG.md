@@ -24,6 +24,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `recall_rewrite_apply`: the MCP client is the model, and a reviewer id it can type is a field
   rather than a person. `recall_reasoning_proposals` and `recall reasoning proposals` gain
   `include_extracted`, defaulting to off so existing behaviour is byte identical.
+* Added `recall extract run --cache PATH`, a persistent SQLite extraction cache, so re-ingesting
+  an unchanged memo does not re-pay the engine for it. Entries are keyed on engine identity,
+  engine revision, prompt revision, the file, its body and the corpus names, so an answer
+  produced under one engine is never served for another. A path that is not a usable cache is
+  refused before any engine call, a corrupt row is a miss and is re-paid, and a failed write is
+  counted and reported rather than discarding the files already extracted. `--cache` was briefly
+  a boolean because an earlier version accepted a PATH and ignored it; the flag came back when
+  the persistence did. See [docs/EXTRACTION_CACHE_DESIGN.md](docs/EXTRACTION_CACHE_DESIGN.md).
+
+### Fixed
+
+* Fixed `recall extract run` aborting a whole corpus on one filename that is not valid UTF-8.
+  A POSIX name arrives as a lone surrogate through `Path.glob`'s surrogateescape, and it raised
+  twice: once hashing the cache key, which is computed for every file whether or not a cache is
+  in use, and again printing the report, because reconfiguring stdout's encoding resets its
+  error handler to strict. The first discarded every file already extracted; the second threw
+  away a completed extraction at the last step, exiting 1 with empty output. Such a name is now
+  reported with its bad bytes escaped.
 
 ### Changed
 

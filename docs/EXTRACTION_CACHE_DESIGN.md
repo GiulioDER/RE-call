@@ -281,11 +281,24 @@ Added after a review enumerated guards from the SOURCE rather than from either l
     reachable from a single process test. It is NOT evidence about concurrency; see the section
     below on the race that was not one.
 42. The stored payload's key order is deterministic. `sort_keys=True` was asserted by nothing,
-    because round trip equality is identical either way and only the BYTE form varies.
+    because round trip equality is identical either way and only the BYTE form varies. The
+    assertion re-dumps, so `separators` and `ensure_ascii` and the key order inside each claim
+    are pinned with it, and the fixture carries a non-ASCII quote to make the last one reachable.
 43. A refusal names WHICH guard refused. The busy and damaged branches assert distinct
     messages, so forcing `_is_busy` true can no longer report a corrupt store as "retry, another
     run is probably holding it" over a cache whose only recovery is deleting it. The malformed
     payload and bad member cases likewise assert their reason rather than only their type.
+44. A claim kind that is not a string is refused rather than raising `TypeError`. `kind not in
+    _CLAIM_TYPES` HASHES the key, so a JSON array or object crashed the exported function before
+    any guard written to catch a bad kind could run.
+45. A filename that is not valid UTF-8 does not abort the ingest, tested where the property
+    lives, with no cache passed at all. Its key is stable for every ordinary name, and two
+    documents never share one.
+46. A surrogate in the engine identity does not raise, over all four identity fields including
+    `prompt_revision`, which is pinned by building the prompt directly because no reachable
+    input can carry a surrogate there today.
+47. `recall extract run` REPORTS such a file rather than dying, asserted at the CLI, including
+    that the awkward file's own claim survives and not merely that the run completed.
 
 The sentinel in property 36 derives from `BaseException`, not `Exception`, and that IS the test:
 derived from `Exception` it pinned the bare `raise` and left the `except BaseException` free, so
@@ -314,6 +327,55 @@ behaviour is pinned by a test. The mechanism is not stated in the code.
 The `"busy" in text` half of `_is_busy` appears unreachable: SQLite's own strings for `SQLITE_BUSY`
 and `SQLITE_LOCKED` are "database is locked" and "database table is locked", and no real message
 containing "busy" could be constructed. Only the "locked" half is exercised.
+
+## The cache key, and a filename that is not text
+
+`extraction_cache_key` passes every string it hashes through `_hashable`, which returns the string
+itself when it is valid UTF-8 and an injective stand-in when it is not.
+
+This is not a cache concern, and that is the point of recording it here. A POSIX filename is bytes,
+not text; one that is not valid UTF-8 arrives as a lone surrogate through `Path.glob`'s
+surrogateescape; and `canonical_sha256` encodes as UTF-8. `extract_file_claims` computes the key
+UNCONDITIONALLY, before and independently of any cache, and outside the guard that keeps one bad
+memo from killing a run. So a single such filename aborted the whole ingest and discarded every file
+already extracted, with or without `--cache`. Hardening the cache's own writes against the same byte
+was pointless while the key computation one frame earlier still threw.
+
+Fixed here rather than in `canonical_sha256`, which has 22 callers across the package.
+
+Two properties matter, and both took a correction to get right:
+
+**Key stability.** `_hashable` is the identity for every string that is valid UTF-8 and does not
+begin with the marker, so no entry written before this change moves. A stand-in applied
+unconditionally would have silently invalidated every entry in every user's store, which presents as
+"the cache stopped working" rather than as an error.
+
+**Injectivity.** The first version was not injective. It argued that its NUL marker cannot occur in a
+real filename, which is true of `file` and `corpus_names` and false of `human_body`: that is file
+CONTENT, a NUL survives `read_text`, and a body beginning with the marker collided with the surrogate
+string that marker encodes. Two different documents shared a cache key and one would be served for
+the other, which is the single failure this module exists to prevent, introduced by the guard written
+to protect it. A string already carrying the marker is diverted too, so the ranges are disjoint and
+the map is one to one.
+
+All seven hashed fields go through it, not the three that happened to be filenames. `model_id` and
+`revision` come from `RECALL_EXTRACTION_MODEL` and `RECALL_EXTRACTION_REVISION`, and `os.environ`
+decodes with surrogateescape on POSIX by exactly the mechanism that puts a surrogate in a filename.
+That case is worse, not better: an engine identity is fixed for the run, so it raises on the first
+file of 792 rather than on the one awkward memo. The property is "this never raises", not "these
+fields are safe".
+
+## Reporting a name that is not text
+
+`main()` reconfigures stdout with `errors="backslashreplace"`, and stderr likewise. Reconfiguring the
+encoding RESETS the error handler to strict, so the inherited surrogateescape was dropped and every
+`print` of such a filename raised. With the library layer fixed, `recall extract run` still exited 1
+with EMPTY stdout, throwing away a completed extraction at the REPORT step. Showing a mangled name
+beats showing nothing.
+
+Only lone surrogates are affected, so no other output changes: every JSON emission in `cli.py` uses
+`json.dumps` at its `ensure_ascii=True` default, and the MCP stdio channel is a separate entry point
+that does not import `cli`.
 
 ## The parent directory, and a race that was not one
 
