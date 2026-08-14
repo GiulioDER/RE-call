@@ -430,6 +430,32 @@ def _refuse_unwritable_value(value: str) -> None:
         )
 
 
+def _writable_reference(value: str) -> str:
+    """The value as a memo can carry it, with the segments no reader looks at dropped.
+
+    `supersedes_key` reduces a reference to the stem of its LAST segment, and `_resolve`,
+    `lint`, `check`, `fix` and the store all compare through it, so `legal/old.md` and `old.md`
+    name the same document to every one of them. That makes a directory whose name is not
+    valid UTF-8 a different case from a FILE whose name is not: the basename is still a
+    reference every reader resolves, and refusing it invented a restriction this package does
+    not have, about a file whose own name was never the problem. Verified by asking a reader
+    rather than by reasoning: `rewrite verify` resolves the edge this writes.
+
+    Only when the marker survives into the last segment is there nothing writable left, and
+    `_refuse_stand_in_reference` says so next, naming that segment: the file's own name is
+    what has to change. Ambiguity is unaffected: the stem is what was being compared either
+    way, so dropping the directory cannot make two documents collide that did not already.
+
+    A value carrying no marker is returned untouched, directories and all. Trimming those too
+    would read the same to every resolver and still be wrong: the derived block's dedup
+    recognises the line it wrote by comparing the value, so a spelling that changes between
+    runs is an entry appended forever.
+    """
+    if NAME_STAND_IN_MARK not in value:
+        return value
+    return value.rsplit("/", 1)[-1]
+
+
 def _refuse_stand_in_reference(value: str) -> None:
     """A written reference must name a file every reader of the corpus can find.
 
@@ -449,7 +475,9 @@ def _refuse_stand_in_reference(value: str) -> None:
 
     Tested with `in` rather than `startswith`: the marker rides on the path SEGMENT that needs
     it, so `sub/<marker>bad.md` carries it in the middle, and a value a provider wrapped in
-    wikilink brackets carries it one character in.
+    wikilink brackets carries it one character in. `_writable_reference` has already dropped
+    the segments a reader ignores, so a marker still present here is on the file's own name,
+    which is what makes "rename the file" the true instruction rather than a guess.
     """
     if NAME_STAND_IN_MARK not in value:
         return
@@ -629,12 +657,17 @@ def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:
     # equal their key names, and it raised `unknown_key` for every relation v2 added.
     routed = route_relation(checked.relation, checked.subject_id, checked.object_id)
     block = destination(routed.key)
-    _refuse_stand_in_reference(routed.value)
-    _refuse_unwritable_value(routed.value)
+    # The value is trimmed to what a reader resolves BEFORE it is judged, so the refusal below
+    # fires only for a file that has no writable name at all, rather than for one that merely
+    # sits in a directory that has none. `claim_key` keeps the untrimmed ids, so a rejection
+    # recorded against this claim still matches the proposal it was made about.
+    value = _writable_reference(routed.value)
+    _refuse_stand_in_reference(value)
+    _refuse_unwritable_value(value)
     return RewritePlan(
         edit_file=_resolve(root, routed.edit_file),
         key=routed.key,
-        value=routed.value,
+        value=value,
         block=block,
         claim=claim_key(checked.relation, checked.subject_id, checked.object_id),
         fact_id=checked.fact_id,

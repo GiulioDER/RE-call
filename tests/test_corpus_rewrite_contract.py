@@ -416,6 +416,30 @@ def test_a_unicode_line_separator_cannot_smuggle_a_title_past_the_guard(tmp_path
     assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == before
 
 
+def test_an_ordinary_nested_reference_is_written_exactly_as_the_corpus_names_it(
+    tmp_path: Path,
+) -> None:
+    """Byte for byte, directories included, because the value is compared as text.
+
+    The derived block's dedup recognises the line it wrote by comparing the value, so a
+    spelling that changes between runs is an entry appended on every run. Every reader reduces
+    a reference to its last segment, which makes `legal/old.md` and `old.md` equally
+    resolvable and makes a writer free to quietly swap one for the other. That freedom is what
+    this refuses: the one case where a segment is dropped is the one where it cannot be
+    written at all.
+    """
+    _memo(tmp_path, "new_decision_2026-06-01.md", _NEW)
+    (tmp_path / "legal").mkdir()
+    _memo(tmp_path, "legal/old_decision_2026-01-01.md", _OLD)
+
+    apply_rewrite(
+        tmp_path, _fact(subject_id="legal/old_decision_2026-01-01.md"), apply=True
+    )
+
+    written = (tmp_path / "new_decision_2026-06-01.md").read_text(encoding="utf-8")
+    assert "supersedes: legal/old_decision_2026-01-01.md" in written
+
+
 @pytest.mark.parametrize("folder", ["", "sub/"])
 def test_a_reference_to_a_file_named_only_by_a_stand_in_is_refused_before_any_write(
     tmp_path: Path, folder: str

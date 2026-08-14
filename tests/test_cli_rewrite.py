@@ -293,6 +293,35 @@ def test_an_applied_edge_on_an_unnamable_file_does_not_come_back_as_unreviewed(
     assert "review  " not in out
 
 
+def test_an_edge_inside_an_unnamable_directory_is_written_in_a_spelling_readers_resolve(
+    tmp_path, capsys
+):
+    """The FILE's name is what has to be spellable, not every directory above it.
+
+    Every reader of a declared edge reduces the reference to the stem of its last segment, so
+    `legal/old.md` and `old.md` name the same document to all of them. When only the directory
+    cannot be spelled in UTF-8, the basename is still a perfectly good reference: refusing it
+    invented a restriction this package's own readers do not have, and the refusal blamed a
+    file whose name was never the problem. Proved by asking a reader: `verify` resolves the
+    edge that gets written.
+    """
+    folder = tmp_path / "legal\udcff"
+    folder.mkdir()
+    (folder / OLD).write_text("# old\n\nThe original call.\n", encoding="utf-8", newline="\n")
+    (folder / NEW).write_text(
+        f"# new\n\nThis memo supersedes {OLD} after review.\n", encoding="utf-8", newline="\n"
+    )
+    found = [p for p in corpus_proposals(tmp_path) if p.proposed_relation == "supersedes"]
+    assert found, "the memo states a supersession its neighbour can be named by"
+
+    main(["rewrite", "apply", str(tmp_path), "--proposal", found[0].id,
+          "--reviewer", "gde", "--note", "Read both memos.", "--apply"])
+    assert f"supersedes: {OLD}" in (folder / NEW).read_text(encoding="utf-8")
+    capsys.readouterr()
+    main(["rewrite", "verify", str(tmp_path)])
+    assert "0 unresolved" in capsys.readouterr().out, "it wrote an edge no reader resolves"
+
+
 def test_verify_refuses_an_ambiguous_target(tmp_path, capsys):
     """Two files sharing a basename resolve to two files and therefore to none.
 
