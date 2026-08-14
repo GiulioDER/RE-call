@@ -12,8 +12,9 @@ from recall.cache import EmbeddingCache, embed_with_cache
 from recall.context import ContextPolicy, StructuredChunk, contextual_passages
 from recall.embedding_registry import context_version_for
 from recall.control_plane import ControlPlane
+from recall.document import parse_document
 from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
-from recall.frontmatter import legacy_pairing_differs, parse_frontmatter, validity_bounds
+from recall.frontmatter import legacy_pairing_differs, validity_bounds
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
 from recall.sparse import SparseEncoderProtocol, store_sparse_vectors
@@ -593,7 +594,12 @@ class Indexer:
             ):
                 skipped += 1
                 continue
-            meta, body = parse_frontmatter(raw)
+            # `body` here is the HUMAN body: the derived block is stripped, so an extraction pass
+            # can never read its own prior output back as evidence. `raw` stays unstripped for
+            # `contextual_passages` below, which only uses it for `document_title` — frontmatter
+            # and the first H1, both above the block.
+            document = parse_document(raw)
+            meta, body = document.meta, document.human_body
             try:
                 validity_bounds(meta)  # fail fast on malformed dates, before anything is embedded
             except ValueError as exc:

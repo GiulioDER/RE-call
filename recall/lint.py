@@ -15,6 +15,14 @@ errors (break the trust layer's correctness):
   so which one is superseded cannot be resolved. An error, not a smell: read-time acts on it —
   `recall.trust` returns the ``ambiguous_supersession`` verdict and abstains rather than guess,
   so a corpus that lints clean must be one the engine will actually answer from.
+- ``derived-block-duplicated``  — more than one machine-owned derived block in one file
+- ``derived-block-not-last``    — prose follows the close fence, and is therefore excluded from
+  retrieval; the message names the byte count it costs
+- ``derived-block-tampered``    — the block parses and its structure does not hash to the digest
+  it carries; the write path refuses the file
+- ``derived-block-malformed``   — anything else the block grammar refuses. Kept separate from
+  ``tampered`` on purpose: an unclosed fence has no digest to disagree with, and reporting a
+  half-written file as an integrity breach sends the reader looking for an attacker
 
 warnings (smells that usually mean a missing or ambiguous edge):
 - ``version-sibling-unlinked``     — ``x_v1.md`` / ``x_v2.md`` naming with no edge into the older one
@@ -29,7 +37,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from recall.frontmatter import parse_frontmatter, supersedes_key, validity_bounds
+from recall.derived_block import diagnose_derived_block
+from recall.document import parse_document
+from recall.frontmatter import supersedes_key, validity_bounds
 
 #: Prose that usually accompanies a closure/replacement decision. Deliberately short and
 #: high-precision: a chatty list would drown real omissions in noise.
@@ -121,8 +131,14 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
             issues.append(LintIssue(rel[f], "error", "unreadable-file", str(exc)))
             continue
         readable.append(f)
-        meta, body = parse_frontmatter(text)
+        document = parse_document(text)
+        meta, body = document.meta, document.human_body
         metas[rel[f]], bodies[rel[f]] = meta, body
+        # The derived block is machine-owned and regenerable, so a malformed one is a defect in a
+        # tool rather than in the author's prose — but it is still an ERROR, because a block the
+        # library cannot parse is a block the write path must refuse to overwrite.
+        for code, message in diagnose_derived_block(document.derived_text):
+            issues.append(LintIssue(rel[f], "error", code, message))
         try:
             validity_bounds(meta)
         except ValueError as exc:

@@ -14,6 +14,9 @@ CORPUS = Path(__file__).parent / "corpus"
 
 def main() -> None:
     for f in sorted(CORPUS.glob("*.md")):
+        # Deliberately chunks raw file bytes, frontmatter and any derived block included: this
+        # is eval-label authoring, not a corpus evidence path, so it is outside the
+        # parse_document seam (docs/DERIVED_BLOCK_DESIGN.md) by design.
         chunks = chunk_text(f.read_text(encoding="utf-8"))
         for i, c in enumerate(chunks):
             preview = c.replace("\n", " ")[:80]

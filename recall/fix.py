@@ -36,12 +36,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from recall.atomic_write import atomic_write_bytes
+from recall.document import parse_document
 from recall.frontmatter import (
     NAME_STAND_IN_MARK,
     encodable_name,
     has_line_break,
     insert_frontmatter_line,
-    parse_frontmatter,
     supersedes_key,
     writable_reference,
 )
@@ -233,7 +233,8 @@ def propose_fixes(
     bodies: dict[str, str] = {}
     for f in files:
         try:
-            meta, body = parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+            document = parse_document(f.read_text(encoding="utf-8-sig"))
+            meta, body = document.meta, document.human_body
         except (UnicodeDecodeError, OSError):
             continue
         bodies[rel[f]] = body
@@ -414,7 +415,7 @@ def apply_proposal(root: Path, p: Proposal) -> None:
         # every time. The old `read_text` raised here; keep refusing, with a message that says
         # which file and why.
         raise UnreadableMemo(f"{p.edit_file} is not valid UTF-8 ({exc.reason})") from exc
-    if parse_frontmatter(text)[0].get("supersedes"):
+    if parse_document(text).meta.get("supersedes"):
         # Re-checked against THIS file rather than the corpus-wide scan, for the same reason:
         # the scan's view can be missing a file it could not read at the time.
         raise UnreadableMemo(f"{p.edit_file} already declares supersedes — refusing to overwrite")

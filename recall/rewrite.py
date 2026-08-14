@@ -64,6 +64,7 @@ from pathlib import Path
 from typing import Literal
 
 from recall.atomic_write import atomic_write_bytes
+from recall.document import parse_document
 from recall.frontmatter import (
     NAME_STAND_IN_MARK,
     VALIDITY_KEYS,
@@ -71,7 +72,6 @@ from recall.frontmatter import (
     encodable_name,
     insert_frontmatter_line,
     line_terminator,
-    parse_frontmatter,
     split_bom,
     split_lines,
     supersedes_key,
@@ -684,7 +684,7 @@ def apply_rewrite(
     raw = path.read_bytes()
     text = _readable_text(raw, plan.edit_file)
     if plan.block == "frontmatter":
-        meta, _ = parse_frontmatter(text)
+        meta = parse_document(text).meta
         if plan.key in meta:
             # PRESENCE, not truthiness. `supersedes:` with nothing after it is a human writing
             # "this supersedes nothing"; reading that as absence appends a second line and leaves

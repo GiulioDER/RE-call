@@ -22,7 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from recall.fix import _REF, _is_index
-from recall.frontmatter import parse_frontmatter, supersedes_key
+from recall.document import parse_document
+from recall.frontmatter import supersedes_key
 from recall.lint import CLOSURE_MARKERS, DEFAULT_GLOB
 
 #: Any document reference anywhere in the body — no marker proximity required. At write time the
@@ -50,7 +51,10 @@ def _marker_in(body: str) -> str:
 def check_file(path: str | Path, corpus_names: set[str] | None = None) -> CheckResult:
     """Inspect one memo. `corpus_names` (stems) filters candidates to real documents."""
     p = Path(path)
-    meta, body = parse_frontmatter(p.read_text(encoding="utf-8-sig", errors="replace"))
+    # The human body only: `_ANY_REF` below would otherwise hand the author the machine's own
+    # values back as `supersedes:` candidates.
+    document = parse_document(p.read_text(encoding="utf-8-sig", errors="replace"))
+    meta, body = document.meta, document.human_body
     declared = bool(meta.get("supersedes") or meta.get("valid_until"))
     marker = "" if _is_index(p.name) else _marker_in(body)
 

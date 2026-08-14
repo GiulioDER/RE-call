@@ -16,8 +16,9 @@ import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
+from recall.document import parse_document
 from recall.embeddings import Embedder, embed_passages
-from recall.frontmatter import legacy_pairing_differs, parse_frontmatter, validity_bounds
+from recall.frontmatter import legacy_pairing_differs, validity_bounds
 from recall.lineage import (
     GenerationState,
     IndexManifestV1,
@@ -531,7 +532,11 @@ class GenerationManager:
                 metadata: dict[str, Any] = {}
                 body = text
                 if entry.media_type in _MARKDOWN_MEDIA_TYPES:
-                    metadata, body = parse_frontmatter(text)
+                    # Not optional. `recall index` is refused under RECALL_ENV=production
+                    # (`recall/cli.py:1209`), so hooking only the index path would leave the one
+                    # build path that runs in production reading derived blocks as evidence.
+                    document = parse_document(text)
+                    metadata, body = document.meta, document.human_body
                     try:
                         validity_bounds(metadata)
                     except ValueError as exc:
