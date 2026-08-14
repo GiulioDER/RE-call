@@ -234,9 +234,8 @@ def test_the_two_readers_disagree_about_the_value_the_writer_now_refuses():
     assert set(meta) == {"supersedes", "valid_from"}, "the parser sees one key, not two"
     assert meta["supersedes"] == f"evil{sep}title: pwned"
 
-    assert document_title(raw, body, "memo.md") == "pwned", (
-        "the injected line is what the other reader takes as the memo's indexed title, which is "
-        "the damage this guard exists to prevent"
+    assert document_title(raw, body, "memo.md") == "real heading", (
+        "the title reader now refuses to let the injected line outrank the authored heading"
     )
 # --- a leading `---` is also markdown's thematic break -----------------------------------
 
