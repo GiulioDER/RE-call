@@ -212,18 +212,18 @@ def test_insert_frontmatter_line_refuses_a_value_that_would_split(sep):
         insert_frontmatter_line(b"---\nx: 1\n---\nbody\n", "supersedes", f"a{sep}b")
 
 
-def test_the_two_readers_disagree_about_the_value_the_writer_now_refuses():
-    """Why the refusal belongs in the writer, asserted against the READERS themselves.
+def test_the_writer_guard_outlives_the_old_title_reader_divergence():
+    """The parser still sees one key, and the title reader now stays aligned with the body.
 
-    This is the whole justification for the guard, so it is checked by calling
-    `parse_frontmatter` and `document_title` rather than by restating their line boundaries with
-    `str.split` and `str.splitlines`. An earlier version of this test did the latter, and it
-    could not have gone red if either reader's notion of a line moved — which is precisely the
-    event the guard would need to hear about.
+    The line-break refusal was introduced because `parse_frontmatter` and `document_title` once
+    disagreed about a value carrying U+2028: the parser saw one `supersedes:` line while the
+    title scan, splitting more finely, read an injected `title:` out of it. `document_title` has
+    since been brought onto `frontmatter_span`'s boundary, and this test pins that repair so the
+    guard's original rationale does not silently re-open.
 
-    `parse_frontmatter` splits on `"\\n"` and sees ONE key whose value happens to contain an odd
-    character. `document_title` uses `splitlines()`, which honours U+2028, and reads the injected
-    text as a `title:` line of its own.
+    The refusal remains load-bearing even with that fix: the parser still sees one key whose
+    value contains a line separator a `splitlines()` reader would honour, so the write boundary
+    still has to refuse it rather than rely on every consumer staying in lockstep forever.
     """
     from recall.context import document_title
 
@@ -234,9 +234,9 @@ def test_the_two_readers_disagree_about_the_value_the_writer_now_refuses():
     assert set(meta) == {"supersedes", "valid_from"}, "the parser sees one key, not two"
     assert meta["supersedes"] == f"evil{sep}title: pwned"
 
-    assert document_title(raw, body, "memo.md") == "pwned", (
-        "the injected line is what the other reader takes as the memo's indexed title, which is "
-        "the damage this guard exists to prevent"
+    assert document_title(raw, body, "memo.md") == "real heading", (
+        "the title reader should now stay aligned with the body rather than misreading the "
+        "injected splitlines fragment as frontmatter"
     )
 # --- a leading `---` is also markdown's thematic break -----------------------------------
 
