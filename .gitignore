@@ -77,3 +77,14 @@ results/mtrag_generation/algorithmic/*.jsonl
 # documented in CONTRIBUTING.md. It is a throwaway on the CI runner; committing it would ship a
 # second, silently-drifting copy of uv.lock.
 requirements.lock.txt
+
+# Scratch clones of third-party repositories pulled in to reproduce or score against an external
+# harness. `.tmp_erbleaderboard` is the EnterpriseRAG-Bench leaderboard Space, 105 MB with its own
+# `.git`, cloned to read the scoring code for the #282 submission.
+#
+# The pattern rather than the one name, because the next external harness will be cloned the same
+# way and would arrive equally unignored. A nested `.git` means `git add -A` records a GITLINK
+# rather than 105 MB of files, so the failure is quiet: a one-line entry pointing at a commit in a
+# repository this project does not own, which nobody can clone from here and which `git status`
+# then reports as permanently modified.
+.tmp_*/
