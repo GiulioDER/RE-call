@@ -11,6 +11,7 @@ from io import BytesIO
 import psycopg
 import pytest
 
+from recall.derived_block import DerivedEntry, render_derived_block
 from recall.generations import (
     GenerationError,
     GenerationManager,
@@ -1289,3 +1290,70 @@ def test_a_thematic_break_object_is_never_reused_into_a_new_generation(manager) 
 
     assert stats.reused_objects == 0, "an object whose body moved must not be reused"
     assert must_run.calls == 1, "it must be re-chunked and re-embedded, not copied"
+
+
+@requires_db
+def test_markdown_build_strips_the_derived_block_before_chunking(manager) -> None:
+    """`recall/generations.py:501` is the site the design doc calls "not optional": `recall
+    index` is refused under RECALL_ENV=production (`recall/cli.py:1209`), so this S3 build path
+    is the one build path that runs in production. Two markdown objects carry the SAME prose;
+    one also carries a well-formed derived block. If the markdown branch regressed to
+    `body = text`, or reordered to chunk before stripping, the blocked object's chunk would carry
+    the fence lines and this comparison would diverge.
+    """
+    tenant = manager.tenant_id
+    frontmatter = "---\nstatus: current\n---\n"
+    prose = (
+        "# Retention\n\n"
+        "The 90 day retention window is fully documented in this paragraph, long enough to "
+        "stand as a chunk of its own.\n"
+    )
+    block = render_derived_block(
+        [
+            DerivedEntry(
+                head="status",
+                value="adopted",
+                proposal="a" * 64,
+                provider="recall.deterministic@session3-v1",
+                reviewer="giulio",
+                at="2026-08-11T09:14:22Z",
+            )
+        ]
+    )
+    plain_data = (frontmatter + prose).encode("utf-8")
+    blocked_data = (frontmatter + prose + "\n" + block).encode("utf-8")
+    plain_uri = f"s3://approved/corpora/{tenant}/plain.md"
+    blocked_uri = f"s3://approved/corpora/{tenant}/blocked.md"
+    manifest = IndexManifestV1(
+        tenant,
+        "corpus-v1",
+        (
+            ManifestObjectV1(plain_uri, "v1", "text/markdown", len(plain_data),
+                             hashlib.sha256(plain_data).hexdigest()),
+            ManifestObjectV1(blocked_uri, "v1", "text/markdown", len(blocked_data),
+                             hashlib.sha256(blocked_data).hexdigest()),
+        ),
+    )
+    reader = S3ObjectReader(
+        _S3({
+            ("approved", f"corpora/{tenant}/plain.md", "v1"): plain_data,
+            ("approved", f"corpora/{tenant}/blocked.md", "v1"): blocked_data,
+        }),
+        S3Allowlist.parse("approved/corpora/"),
+    )
+    embedder = _Embedder(1)
+
+    generation_id = _ready(manager, manifest, _pipeline("model-a"), reader, embedder)
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        rows = conn.execute(
+            "SELECT source_uri, chunk_ordinal, text FROM recall_chunks_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s ORDER BY source_uri, chunk_ordinal",
+            (tenant, generation_id),
+        ).fetchall()
+
+    plain_texts = [text for uri, _, text in rows if uri == plain_uri]
+    blocked_texts = [text for uri, _, text in rows if uri == blocked_uri]
+    assert plain_texts, "the plain source produced no chunks"
+    assert blocked_texts == plain_texts

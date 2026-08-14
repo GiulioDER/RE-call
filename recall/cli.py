@@ -355,7 +355,7 @@ def _rejected_claims(ledger_path: Path) -> frozenset[str]:
 
 def _already_declared(root: Path, proposal: object) -> bool:
     """True when the memo already states this proposal's key, so it needs no second review."""
-    from recall.frontmatter import parse_frontmatter
+    from recall.document import parse_document
     from recall.rewrite import RewriteRefused, _resolve, destination, route_relation
 
     try:
@@ -378,7 +378,7 @@ def _already_declared(root: Path, proposal: object) -> bool:
             # never converges is the defect DECLARED exists to prevent. The join stays first
             # because this runs once per proposal and `_resolve` walks the whole corpus.
             path = corpus_root / _resolve(corpus_root, routed.edit_file)
-        meta, _ = parse_frontmatter(path.read_text(encoding="utf-8-sig"))
+        meta = parse_document(path.read_text(encoding="utf-8-sig")).meta
     except (RewriteRefused, UnicodeDecodeError, OSError):
         return False
     return routed.key in meta
@@ -392,7 +392,8 @@ def _run_rewrite(args: argparse.Namespace) -> None:
     """
     from datetime import datetime, timezone
 
-    from recall.frontmatter import parse_frontmatter, supersedes_key
+    from recall.document import parse_document
+    from recall.frontmatter import supersedes_key
     from recall.promotion import (
         accept_reviewed_proposal,
         promote_accepted_proposal,
@@ -446,7 +447,7 @@ def _run_rewrite(args: argparse.Namespace) -> None:
             if not path.is_file():
                 continue
             try:
-                meta, _ = parse_frontmatter(path.read_text(encoding="utf-8-sig"))
+                meta = parse_document(path.read_text(encoding="utf-8-sig")).meta
             except (UnicodeDecodeError, OSError) as exc:
                 print(f"  UNREADABLE {_rel(path)}: {exc}")
                 continue

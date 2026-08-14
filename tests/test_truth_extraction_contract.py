@@ -243,7 +243,7 @@ def test_quote_from_the_frontmatter_block_is_not_verbatim_body() -> None:
 def test_human_body_of_strips_the_frontmatter_block() -> None:
     document = "---\nvalid_from: 2026-02-01\n---\n" + BODY
 
-    assert human_body_of(document) == BODY
+    assert human_body_of(document) == BODY.rstrip("\n")
     assert "valid_from: 2026-02-01" not in human_body_of(document)
 
 

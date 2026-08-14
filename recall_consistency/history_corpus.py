@@ -6,6 +6,7 @@ match. Auditing the tree cannot show that failure. Walking history restores it.
 """
 from __future__ import annotations
 
+import sys
 import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -103,18 +104,45 @@ def memo_stem(rel_path: str, date: str, sha: str) -> str:
     `recall.frontmatter.supersedes_key` matches on the stem, so this is what a `supersedes:`
     line has to carry.
     """
+    _assert_frontmatter_safe_path(rel_path)
     flat = rel_path.replace("/", "_").replace("\\", "_")
     if flat.lower().endswith(".md"):
         flat = flat[:-3]
     return f"{flat}__{date}__{sha}"
 
 
+def _assert_frontmatter_safe_path(rel_path: str) -> None:
+    """Reject a tracked path that would split a generated frontmatter line.
+
+    Imported lazily to keep `python -m recall_consistency`'s claim scan stdlib-only when
+    `--corpus-out` is not used. `recall.frontmatter` carries the shared line-boundary rule, but
+    importing it at module scope would run `recall/__init__.py` and pull the heavier retrieval
+    stack into a path whose docstring promises it does not.
+    """
+    from recall.frontmatter import has_line_break
+
+    if has_line_break(rel_path):
+        raise ValueError(
+            f"tracked path {rel_path!r} contains a line break and cannot be written into "
+            "generated frontmatter safely"
+        )
+
+
 def write_history_corpus(repo: Path, rel_paths: Iterable[str], out_dir: Path) -> list[Path]:
-    """Write one memo per revision. Each carries `valid_from`, and supersedes the one before it."""
+    """Write one memo per revision. Each carries `valid_from`, and supersedes the one before it.
+
+    A path that would split the generated `supersedes:` line is refused per document rather than
+    aborting the whole audit after the history walk has already completed.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for rel_path in rel_paths:
         revs = revisions(repo, rel_path)
+        try:
+            _assert_frontmatter_safe_path(rel_path)
+        except ValueError as exc:
+            print(f"skipping history corpus for {rel_path!r}: {exc}", file=sys.stderr)
+            continue
         for i, rev in enumerate(revs):
             lines = ["---", f"valid_from: {rev.date}"]
             if i:

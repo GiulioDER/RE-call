@@ -59,6 +59,7 @@ want to audit a claim or reproduce a benchmark.
 | [RAG_TRAINING_STUDY.md](RAG_TRAINING_STUDY.md) | When fine-tuning embeddings helps, and when it does not. |
 | [ENTAILMENT_SUPERSESSION_STUDY.md](ENTAILMENT_SUPERSESSION_STUDY.md) | Near-miss abstention, entailment, and write-time supersession. |
 | [REFERENCE_TIME_DESIGN.md](REFERENCE_TIME_DESIGN.md) | Reference-time handling for temporal retrieval. |
+| [DERIVED_BLOCK_DESIGN.md](DERIVED_BLOCK_DESIGN.md) | Machine-owned regenerable block for `contradicts` and `same_entity`, isolated from extraction. |
 | [their-harness-parity.md](their-harness-parity.md) | Running RE-call inside Mem0's benchmark harness. |
 
 Generated binaries and local render outputs should stay out of narrative documentation unless a
