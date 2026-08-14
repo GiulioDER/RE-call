@@ -128,8 +128,31 @@ def is_fence(line: bytes) -> bool:
     return line.decode("utf-8", "replace").strip() == "---"
 
 
+def has_line_break(text: str) -> bool:
+    """True when `text` holds anything ``str.splitlines()`` treats as the end of a line.
+
+    Deliberately NOT a hand-listed subset, and deliberately not ``"\\n" in text``. ``\\n`` and
+    ``\\r`` are the notion of a line break `parse_frontmatter` uses, and that notion is too narrow
+    to protect the file: ``str.splitlines()`` honours eight more characters (``\\x0b \\x0c \\x1c
+    \\x1d \\x1e \\x85`` and U+2028, U+2029), so a value carrying one of those is invisible to the
+    parser while still splitting the written line for every reader that uses ``splitlines()``.
+    `recall/context.py:document_title` is one such reader, and it decides a memo's indexed title.
+
+    Phrasing it as "the text must survive ``splitlines()`` unchanged" keeps it correct for any
+    reader on that boundary rather than for a list someone has to remember to extend. Comparing
+    the JOINED result also catches a TRAILING separator, which a ``len(...) > 1`` test misses.
+    """
+    return text != "".join(text.splitlines())
+
+
 def insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
     """`key: value` into the frontmatter block, adding a block if the file has none.
+
+    Refuses a `value` carrying a line break rather than writing a line that splits. The value
+    reaches here from a FILENAME (see `recall/fix.py`), so it is attacker-controlled wherever a
+    corpus is not entirely hand-authored, and a separator in it writes a second key that the
+    parser cannot see but `splitlines()` readers can. `propose_fixes` reports that case before it
+    gets this far; this is the backstop for any other caller that builds a `Proposal` itself.
 
     Bytes in, bytes out. Decoding to `str`, splitting on ``"\\n"`` and re-encoding is how a memo
     loses its BOM and has every line ending in it rewritten — both invisible when the result is
@@ -144,6 +167,8 @@ def insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
     rewrite it again on every run. The parser defines what the block is; this follows it. Tighten
     both together or neither.
     """
+    if has_line_break(value):
+        raise ValueError(f"{key} value {value!r} contains a line break and would split the block")
     bom, body = split_bom(raw)
     newline = dominant_newline(body)
     entry = f"{key}: {value}".encode("utf-8")
