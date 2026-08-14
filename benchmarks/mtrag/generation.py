@@ -404,26 +404,245 @@ def previous_prompt(out: Path) -> str | None:
     return prompt if isinstance(prompt, str) else None
 
 
+class CheckpointChanged(RuntimeError):
+    """The output file moved under a repair that was about to rewrite it.
+
+    Distinct from an `OSError` because the cause is another RUN rather than the filesystem, and the
+    operator's fix is a different `--out` rather than a permission or a disk.
+    """
+
+
+def submission_answer(row: object) -> str:
+    """The prediction text a written row carries, stripped, or "" if it carries none.
+
+    Every shape that is not a non-blank string collapses to "", because they are the same thing to
+    a judge: no `predictions` key, an empty list, an entry that is not an object, a `text` that is
+    null or not a string, and a `text` of whitespace all score as a failure by the system under
+    test rather than as an answer.
+
+    ⚠️ EVERY entry is considered, not just the first. `submission_row` writes exactly one, so a
+    row with more is a file this module did not write, which `--contexts-from` already reads and
+    hand-merged submissions produce. `drop_answerless_rows` deletes the whole ROW on the strength
+    of this answer, so reading only `predictions[0]` would destroy a real answer sitting behind a
+    blank one. Deleting is irreversible and regenerating a task is not, so the cheap error has to
+    be the second.
+    """
+    if not isinstance(row, dict):
+        return ""
+    predictions = row.get("predictions")
+    if not isinstance(predictions, list):
+        return ""
+    for entry in predictions:
+        text = entry.get("text") if isinstance(entry, dict) else None
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    return ""
+
+
 def already_done(path: Path) -> set[str]:
-    """Task ids already in the output, so a re-run does not pay for them twice.
+    """Task ids already in the output CARRYING AN ANSWER, so a re-run does not pay for them twice.
 
     A malformed trailing line, which is the shape an interrupted write leaves, is ignored rather
     than fatal: that task is simply regenerated. Re-doing one answer is the cheap error here;
     treating a truncated file as complete is the expensive one. Same rule as
     `scripts/encode_sparse.py --resume`, for the same reason.
+
+    ⚠️ Carrying an answer is checked, not just carrying a `task_id`. Counting the id alone was
+    right while every written row necessarily held an answer, and stopped being right the moment
+    this module could write `predictions: [{"text": ""}]`, which it did for every `content_filter`
+    and `tool_calls` completion before `generate_one` grew its guards. Those guards fix new runs
+    and leave OLD artifacts stranded: re-running the identical command over one skipped the empty
+    rows, wrote nothing, and exited 0 over a file that cannot be submitted. The `incomplete` gate
+    cannot catch that either, since it reports tasks that failed IN THIS RUN and these are never
+    attempted.
     """
     if not path.exists():
         return set()
     done: set[str] = set()
-    with path.open(encoding="utf-8") as handle:
+    # `errors="surrogateescape"` so a checkpoint torn mid-character is malformed rather than
+    # FATAL. It has to be the OPEN rather than an `except UnicodeDecodeError` below: strict
+    # decoding raises from the file ITERATOR, outside the `try`, so no handler here could catch
+    # it. `main` writes with `ensure_ascii=False`, so every non-ASCII answer is raw multi-byte
+    # UTF-8 and a kill during the per-row flush can split one. Decoding strictly raised
+    # `UnicodeDecodeError`, a `ValueError`, which no caller catches.
+    with path.open(encoding="utf-8", errors="surrogateescape") as handle:
         for line in handle:
             try:
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(row, dict) and "task_id" in row:
+            if isinstance(row, dict) and "task_id" in row and submission_answer(row):
                 done.add(str(row["task_id"]))
     return done
+
+
+def unparsable_rows(path: Path) -> int:
+    """How many lines of `path` are not readable JSON.
+
+    A fragment left by a kill mid-write is KEPT by `drop_answerless_rows`, deliberately, so it
+    survives every later resume. Nothing else in this module parses what it wrote back:
+    `check_submission_size` counts bytes, and the `incomplete` gate reports tasks that failed IN
+    THIS RUN. So a run could hand back a file the official checker rejects and still exit 0, which
+    is the contract `main` closes with: exit code 0 has to mean the submission is whole.
+
+    Counted rather than deleted. Removing the fragment would silently drop whatever partial row it
+    holds, and the operator is the one who should decide that; saying it is there costs nothing and
+    is the part that was missing.
+    """
+    if not path.exists():
+        return 0
+    bad = 0
+    # ⚠️ `newline="\n"` so this splits the file the way the CHECKER does. Universal-newline mode
+    # treats a bare CR as a terminator, so a pair of rows glued by one read back as two clean rows
+    # and this counted nothing, while the official `format_checker.py`, `jq` and
+    # `pandas.read_json(lines=True)` all see a single unparseable line. `ensure_final_newline`
+    # refuses a bare CR for the same reason; a mid-file one is permanent, since that guard only
+    # fixes the end of the file and the repair keeps lines verbatim.
+    with path.open(encoding="utf-8", newline="\n", errors="surrogateescape") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                json.loads(line)
+            except json.JSONDecodeError:
+                bad += 1
+    return bad
+
+
+def ensure_final_newline(path: Path) -> bool:
+    """Terminate the last line if it is not, so the next appended row starts its own. Returns
+    whether a byte was added.
+
+    ⚠️ On EVERY resume, not only the ones that repair something. A run killed mid-flush leaves a
+    last line without its terminator, and `main` then appends onto the end of it: two rows become
+    one unparseable line, losing the answer already paid for and the one just paid for.
+    `check_submission_size` counts bytes rather than rows, so the run still exits 0. It does not
+    self-heal either, because the glued line reads as malformed on every later resume.
+
+    A pure append of one byte, which is why it needs no staging, no atomicity window and no
+    concurrency check: it cannot truncate, and a second run appending a whole row concurrently
+    still lands on its own line.
+
+    A bare CR does not count. It terminates a line for Python's own readers, which is why this went
+    unnoticed, but not for anything that splits on LF: the official `format_checker.py`, `jq`,
+    `pandas.read_json(lines=True)`.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    with path.open("rb") as handle:
+        handle.seek(-1, os.SEEK_END)
+        if handle.read(1) == b"\n":
+            return False
+    with path.open("ab") as handle:
+        handle.write(b"\n")
+    return True
+
+
+def drop_answerless_rows(path: Path, task_ids: set[str]) -> int:
+    """Remove rows for `task_ids` that carry no answer. Returns how many went.
+
+    ⚠️ Required by `already_done`'s emptiness check rather than merely tidy. The output is opened
+    in APPEND mode and IS the run's checkpoint, so regenerating a task whose empty row is still on
+    disk would leave TWO rows under one `task_id`: one unscorable and one real, in a format whose
+    checker expects one row per task, read by a judge that would score whichever it met first.
+    Repairing the artifact and corrupting it differ by exactly this call.
+
+    `task_ids` is the set this run is about to regenerate, and nothing outside it is touched. Under
+    `--limit`, or against a task list that no longer carries an id, dropping a row that nothing
+    will replace shrinks the artifact without repairing it, which is a worse failure than the one
+    being fixed here.
+
+    An id already carrying an answer elsewhere in the file is in scope too, whatever `task_ids`
+    says. Such a row is a duplicate that already exists, so `already_done` reports the task as
+    finished and it never becomes pending: without this the twin could never be removed, and the
+    run would exit 0 over an artifact the official checker rejects, which is the false green this
+    whole guard exists to kill. Dropping it leaves exactly the good row, so nothing is unreplaced.
+
+    Lines that do not parse are KEPT verbatim. They carry no `task_id`, so they cannot become a
+    duplicate, and `already_done` already treats them as absent; rewriting them away would be a
+    second, unrelated change to what an interrupted write leaves behind.
+
+    ⚠️ This rewrites the run's ONLY checkpoint for work that cost real money, so it is held to the
+    standard `benchmarks/mtrag/multiquery.py:write_manifest` already sets for a far cheaper file:
+    staged in a PID-suffixed sibling, flushed and fsynced before the swap, swapped with
+    `os.replace`, and the scratch removed in a `finally`. Covers process death; NOT full power-loss
+    safety, since the containing directory is not fsynced and cannot portably be on Windows.
+
+    It only happens when there is something to drop, because a checkpoint is not worth replacing to
+    change nothing: the window would be pure risk paid on every ordinary resume.
+
+    Read-modify-write with no lock, so it refuses rather than races. Nothing under `benchmarks/`
+    takes a lock on an output, and a row appended by a second run between the read and the swap
+    would be destroyed by the swap after being paid for. A size that moved is enough to detect it
+    and is cheaper than a lock protocol this module is the only user of.
+    """
+    if not path.exists():
+        return 0
+    size_before = path.stat().st_size
+    answered = already_done(path)
+    kept: list[str] = []
+    dropped = 0
+    # `newline=""` so the lines arrive with their own terminators intact. Universal-newline mode
+    # strips the CR before the line is kept, which on Windows silently rewrote every CRLF row that
+    # `main` had appended into LF, and split any torn line containing a bare CR into two.
+    with path.open(encoding="utf-8", newline="", errors="surrogateescape") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                kept.append(line)
+                continue
+            answerless = (
+                isinstance(row, dict)
+                # `"task_id" in row` before reading it: `str(row.get("task_id"))` renders a missing
+                # key as "None", and a task whose id is null puts that same string in `task_ids`,
+                # which made every untagged row in the file a match.
+                and "task_id" in row
+                and (str(row["task_id"]) in task_ids or str(row["task_id"]) in answered)
+                and not submission_answer(row)
+            )
+            if answerless:
+                dropped += 1
+            else:
+                kept.append(line)
+    if not dropped:
+        return 0
+    # The prune owns every byte it writes back, so it is where the terminator is guaranteed. A last
+    # line without one glues the next appended row onto it: two rows become one unparseable line,
+    # losing both the kept answer and the one just paid for, and it does not self-heal, because the
+    # glued line reads as malformed on every later resume.
+    # An LF specifically. A bare CR terminates a line for Python's own readers, which is why this
+    # went unnoticed, but not for anything that splits on LF: the official `format_checker.py`,
+    # `jq`, `pandas.read_json(lines=True)`. A line already ending "\r\n" passes untouched.
+    if kept and not kept[-1].endswith("\n"):
+        kept[-1] += "\n"
+    if path.stat().st_size != size_before:
+        raise CheckpointChanged(
+            f"{path} grew from {size_before} to {path.stat().st_size} bytes while it was being "
+            "read, which means another run is appending to it. Rewriting it now would destroy "
+            "rows that run has already paid for. Give each run its own --out."
+        )
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.pruned")
+    try:
+        # `surrogateescape` on BOTH sides or the round trip is not one: it is the only error
+        # handler that writes the undecodable bytes back exactly as they were read.
+        with tmp.open("w", encoding="utf-8", newline="", errors="surrogateescape") as handle:
+            handle.write("".join(kept))
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Re-checked immediately before the swap. The first check closed the READ window and left
+        # this one open, and this is the slow half: it spans the whole write and the fsync. This
+        # narrows the race to the `os.replace` call itself; only a lock would close it, and nothing
+        # under `benchmarks/` has one.
+        if path.stat().st_size != size_before:
+            raise CheckpointChanged(
+                f"{path} changed size while the repair was being written, which means another run "
+                "is appending to it. Give each run its own --out."
+            )
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return dropped
 
 
 def openrouter_client(api_key: str | None = None) -> Any:
@@ -485,6 +704,10 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
     raise, not "gave up after 4 attempts, re-run to resume", which is the wrong advice here.
     """
     last: Exception | None = None
+    #: What the failure actually COST, which is not `GENERATION_ATTEMPTS` whenever the loop broke
+    #: early. Tracked separately rather than read off `attempt` after the loop, because that name
+    #: is undefined if the range is empty and the failure would then be a `NameError` raised from
+    #: the error path, losing the exception it was reporting.
     spent = 0
     for attempt in range(1, GENERATION_ATTEMPTS + 1):
         spent = attempt
@@ -528,22 +751,22 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             # NOT in `PERMANENT_ERROR_NAMES`, so every affected task paid four BILLED attempts
             # before failing, and five such tasks in a row aborted the run. Shared with the other
             # two OpenAI-compatible clients in this repo so the rule cannot drift between them.
-            # ⛔ ONE FIELD FURTHER than the `choices` guard above, because stopping there left the
-            # next dereference blind: a 200 whose first choice carries `message: null` raised
-            # `AttributeError: 'NoneType' object has no attribute 'content'` at four billed calls,
-            # which is the failure class this guard exists to abolish, reached through the field
-            # along. `assistant_text` is total, so `message` was the only crash surface a
-            # WELL FORMED SDK response object could still present here — narrower than the
-            # first wording, which claimed it was the only one at all. `getattr(..., default)`
-            # suppresses only `AttributeError`, so a descriptor raising anything else still
-            # escapes, and `not choices`, `choices[0]` and `reason == "length"` all run
-            # provider-supplied code inside this same `try`. The real SDK exposes these as
-            # plain pydantic attributes, and the enclosing retry bounds the cost either way.
+            # ⚠️ ORDER. `finish_reason` is asked ABOVE, before the body is read, because it is
+            # the most specific thing known about the response and the only one of these causes
+            # that names a fix. Reading the body first sends a truncated completion whose `message`
+            # also failed to arrive to the retried class: four billed attempts against a ceiling no
+            # retry can move, in a message that contradicts itself.
             #
-            # A SENTINEL, not `getattr(..., None)`, because the two cases must not merge. A missing
-            # `message` is a malformed body: the provider's fault, transient, worth another route.
-            # A `content` that arrived and is null is an empty ANSWER: permanent, and it has to
-            # keep falling through to the `EmptyCompletion` below at one billed call, not four.
+            # Against a sentinel, because `message` can fail to arrive as an object in three ways
+            # (key omitted, set to null, holding something that is not an object) and a `None`
+            # check catches one. A message object with no `content` KEY is not among them: the SDK
+            # normalises that to `content=None`, which is the permanent `EmptyCompletion` path
+            # below, and rightly so, since the field did arrive. Verified against the pinned SDK: a
+            # body sending `"message": "the answer"` constructs `Choice(message='the answer')`,
+            # passes a `None` check, and raises `AttributeError: 'str' object has no attribute
+            # 'content'`. `None` cannot be the sentinel: a `content` that arrived carrying null is
+            # a completion with no text, which is `EmptyCompletion` below and permanent, while no
+            # `content` field at all is a malformed body, which is retried.
             content = getattr(getattr(choice, "message", None), "content", _NO_CONTENT_FIELD)
             if content is _NO_CONTENT_FIELD:
                 raise NoCompletionChoices(
@@ -600,6 +823,14 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             # and `CONSECUTIVE_FAILURE_LIMIT` turns five such tasks into an aborted run.
             paced = _retry_after_seconds(exc) or 0.0
             time.sleep(GENERATION_BACKOFF_S * (2 ** (attempt - 1)) + paced)
+    # The count is what was SPENT, not the budget. `main` copies this string verbatim into
+    # `.failed.jsonl` and into the `task_failed` event, where `error_type` is `RuntimeError` for
+    # every wrapped failure, so this sentence carries the only attempt information an operator
+    # sees. Interpolating the budget priced every permanent failure at 4x what it cost, which is
+    # backwards for errors that are classified permanent BECAUSE they cost one request.
+    #
+    # Pluralised, because "1 attempts" is the tell that a number is being interpolated into fixed
+    # prose rather than described.
     raise RuntimeError(
         # `spent`, not `GENERATION_ATTEMPTS`. A permanent cause BREAKS at the first attempt, so
         # interpolating the budget priced every early break at 4x what it cost — and with
@@ -708,18 +939,6 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
 
-    # To DISK, not only to stdout. A console line does not survive a lost terminal, and the prompt
-    # is the difference between two artifacts that are otherwise indistinguishable.
-    # NOT on a dry run. A dry run writes no rows, and `tasks` here is post-`--limit`, so a
-    # limited preview against an in-progress output would overwrite a real run's manifest with a
-    # partial count and a description of a run that produced nothing.
-    if not args.dry_run:
-        write_run_manifest(
-            args.out, prompt=args.prompt, layout=layout, model=args.model, task=args.task,
-            contexts_from=args.contexts_from if args.task == "c" else "reference",
-            max_tokens=args.max_tokens, tasks=len(tasks), limit=args.limit,
-        )
-
     if args.dry_run:
         chars = missing = 0
         for task in pending:
@@ -743,6 +962,52 @@ def main(argv: list[str] | None = None) -> int:
     failed: list[str] = []
     consecutive = 0
     failures_path = args.out.with_suffix(args.out.suffix + ".failed.jsonl")
+    # Before the file is opened for APPEND, and only for the tasks about to be regenerated. An
+    # artifact written before `generate_one` grew its guards can hold rows with an empty
+    # `predictions` text; `already_done` no longer counts those as finished, so without this the
+    # regenerated answer would land BESIDE the empty row rather than replace it.
+    #
+    # AHEAD of the failure log being cleared, so a run that refuses to proceed has not already
+    # destroyed the previous run's record of what failed. Under the concurrent-run case this guard
+    # exists for, that log belongs to the other run.
+    try:
+        repaired = drop_answerless_rows(args.out, {str(t["task_id"]) for t in pending})
+    except (OSError, CheckpointChanged) as exc:
+        # `os.replace` raises on Windows whenever another process holds the destination open, which
+        # a tail, an editor or a virus scanner will do. Letting it escape killed an 842-task resume
+        # with a raw traceback before a single task was attempted. The file is untouched at this
+        # point, so refusing is the correct outcome: appending beside rows that should have been
+        # replaced would produce the duplicate the repair exists to prevent.
+        print(
+            json.dumps({"event": "repair_failed", "output": str(args.out),
+                        "error_type": type(exc).__name__, "error": str(exc), "note":
+                        "the existing rows carrying no answer could not be removed, so nothing was "
+                        "appended; the predictions file is unchanged and no task was attempted"}),
+            flush=True,
+        )
+        return 1
+    if repaired:
+        print(
+            json.dumps({"event": "repaired", "answerless_rows_dropped": repaired, "note":
+                        "rows carrying no answer, from a run that predates the empty-completion "
+                        "guards; they are regenerated below rather than left beside the new ones"}),
+            flush=True,
+        )
+    # Independent of the repair: an unterminated last line glues the first appended row onto it,
+    # and the overwhelmingly common resume repairs nothing at all.
+    ensure_final_newline(args.out)
+    # To DISK, not only to stdout. A console line does not survive a lost terminal, and the prompt
+    # is the difference between two artifacts that are otherwise indistinguishable.
+    #
+    # AFTER the repair, for the same reason the failure log is cleared after it: a run that refuses
+    # to touch the predictions must not already have replaced the record of what produced them. A
+    # dry run never reaches here, so the old `args.dry_run` guard is now the control flow itself;
+    # that guard existed because a limited preview would otherwise describe a run producing nothing.
+    write_run_manifest(
+        args.out, prompt=args.prompt, layout=layout, model=args.model, task=args.task,
+        contexts_from=args.contexts_from if args.task == "c" else "reference",
+        max_tokens=args.max_tokens, tasks=len(tasks), limit=args.limit,
+    )
     # Rewritten, not appended across runs: this file describes the run that just happened. Appending
     # would leave a task that failed once and later succeeded sitting in the log forever, so the
     # file would over-report while the "done" event under-reported, and the two would disagree.
@@ -764,6 +1029,21 @@ def main(argv: list[str] | None = None) -> int:
                     build_messages(task, contexts, PROMPTS[args.prompt], layout),
                     args.max_tokens
                 )
+                # ⚠️ The ENCODE is inside the guard and the WRITE is not, and the line between them
+                # is which failures belong to one task. The handle encodes strictly, so a lone
+                # surrogate raises `UnicodeEncodeError` on the way out; `json.loads` accepts an
+                # escaped one from any third-party file `load_generation_tasks` or
+                # `load_recall_contexts` reads, and `submission_row` copies those fields straight
+                # through, so one such row would otherwise raise out of `main` and abandon every
+                # remaining task. That is a property of THIS task, so it fails this task.
+                #
+                # An `OSError` from the write or the flush is not. A full disk is a run-level
+                # fault, and quarantining it would file a task as having no answer while its row
+                # sits complete in the submission: `BufferedWriter` keeps the unwritten remainder
+                # and emits it in order on the next successful flush, so the row lands anyway and
+                # `.failed.jsonl`, `written` and the `incomplete` note would all be false about it.
+                row = json.dumps(submission_row(task, contexts, answer), ensure_ascii=False)
+                row.encode("utf-8")
             except MemoryError:
                 # Not quarantinable. `MemoryError` is an `Exception`, so the handler below would
                 # otherwise catch it and loop straight into the next allocation-heavy iteration,
@@ -808,7 +1088,7 @@ def main(argv: list[str] | None = None) -> int:
                     ) from exc
                 continue
             consecutive = 0
-            handle.write(json.dumps(submission_row(task, contexts, answer), ensure_ascii=False) + "\n")
+            handle.write(row + "\n")
             # Flushed per answer, not per batch. The file IS the checkpoint: a crash costs the
             # call in flight, never the ones already paid for.
             handle.flush()
@@ -836,6 +1116,16 @@ def main(argv: list[str] | None = None) -> int:
     # fails almost everything and still finishes "cleanly": measured at 30 of 40 tasks failed with
     # rc=0. `check_submission_size` counts bytes and never completeness, so nothing downstream
     # catches it either. Exit code 0 has to mean the submission is whole.
+    fragments = unparsable_rows(args.out)
+    if fragments:
+        print(
+            json.dumps({"event": "unparsable_rows", "count": fragments, "output": str(args.out),
+                        "note": "line(s) that are not readable JSON, which an interrupted write "
+                                "leaves behind. The official format checker rejects the file. The "
+                                "answers around them are intact: delete those line(s) and re-run, "
+                                "which regenerates only what they were holding"}),
+            flush=True,
+        )
     if failed:
         print(
             json.dumps({"event": "incomplete", "note":
@@ -844,8 +1134,7 @@ def main(argv: list[str] | None = None) -> int:
                         f"completed ones are skipped."}),
             flush=True,
         )
-        return 1
-    return 0
+    return 1 if (failed or fragments) else 0
 
 
 if __name__ == "__main__":

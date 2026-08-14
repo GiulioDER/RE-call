@@ -109,6 +109,32 @@ def test_a_permanent_error_is_not_retried(
         assert stub.count == 1
 
 
+def test_a_permanent_error_reports_the_attempt_it_actually_cost(
+    instant_backoff: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """⚠️ The report must not price a failure at four times what it cost.
+
+    The arm above proves a 400 is billed once. This is about what the operator is TOLD, which is a
+    separate claim and was wrong: the give-up message interpolated `GENERATION_ATTEMPTS` rather
+    than the attempt the loop reached, so a failure that cost one request still read "gave up after
+    4 attempts".
+
+    That string is not cosmetic. `main` copies it verbatim into `.failed.jsonl` and into the
+    `task_failed` event, and the `error_type` beside it is `RuntimeError` for every wrapped
+    failure, so the count inside this sentence is the only attempt information an operator has.
+    Reading it back to size a bill, or to judge whether the retry policy honoured its own
+    classification, gives 4x the real figure for every permanent cause.
+    """
+    with provider_stub(CHAT_OK) as stub:
+        client = _client(stub, monkeypatch)
+        stub.arm(400, "input is not valid for this model")
+
+        with pytest.raises(RuntimeError, match=r"gave up after 1 attempt\b"):
+            generation.generate_one(client, "stub/model", _MESSAGES, max_tokens=16)
+
+        assert stub.count == 1
+
+
 def test_a_success_costs_exactly_one_request(
     instant_backoff: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
