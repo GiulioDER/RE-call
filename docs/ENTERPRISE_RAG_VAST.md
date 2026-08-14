@@ -155,6 +155,38 @@ Expected outputs:
    `results/enterprise_rag/vast_top_splade_full.answers.jsonl` and
    `results/enterprise_rag/vast_top_splade_full.answers.jsonl.manifest.json`.
 
+## Export Back To VPS2
+
+After SPLADE backfill, the chunk table alone is not enough. SPLADE vectors live in
+`recall_sparse_v1`, keyed by `(tenant_id, chunk_table, profile_id, id)`. A close signal for the GPU
+instance is only valid after exporting both the chunk table and `recall_sparse_v1`, then restoring
+and verifying the sidecar row count on VPS2.
+
+On Vast, create the full transferable dump:
+
+```bash
+cd /workspace/RE-call
+./scripts/enterprise_rag_vast_export_splade.sh
+```
+
+The export refuses to proceed unless the source database has at least one SPLADE row for every
+chunk id in the EnterpriseRAG tenant. It also checks the custom dump manifest for:
+
+```text
+TABLE DATA public ber_voy_lex_12k_full
+TABLE DATA public recall_sparse_v1
+```
+
+On VPS2, restore with SPLADE required:
+
+```bash
+cd /home/sentiment/enterprise-rag-run/RE-call
+ENTERPRISE_RAG_REQUIRE_SPLADE=1 \
+  ./scripts/enterprise_rag_vast_import_dense.sh /home/sentiment/enterprise-rag-run/enterprise_rag_splade_full.pgcustom
+```
+
+Do not close the Vast instance until the VPS2 restore reports `sparse_ids` equal to the chunk count.
+
 ## Work That Can Be Done Before Renting
 
 Already done locally or on VPS2:
