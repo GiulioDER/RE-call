@@ -1512,7 +1512,7 @@ def main(argv: list[str] | None = None) -> None:
         _validated_emb: Embedder | None = None
 
         if args.fix:
-            from recall.fix import UnreadableMemo, apply_proposal, propose_fixes
+            from recall.fix import apply_proposal, propose_fixes
 
             proposals, unfixable = propose_fixes(args.path, glob=args.glob)
             print()
@@ -1538,12 +1538,30 @@ def main(argv: list[str] | None = None) -> None:
                 for p in proposals:
                     try:
                         apply_proposal(root, p)
-                    except UnreadableMemo as exc:
+                    except ValueError as exc:
                         # One memo the writer refuses must not discard the rest of the run. The
                         # loop previously had no guard, so a single undecodable file aborted with
                         # a traceback AFTER the earlier proposals had already been written — the
                         # worst of both, a partial apply the user has to reconstruct by hand.
-                        print(f"  SKIP {exc}")
+                        #
+                        # `ValueError`, not `UnreadableMemo`, because the writer has a second
+                        # refusal now: `insert_frontmatter_line` rejects a value carrying a line
+                        # break. `UnreadableMemo` subclasses `ValueError`, so this still catches
+                        # everything it did, and the widening is what keeps that second refusal
+                        # from reintroducing the exact partial apply this handler exists to stop.
+                        # `propose_fixes` filters those values first, so reaching here means a
+                        # caller built the `Proposal` itself.
+                        #
+                        # The memo is named explicitly rather than left to the exception's own
+                        # text. `UnreadableMemo` opens with the path, but the widening admits
+                        # exceptions raised further down that do not: a filename that is not
+                        # valid UTF-8 arrives surrogate-escaped from `Path.glob`, passes the
+                        # line-break check, and makes the writer's `.encode("utf-8")` raise
+                        # `UnicodeEncodeError` — also a `ValueError`, and its message names a
+                        # code point, not a file. A nameless SKIP in a list of many, followed by
+                        # "skipped 1", leaves the operator of a destructive command unable to
+                        # tell WHICH memo was passed over.
+                        print(f"  SKIP {p.edit_file}: {exc}")
                         continue
                     written += 1
                 print(f"wrote {written} edge(s), skipped {len(proposals) - written}.")
