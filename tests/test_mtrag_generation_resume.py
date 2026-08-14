@@ -408,8 +408,94 @@ def test_an_answer_that_cannot_be_encoded_fails_its_task_and_not_the_run(
     assert "b<::>1" in failures.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    "body, expected, why",
+    [
+        pytest.param(lambda r: r("a<::>1", "x") + r("b<::>1", "y"), 0, "clean", id="clean"),
+        pytest.param(
+            lambda r: (r("a<::>1", "x") + r("b<::>1", "y")).replace("\n", "\r\n"), 0,
+            "CRLF is two rows to every reader", id="crlf",
+        ),
+        pytest.param(
+            lambda r: r("a<::>1", "x").rstrip("\n") + "\r" + r("b<::>1", "y"), 1,
+            "⚠️ glued by a bare CR: ONE line to anything that splits on LF, which is the official "
+            "format_checker, jq and pandas, and two to Python's universal-newline reader",
+            id="glued-by-a-bare-cr",
+        ),
+        pytest.param(lambda r: r("a<::>1", "x") + "{ half a row", 1, "the torn tail", id="torn"),
+        pytest.param(lambda r: r("a<::>1", "x") + "\n\n", 0, "blank lines are not rows", id="blank"),
+    ],
+)
+def test_the_fragment_count_sees_the_lines_the_official_checker_sees(
+    tmp_path, body, expected: int, why: str
+) -> None:
+    """⚠️ This counter is the only thing standing between a corrupt artifact and a 0 exit code, so
+    it has to split the file the way the checker does. Reading it with Python's universal-newline
+    rules made a CR-glued pair read back as two clean rows, which is precisely the shape that is
+    unparseable to the tools that matter, so the run reported success over it.
+
+    `ensure_final_newline` already refuses a bare CR as a terminator for this reason, and a mid-file
+    one is permanent: that guard only fixes the end of the file and the prune keeps lines verbatim.
+    """
+    out = tmp_path / "preds.jsonl"
+    out.write_bytes(body(_row).encode("utf-8"))
+
+    assert gen.unparsable_rows(out) == expected, why
+
+
+def test_the_fragment_count_survives_a_checkpoint_torn_mid_character(tmp_path) -> None:
+    """It runs at the END of `main`, after the whole run has been paid for, so a strict decode here
+    would throw the fatal traceback of round two in the most expensive place there is."""
+    out = tmp_path / "preds.jsonl"
+    torn = json.dumps(
+        {"task_id": "b<::>1", "predictions": [{"text": "Café"}]}, ensure_ascii=False
+    ).encode("utf-8")
+    out.write_bytes(_row("a<::>1", "real").encode("utf-8")
+                    + torn[: torn.index("é".encode("utf-8")) + 1])
+
+    assert gen.unparsable_rows(out) == 1
+
+
+def test_a_write_failure_is_not_filed_as_a_task_that_had_no_answer(tmp_path, monkeypatch) -> None:
+    """⚠️ The other side of the quarantine line, and the reason the ENCODE is inside it while the
+    WRITE is not.
+
+    A failing flush does not mean the row was lost: `BufferedWriter` keeps the unwritten remainder
+    and emits it, in order, on the next successful flush. So quarantining an `OSError` would file
+    the task in `.failed.jsonl`, leave it out of `written`, and report "N task(s) have no answer",
+    while its complete and already paid-for row sits in the submission. Three artifacts lying about
+    the same row.
+
+    A full disk is also not a property of one task, so there is nothing for the next task to do
+    differently. It stops the run."""
+    tasks = [_task(task_id="a<::>1")]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+
+    real_open = gen.Path.open
+
+    def flaky(self, *a, **k):
+        handle = real_open(self, *a, **k)
+        if self == out and a and a[0] == "a":
+            handle.flush = lambda: (_ for _ in ()).throw(OSError(28, "no space left on device"))
+        return handle
+
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+    monkeypatch.setattr(gen, "generate_one", lambda *a, **k: "an answer")
+    monkeypatch.setattr(gen.Path, "open", flaky)
+
+    with pytest.raises(OSError):
+        gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+
+    monkeypatch.undo()
+    failures = out.with_suffix(out.suffix + ".failed.jsonl")
+    assert not failures.exists() or "a<::>1" not in failures.read_text(encoding="utf-8"), (
+        "the task must not be recorded as having no answer when the failure was the disk"
+    )
+
+
 def test_a_checkpoint_holding_an_unparseable_fragment_does_not_report_success(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capsys
 ) -> None:
     """⚠️ Gluing is fixed; the false green it caused is not. A fragment left by a kill mid-write is
     kept verbatim by the prune, by design, so it survives every later resume, and nothing in the
@@ -427,7 +513,20 @@ def test_a_checkpoint_holding_an_unparseable_fragment_does_not_report_success(
 
     rc = gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
 
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    reported = [e for e in events if e.get("event") == "unparsable_rows"]
     assert rc == 1, "a submission carrying an unparseable line is not submittable"
+    assert reported and reported[0]["count"] == 1, (
+        "the exit code says something is wrong; only this event says WHAT, and what to do"
+    )
+    assert not [e for e in events if e.get("event") == "incomplete"], (
+        "no task failed, so reporting '0 of 1 task(s) have no answer' would send the operator "
+        "looking for a generation failure that did not happen"
+    )
+    assert '"predi' in out.read_text(encoding="utf-8"), (
+        "the fragment is REPORTED, not deleted: whatever partial row it holds is the operator's "
+        "to discard, and silently dropping it is the failure mode this whole file is about"
+    )
 
 
 def test_a_row_appended_during_the_write_is_not_swapped_away(tmp_path, monkeypatch) -> None:

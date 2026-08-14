@@ -453,8 +453,9 @@ def already_done(path: Path) -> set[str]:
         return set()
     done: set[str] = set()
     # `errors="surrogateescape"` so a checkpoint torn mid-character is malformed rather than
-    # FATAL. It has to be the OPEN, not an `except UnicodeDecodeError` below: strict decoding
-    # raises from the file ITERATOR, outside the `try`, so no handler here could ever catch it. `main` writes with `ensure_ascii=False`, so every non-ASCII answer is raw multi-byte
+    # FATAL. It has to be the OPEN rather than an `except UnicodeDecodeError` below: strict
+    # decoding raises from the file ITERATOR, outside the `try`, so no handler here could catch
+    # it. `main` writes with `ensure_ascii=False`, so every non-ASCII answer is raw multi-byte
     # UTF-8 and a kill during the per-row flush can split one. Decoding strictly raised
     # `UnicodeDecodeError`, a `ValueError`, which no caller catches.
     with path.open(encoding="utf-8", errors="surrogateescape") as handle:
@@ -484,7 +485,13 @@ def unparsable_rows(path: Path) -> int:
     if not path.exists():
         return 0
     bad = 0
-    with path.open(encoding="utf-8", errors="surrogateescape") as handle:
+    # ⚠️ `newline="\n"` so this splits the file the way the CHECKER does. Universal-newline mode
+    # treats a bare CR as a terminator, so a pair of rows glued by one read back as two clean rows
+    # and this counted nothing, while the official `format_checker.py`, `jq` and
+    # `pandas.read_json(lines=True)` all see a single unparseable line. `ensure_final_newline`
+    # refuses a bare CR for the same reason; a mid-file one is permanent, since that guard only
+    # fixes the end of the file and the repair keeps lines verbatim.
+    with path.open(encoding="utf-8", newline="\n", errors="surrogateescape") as handle:
         for line in handle:
             if not line.strip():
                 continue
@@ -1072,19 +1079,21 @@ def main(argv: list[str] | None = None) -> int:
                     build_messages(task, contexts, PROMPTS[args.prompt], layout),
                     args.max_tokens
                 )
-                # ⚠️ INSIDE the guard, because writing the row is part of doing the task and can
-                # fail on its own. The handle encodes strictly, so one unencodable character (a
-                # lone surrogate, which `json.loads` accepts from any third-party file that
-                # `load_generation_tasks` or `load_recall_contexts` reads, and which
-                # `submission_row` copies straight through) raised `UnicodeEncodeError` out of
-                # `main` and abandoned every remaining task. Nothing is written on that error,
-                # since the encode completes before any byte reaches the buffer.
-                handle.write(
-                    json.dumps(submission_row(task, contexts, answer), ensure_ascii=False) + "\n"
-                )
-                # Flushed per answer, not per batch. The file IS the checkpoint: a crash costs the
-                # call in flight, never the ones already paid for.
-                handle.flush()
+                # ⚠️ The ENCODE is inside the guard and the WRITE is not, and the line between them
+                # is which failures belong to one task. `json.dumps` with a lone surrogate raises
+                # `UnicodeEncodeError` when the handle encodes it, and `json.loads` accepts an
+                # escaped one from any third-party file `load_generation_tasks` or
+                # `load_recall_contexts` reads, which `submission_row` copies straight through: an
+                # unencodable row used to raise out of `main` and abandon every remaining task.
+                # That is a property of THIS task, so it fails this task.
+                #
+                # An `OSError` from the write or the flush is not. A full disk is a run-level
+                # fault, and quarantining it would file a task as having no answer while its row
+                # sits complete in the submission: `BufferedWriter` keeps the unwritten remainder
+                # and emits it in order on the next successful flush, so the row lands anyway and
+                # `.failed.jsonl`, `written` and the `incomplete` note would all be false about it.
+                row = json.dumps(submission_row(task, contexts, answer), ensure_ascii=False)
+                row.encode("utf-8")
             except MemoryError:
                 # Not quarantinable. `MemoryError` is an `Exception`, so the handler below would
                 # otherwise catch it and loop straight into the next allocation-heavy iteration,
@@ -1120,6 +1129,10 @@ def main(argv: list[str] | None = None) -> int:
                     ) from exc
                 continue
             consecutive = 0
+            handle.write(row + "\n")
+            # Flushed per answer, not per batch. The file IS the checkpoint: a crash costs the
+            # call in flight, never the ones already paid for.
+            handle.flush()
             written += 1
             if position % 25 == 0:
                 print(
