@@ -513,6 +513,61 @@ def test_a_permanent_error_is_not_retried(monkeypatch) -> None:
     assert bad.calls == 1, "a permanent error must not be retried"
 
 
+def test_a_permanent_error_reports_the_attempt_it_actually_cost(monkeypatch) -> None:
+    """⚠️ The report must not price a failure at four times what it cost.
+
+    The arm above proves a permanent error is billed once. This is about what the operator is TOLD,
+    which is a separate claim and was wrong: the message interpolated `RETRIEVAL_ATTEMPTS` rather
+    than the attempt the loop reached, so a failure that cost one search still read "gave up on a
+    query after 4 attempts".
+
+    That matters most on exactly this path. The docstring above `search_with_retry` prices the bill
+    in attempts, because on a hosted-reranker arm every attempt is a billed call, and this sentence
+    is the only per-query attempt count anything emits: the `retrieval_retry` events stop at the
+    last retry, and the exception is what ends the arm.
+    """
+    import pytest as _pytest
+
+    monkeypatch.setattr(run.time, "sleep", lambda *_: None)
+
+    class AuthenticationError(Exception):
+        pass
+
+    class Unauthorized:
+        def search(self, query, k):
+            raise AuthenticationError("invalid api key")
+
+    arm = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
+    with _pytest.raises(RuntimeError, match=r"after 1 attempt\b") as caught:
+        run.search_with_retry(Unauthorized(), "q", arm)
+
+    assert "4 attempts" not in str(caught.value), "the budget is not what this failure cost"
+
+
+def test_an_exhausted_retry_still_reports_the_whole_budget(monkeypatch) -> None:
+    """Guards the guard, in the other direction: the count must follow the loop rather than become
+    a constant 1. A transient failure that really does exhaust the budget costs four billed calls
+    and has to say so."""
+    import pytest as _pytest
+
+    monkeypatch.setattr(run.time, "sleep", lambda *_: None)
+
+    class Dead:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, query, k):
+            self.calls += 1
+            raise ConnectionError("always")
+
+    arm = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
+    dead = Dead()
+    with _pytest.raises(RuntimeError, match=r"after 4 attempts\b"):
+        run.search_with_retry(dead, "q", arm)
+
+    assert dead.calls == run.RETRIEVAL_ATTEMPTS, "the count in the message must be the real bill"
+
+
 def test_the_failure_message_says_the_partial_is_not_resumed(monkeypatch) -> None:
     """The partial file is forensic, not a checkpoint. Nothing reads it back.
 

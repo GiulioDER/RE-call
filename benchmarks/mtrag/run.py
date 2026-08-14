@@ -823,7 +823,13 @@ def search_with_retry(retriever: Any, query: str, arm: "Arm") -> tuple[Any, floa
     reader can find the affected queries instead of having to trust that there were none.
     """
     last: Exception | None = None
+    #: What the failure actually COST, which is not `RETRIEVAL_ATTEMPTS` whenever the loop broke
+    #: early. Tracked separately rather than read off `attempt` after the loop, because that name
+    #: is undefined if the range is empty and the failure would then be a `NameError` raised from
+    #: the error path, losing the exception it was reporting.
+    spent = 0
     for attempt in range(1, RETRIEVAL_ATTEMPTS + 1):
+        spent = attempt
         started = time.perf_counter()
         try:
             result = retriever.search(query, k=RETRIEVAL_DEPTH)
@@ -840,8 +846,16 @@ def search_with_retry(retriever: Any, query: str, arm: "Arm") -> tuple[Any, floa
                 flush=True,
             )
             time.sleep(delay)
+    # The count is what was SPENT, not the budget. The docstring above prices this loop's bill in
+    # attempts because on a hosted-reranker arm each one is a billed call, and this sentence is the
+    # only per-query attempt count anything emits: the `retrieval_retry` events stop at the last
+    # retry, and a permanent error emits none at all. Interpolating the budget priced every
+    # `PERMANENT_ERROR_NAMES` failure at 4x what it cost.
+    #
+    # Pluralised, because "1 attempts" is the tell that a number is being interpolated into fixed
+    # prose rather than described.
     raise RuntimeError(
-        f"arm {arm.name!r} gave up on a query after {RETRIEVAL_ATTEMPTS} attempts "
+        f"arm {arm.name!r} gave up on a query after {spent} attempt{'' if spent == 1 else 's'} "
         f"({type(last).__name__}: {last}); predictions produced so far are flushed to "
         f"{arm.name}.partial.jsonl, which is a FORENSIC record and is NOT resumed from: "
         f"re-running this arm re-issues every call, including any already billed."
