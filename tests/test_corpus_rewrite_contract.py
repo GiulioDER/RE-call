@@ -416,6 +416,93 @@ def test_a_unicode_line_separator_cannot_smuggle_a_title_past_the_guard(tmp_path
     assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == before
 
 
+def test_a_stand_in_wrapped_by_a_provider_is_refused_rather_than_trimmed_into_nonsense(
+    tmp_path: Path,
+) -> None:
+    """The trim is only allowed where it is invisible to `supersedes_key`.
+
+    `[[name]]` is a spelling the corpus's own author uses and `_refuse_stand_in_reference`
+    names as reachable from a provider. Splitting such a value on the last `/` cut inside the
+    brackets: the marker went with the discarded half, so nothing refused it, and the leftover
+    `old.md]]` resolved to a document that does not exist. A trim that changes what a reader
+    resolves is not a trim, it is an edit of the reference, so the value is left whole and
+    refused instead. Rewriting it into `[[old.md]]` would be this module editing a reference
+    it was handed, which is how a writer starts guessing at what a human meant.
+    """
+    _corpus(tmp_path)
+    folder = "legal\udcff"
+    (tmp_path / folder).mkdir()
+    _memo(tmp_path, f"{folder}/old_decision_2026-01-01.md", _OLD)
+    before = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+
+    from recall.frontmatter import encodable_name
+
+    wrapped = "[[" + encodable_name(f"{folder}/old_decision_2026-01-01.md") + "]]"
+    with pytest.raises(RewriteRefused, match="(?i)stand-in"):
+        apply_rewrite(tmp_path, _fact(subject_id=wrapped), apply=True)
+
+    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == before
+
+
+def test_an_ordinary_nested_reference_is_written_exactly_as_the_corpus_names_it(
+    tmp_path: Path,
+) -> None:
+    """Byte for byte, directories included, because the value is compared as text.
+
+    The derived block's dedup recognises the line it wrote by comparing the value, so a
+    spelling that changes between runs is an entry appended on every run. Every reader reduces
+    a reference to its last segment, which makes `legal/old.md` and `old.md` equally
+    resolvable and makes a writer free to quietly swap one for the other. That freedom is what
+    this refuses: the one case where a segment is dropped is the one where it cannot be
+    written at all.
+    """
+    _memo(tmp_path, "new_decision_2026-06-01.md", _NEW)
+    (tmp_path / "legal").mkdir()
+    _memo(tmp_path, "legal/old_decision_2026-01-01.md", _OLD)
+
+    apply_rewrite(
+        tmp_path, _fact(subject_id="legal/old_decision_2026-01-01.md"), apply=True
+    )
+
+    written = (tmp_path / "new_decision_2026-06-01.md").read_text(encoding="utf-8")
+    assert "supersedes: legal/old_decision_2026-01-01.md" in written
+
+
+@pytest.mark.parametrize("folder", ["", "sub/"])
+def test_a_reference_to_a_file_named_only_by_a_stand_in_is_refused_before_any_write(
+    tmp_path: Path, folder: str
+) -> None:
+    """A file the corpus names by a stand-in has no spelling a memo can carry.
+
+    `corpus_proposals` names such a file by what `encodable_name` returns, which is what keeps
+    the review queue alive, and that name is right for an id and for a report. Written into a
+    memo it would be a lie: `lint`, `check`, `fix` and the store resolve a declared edge by
+    comparing raw filenames, so the line reads as a real edge to a human and as an unresolved
+    one to every reader in this package, with the trust layer never demoting the memo the edge
+    supersedes. Silence is the one outcome worse than a refusal here.
+
+    The refusal is decided by the marker alone, which is why it needs no corpus walk: a NUL
+    cannot occur in a path, so a value carrying one is a stand-in and nothing else. At the
+    corpus root and one directory down, because the marker rides on the path SEGMENT that needs
+    it: a guard testing the START of the value would pass this at the root and let a nested
+    stand-in through, which is exactly how the same reduction bit `_resolve`.
+    """
+    _corpus(tmp_path)
+    awkward = f"{folder}bad\udcff_2026-01-01.md"
+    (tmp_path / folder).mkdir(parents=True, exist_ok=True)
+    _memo(tmp_path, awkward, _OLD)
+    before = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+
+    from recall.frontmatter import encodable_name
+
+    stand_in = encodable_name(awkward)
+    assert stand_in != awkward, "this name needs no stand-in, so the test proves nothing"
+    with pytest.raises(RewriteRefused, match="(?i)stand-in"):
+        apply_rewrite(tmp_path, _fact(subject_id=stand_in), apply=True)
+
+    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == before
+
+
 def test_a_value_wrapped_in_whitespace_is_refused_so_the_dedup_can_match_it(
     tmp_path: Path,
 ) -> None:

@@ -5,9 +5,11 @@ from datetime import datetime, timezone
 import pytest
 
 from recall.frontmatter import (
+    encodable_name,
     has_line_break,
     insert_frontmatter_line,
     parse_frontmatter,
+    supersedes_key,
     validity_bounds,
 )
 
@@ -78,6 +80,82 @@ def test_quoted_values_are_unquoted():
     meta, _ = parse_frontmatter("---\nsupersedes: \"v1.md\"\nvalid_from: '2026-01-01'\n---\nx")
     assert meta["supersedes"] == "v1.md"
     assert meta["valid_from"] == "2026-01-01"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["old_2026-01-01.md", "legal/policy.md", "caffè.md", "a\\b.md", "policy\\update.md"],
+)
+def test_encodable_name_returns_a_name_that_encodes_unchanged(name):
+    """Every name a real corpus holds, byte for byte, with no exceptions.
+
+    The output is hashed into `reasoning_graph` node ids and therefore into the proposal ids a
+    reviewer types into `recall rewrite apply`. A stand-in applied to a name that does not need
+    one would renumber every queue that already exists, which reads as "the tool forgot".
+    `caffè.md` is perfectly good UTF-8, and so is `policy\\update.md`: a backslash is legal in a
+    POSIX filename, and an earlier version of this function diverted anything that LOOKED like
+    an escape, which cost that file its id and its ability to be named by an edge.
+    """
+    assert encodable_name(name) == name
+
+
+def test_encodable_name_is_encodable_for_a_name_that_is_not_valid_utf8():
+    stand_in = encodable_name("bad\udcff.md")
+    assert stand_in.encode("utf-8") == b"\x00name:bad\\udcff.md"
+
+
+def test_encodable_name_does_not_collapse_two_names_onto_one():
+    """INJECTIVE, or a corpus loses a file rather than a hash.
+
+    The stand-in reads as the escape a reader already sees on stderr, and a file may
+    legitimately be NAMED with that escape's own characters. Mapping `bad<surrogate>.md` onto
+    the literal `bad\\udcff.md` would give two different documents one dict key in
+    `corpus_documents` and one node id in the graph: the second silently replaces the first,
+    which is the collision the corpus-relative key exists to prevent, reintroduced by the guard
+    against the crash. The marker is what keeps the two ranges apart.
+    """
+    surrogate = "bad\udcff.md"
+    impostor = "bad\\udcff.md"
+    assert surrogate != impostor
+    assert encodable_name(surrogate) != encodable_name(impostor)
+
+
+def test_a_stand_in_is_still_a_stand_in_after_the_name_normaliser():
+    """`supersedes_key` reduces a name to the stem of its LAST path segment.
+
+    A marker prepended to the whole relative path is thrown away by that reduction, so a
+    nested memo was `\\x00name:sub/bad\\udcff` as a reference and `\\x00name:bad\\udcff` as a
+    file, the two could never meet, and `_resolve` refused to write about a file sitting right
+    there. The marker travels with the segment that needs it, which is the only part of a path
+    the normaliser keeps.
+    """
+    assert supersedes_key(encodable_name("sub/bad\udcff.md")) == supersedes_key(
+        encodable_name("bad\udcff.md")
+    )
+
+
+def test_the_normaliser_does_not_collapse_a_nested_stand_in_onto_its_impostor():
+    """Injectivity has to survive normalisation too, or `claim_key` re-merges what it separated.
+
+    Both names reduce through `supersedes_key` before they are hashed into a claim, so a
+    stripped marker meant a reviewer's rejection of one silently suppressed the other.
+    """
+    surrogate = encodable_name("sub/bad\udcff.md")
+    impostor = encodable_name("sub/bad\\udcff.md")
+    assert supersedes_key(surrogate) != supersedes_key(impostor)
+
+
+def test_encodable_name_survives_a_name_wearing_the_marker():
+    """The marker cannot occur in a real path, and the map is one to one anyway.
+
+    `_hashable` in the extraction cache shipped without this, reasoned that its marker could
+    not occur, and was right about filenames and wrong about file CONTENT, which collided two
+    documents onto one cache key. The cost of not relying on the argument is one comparison.
+    """
+    from recall.frontmatter import NAME_STAND_IN_MARK
+
+    worn = NAME_STAND_IN_MARK + "bad\\udcff.md"
+    assert encodable_name(worn) != encodable_name("bad\udcff.md")
 
 
 # --- a value that would split the line it is written into --------------------------------------

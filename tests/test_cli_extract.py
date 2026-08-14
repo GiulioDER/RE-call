@@ -50,6 +50,14 @@ def _enable(monkeypatch):
         monkeypatch.setenv(key, value)
 
 
+def _is_not_utf8(value: str) -> bool:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    return False
+
+
 def test_extract_run_refuses_when_extraction_is_off(corpus, capsys):
     with pytest.raises(SystemExit) as exc:
         main(["extract", "run", str(corpus)])
@@ -332,6 +340,41 @@ def test_a_filename_that_is_not_valid_utf8_is_reported_not_fatal(corpus, monkeyp
     # neither notices. "Showing a mangled name beats showing nothing" is the stated property,
     # and it needs the name asserted to be a property rather than a hope.
     assert "bad\\udcff.md: status" in out, "the awkward file's own claim was lost"
+
+
+def test_no_corpus_name_reaches_the_engine_as_a_lone_surrogate(corpus, monkeypatch, capsys):
+    """The deterministic engine takes the prompt as Python strings and never encodes them.
+
+    A model engine does: it sends the prompt as JSON over HTTP, and a `file` or `corpus_names`
+    entry holding a lone surrogate raises `UnicodeEncodeError` inside the client, on the first
+    file of the corpus. Guarding the cache key made the DEFAULT engine survive such a corpus
+    while leaving the same value on its way to every other one, which is why the name is made
+    encodable where the corpus is read rather than at each thing that encodes it.
+    """
+    _enable(monkeypatch)
+    (corpus / "bad\udcff.md").write_bytes(b"Status: deprecated\n")
+    inner = DeterministicExtractionEngine()
+    seen = []
+
+    class _Recording:
+        engine_id = inner.engine_id
+        model_id = inner.model_id
+        revision = inner.revision
+
+        def run(self, prompt):
+            seen.append(prompt)
+            return inner.run(prompt)
+
+    monkeypatch.setattr("recall.truth_extraction.resolve_extraction_engine", lambda: _Recording())
+    main(["extract", "run", str(corpus)])
+    assert seen, "the engine was never called, so this test proves nothing"
+    unencodable = [
+        value
+        for prompt in seen
+        for value in (prompt.file, *prompt.corpus_names)
+        if _is_not_utf8(value)
+    ]
+    assert not unencodable, f"{len(unencodable)} value(s) would break a model engine"
 
 
 def test_extract_show_reports_only_the_named_file(corpus, monkeypatch, capsys):

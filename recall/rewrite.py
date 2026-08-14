@@ -65,8 +65,10 @@ from typing import Literal
 
 from recall.atomic_write import atomic_write_bytes
 from recall.frontmatter import (
+    NAME_STAND_IN_MARK,
     VALIDITY_KEYS,
     dominant_newline,
+    encodable_name,
     insert_frontmatter_line,
     line_terminator,
     parse_frontmatter,
@@ -332,7 +334,9 @@ class RewritePlan:
 
     edit_file: str          # root-relative path of the memo that gains the key
     key: str                # `supersedes` | `contradicts` | `same_entity` | ...
-    value: str              # the other document, written verbatim as the fact named it
+    value: str              # the other document, as a memo can carry it: verbatim for every
+                            # name the corpus can spell, and reduced to the basename when only
+                            # a directory above it cannot (see `_writable_reference`)
     block: Destination
     claim: str              # the ledger key for this claim
     fact_id: str
@@ -428,6 +432,74 @@ def _refuse_unwritable_value(value: str) -> None:
         )
 
 
+def _writable_reference(value: str) -> str:
+    """The value as a memo can carry it, with the segments no reader looks at dropped.
+
+    `supersedes_key` reduces a reference to the stem of its LAST segment, and `_resolve`,
+    `lint`, `check`, `fix` and the store all compare through it, so `legal/old.md` and `old.md`
+    name the same document to every one of them. That makes a directory whose name is not
+    valid UTF-8 a different case from a FILE whose name is not: the basename is still a
+    reference every reader resolves, and refusing it invented a restriction this package does
+    not have, about a file whose own name was never the problem. Verified by asking a reader
+    rather than by reasoning: `rewrite verify` resolves the edge this writes.
+
+    Only when the marker survives into the last segment is there nothing writable left, and
+    `_refuse_stand_in_reference` says so next, naming that segment: the file's own name is
+    what has to change. Ambiguity is unaffected: the stem is what was being compared either
+    way, so dropping the directory cannot make two documents collide that did not already.
+
+    A value carrying no marker is returned untouched, directories and all. Trimming those too
+    would read the same to every resolver and still be wrong: the derived block's dedup
+    recognises the line it wrote by comparing the value, so a spelling that changes between
+    runs is an entry appended forever.
+
+    The invariant is CHECKED rather than assumed, by asking `supersedes_key` whether the trim
+    changed anything. A bare corpus name is not the only shape a value arrives in: `[[name]]`
+    is what the corpus's own author writes and what a provider can hand over, and splitting
+    that on the last `/` cuts inside the brackets, taking the marker with the discarded half
+    and leaving `old.md]]`, which resolves to nothing. Refusing it whole is the honest
+    outcome. Rewriting it into `[[old.md]]` would be this module editing a reference it was
+    handed, which is where a writer starts guessing at what a human meant.
+    """
+    if NAME_STAND_IN_MARK not in value:
+        return value
+    trimmed = value.rsplit("/", 1)[-1]
+    return trimmed if supersedes_key(trimmed) == supersedes_key(value) else value
+
+
+def _refuse_stand_in_reference(value: str) -> None:
+    """A written reference must name a file every reader of the corpus can find.
+
+    A filename that is not valid UTF-8 has no spelling a memo can carry: the memo is written as
+    UTF-8, so the raw name cannot go in, and `corpus_proposals` therefore names such a file by
+    the stand-in `encodable_name` returns. That stand-in is the right answer for an id and for
+    a report, and the wrong one for a corpus file. `lint`, `check`, `fix`, `store` and the
+    reasoning graph all resolve a declared edge by comparing raw filenames, so the line would
+    read as a real edge to a human and as an unresolved one to every reader in this package,
+    with the trust layer never demoting the memo it supersedes. Teaching one of those readers
+    the stand-in would only make it the one that disagrees with the other four.
+
+    The marker is proof on its own — no corpus walk, because `NAME_STAND_IN_MARK` holds a NUL
+    and no real name can. `_refuse_unwritable_value` would refuse this value too, for its NUL,
+    and this runs first for the message: "contains a NUL byte" is true and tells a reviewer
+    nothing about the file they would have to rename.
+
+    Tested with `in` rather than `startswith`: the marker rides on the path SEGMENT that needs
+    it, so `sub/<marker>bad.md` carries it in the middle, and a value a provider wrapped in
+    wikilink brackets carries it one character in. `_writable_reference` has already dropped
+    the segments a reader ignores, so a marker still present here is on the file's own name,
+    which is what makes "rename the file" the true instruction rather than a guess.
+    """
+    if NAME_STAND_IN_MARK not in value:
+        return
+    raise RewriteRefused(
+        f"refusing to write: {value.replace(NAME_STAND_IN_MARK, '')!r} is this corpus's "
+        f"stand-in for a file whose name is not valid UTF-8, and no reader of the corpus "
+        f"resolves a stand-in. Rename the file first; the edge can be declared once it has a "
+        f"name a memo can hold."
+    )
+
+
 def _readable_text(raw: bytes, rel: str) -> str:
     """The memo decoded, or a refusal naming it.
 
@@ -455,8 +527,16 @@ def _readable_text(raw: bytes, rel: str) -> str:
 def _resolve(root: Path, ref: str) -> str:
     """The one corpus file `ref` names, root-relative. Zero or several matches is a refusal."""
     key = supersedes_key(ref)
+    # `ref` is a corpus NAME, and `corpus_proposals` guarantees those are encodable, so the
+    # file side must be compared in the same spelling or the two can never meet. A memo whose
+    # filename is not valid UTF-8 is named `bad\udcff.md` in every proposal and `bad<lone
+    # surrogate>.md` on disk: matching raw found zero files and refused the write with "matches
+    # 0 files in the corpus" about a file sitting right there. The match is on the escaped
+    # form; what is RETURNED stays the real path, because that is what gets opened and written.
     matches = sorted(
-        f.relative_to(root).as_posix() for f in root.rglob("*.md") if supersedes_key(f.name) == key
+        f.relative_to(root).as_posix()
+        for f in root.rglob("*.md")
+        if supersedes_key(encodable_name(f.name)) == key
     )
     if len(matches) != 1:
         raise RewriteRefused(
@@ -510,10 +590,16 @@ def corpus_proposals(root: Path, glob: str = "**/*.md") -> tuple[InferencePropos
     read_paths = corpus_paths if root.is_dir() else [root]
 
     def _key(path: Path) -> str:
+        # `encodable_name` at the boundary, not at each of the places a name is later hashed,
+        # serialised or printed. A filename that is not valid UTF-8 is a lone surrogate here,
+        # and it reached `canonical_sha256` through the graph's node ids: one such file raised
+        # `UnicodeEncodeError` out of `build_reasoning_graph` and returned NO proposals at all,
+        # about a corpus whose other memos are ordinary. Every ordinary name is returned
+        # unchanged, so no existing proposal id moves.
         try:
-            return path.relative_to(corpus_root).as_posix()
+            return encodable_name(path.relative_to(corpus_root).as_posix())
         except ValueError:
-            return path.name
+            return encodable_name(path.name)
 
     # The whole corpus is read for the GRAPH, while only `read_paths` is extracted FROM. A
     # supersession proposal needs a graph node for its target as well as a corpus name for it:
@@ -582,11 +668,17 @@ def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:
     # equal their key names, and it raised `unknown_key` for every relation v2 added.
     routed = route_relation(checked.relation, checked.subject_id, checked.object_id)
     block = destination(routed.key)
-    _refuse_unwritable_value(routed.value)
+    # The value is trimmed to what a reader resolves BEFORE it is judged, so the refusal below
+    # fires only for a file that has no writable name at all, rather than for one that merely
+    # sits in a directory that has none. `claim_key` keeps the untrimmed ids, so a rejection
+    # recorded against this claim still matches the proposal it was made about.
+    value = _writable_reference(routed.value)
+    _refuse_stand_in_reference(value)
+    _refuse_unwritable_value(value)
     return RewritePlan(
         edit_file=_resolve(root, routed.edit_file),
         key=routed.key,
-        value=routed.value,
+        value=value,
         block=block,
         claim=claim_key(checked.relation, checked.subject_id, checked.object_id),
         fact_id=checked.fact_id,

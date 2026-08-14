@@ -227,3 +227,73 @@ def supersedes_key(value: str) -> str:
     if v.lower().endswith(".md"):
         v = v[:-3]
     return v.rsplit("/", 1)[-1].strip()
+
+
+#: Prefix for the stand-in. NUL cannot occur in a path on either platform — Python refuses to
+#: build a `Path` from one — so no real corpus name can be mistaken for a stand-in, and no name
+#: that needs no stand-in ever gets one. `recall/truth_extraction/_cache.py` marks its own for
+#: the same reason; the two markers differ because that one stands in for file CONTENT too.
+NAME_STAND_IN_MARK = "\x00name:"
+
+
+def encodable_name(name: str) -> str:
+    """``name`` itself when it encodes as UTF-8, and a marked stand-in when it does not.
+
+    A POSIX filename is bytes, not text. One that is not valid UTF-8 arrives as a lone
+    surrogate through `Path.glob`'s surrogateescape, and everything downstream of a corpus name
+    eventually encodes it: `canonical_sha256` hashes it into a `reasoning_graph` node id,
+    `canonical_json` serialises it, an HTTP client would send it. Each of those raised
+    `UnicodeEncodeError`, and each was patched where it raised — a cache key here, a `print`
+    there — while the next consumer kept inheriting the same landmine. `recall rewrite plan`
+    was the third, and it did not degrade: one such file in a corpus emptied the whole review
+    queue. This is the boundary those consumers share, so the guard belongs here.
+
+    Two properties, and the second is the one that is easy to lose:
+
+    **A name that encodes gets no stand-in, with no exceptions.** The output is hashed into the
+    proposal ids a reviewer types into `recall rewrite apply`, so rewriting names that do not
+    need it would renumber queues that already exist. `caffè.md` is good UTF-8 and is returned
+    untouched, and so is the POSIX-legal `policy\\update.md`, whose backslash makes it look like
+    an escape without making it one.
+
+    **INJECTIVE**, or the guard against a crash quietly costs a document. Two documents sharing
+    one key in the caller's dict and one node id in the graph is the collision the
+    corpus-relative key exists to prevent, and an earlier version of this function reintroduced
+    it: the stand-in was the bare backslash escape, which a file may legitimately be NAMED. The
+    marker is what separates the two ranges, and it holds a NUL precisely because no filename
+    can. Backslashes are doubled INSIDE the stand-in as well, so the escape stays reversible
+    and the map is one to one over arbitrary strings rather than only over real paths.
+
+    The stand-in stays readable after the marker, spelled the way `recall`'s streams already
+    print such a name — they reconfigure with ``errors="backslashreplace"`` — because a mangled
+    name beats no name. It is a name for the queue and never one for the corpus: `rewrite`
+    refuses to write it into a memo, where no other reader would resolve it.
+
+    **Per path SEGMENT**, because `name` is often a corpus-relative path and `supersedes_key`
+    reduces one to the stem of its last segment. A marker on the front of the whole path is
+    thrown away by that reduction: `sub/bad<surrogate>.md` was a marked reference and an
+    unmarked file, `_resolve` could never match the two, and `claim_key` merged it with the
+    file literally NAMED `sub/bad\\udcff.md` — the collision the marker exists to prevent,
+    re-entering through the normaliser rather than through this map. Marking the segment that
+    needs it survives the reduction, and stays one to one: the escape never emits ``/``, so
+    splitting and rejoining is a bijection over the segments it is applied to.
+
+    ⚠️ The marker's NUL is invisible to SQL. SQLite's string functions treat TEXT as NUL
+    terminated, so a stand-in stored in a column round trips through parameter binding intact
+    while `length()` reads 0 and `LIKE` never matches it. Nothing in `recall` queries such a
+    column — the extraction cache stores `file` for a human to SELECT — but an operator
+    inspecting one by hand will find these rows blank rather than absent.
+    """
+    return "/".join(_encodable_segment(segment) for segment in name.split("/"))
+
+
+def _encodable_segment(segment: str) -> str:
+    try:
+        segment.encode("utf-8")
+    except UnicodeEncodeError:
+        pass
+    else:
+        if NAME_STAND_IN_MARK not in segment:
+            return segment
+    escaped = segment.replace("\\", "\\\\").encode("utf-8", "backslashreplace").decode("utf-8")
+    return NAME_STAND_IN_MARK + escaped
