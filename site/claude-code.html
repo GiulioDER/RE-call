@@ -1,68 +1,142 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Claude Code · RE-call Setup Manual</title>
-  <meta name="description" content="How to connect RE-call to Claude Code and what the scaffolded files do.">
-  <link rel="stylesheet" href="styles.css">
-  <script src="app.js" defer></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Code · RE-call setup</title>
+<meta name="description" content="How Claude uses your RE-call memory: registering the MCP server, the ten tools it exposes, the CLAUDE.md block that makes Claude search before it answers, and the boundaries that keep it honest.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
 </head>
 <body>
-  <header class="site-header">
-    <div class="page-shell site-header-inner">
-      <a class="brand" href="index.html">
-        <span class="brand-mark">RE-call Setup Manual</span>
-        <span class="brand-note">Beginner path for Windows and macOS</span>
-      </a>
-      <nav class="top-nav" aria-label="Primary">
-        <a href="index.html">Home</a>
-        <a href="requirements.html">Requirements</a>
-        <a href="installation.html">Installation</a>
-        <a href="corpus.html">Build Your Corpus</a>
-        <a class="active" href="claude-code.html">Claude Code</a>
-      </nav>
-    </div>
-  </header>
 
-  <main class="page-shell layout">
-    <div class="content-grid">
-      <section class="page-section" id="why-connect">
-        <p class="eyebrow">Claude integration</p>
-        <h1>Connect RE-call so Claude can check memory before it acts.</h1>
-        <p class="lede">
-          This is the practical goal: Claude asks RE-call what the memory already says, then uses
-          that answer to avoid repeating a dead idea or trusting a weak match.
-        </p>
-        <div class="callout">
-          <div class="callout-title">What changes after connection</div>
-          <p>RE-call becomes an MCP tool server. Claude can call tools like `recall_search` and `recall_evidence` directly instead of relying on pasted notes.</p>
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="index.html">RE-call <span>Setup</span></a>
+    <nav>
+      <a href="start.html">Install</a>
+      <a href="corpus.html">Your memory</a>
+      <a href="claude-code.html" aria-current="page">Claude Code</a>
+      <a href="calibration.html">Calibration</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="shell" data-reveal style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(2rem, 5vw, 3.5rem);">
+  <p class="eyebrow">Working with Claude</p>
+  <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 20ch; margin-bottom: 1.5rem;">Give Claude your memory, and the rules for using it.</h1>
+  <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
+  <p class="lede">You already registered the server in <a href="start.html#step-8">step 8 of the install guide</a>. This page is the part that step could not hold: every tool the server exposes, the instructions that decide whether Claude ever calls them, and the boundaries that stop it writing where it should not.</p>
+</section>
+
+<div class="shell guide-layout" style="padding-bottom: clamp(4rem, 9vw, 7rem);">
+
+  <!-- Contents rail -->
+  <aside class="rail" data-rail>
+    <p class="rail-title">On this page</p>
+    <ol>
+      <li><a href="#what-changes">What actually changes</a></li>
+      <li><a href="#wiring">Wiring it up</a></li>
+      <li><a href="#tools">The ten tools</a></li>
+      <li><a href="#claude-md">The CLAUDE.md block</a></li>
+      <li><a href="#loop">The self recall loop</a></li>
+      <li><a href="#boundaries">Safety boundaries</a></li>
+      <li><a href="#verifying">Verifying it works</a></li>
+    </ol>
+    <p class="rail-progress" data-rail-progress>Step 1 of 7</p>
+  </aside>
+
+  <div>
+
+    <div class="steps">
+
+      <!-- ============================================ 1 -->
+      <section id="what-changes" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">01</span>
+          <h2>What actually changes</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Two things, and it is worth being precise about both, because the gap between what people expect here and what the server does is where the disappointment usually lives.</p>
+
+          <p><strong>Claude checks what you already decided before it answers.</strong> When you propose something you have proposed before, it can call <code>recall_search</code>, find the note where you settled the question, and tell you it is settled instead of cheerfully designing it again.</p>
+
+          <p><strong>Claude writes new facts back.</strong> When a decision gets made in a session, it can write a small markdown file into <code>memory/</code> and index it, so the next session starts knowing it. Your memory grows as a by product of working, rather than as a chore you keep meaning to do.</p>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">What it is not</p>
+            <p>Registering the server does not change how Claude thinks. It adds tools to a list. A tool that nothing tells Claude to call is a tool Claude will mostly not call, which is why the <a href="#claude-md"><code>CLAUDE.md</code> block</a> matters more than the registration does. Everything on this page assumes both are in place.</p>
+          </div>
+
+          <p>Three more expectations worth setting honestly before you go further.</p>
+
+          <ul>
+            <li>Memory contains what you indexed, and nothing else. There is no background crawl of your repository, your chat history, or your files.</li>
+            <li>The server runs no generator. <code>recall_evidence</code> hands back passages plus the exact prompt to answer with, and Claude is the one that writes the answer. That separation is deliberate: the thing that retrieves is not the thing that speaks.</li>
+            <li>An abstention is an answer. If memory has nothing that clears the confidence threshold, the honest output is "I do not know", and both the tool and the instructions treat it that way.</li>
+          </ul>
         </div>
       </section>
 
-      <section class="page-section" id="install-mcp-extra">
-        <p class="eyebrow">Step 1</p>
-        <h2>Install the MCP extra</h2>
-        <p>If you installed only the base local path earlier, add the `mcp` extra now.</p>
-        <div class="command-card">
-          <div class="command-top">
-            <span class="command-label">Windows PowerShell and macOS shell</span>
-            <button class="copy-button" data-copy-target="#mcp-install">Copy</button>
-          </div>
-          <pre id="mcp-install">pip install -e ".[fastembed,mcp]"</pre>
+      <!-- ============================================ 2 -->
+      <section id="wiring" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">02</span>
+          <h2>Wiring it up</h2>
         </div>
-      </section>
+        <div class="step-body">
+          <p class="step-what">The server ships in an optional extra. Install it alongside the embedder you already use, then register it one of two ways.</p>
 
-      <section class="page-section" id="mcp-config">
-        <p class="eyebrow">Step 2</p>
-        <h2>Add the RE-call MCP server to Claude Code</h2>
-        <p>The repo docs show this `mcpServers` block for local development mode:</p>
-        <div class="command-card">
-          <div class="command-top">
-            <span class="command-label">.mcp.json snippet</span>
-            <button class="copy-button" data-copy-target="#mcp-json">Copy</button>
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m pip install "recall-rag[fastembed,mcp]"</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m pip install "recall-rag[fastembed,mcp]"</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m pip install "recall-rag[fastembed,mcp]"</span></pre></div>
+            </div>
           </div>
-          <pre id="mcp-json">{
+
+          <h3 style="font-size: 1.125rem; margin-bottom: 0.75rem;">Method one: the CLI</h3>
+          <p>One command, registered against your Claude Code installation.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">claude mcp add recall -- python -m recall_mcp.server</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">claude mcp add recall -- python3 -m recall_mcp.server</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">claude mcp add recall -- python3 -m recall_mcp.server</span></pre></div>
+            </div>
+          </div>
+
+          <h3 style="font-size: 1.125rem; margin-bottom: 0.75rem;">Method two: a file in the project</h3>
+          <p>Save this as <code>.mcp.json</code> in your project root, next to the <code>.env</code> the wizard wrote. I recommend this one, because it carries the environment explicitly: the connection string and the trust mode are visible in the file rather than inherited from wherever the command happened to be run.</p>
+
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-label">.mcp.json</span>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body"><pre>{
   "mcpServers": {
     "recall": {
       "command": "python",
@@ -74,141 +148,509 @@
       }
     }
   }
-}</pre>
-        </div>
-        <div class="note">
-          <div class="note-title">Where this goes</div>
-          <p>For Claude Code, save it as `.mcp.json` in the project root, or use the documented CLI command:
-          <code>claude mcp add recall -- python -m recall_mcp.server</code>.</p>
-        </div>
-        <div class="warning">
-          <div class="warning-title">Why development mode is here</div>
-          <p>This local example is for an uncalibrated development setup. The technical docs say to remove `RECALL_TRUST_MODE` in production after you have an active generation with a published certified calibration.</p>
-        </div>
-        <div class="screenshot">
-          <div class="screenshot-title">Screenshot to add later</div>
-          <p>Asset hint: `claude-mcp-json-project-root.png`</p>
+}</pre></div>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">The server does not read your .env</p>
+            <p>This is the single most common reason a correctly installed server behaves as though nothing is configured. Claude Code launches the process itself, and the only settings it receives are the ones in the <code>env</code> block above. Every value you want the server to have has to be repeated there, including <code>RECALL_SERVING_DSN</code> and <code>RECALL_TRUST_MODE</code>.</p>
+            <p>On macOS and Linux, change <code>"command": "python"</code> to <code>"python3"</code>.</p>
+          </div>
+
+          <div class="notice">
+            <p class="notice-title">The module path is exact</p>
+            <p><code>python -m recall_mcp</code> does not work. It has to be <code>python -m recall_mcp.server</code>. The installed <code>recall-mcp</code> console script is the same entry point, so use it if you prefer a shorter command.</p>
+          </div>
+
+          <h3 style="font-size: 1.125rem; margin-bottom: 0.75rem;">Claude Desktop</h3>
+          <p>Same JSON block, different file. Claude Desktop reads <code>claude_desktop_config.json</code>, and it only picks up changes on a restart.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Platform</th><th>Where the file lives</th><th>After editing</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Windows</td>
+                  <td><code>%APPDATA%\Claude\claude_desktop_config.json</code></td>
+                  <td>Quit Claude Desktop completely and start it again.</td>
+                </tr>
+                <tr>
+                  <td>macOS</td>
+                  <td><code>~/Library/Application Support/Claude/claude_desktop_config.json</code></td>
+                  <td>Quit Claude Desktop completely and start it again.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <details class="why">
+            <summary>Why the server always reads the table named chunks</summary>
+            <div class="why-body">
+              <p>The stdio server opens the default <code>chunks</code> table and takes no table flag. That is a deliberate narrowing: a server that could be pointed at any table would need the client to be trusted to name one, and the client here is a language model.</p>
+              <p>The consequence is worth knowing before you debug it. If you indexed a demo corpus into a named table from the CLI, the server will not see those rows, and searches will come back empty with nothing obviously wrong. Index into the default table, or into the tenant you set in <code>RECALL_TENANT</code>, and the rows appear.</p>
+            </div>
+          </details>
+
+          <p class="escape">Server not appearing after all this? <a href="troubleshooting.html#mcp">Claude Code problems</a>.</p>
         </div>
       </section>
 
-      <section class="page-section" id="what-setup-writes">
-        <p class="eyebrow">Scaffolded files</p>
-        <h2>What `recall setup` writes for Claude projects</h2>
-        <p>The setup wizard can scaffold two things after its embedder and retrieval prompts:</p>
-        <table>
-          <thead>
-            <tr>
-              <th>File</th>
-              <th>What it does</th>
-              <th>Important behavior</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>`CLAUDE.md` block</td>
-              <td>Adds a `<!-- recall setup begin -->` to `<!-- recall setup end -->` section that tells Claude when to call RE-call tools and how to record new durable facts.</td>
-              <td>Re-running setup replaces only that marked block, not the rest of your file.</td>
-            </tr>
-            <tr>
-              <td>`memory/MEMORY.md`</td>
-              <td>Creates the starter memory index and documents the expected frontmatter and one line per fact pattern.</td>
-              <td>It is only created if it does not already exist.</td>
-            </tr>
-          </tbody>
-        </table>
-        <div class="note">
-          <div class="note-title">Why this matters</div>
-          <p>These files teach Claude that memory is a tool driven workflow: search first, answer carefully, and write durable facts back into the memory folder in a consistent format.</p>
+      <!-- ============================================ 3 -->
+      <section id="tools" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">03</span>
+          <h2>The ten tools</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">The server registers ten tools. Four of them are the ones you will see used daily, one is destructive, and five belong to the reasoning and rewrite layer, which is opt in and which most installations never touch.</p>
+
+          <h3 style="font-size: 1.125rem; margin-bottom: 0.75rem;">Everyday</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Tool</th><th>What it does</th><th>When Claude should call it</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>recall_search</code></td>
+                  <td>Searches memory and returns hits carrying a trust verdict and a calibrated confidence, plus an <code>abstained</code> flag and an <code>advice</code> field stating what to do with the result.</td>
+                  <td>Before proposing an idea, forming a hypothesis, or repeating past work. This is the consult step, not the answer step.</td>
+                </tr>
+                <tr>
+                  <td><code>recall_evidence</code></td>
+                  <td>Builds a citable evidence bundle from passages the trust layer cleared, and returns a system prompt and a user message alongside them. The client generates the answer.</td>
+                  <td>When about to answer from memory rather than merely check it. Every citation must be a <code>chunk_id</code> from the bundle.</td>
+                </tr>
+                <tr>
+                  <td><code>recall_index</code></td>
+                  <td>Adds a markdown file or folder to memory. Confined to <code>RECALL_INDEX_ROOT</code>, which defaults to the server's working directory. Indexing a file again replaces its chunks rather than duplicating them.</td>
+                  <td>After writing a durable fact into <code>memory/</code>, so the new file is searchable from the next turn.</td>
+                </tr>
+                <tr>
+                  <td><code>recall_stats</code></td>
+                  <td>Reports memory freshness and size: how many chunks exist, when the newest was indexed, and whether the index has gone stale.</td>
+                  <td>When you want to know whether memory is actually populated, or whether it has stopped being fed.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3 style="font-size: 1.125rem; margin-bottom: 0.75rem;">Destructive</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Tool</th><th>What it does</th><th>Before you allow it</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>recall_forget</code></td>
+                  <td>Permanently deletes indexed memory for the source values you name. Requires the <code>recall:forget</code> scope. Irreversible.</td>
+                  <td>Read <a href="#boundaries">the boundaries section</a>. There is no undo, and a source that did not match comes back in <code>sources_not_found</code> rather than being silently counted as removed.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3 style="font-size: 1.125rem; margin-bottom: 0.75rem;">Reasoning and rewrite</h3>
+          <p class="muted" style="font-size: 0.9375rem;">Additive and opt in. <code>recall_search</code> and <code>recall_evidence</code> behave identically whether or not you ever use these.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Tool</th><th>What it does</th><th>When it earns its place</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>recall_reasoning_query</code></td>
+                  <td>Runs a bounded reasoning query over trusted retrieval, obeying the configured policy and budget, and returns cited output, review state, a clarification, or an abstention.</td>
+                  <td>When a question needs more than one hop across memory and you still want the trust layer in front of it.</td>
+                </tr>
+                <tr>
+                  <td><code>recall_reasoning_projection</code></td>
+                  <td>Inspects the generation bound reasoning graph projection without answering anything.</td>
+                  <td>When you want to see what structure was derived from your corpus, rather than a conclusion drawn from it.</td>
+                </tr>
+                <tr>
+                  <td><code>recall_reasoning_proposals</code></td>
+                  <td>Lists inference proposals as review candidates. They are candidates, never trusted memory.</td>
+                  <td>When reviewing what the layer thinks might be true, before any human decides whether it is.</td>
+                </tr>
+                <tr>
+                  <td><code>recall_rewrite_plan</code></td>
+                  <td>Plans a corpus rewrite: which key a proposal would declare, and in which file. It writes nothing.</td>
+                  <td>Before a human applies the change themselves. There is no apply tool on this surface, and that omission is the design.</td>
+                </tr>
+                <tr>
+                  <td><code>recall_reasoning_audit</code></td>
+                  <td>Audits reasoning integration state and returns diagnostics.</td>
+                  <td>Before relying on any of the four tools above, to confirm the layer is actually wired and healthy.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <details class="why">
+            <summary>Why there is no rewrite apply tool</summary>
+            <div class="why-body">
+              <p>Applying a rewrite requires a reviewer identity and an audit note. If the MCP surface accepted those, the model would supply them, and the human gate would become a field the model fills in rather than a person who decided. The plan is available to the agent; the apply lives at <code>recall rewrite apply</code>, where a person runs it.</p>
+            </div>
+          </details>
         </div>
       </section>
 
-      <section class="page-section" id="auto-index">
-        <p class="eyebrow">Auto-index</p>
-        <h2>What the setup wizard tries to do next</h2>
-        <p>After scaffolding, the wizard tries to index `memory/` immediately so Claude can search it from the first turn.</p>
-        <ol class="steps">
-          <li>
-            <h3>It only works if the schema already matches the chosen embedder width</h3>
-            <p>If the schema is missing or at the wrong dimension, setup prints remediation instead of blocking forever.</p>
-          </li>
-          <li>
-            <h3>Production mode skips local auto-index</h3>
-            <p>The docs note that under `RECALL_ENV=production`, this local filesystem indexing step is skipped entirely.</p>
-          </li>
-          <li>
-            <h3>Default tenant and table are used</h3>
-            <p>If your project uses non-default values, index the folder yourself against the correct target later.</p>
-          </li>
-        </ol>
-        <div class="warning">
-          <div class="warning-title">One subtle beginner surprise</div>
-          <p>The first auto-index can index `memory/MEMORY.md` itself. The docs say that is usually harmless, but if Claude surfaces that file, this is why.</p>
+      <!-- ============================================ 4 -->
+      <section id="claude-md" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">04</span>
+          <h2>The CLAUDE.md block</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">If you answered yes to the scaffolding question in the wizard, this block is already in your <code>CLAUDE.md</code>, between two HTML comment markers. It is what turns ten available tools into a habit.</p>
+
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-label">CLAUDE.md</span>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body"><pre>&lt;!-- recall setup begin --&gt;
+## Using recall
+
+This project is indexed by recall. Call `recall_search` before proposing an idea, forming a hypothesis, or repeating past work. If a closed decision or falsified hypothesis surfaces, do not re-litigate it.
+
+- When `abstained` is true, no hit survived the trust gate (or `decision: abstain` from `recall_evidence`) — say you do not know instead of answering from degraded hits.
+- Use `recall_evidence` instead of `recall_search` when about to answer from memory rather than just consult it; cite only `chunk_id` values from its `items`.
+- Write new durable facts to `memory/`, one file per fact, indexed by `memory/MEMORY.md` (see that file for the format), then call `recall_index` on `memory/` so the new file and the updated index both become searchable.
+&lt;!-- recall setup end --&gt;</pre></div>
+          </div>
+
+          <p class="muted" style="font-size: 0.9375rem;">That is the wizard's text as written, punctuation included.</p>
+
+          <p>Four instructions, and each one buys you something specific.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>The instruction</th><th>What it buys you</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Call <code>recall_search</code> first</td>
+                  <td>Without it, Claude answers from the conversation in front of it and from what the model already knows. Neither of those contains last month's decision. This line is the difference between a memory that exists and a memory that is used.</td>
+                </tr>
+                <tr>
+                  <td>Respect <code>abstained</code></td>
+                  <td>A model that reads "no confident hit" as an obstacle will route around it, and the routing produces a fluent guess. This line says the abstention is the answer. It is the instruction that protects everything the trust layer does.</td>
+                </tr>
+                <tr>
+                  <td>Use <code>recall_evidence</code> when answering</td>
+                  <td>It admits only passages the trust layer cleared, and it hands back the citations. You get an answer whose sources you can open, instead of a paraphrase whose origin you have to take on faith.</td>
+                </tr>
+                <tr>
+                  <td>Write durable facts to <code>memory/</code></td>
+                  <td>This is what makes the corpus grow without you maintaining it by hand. One file per fact, listed in <code>memory/MEMORY.md</code>, then indexed so the next session can find it.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">Extend outside the markers, not inside</p>
+            <p>Re-running <code>recall setup</code> replaces everything between <code>&lt;!-- recall setup begin --&gt;</code> and <code>&lt;!-- recall setup end --&gt;</code>, and leaves the rest of <code>CLAUDE.md</code> untouched. Anything you write inside the markers is lost on the next run. Put your own rules in their own section above or below the block.</p>
+          </div>
+
+          <details class="why">
+            <summary>Rules worth adding yourself</summary>
+            <div class="why-body">
+              <p>The scaffolded block is deliberately minimal, because it has to be right for every project. In my own <code>CLAUDE.md</code> I add three things outside the markers. First, a rule that a fact only goes into <code>memory/</code> once it is settled, so sessions do not fill the corpus with half decided thinking. Second, an instruction to name the file after the decision rather than the date, because a search matches on meaning and a date carries none. Third, a note that a corrected fact should supersede the old file rather than sit beside it, since two files disagreeing is worse than neither existing.</p>
+              <p>The <a href="corpus.html">memory page</a> covers what makes a file worth indexing in more detail.</p>
+            </div>
+          </details>
         </div>
       </section>
 
-      <section class="page-section" id="tool-behavior">
-        <p class="eyebrow">Tool behavior</p>
-        <h2>How Claude should use RE-call</h2>
-        <div class="card-grid">
-          <article>
-            <p class="kicker">Use `recall_search` first</p>
-            <p>Claude should call it before proposing an idea, revisiting prior work, or repeating a hypothesis.</p>
-          </article>
-          <article>
-            <p class="kicker">Use `recall_evidence` before answering from memory</p>
-            <p>This path is for citation ready evidence, not only a quick “have we seen this?” check.</p>
-          </article>
-          <article>
-            <p class="kicker">Respect abstentions</p>
-            <p>If RE-call abstains, Claude should say it does not know instead of manufacturing certainty from low quality hits.</p>
-          </article>
-          <article>
-            <p class="kicker">Write durable facts into `memory/`</p>
-            <p>Keep stable, valuable knowledge in files that can be re-indexed, not only in chat history.</p>
-          </article>
+      <!-- ============================================ 5 -->
+      <section id="loop" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">05</span>
+          <h2>The self recall loop</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Four moves, repeated. Search before answering, respect an abstention, write the durable fact back, index it. The whole product is that loop closing.</p>
+
+          <p><strong>One. Search before answering.</strong> You propose something. Claude calls <code>recall_search</code> before it responds, and memory returns what you already concluded.</p>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">A hit that settles the question</p>
+            <div class="terminal terminal--output">
+              <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+              <div class="terminal-body"><pre><span class="dim">recall_search("raise the public API rate limit to 500/min")</span>
+<span class="ok">  abstained: false</span>
+<span class="hit">  ok    conf=0.84  rate-limits.md  'Clients may issue 100 requests per minute...'</span>
+<span class="dim">  advice: a prior decision covers this; do not reopen it without new evidence</span></pre></div>
+            </div>
+          </div>
+
+          <p><strong>Two. Respect an abstention.</strong> Ask something memory does not cover and the tool says so, plainly, instead of returning the nearest paragraph.</p>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">An abstention</p>
+            <div class="terminal terminal--output">
+              <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+              <div class="terminal-body"><pre><span class="dim">recall_search("what did we conclude about the refund window?")</span>
+<span class="warn">  abstained: true</span>
+<span class="dim">  reason: no hit above the calibrated confidence threshold (probable corpus gap)</span></pre></div>
+            </div>
+          </div>
+
+          <div class="notice notice--signal">
+            <p class="notice-title">This is the part that matters</p>
+            <p>Everything else in RE-call exists to make the abstention trustworthy, so an agent that works around it throws away the entire mechanism. The failure is subtle because it is invisible from the outside: a model that treats "no confident hit" as a hurdle produces an answer that reads exactly like a well sourced one, in the same voice, with the same confidence, and nothing in the transcript marks it as invented. A memory you cannot distinguish from a guess is worse than no memory, because you stopped checking.</p>
+            <p>There is a second, sharper version of the same mistake. An abstention means the gate ran and found nothing worth standing behind. A trust refusal means the gate could not run at all: the database is down, the index is not ready, the calibration is missing. Read the second as the first and the agent concludes there is no prior memory, then confidently reopens a question that was in fact settled. They must not be collapsed into one.</p>
+          </div>
+
+          <p><strong>Three. Write the durable fact back.</strong> Once something is actually decided, it goes into <code>memory/</code> as its own file, with the frontmatter the starter index documents, and a line added to <code>memory/MEMORY.md</code>.</p>
+
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-label">memory/refund-window.md</span>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body"><pre>---
+name: refund-window
+description: How long a customer has to request a refund.
+metadata:
+  type: project
+---
+
+Refunds may be requested within 30 days of purchase. Agreed
+14 August 2026. Support asked for 60; finance would not carry
+the liability, and 30 matches what the terms page already said.</pre></div>
+          </div>
+
+          <p><strong>Four. Index it.</strong> Claude can do this itself by calling <code>recall_index</code> on <code>memory/</code>. You can do the same from your own terminal, and it is worth knowing the command for the times a session ends before the tool runs.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli index memory/</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli index memory/</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli index memory/</span></pre></div>
+            </div>
+          </div>
+
+          <p>Indexing a file again replaces its chunks rather than adding a second copy, so running this after every edit is safe and is the habit to build.</p>
+
+          <details class="why">
+            <summary>Why the wizard's auto index ignores your tenant and table flags</summary>
+            <div class="why-body">
+              <p>The auto index step the wizard runs at the end of <code>recall setup</code> always writes to table <code>chunks</code> and tenant <code>default</code>, even when you passed different values on the command line. If your project uses a non default tenant or table, those rows will not appear in that tenant's searches, and you should index <code>memory/</code> yourself against the right one instead.</p>
+              <p>The same step is skipped entirely under <code>RECALL_ENV=production</code>, where indexing from the local filesystem is not a thing the server should be doing at all. There, memory is built by your deployment pipeline.</p>
+            </div>
+          </details>
         </div>
       </section>
 
-      <section class="page-section" id="download-claude">
-        <p class="eyebrow">Official Claude links</p>
-        <h2>Where to get Claude Code and MCP docs</h2>
-        <ul>
-          <li><a href="https://docs.anthropic.com/en/docs/claude-code/overview">Claude Code overview</a></li>
-          <li><a href="https://docs.anthropic.com/en/docs/claude-code/mcp">Connect Claude Code to tools via MCP</a></li>
-          <li><a href="https://docs.anthropic.com/en/docs/claude-code/setup">Claude Code setup</a></li>
-          <li><a href="https://claude.com/download">Claude Desktop download</a></li>
-        </ul>
+      <!-- ============================================ 6 -->
+      <section id="boundaries" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">06</span>
+          <h2>Safety boundaries</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">You have handed a language model a tool that writes to a database and a tool that deletes from one. Three things bound what it can do with them.</p>
+
+          <h3 style="font-size: 1.125rem; margin-bottom: 0.75rem;">RECALL_INDEX_ROOT</h3>
+          <p>This is the boundary that stops the agent indexing arbitrary paths. <code>recall_index</code> may only read inside it, and it defaults to the server's working directory. Ask the agent to index your home folder, or a colleague's project, or a directory of credentials, and the request is refused before anything is read.</p>
+          <p>The default is reasonable and most people leave it. Setting it explicitly is better, because then the bound is a decision you made rather than a side effect of where Claude Code happened to start. Add it to the <code>env</code> block in <code>.mcp.json</code>.</p>
+
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-label">.mcp.json</span>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body"><pre>"env": {
+  "RECALL_SERVING_DSN": "postgresql://recall:recall@localhost:5432/recall",
+  "RECALL_TENANT": "default",
+  "RECALL_TRUST_MODE": "development",
+  "RECALL_INDEX_ROOT": "C:/Users/you/project/memory"
+}</pre></div>
+          </div>
+
+          <p class="muted" style="font-size: 0.9375rem;">A request that exceeds the configured file count or byte ceiling is also refused, before anything is embedded, so a pointed instruction cannot quietly run up a large indexing job.</p>
+
+          <h3 style="font-size: 1.125rem; margin-bottom: 0.75rem;">The recall:forget scope</h3>
+          <p><code>recall_forget</code> requires the <code>recall:forget</code> scope, and deletion is confined to the server's own tenant: it cannot reach another tenant's memory. On an authenticated transport, that scope is the gate, and a caller that does not hold it is denied before the request touches the store.</p>
+
+          <h3 style="font-size: 1.125rem; margin-bottom: 0.75rem;">Deletion is permanent</h3>
+          <div class="notice notice--signal">
+            <p class="notice-title">recall_forget is irreversible</p>
+            <p>There is no undo, no trash, and no snapshot the tool restores from. It is the right to erasure path, which is exactly what you want when something was indexed that should never have been retained, and exactly what you do not want fired off casually by an agent tidying up.</p>
+            <p>Check <code>sources_not_found</code> in the response before believing a name was actually forgotten. A source that did not match is reported there rather than counted as removed, so a typo produces a clear "that did not exist" instead of a false confirmation.</p>
+          </div>
+
+          <p>My own rule: <code>recall_forget</code> is a tool I run myself, from my own terminal, on sources I have first confirmed with a search. It is available to the agent because right to erasure has to be reachable, not because it is a routine part of the loop.</p>
+        </div>
       </section>
+
+      <!-- ============================================ 7 -->
+      <section id="verifying" class="step" data-reveal>
+        <div class="step-head">
+          <span class="step-number">07</span>
+          <h2>Verifying it works</h2>
+        </div>
+        <div class="step-body">
+          <p class="step-what">Start Claude Code in the folder holding your <code>.mcp.json</code>, then run <code>/mcp</code>. You are looking for a server named <code>recall</code>, connected, offering the tools from section three.</p>
+
+          <p>Outside Claude, this lists what is registered and whether each server starts.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">claude mcp list</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">claude mcp list</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">claude mcp list</span></pre></div>
+            </div>
+          </div>
+
+          <div class="checkpoint">
+            <p class="checkpoint-title">You should see</p>
+            <div class="terminal terminal--output">
+              <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+              <div class="terminal-body"><pre><span class="ok">recall: python -m recall_mcp.server (stdio) &#8226; connected</span></pre></div>
+            </div>
+          </div>
+
+          <p>Then ask Claude a question you know your memory answers, and watch it call <code>recall_search</code> before it replies. If it answers without calling anything, the server is fine and the <a href="#claude-md"><code>CLAUDE.md</code> block</a> is what is missing.</p>
+
+          <p>The other useful check is to run the server yourself. It is a stdio server, so it starts and then waits silently for input, which is success. What you are looking for is the absence of a traceback in the first second.</p>
+
+          <div class="terminal terminal--command" data-os-group data-shell="posix">
+            <div class="terminal-bar">
+              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
+                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
+                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
+              </div>
+              <button class="copy-button" type="button">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall_mcp.server</span></pre></div>
+              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall_mcp.server</span></pre></div>
+              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall_mcp.server</span></pre></div>
+            </div>
+          </div>
+
+          <h3 style="font-size: 1.125rem; margin-bottom: 0.75rem;">When the server does not appear</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>What you see</th><th>What it usually is</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>No <code>recall</code> server listed at all</td>
+                  <td>Claude Code was started somewhere other than the folder holding <code>.mcp.json</code>, or the JSON has a syntax error. A trailing comma is enough to make the whole file ignored.</td>
+                </tr>
+                <tr>
+                  <td>Listed, but it fails to start</td>
+                  <td>The <code>mcp</code> extra is not installed in the interpreter being launched, or the module path is wrong. It is <code>recall_mcp.server</code>, never <code>recall_mcp</code>.</td>
+                </tr>
+                <tr>
+                  <td><code>python: command not found</code></td>
+                  <td>On macOS and Linux the <code>command</code> field has to be <code>python3</code>.</td>
+                </tr>
+                <tr>
+                  <td>Connected, but every call errors</td>
+                  <td>The database is not running, or <code>RECALL_SERVING_DSN</code> is missing from the <code>env</code> block. Remember that the <code>.env</code> file is not read here.</td>
+                </tr>
+                <tr>
+                  <td>Connected, searches always empty</td>
+                  <td>Your rows are in a different table or tenant. The server reads table <code>chunks</code> and the tenant named in <code>RECALL_TENANT</code>.</td>
+                </tr>
+                <tr>
+                  <td>Every result flagged uncertified</td>
+                  <td>Expected while <code>RECALL_TRUST_MODE=development</code> is set and no calibration has been published. <a href="calibration.html">Measure a threshold</a> and the flag goes away.</td>
+                </tr>
+                <tr>
+                  <td>It refuses rather than answering</td>
+                  <td>Strict mode with no certified calibration for the tenant. Either publish one, or set <code>RECALL_TRUST_MODE=development</code> for local work.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="escape">Still stuck? <a href="troubleshooting.html#mcp">Claude Code problems</a> goes through each of these with the exact error text.</p>
+        </div>
+      </section>
+
     </div>
 
-    <aside class="side-panel">
-      <div class="side-card">
-        <h3>On this page</h3>
-        <ul>
-          <li><a href="#why-connect">Why connect</a></li>
-          <li><a href="#install-mcp-extra">Install MCP extra</a></li>
-          <li><a href="#mcp-config">MCP config</a></li>
-          <li><a href="#what-setup-writes">Scaffolded files</a></li>
-          <li><a href="#auto-index">Auto-index</a></li>
-          <li><a href="#tool-behavior">Tool behavior</a></li>
-          <li><a href="#download-claude">Official links</a></li>
-        </ul>
-      </div>
-      <div class="side-card">
-        <h3>Deeper technical docs</h3>
-        <ul>
-          <li><a href="https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md">Using with Claude</a></li>
-          <li><a href="https://github.com/GiulioDER/RE-call/blob/master/examples/self_recall_agent.py">Self recall example</a></li>
-          <li><a href="https://github.com/GiulioDER/RE-call/blob/master/docs/PRODUCTION.md">Production notes</a></li>
-        </ul>
-      </div>
-    </aside>
-  </main>
+    <!-- ============================================ Further reading -->
+    <section class="band" data-reveal style="padding-bottom: 0;">
+      <h2 style="font-size: clamp(1.5rem, 3vw, 2.25rem);">Further reading</h2>
+      <ul class="routes">
+        <li>
+          <a href="https://docs.claude.com/en/docs/claude-code">
+            <strong>Claude Code documentation</strong>
+            <span>The official guide to Claude Code itself: settings, permissions, memory files, and how MCP servers are configured and scoped.</span>
+            <em>&#8599;</em>
+          </a>
+        </li>
+        <li>
+          <a href="https://modelcontextprotocol.io">
+            <strong>Model Context Protocol</strong>
+            <span>The specification behind all of this: what a tool is, what a server may expose, and how a client and server negotiate.</span>
+            <em>&#8599;</em>
+          </a>
+        </li>
+        <li>
+          <a href="corpus.html">
+            <strong>Fill your memory</strong>
+            <span>What makes a memory file worth indexing, and how a corpus stays useful as it grows.</span>
+            <em>&#8594;</em>
+          </a>
+        </li>
+        <li>
+          <a href="calibration.html">
+            <strong>Measure your threshold</strong>
+            <span>Replace the placeholder confidence number with one measured on your own corpus, and leave development mode behind.</span>
+            <em>&#8594;</em>
+          </a>
+        </li>
+      </ul>
+    </section>
 
-  <footer class="footer page-shell">
-    <div class="footer-card">
-      <p class="muted">Once this is connected, Claude can treat memory as a live tool path rather than a static note dump.</p>
-    </div>
-  </footer>
+  </div>
+</div>
+
+</main>
+
+<footer class="footer">
+  <div class="shell footer-inner">
+    <nav>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+      <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
+    </nav>
+    <small>Apache 2.0</small>
+  </div>
+</footer>
+
 </body>
 </html>

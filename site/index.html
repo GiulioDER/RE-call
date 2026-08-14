@@ -1,180 +1,193 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RE-call Setup Manual</title>
-  <meta name="description" content="A beginner friendly GitHub Pages guide for installing RE-call, building a corpus, calibrating retrieval, and connecting Claude Code.">
-  <link rel="stylesheet" href="styles.css">
-  <script src="app.js" defer></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RE-call · Setup guide</title>
+<meta name="description" content="A beginner's guide to installing, configuring and running RE-call: the memory layer that abstains instead of guessing. Eight steps, every command, on Windows, macOS and Linux.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
 </head>
 <body>
-  <header class="site-header">
-    <div class="page-shell site-header-inner">
-      <a class="brand" href="index.html">
-        <span class="brand-mark">RE-call Setup Manual</span>
-        <span class="brand-note">Beginner path for Windows and macOS</span>
-      </a>
-      <nav class="top-nav" aria-label="Primary">
-        <a class="active" href="index.html">Home</a>
-        <a href="requirements.html">Requirements</a>
-        <a href="installation.html">Installation</a>
-        <a href="corpus.html">Build Your Corpus</a>
-        <a href="claude-code.html">Claude Code</a>
-      </nav>
+
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="index.html">RE-call <span>Setup</span></a>
+    <nav>
+      <a href="start.html">Install</a>
+      <a href="corpus.html">Your memory</a>
+      <a href="claude-code.html">Claude Code</a>
+      <a href="calibration.html">Calibration</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<!-- ============================================================ Hero -->
+<section class="hero">
+  <div class="shell hero-inner">
+    <p class="eyebrow">Setup guide</p>
+    <h1>Get RE-call running in eight steps.</h1>
+    <hr class="rule">
+    <p class="hero-lede">Written for someone who has never installed it. Every command, what should come back, and what to do when something else does.</p>
+    <div class="hero-actions">
+      <a class="button" href="start.html">Start the install</a>
     </div>
-  </header>
+  </div>
+  <div class="shell hero-meta">
+    <span>Python <b>3.11+</b></span>
+    <span>PostgreSQL <b>18</b> via Docker</span>
+    <span>Windows <b>·</b> macOS <b>·</b> Linux</span>
+    <span>Runs <b>offline</b></span>
+  </div>
+</section>
 
-  <main>
-    <section class="hero">
-      <div class="page-shell hero-panel">
-        <div class="hero-grid">
-          <div class="hero-copy">
-            <p class="eyebrow">Field Guide</p>
-            <h1>Install RE-call without guessing what each part does.</h1>
-            <p class="hero-summary">
-              This site turns the repo docs into a first run path: exact links, exact commands, and a
-              plain explanation of what each choice changes.
-            </p>
-            <div class="hero-actions">
-              <a class="button" href="requirements.html">Start with requirements</a>
-              <a class="button-secondary" href="installation.html">Jump to installation</a>
-            </div>
-            <div class="warning">
-              <div class="warning-title">Test version</div>
-              <p>This onboarding site is a first test version. Expect refinement, tighter screenshots, and sharper edge case coverage later.</p>
-            </div>
-          </div>
-          <div class="hero-side">
-            <div class="signal-strip">
-              <div class="signal-item">
-                <div class="signal-label">What this covers</div>
-                <div>Python, Docker Desktop, PostgreSQL plus pgvector, RE-call setup, corpus prep, calibration, and Claude Code MCP wiring.</div>
-              </div>
-              <div class="signal-item">
-                <div class="signal-label">What this skips</div>
-                <div>Linux, production hardening, custom hosting, and deep research docs. Those still live in the main repository documentation.</div>
-              </div>
-              <div class="signal-item">
-                <div class="signal-label">Source of truth</div>
-                <div>The repo README and technical docs remain authoritative. This site is the guided onboarding layer.</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="page-shell">
-      <div class="card-grid">
-        <article>
-          <p class="kicker">01 · Prepare the machine</p>
-          <h2>Get the right downloads first</h2>
-          <p>Official download pages, the safest beginner choices, and what each dependency is for.</p>
-          <a class="button-secondary" href="requirements.html">Open requirements</a>
-        </article>
-        <article>
-          <p class="kicker">02 · Run the local stack</p>
-          <h2>Follow the install sequence step by step</h2>
-          <p>Database first, package second, schema third, setup fourth.</p>
-          <a class="button-secondary" href="installation.html">Open installation</a>
-        </article>
-        <article>
-          <p class="kicker">03 · Feed it real memory</p>
-          <h2>Build a corpus from your own material</h2>
-          <p>What belongs in memory, how to structure it, and how calibration changes once you leave the demo sample.</p>
-          <a class="button-secondary" href="corpus.html">Open corpus guide</a>
-        </article>
-        <article>
-          <p class="kicker">04 · Connect Claude Code</p>
-          <h2>Teach Claude to check memory before it acts</h2>
-          <p>MCP config, the scaffolded `CLAUDE.md` block, `memory/MEMORY.md`, and the self recall loop.</p>
-          <a class="button-secondary" href="claude-code.html">Open Claude Code guide</a>
-        </article>
-      </div>
-    </section>
-
-    <section class="page-shell layout">
-      <div class="content-grid">
-        <section class="page-section" id="who-this-is-for">
-          <p class="eyebrow">Audience</p>
-          <h2>Who this manual is for</h2>
-          <p class="lede">
-            Use this path if you can run commands but do not want to reverse engineer the stack
-            before the first successful result.
-          </p>
-          <div class="pill-row">
-            <span class="pill">Windows PowerShell supported</span>
-            <span class="pill">macOS shell supported</span>
-            <span class="pill">Docker first path</span>
-            <span class="pill">Screenshot slots ready</span>
-          </div>
-        </section>
-
-        <section class="page-section" id="why-this-site-exists">
-          <p class="eyebrow">Why this site exists</p>
-          <h2>The repo docs are accurate, but they assume you already know the moving parts.</h2>
-          <p>
-            RE-call stores memory in PostgreSQL, indexes it with pgvector, and layers trust,
-            calibration, and Claude integration on top. For a first run, what matters most is the
-            order of operations. This site gives that order.
-          </p>
-          <div class="callout">
-            <div class="callout-title">The shortest successful path</div>
-            <p>Install Python and Docker Desktop, start the bundled pgvector container, install `recall-rag[fastembed]`, apply the schema, then run `python -m recall.cli setup`.</p>
-          </div>
-        </section>
-
-        <section class="page-section" id="where-to-go-next">
-          <p class="eyebrow">Map</p>
-          <h2>Suggested reading order</h2>
-          <ol class="steps">
-            <li>
-              <h3>Requirements</h3>
-              <p>Collect installers and choose Docker first unless you already have a working PostgreSQL plus pgvector instance.</p>
-            </li>
-            <li>
-              <h3>Installation</h3>
-              <p>Run the exact commands in the correct order and capture screenshots later using the placeholders.</p>
-            </li>
-            <li>
-              <h3>Build your corpus</h3>
-              <p>Move from the demo data to your own memory files, then calibrate on your own labeled queries.</p>
-            </li>
-            <li>
-              <h3>Claude Code</h3>
-              <p>Wire RE-call into Claude Code so memory becomes a tool rather than a thing you paste into chat.</p>
-            </li>
-          </ol>
-        </section>
-      </div>
-
-      <aside class="side-panel">
-        <div class="side-card">
-          <h3>Primary docs behind this guide</h3>
-          <ul>
-            <li><a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README.md</a></li>
-            <li><a href="https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md">docs/CALIBRATION.md</a></li>
-            <li><a href="https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md">docs/USING_WITH_CLAUDE.md</a></li>
-          </ul>
-        </div>
-        <div class="side-card">
-          <h3>Keep in mind</h3>
-          <ul class="mini-list">
-            <li>The local demo path uses development trust mode until you publish a certified calibration.</li>
-            <li>The sample calibration proves the mechanism, not the quality of your real corpus.</li>
-            <li>The easiest pgvector path for beginners is the Docker container already used in this repo.</li>
-          </ul>
-        </div>
-      </aside>
-    </section>
-  </main>
-
-  <footer class="footer page-shell">
-    <div class="footer-card">
-      <h3>Need the deeper product docs?</h3>
-      <p class="muted">Start with the repository documentation index at <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">docs/README.md</a>. It covers production posture, migrations, security, and the full evidence trail.</p>
+<!-- ============================================================ What it is -->
+<section class="band" id="what">
+  <div class="shell split" data-reveal>
+    <div>
+      <p class="eyebrow">What you are installing</p>
+      <h2>A memory that would rather say nothing than guess.</h2>
+      <p>RE-call stores your notes, decisions and project history, and searches them by meaning rather than by keyword. That much is ordinary.</p>
+      <p>The part that is not ordinary: when nothing it holds actually answers your question, it says so. An ordinary vector search always returns its closest match, because closest is all it knows how to compute. Closest is not the same as correct.</p>
     </div>
-  </footer>
+    <div>
+      <p class="eyebrow eyebrow--signal">Asked something it has no answer to</p>
+      <div class="terminal terminal--output">
+        <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+        <div class="terminal-body"><pre><span class="warn">[ABSTAIN] query='what is our refund policy?'</span>
+<span class="dim">  reason: no valid result cleared the threshold</span></pre></div>
+      </div>
+      <p class="muted" style="font-size: 0.9375rem;">You will run this yourself in step 7. It takes about ten minutes of work to get there, most of it spent waiting for two downloads.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ Facts strip -->
+<section class="band--tight" data-reveal>
+  <dl class="facts">
+    <div class="fact">
+      <dt>You need</dt>
+      <dd>Python 3.11+<small>3.12 to 3.14 also supported</small></dd>
+    </div>
+    <div class="fact">
+      <dt>And</dt>
+      <dd>Docker Desktop<small>Runs the database for you</small></dd>
+    </div>
+    <div class="fact">
+      <dt>Your data</dt>
+      <dd>Stays local<small>The default embedder runs on your machine</small></dd>
+    </div>
+    <div class="fact">
+      <dt>Licence</dt>
+      <dd>Apache 2.0<small>Free for commercial use</small></dd>
+    </div>
+  </dl>
+</section>
+
+<!-- ============================================================ The pieces -->
+<section class="band band--tint">
+  <div class="shell" data-reveal>
+    <div class="section-head">
+      <p class="eyebrow">The moving parts</p>
+      <h2>Three things, and only one of them is RE-call.</h2>
+      <p class="muted">Most of the confusion in a first install comes from not knowing which piece a command is talking to. There are only three.</p>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Piece</th><th>What it does</th><th>You touch it</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>A PostgreSQL database</td>
+            <td>Holds your memory: the text of every note, plus a numeric fingerprint of its meaning. The pgvector extension is what makes searching those fingerprints fast.</td>
+            <td>Once, in step 1. It then runs in the background.</td>
+          </tr>
+          <tr>
+            <td>The RE-call package</td>
+            <td>Reads your markdown files, turns them into those fingerprints, and decides at query time whether anything it found is trustworthy enough to answer from.</td>
+            <td>Steps 2 to 7. This is the part you actually use.</td>
+          </tr>
+          <tr>
+            <td>The MCP server</td>
+            <td>Optional. Exposes your memory to Claude Code as a tool it can call, so it checks what you have already decided before it answers.</td>
+            <td>Step 8, and only if you want it.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ Routes -->
+<section class="band">
+  <div class="shell" data-reveal>
+    <div class="section-head">
+      <p class="eyebrow">The rest of this site</p>
+      <h2>Four pages you will want after the install, and not before.</h2>
+    </div>
+    <ul class="routes">
+      <li>
+        <a href="corpus.html">
+          <strong>Your memory</strong>
+          <span>What makes a good memory file, how to organise a corpus that keeps growing, and what not to put in it.</span>
+          <em>→</em>
+        </a>
+      </li>
+      <li>
+        <a href="claude-code.html">
+          <strong>Claude Code</strong>
+          <span>Every tool the server exposes, and how to get Claude checking memory before it acts rather than after.</span>
+          <em>→</em>
+        </a>
+      </li>
+      <li>
+        <a href="calibration.html">
+          <strong>Calibration</strong>
+          <span>Measure, on your own corpus, how confident a result must be before RE-call answers from it.</span>
+          <em>→</em>
+        </a>
+      </li>
+      <li>
+        <a href="troubleshooting.html">
+          <strong>Troubleshooting</strong>
+          <span>The errors a first install produces most often, what each one actually means, and the fix.</span>
+          <em>→</em>
+        </a>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============================================================ Closer -->
+<section class="closer">
+  <div class="shell-narrow" data-reveal>
+    <h2>Start at step one.</h2>
+    <p>Two things to install, one command each, and a checkpoint after every step so you always know whether it worked.</p>
+    <a class="button" href="start.html">Start the install</a>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="shell footer-inner">
+    <nav>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+      <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
+    </nav>
+    <small>Apache 2.0</small>
+  </div>
+</footer>
+
 </body>
 </html>
