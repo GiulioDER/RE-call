@@ -80,3 +80,9 @@ requirements.lock.txt
 
 # Intermediate 2x renders from the docs/ figure generators, never shipped.
 docs/_*_2x.png
+
+# Per-checkout MCP client config. This file carries bearer tokens for the internal servers, and
+# this repository is public: on PyPI, on GitHub and in the MCP registry. It is generated per
+# checkout by `scripts/session-mcp.sh` from a secrets file that lives outside the tree, so the
+# tokens have no path into a commit even by accident. `.mcp.json.example` is the committed shape.
+.mcp.json

@@ -1,0 +1,29 @@
+{
+  "_comment": "Committed SHAPE only. The real .mcp.json is gitignored and generated per checkout by scripts/session-mcp.sh. Internal host addresses and bearer tokens both live in ~/.claude/recall-mcp-secrets.json, outside this tree, because this repository is public and a host inventory is disclosure even without credentials. Do not paste real hosts or tokens into this file.",
+  "mcpServers": {
+    "recall": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "recall_mcp.server"],
+      "env": {
+        "RECALL_DSN": "postgresql://recall:recall@127.0.0.1:5433/recall",
+        "RECALL_EMBEDDER": "fastembed"
+      }
+    },
+    "recall-memory": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "recall_mcp.server"],
+      "env": {
+        "RECALL_DSN": "postgresql://recall:recall@127.0.0.1:5433/recall",
+        "RECALL_EMBEDDER": "fastembed",
+        "RECALL_TENANT": "memory"
+      }
+    },
+    "an-internal-http-server": {
+      "type": "http",
+      "url": "http://HOST:PORT/mcp",
+      "headers": { "Authorization": "Bearer SUPPLIED_AT_GENERATION" }
+    }
+  }
+}
