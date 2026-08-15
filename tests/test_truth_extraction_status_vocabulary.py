@@ -289,10 +289,11 @@ def test_the_write_path_stays_closed_to_a_custom_vocabulary() -> None:
     name `final`, and that value still must not reach a user's memo, because the trust layer has
     no meaning for it.
 
-    Asserted on the API and on BEHAVIOUR, not on `inspect.getsource`. The source form went red
-    the moment anyone added a comment saying why the writer takes no vocabulary — the very note
-    this closure invites — and stayed green if the writer ever forwarded one under another
-    parameter name or through `**kwargs`.
+    Asserted on the API and on the WRITER'S OWN GUARD, not on `inspect.getsource`. The source
+    form went red the moment anyone added a comment saying why the writer takes no vocabulary —
+    the very note this closure invites — and stayed green if the writer ever forwarded one under
+    another parameter name. The behavioural half now drives `route_relation` with the status a
+    PEP-vocabulary run proposes, which no extraction-side parameter can widen.
     """
     import inspect
 
@@ -304,13 +305,15 @@ def test_the_write_path_stays_closed_to_a_custom_vocabulary() -> None:
     )
     assert "final" not in STATUS_VOCABULARY
 
-    # And the behaviour that closure exists to produce: a status outside the shipped set does not
-    # survive the path the writer actually runs.
-    with pytest.raises(ExtractionBatchRejected) as caught:
-        normalize_extraction(
-            PAYLOAD, file="pep-0376.rst", human_body=BODY, corpus_names=("pep-0376",)
-        )
-    assert caught.value.rung == "claim_shape"
+    # And the behaviour that closure exists to produce, asserted on the guard that a parameter
+    # CANNOT widen. The previous version re-asserted that `normalize_extraction` refuses `final`
+    # under the shipped default: true, but a fact about the ladder rather than about the writer,
+    # and green even if `rewrite.py` began forwarding a vocabulary. `route_relation` is where the
+    # value meets the corpus, and `plan_rewrite` reaches it.
+    from recall.rewrite import RewriteRefused, route_relation
+
+    with pytest.raises(RewriteRefused, match="unroutable_status"):
+        route_relation("declares_status", "pep-0376.rst", "status:final")
 
 
 class _RecordingEngine:
