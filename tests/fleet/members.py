@@ -56,7 +56,16 @@ DEPTH = 10
 
 
 def _rows(gold: str, rank: int | None, prefix: str, score: float) -> list[tuple[str, float]]:
-    """`DEPTH` rows with `gold` at 1-based `rank`, or absent from the list when `rank` is None."""
+    """`DEPTH` rows with `gold` at 1-based `rank`, or absent from the list when `rank` is None.
+
+    `rank` must be `None` or within `1..DEPTH`. Without this check, `rank <= 0` would silently
+    index `ids[-1]` via Python's negative-index wraparound and place `gold` at the LAST row
+    instead of raising, which is a fixture bug that would read exactly like a retrieval defect.
+    `rank > DEPTH` already fails loudly with `IndexError`; this makes both directions fail the
+    same way, on purpose, rather than leaving one of them to an accident of list indexing.
+    """
+    if rank is not None and not (1 <= rank <= DEPTH):
+        raise ValueError(f"rank must be None or within 1..{DEPTH}, got {rank}")
     ids = [f"{prefix}_{i}.md:0" for i in range(DEPTH)]
     if rank is not None:
         ids[rank - 1] = gold

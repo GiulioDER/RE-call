@@ -19,9 +19,27 @@ class ScriptedEmbedder:
     `embed_query` BEFORE `query_dense` on every search, so `last_query` is always the query
     currently being served.
 
-    `name` is set explicitly. `embedding_profile_id` falls back to `type(embedder).__name__`
-    when an embedder has neither `profile` nor `name`, and `_score_config` wraps this in
-    `TimedEmbedder`, so without it an `AblationResult` would be labelled "TimedEmbedder".
+    `name` is set explicitly to satisfy the `Embedder` protocol, whose docstring documents it as
+    identifying the backend, used in logging and evals. Two call sites read it, and it is worth
+    being precise about which one does what.
+
+    `_score_config` builds the returned `AblationResult` with
+    `embedder=embedding_profile_id(embedder)` (`harness.py:167`), using this raw, unwrapped
+    instance, never the `TimedEmbedder` wrapper. Without `name`, `embedding_profile_id` would
+    fall through `profile` (also absent here) to `type(embedder).__name__`, so the label would
+    read "ScriptedEmbedder", not "TimedEmbedder".
+
+    The label "TimedEmbedder" is reachable, but through a different field entirely:
+    `HybridRetriever` builds `RetrievalDiagnostics.embedding_profile` from `self._embedder`,
+    which `_score_config` sets to the `TimedEmbedder` wrapper. `TimedEmbedder.name` is a property
+    delegating to `self._inner.name`; if `ScriptedEmbedder` had no `name`, that property access
+    would raise `AttributeError`, which `embedding_profile_id`'s own `getattr(obj, "name", None)`
+    swallows, falling back to `type(embedder).__name__` on the wrapper this time. That is the
+    one field that would actually say "TimedEmbedder", and the fleet never reads it.
+
+    So the attribute is kept for a plainer reason: `ScriptedEmbedder` claims to satisfy the
+    `Embedder` protocol, and an implementation missing a property the protocol documents is a
+    fake that fails its own interface quietly.
     """
 
     dim = 4

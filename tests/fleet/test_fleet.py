@@ -5,7 +5,7 @@ import pytest
 
 from recall.eval.harness import _score_config
 from recall.eval.promotion.aggregate import decide
-from tests.fleet.members import SURFACE_A, SURFACE_B, FleetMember
+from tests.fleet.members import DEPTH, SURFACE_A, SURFACE_B, FleetMember, GateExpectation, _rows
 from tests.fleet.scripted import QueryKeyedStore, ScriptedEmbedder
 
 
@@ -47,8 +47,6 @@ def test_a_member_without_a_declared_blind_spot_is_refused():
     An optional field would be empty on every member within a month, and a fleet that does not
     state what it misses invites being read as covering more than it does.
     """
-    from tests.fleet.members import FleetMember
-
     with pytest.raises(ValueError, match="does_not_catch"):
         FleetMember(
             name="blank",
@@ -59,14 +57,54 @@ def test_a_member_without_a_declared_blind_spot_is_refused():
         )
 
 
+def test_a_gate_expectation_with_raises_and_promoted_is_refused():
+    """`raises` set together with `promoted` (or `failure_contains`) is refused.
+
+    The `raises` branch of the runner returns before checking either, so a stale value left on
+    one of them would silently never be checked. Modelled on
+    `test_a_member_without_a_declared_blind_spot_is_refused`.
+    """
+    with pytest.raises(ValueError, match="raises is set together with promoted"):
+        GateExpectation(raises=ValueError, promoted=True)
+
+
+def test_a_gate_expectation_with_raises_contains_but_no_raises_is_refused():
+    """`raises_contains` set without `raises` is refused: there is no exception to read from."""
+    with pytest.raises(ValueError, match="raises_contains is set without raises"):
+        GateExpectation(raises_contains="something")
+
+
+def test_a_gate_expectation_asserting_nothing_is_refused():
+    """None of `raises`, `promoted`, `failure_contains` set is refused.
+
+    A `GateExpectation` that asserts nothing would pass no matter what the gate did, which is
+    the exact silent-pass failure mode this fleet exists to catch.
+    """
+    with pytest.raises(ValueError, match="none of raises, promoted or failure_contains"):
+        GateExpectation()
+
+
+@pytest.mark.parametrize("rank", [0, -1, DEPTH + 1])
+def test_rows_rejects_a_rank_outside_1_to_depth(rank: int):
+    """`rank <= 0` must raise, not silently wrap around to `ids[-1]` via negative indexing.
+
+    `rank > DEPTH` is included too, so both directions of an out-of-range rank fail the same
+    explicit way rather than one of them being an accident of `IndexError`.
+    """
+    with pytest.raises(ValueError, match="rank must be None or within"):
+        _rows(gold="gold.md:0", rank=rank, prefix="filler", score=0.8)
+
+
 def run_surface_a(member: FleetMember) -> dict[str, float]:
     """Drive one member through the REAL scoring path and return the published fields."""
     queries, script = member.build()
     if not queries:
         raise ValueError(
-            f"{member.name} scored zero questions. A fixture that measured nothing must not "
-            f"read like a defect that was absent; `arm_check.EmptySampleError` sets the same "
-            f"precedent for an empty comparison."
+            f"{member.name} built an empty query list. A fixture that supplies no queries at "
+            f"all must not read like a defect that was absent; `arm_check.EmptySampleError` "
+            f"sets the same precedent for an empty comparison. This is distinct from a "
+            f"non-empty list that scores zero QUALITY questions, which `no-answerable-queries` "
+            f"deliberately does and must keep passing."
         )
     embedder = ScriptedEmbedder()
     store = QueryKeyedStore(embedder, script)

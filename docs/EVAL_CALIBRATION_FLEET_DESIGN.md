@@ -1,6 +1,6 @@
 # Eval calibration fleet: certifying that the harness reports the number it claims
 
-> Design, 2026-08-15. Status: approved, not yet implemented.
+> Design, 2026-08-15. Status: implemented, shipped on branch `claude/eval-calibration-fleet`.
 > Scope: `tests/fleet/`, covering `recall/eval/harness._score_config` and
 > `recall/eval/promotion/aggregate.py`. Test only, nothing ships in the wheel.
 
@@ -113,7 +113,7 @@ nDCG@10 = 1/log2(r+1)                 (idcg = 1/log2(2) = 1 for a single relevan
 | `boundary-rank-6` | gold one past the edge | `R@5 0.0`, `P@5 0.0`, `MRR 1/6`, `nDCG 1/log2(7)` | pins the exclusive edge. This repo has a documented history of 1-based and 0-based rank confusion, recorded in `metrics.latency_report`'s docstring |
 | `gold-dropper-half` | gold absent entirely on half the questions | `R@5 0.5`, `MRR 0.5`, `nDCG 0.5`, `P@5 0.1` | pins the mean over questions, not just the per-question value |
 | `guard-never-fires` | dense scores above threshold on every unanswerable query | `fcr_with_guard 1.0` | with the next row, pins the polarity of the `not g` negation inside `false_confident_rate` |
-| `guard-always-fires` | dense scores below threshold | `fcr_with_guard 0.0` | a polarity flip is invisible to any fixture that is symmetric in the two classes |
+| `guard-fires-on-half` | dense scores below threshold on half the unanswerable queries, above on the rest | `fcr_with_guard 0.5` | the interior point, not the 0.0 extreme, is what defeats a scorer that computes `any()`/`all()` instead of a mean over the class; the 0.0 extreme is already covered by every other member (all of which have `fcr_with_guard 0.0`) |
 | `no-answerable-queries` | declared blind spot, see below | `p_at_5 0.0` (current behaviour) | pins today's value and names the inconsistency |
 
 `gold-dropper-half` is built as 10 answerable queries, 5 with the gold at rank 1 and 5 with the gold
@@ -182,8 +182,8 @@ member's expected value ever has to be edited to make a test pass, that is a fin
 investigate, not a chore. The module docstring says so, because re-recording is how this kind of
 suite rots.
 
-Float comparison is `math.isclose` with an explicit absolute tolerance. `1/log2(6)` is irrational
-and an equality assert would be a lie about precision.
+Float comparison is `pytest.approx(expected, abs=1e-9)`, an explicit absolute tolerance either
+way. `1/log2(6)` is irrational and an equality assert would be a lie about precision.
 
 ## Failure modes the runner distinguishes
 
@@ -206,8 +206,10 @@ a fix and never shown to fail is a hypothesis rather than a guard. Two meta-test
 - **Surface A**: monkeypatch `recall_at_k` to return `1.0` unconditionally, assert the fleet goes
   red.
 - **Surface B**: monkeypatch `false_abstain_rate` to return `0.0` unconditionally, which makes the
-  safety axis unable to register a regression, and assert `safety-regressed` and `nan-safety-class`
-  go red.
+  safety axis unable to register a regression, and assert `safety-regressed` goes red (its
+  refusal, `"false abstention regresses"`, disappears and the candidate is wrongly promoted).
+  `nan-safety-class` raises on `gap_false_confident_rate`, a different function untouched by this
+  stub, so it is not part of this meta-test.
 
 If either mutation leaves the suite green, the fleet is decorative and that is the finding.
 
