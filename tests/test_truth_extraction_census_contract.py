@@ -184,9 +184,25 @@ def test_every_csv_item_has_a_key_entry():
     assert items == set(json.loads(KEY_PATH.read_text(encoding="utf-8")))
 
 
-def test_verdict_column_ships_blank():
-    rows = _csv_rows()
-    assert rows and all(row["your_verdict_Y_or_N"] == "" for row in rows)
+def test_the_builder_emits_a_blank_verdict_column():
+    """Asserted on the BUILDER, not on the committed pack, because the pack is now labelled.
+
+    This used to read `all(row["your_verdict_Y_or_N"] == "")` over the committed CSV, which was
+    right while the sheet was waiting for an adjudicator and became false the moment one filled it
+    in. Deleting it would have lost the property that still matters: a REBUILD must hand the next
+    adjudicator an empty column, never carry a previous round's verdicts forward, which is how a
+    labelling exercise quietly turns into a measurement of the last labelling exercise.
+
+    The committed pack's own verdicts are pinned separately, in
+    `tests/test_truth_extraction_adjudication.py`.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "benchmarks" / "labelling" / "truth_extraction" / "build_adjudication.py"
+    ).read_text(encoding="utf-8")
+    assert '"your_verdict_Y_or_N": ""' in source, (
+        "the builder must emit an empty verdict column, or a rebuild ships a pre-labelled sheet"
+    )
 
 
 def test_every_row_names_a_candidate_target():
