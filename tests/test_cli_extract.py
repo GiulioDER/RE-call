@@ -274,7 +274,7 @@ def test_the_cache_is_closed_and_reported_even_when_the_run_raises(
     monkeypatch.setattr(SqliteExtractionCache, "__init__", _tracking_init)
     monkeypatch.setattr(
         extract_mod,
-        "extract_corpus_claims",
+        "extract_corpus_claims_for_report",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
@@ -412,3 +412,169 @@ def test_a_refused_claim_is_reported_rather_than_hidden(tmp_path, monkeypatch, c
     out = capsys.readouterr().out
     assert "target_not_in_corpus" in out
     assert "0 claim(s) for review" in out
+
+
+class _FinalAlways:
+    """Answers `final` whatever it is asked, which is what the real model did on `python/peps`.
+
+    `DeterministicExtractionEngine` cannot reproduce the defect: it skips any status outside the
+    vocabulary it was handed, so under the shipped set it emits NO status claim rather than a
+    refused one. The batch refusal this flag exists to remove needs an engine that answers a word
+    it was not offered.
+    """
+
+    engine_id = "final-always"
+    model_id = "final-always"
+    revision = "r"
+
+    def run(self, prompt) -> str:
+        return (
+            '{"claims": [{"kind": "status", "value": "final", '
+            '"quote": "Status: Final"}]}'
+        )
+
+
+@pytest.fixture
+def pep_corpus(tmp_path):
+    """A document whose status word is outside the shipped memo set, plus a supersession."""
+    (tmp_path / "pep-0345.md").write_text(
+        "Status: Final\n\nThe original.\n", encoding="utf-8", newline="\n"
+    )
+    (tmp_path / "pep-0376.md").write_text(
+        "Status: Final\n\nThis PEP supersedes pep-0345.md after review.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return tmp_path
+
+
+def test_a_custom_vocabulary_admits_a_status_the_shipped_set_drops(
+    pep_corpus, monkeypatch, capsys
+):
+    """The defect, end to end at the CLI, in the direction the shipped engine can show."""
+    _enable(monkeypatch)
+    main(["extract", "run", str(pep_corpus)])
+    without = capsys.readouterr().out
+    assert "status" not in without, "the shipped vocabulary should not admit `Final`"
+
+    main(["extract", "run", str(pep_corpus), "--status-vocabulary", "Final,Rejected,Deferred"])
+    with_flag = capsys.readouterr().out
+    assert "status" in with_flag, "the custom vocabulary did not reach the prompt"
+    assert "supersession" in with_flag, "the supersession claim was lost"
+
+
+def test_the_flag_saves_the_other_claims_from_a_batch_refusal(
+    pep_corpus, monkeypatch, capsys
+):
+    """The measured failure: one out-of-vocabulary status refuses the file at a BATCH rung.
+
+    Driven with an engine that answers `final` regardless, because that is what the real model
+    did and what the shipped deterministic engine cannot do.
+    """
+    import recall.truth_extraction._engine as engine_mod
+
+    _enable(monkeypatch)
+    monkeypatch.setattr(engine_mod, "resolve_extraction_engine", lambda *a, **k: _FinalAlways())
+    monkeypatch.setattr(
+        "recall.truth_extraction.resolve_extraction_engine", lambda *a, **k: _FinalAlways()
+    )
+
+    main(["extract", "run", str(pep_corpus)])
+    assert "REFUSED" in capsys.readouterr().out, "the batch refusal is the defect being fixed"
+
+    main(["extract", "run", str(pep_corpus), "--status-vocabulary", "final,rejected"])
+    assert "REFUSED" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("Final,,Rejected", "blank once stripped"),
+        (",", "blank once stripped"),
+        ("", "blank once stripped"),
+        ("Final,FINAL", "differ only by case"),
+    ],
+)
+def test_a_degenerate_vocabulary_exits_2_rather_than_refusing_every_status(
+    corpus, monkeypatch, capsys, value, expected
+):
+    """Refused as the argument error it is, not carried into the ladder.
+
+    A comma split that strips and drops blanks — which is what the labelling runner does —
+    swallows exactly these. `Final,,Rejected` would pass quietly and `,` would become an empty
+    vocabulary that refuses every status claim at a BATCH rung: the original defect, re-entered
+    through the flag added to remove it.
+    """
+    _enable(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(["extract", "run", str(corpus), "--status-vocabulary", value])
+    assert exc.value.code == 2
+    assert expected in capsys.readouterr().err
+
+
+def test_a_one_word_vocabulary_is_a_list_not_a_string(corpus, monkeypatch, capsys):
+    """`Sequence[str]` accepts `str`, so a bare word would render `['f','i','n','a','l']`.
+
+    The split is what prevents it: `"final".split(",")` is `["final"]`. Accepted, not refused.
+    """
+    _enable(monkeypatch)
+    main(["extract", "run", str(corpus), "--status-vocabulary", "final"])
+    assert "final" in capsys.readouterr().out
+
+
+def test_the_vocabulary_is_refused_before_any_file_is_read(tmp_path, monkeypatch, capsys):
+    """Knowable at parse time, so it must not cost a corpus of model calls first.
+
+    Pointed at a path that does not exist: a bad vocabulary must lose the race to the missing
+    path, proving it is checked before the corpus is even looked at.
+    """
+    _enable(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(["extract", "run", str(tmp_path / "nope"), "--status-vocabulary", ","])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--status-vocabulary" in err, f"the path was checked first: {err}"
+
+
+def test_show_takes_the_flag_too(pep_corpus, monkeypatch, capsys):
+    """`show` carries the defect identically; a flag on `run` alone leaves the single-file
+    diagnostic unable to reproduce what `run` just did."""
+    _enable(monkeypatch)
+    main(
+        [
+            "extract",
+            "show",
+            str(pep_corpus / "pep-0376.md"),
+            "--status-vocabulary",
+            "Final,Rejected",
+        ]
+    )
+    assert "status" in capsys.readouterr().out
+
+
+def test_recheck_measures_against_the_same_vocabulary_it_warmed(
+    pep_corpus, tmp_path, monkeypatch, capsys
+):
+    """Not forwarded, every key misses and the report reads `checked=0`.
+
+    A determinism measurement that silently became a non-measurement, which is the failure mode
+    `recheck_cached_extractions` documents for exactly this argument.
+    """
+    _enable(monkeypatch)
+    db = str(tmp_path / "rc.sqlite3")
+    vocab = ["--status-vocabulary", "Final,Rejected"]
+    main(["extract", "run", str(pep_corpus), "--cache", db, *vocab])
+    capsys.readouterr()
+    main(["extract", "run", str(pep_corpus), "--cache", db, "--recheck", *vocab])
+    out = capsys.readouterr().out
+    assert "recheck: 0 checked" not in out, f"the recheck measured nothing: {out}"
+
+
+def test_the_report_names_a_non_default_vocabulary(pep_corpus, monkeypatch, capsys):
+    """Two runs whose outputs differ must say on screen why they differ."""
+    _enable(monkeypatch)
+    main(["extract", "run", str(pep_corpus), "--status-vocabulary", "Final,Rejected"])
+    assert "status vocabulary: Final, Rejected" in capsys.readouterr().out
+
+    main(["extract", "run", str(pep_corpus)])
+    assert "status vocabulary:" not in capsys.readouterr().out
