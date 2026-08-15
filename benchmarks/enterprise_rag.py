@@ -21,9 +21,9 @@ import subprocess
 import time
 import zipfile
 from io import TextIOWrapper
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, cast
@@ -34,7 +34,7 @@ from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.index import chunk_text
 from recall.retriever import SPARSE_BACKENDS, HybridRetriever
 from recall.store import PgVectorStore
-from recall.types import Chunk, ScoredChunk
+from recall.types import Chunk, ScoredChunk, TrustedResult
 
 DEFAULT_TABLE = "bench_enterprise_rag_chunks"
 DEFAULT_TENANT = "enterprise-rag"
@@ -442,6 +442,225 @@ def extractive_answer(question: str, hits: Sequence[ScoredChunk], *, max_chars: 
     return "\n\n".join(parts)
 
 
+#: What a library-arm row emits when the evidence boundary declines to answer. Library authored,
+#: fixed, and never interpolated, so no corpus byte reaches the submission through this path. It
+#: exists because the submission format needs a string and `insufficient_evidence=true` yields
+#: `answer=None`; the count is reported separately so an abstention is never mistaken for a
+#: wrong answer.
+LIBRARY_ABSTENTION = (
+    "The retrieved enterprise documents do not contain enough information to answer this question."
+)
+
+
+#: Ceiling on rows the evidence boundary refused, as a FRACTION of library-arm rows. Above it
+#: the arm is broken rather than selective, and a mean over the rows that happened to parse is a
+#: mean over a different population. Pre-registered as B3 in
+#: `results/enterprise_rag/PREREGISTRATION-library-parity.md`.
+LIBRARY_MAX_VALIDATION_FAILURE_RATE = 0.05
+
+
+def _new_library_tally() -> dict[str, Any]:
+    return {
+        "rows": 0,
+        "validation_failures": 0,
+        "insufficient_evidence": 0,
+        "generator_invoked": 0,
+        "citations_total": 0,
+        "answered_rows": 0,
+        "evidence_items": {},
+        "validation_error_samples": [],
+    }
+
+
+def _tally_library_row(tally: dict[str, Any], diagnostics: Mapping[str, Any]) -> None:
+    """Accumulate what the library arm actually did, so it can reach the manifest.
+
+    Without this the pre-registered B3 and B6 are unmeasurable and J3 and J5 have nothing to read:
+    `write_answers_stream` drops every `_`-prefixed key before writing, so the per-row diagnostics
+    existed only in memory and died with the process.
+    """
+    tally["rows"] += 1
+    if diagnostics.get("validation_error"):
+        tally["validation_failures"] += 1
+        if len(tally["validation_error_samples"]) < 10:
+            tally["validation_error_samples"].append(str(diagnostics["validation_error"]))
+        return
+    if diagnostics.get("generator_invoked"):
+        tally["generator_invoked"] += 1
+    if diagnostics.get("insufficient_evidence"):
+        tally["insufficient_evidence"] += 1
+    else:
+        tally["answered_rows"] += 1
+        tally["citations_total"] += int(diagnostics.get("citations") or 0)
+    items = diagnostics.get("evidence_items")
+    if items is not None:
+        key = str(items)
+        tally["evidence_items"][key] = tally["evidence_items"].get(key, 0) + 1
+
+
+def library_tally_summary(tally: Mapping[str, Any]) -> dict[str, Any]:
+    """The manifest block, with the rates the pre-registration predicts computed here."""
+    rows = int(tally.get("rows") or 0)
+    answered = int(tally.get("answered_rows") or 0)
+    failures = int(tally.get("validation_failures") or 0)
+    return {
+        **{key: tally[key] for key in tally if key != "validation_error_samples"},
+        "validation_failure_rate": round(failures / rows, 6) if rows else None,
+        "insufficient_evidence_rate": (
+            round(int(tally.get("insufficient_evidence") or 0) / rows, 6) if rows else None
+        ),
+        "mean_citations_per_answered_row": (
+            round(int(tally.get("citations_total") or 0) / answered, 4) if answered else None
+        ),
+        "validation_error_samples": tally.get("validation_error_samples", []),
+    }
+
+
+def refuse_a_broken_library_arm(tally: Mapping[str, Any]) -> None:
+    """Raise `SystemExit` when the library arm failed too often to have measured anything.
+
+    The pre-registered decision rule gives this precedence over every other row: above the
+    ceiling the result is an APPARATUS FAILURE and no number may be published. Asserted here
+    rather than left to a reader, because the alternative shape is the one this repository keeps
+    finding: a run that wrote a full file of empty answers, printed a success line and exited 0.
+    """
+    rows = int(tally.get("rows") or 0)
+    if not rows:
+        return
+    failures = int(tally.get("validation_failures") or 0)
+    rate = failures / rows
+    if rate > LIBRARY_MAX_VALIDATION_FAILURE_RATE:
+        samples = "; ".join(tally.get("validation_error_samples", [])[:3])
+        raise SystemExit(
+            f"APPARATUS FAILURE: {failures} of {rows} library rows "
+            f"({rate:.1%}) were refused by the evidence boundary, above the pre-registered "
+            f"ceiling of {LIBRARY_MAX_VALIDATION_FAILURE_RATE:.0%}. Publish no number from this "
+            f"run. First failures: {samples}"
+        )
+
+
+def _system_prompt_digest() -> str:
+    """SHA-256 of the exact system prompt bytes this run used.
+
+    A parity delta is only attributable while the prompt is fixed, and "the prompt is unchanged"
+    is precisely the kind of claim that rots silently. `SYSTEM_PROMPT` is a module constant, so a
+    later edit would move every arm's score with nothing in the artifact recording that anything
+    moved. The digest is the record.
+    """
+    import hashlib
+
+    from recall.evidence import SYSTEM_PROMPT
+
+    return hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()
+
+
+def trusted_result_from_hits(
+    question: str,
+    hits: Sequence[ScoredChunk],
+    *,
+    max_chars: int,
+    gap_warning: bool = False,
+) -> "TrustedResult":
+    """Project retrieved hits into the library's trusted shape WITHOUT re-running the trust layer.
+
+    ⚠️ This is a PARITY fixture, and the omission is the point. `recall.trust` applies a dense
+    cosine floor, and `results/enterprise_rag/dense_floor_strat100.retrieval.json` measures at
+    least 5.6% of questions below it, with `false_confident_rate_on_info_not_found = 1.0` at 0.50.
+    Running it here would change abstention behaviour and the `info_not_found` category, which
+    scores 100.0 and is a registered invariant. The parity arm changes the GENERATION leg and
+    nothing else; measuring the trust layer is a separate arm with its own prediction.
+
+    Every hit therefore enters as `verdict="ok"`, in retrieval order, with the same per-hit
+    character budget the bespoke harness applies, so the evidence TEXT reaching the model is the
+    same bytes in both arms and the delta cannot be a truncation difference.
+    """
+    from recall.types import Provenance, StalenessReport, TrustedHit, TrustedResult, Validity
+
+    trusted: list[TrustedHit] = []
+    used = 0
+    for hit in hits:
+        remaining = max_chars - used
+        if remaining <= 0:
+            break
+        text = " ".join(hit.chunk.text.split())[:remaining]
+        used += len(text)
+        trusted.append(
+            TrustedHit(
+                chunk=Chunk(
+                    id=hit.chunk.id,
+                    source=hit.chunk.source,
+                    text=text,
+                    metadata=dict(hit.chunk.metadata),
+                ),
+                cosine=hit.score,
+                confidence=hit.score,
+                verdict="ok",
+                provenance=Provenance(
+                    source=hit.chunk.source,
+                    file=str(hit.chunk.metadata.get("doc_id") or hit.chunk.source),
+                    ord=None,
+                    indexed_at=hit.indexed_at,
+                ),
+                validity=Validity(valid_from=None, valid_until=None, superseded_by=None),
+            )
+        )
+    return TrustedResult(
+        query=question,
+        hits=trusted,
+        abstained=not trusted,
+        reason="no hits retrieved" if not trusted else "",
+        gap_warning=gap_warning,
+        staleness=StalenessReport(
+            stale=False, newest_indexed_at=None, age=None, max_age=timedelta(days=3650)
+        ),
+    )
+
+
+def library_answer(
+    question: str,
+    hits: Sequence[ScoredChunk],
+    *,
+    provider: Callable[[str, str], str],
+    max_chars: int,
+    max_items: int,
+    gap_warning: bool = False,
+) -> tuple[str, dict[str, Any]]:
+    """Answer through `recall.evidence`, the product's generation boundary.
+
+    This is the whole point of the library arm: the submitted score has always measured a bespoke
+    harness that imports neither `recall.evidence` nor `recall.trust` nor `recall.reasoning` and
+    writes its own prompt. Here the prompt is `SYSTEM_PROMPT`, the framing is the delimited
+    evidence payload, and the reply clears `validate_answer` before it counts.
+
+    Returns the answer text and a diagnostics mapping. A validation failure is RECORDED rather
+    than raised, because one malformed reply must not discard 499 paid rows; the caller refuses
+    the whole run if the failure rate says the arm is broken rather than selective.
+    """
+    from recall.evidence import EvidencePolicy, EvidenceValidationError, generate_from_evidence
+
+    result = trusted_result_from_hits(
+        question, hits, max_chars=max_chars, gap_warning=gap_warning
+    )
+    try:
+        generated = generate_from_evidence(
+            result, provider, EvidencePolicy(max_items=max_items)
+        )
+    except EvidenceValidationError as exc:
+        return "", {"validation_error": str(exc), "generator_invoked": True}
+
+    envelope = generated.envelope
+    diagnostics: dict[str, Any] = {
+        "generator_invoked": generated.generator_invoked,
+        "evidence_items": len(generated.evidence.items),
+        "citations": len(envelope.citations),
+        "insufficient_evidence": envelope.insufficient_evidence,
+        "citations_normalized": generated.citations_normalized,
+    }
+    if envelope.insufficient_evidence or not envelope.answer:
+        return LIBRARY_ABSTENTION, diagnostics
+    return envelope.answer, diagnostics
+
+
 def generated_answer(
     question: str,
     hits: Sequence[ScoredChunk],
@@ -552,6 +771,9 @@ def _answers(
     sparse_encoder: object | None,
     reranker: object | None,
     gap_threshold: float,
+    answer_provider: Callable[[str, str], str] | None = None,
+    evidence_max_items: int | None = None,
+    tally: dict[str, Any] | None = None,
 ) -> Iterator[Mapping[str, Any]]:
     for question in questions:
         doc_ids, hits, gap_warning = retrieve_docs(
@@ -565,6 +787,7 @@ def _answers(
             reranker=reranker,
             gap_threshold=gap_threshold,
         )
+        diagnostics: dict[str, Any] = {"gap_warning": gap_warning}
         if mode == "openrouter":
             if not api_key:
                 raise RuntimeError("OPENROUTER_API_KEY is required for --answer-mode openrouter")
@@ -576,13 +799,34 @@ def _answers(
                 max_chars=max_chars,
                 question_type=_text(question.raw.get("question_type")),
             )
+        elif mode == "library":
+            if answer_provider is None:
+                raise RuntimeError(
+                    "--answer-mode library needs an answer provider. Set RECALL_REASONING=1 "
+                    "with RECALL_REASONING_API_KEY, or pass one in."
+                )
+            # ⚠️ `question_type` is NOT passed. The bespoke arm puts it in the prompt; the library
+            # arm has no channel for it, because `render_evidence_prompt` takes the bundle alone.
+            # Recorded here rather than quietly dropped: it is one of the enumerated differences
+            # the parity delta is decomposed against.
+            answer, library_diagnostics = library_answer(
+                question.question,
+                hits,
+                provider=answer_provider,
+                max_chars=max_chars,
+                max_items=evidence_max_items if evidence_max_items is not None else k,
+                gap_warning=gap_warning,
+            )
+            diagnostics.update(library_diagnostics)
+            if tally is not None:
+                _tally_library_row(tally, library_diagnostics)
         else:
             answer = extractive_answer(question.question, hits, max_chars=max_chars)
         yield {
             "question_id": question.question_id,
             "answer": answer,
             "document_ids": doc_ids,
-            "_diagnostics": {"gap_warning": gap_warning},
+            "_diagnostics": diagnostics,
         }
 
 
@@ -862,7 +1106,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--index-only", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--answer-mode", choices=("extractive", "openrouter"), default="extractive")
+    parser.add_argument(
+        "--answer-mode",
+        choices=("extractive", "openrouter", "library"),
+        default="extractive",
+        help="library routes generation through recall.evidence, the product boundary, "
+             "instead of this file's bespoke prompt",
+    )
+    parser.add_argument(
+        "--evidence-max-items",
+        type=int,
+        default=None,
+        help="EvidencePolicy.max_items for --answer-mode library. Defaults to --k, which "
+             "HOLDS THE ITEM COUNT CONSTANT against the bespoke arm; the shipped library "
+             "default is 5 and using it would confound the prompt delta with a context "
+             "size delta",
+    )
     parser.add_argument("--model", default=os.environ.get("ENTERPRISE_RAG_MODEL", DEFAULT_MODEL))
     parser.add_argument("--max-context-chars", type=int, default=DEFAULT_MAX_CHARS)
     parser.add_argument("--calibrate-retrieval-out", type=Path)
@@ -890,6 +1149,16 @@ def apply_top_config(args: argparse.Namespace) -> None:
     args.sparse_backend = TOP_CONFIG_SPARSE_BACKEND
     args.backfill_splade = True
     args.reranker = TOP_CONFIG_RERANKER
+    if args.answer_mode not in ("extractive", "openrouter"):
+        # `--top-config` pins the SUBMITTED configuration, whose answering arm is `openrouter`.
+        # Overwriting an explicit `--answer-mode library` silently charged the operator for a
+        # full run of the arm they were trying to replace, and the manifest then recorded
+        # `"mode": "openrouter"` with no hint that a different one had been asked for.
+        raise SystemExit(
+            f"--top-config pins --answer-mode openrouter, but --answer-mode "
+            f"{args.answer_mode} was given. Run the library arm without --top-config, "
+            f"passing the top-config retrieval flags explicitly."
+        )
     args.answer_mode = "openrouter"
     args.model = DEFAULT_MODEL
     args.max_context_chars = TOP_CONFIG_MAX_CHARS
@@ -906,15 +1175,31 @@ def main(argv: Iterable[str] | None = None) -> int:
     t0 = time.perf_counter()
     embedder = resolve_embedder(args.embedder)
     reranker = build_reranker(args.reranker, max_document_chars=args.rerank_document_chars)
+    answer_provider = None
+    library_tally = _new_library_tally()
     sparse_encoder: object | None = None
     questions = load_questions(args.questions, limit=args.limit_questions)
     all_questions = list(questions)
     existing_answer_rows: list[dict[str, Any]] = []
     if args.resume:
         existing_answer_rows = read_answer_rows(args.out)
+        # An empty answer is a FAILED row, not a finished one. `library_answer` returns ""
+        # when the evidence boundary refused the reply, and treating that as done baked the
+        # failure permanently into the submission: resuming skipped it and no rerun could
+        # repair it without hand-editing the file.
         existing_question_ids = {
-            str(row.get("question_id")) for row in existing_answer_rows if row.get("question_id")
+            str(row.get("question_id"))
+            for row in existing_answer_rows
+            if row.get("question_id") and str(row.get("answer") or "").strip()
         }
+        retryable = len(existing_answer_rows) - len(existing_question_ids)
+        existing_answer_rows = [
+            row
+            for row in existing_answer_rows
+            if str(row.get("question_id")) in existing_question_ids
+        ]
+        if retryable:
+            print(f"resume dropping {retryable} empty-answer row(s) for retry", flush=True)
         questions = [question for question in questions if question.question_id not in existing_question_ids]
         print(
             f"resume loaded existing_rows={len(existing_answer_rows)} "
@@ -986,6 +1271,22 @@ def main(argv: Iterable[str] | None = None) -> int:
                 accept_noncommercial_license=args.accept_noncommercial_splade_license,
                 device=args.sparse_device,
             )
+            if args.answer_mode == "library":
+                # Built HERE, not at startup: `--index-only` and `--calibrate-retrieval-out`
+                # return before this point, and constructing the provider up there made an
+                # indexing run refuse without an API key it would never have used.
+                #
+                # ⚠️ `RECALL_REASONING_MODEL` is overridden with `--model`. Without this the
+                # library arm answered with `DEFAULT_ANSWER_MODEL` while the baseline it is
+                # compared against used `--model`, so the "prompt delta" would have been a
+                # prompt delta PLUS a model swap. That is precisely the confound this whole
+                # parity exercise exists to avoid, and it was silent: the manifest recorded
+                # `"model": null` for library runs.
+                from recall.answer_provider import answer_provider_from_env
+
+                answer_provider = answer_provider_from_env(
+                    {**os.environ, "RECALL_REASONING_MODEL": args.model}
+                )
             written, new_answer_rows = write_answers_stream(
                 args.out,
                 _answers(
@@ -1002,12 +1303,18 @@ def main(argv: Iterable[str] | None = None) -> int:
                     sparse_encoder=sparse_encoder,
                     reranker=reranker,
                     gap_threshold=args.gap_threshold,
+                    answer_provider=answer_provider,
+                    evidence_max_items=args.evidence_max_items,
+                    tally=library_tally,
                 ),
                 overwrite=args.overwrite,
                 resume=args.resume,
             )
             answer_rows = [*existing_answer_rows, *new_answer_rows]
             retrieval_metrics = retrieval_summary(all_questions, answer_rows)
+            # AFTER the rows are on disk, so a refused run keeps its evidence, and BEFORE the
+            # manifest, so a refused run has no manifest to be mistaken for a result.
+            refuse_a_broken_library_arm(library_tally)
     manifest = {
         "benchmark": "EnterpriseRAG-Bench",
         "started_at": started,
@@ -1038,8 +1345,23 @@ def main(argv: Iterable[str] | None = None) -> int:
         },
         "answering": {
             "mode": args.answer_mode,
-            "model": args.model if args.answer_mode == "openrouter" else None,
+            "model": args.model if args.answer_mode in ("openrouter", "library") else None,
             "max_context_chars": args.max_context_chars,
+            # The library arm's identity and the knobs the parity comparison holds constant.
+            # Recorded because two committed EnterpriseRAG summaries carry `evaluator_options:
+            # null` and an empty judge block, so their configuration survives only in a filename.
+            "library": None if answer_provider is None else {
+                "provider_id": answer_provider.provider_metadata().provider_id,
+                "model_id": answer_provider.model_id,
+                "model_revision": answer_provider.revision,
+                "base_url": answer_provider.base_url,
+                "temperature": answer_provider.temperature,
+                "max_tokens": answer_provider.max_tokens,
+                "evidence_max_items": args.evidence_max_items
+                if args.evidence_max_items is not None else args.k,
+                "system_prompt_sha256": _system_prompt_digest(),
+                "tally": library_tally_summary(library_tally),
+            },
         },
         "outputs": {
             "answers": str(args.out),
