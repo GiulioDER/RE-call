@@ -8,7 +8,7 @@ this module is its first caller, and the reason the gate exists.
 trust layer acts on those and nothing else. This module writes into that block and adds no key to
 it — `FRONTMATTER_KEYS` *is* `VALIDITY_KEYS`, imported rather than restated, so the set cannot
 drift by someone editing this file. Relations the frontmatter has no vocabulary for
-(`contradicts`, `same_entity`, and a `status` no relation emits yet) go into the derived block: a
+(`contradicts`, `same_entity` and `status`) go into the derived block: a
 delimited, machine-owned region appended to the body, which `parse_frontmatter` sees as ordinary
 text and the trust layer therefore never mistakes for authored metadata. Inventing
 `contradicts:` as a fourth frontmatter key would have made the trust layer's input surface bigger
@@ -91,8 +91,10 @@ _log = get_logger("rewrite")
 #: name one that `recall/frontmatter.py` does not already recognise.
 FRONTMATTER_KEYS: tuple[str, ...] = VALIDITY_KEYS
 
-#: Everything the frontmatter has no vocabulary for. `status` is routable but no relation emits it
-#: yet: the routing table is the design, and leaving a hole in it invites a fourth frontmatter key.
+#: Everything the frontmatter has no vocabulary for. `status` was a hole here while the routing
+#: table was written on one branch and the relation that fills it on another; schema v2 closed it.
+#: `reasoning_proposals/_extracted.py` emits `declares_status` for a `StatusClaim`, and
+#: `route_relation` carries it to this key, so the chain is live end to end.
 DERIVED_KEYS: tuple[str, ...] = ("contradicts", "same_entity", "status")
 
 #: Derived keys that hold exactly one value, so a second declaration is a conflict rather than

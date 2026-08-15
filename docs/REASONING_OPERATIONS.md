@@ -16,8 +16,13 @@ Existing retrieval clients remain compatible.
 * Reasoning is explicit opt in. No retrieval command enters reasoning mode by omission.
 * Reasoning responses carry trust state, tenant id, generation id, calibration status, proposal
   status, refusal reason, and diagnostics.
-* Reasoning proposals are review candidates only. They are never promoted into corpus metadata by
-  the API, CLI, or MCP server.
+* Reasoning proposals are review candidates only. **No proposal is ever promoted automatically.**
+  The API and the MCP server cannot promote one at all: the MCP surface exposes
+  `recall_rewrite_plan` and deliberately no `recall_rewrite_apply`, because the MCP client is the
+  model. A reasoning proposal reaches corpus metadata through exactly one path, and it is human
+  driven: `recall rewrite apply` changes nothing without `--apply`, and `--apply` requires
+  `--reviewer` and `--note`, records the decision in a rejection ledger, and refuses a claim a
+  reviewer has already rejected. Nothing promotes on a retrieval, a query or a schedule.
 
 The core library does not require a managed database or a managed reasoning service. The core uses
 typed Python APIs and provider ports. PostgreSQL is one supported durable store for RE-call

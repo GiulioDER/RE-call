@@ -1,8 +1,14 @@
 # Truth extraction and reviewed rewrites: design, and the consolidation it starts from
 
-Status: **design approved, not yet implemented.** The unusual part of this document is its
-starting point. The feature described here has already been built three times, on three branches,
-none merged. The first deliverable is therefore not code but a decision about which of the three
+Status: **implemented and measured.** The extractor, the write path, the CLI, the MCP surface and
+the gold set are merged; the measurement is at
+`results/truth_extraction/PREREGISTRATION-prose-extraction.md`, and it is a **negative result**.
+Read that before extending anything here: the model failed the public bridge (P10, two of four
+transplanted fixtures proposed) and neither arm carried enough proposals to be given a tier.
+
+The unusual part of this document is its starting point, kept because it is the record of a
+decision. The feature described here had already been built three times, on three branches, none
+merged. The first deliverable was therefore not code but a decision about which of the three
 survives, and that decision is recorded here so the next session does not build a fourth.
 
 ## The problem
@@ -156,10 +162,13 @@ frontmatter key past `destination()`. And `supersedes` is the only row whose edi
 `object_id`; every other row edits `subject_id`. Getting that column wrong writes the right key
 onto the wrong document, which is a quieter failure than an inverted edge and no less wrong.
 
-The `status` hole in `DERIVED_KEYS` was left deliberately by `a7834c`, whose comment reads that
-`status` is routable but no relation emits it yet. Schema v2 is what emits it. The hole and the
-thing that fills it were built on separate branches by separate sessions, which is the clearest
-single argument for consolidating rather than continuing to build in parallel.
+The `status` hole in `DERIVED_KEYS` was left deliberately by `a7834c`, whose comment read that
+`status` is routable but no relation emits it yet. Schema v2 is what emits it, and the
+consolidation this document argued for is what joined them: `reasoning_proposals/_extracted.py`
+now returns `declares_status` for a `StatusClaim` and `route_relation` carries it to the key, so
+the chain is live. The hole and the thing that fills it were built on separate branches by
+separate sessions, which was the clearest single argument for consolidating rather than
+continuing to build in parallel.
 
 ### Direction
 
