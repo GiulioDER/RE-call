@@ -164,3 +164,27 @@ def test_surface_b_member_reaches_its_declared_verdict(member: FleetMember):
 
 def test_surface_b_has_six_members():
     assert len(SURFACE_B) == 6
+
+
+def test_the_fleet_detects_a_disabled_safety_axis(monkeypatch):
+    """Make the safety axis unable to register a regression and require the fleet to notice.
+
+    `safety-regressed` is the member that proves the safety axis can veto a candidate winning
+    on quality. If it still refuses with false_abstain_rate pinned to 0.0, it was refusing for
+    some other reason and the member is decorative.
+    """
+    import recall.eval.promotion.aggregate as aggregate
+
+    monkeypatch.setattr(aggregate, "false_abstain_rate", lambda *args, **kwargs: 0.0)
+
+    member = next(m for m in SURFACE_B if m.name == "safety-regressed")
+    decision, _document = run_surface_b(member)
+
+    assert not any("false abstention regresses" in f for f in decision.failures), (
+        "false_abstain_rate stubbed to 0.0 still produced a false-abstention failure, so "
+        "safety-regressed is not actually driven by that metric"
+    )
+    assert decision.promoted, (
+        "with the safety axis disabled this candidate wins on quality and should now be "
+        f"promoted; it still failed on {decision.failures}"
+    )
