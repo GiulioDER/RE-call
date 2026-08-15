@@ -12,7 +12,7 @@ repository's established convention: a pre-registration lives beside the results
 ```yaml
 registration_commit: 4f0a8c83a199367f1db9eb4ffd257902a7eb8573
 registration_authored: 2026-08-15T20:14:54+00:00
-frozen_evidence_digest: PENDING
+frozen_evidence_digest: 70715fcd64de564ac1fea1ffe54d90458265efaa0543be9f1a56fe425464d2f0
 frozen_anchors_digest: PENDING
 ```
 
@@ -150,3 +150,56 @@ Searched before predicting, so this is not a re-measurement.
 - **Anything about the benchmark score.** Eleven rows, no judge, no aggregate.
 - **Whether the trust layer should change.** It demotes; these rows need retention with a label.
   Untouched by design.
+
+---
+
+## Apparatus note, 2026-08-15: the freeze, and two deviations it forced
+
+**Appended before either arm ran. No prediction above is edited.** These are facts about the
+apparatus, discovered while building it, and the pre-registration's own rule is that predictions
+are never revised after measuring; recording what the instrument turned out to be is the opposite
+of that.
+
+`frozen_evidence_digest` is now filled: **`70715fcd…`**, 11 rows, 8 hits each. It verifies on a
+second machine with no index and no network, which is what apparatus check A6 needs.
+
+### Deviation 1: SPLADE runs on CPU, the submitted run used CUDA
+
+VPS2 has no GPU. `prune_to_top_k` takes a hard top-k over SPLADE weights, so device differences in
+the last bits flip terms across the pruning boundary and the candidate pool changes. **Forced, not
+chosen.**
+
+### Deviation 2: `--rerank-document-chars` is 3900, the submitted run used 4000
+
+At 4000 the Voyage reranker refuses the batch: the fused pool is 604,210 tokens against a 600,000
+ceiling, 0.7% over. I swept the setting and measured its effect on whether the gold documents
+survive into the frozen evidence, which is the property the experiment actually depends on:
+
+| `rerank_document_chars` | qst_0418 | qst_0419 | qst_0420 | qst_0425 |
+|---|---|---|---|---|
+| 2000 | 2/2 | 1/2 | 1/2 | **0/2** |
+| 3500 | 2/2 | 1/2 | 2/2 | 2/2 |
+| **3900, adopted** | **2/2** | **1/2** | **2/2** | **2/2** |
+
+⚠️ **At 2000 the fixture would have been useless and it would have looked fine.** `qst_0425` had
+NO gold document at all, so both arms would have scored near zero on it and the null would have
+been read as "the annotation does not help" when the truth is "the evidence was not there". The
+check that caught this cost nothing and is the reason it is worth doing before the arms, not after.
+
+### The consequence for `qst_0419`, stated now
+
+**`qst_0419` carries 1 of its 2 gold documents at every setting tried.** It cannot be recovered by
+tuning, so the remaining cause is deviation 1 or ordinary reranker nondeterminism. This matters
+beyond detection: with one of the two documents absent, **the conflict may not be present in the
+frozen evidence at all**, and a row with no conflict cannot demonstrate conflict resolution.
+
+`qst_0419` was already the named expected miss for S4, on the separate grounds that its successor
+says only "the updated requirements". It now has two independent reasons to miss. **S4's
+prediction of "exactly 3 of 4" is unchanged**, and the analysis will report `qst_0419` separately
+so the two reasons are not conflated with each other or with a genuine null.
+
+### What this does not damage
+
+Both arms read the same frozen bytes, so the A/B comparison is unaffected by either deviation. What
+the deviations cost is the claim that these rows reproduce their ORIGINAL failure: three of four
+do, on gold presence, and `qst_0419` does not.
