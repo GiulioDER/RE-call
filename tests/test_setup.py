@@ -1540,6 +1540,8 @@ def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
         ],
     )
     assert "RECALL_REASONING_BASE_URL=http://localhost:11434/v1" in env
+    assert "RECALL_REASONING_MODEL=qwen2.5" in env
+    assert f"RECALL_REASONING_API_KEY={LOCAL_API_KEY}" in env
 
 
 def test_a_malformed_base_url_does_not_end_the_interview(tmp_path, monkeypatch):
@@ -1572,8 +1574,6 @@ def test_a_malformed_base_url_does_not_end_the_interview(tmp_path, monkeypatch):
     assert "RECALL_REASONING_BASE_URL=http://[::1:11434/v1" in env
     assert "RECALL_REASONING_MODEL=qwen2.5" in env
     assert "retrieved evidence" in output  # it warned rather than staying silent
-    assert "RECALL_REASONING_MODEL=qwen2.5" in env
-    assert f"RECALL_REASONING_API_KEY={LOCAL_API_KEY}" in env
 
 
 def test_a_failing_probe_still_writes_the_configuration(tmp_path, monkeypatch):
