@@ -163,6 +163,12 @@ CSV_PATH = _TE / "adjudication.csv"
 KEY_PATH = _TE / "adjudication_key.json"
 
 
+#: ⚠️ `utf-8-sig` on BOTH files, here as well as in `tests/test_truth_extraction_adjudication.py`.
+#: "CSV UTF-8" writes a BOM, and the same tools edit the key. The named byte guard that REPORTS a
+#: BOM lives in the other file; these readers only have to survive one, so that a BOM is
+#: diagnosed once rather than raising `KeyError: 'item'` and `JSONDecodeError` from inside
+#: whichever test happened to open the file first. Moving one reader and not the other left
+#: exactly that hole open, one file over, on the round that set out to close it.
 def _csv_rows() -> list[dict[str, str]]:
     with CSV_PATH.open(encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
@@ -181,13 +187,13 @@ def test_blind_csv_leaks_no_arm_model_or_judge_column():
 
 def test_the_key_is_a_separate_file_from_the_csv():
     assert KEY_PATH.exists() and KEY_PATH != CSV_PATH
-    key = json.loads(KEY_PATH.read_text(encoding="utf-8"))
+    key = json.loads(KEY_PATH.read_text(encoding="utf-8-sig"))
     assert key, "key file is empty — nothing could be un-blinded after labelling"
 
 
 def test_every_csv_item_has_a_key_entry():
     items = {row["item"] for row in _csv_rows()}
-    assert items == set(json.loads(KEY_PATH.read_text(encoding="utf-8")))
+    assert items == set(json.loads(KEY_PATH.read_text(encoding="utf-8-sig")))
 
 
 def test_the_builder_emits_a_blank_verdict_column(tmp_path):
@@ -266,6 +272,220 @@ def test_the_builder_applies_the_injection_defence_when_it_writes(tmp_path):
     assert not any(e["evidence_sentence"].startswith("'") for e in stored.values()), (
         "the key must store the raw sentence, not the injection-defended form"
     )
+
+
+@pytest.mark.parametrize(
+    "out",
+    ["adjudication", "adjudication.v2", "round2.2026-08-15", "pack.csv"],
+)
+def test_the_two_halves_of_a_pack_always_share_a_stem(tmp_path, out: str):
+    """One stem, two files. They were derived by two incompatible rules.
+
+    `out.with_suffix(".csv")` replaces the last dotted component while `out.name + "_key.json"`
+    appends to the whole name. So `--out round2.2026-08-15` wrote `round2.csv` beside
+    `round2.2026-08-15_key.json`: halves sharing no stem, so the obvious sibling lookup finds
+    nothing. And `--out adjudication.v2` resolved its CSV to `adjudication.csv`, which is the
+    committed, human-labelled pack.
+    """
+    from benchmarks.labelling.truth_extraction.build_adjudication import pack_paths
+
+    csv_path, key_path = pack_paths(tmp_path / out)
+    assert csv_path.suffix == ".csv"
+    assert key_path.name == csv_path.name[: -len(".csv")] + "_key.json", (
+        f"{csv_path.name} and {key_path.name} do not name one pack"
+    )
+
+
+def test_a_rebuild_refuses_to_replace_an_existing_pack(tmp_path):
+    """`main`'s default --out IS the committed pack, and a rebuild silently truncated it.
+
+    Reproduced before this guard: running the builder from the repo root took the labelled CSV
+    from 5808 bytes to 108 and its 37 verdicts to 0, exit code 0, output "1 items". The
+    row-count test tells an operator to set RECALL_PEPS_DIR and rebuild, which is that exact
+    invocation. Git tracked the file, so it was recoverable. That is luck, not a design.
+    """
+    from benchmarks.labelling.truth_extraction.build_adjudication import build_rows, write_pack
+
+    rows, key = build_rows(_formula_corpus(tmp_path), seed=0, limit=None)
+    out = tmp_path / "pack"
+    csv_path, _ = write_pack(rows, key, out)
+    labelled = csv_path.read_text(encoding="utf-8").replace(",\n", ",Y\n")
+    csv_path.write_text(labelled, encoding="utf-8", newline="")
+
+    with pytest.raises(SystemExit, match="--force"):
+        write_pack(rows, key, out)
+    assert csv_path.read_text(encoding="utf-8") == labelled, "the verdicts were overwritten"
+
+    write_pack(rows, key, out, force=True)  # and --force still works
+    assert csv_path.read_text(encoding="utf-8") != labelled
+
+
+@pytest.mark.parametrize("when", ["staging", "replacing"])
+@pytest.mark.parametrize("failure", [OSError("no space left on device"), KeyboardInterrupt()])
+@pytest.mark.parametrize("preexisting", [False, True], ids=["fresh", "over-a-labelled-pack"])
+def test_a_failed_key_write_never_leaves_a_mismatched_pack(
+    tmp_path, monkeypatch, failure: BaseException, preexisting: bool, when: str
+):
+    """Item numbers restart at 1 in every build.
+
+    So a new CSV beside a previous run's key is not a broken pack, it is a pack whose un-blinding
+    record attributes every sentence to the WRONG source PEP, and nothing about it looks wrong.
+
+    ⚠️ Both parameters exist because the first version of this test had neither, and each hid a
+    defect that destroyed adjudicated work:
+
+    - It ran on a FRESH path only, so `assert not key_path.exists()` could not fail (the key was
+      never written) and the `--force` path was untested. On that path the rollback deleted the
+      human-labelled CSV outright: `os.replace` had already overwritten it, and the unlink then
+      removed the only remaining copy, leaving the OLD key behind.
+    - It raised only `OSError`, so `except Exception` looked correct. Ctrl-C during the key write
+      is the likeliest interruption there is, and it skipped the rollback entirely.
+    """
+    import benchmarks.labelling.truth_extraction.build_adjudication as builder
+
+    rows, key = builder.build_rows(_formula_corpus(tmp_path), seed=0, limit=None)
+    out = tmp_path / "pack"
+    csv_path, key_path = builder.pack_paths(out)
+
+    before: bytes | None = None
+    if preexisting:
+        builder.write_pack(rows, key, out)
+        # Labelled, so a loss is visible as a loss rather than as an identical rebuild.
+        csv_path.write_text(
+            csv_path.read_text(encoding="utf-8").replace(",\n", ",Y\n"),
+            encoding="utf-8",
+            newline="",
+        )
+        before = csv_path.read_bytes()
+        assert b"Y" in before, "the fixture must carry a verdict, or a loss is invisible"
+
+    # ⚠️ BOTH injection points, because they reach different guards and each version of this test
+    # had only one. Failing at STAGING never replaces the CSV, so it exercises the scratch-file
+    # cleanup and leaves the rollback untouched — three separate mutations of the rollback were
+    # green under it. Failing at the second REPLACE is the state that matters: the CSV landed and
+    # the key did not.
+    if when == "staging":
+        real_stage = builder._stage
+
+        def _fail_stage(path, text):
+            if path.name.endswith("_key.json"):
+                raise failure
+            return real_stage(path, text)
+
+        monkeypatch.setattr(builder, "_stage", _fail_stage)
+    else:
+        real_replace = builder.os.replace
+
+        def _fail_replace(src, dst):
+            if str(dst).endswith("_key.json"):
+                raise failure
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(builder.os, "replace", _fail_replace)
+
+    with pytest.raises(type(failure)):
+        builder.write_pack(rows, key, out, force=preexisting)
+    monkeypatch.undo()
+
+    if preexisting:
+        assert csv_path.read_bytes() == before, "the labelled pack was destroyed by a rebuild"
+    else:
+        assert not csv_path.exists(), "a blind CSV was left with no key that can un-blind it"
+        assert not key_path.exists()
+    # And no scratch file survives either. A fixed `<target>.tmp` name was shared by two
+    # concurrent builds, so one run's rename could commit the other run's bytes.
+    assert not list(tmp_path.glob("*.tmp")), f"staging files left behind: {list(tmp_path.iterdir())}"
+
+
+def test_two_builds_of_one_pack_do_not_share_a_staging_file(tmp_path):
+    """A fixed `<target>.tmp` is shared, so one run's rename commits the other run's bytes.
+
+    That produces a CSV beside the wrong key, which is the state the whole write path exists to
+    prevent, and it needs no crash to happen: two builds of the same `--out` are enough.
+    """
+    from benchmarks.labelling.truth_extraction.build_adjudication import _stage
+
+    target = tmp_path / "pack.csv"
+    first, second = _stage(target, "a"), _stage(target, "b")
+    try:
+        assert first != second, "two builds of one pack share a staging file"
+        assert first.read_text(encoding="utf-8") == "a", "the second build overwrote the first"
+    finally:
+        first.unlink(missing_ok=True)
+        second.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("out", ["", ".", "C:/"])
+def test_an_out_that_names_no_file_is_refused_with_a_sentence(out: str):
+    """And before the census runs, which is why `main` calls `pack_paths` first.
+
+    `Path("").name` is empty and `with_name` then raises `ValueError: WindowsPath('.') has an
+    empty name` — after a walk of 733 files, and with no mention of `--out`.
+    """
+    from benchmarks.labelling.truth_extraction.build_adjudication import pack_paths
+
+    with pytest.raises(SystemExit, match="names no file"):
+        pack_paths(Path(out))
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_a_limit_below_one_is_refused_rather_than_reinterpreted(tmp_path, limit: int):
+    """`if limit:` read 0 as "no cap" and -1 as `candidates[:-1]`, both silently."""
+    from benchmarks.labelling.truth_extraction.build_adjudication import build_rows
+
+    with pytest.raises(ValueError, match="at least 1"):
+        build_rows(_formula_corpus(tmp_path), seed=0, limit=limit)
+
+
+def test_the_builder_refuses_a_key_that_does_not_cover_the_rows(tmp_path):
+    """The invariant every reader assumes, asserted where the pack is MADE."""
+    from benchmarks.labelling.truth_extraction.build_adjudication import build_rows, write_pack
+
+    rows, key = build_rows(_formula_corpus(tmp_path), seed=0, limit=None)
+    key.pop(rows[0]["item"])
+    with pytest.raises(ValueError, match="exactly the CSV's items"):
+        write_pack(rows, key, tmp_path / "pack")
+
+
+@pytest.mark.parametrize(
+    ("item", "int_parses"),
+    [
+        ("", False),
+        # 128 non-ASCII characters satisfy `str.isdigit()` and still raise from `int()`. This is
+        # the case the first version of the guard missed, so it passed and the digest test then
+        # produced the bare `ValueError: invalid literal for int()` the guard exists to prevent.
+        ("³", False),
+        ("1.0", False),
+        # Stricter than `int()` on purpose: `int(" 1")` succeeds, but a padded item cell is
+        # spreadsheet damage, and the digest sorts on these.
+        (" 1", True),
+    ],
+)
+def test_a_malformed_item_cell_is_named_by_the_shape_guard(item: str, int_parses: bool):
+    """Applied as DATA, because the committed pack carries no such cell.
+
+    Deleting the guard alone changes nothing observable and reads as a survivor that says
+    nothing about it: the corruption has to reach the predicate for the predicate to be measured.
+    """
+    import csv as _csv
+
+    from tests.test_truth_extraction_adjudication import CSV_PATH, malformed_item_cells
+
+    with CSV_PATH.open(encoding="utf-8-sig", newline="") as handle:
+        parsed = list(_csv.reader(handle))
+    parsed[3][0] = item
+
+    # THE guard's predicate, imported rather than restated. The first version of this test copied
+    # the condition into its own body, so removing `isascii()` from the real guard left it green:
+    # a guard's test asserting on its own copy of the guard is the defect this file has now hit
+    # three times. Asserting through the real test function instead would need the committed file
+    # mutated on disk, and this pack is irreplaceable human work.
+    assert malformed_item_cells(parsed[1:]) == [item], (
+        f"the shape guard's predicate accepts {item!r}"
+    )
+    if not int_parses:
+        with pytest.raises(ValueError):
+            int(item)
 
 
 def _formula_corpus(tmp_path):

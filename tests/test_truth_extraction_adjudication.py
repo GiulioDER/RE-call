@@ -19,9 +19,15 @@ adjudicator's familiarity with the corpus.
 The two files hold the same sentences in DIFFERENT forms, deliberately: the CSV carries the
 `_csv_safe` injection-defended form, the key carries the raw sentence. Comparing them raw reads
 the defence as damage — it did, and a "repair" stripped the apostrophe off four cells before
-anything caught it. Every comparison here goes through `_csv_safe`, and
-`test_the_key_stores_raw_sentences` guards the mirror image, which is repairing the KEY to match
-the CSV.
+anything caught it.
+
+So exactly ONE test owns the apostrophe.
+`test_the_formula_injection_defence_survives_a_round_trip_through_a_spreadsheet` reports a
+stripped one; `test_the_key_stores_raw_sentences` reports the mirror, a repair that went the
+wrong way. Every other comparison accepts either form, through `_matches_key`, so a spreadsheet
+round trip produces one failure naming a spreadsheet rather than four naming the mapping, the
+evidence and the digest. The frozen digest reads its sentences from the KEY, where no defence is
+ever applied and the question of which form is present does not arise.
 
 Follows `tests/test_beam_blind_labelling.py`, which pins the same properties for the BEAM pack.
 """
@@ -54,7 +60,11 @@ BOM = b"\xef\xbb\xbf"
 #: in both the CSV and the key, leave the verdict column untouched, and every label now answers
 #: the wrong question while the digest is unchanged. Mutation confirmed that passed. Binding the
 #: sentence in is what makes this pin the adjudication rather than just its right-hand column.
-ANSWERED_DIGEST = "f2b5d6969b6515b146a459a98bf8ae1efbaa5157caf50c257ab632d0569d27a3"
+#:
+#: Taken over `_undefended` cells, so a spreadsheet stripping the injection apostrophe is
+#: reported by the test that can name that cause rather than by this one, which would tell the
+#: reader to re-adjudicate a pack whose labels had not moved.
+ANSWERED_DIGEST = "12d8df9c16e5b9257e5c997ca4f9e36bf7f52dbc3089542db8eeffe1fa2f8093"
 
 #: The row the adjudicator could not decide. Named, because the argument for keeping a blank is
 #: that THIS candidate is undecidable, not that some unspecified one is.
@@ -69,6 +79,40 @@ UNDECIDABLE_ITEM = "7"
 #: 10 rows of a pack with zero positives scores 0.00 at n=10, which is decisive rather than
 #: underpowered. An earlier version of this constant cited that clause and was wrong about it.
 MIN_POSITIVES = 8
+
+
+def malformed_item_cells(parsed: list[list[str]]) -> list[str]:
+    """Item cells the digest's `int(...)` must not be handed. ONE definition.
+
+    Exported rather than inlined in the shape test, because the corruption that triggers it is
+    not in the committed pack: a test applying the corruption has to reach THIS predicate, and
+    the version that copied the condition into its own body asserted on its copy and stayed
+    green when the real guard lost `isascii()`.
+
+    `isascii()` as well as `isdigit()`: 128 non-ASCII characters satisfy `str.isdigit()` and
+    still raise from `int()`, U+00B3 SUPERSCRIPT THREE among them. Stricter than `int()` in the
+    other direction too — `int(" 1")` succeeds, and a padded item cell is spreadsheet damage the
+    digest's sort would silently accept.
+    """
+    return [row[0] for row in parsed if not (row[0].isascii() and row[0].isdigit())]
+
+
+def _matches_key(cell: str, stored: str) -> bool:
+    """A CSV cell holds its key entry, defended or not. Either is correct; both are the sentence.
+
+    The CSV carries `_csv_safe`'s apostrophe and the key carries the raw sentence, so a raw
+    compare reads the defence as corruption — it did, and a "repair" stripped four cells. The
+    fix for that compared against `_csv_safe(stored)`, which left the mirror: a spreadsheet
+    STRIPPING the apostrophe then failed here too, with a message about the mapping, when one
+    test already names the spreadsheet. Accepting both forms lets exactly one test own the
+    apostrophe and leaves this one owning the sentence.
+
+    Deliberately not a `_undefended(cell) == stored` normalisation, which was the previous
+    attempt: `'` is not itself a formula lead, so an author writing `'-1' as a sentinel ...`
+    produces a cell the builder does NOT defend and that normalisation strips anyway. A freshly
+    built, uncorrupted pack then failed four tests, each naming the wrong cause.
+    """
+    return cell in {stored, _csv_safe(stored)}
 
 
 def _raw() -> bytes:
@@ -88,11 +132,19 @@ def _key() -> dict[str, dict[str, str]]:
 
 
 def test_the_file_is_shaped_before_anything_reads_it_as_a_pack() -> None:
-    """A mangled file must fail with a sentence, not a KeyError raised inside another test.
+    """A mangled file must NAME its damage, alongside whatever else it breaks.
 
-    A spreadsheet round trip damages this file in two ways that used to surface as raw
+    A spreadsheet round trip damages this file in ways that used to surface only as raw
     `KeyError: 'item'`, `AttributeError: NoneType has no strip`, and `TypeError: sequence item 3`
     across five tests: a BOM on the header, and a dropped trailing field on the blank row.
+
+    ⚠️ The claim is "names the cause", not "is the only failure". An earlier docstring here said
+    a mangled file must fail with a sentence *instead of* a KeyError inside another test, which
+    a test cannot deliver: pytest does not stop at the first failure, so this guard ADDS a named
+    failure and suppresses none of the unnamed ones. Measured: a key rewritten as a list fires
+    this test plus eight others carrying bare TypeErrors. Delivering the stronger claim would
+    mean validating in `_rows`/`_key` themselves, or in an autouse fixture raising
+    `pytest.UsageError`, which is a different design and not what is here.
     """
     raw = _raw()
     assert not raw.startswith(b"\xef\xbb\xbf"), "a BOM means a spreadsheet rewrote this file"
@@ -104,6 +156,13 @@ def test_the_file_is_shaped_before_anything_reads_it_as_a_pack() -> None:
     assert parsed[0] == ["item", "evidence_sentence", "candidate_target", "your_verdict_Y_or_N"]
     for line, row in enumerate(parsed[1:], start=2):
         assert len(row) == 4, f"line {line} has {len(row)} fields, not 4"
+    # Numeric, because the digest sorts on `int(row["item"])`. A blanked item cell keeps the row
+    # at four fields, so it passed the check above and then raised a bare
+    # `ValueError: invalid literal for int()` with no message from inside the freeze test — the
+    # exact shape this guard exists to prevent, one line into the code that added it. The
+    # predicate is `malformed_item_cells`, shared with the test that applies the corruption.
+    malformed = malformed_item_cells(parsed[1:])
+    assert not malformed, f"item cells that are not plain digits: {malformed}"
 
     # The key is edited by the same tools and was not covered: a BOM there raised
     # JSONDecodeError from inside four unrelated tests, none of which named the cause.
@@ -117,14 +176,27 @@ def test_the_file_is_shaped_before_anything_reads_it_as_a_pack() -> None:
     # happened to subscript it first. The three keys are named here because every consumer below
     # subscripts all three.
     key = _key()
-    assert isinstance(key, dict), f"the key must be an object keyed by item, not {type(key).__name__}"
-    malformed = {
-        item: sorted(entry) if isinstance(entry, dict) else type(entry).__name__
-        for item, entry in key.items()
-        if not isinstance(entry, dict)
-        or set(entry) != {"source_pep", "candidate_target", "evidence_sentence"}
-    }
-    assert not malformed, f"key entries are not (source_pep, candidate_target, evidence_sentence): {malformed}"
+    assert isinstance(key, dict), (
+        f"the key must be an object keyed by item, not {type(key).__name__}"
+    )
+    fields = {"source_pep", "candidate_target", "evidence_sentence"}
+    malformed = {}
+    for item, entry in key.items():
+        if not isinstance(entry, dict):
+            malformed[item] = type(entry).__name__
+        elif set(entry) != fields:
+            malformed[item] = sorted(entry)
+        else:
+            # VALUES, not only names. Checking the field set alone left the failure this guard
+            # names half open: a null `evidence_sentence` satisfies it and then surfaces as
+            # `AttributeError: NoneType has no startswith` and `_csv_safe(None)` across four
+            # other tests, none of which say what is wrong.
+            wrong = {k: type(v).__name__ for k, v in entry.items() if not isinstance(v, str)}
+            if wrong:
+                malformed[item] = wrong
+    assert not malformed, (
+        f"key entries must map {sorted(fields)} to strings; these do not: {malformed}"
+    )
 
 
 def test_the_committed_verdicts_are_frozen() -> None:
@@ -139,11 +211,19 @@ def test_the_committed_verdicts_are_frozen() -> None:
     # numerically. A spreadsheet "sort by sentence" is a routine thing to do to a file handed to
     # a human, and it changes no label: it must fail with its own message rather than with one
     # telling the reader to re-adjudicate.
+    key = _key()
     ordered = sorted(rows, key=lambda r: int(r["item"]))
+    # The SENTENCE is read from the KEY and the VERDICT from the CSV, which is what "the question
+    # and the answer it was given" actually means here. Hashing the CSV's own sentence forced a
+    # choice between two wrong things: hash the defended form, and a spreadsheet stripping the
+    # apostrophe reports "re-adjudicate" for a pack whose labels never moved; strip it first, and
+    # an apostrophe a PEP author WROTE is erased from the digest. The key holds the raw sentence
+    # and no defence at all, so the ambiguity does not exist there. The CSV/key correspondence is
+    # a separate property with its own two tests.
     joined = "".join(
         f"{r['item']}="
-        f"{hashlib.sha256(r['evidence_sentence'].encode('utf-8')).hexdigest()[:12]}:"
-        f"{r['candidate_target']}="
+        f"{hashlib.sha256(key[r['item']]['evidence_sentence'].encode('utf-8')).hexdigest()[:12]}:"
+        f"{key[r['item']]['candidate_target']}="
         f"{r['your_verdict_Y_or_N'].strip()};"
         for r in ordered
     )
@@ -229,11 +309,10 @@ def test_the_key_carries_the_mapping_the_csv_withholds() -> None:
     assert set(key) == {row["item"] for row in rows}, "the key must cover exactly the CSV's items"
     for row in rows:
         entry = key[row["item"]]
-        # `_csv_safe`, not a raw compare. The CSV carries the injection-defended form and the key
-        # carries the raw sentence, so they are SUPPOSED to differ on any cell opening with a
-        # formula character. A raw compare reads that defence as corruption — it did.
-        assert _csv_safe(entry["evidence_sentence"]) == row["evidence_sentence"], row["item"]
-        assert _csv_safe(entry["candidate_target"]) == row["candidate_target"], row["item"]
+        # Either form of the cell is this key entry: see `_matches_key`. Exactly one test owns
+        # the apostrophe, and it is not this one.
+        assert _matches_key(row["evidence_sentence"], entry["evidence_sentence"]), row["item"]
+        assert _matches_key(row["candidate_target"], entry["candidate_target"]), row["item"]
         # Shape only, and the message says so. A well-formed but WRONG stem still passes:
         # verifying attribution needs the corpus, and the only corpus-gated test here skips
         # without RECALL_PEPS_DIR. Claiming more than this checks is how the previous version
@@ -295,12 +374,18 @@ def test_the_formula_injection_defence_survives_a_round_trip_through_a_spreadshe
 
 @pytest.mark.parametrize("column", ["item", "evidence_sentence", "candidate_target"])
 def test_labelling_did_not_edit_the_evidence(column: str) -> None:
-    """The sentence and target are the question. Editing them changes what was adjudicated."""
+    """The sentence and target are the question. Editing them changes what was adjudicated.
+
+    Through `_matches_key`, because a stripped injection apostrophe is not an edit to the
+    evidence: it is a spreadsheet's own escape handling, the text underneath is unchanged, and
+    saying "evidence_sentence changed" about it sends the reader to re-check an adjudication
+    that did not move. That cause has its own test, which names the spreadsheet.
+    """
     key = _key()
     for row in _rows():
         if column == "item":
             assert row["item"] in key
         else:
-            assert row[column] == _csv_safe(key[row["item"]][column]), (
+            assert _matches_key(row[column], key[row["item"]][column]), (
                 f"item {row['item']}: {column} changed"
             )
