@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Install RE-call · Setup guide</title>
-<meta name="description" content="The complete RE-call install path in eight steps: start the database, install the package, create the tables, run the wizard, index your first memory, and connect Claude Code.">
+<meta name="description" content="The complete RE-call install path in seven steps: start the database, install the package, run the wizard, index your first memory, and connect Claude Code.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
@@ -30,7 +30,7 @@
 
 <section class="shell" style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(2rem, 5vw, 3.5rem);">
   <p class="eyebrow">The install path</p>
-  <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 18ch; margin-bottom: 1.5rem;">Eight steps from nothing to a memory that answers you.</h1>
+  <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 18ch; margin-bottom: 1.5rem;">Seven steps from nothing to a memory that answers you.</h1>
   <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
   <p class="lede">Do them in order. Each one gives you something you can check before moving on, so you never get three steps deep before finding out something went wrong.</p>
 </section>
@@ -43,14 +43,13 @@
     <ol>
       <li><a href="#step-1">Start the database</a></li>
       <li><a href="#step-2">Install RE-call</a></li>
-      <li><a href="#step-3">Create the tables</a></li>
-      <li><a href="#step-4">Run the setup wizard</a></li>
-      <li><a href="#step-5">Let it answer you</a></li>
-      <li><a href="#step-6">Give it a memory</a></li>
-      <li><a href="#step-7">Ask, and watch it refuse</a></li>
-      <li><a href="#step-8">Connect Claude Code</a></li>
+      <li><a href="#step-3">Run the setup wizard</a></li>
+      <li><a href="#step-4">Let it answer you</a></li>
+      <li><a href="#step-5">Give it a memory</a></li>
+      <li><a href="#step-6">Ask, and watch it refuse</a></li>
+      <li><a href="#step-7">Connect Claude Code</a></li>
     </ol>
-    <p class="rail-progress" data-rail-progress>Step 1 of 8</p>
+    <p class="rail-progress" data-rail-progress>Step 1 of 7</p>
   </aside>
 
   <div>
@@ -236,7 +235,7 @@
             <summary>What the square brackets mean, and the other options</summary>
             <div class="why-body">
               <p>The brackets are optional extras. Plain <code>recall-rag</code> installs with no embedding model at all, which leaves you with a placeholder that is only useful for testing plumbing. <code>[fastembed]</code> adds the local model this guide uses, roughly 130 MB, downloaded the first time you index something.</p>
-              <p>Others exist for later: <code>[mcp]</code> for the Claude Code server in step 8, <code>[rerank]</code> for a quality upgrade on results, <code>[voyage]</code> for a cloud embedder. You can add them at any time by re-running the install with a longer bracket list.</p>
+              <p>Others exist for later: <code>[mcp]</code> for the Claude Code server in step 7, <code>[rerank]</code> for a quality upgrade on results, <code>[voyage]</code> for a cloud embedder. You can add them at any time by re-running the install with a longer bracket list.</p>
             </div>
           </details>
 
@@ -248,71 +247,15 @@
       <section id="step-3" class="step" data-reveal>
         <div class="step-head">
           <span class="step-number">03</span>
-          <h2>Create the tables</h2>
-        </div>
-        <div class="step-body">
-          <p class="step-what">The database is running but empty. This creates the tables RE-call stores memory in, and switches on the <code>vector</code> extension for you.</p>
-
-          <div class="terminal terminal--command" data-os-group data-shell="posix">
-            <div class="terminal-bar">
-              <div class="terminal-tabs" role="tablist" aria-label="Operating system">
-                <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
-                <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
-                <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
-              </div>
-              <button class="copy-button" type="button">Copy</button>
-            </div>
-            <div class="terminal-body">
-              <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span></pre></div>
-              <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span></pre></div>
-              <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply</span></pre></div>
-            </div>
-          </div>
-
-          <div class="notice notice--signal">
-            <p class="notice-title">384 is not a number you may change freely</p>
-            <p>It is the width of the vectors the local <code>fastembed</code> model produces. The table has to be exactly that wide. If you later switch to a different embedding model, its width changes and the table has to be rebuilt to match. Step 4 checks this for you and will refuse to continue if the two disagree.</p>
-          </div>
-
-          <div class="checkpoint">
-            <p class="checkpoint-title">Confirm the schema landed</p>
-            <div class="terminal terminal--command" data-os-group data-shell="posix">
-              <div class="terminal-bar">
-                <div class="terminal-tabs" role="tablist" aria-label="Operating system">
-                  <button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button>
-                  <button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button>
-                  <button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button>
-                </div>
-                <button class="copy-button" type="button">Copy</button>
-              </div>
-              <div class="terminal-body">
-                <div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m recall.cli schema status</span></pre></div>
-                <div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli schema status</span></pre></div>
-                <div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m recall.cli schema status</span></pre></div>
-              </div>
-            </div>
-            <p class="muted" style="font-size: 0.9375rem;">The installed version should match the required version, with nothing pending.</p>
-          </div>
-
-          <details class="why">
-            <summary>Why there are two different connection strings</summary>
-            <div class="why-body">
-              <p><code>--migration-dsn</code> is the account allowed to change the shape of the database. Everything after this step uses a serving connection instead, which can read and write rows but cannot alter tables. On your laptop both are the same <code>recall</code> user, so the distinction looks pointless. It exists so that a deployed installation can hand the application an account that cannot drop a table, and this guide uses the same flag names so that what you learn here still applies there.</p>
-            </div>
-          </details>
-
-          <p class="escape">Connection refused, or <code>SchemaTooOld</code>? <a href="troubleshooting.html#schema">Schema problems</a>.</p>
-        </div>
-      </section>
-
-      <!-- ============================================ 4 -->
-      <section id="step-4" class="step" data-reveal>
-        <div class="step-head">
-          <span class="step-number">04</span>
           <h2>Run the setup wizard</h2>
         </div>
         <div class="step-body">
           <p class="step-what">This asks you a short series of questions, then writes your answers to a <code>.env</code> file in the current folder so you never have to repeat them. Run it from whichever folder you want your memory to live in.</p>
+
+          <div class="notice">
+            <p class="notice-title">It sets the database up for you</p>
+            <p>Once you pick an embedder the wizard creates the tables at the matching vector width, printing <code>Prepared 'chunks' for 384 dimensions.</code> as it goes. There is no separate schema command to run first. If it cannot reach the database it says so and tells you the command to run by hand.</p>
+          </div>
 
           <div class="terminal terminal--command" data-os-group data-shell="posix">
             <div class="terminal-bar">
@@ -346,7 +289,7 @@
                 <tr>
                   <td>Choose the embedder</td>
                   <td><strong>2</strong>, fastembed</td>
-                  <td>The local model you installed in step 2, and the one your 384-wide table was built for.</td>
+                  <td>The local model you installed in step 2. The wizard prepares the database at its 384 wide vector size for you.</td>
                 </tr>
                 <tr>
                   <td>Choose whether to enable reranking</td>
@@ -362,6 +305,11 @@
                   <td>Enable the entailment judge?</td>
                   <td><strong>N</strong></td>
                   <td>An extra check on whether a result really supports an answer. Useful later, another model download now. You may not be asked this at all.</td>
+                </tr>
+                <tr>
+                  <td>Enable the optional reasoning arm?</td>
+                  <td><strong>N</strong></td>
+                  <td>Points RE-call at a language model that can reason over what it retrieves. Because you answered yes to security, only a local server such as Ollama is offered, and it also needs the <code>extract</code> extra. Say no now and add it later once you have one running.</td>
                 </tr>
                 <tr>
                   <td>Scaffold CLAUDE.md and a memory/ directory?</td>
@@ -391,14 +339,14 @@
 
           <div class="notice">
             <p class="notice-title">What you now have on disk</p>
-            <p><code>.env</code> holds your choices. <code>memory/</code> is where your memory files go. <code>memory/MEMORY.md</code> is a starter index explaining the file format. <code>CLAUDE.md</code> tells Claude to search memory before it answers, which matters in step 8.</p>
+            <p><code>.env</code> holds your choices. <code>memory/</code> is where your memory files go. <code>memory/MEMORY.md</code> is a starter index explaining the file format. <code>CLAUDE.md</code> tells Claude to search memory before it answers, which matters in step 7.</p>
           </div>
 
           <details class="why">
             <summary>What happens if you answer differently</summary>
             <div class="why-body">
               <p>Answering <strong>n</strong> to the security question unlocks cloud embedders and offers to store API keys. Those send your text to a third party, which is a decision worth making deliberately rather than during a first install.</p>
-              <p>Choosing a different embedder changes the vector width, and the wizard will notice it does not match the table you built in step 3. Rather than failing later, it re-asks and tells you the exact <code>schema</code> command that would make the two agree.</p>
+              <p>Choosing a different embedder changes the vector width. On a fresh database the wizard simply prepares the tables at whatever width you picked. On a database that already holds memory at another width it will not silently rebuild it: rather than failing later, it re-asks and tells you the exact <code>schema</code> command that would make the two agree.</p>
               <p>You can re-run <code>setup</code> at any time. It rewrites only its own block in <code>.env</code>, so anything you added yourself survives.</p>
             </div>
           </details>
@@ -407,10 +355,10 @@
         </div>
       </section>
 
-      <!-- ============================================ 5 -->
-      <section id="step-5" class="step" data-reveal>
+      <!-- ============================================ 4 -->
+      <section id="step-4" class="step" data-reveal>
         <div class="step-head">
-          <span class="step-number">05</span>
+          <span class="step-number">04</span>
           <h2>Let it answer you</h2>
         </div>
         <div class="step-body">
@@ -447,10 +395,10 @@
         </div>
       </section>
 
-      <!-- ============================================ 6 -->
-      <section id="step-6" class="step" data-reveal>
+      <!-- ============================================ 5 -->
+      <section id="step-5" class="step" data-reveal>
         <div class="step-head">
-          <span class="step-number">06</span>
+          <span class="step-number">05</span>
           <h2>Give it a memory</h2>
         </div>
         <div class="step-body">
@@ -517,10 +465,10 @@ gateway degrading above 140. Bursts up to 150 are tolerated for
         </div>
       </section>
 
-      <!-- ============================================ 7 -->
-      <section id="step-7" class="step" data-reveal>
+      <!-- ============================================ 6 -->
+      <section id="step-6" class="step" data-reveal>
         <div class="step-head">
-          <span class="step-number">07</span>
+          <span class="step-number">06</span>
           <h2>Ask, and watch it refuse</h2>
         </div>
         <div class="step-body">
@@ -605,10 +553,10 @@ refuses rather than assuming it.</span>
         </div>
       </section>
 
-      <!-- ============================================ 8 -->
-      <section id="step-8" class="step" data-reveal>
+      <!-- ============================================ 7 -->
+      <section id="step-7" class="step" data-reveal>
         <div class="step-head">
-          <span class="step-number">08</span>
+          <span class="step-number">07</span>
           <h2>Connect Claude Code</h2>
         </div>
         <div class="step-body">
