@@ -7,6 +7,7 @@ import pytest
 
 from recall.setup import (
     HardwareProbe,
+    LOCAL_API_KEY,
     LOCAL_PROVIDER,
     MANUAL_MODEL,
     OPENAI_BASE_URL,
@@ -1540,7 +1541,7 @@ def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
     )
     assert "RECALL_REASONING_BASE_URL=http://localhost:11434/v1" in env
     assert "RECALL_REASONING_MODEL=qwen2.5" in env
-    assert "RECALL_REASONING_API_KEY=local" in env
+    assert f"RECALL_REASONING_API_KEY={LOCAL_API_KEY}" in env
 
 
 def test_a_failing_probe_still_writes_the_configuration(tmp_path, monkeypatch):
@@ -1653,3 +1654,114 @@ def test_the_wizard_writes_exactly_the_agreed_reasoning_variables(tmp_path, monk
         if line.startswith("RECALL_REASONING")
     }
     assert written == REASONING_ENV_KEYS
+
+
+def test_unreachable_database_reports_a_message_instead_of_staying_silent(tmp_path, monkeypatch):
+    """`_prepare_schema_for_embedder` used to return silently on an unreachable database, so the
+    wizard finished as though the schema were fine. The first sign of trouble was `index` or
+    `search` failing much later with 'vector type not found in the database'. Point setup at a
+    closed port and the wizard must say so, in words naming the actual command to run, while
+    still completing and writing `.env`."""
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: _roomy_probe(100 * 1024**3))
+    answers = iter([
+        "y",  # security required, so no cloud API key prompts
+        "2",  # embedder: fastembed
+        "1",  # reranker: none
+        "1",  # sparse: fts
+        "n",  # reasoning arm declined
+        "n",  # scaffold declined
+        "n",  # calibrate declined
+    ])
+    output = io.StringIO()
+
+    run_setup_wizard(
+        dsn="postgresql://recall:recall@127.0.0.1:1/db",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _p="": next(answers),
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = output.getvalue()
+    assert "database could not be reached" in text
+    assert "was not prepared" in text
+    assert "recall schema apply" in text
+    assert next(answers, None) is None
+    # The whole point of the wizard is to be runnable when the configuration is broken: it must
+    # neither raise nor exit, and it must still write .env.
+    assert (tmp_path / ".env").exists()
+
+
+def test_a_remote_local_endpoint_base_url_warns_about_the_tradeoff(tmp_path, monkeypatch):
+    """`security_required` withholds cloud providers from the menu, but the base URL prompt still
+    accepts any free text, and a model server on a private LAN or an internal DNS name is a
+    legitimate local setup this cannot recognize. So a remote looking URL is not refused, but the
+    reader must be told what answering yes to the security question actually bought them."""
+    monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
+    _, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",  # security required, so only the local provider is offered
+            "2",  # embedder: fastembed
+            "1",  # reranker: none
+            "1",  # sparse: fts
+            "y",  # reasoning arm enabled
+            "https://reasoning.example.com/v1",  # base URL, not obviously local
+            "qwen2.5",  # model id
+            "n",  # scaffold declined
+            "n",  # calibrate declined
+        ],
+    )
+    assert "withheld the cloud providers" in output
+    assert "reasoning.example.com" in output
+    assert "query and the retrieved evidence" in output
+
+
+def test_the_default_local_base_url_prints_no_warning(tmp_path, monkeypatch):
+    """The warning must not fire on the ordinary path, where the reader took the offered default."""
+    monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
+    _, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",  # security required, so only the local provider is offered
+            "2",  # embedder: fastembed
+            "1",  # reranker: none
+            "1",  # sparse: fts
+            "y",  # reasoning arm enabled
+            "",  # base URL, take the default, obviously local
+            "qwen2.5",  # model id
+            "n",  # scaffold declined
+            "n",  # calibrate declined
+        ],
+    )
+    assert "withheld the cloud providers" not in output
+
+
+def test_quote_env_escapes_newlines_so_a_value_cannot_span_lines(tmp_path, monkeypatch):
+    """Without escaping, a raw newline inside a value broke out of its quoted line, and
+    `recall/_env.py`'s line based parser read the continuation as its own unrelated `KEY=VALUE`
+    pair. Proved here by constructing a value that tries to smuggle in RECALL_SERVING_DSN
+    alongside a legitimate key, the same shape as the finding this fixes."""
+    import os
+
+    from recall._env import load_dotenv
+    from recall.setup import SETUP_BEGIN, SETUP_END, _update_env_block
+
+    payload = "attacker-model\nRECALL_SERVING_DSN=postgresql://attacker@evil/db"
+    env_path = tmp_path / ".env"
+    _update_env_block(env_path, {"RECALL_REASONING_MODEL": payload})
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    data_lines = [line for line in lines if line not in (SETUP_BEGIN, SETUP_END)]
+    assert len(data_lines) == 1, data_lines
+
+    monkeypatch.delenv("RECALL_SERVING_DSN", raising=False)
+    monkeypatch.delenv("RECALL_REASONING_MODEL", raising=False)
+    load_dotenv(env_path)
+    try:
+        assert "RECALL_SERVING_DSN" not in os.environ
+        assert os.environ["RECALL_REASONING_MODEL"] == payload
+    finally:
+        os.environ.pop("RECALL_REASONING_MODEL", None)
+        os.environ.pop("RECALL_SERVING_DSN", None)

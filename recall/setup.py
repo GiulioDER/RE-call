@@ -6,6 +6,7 @@ import os
 import shutil
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,8 +33,15 @@ LOCAL_PROVIDER = "local"
 #: Ollama's OpenAI compatible endpoint, offered as the default for a local server.
 LOCAL_BASE_URL_DEFAULT = "http://localhost:11434/v1"
 
-#: A local server ignores the key, and the OpenAI client refuses an empty one.
-LOCAL_API_KEY = "local"
+#: A local server ignores the key, and the OpenAI client refuses an empty one. Deliberately not
+#: the same string as `LOCAL_PROVIDER`: the two mean different things (which provider was chosen,
+#: versus the placeholder credential sent to it), and a shared literal would let a mixup between
+#: the two call sites pass every test silently.
+LOCAL_API_KEY = "unused-local-key"
+
+#: Sentinel value for the "type an id yourself" entry in `reasoning_model_choices`. The empty
+#: string cannot collide with a real model id, so it needs no separate flag on `Choice`.
+MANUAL_MODEL = ""
 
 DEFAULT_CALIBRATION_PATH = Path("calibration.json")
 MODEL_DOWNLOAD_FLOOR_BYTES = 1_500_000_000
@@ -379,6 +387,11 @@ def _prepare_schema_for_embedder(
             print_fn(f"Verified {target_table!r} for {embedder.dim} dimensions.")
         return
     if state == "unknown":
+        print_fn(
+            f"The database could not be reached, so the schema for {target_table!r} was not "
+            "prepared. Apply it by hand with 'recall schema apply' once the database is "
+            "reachable, then rerun setup or index/search directly."
+        )
         return
 
     if detail:
@@ -607,11 +620,6 @@ def reasoning_provider_choices(
     return choices
 
 
-#: Sentinel value for the "type an id yourself" entry. The empty string cannot collide with a
-#: real model id, so it needs no separate flag on `Choice`.
-MANUAL_MODEL = ""
-
-
 def reasoning_model_choices(base_url: str) -> list[Choice]:
     """Models offered for a cloud provider, default first, always ending in manual entry.
 
@@ -698,9 +706,10 @@ def probe_reasoning_model(
     if not _module_available("openai"):
         return 'the openai package is not installed, install "recall-rag[extract]"'
 
-    outcome: list[str | None] = [f"no response within {timeout:.0f}s"]
+    outcome: str | None = f"no response within {timeout:.0f}s"
 
     def call() -> None:
+        nonlocal outcome
         try:
             from openai import OpenAI
 
@@ -714,15 +723,16 @@ def probe_reasoning_model(
             # GPT-5, which want `max_completion_tokens`, so capping here would report a working
             # model as unreachable. Those models are not in the menu but manual entry can name
             # one, and a probe that cries failure over a working configuration is worse than no
-            # probe at all. The reply to "ping" is a few tokens, which is not worth a
-            # compatibility branch.
+            # probe at all. The prompt asks for a single short word instead, so a compliant model
+            # answers briefly by construction and generation cost stays bounded without a cap
+            # that would misreport a working o series or GPT-5 model as unreachable.
             client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": "ping"}],
+                messages=[{"role": "user", "content": "Reply with a single short word."}],
             )
-            outcome[0] = None
+            outcome = None
         except Exception as exc:
-            outcome[0] = f"{type(exc).__name__}: {exc}"
+            outcome = f"{type(exc).__name__}: {exc}"
 
     try:
         thread = threading.Thread(target=call, daemon=True)
@@ -733,7 +743,7 @@ def probe_reasoning_model(
         # (an OS refusing a new thread is the realistic case) needs its own net. The never raise
         # rule covers this path too, not just what happens inside the call itself.
         return f"{type(exc).__name__}: {exc}"
-    return outcome[0]
+    return outcome
 
 
 def _prompt_twice(
@@ -744,14 +754,26 @@ def _prompt_twice(
     """Ask, and on a blank answer ask once more. Empty when both answers are blank.
 
     A stray Enter should not cost the reader the whole wizard, and giving up after the second
-    blank stops a scripted or piped stdin from looping forever. Both places that need a model id
-    share this so the retry rule lives in exactly one place.
+    blank stops a scripted or piped stdin from looping forever. Three call sites need a non blank
+    answer and share this so the retry rule lives in exactly one place: the local endpoint's
+    model id prompt, the manual model id prompt, and the cloud provider's API key prompt.
     """
     answer = _prompt(input_fn, print_fn, text)
     if answer:
         return answer
     print_fn("That was blank. One more try:")
     return _prompt(input_fn, print_fn, text)
+
+
+def _looks_locally_hosted(base_url: str) -> bool:
+    """Whether `base_url`'s host is obviously on this machine, not a completeness check.
+
+    A model server on a private LAN or behind an internal DNS name is a legitimate local setup
+    this cannot recognize, so this is used only to decide whether to print a warning, never to
+    refuse a value. The three names checked are the ones a reader would actually type.
+    """
+    host = (urllib.parse.urlsplit(base_url).hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "::1"}
 
 
 def _reasoning_interview(
@@ -794,6 +816,12 @@ def _reasoning_interview(
             )
             or LOCAL_BASE_URL_DEFAULT
         )
+        if security_required and not _looks_locally_hosted(base_url):
+            print_fn(
+                "Warning: answering yes to the security question withheld the cloud "
+                f"providers, but {base_url!r} does not look like a local address. This "
+                "endpoint will receive the query and the retrieved evidence."
+            )
         api_key = LOCAL_API_KEY
         model = _prompt_twice(input_fn, print_fn, "Model id: ")
     else:
@@ -1040,10 +1068,23 @@ def index_memory_directory(
 
 
 def _quote_env(value: str) -> str:
+    """Quote `value` for one `KEY=VALUE` line, and never let it span more than that one line.
+
+    `\\n` and `\\r` are escaped to the two character sequences `\\\\n` and `\\\\r`, in addition to
+    the existing backslash and quote escaping. Without this, a value carrying a raw newline broke
+    out of its quoted line, and `recall/_env.py`'s line based parser read the continuation as an
+    unrelated `KEY=VALUE` pair, letting a written value set a variable it never named.
+    """
     if value == "":
         return '""'
     if any(ch.isspace() for ch in value) or any(ch in value for ch in '#"'):
-        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        escaped = (
+            value.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+        )
+        return '"' + escaped + '"'
     return value
 
 
