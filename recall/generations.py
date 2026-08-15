@@ -180,6 +180,21 @@ _GENERATION_COLUMNS = (
 )
 
 
+def with_provenance(metadata: dict, provenance: dict) -> dict:
+    """Frontmatter first, provenance LAST, and never mutating the input.
+
+    Provenance overrides because a document must not be able to relabel its own origin: if
+    frontmatter won, any indexed file could claim to come from another project and provenance would
+    be an assertion made by the data rather than a record made by the builder.
+
+    A copy, not an update in place: the caller reuses one `metadata` dict across every chunk of a
+    document, so mutating it would accumulate across chunks and leak between documents.
+    """
+    if not provenance:
+        return metadata
+    return {**metadata, **provenance}
+
+
 class GenerationManager:
     """Tenant-scoped generation administration over the versioned v1 tables."""
 
@@ -488,6 +503,7 @@ class GenerationManager:
         reader: S3ObjectReader,
         embedder: Embedder,
         chunker: Chunker,
+        provenance: dict | None = None,
     ) -> BuildStats:
         chunks_written = reused_objects = reused_chunks = tombstoned = empty = 0
         indexed_sources: list[str] = []
@@ -557,6 +573,9 @@ class GenerationManager:
                         validity_bounds(metadata)
                     except ValueError as exc:
                         raise GenerationError(f"{entry.uri}: {exc}") from exc
+                # Stamped here, after frontmatter has been read and before any chunk is built,
+                # so every chunk of every document carries it and no document can override it.
+                metadata = with_provenance(metadata, provenance or {})
                 pieces = chunker(body)
                 if not pieces:
                     empty += 1

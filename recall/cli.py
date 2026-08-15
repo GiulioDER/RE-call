@@ -903,6 +903,17 @@ def main(argv: list[str] | None = None) -> None:
     p_build.add_argument("--embedder-revision", default=None)
     p_build.add_argument("--embedder-artifact-digest", default=None)
     p_build.add_argument("--unverified-development", action="store_true")
+    p_build.add_argument(
+        "--project",
+        default=None,
+        help="stamp every chunk with the project that produced it, as `recall index --project` "
+             "does. A calibrated generation without it cannot say where a hit came from.",
+    )
+    p_build.add_argument(
+        "--no-commit-stamp",
+        action="store_true",
+        help="do not record the repository HEAD on each chunk.",
+    )
     p_build.add_argument("--chunker", choices=["text", "code"], default="text")
     p_build.add_argument("--max-chars", type=int, default=800)
     p_build.add_argument("--overlap", type=int, default=80)
@@ -1576,11 +1587,23 @@ def main(argv: list[str] | None = None) -> None:
             pipeline,
             allow_unverified=args.unverified_development,
         )
+        # Same provenance the index path stamps. Without this a CALIBRATED generation carries no
+        # record of which project produced each chunk, and the generation path is the only one
+        # calibration can use.
+        build_provenance = {
+            k: v
+            for k, v in (
+                ("project", args.project),
+                ("indexed_commit", None if args.no_commit_stamp else head_commit(".")),
+            )
+            if v is not None
+        }
         generation_stats = manager.build(
             generation.generation_id,
             reader,
             embedder,
             generation_chunker,
+            provenance=build_provenance,
         )
         print(
             f"built {generation_stats.generation_id}: {generation_stats.objects} objects, "
