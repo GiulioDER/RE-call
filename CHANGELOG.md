@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Fixed
+
+* **The MCP server now honours `RECALL_TRUST_MODE`.** `docs/USING_WITH_CLAUDE.md` has told users to
+  set it since the document was written, and it did nothing: the variable appeared nowhere in
+  `recall_mcp`, and `search_memory` and `evidence_memory` were both called without `policy=`, so the
+  service applied its strict default. Following the documented first-run path therefore produced
+  `INDEX_NOT_READY` on every `recall_search` against a freshly indexed corpus, with the one
+  documented remedy inert. The CLI honoured the same variable throughout, which is what let the gap
+  survive: the same setting worked in one entry point and was silently ignored in the other.
+  Strict remains the default, a misspelling such as `developmnet` still stays strict, and a relaxed
+  server now logs a warning at every start rather than degrading quietly.
+
 ### Added
 
 * `recall extract run|show --status-vocabulary W,X,Y` lets a corpus that states status in its
