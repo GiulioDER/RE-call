@@ -16,7 +16,13 @@ Properties, one test each:
   10. The writer emits LF regardless of platform.
   11. The blind CSV exposes no arm / model / judge / score / rule / system column.
   12. The un-blinding key is a separate file, and every CSV item has an entry in it.
-  13. The verdict column ships blank — blank is "undecidable", per score_beam_labels.py:29.
+  13. The BUILDER emits a blank verdict column, so a rebuild never carries a previous round's
+      verdicts forward. Asserted by running it, not by grepping its source. Blank means
+      "undecidable" and is excluded from the denominator, per
+      `benchmarks/labelling/score_beam_labels.read_verdict` (named, not line-numbered: a line
+      number in prose goes stale on the next edit, and this one already had). The committed
+      pack's own labels are pinned in `tests/test_truth_extraction_adjudication.py`.
+  13b. The builder applies `_csv_safe` when it WRITES, which nothing covered.
   14. Every row names a candidate target; the unprovable-target class is excluded, not guessed.
   15. The committed row count recomputes from the corpus (skips loudly without RECALL_PEPS_DIR).
   16. The PEPs SHA format validator accepts a real 40-hex SHA and refuses malformed input.
@@ -184,7 +190,7 @@ def test_every_csv_item_has_a_key_entry():
     assert items == set(json.loads(KEY_PATH.read_text(encoding="utf-8")))
 
 
-def test_the_builder_emits_a_blank_verdict_column():
+def test_the_builder_emits_a_blank_verdict_column(tmp_path):
     """Asserted on the BUILDER, not on the committed pack, because the pack is now labelled.
 
     This used to read `all(row["your_verdict_Y_or_N"] == "")` over the committed CSV, which was
@@ -193,16 +199,80 @@ def test_the_builder_emits_a_blank_verdict_column():
     adjudicator an empty column, never carry a previous round's verdicts forward, which is how a
     labelling exercise quietly turns into a measurement of the last labelling exercise.
 
+    Asserted by RUNNING the builder, not by grepping its source. The first version of this test
+    matched the literal `"your_verdict_Y_or_N": ""` in `build_adjudication.py`, which was both
+    too weak and too brittle: a builder rewritten to carry a previous round's verdicts forward
+    passed as long as the literal survived in a comment, while three benign reformattings of a
+    CORRECT builder (single quotes, a named constant, a line break before the value) turned it
+    red. `build_rows` runs on a two-file synthetic corpus in about a second, so there is no
+    reason to assert on bytes.
+
     The committed pack's own verdicts are pinned separately, in
-    `tests/test_truth_extraction_adjudication.py`.
+    `tests/test_truth_extraction_adjudication.py::test_the_committed_verdicts_are_frozen`.
     """
-    source = (
-        Path(__file__).resolve().parent.parent
-        / "benchmarks" / "labelling" / "truth_extraction" / "build_adjudication.py"
-    ).read_text(encoding="utf-8")
-    assert '"your_verdict_Y_or_N": ""' in source, (
-        "the builder must emit an empty verdict column, or a rebuild ships a pre-labelled sheet"
+    from benchmarks.labelling.truth_extraction.build_adjudication import build_rows
+
+    corpus = tmp_path / "peps"
+    corpus.mkdir()
+    (corpus / "pep-0001.rst").write_text(
+        "PEP: 1\nTitle: One\nStatus: Active\n\n\nThis PEP is superseded by :pep:`2`.\n",
+        encoding="utf-8",
     )
+    (corpus / "pep-0002.rst").write_text(
+        "PEP: 2\nTitle: Two\nStatus: Active\n\n\nNothing to see.\n", encoding="utf-8"
+    )
+
+    rows, key = build_rows(corpus, seed=0, limit=None)
+
+    assert rows, "the synthetic corpus must yield a candidate, or this test proves nothing"
+    assert all(row["your_verdict_Y_or_N"] == "" for row in rows), (
+        "a rebuild must hand the next adjudicator an empty column"
+    )
+    assert set(key) == {row["item"] for row in rows}
+
+
+def test_the_builder_applies_the_injection_defence_when_it_writes(tmp_path):
+    """The defence at BUILD time, which nothing covered.
+
+    `_csv_safe` is applied in `main`'s `writer.writerows(...)`, not in `build_rows`, so removing
+    it there left the whole suite green while the pack shipped raw `+`-leading cells for a
+    spreadsheet to execute. Asserted on the written FILE, through the same path an operator uses.
+    """
+    import csv as _csv
+
+    from benchmarks.labelling.truth_extraction.build_adjudication import _csv_safe, build_rows
+
+    rows, _ = build_rows(_formula_corpus(tmp_path), seed=0, limit=None)
+    assert rows, "the fixture must yield a candidate"
+    written = tmp_path / "out.csv"
+    with written.open("w", encoding="utf-8", newline="\n") as handle:
+        writer = _csv.DictWriter(
+            handle,
+            fieldnames=["item", "evidence_sentence", "candidate_target", "your_verdict_Y_or_N"],
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows([{k: _csv_safe(v) for k, v in row.items()} for row in rows])
+
+    parsed = list(_csv.DictReader(written.open(encoding="utf-8", newline="")))
+    defended = [r for r in parsed if r["evidence_sentence"].startswith("'")]
+    assert defended, (
+        "a sentence opening with a formula character must reach the CSV with its apostrophe"
+    )
+
+
+def _formula_corpus(tmp_path):
+    """A corpus whose marker sentence opens with `-`, so `_csv_safe` has work to do."""
+    corpus = tmp_path / "peps"
+    corpus.mkdir()
+    (corpus / "pep-0001.rst").write_text(
+        "PEP: 1\nTitle: One\nStatus: Active\n\n\n- superseded by :pep:`2` in the list above.\n",
+        encoding="utf-8",
+    )
+    (corpus / "pep-0002.rst").write_text(
+        "PEP: 2\nTitle: Two\nStatus: Active\n\n\nNothing.\n", encoding="utf-8"
+    )
+    return corpus
 
 
 def test_every_row_names_a_candidate_target():
