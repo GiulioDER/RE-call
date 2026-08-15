@@ -105,10 +105,27 @@ def sentences(body: str) -> list[str]:
     paragraph: two defects cancelling, on one edge, by luck.
     """
     out: list[str] = []
+    for flat in paragraphs(body):
+        out.extend(re.findall(r"[^.!?]*[.!?]|[^.!?]+", flat))
+    return out
+
+
+def paragraphs(body: str) -> list[str]:
+    """Paragraphs with their hard line breaks unwrapped, in the order they appear.
+
+    Extracted from `sentences` rather than duplicated, because a second caller needs the same
+    text. `run_arms.py` locates an adjudicated sentence in order to run `recall.fix`'s refusal
+    rules against the context it sits in, and a sentence produced by `sentences` does NOT appear
+    verbatim in the raw body: RST wraps at ~79 columns, so a restatement routinely spans two
+    lines and a literal `body.find(sentence)` misses it. It missed 30 of 38 before this existed,
+    and reported them as refusals, which would have made an arm look selective when it had simply
+    never seen the candidates.
+    """
+    out: list[str] = []
     for paragraph in re.split(r"\n\s*\n", body):
         flat = re.sub(r"\s*\n\s*", " ", paragraph).strip()
         if flat:
-            out.extend(re.findall(r"[^.!?]*[.!?]|[^.!?]+", flat))
+            out.append(flat)
     return out
 
 
