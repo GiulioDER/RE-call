@@ -154,9 +154,10 @@ Model id:
 
 A blank base URL takes the default, which is Ollama's OpenAI compatible endpoint. A blank model id
 re-asks exactly once, because there is no sensible default; a second blank answer is taken as "not
-now" and handled as described under "When nothing is runnable". `RECALL_REASONING_API_KEY` is written as the literal
-`local` for a local endpoint, since the OpenAI client requires a non empty key and local servers
-ignore its value.
+now" and handled as described under "When nothing is runnable". `RECALL_REASONING_API_KEY` is written as the literal `unused-local-key` for a local endpoint,
+since the OpenAI client requires a non empty key and local servers ignore its value. It is
+deliberately NOT the same string as the `local` provider sentinel: while the two shared a value,
+swapping one for the other at either call site would have passed every test.
 
 ### 3. Model
 

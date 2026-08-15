@@ -1540,6 +1540,38 @@ def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
         ],
     )
     assert "RECALL_REASONING_BASE_URL=http://localhost:11434/v1" in env
+
+
+def test_a_malformed_base_url_does_not_end_the_interview(tmp_path, monkeypatch):
+    """One mistyped bracket used to kill the whole wizard.
+
+    `urlsplit("http://[::1:11434/v1")` raises `ValueError: Invalid IPv6 URL` on an unclosed
+    bracket, and the locality check that decides whether to warn parsed the typed value with no
+    guard. So a typo in an optional step raised out of `run_setup_wizard` before `.env` was
+    written, taking every answer already given with it. The wizard is the thing you run to repair
+    a broken configuration; it must not be the thing that dies on a typo.
+
+    An unparseable URL is not obviously local, so the right outcome is the warning, not silence.
+    """
+    monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
+    env, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",                      # security required
+            "2",                      # embedder: fastembed
+            "1",                      # reranker: none
+            "1",                      # sparse: fts
+            "y",                      # reasoning arm enabled
+            "http://[::1:11434/v1",   # base URL with an unclosed IPv6 bracket
+            "qwen2.5",                # model id
+            "n",                      # scaffold declined
+            "n",                      # calibrate declined
+        ],
+    )
+    assert "RECALL_REASONING_BASE_URL=http://[::1:11434/v1" in env
+    assert "RECALL_REASONING_MODEL=qwen2.5" in env
+    assert "retrieved evidence" in output  # it warned rather than staying silent
     assert "RECALL_REASONING_MODEL=qwen2.5" in env
     assert f"RECALL_REASONING_API_KEY={LOCAL_API_KEY}" in env
 

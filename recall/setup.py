@@ -772,7 +772,15 @@ def _looks_locally_hosted(base_url: str) -> bool:
     this cannot recognize, so this is used only to decide whether to print a warning, never to
     refuse a value. The three names checked are the ones a reader would actually type.
     """
-    host = (urllib.parse.urlsplit(base_url).hostname or "").lower()
+    try:
+        host = (urllib.parse.urlsplit(base_url).hostname or "").lower()
+    except ValueError:
+        # `urlsplit` raises on a malformed IPv6 literal, an unclosed bracket being the easy typo.
+        # This decides whether to PRINT A WARNING on a value the reader typed, so raising here
+        # would end the interview over a typo and lose every answer already given. A URL that
+        # cannot be parsed is certainly not recognisably local, so the warning is the right
+        # outcome and returning False produces it.
+        return False
     return host in {"localhost", "127.0.0.1", "::1"}
 
 
