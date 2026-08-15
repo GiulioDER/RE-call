@@ -164,12 +164,12 @@ KEY_PATH = _TE / "adjudication_key.json"
 
 
 def _csv_rows() -> list[dict[str, str]]:
-    with CSV_PATH.open(encoding="utf-8", newline="") as handle:
+    with CSV_PATH.open(encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
 
 
 def test_blind_csv_leaks_no_arm_model_or_judge_column():
-    with CSV_PATH.open(encoding="utf-8", newline="") as handle:
+    with CSV_PATH.open(encoding="utf-8-sig", newline="") as handle:
         header = next(csv.reader(handle))
     leaky = [
         column
@@ -232,32 +232,39 @@ def test_the_builder_emits_a_blank_verdict_column(tmp_path):
 
 
 def test_the_builder_applies_the_injection_defence_when_it_writes(tmp_path):
-    """The defence at BUILD time, which nothing covered.
+    """The defence at BUILD time, asserted DOWNSTREAM of the code that applies it.
 
-    `_csv_safe` is applied in `main`'s `writer.writerows(...)`, not in `build_rows`, so removing
-    it there left the whole suite green while the pack shipped raw `+`-leading cells for a
-    spreadsheet to execute. Asserted on the written FILE, through the same path an operator uses.
+    `_csv_safe` is applied where the pack is serialised, not in `build_rows`, so removing it left
+    the whole suite green while the pack shipped raw `+`-leading cells for a spreadsheet to
+    execute.
+
+    The first attempt to close that gap reimplemented the `DictWriter` block in this test's own
+    body and therefore asserted on its own copy: deleting `_csv_safe` from the real writer still
+    passed. A guard that reimplements what it guards is testing itself. The block now lives in
+    `write_pack`, which `main` calls and this test calls, so there is one definition and the
+    assertion sits downstream of it.
     """
     import csv as _csv
 
-    from benchmarks.labelling.truth_extraction.build_adjudication import _csv_safe, build_rows
+    from benchmarks.labelling.truth_extraction.build_adjudication import build_rows, write_pack
 
-    rows, _ = build_rows(_formula_corpus(tmp_path), seed=0, limit=None)
-    assert rows, "the fixture must yield a candidate"
-    written = tmp_path / "out.csv"
-    with written.open("w", encoding="utf-8", newline="\n") as handle:
-        writer = _csv.DictWriter(
-            handle,
-            fieldnames=["item", "evidence_sentence", "candidate_target", "your_verdict_Y_or_N"],
-            lineterminator="\n",
-        )
-        writer.writeheader()
-        writer.writerows([{k: _csv_safe(v) for k, v in row.items()} for row in rows])
+    rows, key = build_rows(_formula_corpus(tmp_path), seed=0, limit=None)
+    assert rows, "the fixture must yield a candidate, or this test proves nothing"
 
-    parsed = list(_csv.DictReader(written.open(encoding="utf-8", newline="")))
+    csv_path, key_path = write_pack(rows, key, tmp_path / "pack")
+
+    with csv_path.open(encoding="utf-8", newline="") as handle:
+        parsed = list(_csv.DictReader(handle))
     defended = [r for r in parsed if r["evidence_sentence"].startswith("'")]
     assert defended, (
         "a sentence opening with a formula character must reach the CSV with its apostrophe"
+    )
+    # The key is the un-blinding record and must keep the RAW sentence: the two files hold the
+    # same text in different forms on purpose, and a defence applied to both would make the
+    # CSV/key comparison unable to see a spreadsheet stripping it.
+    stored = json.loads(key_path.read_text(encoding="utf-8"))
+    assert not any(e["evidence_sentence"].startswith("'") for e in stored.values()), (
+        "the key must store the raw sentence, not the injection-defended form"
     )
 
 
