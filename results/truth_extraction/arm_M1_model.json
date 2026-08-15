@@ -1,0 +1,45 @@
+{
+  "arm": "M1-model",
+  "proposed": 2,
+  "proposed_scored": 2,
+  "proposed_undecidable_excluded": 0,
+  "true_positive": 0,
+  "false_positive": 2,
+  "precision": 0.0,
+  "precision_wilson_lower": 0.0,
+  "precision_wilson_upper": 0.6576197724933468,
+  "referral_rate": null,
+  "referral_rate_note": "NOT MEASURED: no extraction path emits a review-required status, so there is nothing to count. P6 is unscored rather than falsified.",
+  "recall_vs_adjudicated_positives": 0.0,
+  "adjudicated_positives": 10,
+  "refusal_reasons": {
+    "no supersession claim naming this target": 36
+  },
+  "candidates_not_read": 0,
+  "not_read_reasons": {},
+  "verdict": "UNDERPOWERED",
+  "sibling_proposals": 9,
+  "proposed_items": [
+    "20",
+    "28"
+  ],
+  "corpus_files": 733,
+  "model_calls": 30,
+  "cache_hits": 30,
+  "batch_failures": {},
+  "documents_refused_whole": 0,
+  "_provenance": {
+    "peps_sha": "5981b2a292610104eb30735423504c52fe454650",
+    "peps_tree_dirty": false,
+    "recall_commit": "179e54e3",
+    "recall_tree_dirty": false,
+    "generated_at": "2026-08-15T14:07:54+00:00",
+    "invocation": "python -m benchmarks.labelling.truth_extraction.run_arms --arm model --cache C:\\Users\\gde00\\AppData\\Local\\Temp\\claude\\C--Users-gde00-Documents-recall--claude-worktrees-reverent-chebyshev-09eb74\\fc01f011-a14c-4fc4-a1ed-9d506ba8024c\\scratchpad\\m1_v2.sqlite3 --peps-dir C:\\Users\\gde00\\AppData\\Local\\Temp\\claude\\C--Users-gde00-Documents-recall--claude-worktrees-competent-lamarr-b77d01\\935a0cbc-bd71-40ae-9308-d1f9010a1814\\scratchpad\\peps\\peps --sibling C:\\Users\\gde00\\AppData\\Local\\Temp\\claude\\C--Users-gde00-Documents-recall--claude-worktrees-reverent-chebyshev-09eb74\\fc01f011-a14c-4fc4-a1ed-9d506ba8024c\\scratchpad\\arm_R1_rules.json --status-vocabulary Final,Rejected,Deferred,Accepted,Active,Draft,Superseded,Withdrawn,Provisional",
+    "pack_digest": "e10296e2703ea45110442bb049ed426a0561efc31bd6412a50b8a7221ca5c68d",
+    "prompt_revision": "truth-extraction-prompt-v2",
+    "model_id": "anthropic/claude-sonnet-4.5",
+    "model_revision": "unpinned",
+    "engine_id": "recall.truth_extraction.openai@openrouter.ai",
+    "status_vocabulary": "Final,Rejected,Deferred,Accepted,Active,Draft,Superseded,Withdrawn,Provisional"
+  }
+}

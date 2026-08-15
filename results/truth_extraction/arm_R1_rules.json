@@ -1,0 +1,48 @@
+{
+  "arm": "R1-rules",
+  "proposed": 9,
+  "proposed_scored": 8,
+  "proposed_undecidable_excluded": 1,
+  "true_positive": 3,
+  "false_positive": 5,
+  "precision": 0.375,
+  "precision_wilson_lower": 0.13684428582359742,
+  "precision_wilson_upper": 0.6942576053973726,
+  "referral_rate": null,
+  "referral_rate_note": "NOT MEASURED: no extraction path emits a review-required status, so there is nothing to count. P6 is unscored rather than falsified.",
+  "recall_vs_adjudicated_positives": 0.3,
+  "adjudicated_positives": 10,
+  "refusal_reasons": {
+    "no marker names this target within the window": 29
+  },
+  "candidates_not_read": 0,
+  "not_read_reasons": {},
+  "verdict": "UNDERPOWERED",
+  "sibling_proposals": null,
+  "proposed_items": [
+    "1",
+    "3",
+    "7",
+    "9",
+    "15",
+    "17",
+    "18",
+    "28",
+    "29"
+  ],
+  "corpus_files": 733,
+  "model_calls": 0,
+  "cache_hits": 0,
+  "batch_failures": {},
+  "documents_refused_whole": 0,
+  "_provenance": {
+    "peps_sha": "5981b2a292610104eb30735423504c52fe454650",
+    "peps_tree_dirty": false,
+    "recall_commit": "179e54e3",
+    "recall_tree_dirty": false,
+    "generated_at": "2026-08-15T14:07:39+00:00",
+    "invocation": "python -m benchmarks.labelling.truth_extraction.run_arms --arm rules --peps-dir C:\\Users\\gde00\\AppData\\Local\\Temp\\claude\\C--Users-gde00-Documents-recall--claude-worktrees-competent-lamarr-b77d01\\935a0cbc-bd71-40ae-9308-d1f9010a1814\\scratchpad\\peps\\peps",
+    "pack_digest": "e10296e2703ea45110442bb049ed426a0561efc31bd6412a50b8a7221ca5c68d",
+    "status_vocabulary": null
+  }
+}

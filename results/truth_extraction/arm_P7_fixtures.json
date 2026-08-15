@@ -1,0 +1,61 @@
+{
+  "arm": "M1-fixtures",
+  "fixtures": 4,
+  "refused": 2,
+  "proposed": 2,
+  "proposed_items": [
+    "partial_scope_claim",
+    "partial_scope_scope"
+  ],
+  "corpus_names": [
+    "curate_wallets_2026-07-14",
+    "feedback_ci_green_constraints_2026-06-22",
+    "hedged",
+    "partial_scope_claim",
+    "partial_scope_scope",
+    "project_lrp_maker_2026-06-24",
+    "project_recall_abstention_2026-07-18",
+    "reported_speech"
+  ],
+  "per_fixture": {
+    "hedged": {
+      "proposed": [],
+      "rejection_rungs": []
+    },
+    "partial_scope_claim": {
+      "proposed": [
+        "curate_wallets_2026-07-14"
+      ],
+      "rejection_rungs": []
+    },
+    "partial_scope_scope": {
+      "proposed": [
+        "project_recall_abstention_2026-07-18"
+      ],
+      "rejection_rungs": []
+    },
+    "reported_speech": {
+      "proposed": [],
+      "rejection_rungs": []
+    }
+  },
+  "p7_prediction": "4 of 4 refused",
+  "p7_holds": false,
+  "model_calls": 4,
+  "cache_hits": 0,
+  "batch_failures": {},
+  "_provenance": {
+    "peps_sha": "5981b2a292610104eb30735423504c52fe454650",
+    "peps_tree_dirty": false,
+    "recall_commit": "179e54e3",
+    "recall_tree_dirty": false,
+    "generated_at": "2026-08-15T14:08:14+00:00",
+    "invocation": "python -m benchmarks.labelling.truth_extraction.run_arms --arm fixtures --cache C:\\Users\\gde00\\AppData\\Local\\Temp\\claude\\C--Users-gde00-Documents-recall--claude-worktrees-reverent-chebyshev-09eb74\\fc01f011-a14c-4fc4-a1ed-9d506ba8024c\\scratchpad\\p7.sqlite3 --peps-dir C:\\Users\\gde00\\AppData\\Local\\Temp\\claude\\C--Users-gde00-Documents-recall--claude-worktrees-competent-lamarr-b77d01\\935a0cbc-bd71-40ae-9308-d1f9010a1814\\scratchpad\\peps\\peps",
+    "pack_digest": "e10296e2703ea45110442bb049ed426a0561efc31bd6412a50b8a7221ca5c68d",
+    "prompt_revision": "truth-extraction-prompt-v2",
+    "model_id": "anthropic/claude-sonnet-4.5",
+    "model_revision": "unpinned",
+    "engine_id": "recall.truth_extraction.openai@openrouter.ai",
+    "status_vocabulary": "active,draft,deprecated,superseded,withdrawn"
+  }
+}

@@ -42,6 +42,37 @@ when it meant "the older one".
 | `benchmarks/labelling/truth_extraction/gold.manifest.jsonl` | 47 gold positives (authored PEP headers) + 4 transplanted negatives, frozen |
 | `benchmarks/labelling/truth_extraction/adjudication.csv` | the blind negative-adjudication pack, 38 rows from the 30 of 175 marker-without-header PEPs that name a target; `adjudication_key.json` un-blinds it and must not be opened until labelling is finished |
 | `recall/eval/peps_trust_queries.json` | 62 trust queries (42 successor / 20 abstain), one row per superseded PEP rather than one row per edge, replacing a shipped successor arm of n=4 |
+| `results/truth_extraction/arm_R1_rules.json` | the rules arm: 9 proposals, 8 decided, precision **0.375**, Wilson [0.137, 0.694] |
+| `results/truth_extraction/arm_M1_model.json` | the model arm under `truth-extraction-prompt-v2`: 2 proposals, both wrong, precision **0.00**, Wilson [0.000, 0.658] |
+| `results/truth_extraction/arm_P7_fixtures.json` | the public bridge: **2 of 4 transplanted fixtures PROPOSED**, so P7 fails |
+
+**Read the three together, because no one of them is the result.**
+
+**P7 decides it, and P7 failed.** The pre-registered rule's top row reads "any transplanted
+fixture proposed → fails the public bridge → reviewing aid at most, whatever else holds". The
+model proposed an edge on both partial-scope fixtures — `Supersedes the *inferred* "maker" claim
+in [[curate_wallets_2026-07-14]]` and `Supersedes the scope in
+[[project_recall_abstention_2026-07-18]]` — and both survived every rung of the validation
+ladder with no rejection recorded anywhere. It correctly refused the reported-speech and hedged
+fixtures, which the pre-registration named as the hardest two. So the model reproduces two of the
+four failures the regex it replaces already made, on the exact memos where `recall/fix.py`
+measured them, and a reader can check that without the private corpus.
+
+**Neither precision number supports a tier.** R1 decided 8 and M1 decided 2, against the
+pre-registered floor of 10 proposals in *either* arm, so both artifacts read `UNDERPOWERED`:
+"could not tell", not "the arm is bad". The point estimates (0.375 and 0.00) are reported because
+they are what happened, and the intervals are what should be quoted: R1's upper bound of 0.694
+does sit just below P1's predicted floor of 0.70, which is a falsification of the prediction even
+though the arm is underpowered for tiering. The two facts are separate and both are true.
+
+**P6 is unscored, not falsified.** The registered referral rate has no measurement behind it: no
+extraction path emits a review-required status, so the field would have been 0.0 by construction.
+The artifacts carry `null` and a note saying so.
+
+⚠️ **What these do NOT show.** PEPs cite each other in a conventional `:pep:`NNN`` form that a
+regex handles, so the target-resolution lever a model provides is largely absent here. This
+corpus cannot settle the model's value either way; the private 792-memo arm is the one that
+could, and it has not run.
 
 **What this set measures well, and what it does not.** Of 47 authored header edges, only **8** are
 restated in prose with the marker and the partner PEP in the same sentence. A perfect prose
