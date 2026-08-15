@@ -4,7 +4,9 @@ import importlib.util
 import json
 import os
 import shutil
+import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,30 @@ from recall.eval.calibrate import CalibrationReport
 SETUP_BEGIN = "# recall setup begin"
 SETUP_END = "# recall setup end"
 DEFAULT_ENV_PATH = Path(".env")
+
+#: OpenAI compatible endpoints the reasoning arm can be pointed at. The base URL is the only
+#: record of which provider was chosen: `_host_of` in the truth extraction engine already turns
+#: it into an audit identity, so a separate provider name would be a second source of truth for
+#: the same fact.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+
+#: Sentinel for "ask me for a base URL", distinct from any real URL.
+LOCAL_PROVIDER = "local"
+
+#: Ollama's OpenAI compatible endpoint, offered as the default for a local server.
+LOCAL_BASE_URL_DEFAULT = "http://localhost:11434/v1"
+
+#: A local server ignores the key, and the OpenAI client refuses an empty one. Deliberately not
+#: the same string as `LOCAL_PROVIDER`: the two mean different things (which provider was chosen,
+#: versus the placeholder credential sent to it), and a shared literal would let a mixup between
+#: the two call sites pass every test silently.
+LOCAL_API_KEY = "unused-local-key"
+
+#: Sentinel value for the "type an id yourself" entry in `reasoning_model_choices`. The empty
+#: string cannot collide with a real model id, so it needs no separate flag on `Choice`.
+MANUAL_MODEL = ""
+
 DEFAULT_CALIBRATION_PATH = Path("calibration.json")
 MODEL_DOWNLOAD_FLOOR_BYTES = 1_500_000_000
 CLAUDE_MD_BEGIN = "<!-- recall setup begin -->"
@@ -361,6 +387,11 @@ def _prepare_schema_for_embedder(
             print_fn(f"Verified {target_table!r} for {embedder.dim} dimensions.")
         return
     if state == "unknown":
+        print_fn(
+            f"The database could not be reached, so the schema for {target_table!r} was not "
+            "prepared. Apply it by hand with 'recall schema apply' once the database is "
+            "reachable, then rerun setup or index/search directly."
+        )
         return
 
     if detail:
@@ -531,6 +562,315 @@ def entailment_choices(probe: HardwareProbe) -> list[Choice]:
             )
         )
     return choices
+
+
+def reasoning_provider_choices(
+    probe: HardwareProbe,
+    *,
+    security_required: bool,
+) -> list[Choice]:
+    """Providers for the optional reasoning arm, local first.
+
+    Local leads because `_choose` refuses a menu whose first entry is unavailable, and a local
+    endpoint is the only option that needs neither a key nor internet. It is therefore the only
+    entry that can be offered unconditionally.
+
+    Cloud entries are withheld entirely under `security_required`, rather than being offered and
+    marked. That differs from how an uninstalled package is handled, and deliberately: a missing
+    package is a thing the user can go and fix, whereas the security answer is a decision they
+    already made, and re-offering it invites them to undo it by accident.
+    """
+    choices = [
+        Choice(
+            label="local endpoint",
+            value=LOCAL_PROVIDER,
+            description="An OpenAI compatible server you run yourself, such as Ollama or vLLM",
+        )
+    ]
+    if security_required:
+        return choices
+
+    openai_installed = _module_available("openai")
+    blockers: list[str] = []
+    if not openai_installed:
+        blockers.append('the openai package is not installed, pip install "recall-rag[extract]"')
+    if not probe.internet:
+        blockers.append("no internet connection was detected")
+    note = "; ".join(blockers)
+    runnable = openai_installed and probe.internet
+
+    choices.append(
+        Choice(
+            label="openrouter",
+            value=OPENROUTER_BASE_URL,
+            description="Many providers behind one key, including cheap models",
+            available=runnable,
+            unavailable_note=note,
+        )
+    )
+    choices.append(
+        Choice(
+            label="openai",
+            value=OPENAI_BASE_URL,
+            description="OpenAI directly, for an existing OpenAI key",
+            available=runnable,
+            unavailable_note=note,
+        )
+    )
+    return choices
+
+
+def reasoning_model_choices(base_url: str) -> list[Choice]:
+    """Models offered for a cloud provider, default first, always ending in manual entry.
+
+    The OpenRouter ids were verified against its live catalogue on 2026-08-14, which is how a
+    sixth candidate that no longer exists was caught before shipping. They will still go stale:
+    this is a static list inside a released artifact, and the provider's roster is not ours. The
+    manual entry is the mitigation and must stay last on every provider.
+
+    Descriptions carry no prices. Prices were read during design and left out on purpose, because
+    a number in a shipped menu is a measurement nothing re-checks.
+    """
+    manual = Choice(
+        label="enter a model id",
+        value=MANUAL_MODEL,
+        description="Type an id yourself, for anything not listed",
+    )
+    if base_url == OPENAI_BASE_URL:
+        return [
+            Choice(
+                label="gpt-4o mini",
+                value="gpt-4o-mini",
+                description="Cheap and fast, a good default",
+            ),
+            Choice(
+                label="gpt-4o",
+                value="gpt-4o",
+                description="Higher quality and several times the price",
+            ),
+            manual,
+        ]
+    return [
+        Choice(
+            label="gpt-4o mini",
+            value="openai/gpt-4o-mini",
+            description="Small, fast and inexpensive, the default",
+        ),
+        Choice(
+            label="deepseek chat",
+            value="deepseek/deepseek-chat",
+            description="Low cost general model, strong for the price",
+        ),
+        Choice(
+            label="deepseek r1",
+            value="deepseek/deepseek-r1",
+            description="Reasoning tuned, slower and dearer than chat",
+        ),
+        Choice(
+            label="llama 3.3 70b",
+            value="meta-llama/llama-3.3-70b-instruct",
+            description="Open weights, the cheapest option here",
+        ),
+        Choice(
+            label="claude sonnet 4.5",
+            value="anthropic/claude-sonnet-4.5",
+            description="Best quality and the dearest, matching the truth extraction default",
+        ),
+        manual,
+    ]
+
+
+def probe_reasoning_model(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: float = 20.0,
+) -> str | None:
+    """Send one minimal completion. `None` when it worked, otherwise what went wrong.
+
+    A wrong key, a retired model id and a local server that is not running are the three likely
+    failures, and each is far cheaper to find here than on the reader's first reasoning query.
+
+    This never raises. It runs against three different providers and a base URL the user typed,
+    so the set of reachable exception types is not knowable from here, and letting one escape
+    would turn an optional step into a failed install. The caller prints the string and writes
+    the configuration regardless.
+
+    The call runs on a daemon thread joined with `timeout`, rather than relying on the client's
+    own `timeout` alone. httpx treats a bare float as separate connect, read, write and pool
+    timeouts, and its read timeout only bounds the gap between chunks of a streamed response, not
+    the total call. A slow endpoint that trickles bytes could otherwise keep resetting that timer
+    forever. The thread is a daemon so a call that never returns cannot block interpreter exit.
+    """
+    if not _module_available("openai"):
+        return 'the openai package is not installed, install "recall-rag[extract]"'
+
+    outcome: str | None = f"no response within {timeout:.0f}s"
+
+    def call() -> None:
+        nonlocal outcome
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=timeout,
+                max_retries=0,
+            )
+            # No token cap is sent. `max_tokens` is rejected outright by OpenAI's o series and by
+            # GPT-5, which want `max_completion_tokens`, so capping here would report a working
+            # model as unreachable. Those models are not in the menu but manual entry can name
+            # one, and a probe that cries failure over a working configuration is worse than no
+            # probe at all. The prompt asks for a single short word instead, so a compliant model
+            # answers briefly by construction and generation cost stays bounded without a cap
+            # that would misreport a working o series or GPT-5 model as unreachable.
+            client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": "Reply with a single short word."}],
+            )
+            outcome = None
+        except Exception as exc:
+            outcome = f"{type(exc).__name__}: {exc}"
+
+    try:
+        thread = threading.Thread(target=call, daemon=True)
+        thread.start()
+        thread.join(timeout)
+    except Exception as exc:
+        # Starting or joining the thread is outside `call`'s own try/except, so a failure here
+        # (an OS refusing a new thread is the realistic case) needs its own net. The never raise
+        # rule covers this path too, not just what happens inside the call itself.
+        return f"{type(exc).__name__}: {exc}"
+    return outcome
+
+
+def _prompt_twice(
+    input_fn: Callable[[str], str],
+    print_fn: Callable[..., None],
+    text: str,
+) -> str:
+    """Ask, and on a blank answer ask once more. Empty when both answers are blank.
+
+    A stray Enter should not cost the reader the whole wizard, and giving up after the second
+    blank stops a scripted or piped stdin from looping forever. Three call sites need a non blank
+    answer and share this so the retry rule lives in exactly one place: the local endpoint's
+    model id prompt, the manual model id prompt, and the cloud provider's API key prompt.
+    """
+    answer = _prompt(input_fn, print_fn, text)
+    if answer:
+        return answer
+    print_fn("That was blank. One more try:")
+    return _prompt(input_fn, print_fn, text)
+
+
+def _looks_locally_hosted(base_url: str) -> bool:
+    """Whether `base_url`'s host is obviously on this machine, not a completeness check.
+
+    A model server on a private LAN or behind an internal DNS name is a legitimate local setup
+    this cannot recognize, so this is used only to decide whether to print a warning, never to
+    refuse a value. The three names checked are the ones a reader would actually type.
+    """
+    try:
+        host = (urllib.parse.urlsplit(base_url).hostname or "").lower()
+    except ValueError:
+        # `urlsplit` raises on a malformed IPv6 literal, an unclosed bracket being the easy typo.
+        # This decides whether to PRINT A WARNING on a value the reader typed, so raising here
+        # would end the interview over a typo and lose every answer already given. A URL that
+        # cannot be parsed is certainly not recognisably local, so the warning is the right
+        # outcome and returning False produces it.
+        return False
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def _reasoning_interview(
+    input_fn: Callable[[str], str],
+    print_fn: Callable[..., None],
+    probe: HardwareProbe,
+    *,
+    security_required: bool,
+    cloud_keys: dict[str, str],
+) -> dict[str, str]:
+    """Ask yes or no, then provider, then model. Returns the keys to write.
+
+    Always returns `RECALL_REASONING`, so that switched off and never configured stay
+    distinguishable in the file. `cloud_keys` may gain a provider key the user supplies here,
+    which is why it is taken as a mutable dict rather than a mapping.
+    """
+    off = {"RECALL_REASONING": "0"}
+    if not _ask_yes_no(
+        input_fn, print_fn, "Enable the optional reasoning arm?", default=False
+    ):
+        return off
+
+    provider = _choose(
+        input_fn,
+        print_fn,
+        "Choose the provider for the reasoning arm:",
+        reasoning_provider_choices(probe, security_required=security_required),
+        sole_note=(
+            "Reasoning provider: local endpoint, the only option while data security is "
+            "required. Cloud providers stay withheld until that answer changes."
+        ),
+    )
+
+    if provider.value == LOCAL_PROVIDER:
+        base_url = (
+            _prompt(
+                input_fn,
+                print_fn,
+                f"Base URL for the local endpoint [{LOCAL_BASE_URL_DEFAULT}]: ",
+            )
+            or LOCAL_BASE_URL_DEFAULT
+        )
+        if security_required and not _looks_locally_hosted(base_url):
+            print_fn(
+                "Warning: answering yes to the security question withheld the cloud "
+                f"providers, but {base_url!r} does not look like a local address. This "
+                "endpoint will receive the query and the retrieved evidence."
+            )
+        api_key = LOCAL_API_KEY
+        model = _prompt_twice(input_fn, print_fn, "Model id: ")
+    else:
+        base_url = provider.value
+        key_name = (
+            "OPENROUTER_API_KEY" if base_url == OPENROUTER_BASE_URL else "OPENAI_API_KEY"
+        )
+        api_key = cloud_keys.get(key_name, "")
+        if not api_key:
+            api_key = _prompt_twice(input_fn, print_fn, f"{key_name}: ")
+            if not api_key:
+                print_fn("Reasoning arm skipped: no API key was given.")
+                return off
+            cloud_keys[key_name] = api_key
+        model_choice = _choose(
+            input_fn,
+            print_fn,
+            "Choose the model for the reasoning arm:",
+            reasoning_model_choices(base_url),
+        )
+        model = model_choice.value
+        if model == MANUAL_MODEL:
+            model = _prompt_twice(input_fn, print_fn, "Model id: ")
+
+    if not model:
+        print_fn("Reasoning arm skipped: no model id was given.")
+        return off
+
+    failure = probe_reasoning_model(base_url=base_url, api_key=api_key, model=model)
+    if failure is None:
+        print_fn(f"Reasoning arm verified against {model}.")
+    else:
+        print_fn(f"Could not reach {model}: {failure}")
+        print_fn("Writing the settings anyway. Correct them in .env and try again.")
+
+    return {
+        "RECALL_REASONING": "1",
+        "RECALL_REASONING_MODEL": model,
+        "RECALL_REASONING_BASE_URL": base_url,
+        "RECALL_REASONING_API_KEY": api_key,
+    }
 
 
 def _prompt(
@@ -736,10 +1076,23 @@ def index_memory_directory(
 
 
 def _quote_env(value: str) -> str:
+    """Quote `value` for one `KEY=VALUE` line, and never let it span more than that one line.
+
+    `\\n` and `\\r` are escaped to the two character sequences `\\\\n` and `\\\\r`, in addition to
+    the existing backslash and quote escaping. Without this, a value carrying a raw newline broke
+    out of its quoted line, and `recall/_env.py`'s line based parser read the continuation as an
+    unrelated `KEY=VALUE` pair, letting a written value set a variable it never named.
+    """
     if value == "":
         return '""'
     if any(ch.isspace() for ch in value) or any(ch in value for ch in '#"'):
-        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        escaped = (
+            value.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+        )
+        return '"' + escaped + '"'
     return value
 
 
@@ -907,6 +1260,14 @@ def run_setup_wizard(
             'pip install "recall-rag[entail]". Rerun setup and choose it again once it can run.'
         )
 
+    reasoning_values = _reasoning_interview(
+        input_fn,
+        print_fn,
+        probe,
+        security_required=security_required,
+        cloud_keys=cloud_keys,
+    )
+
     scaffold_requested = _ask_yes_no(
         input_fn,
         print_fn,
@@ -966,6 +1327,7 @@ def run_setup_wizard(
             if key and value:
                 values[key] = value
 
+    values.update(reasoning_values)
     values.update(cloud_keys)
 
     if _ask_yes_no(

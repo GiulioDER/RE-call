@@ -440,9 +440,9 @@
             <div class="terminal-body"><pre><span class="warn">psycopg.ProgrammingError: vector type not found in the database</span></pre></div>
           </div>
 
-          <p>This is what skipping step 3 looks like. The database is running and reachable, but nothing has ever set it up: the <code>vector</code> extension that stores and compares embeddings is not installed, so the very first query that mentions a vector column fails. It usually appears from <code>index</code> or <code>search</code>, not from the step that was actually missed, which is what makes it confusing.</p>
+          <p>The wizard normally prepares the database for you, so this means it never got the chance: either it could not reach the database when you ran it, or this database was created outside the guide. It is running and reachable, but nothing has ever set it up: the <code>vector</code> extension that stores and compares embeddings is not installed, so the very first query that mentions a vector column fails. It usually appears from <code>index</code> or <code>search</code>, not from the step that was actually missed, which is what makes it confusing.</p>
 
-          <p>You do not need to install the extension by hand. Applying the schema does it for you, as the first thing it does.</p>
+          <p>You do not need to install the extension by hand. Applying the schema does it for you, as the first thing it does. Re-running <code>setup</code> against a reachable database will also do it.</p>
 
           <div class="terminal terminal--command" data-os-group data-shell="posix">
             <div class="terminal-bar">
@@ -468,13 +468,13 @@
 <span class="warn">['0001', '0002', ...]; run `recall schema apply`</span></pre></div>
           </div>
 
-          <p>Almost always this simply means step 3 has not run yet against this database. Apply the schema and the message goes away.</p>
+          <p>Almost always this simply means the schema has never been applied to this database, and the wizard did not do it for you because it could not reach the database at the time. Apply it and the message goes away.</p>
 
           <p>There is a second, rarer form of it, which names global generation migrations instead. RE-call's migrations are global: they set up the extension, the shared machinery, and the default <code>chunks</code> table that everything else is layered on. Until those have run once, the database has no foundation to build a custom table on, and any command that expects one refuses.</p>
 
           <div class="notice notice--signal">
             <p class="notice-title">Never start with a custom table on a fresh database</p>
-            <p>Apply the global migrations against the default <code>chunks</code> table first, exactly as step 3 of the install guide does. Custom tables are an addition to a migrated database, not a substitute for migrating it.</p>
+            <p>Apply the global migrations against the default <code>chunks</code> table first, which is what the wizard does for you. Custom tables are an addition to a migrated database, not a substitute for migrating it.</p>
           </div>
 
           <div class="terminal terminal--command" data-os-group data-shell="posix">
@@ -861,7 +861,7 @@ refuses rather than assuming it.</span>
         <li>
           <a href="start.html">
             <strong>Back to the install</strong>
-            <span>Eight steps from nothing to a memory that answers you, each with something you can check.</span>
+            <span>Seven steps from nothing to a memory that answers you, each with something you can check.</span>
             <em>→</em>
           </a>
         </li>

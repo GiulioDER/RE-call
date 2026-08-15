@@ -149,4 +149,17 @@ RECALL_SHADOW_QWEN_MODEL_PATH=
 
 # Enables database backed tenant generation routing and fail closed readiness.
 RECALL_ENTERPRISE_CONTROL_PLANE=0
+
+# --- Optional reasoning arm (docs/REASONING_OPERATIONS.md, docs/REASONING_MODEL_SELECTION_DESIGN.md) ---
+# Off unless RECALL_REASONING is set to "1". This is a separate `RECALL_REASONING_*` family from
+# the `RECALL_EXTRACTION_*` one above: extraction runs on the ingest path over the whole corpus,
+# reasoning runs per query, and the two plausibly want different models at different costs.
+# `recall setup` writes all four together, either the off flag alone or the full set; no other
+# combination is produced.
+# RECALL_REASONING=0
+# The base URL identifies the provider; there is deliberately no separate provider name. Any
+# OpenAI compatible endpoint works, including a local server such as Ollama.
+# RECALL_REASONING_MODEL=deepseek/deepseek-chat
+# RECALL_REASONING_BASE_URL=https://openrouter.ai/api/v1
+# RECALL_REASONING_API_KEY=
 ```
