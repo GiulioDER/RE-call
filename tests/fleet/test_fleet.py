@@ -37,3 +37,21 @@ def test_scripted_store_refuses_an_unscripted_query():
 
     with pytest.raises(KeyError, match="no script for query"):
         _score_config(store, embedder, queries, "dense", None)
+
+
+def test_a_member_without_a_declared_blind_spot_is_refused():
+    """`does_not_catch` is required, not optional.
+
+    An optional field would be empty on every member within a month, and a fleet that does not
+    state what it misses invites being read as covering more than it does.
+    """
+    from tests.fleet.members import FleetMember
+
+    with pytest.raises(ValueError, match="does_not_catch"):
+        FleetMember(
+            name="blank",
+            defect="none",
+            build=lambda: None,
+            expected={},
+            does_not_catch="   ",
+        )
