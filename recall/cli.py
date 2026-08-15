@@ -1263,8 +1263,11 @@ def main(argv: list[str] | None = None) -> None:
             except PermissionError as exc:
                 raise SystemExit(
                     f"{exc}\n\n"
-                    "This is `recall setup`, which cannot prompt its way out of this: pass a "
-                    "DSN explicitly with `recall --dsn <dsn> setup`, or set "
+                    "This is `recall setup`, which cannot prompt its way out of this: it uses "
+                    "the DSN it was given and never asks for another. Passing that same value "
+                    "again with `--dsn` or `--serving-dsn` does not help, because the refusal "
+                    "is about the credentials inside the DSN, not about how it reached the "
+                    "command. Re-run with a DSN carrying a real password, or set "
                     "RECALL_ALLOW_INSECURE_DSN=1 to accept the risk deliberately."
                 ) from exc
         else:

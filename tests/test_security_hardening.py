@@ -195,3 +195,32 @@ def test_confined_to_drops_a_nonexistent_or_directory_path():
     root = Path(__file__).resolve().parent
     assert _confined_to(root, [root]) == []                    # a directory, not a file
     assert _confined_to(root, [root / "nope.md"]) == []        # does not exist
+
+
+def test_the_setup_refusal_does_not_offer_a_remedy_that_does_not_work(tmp_path, monkeypatch):
+    """`recall setup` refused, then told the reader to do something that refuses identically.
+
+    The addendum read "pass a DSN explicitly with `recall --dsn <dsn> setup`". The guard fires on
+    what is IN the DSN, the published `recall:recall` credentials against a non-local host, not on
+    how the DSN reached the command, so passing the same value through the flag refuses again.
+    Anyone already using the flag, which the install guide tells them to do, was handed their own
+    invocation back as the fix.
+
+    This pins two things: that the flag genuinely does not help, and that the text says so rather
+    than implying the opposite.
+    """
+    from recall.cli import main
+
+    monkeypatch.delenv("RECALL_ALLOW_INSECURE_DSN", raising=False)
+    monkeypatch.chdir(tmp_path)
+    insecure = "postgresql://recall:recall@db.example.com:5432/recall"
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--dsn", insecure, "setup"])
+    message = str(exc.value)
+
+    # The flag really is not a way out, so the advice must not be phrased as though it were.
+    assert "--dsn" not in message or "does not help" in message, message
+    # The two remedies that do work must both survive.
+    assert "password" in message
+    assert "RECALL_ALLOW_INSECURE_DSN=1" in message
