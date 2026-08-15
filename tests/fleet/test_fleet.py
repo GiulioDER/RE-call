@@ -1,6 +1,8 @@
 """The eval calibration fleet: see docs/EVAL_CALIBRATION_FLEET_DESIGN.md."""
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from recall.eval.harness import _score_config
@@ -122,10 +124,22 @@ def run_surface_a(member: FleetMember) -> dict[str, float]:
 def test_surface_a_member_reports_its_closed_form(member: FleetMember):
     actual = run_surface_a(member)
     for field, expected in member.expected.items():
-        assert actual[field] == pytest.approx(expected, abs=1e-9), (
-            f"{member.name} ({member.defect}): {field} should be {expected} by construction, "
-            f"got {actual[field]}. Investigate the harness before editing this expectation."
-        )
+        # `pytest.approx` does NOT match NaN unless `nan_ok=True` is passed, and `nan_ok=True`
+        # on a plain `pytest.approx(expected)` would make the comparison pass for ANY actual
+        # value once expected is NaN (NaN tolerates everything under that flag). So NaN gets its
+        # own explicit branch: `math.isnan(actual[field])` is False for 0.0, which is exactly
+        # the old bug this member exists to catch — it still fails loudly against a `mean(x) if
+        # x else 0.0` regression.
+        if math.isnan(expected):
+            assert math.isnan(actual[field]), (
+                f"{member.name} ({member.defect}): {field} should be NaN (no data measured), "
+                f"got {actual[field]}. Investigate the harness before editing this expectation."
+            )
+        else:
+            assert actual[field] == pytest.approx(expected, abs=1e-9), (
+                f"{member.name} ({member.defect}): {field} should be {expected} by construction, "
+                f"got {actual[field]}. Investigate the harness before editing this expectation."
+            )
 
 
 def test_surface_a_has_eight_members():

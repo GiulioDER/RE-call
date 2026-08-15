@@ -126,6 +126,19 @@ def _drained_mean(leg: str) -> tuple[float, bool]:
     return mean(samples), total > len(samples)
 
 
+def _mean_or_nan(values: list[float]) -> float:
+    """Mean of a per-question metric, NaN when no question of that class was scored.
+
+    `recall/eval/metrics.py` sets this convention for every rate it computes: "a rate with no
+    data is NOT a score", because 0.0-on-empty reads as a real measurement of zero quality.
+    `_score_config` published a literal 0.0 here while `fcr_with_guard`, on the same
+    `AblationResult`, was already NaN-on-empty via `false_confident_rate` — one object carrying
+    two conventions. A configuration with no answerable queries has not measured a P@5 of zero;
+    it has not measured a P@5.
+    """
+    return mean(values) if values else float("nan")
+
+
 def _score_config(
     store: PgVectorStore, embedder: Embedder, queries: list[dict], fusion: str,
     reranker: Reranker | None,
@@ -165,10 +178,10 @@ def _score_config(
     sparse_ms, sparse_truncated = _drained_mean(LEG_SPARSE)
     return AblationResult(
         embedder=embedding_profile_id(embedder), fusion=fusion,
-        p_at_5=mean(ps) if ps else 0.0,
-        r_at_5=mean(rs) if rs else 0.0,
-        mrr=mean(ms) if ms else 0.0,
-        ndcg_at_10=mean(ns) if ns else 0.0,
+        p_at_5=_mean_or_nan(ps),
+        r_at_5=_mean_or_nan(rs),
+        mrr=_mean_or_nan(ms),
+        ndcg_at_10=_mean_or_nan(ns),
         fcr_no_guard=1.0, fcr_with_guard=false_confident_rate(unans_gaps),
         embed_ms_mean=timed_emb.stats.mean_ms,
         rerank_ms_mean=timed_rr.stats.mean_ms if timed_rr else 0.0,
@@ -651,8 +664,9 @@ def results_to_markdown(results: list[AblationResult]) -> str:
     ]
     for r in results:
         lines.append(
-            f"| {r.embedder} | {r.fusion} | {r.p_at_5:.3f} | {r.r_at_5:.3f} | {r.mrr:.3f} | "
-            f"{r.ndcg_at_10:.3f} | {r.fcr_no_guard:.2f}† | {_fmt_rate(r.fcr_with_guard)} |"
+            f"| {r.embedder} | {r.fusion} | {_fmt_rate(r.p_at_5, 3)} | {_fmt_rate(r.r_at_5, 3)} | "
+            f"{_fmt_rate(r.mrr, 3)} | {_fmt_rate(r.ndcg_at_10, 3)} | {r.fcr_no_guard:.2f}† | "
+            f"{_fmt_rate(r.fcr_with_guard)} |"
         )
     lines.append("")
     lines.append(
