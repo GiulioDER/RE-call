@@ -10,8 +10,8 @@ repository's established convention: a pre-registration lives beside the results
 ## Registration
 
 ```yaml
-registration_commit: PENDING
-registration_authored: PENDING
+registration_commit: 4f0a8c83a199367f1db9eb4ffd257902a7eb8573
+registration_authored: 2026-08-15T20:14:54+00:00
 frozen_evidence_digest: PENDING
 frozen_anchors_digest: PENDING
 ```
