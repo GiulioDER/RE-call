@@ -13,9 +13,17 @@ matter and none of them are accidents:
    `harness.py` sees `research_search` and can ask why; a silent default would have looked like
    ordinary search and quietly reopened the fail-open hole this session closed.
 2. It lives outside `recall_mcp` and outside the adapters, so no serving path can reach it.
-3. It still degrades honestly. Development mode does not invent a verdict: every hit comes back
-   `unverified` with `trust_state=degraded`, so a harness that reads verdicts gets the truth that
-   nothing was certified, rather than `ok` computed against the 0.50 floor.
+3. It still degrades honestly, but the honest-degradation SHAPE depends on whether the caller
+   passed a `Calibration`. `recall/trust.py:trusted_search` gates the forced-`unverified` rewrite
+   on `if calibration is None:`: with no calibration, every hit's verdict is overwritten to
+   `unverified`, because the verdicts `evaluate()` just computed came from the uncalibrated 0.50
+   floor and `ok` there would mean "cleared a threshold nobody chose". With an EXPLICIT
+   calibration, that overwrite is skipped and `evaluate()`'s real verdicts (`ok`, `superseded`,
+   `low_confidence`, ...) are left alone — `trust_state` still stays `degraded` and `calibrated`
+   still stays False, so no caller reads this as a certified result, but the verdicts themselves
+   are meaningful. Both `run_trust_eval` and `run_nearmiss_eval` always pass an explicit
+   `calibration`, so neither reaches the forced-`unverified` branch this property used to
+   describe unconditionally.
 
 If you are writing a *serving* path and you find yourself importing this, that is the bug.
 """

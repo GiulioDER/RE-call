@@ -1,14 +1,51 @@
 """The eval calibration fleet: see docs/EVAL_CALIBRATION_FLEET_DESIGN.md."""
 from __future__ import annotations
 
+import json
 import math
+from contextlib import nullcontext
 
 import pytest
 
-from recall.eval.harness import _score_config
+from recall.eval.harness import (
+    ARM_ENTAIL_ONLY,
+    ARM_STACKED,
+    ARM_THRESHOLD,
+    _score_config,
+    run_nearmiss_eval,
+    run_trust_eval,
+)
 from recall.eval.promotion.aggregate import decide
-from tests.fleet.members import DEPTH, SURFACE_A, SURFACE_B, FleetMember, GateExpectation, _rows
-from tests.fleet.scripted import QueryKeyedStore, ScriptedEmbedder
+from tests.fleet.members import (
+    DEPTH,
+    SURFACE_A,
+    SURFACE_B,
+    SURFACE_C,
+    SURFACE_D,
+    FleetMember,
+    GateExpectation,
+    _rows,
+)
+from tests.fleet.scripted import (
+    AlwaysEntailJudge,
+    QueryKeyedStore,
+    QueryKeyedTrustStore,
+    ScriptedEmbedder,
+)
+
+
+def _differs(actual: object, twin_value: object) -> bool:
+    """True if `actual` and `twin_value` differ, for the vacuity checks below.
+
+    Plain `!=` treats `nan != nan` as always True, so two members that both carry NaN in the
+    same field would be reported as differing on it even though the NaN itself carries no
+    distinguishing information. Two NaNs compare equal here (not a difference), so a shared NaN
+    can never be what rescues a member from a vacuity check.
+    """
+    if isinstance(actual, float) and isinstance(twin_value, float):
+        if math.isnan(actual) and math.isnan(twin_value):
+            return False
+    return actual != twin_value
 
 
 def test_scripted_store_returns_the_scripted_order_through_the_real_retriever():
@@ -124,12 +161,12 @@ def run_surface_a(member: FleetMember) -> dict[str, float]:
 def test_surface_a_member_reports_its_closed_form(member: FleetMember):
     actual = run_surface_a(member)
     for field, expected in member.expected.items():
-        # `pytest.approx` does NOT match NaN unless `nan_ok=True` is passed, and `nan_ok=True`
-        # on a plain `pytest.approx(expected)` would make the comparison pass for ANY actual
-        # value once expected is NaN (NaN tolerates everything under that flag). So NaN gets its
-        # own explicit branch: `math.isnan(actual[field])` is False for 0.0, which is exactly
-        # the old bug this member exists to catch — it still fails loudly against a `mean(x) if
-        # x else 0.0` regression.
+        # `pytest.approx(expected, nan_ok=True)` would work here too (measured directly: it
+        # matches NaN only to NaN and still rejects every finite actual, same as Surface C's use
+        # of it below). NaN gets its own explicit `math.isnan` branch anyway because it is more
+        # direct for this one case and needs no argument about a helper's tolerance semantics:
+        # `math.isnan(actual[field])` is False for 0.0, which is exactly the old bug this member
+        # exists to catch — it still fails loudly against a `mean(x) if x else 0.0` regression.
         if math.isnan(expected):
             assert math.isnan(actual[field]), (
                 f"{member.name} ({member.defect}): {field} should be NaN (no data measured), "
@@ -158,7 +195,7 @@ def test_surface_a_member_is_not_vacuous(member: FleetMember):
     if member is twin:
         return
     assert any(
-        member.expected[field] != twin.expected.get(field)
+        _differs(member.expected[field], twin.expected.get(field))
         for field in member.expected
     ), f"{member.name} is indistinguishable from the clean twin on every field it declares"
 
@@ -249,6 +286,172 @@ def test_the_fleet_detects_a_disabled_safety_axis(monkeypatch):
     )
 
 
+def run_surface_c(member: FleetMember, tmp_path) -> dict[str, float]:
+    """Drive one SURFACE_C member through the REAL `run_trust_eval` and return its published
+    fields.
+
+    `run_trust_eval` reads `queries_path` off disk regardless of `store_factory` (Part A's seam
+    only replaces how the STORE is built, not the query set), so the fixture's queries are
+    written to `tmp_path` here rather than passed in-process.
+    """
+    fixture = member.build()
+    embedder = ScriptedEmbedder()
+    store = QueryKeyedTrustStore(
+        embedder, fixture.script, supersession_edges=fixture.supersession_edges
+    )
+    queries_path = tmp_path / "queries.json"
+    queries_path.write_text(json.dumps(fixture.queries), encoding="utf-8")
+    results = run_trust_eval(
+        "unused",  # never read: store_factory replaces the DSN-driven throwaway store entirely
+        [embedder],
+        queries_path=queries_path,
+        touch_stale=False,  # this store's chunks carry no indexed_at for a touch to move
+        store_factory=lambda emb: nullcontext(store),
+    )
+    assert len(results) == 1
+    r = results[0]
+    return {
+        "str_baseline": r.str_baseline,
+        "str_recency": r.str_recency,
+        "str_trust": r.str_trust,
+        "trust_coverage": r.trust_coverage,
+        "successor_acc": r.successor_acc,
+        "abstain_acc": r.abstain_acc,
+        "mrr_answerable_baseline": r.mrr_answerable_baseline,
+        "mrr_answerable_trust": r.mrr_answerable_trust,
+    }
+
+
+@pytest.mark.parametrize("member", SURFACE_C, ids=lambda m: m.name)
+def test_surface_c_member_reports_its_closed_form(member: FleetMember, tmp_path):
+    actual = run_surface_c(member, tmp_path)
+    for field, expected in member.expected.items():
+        # nan_ok=True: abstain_acc on trust-misses-unscripted-supersession is NaN BY
+        # CONSTRUCTION (no expect=="abstain" query in that fixture), and that NaN is itself part
+        # of the asserted closed form, not a skipped comparison.
+        assert actual[field] == pytest.approx(expected, abs=1e-9, nan_ok=True), (
+            f"{member.name} ({member.defect}): {field} should be {expected} by construction, "
+            f"got {actual[field]}. Investigate run_trust_eval before editing this expectation."
+        )
+
+
+def test_surface_c_has_two_members():
+    assert len(SURFACE_C) == 2
+
+
+@pytest.mark.parametrize("member", SURFACE_C, ids=lambda m: m.name)
+def test_surface_c_member_is_not_vacuous(member: FleetMember):
+    twin = SURFACE_C[0]
+    if member is twin:
+        return
+    assert any(
+        _differs(member.expected[field], twin.expected.get(field)) for field in member.expected
+    ), f"{member.name} is indistinguishable from the clean twin on every field it declares"
+
+
+def test_the_fleet_detects_a_broken_supersession_resolver(monkeypatch, tmp_path):
+    """Mutate the code SURFACE_C's supersession detection depends on and require it to notice.
+
+    `trust-catches-scripted-supersession` earns its place only if the trust layer's ACTUAL
+    supersession resolution — not merely a score comparison — is what keeps the scripted stale
+    hit out of `str_trust`. Stubbing `resolve_successor` to always return `None` removes exactly
+    that mechanism, with the edge still scripted, so a str_trust that does not move proves the
+    member was never reading it.
+    """
+    import recall.trust as trust
+
+    monkeypatch.setattr(trust, "resolve_successor", lambda *args, **kwargs: None)
+
+    member = next(m for m in SURFACE_C if m.name == "trust-catches-scripted-supersession")
+    actual = run_surface_c(member, tmp_path)
+
+    assert actual["str_trust"] != pytest.approx(member.expected["str_trust"], abs=1e-9), (
+        "resolve_successor stubbed to always return None did not change str_trust, so "
+        "trust-catches-scripted-supersession is not actually driven by supersession detection"
+    )
+
+
+def run_surface_d(member: FleetMember, tmp_path) -> dict[str, dict[str, float]]:
+    """Drive one SURFACE_D member through the REAL `run_nearmiss_eval` and return every arm's
+    published fields, keyed by `recall.eval.harness` ARM constant."""
+    fixture = member.build()
+    embedder = ScriptedEmbedder()
+    store = QueryKeyedTrustStore(embedder, fixture.script)
+    queries_path = tmp_path / "queries.json"
+    queries_path.write_text(json.dumps(fixture.queries), encoding="utf-8")
+    nearmiss_path = tmp_path / "near_miss.json"
+    nearmiss_path.write_text(json.dumps(fixture.nearmiss), encoding="utf-8")
+    results = run_nearmiss_eval(
+        "unused",
+        [embedder],
+        AlwaysEntailJudge(),
+        queries_path=queries_path,
+        nearmiss_path=nearmiss_path,
+        store_factory=lambda emb: nullcontext(store),
+    )
+    by_arm = {r.arm: r for r in results}
+    assert set(by_arm) == {ARM_THRESHOLD, ARM_STACKED, ARM_ENTAIL_ONLY}
+    return {
+        arm: {
+            "nearmiss_fcr": row.nearmiss_fcr,
+            "gap_fcr": row.gap_fcr,
+            "false_abstain": row.false_abstain,
+            "mrr_answerable": row.mrr_answerable,
+        }
+        for arm, row in by_arm.items()
+    }
+
+
+@pytest.mark.parametrize("member", SURFACE_D, ids=lambda m: m.name)
+def test_surface_d_member_reports_its_closed_form(member: FleetMember, tmp_path):
+    actual = run_surface_d(member, tmp_path)
+    for arm, fields in member.expected.items():
+        for field, expected in fields.items():
+            assert actual[arm][field] == pytest.approx(expected, abs=1e-9), (
+                f"{member.name} ({member.defect}) [{arm}]: {field} should be {expected} by "
+                f"construction, got {actual[arm][field]}. Investigate run_nearmiss_eval before "
+                f"editing this expectation."
+            )
+
+
+def test_surface_d_has_two_members():
+    assert len(SURFACE_D) == 2
+
+
+@pytest.mark.parametrize("member", SURFACE_D, ids=lambda m: m.name)
+def test_surface_d_member_is_not_vacuous(member: FleetMember):
+    twin = SURFACE_D[0]
+    if member is twin:
+        return
+    assert any(
+        _differs(member.expected[arm][field], twin.expected.get(arm, {}).get(field))
+        for arm in member.expected
+        for field in member.expected[arm]
+    ), f"{member.name} is indistinguishable from the clean twin on every field it declares"
+
+
+def test_the_fleet_detects_a_broken_near_miss_metric(monkeypatch, tmp_path):
+    """Mutate the code under test and require SURFACE_D to notice.
+
+    Modelled on `test_the_fleet_detects_a_broken_recall_metric`: if this passes, the SURFACE_D
+    members are decorative and THAT is the finding.
+    """
+    import recall.eval.harness as harness
+
+    monkeypatch.setattr(harness, "near_miss_false_confident_rate", lambda *args, **kwargs: 0.0)
+
+    member = next(
+        m for m in SURFACE_D if m.name == "nearmiss-above-threshold-fools-the-cosine-guard"
+    )
+    actual = run_surface_d(member, tmp_path)
+
+    expected = member.expected[ARM_THRESHOLD]["nearmiss_fcr"]
+    assert actual[ARM_THRESHOLD]["nearmiss_fcr"] != pytest.approx(expected, abs=1e-9), (
+        "near_miss_false_confident_rate stubbed to 0.0 did not change nearmiss_fcr, so the "
+        "fleet is not actually reading this metric"
+    )
+
+
 def test_the_fleet_declares_what_it_does_not_cover():
     """Roll every member's blind spot into one visible list.
 
@@ -256,16 +459,31 @@ def test_the_fleet_declares_what_it_does_not_cover():
     "what does this fleet NOT certify", which is the question a reader actually has. Run with
     `-s` to see it.
     """
-    members = SURFACE_A + SURFACE_B
-    assert len(members) == 14
+    members = SURFACE_A + SURFACE_B + SURFACE_C + SURFACE_D
+    assert len(members) == 18
 
     print("\nThe eval calibration fleet does NOT catch:")
     for member in members:
         print(f"  - {member.name}: {member.does_not_catch}")
     print(
         "\nBeyond the members: indexing and embedding are stubbed, so nothing here speaks to "
-        "real retrieval quality. run_trust_eval and run_nearmiss_eval are unreached (both "
-        "build a real store from a dsn internally). LOCOMO, BEAM, MTRAG and the ladder are "
-        "out of scope. Generation and judging are untouched: the 2026-08-09 conditioning bug "
-        "lived in an upstream IBM scorer and this fleet closes its CLASS, not that instance."
+        "real retrieval quality. run_trust_eval and run_nearmiss_eval are now REACHED, via an "
+        "injected store_factory (SURFACE_C, SURFACE_D) — but only as far as a scripted store "
+        "can honestly drive them:\n"
+        "  - str_recency's real 'prefer the newest timestamp' tie-break is unexercised: every "
+        "scripted hit carries indexed_at=None, so recency degenerates to 'first hit in the "
+        "confident pool'; touch_stale is also passed False in every member, so the re-sync "
+        "simulation run_trust_eval performs by default is never taken.\n"
+        "  - The entailment DEMOTION mechanism (verdict ok -> not_entailed) is unexercised: "
+        "SURFACE_D's judge (AlwaysEntailJudge) never disagrees, so ARM_STACKED is only shown "
+        "to be inert when the judge agrees, never shown to demote a confident near-miss the "
+        "way a real judge is supposed to.\n"
+        "  - The Wilson-CI fields (*_ci) and n_* sample counts TrustEvalResult publishes are "
+        "pure functions of flags SURFACE_C already drives to differing values, and are not "
+        "independently asserted here.\n"
+        "  - entail_latency_ms_mean and query_latency_ms_mean are wall-clock timings with no "
+        "closed form to derive, so no member asserts on them.\n"
+        "LOCOMO, BEAM, MTRAG and the ladder are out of scope. Generation and judging are "
+        "untouched: the 2026-08-09 conditioning bug lived in an upstream IBM scorer and this "
+        "fleet closes its CLASS, not that instance."
     )
