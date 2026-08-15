@@ -1528,3 +1528,36 @@ def test_a_blank_model_id_twice_turns_the_arm_off(tmp_path, monkeypatch):
     assert "RECALL_REASONING=0" in env
     assert "RECALL_REASONING_MODEL" not in env
     assert "no model id" in output
+
+
+REASONING_ENV_KEYS = frozenset(
+    {
+        "RECALL_REASONING",
+        "RECALL_REASONING_MODEL",
+        "RECALL_REASONING_BASE_URL",
+        "RECALL_REASONING_API_KEY",
+    }
+)
+
+
+def test_the_wizard_writes_exactly_the_agreed_reasoning_variables(tmp_path, monkeypatch):
+    """The reasoning arm is being built separately against these four names. Renaming one here
+    without renaming it there produces a wizard that configures nothing, and no other test in
+    this repository would notice.
+    """
+    monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
+    env, _ = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y", "2", "1", "1",
+            "y", "1", "", "qwen2.5",
+            "n", "n",
+        ],
+    )
+    written = {
+        line.split("=", 1)[0]
+        for line in env.splitlines()
+        if line.startswith("RECALL_REASONING")
+    }
+    assert written == REASONING_ENV_KEYS

@@ -117,6 +117,10 @@ Histograms:
 Cost:
 
 * The core library records model call budget usage in `ReasoningBudgetUsage.model_calls`.
-* No managed model provider is required by the default reasoning tools.
+* No managed model provider is required by the default reasoning tools, which remain deterministic.
+  A provider can now be configured through `recall setup`, which writes `RECALL_REASONING`,
+  `RECALL_REASONING_MODEL`, `RECALL_REASONING_BASE_URL` and `RECALL_REASONING_API_KEY`. Configuring
+  one does not by itself put a model on the query path: `ReasoningBudget.max_model_calls` is 0 and
+  `answer_provider` is not wired by the shipped service.
 * Provider specific monetary cost should be added by provider adapters as library authored numeric
   fields or metrics, never as corpus controlled text.
