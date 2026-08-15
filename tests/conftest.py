@@ -95,17 +95,32 @@ if TYPE_CHECKING:
     from recall.trust import TrustedResult
     from recall_mcp.service import SearchResult
 
-#: The local dev database from docker-compose.yml — the same one the README quickstart uses.
-_LOCAL_DEV_DSN = "postgresql://recall:recall@localhost:5432/recall"
-
-#: The test database. Deliberately NOT read from `RECALL_DSN`.
+#: Where an unconfigured run points instead of at a real database.
 #:
-#: These tests DROP TABLES. `RECALL_DSN` is the variable the README tells users to point at their
-#: real database, so resolving the test DSN from it meant that exporting it and running `pytest`
-#: destroyed production data — no flag, no prompt, no way back. The suite now reads a dedicated
-#: `RECALL_TEST_DSN` and otherwise falls back to the local dev container, so a `RECALL_DSN`
-#: pointing at anything real is simply never consulted.
-TEST_DSN = os.environ.get("RECALL_TEST_DSN", _LOCAL_DEV_DSN)
+#: Port 1 is reserved and nothing listens on it, on any platform, so every connection attempt is
+#: refused immediately. That property is the whole point. `TEST_DSN` is imported directly by test
+#: modules and used in `psycopg.connect` and `apply_migrations` calls all over the suite, so a
+#: default that merely *usually* gets skipped is not good enough: any path that slips past a
+#: `requires_db` mark has to fail loudly rather than quietly connect to somebody else's database.
+#: The worst outcome here is a confusing connection error. It is never a dropped table.
+_UNCONFIGURED_DSN = "postgresql://recall:recall@127.0.0.1:1/recall"
+
+#: The test database. Deliberately NOT read from `RECALL_DSN`, and deliberately NOT defaulted to
+#: the shared dev container on port 5432.
+#:
+#: These tests DROP TABLES. Two separate ways that has destroyed data that was not ours:
+#:
+#: 1. `RECALL_DSN` is the variable the README tells users to point at their real database, so
+#:    resolving the test DSN from it meant exporting it and running `pytest` destroyed production
+#:    data — no flag, no prompt, no way back. The suite reads a dedicated `RECALL_TEST_DSN`, so a
+#:    `RECALL_DSN` pointing at anything real is simply never consulted.
+#:
+#: 2. Defaulting to `localhost:5432` pointed every concurrent checkout at the *same* container.
+#:    Two sessions running the suite dropped each other's tables mid-run, and the resulting
+#:    failures described the other session's timing rather than anything about the code. There is
+#:    no default any more: start a container scoped to this checkout with `scripts/session-db.sh
+#:    up`, which prints the `RECALL_TEST_DSN` to export.
+TEST_DSN = os.environ.get("RECALL_TEST_DSN") or _UNCONFIGURED_DSN
 
 
 def _reject_unsafe_test_dsn() -> None:
@@ -148,7 +163,18 @@ def _db_available() -> bool:
 
 #: One wording, used by the collection-time mark and by every fixture that refuses at setup, so a
 #: DB-less run reports the same reason however the test was skipped.
-DB_UNREACHABLE = "pgvector DB not reachable (run `docker compose up -d`)"
+#:
+#: The two cases are worded differently on purpose. "Not reachable" and "never configured" look
+#: identical in a skip summary but call for opposite responses, and reading several hundred skips
+#: that say the container is down, when in fact no DSN was ever exported, wastes the time it takes
+#: to go and inspect a healthy container.
+DB_UNREACHABLE = (
+    "RECALL_TEST_DSN is not set. Start a database scoped to this checkout with "
+    '`eval "$(scripts/session-db.sh up)"`. The suite DROPs tables and no longer defaults to the '
+    "shared container on port 5432, because concurrent checkouts dropped each other's tables."
+    if not os.environ.get("RECALL_TEST_DSN")
+    else "pgvector DB at RECALL_TEST_DSN is not reachable (`scripts/session-db.sh status`)"
+)
 
 requires_db = pytest.mark.skipif(not _db_available(), reason=DB_UNREACHABLE)
 

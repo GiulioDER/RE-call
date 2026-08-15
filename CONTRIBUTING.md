@@ -23,16 +23,27 @@ suite and the linter. Optional extras (`fastembed`, `voyage`, `rerank`, `entail`
 Docker before running `pytest`:
 
 ```bash
-docker compose up -d --wait      # or: make db-up
-pytest -v                        # or: make test
+eval "$(scripts/session-db.sh up)"   # or: make db-up
+pytest -v                            # or: make test
+scripts/session-db.sh down           # or: make db-down
 ```
 
-`tests/conftest.py` reads `RECALL_TEST_DSN` (falling back to the local dev container at
-`postgresql://recall:recall@localhost:5432/recall`) and refuses to run if that DSN is the same as
-`RECALL_DSN` or points at a non-local host without `RECALL_ALLOW_REMOTE_TEST_DB=1` — **the suite
-`DROP TABLE`s**, so this is a safety check, not friction to work around. Each test gets its own
-uuid-named table via the `make_store` / `cli_table` fixtures and cleans it up on teardown; nothing
-you own is at risk from a normal `pytest` run against the dev container.
+`scripts/session-db.sh up` starts a container scoped to *this* checkout, on its own port, and
+prints the `RECALL_TEST_DSN` to export. `down` removes that container and only that one.
+
+**There is no default DSN.** `tests/conftest.py` reads `RECALL_TEST_DSN` and, when it is unset,
+skips every DB test with a message saying so. It used to fall back to the shared dev container on
+port 5432, and that fallback is exactly what made concurrent checkouts drop each other's tables
+mid-run: **the suite `DROP TABLE`s.** The failures that came back described the other run's timing
+rather than anything about the code, which is an expensive way to learn that a default was wrong.
+
+Two further refusals, both at import time, because neither is recoverable from a test report: the
+suite will not run if `RECALL_TEST_DSN` is the same as `RECALL_DSN`, or if it points at a non-local
+host without `RECALL_ALLOW_REMOTE_TEST_DB=1`.
+
+Within a run, each test gets its own uuid-named table via the `make_store` / `cli_table` fixtures
+and cleans it up on teardown, so nothing you own is at risk from a normal `pytest` against a
+container you started.
 
 Tests that need an optional extra (the real-model `rerank`/`entail` cases, the one Voyage test)
 self-skip when the extra or its API key isn't present — that's why CI's `pip install -e ".[dev]"`

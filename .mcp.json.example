@@ -1,0 +1,39 @@
+{
+  "_comment": "Committed shape only. The real .mcp.json is gitignored and generated per checkout by scripts/session-mcp.sh, because the http servers authenticate with bearer tokens and this repository is public. Do not paste real tokens into this file.",
+  "mcpServers": {
+    "recall": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "recall_mcp.server"],
+      "env": {
+        "RECALL_DSN": "postgresql://recall:recall@127.0.0.1:5433/recall",
+        "RECALL_EMBEDDER": "fastembed",
+        "RECALL_TRUST_MODE": "development"
+      }
+    },
+    "code-rag": {
+      "type": "http",
+      "url": "http://100.91.148.25:8765/mcp",
+      "headers": { "Authorization": "Bearer REPLACED_AT_GENERATION" }
+    },
+    "qwen-mcp": {
+      "type": "http",
+      "url": "http://100.91.148.25:49555/mcp",
+      "headers": { "Authorization": "Bearer REPLACED_AT_GENERATION" }
+    },
+    "qwen-vps3": {
+      "type": "http",
+      "url": "http://100.119.123.49:49555/mcp",
+      "headers": { "Authorization": "Bearer REPLACED_AT_GENERATION" }
+    },
+    "vps3-lite": {
+      "type": "http",
+      "url": "http://100.119.123.49:49556/mcp"
+    },
+    "mcp-pg-ops": {
+      "type": "http",
+      "url": "http://100.91.148.25:18003/mcp",
+      "headers": { "Authorization": "Bearer REPLACED_AT_GENERATION" }
+    }
+  }
+}
