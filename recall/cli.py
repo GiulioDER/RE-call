@@ -16,7 +16,7 @@ from recall.entailment import EntailmentJudge, resolve_entailment_judge
 from recall.setup import CalibrationResult
 from recall.trust_policy import TrustPolicy
 from recall.embeddings import Embedder, HashingEmbedder
-from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
+from recall.index import head_commit, Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.store import (
@@ -925,6 +925,19 @@ def main(argv: list[str] | None = None) -> None:
         "--glob",
         default=DEFAULT_GLOB,
         help="file glob to index — e.g. '**/*.py' for code (auto-uses code chunking). Default: markdown.",
+    )
+    p_index.add_argument(
+        "--project",
+        default=None,
+        help="stamp every chunk with the project that produced it. Not inferred from the path: a "
+             "directory name is not a project, and a guessed value reads as authoritative while "
+             "being wrong in every worktree.",
+    )
+    p_index.add_argument(
+        "--no-commit-stamp",
+        action="store_true",
+        help="do not record the repository's HEAD on each chunk. The commit is what makes a stale "
+             "chunk DETECTABLE rather than merely suspected, and it cannot be reconstructed later.",
     )
     p_index.add_argument(
         "--allow-prune",
@@ -1918,7 +1931,18 @@ def main(argv: list[str] | None = None) -> None:
             args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
         ) as store:
             store.check_schema()
-            indexer = Indexer(store, embedder, chunker=chunker, allow_prune=args.allow_prune)
+            # Stamped by default, opt OUT rather than opt in. A corpus indexed without a commit
+            # cannot have one added afterwards, and the run that skips it is always the run nobody
+            # was watching.
+            commit = None if args.no_commit_stamp else head_commit(args.path)
+            indexer = Indexer(
+                store,
+                embedder,
+                chunker=chunker,
+                allow_prune=args.allow_prune,
+                project=args.project,
+                indexed_commit=commit,
+            )
             try:
                 stats = indexer.index_path(args.path, glob=args.glob)
             except PruneGuardTripped as exc:
