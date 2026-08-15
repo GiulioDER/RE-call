@@ -219,27 +219,27 @@ SURFACE_A: tuple[FleetMember, ...] = (
     ),
     FleetMember(
         name="no-answerable-queries",
-        defect="DECLARED BLIND SPOT: a config with no answerable queries publishes a fake 0.0",
+        defect="a config with no answerable queries must publish NaN, not a fake 0.0",
         build=lambda: _unanswerable([SCORE_GAP] * 4),
-        # ⚠️ THIS PINS A VALUE I BELIEVE IS WRONG, deliberately.
-        #
         # `recall/eval/metrics.py` states the convention: a rate with no data is NaN, because
         # 0.0 "would read as a PERFECT superseded-trust rate and a CATASTROPHIC accuracy at the
         # same time" and NaN "forces publishers to render 'n/a' instead of a fake number".
-        # `_score_config` does not honour it: `harness.py:168` uses `mean(ps) if ps else 0.0`
-        # for p_at_5, r_at_5, mrr and ndcg_at_10, while fcr_with_guard on the SAME return object
-        # IS NaN-on-empty via `false_confident_rate`. One object, two conventions.
+        # `_score_config` now honours it via `_mean_or_nan` (harness.py) for p_at_5, r_at_5,
+        # mrr and ndcg_at_10, matching fcr_with_guard on the SAME return object, which was
+        # already NaN-on-empty via `false_confident_rate`. One object, one convention.
         #
-        # Latent, not active: the shipped eval corpus has answerable queries. Pinned as CURRENT
-        # BEHAVIOUR rather than fixed here, because changing the empty-case semantics of four
-        # published metrics deserves its own reviewed diff and not a quiet ride inside a
-        # test-only change. Whoever fixes it changes these four zeros to NaN and this comment.
+        # `test_surface_a_member_reports_its_closed_form` compares NaN fields with `math.isnan`
+        # rather than `pytest.approx` (which does not match NaN without `nan_ok=True`), so this
+        # member still fails loudly if `_score_config` ever regresses back to a literal 0.0.
         expected={
-            "p_at_5": 0.0, "r_at_5": 0.0, "mrr": 0.0, "ndcg_at_10": 0.0,
+            "p_at_5": float("nan"), "r_at_5": float("nan"), "mrr": float("nan"),
+            "ndcg_at_10": float("nan"),
             "fcr_with_guard": 0.0,
         },
-        does_not_catch="the defect it documents. It asserts today's wrong value, so it will "
-                       "go red when the inconsistency is FIXED, which is the intended signal",
+        does_not_catch="whether a DOWNSTREAM renderer (results_to_markdown, save_charts) "
+                       "actually turns this NaN into 'n/a' or a blank bar rather than the "
+                       "literal string 'nan'; that is a separate rendering-level assertion, "
+                       "not this surface-A scoring check",
     ),
 )
 
