@@ -3,6 +3,12 @@
 > Design, 2026-08-15. Status: implemented, shipped on branch `claude/eval-calibration-fleet`.
 > Scope: `tests/fleet/`, covering `recall/eval/harness._score_config` and
 > `recall/eval/promotion/aggregate.py`. Test only, nothing ships in the wheel.
+>
+> **Extended 2026-08-15.** `run_trust_eval` and `run_nearmiss_eval` took an optional injected
+> `store_factory` (`recall/eval/harness.py`, test seam only, default path unchanged for every
+> existing caller), and the fleet grew Surface C and Surface D to reach them as far as a scripted
+> store can honestly drive their published rates. See those two sections below and the updated
+> "Declared non-coverage".
 
 ## The problem this exists to solve
 
@@ -172,6 +178,70 @@ Members assert on `PromotionDecision`'s outcome and on the specific refusal rais
 are deterministic. `evaluate_retrieval_promotion` draws a bootstrap, so members lower
 `bootstrap_samples` for speed and no member asserts on a bootstrap-derived interval bound.
 
+## Surface C: `run_trust_eval`
+
+`run_trust_eval(dsn, embedders, corpus_dir=None, queries_path=None, touch_stale=True,
+store_factory=None)` at `recall/eval/harness.py` built its store internally from a `dsn` until
+`store_factory` gave it an injection point. `queries_path` is still read from disk regardless —
+the seam only replaces how the STORE is built — so `run_surface_c` in `test_fleet.py` writes each
+member's queries to `tmp_path` and passes `store_factory=lambda emb: nullcontext(store)`.
+
+`tests/fleet/scripted.QueryKeyedTrustStore` extends `QueryKeyedStore` with the two things
+`recall.trust.trusted_search` needs beyond a plain `HybridRetriever.search`: a `supersession()`
+method (`trusted_search` calls it unconditionally whenever a search returns any hit, so a bare
+`QueryKeyedStore` raises `AttributeError` the moment the trust layer runs at all), scriptable via
+a `supersession_edges` constructor argument, and a documented no-op `touch_files` (this store's
+chunks never carry an `indexed_at`, so a touch has nothing to move).
+
+**The finding the brief asked this change to establish, stated plainly: `research_search`'s
+`TrustPolicy.development()` does NOT force every verdict to `unverified`.** Reading
+`recall/trust.py:trusted_search` closely: the forced-`unverified` branch is gated on
+`calibration is None`, and both `run_trust_eval` and `run_nearmiss_eval` always pass an EXPLICIT
+`calibration=cal` into `research_search`. So `evaluate()`'s real verdicts (`ok`, `superseded`,
+`low_confidence`, ...) stand; only `trust_state` is stamped `degraded`. `_research_trust.py`'s
+module docstring ("every hit comes back `unverified`") describes the no-calibration case, which
+these two callers never take — the docstring is not wrong, it is just not the branch either
+runner reaches. This means `superseded_trust_rate` is genuinely drivable, not structurally 0.0,
+and the two members below prove it two different ways: by score alone, and by real supersession
+detection.
+
+| member | construction | expected | why it earns its place |
+|---|---|---|---|
+| `trust-catches-scripted-supersession` | a stale hit scores above threshold WITH a scripted `supersedes:` edge | `str_trust 0.0`, `trust_coverage 0.5`, `successor_acc 1.0`, `abstain_acc 1.0` | proves the trust layer's REAL supersession resolution (`recall.trust.resolve_successor`), not just a score comparison, is what keeps the stale hit out of `str_trust` — its successor is promoted from `low_confidence` to `ok` by the same steelman logic `evaluate()` documents |
+| `trust-misses-unscripted-supersession` | the SAME high score, no edge scripted | `str_trust 1.0`, `trust_coverage 1.0`, `successor_acc 0.0`, `abstain_acc NaN` | the honest counterexample: without the metadata edge the trust layer has no signal beyond the score, so a genuinely stale memory (per the eval's own label) is served `ok`. `str_trust` flips from 0.0 to 1.0 driven by nothing but what `supersession()` returns — the two-value proof the brief required before adding either member |
+
+`str_baseline` / `str_recency` are 1.0 in both members (both read the raw scripted hit, not a
+verdict) — reused, not separately proven, since neither routes through the trust layer at all.
+
+`test_the_fleet_detects_a_broken_supersession_resolver` monkeypatches
+`recall.trust.resolve_successor` to always return `None` and requires
+`trust-catches-scripted-supersession`'s `str_trust` to move off 0.0 — proof the member is reading
+the real resolution, not a coincidence of the scripted scores.
+
+## Surface D: `run_nearmiss_eval`
+
+`run_nearmiss_eval(dsn, embedders, judge, ..., store_factory=None)` gained the same seam.
+Unlike Surface C, `judge: EntailmentJudge` is a REQUIRED positional argument used to build all
+three arms every call, even for a member that only cares about `ARM_THRESHOLD`'s row — so
+`tests/fleet/scripted.AlwaysEntailJudge` (`judge(query, texts) -> [True] * len(texts)`) exists
+purely to satisfy that requirement without crashing or ever demoting a hit. It mirrors `AcceptAll`
+in `tests/test_eval_nearmiss.py`, the real (DB-backed) suite's own fixture for the identical
+purpose, and inherits that suite's proven degeneracy: with a judge that never disagrees,
+`ARM_STACKED` cannot differ from `ARM_THRESHOLD` on any published rate
+(`recall/entailment.py`'s `apply_entailment` only ever demotes, never promotes).
+
+| member | construction | expected (`threshold` / `threshold+entail` / `entail-only`) | why it earns its place |
+|---|---|---|---|
+| `nearmiss-above-threshold-fools-the-cosine-guard` | a near-miss distractor scores ABOVE the gap threshold | `nearmiss_fcr 1.0 / 1.0 / 1.0` | a cosine threshold cannot tell a confident distractor from a confident answer — the exact failure class near-miss testing exists to name |
+| `nearmiss-below-threshold-reads-as-an-ordinary-gap` | the SAME distractor, scored below threshold | `nearmiss_fcr 0.0 / 0.0 / 1.0` | `nearmiss_fcr` flips from 1.0 to 0.0 under `threshold`/`threshold+entail`, driven by nothing but the store's returned score — the two-value proof for this rate. `entail-only`'s 1.0 is unchanged in both members: its permissive threshold (-1.0) passes any real cosine regardless, a genuine derived consequence, not vacuity |
+
+`gap_fcr` / `false_abstain` / `mrr_answerable` come from a shared plain/gap query pair and are
+identical across both members (0.0 / 0.0 / 1.0 under `threshold`/`threshold+entail`; `entail-only`
+reads `gap_fcr 1.0` — its permissive threshold cannot tell the far-gap query from an answer
+either, the mirror of what `nearmiss_fcr` shows). `test_the_fleet_detects_a_broken_near_miss_metric`
+monkeypatches `recall.eval.harness.near_miss_false_confident_rate` to a constant `0.0` and
+requires `nearmiss-above-threshold-fools-the-cosine-guard`'s `ARM_THRESHOLD` row to move.
+
 ## Assertions
 
 **Expected values are derived, never captured.** Every `expected` is written by hand from the
@@ -201,7 +271,7 @@ raises rather than returning a vacuous `("IDENTICAL", 0)`:
 ## Proving the fleet can fire
 
 Green tests are evidence of nothing until they have been shown to go red, and a test written after
-a fix and never shown to fail is a hypothesis rather than a guard. Two meta-tests:
+a fix and never shown to fail is a hypothesis rather than a guard. Four meta-tests:
 
 - **Surface A**: monkeypatch `recall_at_k` to return `1.0` unconditionally, assert the fleet goes
   red.
@@ -210,8 +280,14 @@ a fix and never shown to fail is a hypothesis rather than a guard. Two meta-test
   refusal, `"false abstention regresses"`, disappears and the candidate is wrongly promoted).
   `nan-safety-class` raises on `gap_false_confident_rate`, a different function untouched by this
   stub, so it is not part of this meta-test.
+- **Surface C**: monkeypatch `recall.trust.resolve_successor` to always return `None`, assert
+  `trust-catches-scripted-supersession`'s `str_trust` moves off 0.0 — proof the member reads real
+  supersession resolution, not a coincidence of the scripted scores.
+- **Surface D**: monkeypatch `recall.eval.harness.near_miss_false_confident_rate` to return `0.0`
+  unconditionally, assert `nearmiss-above-threshold-fools-the-cosine-guard`'s `ARM_THRESHOLD` row
+  moves off 1.0.
 
-If either mutation leaves the suite green, the fleet is decorative and that is the finding.
+If any mutation leaves the suite green, the fleet is decorative and that is the finding.
 
 ## Declared non-coverage
 
@@ -219,11 +295,28 @@ Rolled up from every member's `does_not_catch` into one test that prints the lis
 appear in the output rather than staying buried per member.
 
 - **Indexing and embedding are stubbed.** Nothing here says anything about real retrieval quality.
-- **`run_trust_eval` and `run_nearmiss_eval` are unreached.** Both take a `dsn` and build a real
-  store internally via `_throwaway_store`, and additionally need `store.touch_files`, a calibration
-  fitted from real cosines, and an entailment judge. Reaching them requires refactoring them to
-  accept an injected store, which turns a test-only change into a harness refactor. **Deferred by
-  decision**, to be its own change.
+- **`run_trust_eval` and `run_nearmiss_eval` are now REACHED** (Surface C, Surface D, added
+  2026-08-15 via an injected `store_factory`), but only as far as a scripted store can honestly
+  drive their published rates:
+  - **`str_recency`'s real "prefer the newest timestamp" tie-break is unexercised.** Every
+    scripted hit carries `indexed_at=None`, so the recency arm's `max(pool, key=...)` degenerates
+    to "first hit in the confident pool" rather than a real timestamp comparison; `touch_stale` is
+    also passed `False` in every Surface C member, so `run_trust_eval`'s default re-sync
+    simulation is never taken.
+  - **The entailment DEMOTION mechanism (`ok` -> `not_entailed`) is unexercised.** Surface D's
+    judge (`AlwaysEntailJudge`) never disagrees, so `ARM_STACKED` is only shown to be inert when
+    the judge agrees — never shown to demote a confident near-miss, which is the one thing
+    entailment exists to do that a cosine threshold cannot. A judge that can disagree per
+    candidate is required to close this, and none is scripted.
+  - **`TrustEvalResult`'s Wilson-CI fields (`*_ci`) and `n_*` sample counts are not
+    independently asserted.** They are pure functions of flags Surface C already drives to
+    differing values (`recall/eval/metrics.py`'s `wilson_ci`), so covering them separately would
+    re-test that 12-line pure function rather than close a new class of blind spot — a scoping
+    choice, not an incapability.
+  - **`entail_latency_ms_mean` and `query_latency_ms_mean` are undrivable to a closed-form
+    value.** They are wall-clock timings; nothing in `tests/fleet/members.py`'s "derived, never
+    captured" discipline can write a formula for a measured duration, so no member asserts on
+    them.
 - **LOCOMO, BEAM, MTRAG and the ladder are out of scope for v1.** `locomo.run_conversation` has the
   same `store` and `embedder` seam, so the `QueryKeyedStore` reaches it whenever someone wants it.
 - **Generation and judging are untouched.** The 08-09 conditioning bug lived in an upstream IBM
@@ -235,8 +328,10 @@ appear in the output rather than staying buried per member.
 
 ## Success criteria
 
-1. `pytest tests/fleet/` passes on `origin/master` with all fourteen members: eight on surface A,
-   six on surface B.
-2. Both mutation meta-tests turn the suite red when applied, verified by running them.
+1. `pytest tests/fleet/` passes with all eighteen members: eight on Surface A, six on Surface B,
+   two on Surface C, two on Surface D.
+2. All four mutation meta-tests turn the suite red when applied, verified by running them.
 3. Every member carries a non-empty `does_not_catch`, enforced by a test rather than by review.
-4. No file outside `tests/` is modified.
+4. No file outside `tests/` is modified, except `recall/eval/harness.py`'s `store_factory` seam
+   (Part A, additive-only: the default path is byte-for-byte unchanged for every existing caller,
+   verified by the six known call sites still passing untouched).

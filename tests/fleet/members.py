@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from recall.eval.harness import ARM_ENTAIL_ONLY, ARM_STACKED, ARM_THRESHOLD
 from recall.eval.promotion.aggregate import UnpairedArms
 from recall.eval.promotion.manifest import FrozenQuestion
 from recall.eval.promotion.records import QuestionRecord
@@ -489,5 +490,245 @@ SURFACE_B: tuple[FleetMember, ...] = (
         expected=GateExpectation(promoted=False, failure_contains="PENDING"),
         does_not_catch="a NaN latency, which the gate refuses on a different branch and which "
                        "no member exercises",
+    ),
+)
+
+
+@dataclass(frozen=True)
+class TrustEvalFixture:
+    """Everything `test_fleet.run_surface_c` needs to call `run_trust_eval` against a store
+    built by `tests.fleet.scripted.QueryKeyedTrustStore`."""
+
+    queries: list[dict]
+    script: dict[str, list[tuple[str, float]]]
+    supersession_edges: dict[str, str]
+
+
+@dataclass(frozen=True)
+class NearMissEvalFixture:
+    """Everything `test_fleet.run_surface_d` needs to call `run_nearmiss_eval` against a store
+    built by `tests.fleet.scripted.QueryKeyedTrustStore`."""
+
+    queries: list[dict]
+    nearmiss: list[dict]
+    script: dict[str, list[tuple[str, float]]]
+
+
+#: Shared plain (non-trust) queries every SURFACE_C / SURFACE_D member calibrates against: one
+#: answerable sample at SCORE_CONFIDENT and one unanswerable sample at SCORE_GAP.
+#:
+#: `recall.calibration.best_threshold` fits from these via its `_quantile` helper
+#: (`sorted_values[min(len(sorted_values) - 1, int(q * len(sorted_values)))]`), which at n=1
+#: collapses to index 0 for ANY percentile — so the 5th-percentile answerable floor is just
+#: SCORE_CONFIDENT and the 95th-percentile unanswerable ceiling is just SCORE_GAP. The fitted
+#: threshold is therefore the exact midpoint: `floor((0.80 + 0.20) / 2 * 1000) / 1000 == 0.5`.
+#: Every closed form in SURFACE_C and SURFACE_D assumes this threshold.
+_PLAIN_QUERIES: list[dict] = [
+    {"id": "p1", "query": "plain query", "answerable": True, "relevant_ids": ["plain_gold.md:0"]},
+    {"id": "p2", "query": "plain gap query", "answerable": False, "relevant_ids": []},
+]
+_PLAIN_SCRIPT: dict[str, list[tuple[str, float]]] = {
+    "plain query": [("plain_gold.md:0", SCORE_CONFIDENT)],
+    "plain gap query": [("plain_noise.md:0", SCORE_GAP)],
+}
+
+
+def _trust_catches_scripted_supersession() -> TrustEvalFixture:
+    trust_queries = [
+        {
+            "id": "t1", "query": "trust successor query", "trust": True, "expect": "successor",
+            "stale_ids": ["stale.md:0"], "successor_ids": ["successor.md:0"],
+        },
+        {
+            "id": "t2", "query": "trust abstain query", "trust": True, "expect": "abstain",
+            "stale_ids": ["stale2.md:0"], "successor_ids": [],
+        },
+    ]
+    script = dict(_PLAIN_SCRIPT)
+    # successor scores BELOW threshold on its own: it only reaches "ok" via the promotion the
+    # stale hit's own confident score licenses (see the member's derivation comment).
+    script["trust successor query"] = [("stale.md:0", SCORE_CONFIDENT), ("successor.md:0", 0.40)]
+    script["trust abstain query"] = [("stale2.md:0", SCORE_GAP)]
+    return TrustEvalFixture(
+        queries=_PLAIN_QUERIES + trust_queries,
+        script=script,
+        supersession_edges={"stale.md": "successor.md"},
+    )
+
+
+def _trust_misses_unscripted_supersession() -> TrustEvalFixture:
+    trust_queries = [
+        {
+            "id": "t1", "query": "trust query with missing edge", "trust": True,
+            "expect": "successor", "stale_ids": ["stale.md:0"],
+            "successor_ids": ["successor.md:0"],
+        },
+    ]
+    script = dict(_PLAIN_SCRIPT)
+    script["trust query with missing edge"] = [("stale.md:0", SCORE_CONFIDENT)]
+    return TrustEvalFixture(
+        queries=_PLAIN_QUERIES + trust_queries,
+        script=script,
+        supersession_edges={},  # the point of this member: no edge recorded for "stale.md"
+    )
+
+
+#: `run_trust_eval` publishes these on `TrustEvalResult`. Its Wilson-CI companions
+#: (`*_ci` fields) and `n_*` sample counts are pure functions of the same flags these members
+#: already drive and are declared, not silently skipped, in `test_fleet.py`'s roll-up.
+SURFACE_C: tuple[FleetMember, ...] = (
+    FleetMember(
+        name="trust-catches-scripted-supersession",
+        defect="none: the clean twin — a supersession edge IS recorded, so the trust arm must "
+               "refuse the stale hit and promote its successor instead",
+        build=_trust_catches_scripted_supersession,
+        # t1 (expect=successor): "stale.md:0" scores 0.80 (>= threshold 0.5) with a scripted
+        # edge stale.md -> successor.md. `recall/trust.py:_verdict` resolves the edge BEFORE it
+        # ever reads the score, so the stale hit's verdict is "superseded", not "ok" —
+        # str_trust does not count it. Because the stale hit's OWN score cleared the threshold,
+        # `evaluate`'s promotion step treats its successor ("successor.md:0", scored 0.40,
+        # itself below threshold) as though it had been the confident answer and promotes it
+        # from low_confidence to ok. That promoted hit is the query's only "ok" hit, so
+        # trust_coverage counts it and successor_acc sees ok_keys[0] equal the successor.
+        # t2 (expect=abstain): "stale2.md:0" scores 0.20 (< threshold); no edge is needed — it
+        # is low_confidence on score alone, ok=[], so the query abstains as expected.
+        # str_baseline / str_recency read no verdicts at all, only the top/newest SCRIPTED hit,
+        # which is the stale doc on both trust queries here -> 2/2 = 1.0 for both.
+        # str_trust: neither t1 nor t2 counts a stale id as "ok" (t1's ok hit is the SUCCESSOR,
+        # not the stale id; t2 has no ok hit at all) -> 0/2 = 0.0.
+        # trust_coverage: t1 has one ok hit, t2 has none -> 1/2 = 0.5.
+        # successor_acc (n=1, only t1 has expect=="successor"): ok_keys[0] is the successor ->
+        # 1/1 = 1.0.
+        # abstain_acc (n=1, only t2 has expect!="successor"): tres.abstained is True -> 1/1 = 1.0.
+        # mrr_answerable_(baseline|trust): the one plain answerable query's gold scores 0.80,
+        # clears threshold, keeps rank 1 under both baseline and trust search -> 1.0 / 1.0.
+        expected={
+            "str_baseline": 1.0, "str_recency": 1.0, "str_trust": 0.0, "trust_coverage": 0.5,
+            "successor_acc": 1.0, "abstain_acc": 1.0,
+            "mrr_answerable_baseline": 1.0, "mrr_answerable_trust": 1.0,
+        },
+        does_not_catch="whether the SAME queries still behave when the corpus never recorded "
+                       "the edge at all; paired with trust-misses-unscripted-supersession, "
+                       "which is exactly that case. Also does not catch str_recency's real "
+                       "tie-break: every scripted hit here carries indexed_at=None, so the "
+                       "'prefer the newest' comparison never distinguishes two real timestamps, "
+                       "and touch_stale is passed False, so the re-sync simulation is unreached",
+    ),
+    FleetMember(
+        name="trust-misses-unscripted-supersession",
+        defect="a stale memory whose supersedes: edge was never recorded reaches str_trust as "
+               "an undetected false positive — the trust layer has no signal beyond the score",
+        build=_trust_misses_unscripted_supersession,
+        # Same threshold (0.5). "stale.md:0" scores 0.80 with NO edge scripted (supersession()
+        # returns {}), so `resolve_successor` returns None immediately and `_verdict` falls
+        # through to score >= threshold -> "ok". The eval's OWN label still says this id is
+        # stale (`stale_ids=["stale.md:0"]`), so trust_flags counts it: str_trust = 1/1 = 1.0,
+        # the OPPOSITE of the paired member's 0.0, driven by nothing but what `supersession()`
+        # returns. successor_acc: ok_keys[0] is "stale.md:0", not the successor -> 0/1 = 0.0.
+        # trust_coverage: one ok hit -> 1/1 = 1.0. No expect=="abstain" query exists in this
+        # fixture, so abst_flags is empty and abstain_acc is NaN by `fraction_true`'s own
+        # empty-input convention (`recall/eval/metrics.py`) — asserted as NaN, not skipped.
+        expected={
+            "str_baseline": 1.0, "str_recency": 1.0, "str_trust": 1.0, "trust_coverage": 1.0,
+            "successor_acc": 0.0, "abstain_acc": float("nan"),
+            "mrr_answerable_baseline": 1.0, "mrr_answerable_trust": 1.0,
+        },
+        does_not_catch="an edge that exists but is written with the wrong basename or points "
+                       "at an ambiguous target (a basename two files share); this member's edge "
+                       "is simply absent, not malformed",
+    ),
+)
+
+
+def _nearmiss_above_threshold_fools_cosine_guard() -> NearMissEvalFixture:
+    script = dict(_PLAIN_SCRIPT)
+    script["near miss query"] = [("distractor.md:0", SCORE_CONFIDENT)]
+    return NearMissEvalFixture(
+        queries=list(_PLAIN_QUERIES),
+        nearmiss=[{"id": "nm1", "query": "near miss query"}],
+        script=script,
+    )
+
+
+def _nearmiss_below_threshold_reads_as_an_ordinary_gap() -> NearMissEvalFixture:
+    script = dict(_PLAIN_SCRIPT)
+    script["near miss query"] = [("distractor.md:0", SCORE_GAP)]
+    return NearMissEvalFixture(
+        queries=list(_PLAIN_QUERIES),
+        nearmiss=[{"id": "nm1", "query": "near miss query"}],
+        script=script,
+    )
+
+
+#: `run_nearmiss_eval` publishes these on `NearMissEvalResult`, one row per `recall.eval.harness`
+#: ARM. `entail_latency_ms_mean` / `query_latency_ms_mean` are wall-clock timings with no closed
+#: form to derive — declared, not covered, in `test_fleet.py`'s roll-up.
+SURFACE_D: tuple[FleetMember, ...] = (
+    FleetMember(
+        name="nearmiss-above-threshold-fools-the-cosine-guard",
+        defect="none: the clean twin — a near-miss distractor scores ABOVE the gap threshold, "
+               "exactly the failure class near-miss testing exists to name",
+        build=_nearmiss_above_threshold_fools_cosine_guard,
+        # threshold=0.5 (same derivation as SURFACE_C). The near-miss distractor scores 0.80: it
+        # clears the threshold on cosine alone, so ARM_THRESHOLD never abstains on it ->
+        # nearmiss_fcr = 1/1 = 1.0 — a cosine threshold cannot tell a confident distractor from a
+        # confident answer, which is the whole reason entailment exists.
+        # ARM_STACKED uses `scripted.AlwaysEntailJudge`, which never demotes an ok hit, so it
+        # reproduces ARM_THRESHOLD exactly on every rate — the same degeneracy
+        # `tests/test_eval_nearmiss.py`'s `test_accept_all_judge_cannot_change_the_threshold_arm`
+        # pins against a real database; this member pins it without one.
+        # ARM_ENTAIL_ONLY's threshold is -1.0 (passes any real cosine), so the distractor is
+        # "ok" there too, regardless of its score -> nearmiss_fcr = 1.0.
+        # gap_fcr / false_abstain / mrr_answerable come from the SHARED plain/gap queries and do
+        # not depend on the near-miss score at all: the far-gap query (0.20) stays below every
+        # non-permissive threshold and abstains under THRESHOLD/STACKED (gap_fcr 0.0), but
+        # ENTAIL_ONLY's permissive threshold passes it too -> gap_fcr 1.0 there. The answerable
+        # query (0.80) is never wrongly abstained on in any arm -> false_abstain 0.0 throughout,
+        # and its gold is the query's only hit -> mrr_answerable 1.0 throughout.
+        expected={
+            ARM_THRESHOLD: {
+                "nearmiss_fcr": 1.0, "gap_fcr": 0.0, "false_abstain": 0.0, "mrr_answerable": 1.0,
+            },
+            ARM_STACKED: {
+                "nearmiss_fcr": 1.0, "gap_fcr": 0.0, "false_abstain": 0.0, "mrr_answerable": 1.0,
+            },
+            ARM_ENTAIL_ONLY: {
+                "nearmiss_fcr": 1.0, "gap_fcr": 1.0, "false_abstain": 0.0, "mrr_answerable": 1.0,
+            },
+        },
+        does_not_catch="whether a judge that can actually DISAGREE demotes this near-miss; "
+                       "AlwaysEntailJudge never does, so ARM_STACKED's equality with "
+                       "ARM_THRESHOLD here proves the judge is wired in and inert when it "
+                       "agrees, not that it can rescue a confident near-miss when it disagrees",
+    ),
+    FleetMember(
+        name="nearmiss-below-threshold-reads-as-an-ordinary-gap",
+        defect="the near-miss distractor happens to score low, so the cosine guard catches it "
+               "for the wrong reason — indistinguishable from an ordinary far gap",
+        build=_nearmiss_below_threshold_reads_as_an_ordinary_gap,
+        # Only the near-miss score changes (0.20 instead of 0.80): it now falls below the 0.5
+        # threshold like an ordinary gap, so ARM_THRESHOLD and ARM_STACKED abstain on it ->
+        # nearmiss_fcr = 0/1 = 0.0, the OPPOSITE of the paired member, driven by nothing but
+        # what the store returns for one query. ENTAIL_ONLY's threshold is still permissive
+        # (-1.0), so it passes the distractor regardless of its now-low score, unchanged from
+        # the paired member -> nearmiss_fcr 1.0 there too — a real, derived consequence of a
+        # permissive threshold plus an agreeable judge, not a second independent proof (see
+        # does_not_catch below). gap_fcr / false_abstain / mrr_answerable are unaffected by the
+        # near-miss score -> identical to the paired member in every arm.
+        expected={
+            ARM_THRESHOLD: {
+                "nearmiss_fcr": 0.0, "gap_fcr": 0.0, "false_abstain": 0.0, "mrr_answerable": 1.0,
+            },
+            ARM_STACKED: {
+                "nearmiss_fcr": 0.0, "gap_fcr": 0.0, "false_abstain": 0.0, "mrr_answerable": 1.0,
+            },
+            ARM_ENTAIL_ONLY: {
+                "nearmiss_fcr": 1.0, "gap_fcr": 1.0, "false_abstain": 0.0, "mrr_answerable": 1.0,
+            },
+        },
+        does_not_catch="ARM_ENTAIL_ONLY ever telling a near-miss apart from a genuine gap: its "
+                       "permissive threshold plus this fleet's agreeable judge makes it "
+                       "confident on both members here, so no member shows entail-only "
+                       "distinguishing the two classes it exists to separate",
     ),
 )

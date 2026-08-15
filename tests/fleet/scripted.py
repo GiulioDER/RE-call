@@ -114,3 +114,74 @@ class QueryKeyedStore:
 
     def newest_indexed_at(self):
         return datetime.now(UTC)
+
+
+class QueryKeyedTrustStore(QueryKeyedStore):
+    """`QueryKeyedStore` plus the surface `recall.trust.trusted_search` needs beyond a plain
+    `HybridRetriever.search`.
+
+    Reached only through `run_trust_eval`/`run_nearmiss_eval`'s injected `store_factory`
+    (`recall/eval/harness.py`). `trusted_search` calls `store.supersession()` unconditionally
+    whenever a search returns any hit at all (`recall/trust.py:738-744`, the `known_as_of is
+    None` branch every fleet member takes) — a bare `QueryKeyedStore` has no such method, so
+    without this subclass every trust-layer call on a scripted store raises `AttributeError`
+    before a single fleet member could run.
+
+    `supersession_edges` maps a superseded FILE (the `metadata["file"]` basename `_chunk` builds
+    from a scripted chunk id, e.g. `"stale.md"` for `"stale.md:0"`) to its successor file, in
+    the exact shape `recall.trust.resolve_successor` walks. Deliberately real, not a stub that
+    always returns empty: `recall/trust.py:_verdict` reads this to decide `superseded` BEFORE it
+    ever looks at the hit's score, so scripting an edge exercises the actual supersession
+    detection a fleet member certifies, not merely a pass-through of the dense score.
+
+    `touch_files` is a documented no-op, not an omission. `run_trust_eval`'s `touch_stale=True`
+    default calls it to give stale documents a fresh `indexed_at` so the RECENCY arm can be
+    fooled by a re-sync (`recall/eval/harness.py`'s `run_trust_eval` docstring) — but the chunks
+    this store hands back never carry an `indexed_at` in the first place (`_chunk` builds a bare
+    `Chunk`, and `QueryKeyedStore.query_dense` wraps it in a `ScoredChunk` with no `indexed_at`
+    argument, so it defaults to `None` on every hit). There is nothing for a touch to move, so
+    accepting the call and doing nothing is the honest behaviour; every fleet member built on
+    this store calls `run_trust_eval(..., touch_stale=False)` and does not rely on it.
+    """
+
+    def __init__(
+        self,
+        embedder: ScriptedEmbedder,
+        script: dict[str, list[tuple[str, float]]],
+        *,
+        supersession_edges: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(embedder, script)
+        self._supersession_edges = dict(supersession_edges or {})
+
+    def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
+        # `frozenset()`: no member scripts an AMBIGUOUS target (a basename two documents share),
+        # so `unresolved` is always empty here — a real gap, named in test_fleet.py's roll-up.
+        return dict(self._supersession_edges), frozenset()
+
+    def touch_files(self, files: list[str]) -> int:
+        return 0
+
+
+class AlwaysEntailJudge:
+    """An `EntailmentJudge` that agrees with every candidate — the entailment arms in
+    `recall/eval/harness.py`'s `run_nearmiss_eval` (`ARM_STACKED`, `ARM_ENTAIL_ONLY`) require
+    SOME judge instance to be constructed at all, even for a fleet member that only cares about
+    `ARM_THRESHOLD`'s row, so this exists to satisfy `run_nearmiss_eval`'s required `judge`
+    argument without crashing or demoting anything.
+
+    Named after, and functionally identical to, `AcceptAll` in `tests/test_eval_nearmiss.py`,
+    which the real (DB-backed) near-miss tests use to pin the exact same degeneracy this fleet
+    exploits: with a judge that never disagrees, `ARM_STACKED` cannot differ from `ARM_THRESHOLD`
+    on any published rate (`recall/entailment.py`'s `apply_entailment` only ever DEMOTES a hit,
+    never promotes one), so a fleet member built on this judge can assert
+    `ARM_STACKED == ARM_THRESHOLD` as a genuine, non-vacuous, derived property, not merely leave
+    it unchecked.
+
+    Declared blind spot, named again in `test_fleet.py`'s roll-up: no member built on this judge
+    can show the entailment DEMOTION itself firing (`ok` -> `not_entailed`), because doing so
+    needs a judge that disagrees on at least one candidate, and this one never does.
+    """
+
+    def judge(self, query: str, texts: list[str]) -> list[bool]:
+        return [True] * len(texts)
