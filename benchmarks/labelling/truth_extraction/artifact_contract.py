@@ -307,6 +307,11 @@ _ANY_FENCE = re.compile(
     r"^(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^(?P=fence)`*~*\s*$", re.MULTILINE | re.DOTALL
 )
 
+#: Where a registration stops being a registration. Anchored to the whole heading line, and
+#: `^...$` under MULTILINE also matches at position 0, so a document opening with the heading is
+#: bounded like any other.
+_RESULT_HEADING = re.compile(r"^##[ \t]+Result[ \t]*$", re.MULTILINE)
+
 #: A prediction row in the pre-registration: `| P7 | targets naming a file ... | 0 | exactly 0 |`.
 #: Anchored on the id sitting alone in the first cell, so the reasoning prose that mentions "P7"
 #: in passing is not mistaken for a registration of it.
@@ -374,14 +379,27 @@ def read_registration(text: str) -> dict[str, str]:
 
 
 def read_prediction_ids(text: str) -> dict[str, str]:
-    """Map every registered prediction id to the rest of its row, lowercased.
+    """Map every REGISTERED prediction id to the rest of its row, lowercased.
 
     The row text is what makes an id checkable. An artifact publishing `p10_holds` is only
     correct if the pre-registration's P10 is the fixtures prediction, and the row is the only
     place that says so.
+
+    ⚠️ Scanning stops at `## Result`. A registration is what stood before the outcome, so the
+    scoring table below that heading restates every id and is not a second registration of any of
+    them. Reading it as one made P1 look registered twice and took every caller down. The bound is
+    also the stronger rule: a prediction cannot be introduced in the section that scores it.
+
+    **Fences are stripped BEFORE the bound is taken, and the order is load bearing.** Bounding
+    first leaves a fence that spans the `## Result` line unterminated in the prefix, so
+    `_ANY_FENCE` no longer matches it and every illustrative row inside it registers, which is
+    exactly what stripping exists to prevent. An anchored heading rather than a prefix, because
+    `str.partition("## Result")` also truncates at `## Results overview`, silently dropping every
+    prediction below it and returning a short dict rather than raising.
     """
+    registered = _RESULT_HEADING.split(_ANY_FENCE.sub("", text), maxsplit=1)[0]
     ids: dict[str, str] = {}
-    for match in _PREDICTION_ROW.finditer(_ANY_FENCE.sub("", text)):
+    for match in _PREDICTION_ROW.finditer(registered):
         key = match.group("id")
         if key in ids:
             raise ValueError(f"{key} is registered twice; an id must name one prediction")

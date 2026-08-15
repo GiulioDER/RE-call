@@ -8,6 +8,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Measured
+
+* **Truth extraction is a reviewing aid, and the pre-registration says so before the numbers do.**
+  The prose extraction experiment is scored in
+  `results/truth_extraction/PREREGISTRATION-prose-extraction.md` and summarised as `RESULTS.md`
+  §13. It is a **negative result**. The load-bearing public prediction, P10, registered that the
+  model would refuse all four failure fixtures transplanted from the private corpus; it proposed
+  an edge on two of them, and the registered decision table caps the feature at reviewing aid on
+  that alone, whatever else holds. `recall rewrite apply` keeps its human gate for this reason
+  rather than by caution.
+* **Neither arm can be given a tier, and neither precision prediction is falsified.** R1 decided 8
+  proposals and M1 decided 2 against a registered floor of 10, so both artifacts read
+  `UNDERPOWERED`: "could not tell", not "the model is bad". Both intervals still overlap their
+  predicted ranges. An earlier write up reported P1 as falsified by comparing R1's Wilson *upper*
+  bound against 0.70, which is the decision rule's gate on the Wilson *lower* bound and not P1's
+  floor of 0.60. That claim is withdrawn in both files.
+* **The finding worth carrying is a mechanism, not a rate.** The model's characteristic error is
+  reading a claim about something *inside* a document as a claim about the document. Both of its
+  false positives on the adjudicated rows and both of its fixture proposals are partial scope:
+  four for four across two corpora sharing no text, and the same error the rules it replaces made
+  on the private corpus.
+* Recall on PEPs is published as a **corpus fact** rather than a model result: 47 authored header
+  edges, 8 restated in prose at either end, and only 3 restated by the document the extractor is
+  actually given, so the operative ceiling is 0.064. Documents with a structured field for a
+  relation use the field.
+
+### Fixed
+
+* The fixtures result is published as **P10**, the prediction it scores, rather than P7, which is
+  a different registered prediction on a different instrument. The artifact is renamed
+  `arm_P10_fixtures.json`, and `tests/test_prereg_authority.py` now derives the identifier from
+  the pre-registration instead of carrying it from one line of code to the next.
+* Invariant I5 ("labels frozen before arms, checked by the runner") is asserted for the first
+  time. It was previously unassertable: the pre-registration and the results lived on two branches
+  neither of which contained the other. The runner now refuses to start when the pre-registration
+  is unreadable or the gold manifest digest has moved, and refuses to write an artifact generated
+  at or before the pre-registration was authored.
+* Corrected three documentation claims the shipped code contradicts: the truth extraction design
+  document's "not yet implemented" status, "`status` is routable but no relation emits it yet" in
+  three places, and `REASONING_OPERATIONS.md`'s claim that no proposal is promoted to corpus
+  metadata by the CLI (`recall rewrite apply --apply` writes frontmatter, under a human gate).
+
 ## [0.9.5] (2026-08-15)
 
 ### Added

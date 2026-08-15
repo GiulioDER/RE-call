@@ -9,8 +9,8 @@ published here that falls outside them.
 
 | tier | means | sections |
 |---|---|---|
-| **📦 artifact** | a committed JSON/markdown result file in `results/` you can diff against the table | §6, §7, §11, §12 |
-| **▶️ reproducible** | no committed artifact, but the corpus is public or ships here and one command regenerates it | §1, §2, §3, §4 (PEPs), §7, §9 |
+| **📦 artifact** | a committed JSON/markdown result file in `results/` you can diff against the table | §6, §7, §11, §12, §13 |
+| **▶️ reproducible** | no committed artifact, but the corpus is public or ships here and one command regenerates it | §1, §2, §3, §4 (PEPs), §7, §9, §13 |
 | **🔒 private** | measured on a corpus that cannot be published; the aggregates are all that exist | §4 (memory corpus), §5, §8 |
 
 A 🔒 row is the weakest kind of evidence in this document and is labelled wherever it appears.
@@ -558,4 +558,116 @@ FINDINGS §10c quotes as 0.70–0.90 against 0.51–0.64.
 python -m recall.eval.locomo      --data locomo10.json          # indexes locomo_chunks
 python -m recall.eval.cosine_dump --data locomo10.json \
     --out results/cosine/distributions.json --chart-dir results/cosine
+```
+
+
+## 13. Truth extraction — can a model recover a supersession a regex could not? 📦 ▶️
+
+**A negative result, pre-registered before either arm ran.** The prediction is
+[`results/truth_extraction/PREREGISTRATION-prose-extraction.md`](truth_extraction/PREREGISTRATION-prose-extraction.md),
+committed at `938caad` on 2026-08-14, ahead of every artifact below and of the labelling; the
+`## Result` section scores each registered prediction against it.
+
+### 13a. The corpus fact, which is arm independent
+
+| quantity | value |
+|---|---|
+| PEPs indexed | 733 <!--@ truth_extraction/census.json # n_files --> |
+| authored `Superseded-By` header edges | 47 <!--@ truth_extraction/census.json # n_header_edges --> |
+| files carrying a prose closure marker | 209 <!--@ truth_extraction/census.json # n_prose_marker_files --> |
+| markers with no matching header | 175 <!--@ truth_extraction/census.json # n_marker_without_header --> |
+| edges restated in prose, **either** end | 8 <!--@ truth_extraction/census.json # n_restated_in_prose --> |
+| recall ceiling, either end | 0.170 <!--@ truth_extraction/census.json # recall_ceiling --> |
+| restated by the superseded PEP itself, the only input the extractor is given | **3** <!--@ citation-pending: the split of the 8 is recorded in census.json's `_provenance.note`, not as a scalar key --> |
+| **operative** ceiling for the frozen gold input | **0.064** <!--@ citation-pending: derived as 3/47 from the same note; no artifact retains it as a scalar --> |
+
+**Recall on PEPs is a property of how PEP authors write, not a measurement of any extractor.** A
+document with a structured field for a relation uses the field. This falsified the census
+prediction that commissioned it: a point of
+0.60 <!--@ citation-pending: a falsified prediction, scored in the pre-registration's "Scored
+already, and wrong" section; no artifact holds a prediction -->
+on an interval of 0.45 <!--@ citation-pending: as above, the lower bound of that prediction -->
+to 0.80 <!--@ citation-pending: as above, the upper bound of that prediction -->.
+The belief it updates is stated
+in the pre-registration: prose restatement is what happens when there is nowhere else to put the
+fact, so the feature is worth deploying on corpora *without* a structured field for the relation.
+
+### 13b. The two arms, on the blind-adjudicated `marker_without_header` pack
+
+`R1` runs `recall/fix.py`'s refusal rules unmodified, with only the PEP cross-reference forms
+added. `M1` runs the shipped extraction engine under `truth-extraction-prompt-v2` on
+`anthropic/claude-sonnet-4.5`. Both decide the same candidates from the same source bodies.
+
+| quantity | R1, rules | M1, model |
+|---|---|---|
+| proposals made | 9 <!--@ truth_extraction/arm_R1_rules.json # proposed --> | 2 <!--@ truth_extraction/arm_M1_model.json # proposed --> |
+| decided (blank labels leave the denominator) | 8 <!--@ truth_extraction/arm_R1_rules.json # proposed_scored --> | 2 <!--@ truth_extraction/arm_M1_model.json # proposed_scored --> |
+| precision | 0.375 <!--@ truth_extraction/arm_R1_rules.json # precision --> | 0.00 <!--@ truth_extraction/arm_M1_model.json # precision --> |
+| Wilson lower | 0.137 <!--@ truth_extraction/arm_R1_rules.json # precision_wilson_lower --> | 0.000 <!--@ truth_extraction/arm_M1_model.json # precision_wilson_lower --> |
+| Wilson upper | 0.694 <!--@ truth_extraction/arm_R1_rules.json # precision_wilson_upper --> | 0.658 <!--@ truth_extraction/arm_M1_model.json # precision_wilson_upper --> |
+| pre-registered verdict | **UNDERPOWERED** | **UNDERPOWERED** |
+
+**Neither number supports a tier, and neither prediction is falsified.** The registered floor was
+ten proposals in either arm, and the arms decided eight and two, which is "could not tell". Both
+predicted a precision of 0.80 <!--@ citation-pending: a registered prediction, held in the
+pre-registration rather than in any artifact -->, and both intervals still overlap their predicted
+ranges, so the correct report is "wrong on the point estimate, not excluded by the data". Quoting
+either point estimate as a precision figure would misstate what these n can carry.
+
+### 13c. The public bridge, which is the result 🔑
+
+Four fixtures transplanted from the private memo corpus <!--@ citation-pending: the private corpus
+is not publishable; only the four transplanted failures are -->, each a documented failure of the
+rules the model replaces, each runnable by anyone. The registered prediction `P10` was that all
+**4** <!--@ truth_extraction/arm_P10_fixtures.json # fixtures --> would be refused. The model
+refused **2** <!--@ truth_extraction/arm_P10_fixtures.json # refused --> and proposed an edge on
+the other **2** <!--@ truth_extraction/arm_P10_fixtures.json # proposed -->.
+
+| fixture | registered | M1 |
+|---|---|---|
+| `reported_speech` | refuse | **refused** |
+| `hedged` | refuse | **refused** |
+| `partial_scope_claim` | refuse | **PROPOSED** |
+| `partial_scope_scope` | refuse | **PROPOSED** |
+
+The pre-registered decision table's top row is unconditional, so the feature ships as a **reviewing
+aid at most**: human in the loop, `--apply` refused, whatever the precision numbers had said.
+
+🔑 **The transferable finding is a mechanism, not a rate.** Every one of `M1`'s proposals across
+both corpora asserts an edge broader than its evidence sentence supports. Three take the narrow
+form, a claim about something *inside* a document read as a claim about the document: `PEP 642`
+replacing "the special casing of `bool` ... in :pep:`634`", and both partial-scope fixtures. The
+fourth, `PEP 376` superseding `PEP 262` only "combined with :pep:`345`", is the same error in
+another shape, a jointly conditioned supersession asserted unconditionally. It is the error
+`recall/fix.py` already recorded on the private corpus. That is the pre-registration's ordering
+prediction `O2`, which held.
+
+`O1`, that the model would propose *more* than the rules arm, was falsified in the opposite
+direction: it proposed 2 <!--@ truth_extraction/arm_M1_model.json # proposed --> against the rules
+arm's 9 <!--@ truth_extraction/arm_R1_rules.json # proposed -->. That was the load-bearing belief,
+so its failure is the strongest single reason to run the private arm.
+
+⚠️ **This corpus cannot settle the model's value either way.** PEPs cite each other as
+``:pep:`NNN```, a conventional form a regex handles, so the target-resolution lever a model
+provides is largely absent here. The private 792-memo arm is the one that could, and it has **not
+run** (host unavailable), which the pre-registration records explicitly rather than as a null.
+
+```bash
+# NOT --depth 1: the scored commit is not the tip, and a shallow clone cannot reach it.
+git clone --filter=blob:none https://github.com/python/peps
+git -C peps checkout 5981b2a292610104eb30735423504c52fe454650
+
+python -m benchmarks.labelling.truth_extraction.run_arms --arm rules \
+    --peps-dir peps/peps --out results/truth_extraction/arm_R1_rules.json
+
+# --status-vocabulary is NOT optional for reproduction. It is part of the prompt and part of the
+# extraction cache key, so omitting it builds a different prompt than the scored run used.
+python -m benchmarks.labelling.truth_extraction.run_arms --arm model \
+    --peps-dir peps/peps --sibling results/truth_extraction/arm_R1_rules.json \
+    --status-vocabulary Final,Rejected,Deferred,Accepted,Active,Draft,Superseded,Withdrawn,Provisional \
+    --out results/truth_extraction/arm_M1_model.json
+
+# The fixtures arm is a memo-shaped corpus and uses the shipped default vocabulary.
+python -m benchmarks.labelling.truth_extraction.run_arms --arm fixtures \
+    --peps-dir peps/peps --out results/truth_extraction/arm_P10_fixtures.json
 ```

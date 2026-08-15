@@ -290,6 +290,166 @@ Postgres on this machine, producing false reds.
 
 ## Result
 
-*Appended after the arms run. Record correct / wrong / partially against the committed intervals,
-**and whether the reasoning held for the right reason.** A prediction never compared against the
-outcome is theatre.*
+Scored 2026-08-15 against `arm_R1_rules.json`, `arm_M1_model.json` and `arm_P10_fixtures.json`,
+generated 2026-08-15 at 14:07:39Z, 14:07:54Z and 14:08:14Z respectively, all three from `recall`
+at `179e54e3` against `python/peps` at `5981b2a2`.
+
+**The decision: the feature ships as a reviewing aid at most.** P10 failed. The model proposed an
+edge on two of the four transplanted fixtures, and the decision table's top row is unconditional:
+"any transplanted fixture proposed leads to fails the public bridge, reviewing aid at most,
+whatever else holds". Nothing below changes that, and nothing below is allowed to.
+
+**Neither arm may be given a tier.** R1 decided 8 proposals and M1 decided 2, against a registered
+floor of 10 in either arm, so both artifacts read `UNDERPOWERED`. The honest report is "could not
+tell", not "the model is bad". M1's Wilson half width is 0.329, which trips the second underpowered
+clause on its own.
+
+### Two corrections to how this was first written up
+
+Both were found by reading this file rather than the summary of it, and both are the reason the
+identifiers are now derived mechanically.
+
+1. ⚠️ **P1 was reported as falsified, and it is not.** The first write up said "R1's upper bound of
+   0.694 sits just below P1's predicted floor of 0.70". P1's predicted floor is **0.60**. The 0.70
+   is the decision rule's gate on the Wilson **lower** bound for the batch reviewable tier, a
+   different quantity on a different bound, and comparing R1's *upper* bound against it is a
+   category error. R1's interval [0.137, 0.694] overlaps the predicted [0.60, 0.95] across
+   [0.60, 0.694], so the data do not exclude the prediction. P1 is **wrong on the point estimate
+   and not falsified**, which is the weaker and correct claim.
+2. **The fixtures result was published as P7 and is P10.** P7 is a different registered prediction
+   on a different instrument. The prose was right throughout and only the identifier was wrong,
+   which is the shape that survives review. `tests/test_prereg_authority.py` now refuses an
+   artifact whose published id does not resolve to the matching row here.
+
+### The invariant row is not scored here, and that is an open gap
+
+⚠️ The decision table's second row gives **APPARATUS FAILURE precedence over every row below it**:
+if any of I1 to I9 fails, publish no number. This section does not report the status of I1, I2,
+I3, I4, I6, I7, I8 or I9, and I am not going to assert a clean bill I have not audited one by one.
+What is true today:
+
+- **I5 is asserted for the first time**, by `tests/test_prereg_authority.py`, and it passes. Until
+  the two branches were joined it was not even expressible.
+- **I8 is partly unassertable here.** Its second half reads "the gold denominator equals
+  `census['n_header_edges']`", and the 47 gold question arm was never run, which is the same fact
+  P8 and P9 are unscored for. Its first half holds: both arms proposed at least one.
+- The remaining invariants have tests in `tests/test_truth_extraction_*.py`, and the suite is
+  green, but **nobody has walked I1 to I9 against those tests and confirmed the mapping**. That
+  audit is outstanding and it is the next thing to do to this experiment.
+
+**Why the headline stands anyway.** P10 does not depend on the precision apparatus. It is four
+documents, four extractions and a refusal count, its validator refuses the one shape that would
+inflate it (any batch failure at all, not merely all of them), and the artifact records an empty
+`rejection_rungs` for every fixture, so no resolution rung stood in for a semantic refusal. The
+precision numbers are the ones an unaudited invariant could move, and they are already published
+as UNDERPOWERED, which is to say as no number at all.
+
+### Score
+
+| # | registered | measured | score |
+|---|---|---|---|
+| P1 | R1 precision 0.80, [0.60, 0.95] | 0.375, Wilson [0.137, 0.694], n=8 | **wrong on the point, NOT falsified**: intervals overlap on [0.60, 0.694] |
+| P2 | M1 precision 0.80, [0.65, 0.92] | 0.00, Wilson [0.000, 0.658], n=2 | **wrong on the point, NOT falsified**, and only by 0.008 of overlap |
+| P3 | abs Δ precision < 0.15 | 0.375 | **wrong**, and it fails low, which the file said to diagnose with P7 |
+| P4 | R1 proposes 8, [2, 20] | 9 | **correct** |
+| P5 | M1 proposes 22, [10, 34] | 2 | **falsified**, and by a count rather than an interval |
+| P6 | M1 referral rate 0.15, [0.05, 0.40] | no extraction path emits a review required status | **unscored** |
+| P7 | M1 out of corpus targets, exactly 0 | no counter exists | **unscored**, holds only by construction |
+| P8 | M1 recall 0.043 | the 47 gold questions arm was never run | **unscored** |
+| P9 | R1 recall 0.021 | as P8 | **unscored** |
+| **P10** | **4 of 4 fixtures refused** | **2 of 4** | **FALSIFIED. This is the result** |
+| P11, P12 | private 792 memo corpus | the host was not available | **not run**, explicitly, never null |
+| O1 | M1 proposes more than R1 | 2 against 9 | **falsified, in the opposite direction** |
+| O2 | M1's residual errors are majority hedged or partial scope, not target resolution | 2 of 2 partial scope | **held** |
+| O3 | R1's residual errors are majority reported speech, via PEP 0 and PEP 1 | at most 1 of 5, and not by that mechanism | **falsified** |
+
+**Six of twelve numbered predictions could not be scored at all**, half of them, and that is a
+finding about the design rather than an inconvenience. P6 and P7 registered quantities nothing
+counts, P8 and P9 registered an arm that was never built, and P11 and P12 registered a corpus that
+was not reachable. Only P1 to P5 and P10 carry a score.
+A prediction whose instrument does not exist is not a prediction; it reads as one until someone
+tries to score it. Registering the instrument alongside the number is the change that follows.
+
+⚠️ **P7 deserves its own line, because P3's diagnostic depended on it.** This file says that if P3
+fails low, check P7 first, since target resolution residuals would mean the shared post filter is
+not reaching M1, which is an apparatus failure and not a result. P3 did fail low. P7 cannot be
+checked: the model never sees a target outside the corpus, because `extract_file_claims` is handed
+`corpus_names` and the resolution rung drops the rest before anything is counted. So P7 holds by
+construction, which is the vacuous form this file warned about in its own invariant table, and the
+diagnostic it was supposed to power is unavailable. The evidence that this is not an apparatus
+failure comes from elsewhere: both of M1's false positives resolved to real corpus files, and the
+fixtures arm records an empty `rejection_rungs` for all four, so no rung did the work there either.
+
+### Did the reasoning hold for the right reason?
+
+**Mostly not, and the one place it did is the most useful thing here.**
+
+**O1 is falsified in the opposite direction, and it was the load-bearing belief.** The registered
+reasoning was "the model's value is coverage, not judgement; precision is held by the shared
+deterministic post filters". M1 proposed **2** where R1 proposed **9**. The model was not more
+generous and worse judged, it was far more conservative. Every downstream expectation rested on
+this, including P5's floor of 10, which is why P5 missed by a factor of five rather than a little.
+
+**O3 was specific and specifically wrong.** It predicted R1's residual false positives would be
+majority reported speech, naming the mechanism: PEP 0 and PEP 1 narrate other PEPs' supersessions
+and `_is_index` does not match the stem `pep-0000`. Of R1's five false positives, at most one reads
+as reported speech, and it comes from PEP 3108, a module removal index, not from PEP 0 or PEP 1.
+The named mechanism did not fire once. The actual residual is a mixture of five: one explicitly
+partial (item 18, "This PEP has **partially** been superseded by :pep:`3137`"), one jointly
+conditioned (item 28, "Combined with :pep:`345`, the current proposal supersedes :pep:`262`"), one
+plain statement naming two targets (item 15, "superseded by :pep:`345` **and** :pep:`376`"), one
+plain statement naming a single target (item 17), and the reported speech fragment (item 29).
+
+🔑 **O2 held, and it held on two corpora independently.** It predicted that M1's residual false
+positives would be majority partial scope rather than target resolution. Both of M1's false
+positives on the 38 rows are partial scope:
+
+- item 20, PEP 642 on PEP 634: "the `__match_args__ is None` handling **in this PEP replaces the
+  special casing of** `bool`, ... **in** :pep:`634`". It replaces a mechanism *inside* PEP 634, not
+  PEP 634.
+- item 28, PEP 376 on PEP 262: "**Combined with** :pep:`345`, the current proposal supersedes
+  :pep:`262`". PEP 376 alone does not supersede it.
+
+And both of M1's fixture proposals are the two partial scope fixtures, `partial_scope_claim` and
+`partial_scope_scope`. It refused `reported_speech` and `hedged`.
+
+**So the model has one characteristic error: it proposes an edge broader than the sentence
+supports.** All four of its proposals across both corpora are that error, and three of the four
+are the same narrow form, a claim about something *inside* a document read as a claim about the
+document (item 20, and both fixtures). The fourth, item 28, is the same error in a different
+shape: the supersession is real but *jointly conditioned*, and the model dropped the condition.
+Calling all four "inside the document" would overstate it, and the two shapes share the thing that
+matters, which is that the proposal asserts more than the evidence sentence does.
+
+This is the same error `recall/fix.py` recorded on the private corpus, where two of the four rule
+based survivors were "superseding a claim or scope inside the target rather than the target". A
+precision point estimate over 2 proposals says nothing. This says where the work is, and it is the
+only thing here I would act on.
+
+⚠️ **A registered piece of reasoning went unscored until review caught it, and it was wrong in the
+model's favour.** Reasoning item 3 above predicted that hedging would be the residual and that
+*the model does not fix it*, on the grounds that refusing is what models are measured worst at in
+this repository. The model refused the hedged fixture. On one data point that is not a
+vindication, but it is a registered prediction that failed in the direction nobody guards against,
+and it belongs in the score rather than in the part of the write up that only counts the misses.
+
+### What this does not settle, restated now that the numbers exist
+
+- **The model's value, at all.** It was said in advance and it is still true: PEPs cite each other
+  as ``:pep:`NNN```, a conventional form a regex handles, so the target resolution lever a model
+  provides is largely absent. On the private corpus 56 of 60 markers never became proposals for
+  exactly that reason. This corpus cannot measure the lever, and it did not.
+- **Whether M1's conservatism is a virtue or a defect.** Proposing 2 where 9 were available is
+  either good judgement or a broken proposer, and 2 decided proposals cannot tell the difference.
+  O1's failure is the strongest reason to run the private arm.
+- **Precision, to any useful width.** 8 and 2 decided proposals. The instrument was 38 rows and it
+  yielded 10 scored proposals across both arms combined.
+- **Anything about `contradicts`, `same_entity` or `status`.** Unchanged from the pre-registration.
+
+### The uninformative outcome, declared live in advance, is what happened
+
+This file predicted it: "with a precision instrument of 38 rows and a recall ceiling of 3, PEPs may
+well return UNDERPOWERED, in which case the honest output is the census plus the four fixture
+refusals." That is very nearly the outcome, with one substantive correction to it. The fixtures did
+not all refuse. Two of four proposed, so the honest output is the census, **the failure of the
+public bridge**, and the partial scope mechanism that O2 predicted and both corpora confirm.

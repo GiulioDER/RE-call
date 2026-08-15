@@ -54,16 +54,32 @@ model proposed an edge on both partial-scope fixtures — `Supersedes the *infer
 in [[curate_wallets_2026-07-14]]` and `Supersedes the scope in
 [[project_recall_abstention_2026-07-18]]` — and both survived every rung of the validation
 ladder with no rejection recorded anywhere. It correctly refused the reported-speech and hedged
-fixtures, which the pre-registration named as the hardest two. So the model reproduces two of the
+fixtures. So the model reproduces two of the
 four failures the regex it replaces already made, on the exact memos where `recall/fix.py`
 measured them, and a reader can check that without the private corpus.
 
 **Neither precision number supports a tier.** R1 decided 8 and M1 decided 2, against the
 pre-registered floor of 10 proposals in *either* arm, so both artifacts read `UNDERPOWERED`:
 "could not tell", not "the arm is bad". The point estimates (0.375 and 0.00) are reported because
-they are what happened, and the intervals are what should be quoted: R1's upper bound of 0.694
-does sit just below P1's predicted floor of 0.70, which is a falsification of the prediction even
-though the arm is underpowered for tiering. The two facts are separate and both are true.
+they are what happened, and the intervals are what should be quoted.
+
+⚠️ **Neither P1 nor P2 is falsified, and an earlier version of this file said P1 was.** It read
+"R1's upper bound of 0.694 does sit just below P1's predicted floor of 0.70". P1's predicted floor
+is **0.60**; the 0.70 is the decision rule's gate on the Wilson **lower** bound for the batch
+reviewable tier, so that sentence compared the wrong bound against the wrong number. R1's interval
+[0.137, 0.694] overlaps the predicted [0.60, 0.95], and M1's [0.000, 0.658] overlaps [0.65, 0.92]
+by 0.008. Both predictions are **wrong on the point estimate and not excluded by the data**, which
+is weaker than a falsification and is what these n support.
+
+🔑 **The finding worth carrying is not a precision number, it is a mechanism.** All four of M1's
+proposals across both corpora assert an edge broader than the evidence sentence supports. Three
+are the narrow form, a claim about something *inside* a document read as a claim about the
+document: PEP 642 replacing "the special casing of `bool` ... in :pep:`634`", and both
+partial-scope fixtures. The fourth, PEP 376 superseding PEP 262 only "combined with :pep:`345`",
+is the same error in a different shape, a jointly conditioned supersession asserted
+unconditionally. It is the error `recall/fix.py` already recorded on the private corpus. That is
+the pre-registration's O2, which held, while O1 (the model proposes MORE than the rules arm) was
+falsified in the opposite direction: 2 against 9.
 
 **P6 is unscored, not falsified.** The registered referral rate has no measurement behind it: no
 extraction path emits a review-required status, so the field would have been 0.0 by construction.

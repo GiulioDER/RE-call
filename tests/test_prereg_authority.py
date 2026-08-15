@@ -235,6 +235,48 @@ def test_a_prediction_row_inside_a_code_fence_is_not_registered():
     assert read_prediction_ids(doc) == {"P1": "the real one |"}
 
 
+def test_a_prediction_cannot_be_introduced_in_the_section_that_scores_it():
+    """Scanning stops at `## Result`, which is both a fix and the stronger rule.
+
+    The scoring table restates every id, so reading it as a registration made P1 look registered
+    twice. Bounding it also means a prediction registered only in the Result section, which is to
+    say after the outcome was known, is not registered at all.
+    """
+    doc = "| P1 | the registered one |\n\n## Result\n\n| P1 | scored |\n| P99 | invented late |\n"
+    ids = read_prediction_ids(doc)
+    assert ids == {"P1": "the registered one |"}
+    assert "P99" not in ids
+
+    # The heading is anchored, so a document OPENING with it is bounded like any other. Nothing
+    # is registered, and an empty registration is refused rather than returned as an empty map:
+    # "no predictions were registered" and "no predictions parsed" must not look the same.
+    with pytest.raises(ValueError, match="no prediction rows"):
+        read_prediction_ids("## Result\n\n| P1 | a |\n\n| P2 | b |\n")
+
+    # ...and a heading that merely starts with "Result" is not the bound. As a prefix match this
+    # truncated at `## Results overview` and returned a short dict rather than raising, which is
+    # the shape that silently drops registrations.
+    assert set(read_prediction_ids("| P1 | a |\n\n## Results overview\n\n| P2 | b |\n")) == {"P1", "P2"}
+
+
+def test_the_result_bound_does_not_reopen_the_fenced_row_hole():
+    """Order of operations: fences are stripped BEFORE the bound is taken.
+
+    Bounded first, a fence spanning the `## Result` line is left unterminated in the prefix, so
+    the fence regex cannot match it and every illustrative row inside it registers. That is the
+    exact hole `test_a_prediction_row_inside_a_code_fence_is_not_registered` exists to close, and
+    taking the bound first quietly reopened it.
+    """
+    doc = (
+        "| P1 | the registered one |\n\n"
+        "```\n| P2 | illustrative, inside a fence |\n## Result\n```\n\n"
+        "| P3 | registered after the fence |\n"
+    )
+    ids = read_prediction_ids(doc)
+    assert "P2" not in ids, "a row inside a fence was registered"
+    assert set(ids) == {"P1", "P3"}, "a real row after the fence was dropped"
+
+
 def test_an_amended_registration_block_is_refused_rather_than_first_won():
     """Two blocks under ONE heading is the shape an amendment takes, and it must not be silent.
 
