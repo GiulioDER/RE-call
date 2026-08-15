@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import threading
+
 import pytest
 
 from recall.setup import (
@@ -1243,7 +1245,9 @@ def test_reasoning_providers_offer_cloud_when_security_is_not_required(monkeypat
 
 def test_reasoning_providers_mark_cloud_unavailable_without_the_openai_package(monkeypatch):
     """Offered but marked, never hidden: hiding makes the product look like it lacks the feature
-    and leaves no way to ask for it. This is the same rule the embedder menu follows."""
+    and leaves no way to ask for it. This is the same rule `reranker_choices` and
+    `sparse_choices` follow. `embedder_choices` differs: it omits cloud entries conditionally
+    rather than offering them marked unavailable."""
     monkeypatch.setattr("recall.setup._module_available", lambda name: name != "openai")
     probe = HardwareProbe(
         cpu_count=8,
@@ -1376,6 +1380,27 @@ def test_the_probe_declines_without_the_openai_package(monkeypatch):
     result = probe_reasoning_model(base_url="x", api_key="k", model="m")
     assert result is not None
     assert "openai" in result
+
+
+def test_the_probe_returns_promptly_when_the_call_never_finishes(monkeypatch):
+    """httpx's read timeout only bounds the gap between chunks of a streamed response, not the
+    whole call, so a client that trickles bytes could keep resetting it forever. The probe's own
+    thread join is what actually bounds total duration, and it must not hang waiting for it."""
+    _install_fake_openai(monkeypatch)
+    never_set = threading.Event()
+    monkeypatch.setattr(
+        _FakeCompletions, "create", lambda self, **kwargs: never_set.wait() or object()
+    )
+    try:
+        result = probe_reasoning_model(
+            base_url="https://openrouter.ai/api/v1",
+            api_key="k",
+            model="deepseek/deepseek-chat",
+            timeout=0.2,
+        )
+    finally:
+        never_set.set()
+    assert result == "no response within 0s"
 
 
 def _run_wizard(tmp_path, monkeypatch, answers, probe=None):
@@ -1528,6 +1553,34 @@ def test_a_blank_model_id_twice_turns_the_arm_off(tmp_path, monkeypatch):
     assert "RECALL_REASONING=0" in env
     assert "RECALL_REASONING_MODEL" not in env
     assert "no model id" in output
+
+
+def test_a_blank_cloud_api_key_twice_turns_the_arm_off(tmp_path, monkeypatch):
+    """A blank key must not be written as `RECALL_REASONING=1`: that would enable an arm that
+    cannot authenticate. The model id path already applies this rule through `_prompt_twice`, and
+    the key path must follow it too."""
+    env, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "n",   # security not required
+            "",    # VOYAGE_API_KEY skipped
+            "",    # OPENAI_API_KEY skipped
+            "",    # OPENROUTER_API_KEY skipped
+            "2",   # embedder: fastembed
+            "1",   # reranker: none
+            "1",   # sparse: fts
+            "y",   # reasoning arm enabled
+            "2",   # provider: openrouter
+            "",    # OPENROUTER_API_KEY blank
+            "",    # OPENROUTER_API_KEY blank again
+            "n",   # scaffold declined
+            "n",   # calibrate declined
+        ],
+    )
+    assert "RECALL_REASONING=0" in env
+    assert "RECALL_REASONING_API_KEY" not in env
+    assert "no API key" in output
 
 
 REASONING_ENV_KEYS = frozenset(

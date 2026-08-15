@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import shutil
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -612,7 +613,7 @@ MANUAL_MODEL = ""
 
 
 def reasoning_model_choices(base_url: str) -> list[Choice]:
-    """Models offered for a cloud provider, cheapest first, always ending in manual entry.
+    """Models offered for a cloud provider, default first, always ending in manual entry.
 
     The OpenRouter ids were verified against its live catalogue on 2026-08-14, which is how a
     sixth candidate that no longer exists was caught before shipping. They will still go stale:
@@ -687,30 +688,52 @@ def probe_reasoning_model(
     so the set of reachable exception types is not knowable from here, and letting one escape
     would turn an optional step into a failed install. The caller prints the string and writes
     the configuration regardless.
+
+    The call runs on a daemon thread joined with `timeout`, rather than relying on the client's
+    own `timeout` alone. httpx treats a bare float as separate connect, read, write and pool
+    timeouts, and its read timeout only bounds the gap between chunks of a streamed response, not
+    the total call. A slow endpoint that trickles bytes could otherwise keep resetting that timer
+    forever. The thread is a daemon so a call that never returns cannot block interpreter exit.
     """
     if not _module_available("openai"):
         return 'the openai package is not installed, install "recall-rag[extract]"'
-    try:
-        from openai import OpenAI
 
-        client = OpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=timeout,
-            max_retries=0,
-        )
-        # No token cap is sent. `max_tokens` is rejected outright by OpenAI's o series and by
-        # GPT-5, which want `max_completion_tokens`, so capping here would report a working model
-        # as unreachable. Those models are not in the menu but manual entry can name one, and a
-        # probe that cries failure over a working configuration is worse than no probe at all.
-        # The reply to "ping" is a few tokens, which is not worth a compatibility branch.
-        client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": "ping"}],
-        )
+    outcome: list[str | None] = [f"no response within {timeout:.0f}s"]
+
+    def call() -> None:
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=timeout,
+                max_retries=0,
+            )
+            # No token cap is sent. `max_tokens` is rejected outright by OpenAI's o series and by
+            # GPT-5, which want `max_completion_tokens`, so capping here would report a working
+            # model as unreachable. Those models are not in the menu but manual entry can name
+            # one, and a probe that cries failure over a working configuration is worse than no
+            # probe at all. The reply to "ping" is a few tokens, which is not worth a
+            # compatibility branch.
+            client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": "ping"}],
+            )
+            outcome[0] = None
+        except Exception as exc:
+            outcome[0] = f"{type(exc).__name__}: {exc}"
+
+    try:
+        thread = threading.Thread(target=call, daemon=True)
+        thread.start()
+        thread.join(timeout)
     except Exception as exc:
+        # Starting or joining the thread is outside `call`'s own try/except, so a failure here
+        # (an OS refusing a new thread is the realistic case) needs its own net. The never raise
+        # rule covers this path too, not just what happens inside the call itself.
         return f"{type(exc).__name__}: {exc}"
-    return None
+    return outcome[0]
 
 
 def _prompt_twice(
@@ -775,9 +798,11 @@ def _reasoning_interview(
         )
         api_key = cloud_keys.get(key_name, "")
         if not api_key:
-            api_key = _prompt(input_fn, print_fn, f"{key_name}: ")
-            if api_key:
-                cloud_keys[key_name] = api_key
+            api_key = _prompt_twice(input_fn, print_fn, f"{key_name}: ")
+            if not api_key:
+                print_fn("Reasoning arm skipped: no API key was given.")
+                return off
+            cloud_keys[key_name] = api_key
         model_choice = _choose(
             input_fn,
             print_fn,
