@@ -199,16 +199,17 @@ chunks never carry an `indexed_at`, so a touch has nothing to move).
 `calibration is None`, and both `run_trust_eval` and `run_nearmiss_eval` always pass an EXPLICIT
 `calibration=cal` into `research_search`. So `evaluate()`'s real verdicts (`ok`, `superseded`,
 `low_confidence`, ...) stand; only `trust_state` is stamped `degraded`. `_research_trust.py`'s
-module docstring ("every hit comes back `unverified`") describes the no-calibration case, which
-these two callers never take — the docstring is not wrong, it is just not the branch either
-runner reaches. This means `superseded_trust_rate` is genuinely drivable, not structurally 0.0,
-and the two members below prove it two different ways: by score alone, and by real supersession
-detection.
+module docstring previously claimed, unconditionally, that development mode sends back every hit
+`unverified` — that is only the `calibration is None` branch, and neither eval runner ever takes
+it, so the claim was false for the two callers this doc is about. The docstring's property 3 now
+names the `calibration is None` gate explicitly and describes both branches. This means
+`superseded_trust_rate` is genuinely drivable, not structurally 0.0, and the two members below
+prove it two different ways: by score alone, and by real supersession detection.
 
 | member | construction | expected | why it earns its place |
 |---|---|---|---|
 | `trust-catches-scripted-supersession` | a stale hit scores above threshold WITH a scripted `supersedes:` edge | `str_trust 0.0`, `trust_coverage 0.5`, `successor_acc 1.0`, `abstain_acc 1.0` | proves the trust layer's REAL supersession resolution (`recall.trust.resolve_successor`), not just a score comparison, is what keeps the stale hit out of `str_trust` — its successor is promoted from `low_confidence` to `ok` by the same steelman logic `evaluate()` documents |
-| `trust-misses-unscripted-supersession` | the SAME high score, no edge scripted | `str_trust 1.0`, `trust_coverage 1.0`, `successor_acc 0.0`, `abstain_acc NaN` | the honest counterexample: without the metadata edge the trust layer has no signal beyond the score, so a genuinely stale memory (per the eval's own label) is served `ok`. `str_trust` flips from 0.0 to 1.0 driven by nothing but what `supersession()` returns — the two-value proof the brief required before adding either member |
+| `trust-misses-unscripted-supersession` | the SAME high score, no edge scripted | `str_trust 1.0`, `trust_coverage 1.0`, `successor_acc 0.0`, `abstain_acc NaN` | the honest counterexample: without the metadata edge the trust layer has no signal beyond the score, so a genuinely stale memory (per the eval's own label) is served `ok`. Its `str_trust 1.0` sits next to the paired member's `0.0`, but the two builds differ in more than the edge (two trust queries and a two-row script there, one of each here), so that pairing is not itself a single-variable proof. The single-variable measurement, toggling only `supersession_edges` on one fixture held otherwise fixed: this member's own fixture with the edge added moves `str_trust` from 1.0 to 0.0, and the paired member's fixture with its edge removed moves `str_trust` from 0.0 to 0.5 (not to 1.0 — its second, abstain-only trust query has no edge to lose) |
 
 `str_baseline` / `str_recency` are 1.0 in both members (both read the raw scripted hit, not a
 verdict) — reused, not separately proven, since neither routes through the trust layer at all.
@@ -334,4 +335,7 @@ appear in the output rather than staying buried per member.
 3. Every member carries a non-empty `does_not_catch`, enforced by a test rather than by review.
 4. No file outside `tests/` is modified, except `recall/eval/harness.py`'s `store_factory` seam
    (Part A, additive-only: the default path is byte-for-byte unchanged for every existing caller,
-   verified by the six known call sites still passing untouched).
+   verified by the seven known call sites still passing untouched: `recall/eval/scale.py:160`,
+   `recall/eval/__main__.py:69`, `recall/eval/__main__.py:71`, `tests/test_eval_harness.py:96`,
+   `tests/test_eval_nearmiss.py:37`, `tests/test_eval_nearmiss.py:50`,
+   `tests/test_eval_nearmiss.py:83`).

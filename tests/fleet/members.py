@@ -622,12 +622,19 @@ SURFACE_C: tuple[FleetMember, ...] = (
         # Same threshold (0.5). "stale.md:0" scores 0.80 with NO edge scripted (supersession()
         # returns {}), so `resolve_successor` returns None immediately and `_verdict` falls
         # through to score >= threshold -> "ok". The eval's OWN label still says this id is
-        # stale (`stale_ids=["stale.md:0"]`), so trust_flags counts it: str_trust = 1/1 = 1.0,
-        # the OPPOSITE of the paired member's 0.0, driven by nothing but what `supersession()`
-        # returns. successor_acc: ok_keys[0] is "stale.md:0", not the successor -> 0/1 = 0.0.
-        # trust_coverage: one ok hit -> 1/1 = 1.0. No expect=="abstain" query exists in this
-        # fixture, so abst_flags is empty and abstain_acc is NaN by `fraction_true`'s own
-        # empty-input convention (`recall/eval/metrics.py`) — asserted as NaN, not skipped.
+        # stale (`stale_ids=["stale.md:0"]`), so trust_flags counts it: str_trust = 1/1 = 1.0.
+        # This member's build also differs from the paired member's in more than the edge (one
+        # trust query and a one-row script here, vs two trust queries and a two-row script
+        # there), so its 1.0 next to the paired member's 0.0 is not itself a single-variable
+        # proof. Toggling ONLY supersession_edges on a fixture held otherwise fixed is: measured
+        # directly, this member's own fixture with an edge added ("stale.md" -> "successor.md")
+        # moves str_trust from 1.0 to 0.0, and the paired member's fixture with its edge removed
+        # moves str_trust from 0.0 to 0.5 (not to 1.0 — that fixture has a second, abstain-only
+        # trust query whose str_trust contribution the edge alone cannot touch). successor_acc:
+        # ok_keys[0] is "stale.md:0", not the successor -> 0/1 = 0.0. trust_coverage: one ok hit
+        # -> 1/1 = 1.0. No expect=="abstain" query exists in this fixture, so abst_flags is
+        # empty and abstain_acc is NaN by `fraction_true`'s own empty-input convention
+        # (`recall/eval/metrics.py`) — asserted as NaN, not skipped.
         expected={
             "str_baseline": 1.0, "str_recency": 1.0, "str_trust": 1.0, "trust_coverage": 1.0,
             "successor_acc": 0.0, "abstain_acc": float("nan"),

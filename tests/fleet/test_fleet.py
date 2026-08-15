@@ -34,6 +34,20 @@ from tests.fleet.scripted import (
 )
 
 
+def _differs(actual: object, twin_value: object) -> bool:
+    """True if `actual` and `twin_value` differ, for the vacuity checks below.
+
+    Plain `!=` treats `nan != nan` as always True, so two members that both carry NaN in the
+    same field would be reported as differing on it even though the NaN itself carries no
+    distinguishing information. Two NaNs compare equal here (not a difference), so a shared NaN
+    can never be what rescues a member from a vacuity check.
+    """
+    if isinstance(actual, float) and isinstance(twin_value, float):
+        if math.isnan(actual) and math.isnan(twin_value):
+            return False
+    return actual != twin_value
+
+
 def test_scripted_store_returns_the_scripted_order_through_the_real_retriever():
     """The whole fleet rests on this: with fusion="dense" the retrieved order IS the script.
 
@@ -147,12 +161,12 @@ def run_surface_a(member: FleetMember) -> dict[str, float]:
 def test_surface_a_member_reports_its_closed_form(member: FleetMember):
     actual = run_surface_a(member)
     for field, expected in member.expected.items():
-        # `pytest.approx` does NOT match NaN unless `nan_ok=True` is passed, and `nan_ok=True`
-        # on a plain `pytest.approx(expected)` would make the comparison pass for ANY actual
-        # value once expected is NaN (NaN tolerates everything under that flag). So NaN gets its
-        # own explicit branch: `math.isnan(actual[field])` is False for 0.0, which is exactly
-        # the old bug this member exists to catch — it still fails loudly against a `mean(x) if
-        # x else 0.0` regression.
+        # `pytest.approx(expected, nan_ok=True)` would work here too (measured directly: it
+        # matches NaN only to NaN and still rejects every finite actual, same as Surface C's use
+        # of it below). NaN gets its own explicit `math.isnan` branch anyway because it is more
+        # direct for this one case and needs no argument about a helper's tolerance semantics:
+        # `math.isnan(actual[field])` is False for 0.0, which is exactly the old bug this member
+        # exists to catch — it still fails loudly against a `mean(x) if x else 0.0` regression.
         if math.isnan(expected):
             assert math.isnan(actual[field]), (
                 f"{member.name} ({member.defect}): {field} should be NaN (no data measured), "
@@ -181,7 +195,7 @@ def test_surface_a_member_is_not_vacuous(member: FleetMember):
     if member is twin:
         return
     assert any(
-        member.expected[field] != twin.expected.get(field)
+        _differs(member.expected[field], twin.expected.get(field))
         for field in member.expected
     ), f"{member.name} is indistinguishable from the clean twin on every field it declares"
 
@@ -331,7 +345,7 @@ def test_surface_c_member_is_not_vacuous(member: FleetMember):
     if member is twin:
         return
     assert any(
-        member.expected[field] != twin.expected.get(field) for field in member.expected
+        _differs(member.expected[field], twin.expected.get(field)) for field in member.expected
     ), f"{member.name} is indistinguishable from the clean twin on every field it declares"
 
 
@@ -409,9 +423,11 @@ def test_surface_d_member_is_not_vacuous(member: FleetMember):
     twin = SURFACE_D[0]
     if member is twin:
         return
-    assert member.expected != twin.expected, (
-        f"{member.name} is indistinguishable from the clean twin on every field it declares"
-    )
+    assert any(
+        _differs(member.expected[arm][field], twin.expected.get(arm, {}).get(field))
+        for arm in member.expected
+        for field in member.expected[arm]
+    ), f"{member.name} is indistinguishable from the clean twin on every field it declares"
 
 
 def test_the_fleet_detects_a_broken_near_miss_metric(monkeypatch, tmp_path):
