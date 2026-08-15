@@ -309,7 +309,7 @@
                 <tr>
                   <td>Enable the optional reasoning arm?</td>
                   <td><strong>N</strong></td>
-                  <td>Points RE-call at a language model that can reason over what it retrieves. Because you answered yes to security, only a local server such as Ollama is offered, and it also needs the <code>extract</code> extra. Say no now and add it later once you have one running.</td>
+                  <td>Records provider settings for a reasoning arm that the shipped tools do not call yet. The default reasoning tools stay deterministic either way. Because you answered yes to security, only a local server such as Ollama is offered, and it also needs the <code>extract</code> extra. Say no now and add it later once you have one running. This question exists from version 0.9.5 onward: on 0.9.4 you will not see it.</td>
                 </tr>
                 <tr>
                   <td>Scaffold CLAUDE.md and a memory/ directory?</td>
@@ -346,7 +346,7 @@
             <summary>What happens if you answer differently</summary>
             <div class="why-body">
               <p>Answering <strong>n</strong> to the security question unlocks cloud embedders and offers to store API keys. Those send your text to a third party, which is a decision worth making deliberately rather than during a first install.</p>
-              <p>Choosing a different embedder changes the vector width. On a fresh database the wizard simply prepares the tables at whatever width you picked. On a database that already holds memory at another width it will not silently rebuild it: rather than failing later, it re-asks and tells you the exact <code>schema</code> command that would make the two agree.</p>
+              <p>Choosing a different embedder changes the vector width. On a fresh database the wizard simply prepares the tables at whatever width you picked. On a database that already holds memory at another width it will not silently rebuild it: rather than failing later, it refuses and stops. It does not re-ask, and it names no command. Choose an embedder matching the existing schema, or point setup at a fresh table name or database.</p>
               <p>You can re-run <code>setup</code> at any time. It rewrites only its own block in <code>.env</code>, so anything you added yourself survives.</p>
             </div>
           </details>

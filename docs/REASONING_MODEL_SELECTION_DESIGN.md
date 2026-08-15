@@ -128,11 +128,17 @@ following `embedder_choices` in `recall/setup.py` in shape, including the `avail
 of which is why an API provider is unreachable. Reusing it would send the reader to fix the wrong
 thing, which is the exact failure its own docstring warns about.
 
-| Order | label | value | Gate |
-|---|---|---|---|
-| 1 | `local endpoint` | `local` | always available |
-| 2 | `openrouter` | `https://openrouter.ai/api/v1` | `not security_required and probe.internet and _module_available("openai")` |
-| 3 | `openai` | `https://api.openai.com/v1` | same gate |
+| Order | label | value | Included when | Available when |
+|---|---|---|---|---|
+| 1 | `local endpoint` | `local` | always | always |
+| 2 | `openrouter` | `https://openrouter.ai/api/v1` | `not security_required` | `probe.internet and _module_available("openai")` |
+| 3 | `openai` | `https://api.openai.com/v1` | `not security_required` | `probe.internet and _module_available("openai")` |
+
+Only `not security_required` decides whether a cloud entry is appended to the list at all. When
+security is off, both cloud entries are always appended; `probe.internet and
+_module_available("openai")` then sets their `available` flag alone, which is why an unusable
+cloud entry can still appear in the menu and explain, through its `unavailable_note`, why it
+cannot run.
 
 The local endpoint is first because `_choose` in `recall/setup.py` raises `ValueError(f"the first
 choice for {title} must be runnable")` when `choices[0].available` is false. A local endpoint needs

@@ -62,6 +62,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   cuts every further attempt, and the existing per-task quarantine keeps the task out of the
   submission and in the failures log.
 
+### Added
+
+* `recall setup` gains an optional reasoning arm step, asked after the entailment judge question
+  and before the CLAUDE.md scaffold question. Answering yes writes four new environment
+  variables: `RECALL_REASONING`, `RECALL_REASONING_MODEL`, `RECALL_REASONING_BASE_URL`, and
+  `RECALL_REASONING_API_KEY`. Answering no writes `RECALL_REASONING=0` and nothing else, so
+  "switched off" and "never configured" stay distinguishable in `.env`. The shipped reasoning
+  tools do not read these variables yet; this writes the settings for a port the reasoning arm
+  will use once it is built. See
+  [docs/REASONING_MODEL_SELECTION_DESIGN.md](docs/REASONING_MODEL_SELECTION_DESIGN.md).
+
+### Fixed
+
+* Corrected `recall setup`'s refusal message for an embedder whose vector width conflicts with a
+  table that already holds data. It previously pointed at a remedy that failed identically to the
+  original problem. It now stops and tells you to choose an embedder matching the existing
+  schema, or point setup at a fresh table name or database.
+
 ## [0.9.4] (2026-08-12)
 
 Released straight from 0.9.2. 0.9.3 is deliberately skipped and will never exist.
