@@ -8,6 +8,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.9.5] (2026-08-15)
+
 ### Added
 
 * Added model backed truth extraction: `recall/truth_extraction/`, turning memo prose into
