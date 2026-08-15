@@ -23,6 +23,7 @@ from recall.truth_extraction.types import (
     ClaimRejection,
     ExtractionBatchRejected,
     FileExtraction,
+    coerce_status_vocabulary,
 )
 
 
@@ -146,20 +147,40 @@ def extract_file_claims(
     return result
 
 
-def extract_corpus_claims(
+def _extract_corpus(
     documents: Mapping[str, str],
     *,
     engine: ExtractionEngine,
-    corpus_names: Sequence[str] | None = None,
-    cache: ExtractionCache | None = None,
+    corpus_names: Sequence[str] | None,
+    cache: ExtractionCache | None,
+    status_vocabulary: Sequence[str] | None,
 ) -> tuple[FileExtraction, ...]:
-    """Extract claims from every document, resolving targets against the corpus itself.
+    """The one implementation behind both public entry points.
 
-    `corpus_names` defaults to the documents' own names: a supersession target that is not in
-    the batch being ingested is refused, which is the same refusal `recall/fix.py` makes for
-    a target that is not a file in the corpus.
+    ONE loop, deliberately, because the vocabulary has to reach THREE prompt builds here and only
+    one of them is the per-file call. The outage path looks the cache up with its own prompt and
+    files its refusal record with another. A second copy of this loop would thread the obvious
+    call and miss those two: a cache warmed under a corpus's own words would then be looked up
+    under the shipped key and miss every entry, and the refusal would name a vocabulary the run
+    never used. That is the same defect the comment on `_refused` records as fixed once already.
+
+    Coerced ONCE, here, rather than per document. `build_extraction_prompt` coerces too and the
+    operation is idempotent, so this changes no result — it changes WHEN a degenerate vocabulary
+    is refused, from once per file to once per run, before the first engine call is paid for.
     """
     names = tuple(corpus_names) if corpus_names is not None else tuple(sorted(documents))
+    vocabulary = coerce_status_vocabulary(status_vocabulary)
+
+    def _prompt_for(file: str, text: str) -> ExtractionPrompt:
+        # The SAME prompt `extract_file_claims` will build for this file, in one place, so the
+        # outage path's cache lookup computes the key the warm run actually wrote under.
+        return build_extraction_prompt(
+            file=file,
+            human_body=human_body_of(text),
+            corpus_names=names,
+            status_vocabulary=vocabulary,
+        )
+
     results: list[FileExtraction] = []
     consecutive_failures = 0
     for file, text in sorted(documents.items()):
@@ -168,10 +189,9 @@ def extract_corpus_claims(
         # extraction that already succeeded: on a warm cache with a dead endpoint, refusing
         # cached files turned 16 surviving claims into zero for identical engine cost.
         if consecutive_failures >= CONSECUTIVE_ENGINE_FAILURE_LIMIT and cache is not None:
-            prompt = build_extraction_prompt(
-                file=file, human_body=human_body_of(text), corpus_names=names
+            cached = cache.get(
+                extraction_cache_key(engine=engine, prompt=_prompt_for(file, text))
             )
-            cached = cache.get(extraction_cache_key(engine=engine, prompt=prompt))
             if cached is not None:
                 results.append(replace(cached, cached=True))
                 continue
@@ -189,9 +209,7 @@ def extract_corpus_claims(
                 _refused(
                     file=file,
                     engine=engine,
-                    prompt=build_extraction_prompt(
-                        file=file, human_body=human_body_of(text), corpus_names=names
-                    ),
+                    prompt=_prompt_for(file, text),
                     rung="engine_error",
                     reason=(
                         f"skipped: the engine failed {consecutive_failures} times in a row, "
@@ -201,7 +219,12 @@ def extract_corpus_claims(
             )
             continue
         result = extract_file_claims(
-            file=file, text=text, corpus_names=names, engine=engine, cache=cache
+            file=file,
+            text=text,
+            corpus_names=names,
+            engine=engine,
+            cache=cache,
+            status_vocabulary=vocabulary,
         )
         # Only a result that actually reached the engine is evidence about the engine. A cache
         # hit says nothing either way, and letting one RESET the counter defeated the break
@@ -218,4 +241,63 @@ def extract_corpus_claims(
     return tuple(results)
 
 
-__all__ = ["extract_corpus_claims", "extract_file_claims"]
+def extract_corpus_claims(
+    documents: Mapping[str, str],
+    *,
+    engine: ExtractionEngine,
+    corpus_names: Sequence[str] | None = None,
+    cache: ExtractionCache | None = None,
+) -> tuple[FileExtraction, ...]:
+    """Extract claims from every document, resolving targets against the corpus itself.
+
+    `corpus_names` defaults to the documents' own names: a supersession target that is not in
+    the batch being ingested is refused, which is the same refusal `recall/fix.py` makes for
+    a target that is not a file in the corpus.
+
+    ⚠️ This is the door the WRITE path uses (`recall/rewrite.py`), and it takes NO status
+    vocabulary on purpose. `recall.rewrite` validates the derived block against the shipped
+    `STATUS_VOCABULARY`, so a value the trust layer has no meaning for must not reach a user's
+    memo because a research run named it. Configurable for MEASUREMENT, closed for WRITING; the
+    measurement door is `extract_corpus_claims_for_report`, below.
+    """
+    return _extract_corpus(
+        documents,
+        engine=engine,
+        corpus_names=corpus_names,
+        cache=cache,
+        status_vocabulary=None,
+    )
+
+
+def extract_corpus_claims_for_report(
+    documents: Mapping[str, str],
+    *,
+    engine: ExtractionEngine,
+    corpus_names: Sequence[str] | None = None,
+    cache: ExtractionCache | None = None,
+    status_vocabulary: Sequence[str] | None = None,
+) -> tuple[FileExtraction, ...]:
+    """The same extraction, for output a human READS rather than output a writer acts on.
+
+    `recall extract` and the labelling arms both land here. `status_vocabulary=None` is the
+    shipped memo set, so this is `extract_corpus_claims` plus one knob — but it is a SEPARATE
+    function rather than a keyword on that one, because the writer's door having no knob is the
+    property `test_the_write_path_stays_closed_to_a_custom_vocabulary` pins. Given the knob,
+    that test could only assert on this module's call sites, which is source inspection wearing
+    a different hat.
+
+    The shipped set is memo-shaped (`active, draft, deprecated, superseded, withdrawn`). A corpus
+    with its own words needs its own list: measured on `python/peps`, `Status: Final` produced
+    `final`, and because `claim_shape` is a BATCH rung that refused 12 of 30 documents outright,
+    taking their supersession claims down with them.
+    """
+    return _extract_corpus(
+        documents,
+        engine=engine,
+        corpus_names=corpus_names,
+        cache=cache,
+        status_vocabulary=status_vocabulary,
+    )
+
+
+__all__ = ["extract_corpus_claims", "extract_corpus_claims_for_report", "extract_file_claims"]

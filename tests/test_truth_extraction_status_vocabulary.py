@@ -311,3 +311,164 @@ def test_the_write_path_stays_closed_to_a_custom_vocabulary() -> None:
             PAYLOAD, file="pep-0376.rst", human_body=BODY, corpus_names=("pep-0376",)
         )
     assert caught.value.rung == "claim_shape"
+
+
+class _RecordingEngine:
+    """Records the vocabulary of every prompt it is handed, and answers nothing."""
+
+    engine_id = "recording"
+    model_id = "recording"
+    revision = "r"
+
+    def __init__(self) -> None:
+        self.seen: list[tuple[str, ...]] = []
+
+    def run(self, prompt) -> str:
+        self.seen.append(tuple(prompt.status_vocabulary))
+        return '{"claims": []}'
+
+
+class _DownEngine:
+    """Fails every call, to drive the consecutive-failure path.
+
+    Same identity as `_RecordingEngine`, deliberately: `extraction_cache_key` hashes engine_id/
+    model_id/revision (`_cache.py`), so an outage test that warms the cache under one identity
+    and reads it back under another misses for THAT reason regardless of vocabulary threading,
+    which would make the test pass or fail for a cause unrelated to the one it names. Every
+    other cache-key test in this file holds engine identity fixed and varies only the thing
+    under test (see `_Engine` above); this class follows the same discipline.
+    """
+
+    engine_id = "recording"
+    model_id = "recording"
+    revision = "r"
+
+    def run(self, prompt) -> str:
+        raise RuntimeError("endpoint down")
+
+
+def test_the_report_entry_point_takes_a_vocabulary_and_the_writer_does_not() -> None:
+    """The split, pinned on BOTH doors.
+
+    Asserting only that the writer's door is closed lets the pair collapse back into one closed
+    function: every other assertion here would still pass while the CLI silently lost the flag.
+    """
+    import inspect
+
+    from recall.truth_extraction.extract import (
+        extract_corpus_claims,
+        extract_corpus_claims_for_report,
+    )
+
+    assert (
+        "status_vocabulary"
+        in inspect.signature(extract_corpus_claims_for_report).parameters
+    ), "the report door must be the one that opens"
+    assert "status_vocabulary" not in inspect.signature(extract_corpus_claims).parameters
+
+
+def test_every_document_gets_the_custom_vocabulary_not_just_the_first() -> None:
+    """Asserted across the whole corpus, because the loop is where a threading bug hides.
+
+    A version that resolved the vocabulary once and then rebuilt the prompt per file from the
+    module default would pass a one-document test.
+    """
+    from recall.truth_extraction.extract import extract_corpus_claims_for_report
+
+    engine = _RecordingEngine()
+    documents = {f"pep-{n:04d}.rst": "Status: Final\n" for n in (1, 2, 3)}
+    extract_corpus_claims_for_report(
+        documents, engine=engine, status_vocabulary=PEP_STATUSES
+    )
+    assert engine.seen == [PEP_STATUSES] * 3, (
+        f"a document was asked under the wrong vocabulary: {engine.seen}"
+    )
+
+
+def test_the_writer_door_still_asks_under_the_shipped_words() -> None:
+    from recall.truth_extraction.extract import extract_corpus_claims
+
+    engine = _RecordingEngine()
+    extract_corpus_claims({"a.md": "Status: Final\n"}, engine=engine)
+    assert engine.seen == [tuple(STATUS_VOCABULARY)]
+
+
+def test_the_outage_path_looks_up_the_key_the_custom_vocabulary_warmed() -> None:
+    """`extract.py:171`. The outage path builds its OWN prompt for the cache lookup.
+
+    Threaded only through the per-file call, that lookup computes the SHIPPED key, misses every
+    entry a custom-vocabulary run warmed, and turns a warm cache into zero surviving claims —
+    the same shape of defect the comment on `_refused` records as fixed once already.
+    """
+    from recall.truth_extraction._sqlite_cache import SqliteExtractionCache
+    from recall.truth_extraction.extract import extract_corpus_claims_for_report
+    from recall.truth_extraction.types import CONSECUTIVE_ENGINE_FAILURE_LIMIT
+
+    import tempfile
+    from pathlib import Path
+
+    # Documents are processed in SORTED order, and the first `LIMIT` of them must be COLD so the
+    # engine is actually called and actually fails. Only then does the counter trip and the
+    # outage path's OWN cache lookup run. Warming everything defeats the test entirely:
+    # `extract_file_claims` consults the cache before calling the engine, so every file would hit
+    # there, no failure would ever be counted, and line 171 would never execute.
+    cold = {
+        f"a-cold-{n}.rst": "Status: Final\n" for n in range(CONSECUTIVE_ENGINE_FAILURE_LIMIT)
+    }
+    warm = {f"z-warm-{n}.rst": "Status: Final\n" for n in range(3)}
+    names = tuple(sorted({**cold, **warm}))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # A `with` block, not a bare assignment: the connection must be closed before the
+        # `TemporaryDirectory` above tries to remove it. POSIX tolerates deleting a file a
+        # process still has open; Windows refuses, and cleanup raced the sqlite handle here.
+        with SqliteExtractionCache(Path(tmp) / "c.sqlite3") as cache:
+            # Warm ONLY the `z-` files, under the custom vocabulary, with an engine that works.
+            # `corpus_names` is the full set in both runs: it is hashed into the key, so warming
+            # under a narrower corpus would miss for a reason that has nothing to do with the
+            # vocabulary and would make this test green for the wrong cause.
+            extract_corpus_claims_for_report(
+                warm,
+                engine=_RecordingEngine(),
+                corpus_names=names,
+                cache=cache,
+                status_vocabulary=PEP_STATUSES,
+            )
+            # Now the engine is down. The cold files fail, the counter trips, and the warm files
+            # must be read through the outage path's lookup.
+            results = extract_corpus_claims_for_report(
+                {**cold, **warm},
+                engine=_DownEngine(),
+                corpus_names=names,
+                cache=cache,
+                status_vocabulary=PEP_STATUSES,
+            )
+    hits = sorted(r.file for r in results if r.cached)
+    assert hits == sorted(warm), (
+        f"the outage path missed the warm entries: hit {hits}, expected {sorted(warm)}. It "
+        f"looked the cache up under a different vocabulary than the run that wrote them."
+    )
+
+
+def test_the_outage_refusal_names_the_vocabulary_the_run_used() -> None:
+    """`extract.py:192`. The refusal record is the audit identity of a failed run.
+
+    Filed under the shipped words, it says the run used a vocabulary it never used, and a failed
+    run is exactly where that field gets read.
+    """
+    from recall.truth_extraction.extract import extract_corpus_claims_for_report
+    from recall.truth_extraction.types import CONSECUTIVE_ENGINE_FAILURE_LIMIT
+
+    documents = {
+        f"pep-{n:04d}.rst": "Status: Final\n"
+        for n in range(CONSECUTIVE_ENGINE_FAILURE_LIMIT + 3)
+    }
+    results = extract_corpus_claims_for_report(
+        documents, engine=_DownEngine(), status_vocabulary=PEP_STATUSES
+    )
+    skipped = [r for r in results if r.batch_rejection and "skipped" in r.batch_rejection.reason]
+    assert skipped, "the failure limit was never reached, so this proves nothing"
+    for result in skipped:
+        assert result.status_vocabulary == PEP_STATUSES, (
+            f"{result.file} filed its refusal under {result.status_vocabulary}"
+        )
