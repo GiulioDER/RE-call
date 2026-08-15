@@ -10,6 +10,50 @@ import os
 from pathlib import Path
 
 
+#: What `recall.setup._quote_env` writes, mapped back. Keep the two in step: a value this cannot
+#: undo is a value the writer must not produce.
+_ESCAPES = {"\\": "\\", '"': '"', "n": "\n", "r": "\r"}
+
+
+def _unquote(raw: str) -> str:
+    """Undo the quoting `_quote_env` applies, and nothing else.
+
+    This used to be `val.strip().strip('"').strip("'")`, which is wrong in two ways at once on a
+    value the writer escaped. It leaves the backslashes in place, so `my model \\"quoted\\"` comes
+    back carrying them; and `str.strip` removes EVERY trailing quote it finds, including the one
+    that belonged to an escape, so the value also loses a character off the end. A model id or a
+    base URL containing a quote therefore did not survive the trip it had just made.
+
+    A line that is NOT a matched quoted pair keeps the old lenient behaviour, stripping a stray
+    outer quote. That is deliberate: a first version of this returned such a line untouched, which
+    reads better in isolation but silently changes how an existing hand-written `.env` is
+    interpreted. Somebody upgrading with `RECALL_SERVING_DSN="postgresql://...` and no closing
+    quote had a working file, and this function's job is to fix the round trip the writer broke,
+    not to start rejecting files that worked yesterday.
+    """
+    val = raw.strip()
+    if len(val) < 2 or val[0] != val[-1] or val[0] not in "\"'":
+        return val.strip('"').strip("'")
+    inner = val[1:-1]
+    if val[0] == "'":
+        # `_quote_env` never emits single quotes, so there is nothing to unescape inside them.
+        return inner
+    out: list[str] = []
+    i = 0
+    while i < len(inner):
+        ch = inner[i]
+        if ch == "\\" and i + 1 < len(inner):
+            nxt = inner[i + 1]
+            # An unrecognised escape keeps both characters rather than silently eating the
+            # backslash: this parser's job is fidelity, not interpretation.
+            out.append(_ESCAPES.get(nxt, "\\" + nxt))
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def load_dotenv(path: str | Path = ".env") -> None:
     """Apply a `.env` ALL-OR-NOTHING: parse the whole file, then set the variables.
 
@@ -50,7 +94,7 @@ def load_dotenv(path: str | Path = ".env") -> None:
             continue
         key, _, val = line.partition("=")
         key = key.strip()
-        val = val.strip().strip('"').strip("'")
+        val = _unquote(val)
         if not key or key in os.environ or key in pending:
             # An exported variable always wins over the file, and so does the file's OWN
             # first occurrence of a key — checked before validity, so a line that was never

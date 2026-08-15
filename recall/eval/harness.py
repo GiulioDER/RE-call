@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -126,6 +126,19 @@ def _drained_mean(leg: str) -> tuple[float, bool]:
     return mean(samples), total > len(samples)
 
 
+def _mean_or_nan(values: list[float]) -> float:
+    """Mean of a per-question metric, NaN when no question of that class was scored.
+
+    `recall/eval/metrics.py` sets this convention for every rate it computes: "a rate with no
+    data is NOT a score", because 0.0-on-empty reads as a real measurement of zero quality.
+    `_score_config` published a literal 0.0 here while `fcr_with_guard`, on the same
+    `AblationResult`, was already NaN-on-empty via `false_confident_rate` — one object carrying
+    two conventions. A configuration with no answerable queries has not measured a P@5 of zero;
+    it has not measured a P@5.
+    """
+    return mean(values) if values else float("nan")
+
+
 def _score_config(
     store: PgVectorStore, embedder: Embedder, queries: list[dict], fusion: str,
     reranker: Reranker | None,
@@ -165,10 +178,10 @@ def _score_config(
     sparse_ms, sparse_truncated = _drained_mean(LEG_SPARSE)
     return AblationResult(
         embedder=embedding_profile_id(embedder), fusion=fusion,
-        p_at_5=mean(ps) if ps else 0.0,
-        r_at_5=mean(rs) if rs else 0.0,
-        mrr=mean(ms) if ms else 0.0,
-        ndcg_at_10=mean(ns) if ns else 0.0,
+        p_at_5=_mean_or_nan(ps),
+        r_at_5=_mean_or_nan(rs),
+        mrr=_mean_or_nan(ms),
+        ndcg_at_10=_mean_or_nan(ns),
         fcr_no_guard=1.0, fcr_with_guard=false_confident_rate(unans_gaps),
         embed_ms_mean=timed_emb.stats.mean_ms,
         rerank_ms_mean=timed_rr.stats.mean_ms if timed_rr else 0.0,
@@ -276,6 +289,7 @@ def run_nearmiss_eval(
     dsn: str, embedders: list[Embedder], judge: EntailmentJudge,
     corpus_dir: Path | None = None, queries_path: Path | None = None,
     nearmiss_path: Path | None = None, k: int = 10,
+    store_factory: Callable[[Embedder], AbstractContextManager[PgVectorStore]] | None = None,
 ) -> list[NearMissEvalResult]:
     """Score the three abstention arms per embedder on answerable / far-gap / near-miss queries.
 
@@ -291,6 +305,16 @@ def run_nearmiss_eval(
     LEAVE-ONE-OUT: the calibration judging a query is refitted with that query's sample removed
     (`_loo_calibrations`), so no query is ever scored by a threshold that saw it. The entail-only
     arm is exempt — its threshold is a fixed -1.0 that is fitted to nothing.
+
+    `store_factory` is a TEST SEAM, not a serving feature. Every existing caller omits it and
+    gets EXACTLY today's behaviour: `None` (the default) builds the same corpus-indexed
+    `_throwaway_store(dsn, emb, corpus_dir, "nm_")` this function has always used, so the default
+    path is byte-for-byte unchanged. When supplied, `store_factory(emb)` replaces that context
+    manager entirely — `dsn` and `corpus_dir` are then not touched to build the store, and a
+    caller handing in a store that was never indexed against the corpus gets back exactly
+    whatever THAT store returns, with no validation that it resembles a real index. It exists so
+    a scripted, in-memory store (see `tests/fleet/scripted.py`) can drive this function without a
+    database; it is not documented in any README and must not be treated as public API.
     """
     corpus_dir = corpus_dir or (EVAL_DIR / "corpus")
     queries = json.loads(
@@ -303,9 +327,14 @@ def run_nearmiss_eval(
     answerable = [q for q in plain if q["answerable"]]
     gaps = [q for q in plain if not q["answerable"]]
 
+    def _default_factory(emb: Embedder) -> "AbstractContextManager[PgVectorStore]":
+        return _throwaway_store(dsn, emb, corpus_dir, "nm_")
+
+    factory = store_factory or _default_factory
+
     results: list[NearMissEvalResult] = []
     for emb in embedders:
-        with _throwaway_store(dsn, emb, corpus_dir, "nm_") as store:
+        with factory(emb) as store:
             # measure_top_cosines walks `plain` in order and splits by label, so ans_cos is
             # positionally aligned with `answerable` and unans_cos with `gaps` — that alignment
             # is what lets a held-out fold be matched back to the query it belongs to.
@@ -431,6 +460,7 @@ def _tkey(hit: TrustedHit) -> str:
 def run_trust_eval(
     dsn: str, embedders: list[Embedder], corpus_dir: Path | None = None,
     queries_path: Path | None = None, touch_stale: bool = True,
+    store_factory: Callable[[Embedder], AbstractContextManager[PgVectorStore]] | None = None,
 ) -> list[TrustEvalResult]:
     """Score the validity-sensitive queries in three modes per embedder.
 
@@ -446,6 +476,16 @@ def run_trust_eval(
     unanswerable queries): a query counts as stale-trusted only if a stale id still carries
     verdict `ok`. Also reports successor accuracy, abstention accuracy, and the answerable-MRR
     regression check (trust must not change ordinary retrieval quality).
+
+    `store_factory` is a TEST SEAM, not a serving feature. Every existing caller omits it and
+    gets EXACTLY today's behaviour: `None` (the default) builds the same corpus-indexed
+    `_throwaway_store(dsn, emb, corpus_dir, "trust_")` this function has always used, so the
+    default path is byte-for-byte unchanged. When supplied, `store_factory(emb)` replaces that
+    context manager entirely — `dsn` and `corpus_dir` are then not touched to build the store, and
+    a caller handing in a store that was never indexed against the corpus gets back exactly
+    whatever THAT store returns, with no validation that it resembles a real index. It exists so
+    a scripted, in-memory store (see `tests/fleet/scripted.py`) can drive this function without a
+    database; it is not documented in any README and must not be treated as public API.
     """
     corpus_dir = corpus_dir or (EVAL_DIR / "corpus")
     queries = json.loads(
@@ -454,9 +494,14 @@ def run_trust_eval(
     plain = [q for q in queries if not q.get("trust")]
     trust_qs = [q for q in queries if q.get("trust")]
 
+    def _default_factory(emb: Embedder) -> "AbstractContextManager[PgVectorStore]":
+        return _throwaway_store(dsn, emb, corpus_dir, "trust_")
+
+    factory = store_factory or _default_factory
+
     results: list[TrustEvalResult] = []
     for emb in embedders:
-        with _throwaway_store(dsn, emb, corpus_dir, "trust_") as store:
+        with factory(emb) as store:
             if touch_stale:
                 store.touch_files(sorted(
                     {sid.rsplit(":", 1)[0] for q in trust_qs for sid in q["stale_ids"]}
@@ -651,8 +696,9 @@ def results_to_markdown(results: list[AblationResult]) -> str:
     ]
     for r in results:
         lines.append(
-            f"| {r.embedder} | {r.fusion} | {r.p_at_5:.3f} | {r.r_at_5:.3f} | {r.mrr:.3f} | "
-            f"{r.ndcg_at_10:.3f} | {r.fcr_no_guard:.2f}† | {_fmt_rate(r.fcr_with_guard)} |"
+            f"| {r.embedder} | {r.fusion} | {_fmt_rate(r.p_at_5, 3)} | {_fmt_rate(r.r_at_5, 3)} | "
+            f"{_fmt_rate(r.mrr, 3)} | {_fmt_rate(r.ndcg_at_10, 3)} | {r.fcr_no_guard:.2f}† | "
+            f"{_fmt_rate(r.fcr_with_guard)} |"
         )
     lines.append("")
     lines.append(

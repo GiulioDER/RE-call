@@ -1,5 +1,7 @@
+import math
+
 from recall.embeddings import HashingEmbedder
-from recall.eval.harness import run_ablations
+from recall.eval.harness import AblationResult, _mean_or_nan, results_to_markdown, run_ablations
 
 from tests.conftest import TEST_DSN, requires_db
 
@@ -16,6 +18,33 @@ def test_run_ablations_hashing():
         assert 0.0 <= r.fcr_with_guard <= 1.0
     # sanity: retrieval actually finds some relevant docs
     assert any(r.mrr > 0 for r in results)
+
+
+def test_mean_or_nan_returns_nan_on_empty():
+    # A rate with no data is not a score: see recall/eval/metrics.py's `fraction_true`
+    # docstring. 0.0 would read as a real measurement of zero quality.
+    assert math.isnan(_mean_or_nan([]))
+
+
+def test_mean_or_nan_returns_the_mean_when_non_empty():
+    assert _mean_or_nan([0.0, 0.5, 1.0]) == 0.5
+
+
+def test_results_to_markdown_renders_n_a_for_a_nan_metric_not_the_string_nan():
+    # A config with no answerable queries: p_at_5/r_at_5/mrr/ndcg_at_10 are all NaN.
+    # `f"{float('nan'):.3f}"` renders the literal string "nan", which is exactly the bug this
+    # test guards: the table must go through `_fmt_rate` and print "n/a" instead.
+    result = AblationResult(
+        embedder="hashing-64", fusion="dense",
+        p_at_5=float("nan"), r_at_5=float("nan"), mrr=float("nan"), ndcg_at_10=float("nan"),
+        fcr_no_guard=1.0, fcr_with_guard=0.0,
+    )
+    table = results_to_markdown([result])
+    row = next(line for line in table.splitlines() if line.startswith("| hashing-64 |"))
+    # Scoped to the data row, not the whole table: the footnote prose below it legitimately
+    # contains "unanswerable", which itself contains the substring "nan".
+    assert "nan" not in row.lower()
+    assert row.count("n/a") == 4
 
 
 @requires_db
