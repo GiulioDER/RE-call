@@ -8,10 +8,15 @@
 # whether somebody is mid-run against them, and a 12 minute suite killed at minute 9 reads exactly
 # like a code failure.
 #
-# An orphan is only removed once it is proved idle. Its checkout being gone means nobody can start
-# new work against it; it does not prove nobody is connected right now, so the sweep asks the
-# database and skips any container with a live client. A container is cheap. Somebody's in-flight
-# run is not.
+# Two conditions gate every removal, and neither is the fall-through:
+#
+#   1. The container carries this tooling's own `recall.session` label. Compose containers whose
+#      working directory has vanished are REPORTED and never removed: that filter matches every
+#      compose project on the daemon, and from Git Bash a WSL-side path always reads as gone.
+#   2. It reports zero client backends on two reads a few seconds apart. That is not a proof, and
+#      the sweep does not claim one: it is the difference between idle and idle-at-the-instant-I-
+#      looked. The suite opens and closes connections per use, so a live run sits at zero for long
+#      stretches. A container is cheap; somebody's in-flight run is not.
 #
 #   scripts/session-close.sh                 # tear down this checkout's DB, sweep orphans
 #   scripts/session-close.sh --keep-db       # leave this checkout's container up
@@ -50,16 +55,48 @@ _client_count() {
     # A container that is not running has no clients by definition, and `docker exec` against it
     # fails in exactly the same way an unreachable one does. Without this branch every stopped
     # orphan reads as "could not ask" and is skipped forever, which is the state that produced the
-    # 23-hour-old stopped orphan this sweep exists to clear.
+    # 25-hour-old stopped orphan this sweep exists to clear.
     state="$(docker inspect "$id" --format '{{.State.Running}}' 2>/dev/null)"
     [ "$state" = "false" ] && { printf '0'; return; }
     [ "$state" != "true" ] && { printf 'busy'; return; }
-    out="$(docker exec "$id" psql -U recall -d recall -tAc \
-        "select count(*)-1 from pg_stat_activity where datname='recall';" 2>/dev/null | tr -d '[:space:]')"
+    # Not scoped to `datname='recall'`. A client attached to any other database in the same
+    # container is still a client, and scoping the count hid it.
+    out="$(docker exec "$id" psql -U recall -d postgres -tAc \
+        "select count(*) from pg_stat_activity where pid <> pg_backend_pid() and backend_type = 'client backend';" \
+        2>/dev/null | tr -d '[:space:]')"
     case "$out" in
         ''|*[!0-9]*) printf 'busy' ;;
         *)           printf '%s' "$out" ;;
     esac
+}
+
+# Positive identity, required before anything is deleted.
+#
+# `session-db.sh orphans` deliberately reports two populations: containers this tooling started,
+# and compose containers whose working directory has vanished. Reporting the second is useful.
+# **Deleting it is not ours to do.** That filter matches every compose project on the daemon, and
+# the `[ -d ]` test behind it cannot see a Linux path from Git Bash, so every compose stack started
+# inside WSL reads as "checkout gone" from here. The sweep therefore removes only what carries this
+# tooling's own label, and merely prints the rest.
+_is_ours() {
+    local id owner
+    id="$1"
+    owner="$(docker inspect "$id" --format '{{index .Config.Labels "recall.session"}}' 2>/dev/null)"
+    [ -n "$owner" ]
+}
+
+# An instantaneous count of zero is not proof that nobody is using a database. The suite opens and
+# closes a connection per use, so a 12 minute run sits at zero clients for long stretches, and both
+# shared services on this machine report zero right now. Two reads a few seconds apart is still not
+# a proof, but it is the difference between "idle" and "idle at the instant I happened to look".
+_idle_twice() {
+    local id first second
+    id="$1"
+    first="$(_client_count "$id")"
+    [ "$first" = "0" ] || return 1
+    sleep 3
+    second="$(_client_count "$id")"
+    [ "$second" = "0" ]
 }
 
 say "Uncommitted work in this checkout"
@@ -130,27 +167,32 @@ if [ -n "$orphan_names" ]; then
         say "Orphan sweep"
         removed=0
         skipped=0
+        # Every branch below either SKIPS or removes, and removal is reached only by satisfying
+        # two positive conditions in order. Deletion must never be the fall-through case: the
+        # previous draft removed whenever the value was neither "busy" nor numerically positive,
+        # so an integer comparison that ERRORED read as "idle" rather than as "could not tell".
         while read -r name; do
             [ -z "$name" ] && continue
-            clients="$(_client_count "$name")"
-            if [ "$clients" = "busy" ]; then
-                printf '  SKIP    %-32s could not be asked whether it is idle\n' "$name"
+            if ! _is_ours "$name"; then
+                printf '  REPORT  %-32s not started by this tooling, left alone\n' "$name"
                 skipped=$((skipped + 1))
-            elif [ "$clients" -gt 0 ] 2>/dev/null; then
-                printf '  SKIP    %-32s %s client(s) still connected\n' "$name" "$clients"
-                skipped=$((skipped + 1))
-            elif docker rm -f "$name" >/dev/null 2>&1; then
-                printf '  REMOVED %-32s idle, and its checkout is gone\n' "$name"
-                removed=$((removed + 1))
+            elif _idle_twice "$name"; then
+                if docker rm -f "$name" >/dev/null 2>&1; then
+                    printf '  REMOVED %-32s idle on two reads, checkout gone\n' "$name"
+                    removed=$((removed + 1))
+                else
+                    printf '  SKIP    %-32s removal failed\n' "$name"
+                    skipped=$((skipped + 1))
+                fi
             else
-                printf '  SKIP    %-32s removal failed\n' "$name"
+                printf '  SKIP    %-32s in use, or could not be asked\n' "$name"
                 skipped=$((skipped + 1))
             fi
         done <<EOF
 $orphan_names
 EOF
         printf '  %s removed, %s left alone.\n' "$removed" "$skipped"
-        [ "$skipped" -gt 0 ] && printf '  A skipped orphan is still in use. Re-run later rather than forcing it.\n'
+        [ "$skipped" -gt 0 ] && printf '  Left-alone entries are in use, unreachable, or not ours. Re-run later; never force them.\n'
     fi
 fi
 

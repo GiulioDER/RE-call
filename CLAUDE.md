@@ -66,14 +66,16 @@ a separate project root to the MCP client.
   store, both out of the `recall-dogfood` corpus on port 5433 (tenants `default` and `memory`,
   1688 and 308 chunks). These are the only servers whose corpus is this project.
 
-  ⚠️ **Their `recall_search` currently refuses**, and this is by design rather than a
-  misconfiguration. `recall_mcp/server.py` never passes a `TrustPolicy`, so the service defaults to
-  strict and **ignores `RECALL_TRUST_MODE`**: the docstring is explicit that a server degrading by
-  omission would degrade in production. An uncalibrated corpus therefore returns
-  `INDEX_NOT_READY`. Lifting it needs a real calibration bound to an immutable generation
-  (`recall calibration calibrate --generation G --queries FILE --publish`), not a flag.
+  They run with `RECALL_TRUST_MODE=development`, set inside the `env` block that
+  `scripts/session-mcp.sh` writes rather than left to your shell: a stdio server launched with an
+  explicit `env` does not inherit exported variables, so a corpus that searches fine from the
+  terminal answered `INDEX_NOT_READY` through the client. Both corpora are uncalibrated and bound
+  to no generation, which a strict server correctly refuses. **That setting is right for a local
+  dogfood index and wrong for anything else**; lifting the refusal properly needs a calibration
+  bound to an immutable generation (`recall calibration calibrate --generation G --queries FILE
+  --publish`).
 
-  Until then the CLI is the working path, because the CLI *does* honour the env var:
+  The same thing from the CLI:
 
   ```bash
   RECALL_DSN=postgresql://recall:recall@127.0.0.1:5433/recall RECALL_EMBEDDER=fastembed \

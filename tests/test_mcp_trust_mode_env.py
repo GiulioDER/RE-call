@@ -23,24 +23,42 @@ import pytest
 from recall.trust_policy import TrustPolicy
 
 
+def _takes_policy(fn: object) -> bool:
+    """Does this callable accept a `policy` parameter? Used to derive the gated set."""
+    import inspect
+
+    try:
+        return "policy" in inspect.signature(fn).parameters  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+
+
 @pytest.fixture
 def reload_server(monkeypatch: pytest.MonkeyPatch):
-    """Reimport the server module under a chosen environment.
+    """Reimport the server module under a chosen environment, then put it back.
 
     The module resolves its configuration at import time, so the environment has to be set before
     the import rather than patched afterwards.
+
+    The teardown is the load-bearing half. `monkeypatch` restores the environment, but it cannot
+    restore a module constant that a reload has already baked in, so without this the last
+    parametrised case left `recall_mcp.server.TRUST_POLICY` RELAXED, with the variable unset, for
+    every later test in the process. A fixture that leaks a relaxed trust gate into the rest of the
+    suite is worse than the bug it was written to catch.
     """
+    import recall_mcp.server as server
 
     def _load(**env: str):
-        for key in ("RECALL_TRUST_MODE",):
-            monkeypatch.delenv(key, raising=False)
+        monkeypatch.delenv("RECALL_TRUST_MODE", raising=False)
         for key, value in env.items():
             monkeypatch.setenv(key, value)
-        import recall_mcp.server as server
-
         return importlib.reload(server)
 
-    return _load
+    yield _load
+
+    monkeypatch.delenv("RECALL_TRUST_MODE", raising=False)
+    importlib.reload(server)
+    assert server.TRUST_POLICY.strict, "teardown failed to restore a strict server module"
 
 
 def test_the_server_exposes_a_trust_policy(reload_server) -> None:
@@ -109,25 +127,34 @@ def test_the_search_tool_passes_the_policy_rather_than_defaulting() -> None:
     source = pathlib.Path(server.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
 
-    # Both trust-gated entry points. Named explicitly, and asserted to be found, because a guard
-    # that silently matches nothing is the failure mode this whole file exists to catch: an earlier
-    # draft named `build_evidence`, which does not exist, and the loop below then passed vacuously
-    # over a single call while `evidence_memory` went unchecked.
-    gated = {"search_memory", "evidence_memory"}
-    calls = [
-        node
+    # The gated set is DERIVED from the service's own signatures, never listed here.
+    #
+    # Two earlier drafts of this guard were wrong in the same direction. The first named
+    # `build_evidence`, which does not exist, so the loop passed vacuously. The second named
+    # `search_memory` and `evidence_memory` as literals and was green while `reasoning_query` and
+    # `reasoning_audit`, which also take `policy`, were still called without it: the guard covered
+    # two of four call sites and reported success, which is precisely the defect it exists to catch.
+    #
+    # Deriving it means a fifth gated function cannot be added without this failing.
+    import recall_mcp.service as service
+
+    gated = {
+        name
+        for name in dir(service)
+        if not name.startswith("_")
+        and callable(getattr(service, name))
+        and _takes_policy(getattr(service, name))
+    }
+    assert gated, "no policy-taking function found in recall_mcp.service; the guard lost its target"
+
+    called = {
+        node.func.id: node
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in gated
-    ]
-    found = {node.func.id for node in calls}
-    assert found == gated, (
-        f"expected a call to each of {sorted(gated)}, found {sorted(found)}. A renamed function "
-        "empties this guard without failing it."
-    )
-    for call in calls:
-        assert any(kw.arg == "policy" for kw in call.keywords), (
-            f"{call.func.id} is called at line {call.lineno} without policy=, so it silently "
-            "falls back to the strict default and RECALL_TRUST_MODE has no effect."
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    for name in sorted(gated & called.keys()):
+        node = called[name]
+        assert any(kw.arg == "policy" for kw in node.keywords), (
+            f"{name} is called at recall_mcp/server.py:{node.lineno} without policy=, so it "
+            "silently falls back to the strict default and RECALL_TRUST_MODE has no effect there."
         )

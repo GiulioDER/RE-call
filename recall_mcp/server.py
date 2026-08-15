@@ -136,9 +136,10 @@ POOL_SIZE = _read_int_env("RECALL_POOL_SIZE", 8, min_value=1)
 TENANT = os.environ.get("RECALL_TENANT", DEFAULT_TENANT)
 #: Trust policy for this server instance, resolved from `RECALL_TRUST_MODE`.
 #:
-#: Strict unless the variable is exactly `development`, which is `TrustPolicy.from_env`'s rule and
-#: means a typo stays strict. Degrading on a near-miss would be the worse failure: the operator
-#: believes the gate is on, and it is not.
+#: Strict unless the variable reads `development` after `strip().lower()`, which is
+#: `TrustPolicy.from_env`'s rule. A misspelling such as `developmnet` therefore stays strict, which
+#: is the property that matters: degrading on a near-miss would be the worse failure, because the
+#: operator believes the gate is on and it is not.
 #:
 #: This exists because it was documented before it was implemented. `docs/USING_WITH_CLAUDE.md`
 #: names `RECALL_TRUST_MODE` three times and tells users to set it for local work against an
@@ -156,6 +157,19 @@ STATEMENT_TIMEOUT_MS = _read_int_env("RECALL_STATEMENT_TIMEOUT_MS", 15000, min_v
 _T = TypeVar("_T")
 
 _log = get_logger("mcp")
+
+if not TRUST_POLICY.strict:
+    # At module scope, not inside `main()`. The server object is built here too, so a host that
+    # imports `recall_mcp.server:mcp` and runs it itself never calls `main()` and would get a
+    # relaxed gate with no warning at all. Logged at ERROR so a raised log level cannot silence it:
+    # a quiet relaxed gate is indistinguishable from a strict one until something is served that
+    # should have been refused, and by then the answer has already been used. Goes to stderr, so it
+    # cannot corrupt the stdio JSON-RPC stream.
+    _log.error(
+        "RECALL_TRUST_MODE=development: the trust gate is RELAXED for this server. Uncalibrated "
+        "and unbound corpora will be served instead of refused. Local work only; unset it for "
+        "anything anyone relies on."
+    )
 
 
 class TenantProvisioning(Protocol):
@@ -966,6 +980,7 @@ def build_server() -> MCPServer:
                         max_steps=max_steps,
                         max_graph_nodes=max_graph_nodes,
                         max_evidence_tokens=max_evidence_tokens,
+                        policy=TRUST_POLICY,
                     ).to_dict(),
                     indent=2,
                     default=str,
@@ -1064,7 +1079,9 @@ def build_server() -> MCPServer:
         store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_audit"):
             return await _to_thread(
-                lambda: reasoning_audit(store, state["embedder"], query=query).model_dump_json(
+                lambda: reasoning_audit(
+                    store, state["embedder"], query=query, policy=TRUST_POLICY
+                ).model_dump_json(
                     indent=2
                 )
             )
@@ -1225,15 +1242,6 @@ def main() -> None:
         )
     else:
         _log.info("starting stdio server", extra={"tenant": TENANT, "embedder": EMBEDDER_NAME})
-    if not TRUST_POLICY.strict:
-        # Warned at every start, not once at configuration time. A relaxed gate that is quiet is
-        # indistinguishable from a strict one until something is served that should have been
-        # refused, and by then the answer has already been used.
-        _log.warning(
-            "RECALL_TRUST_MODE=development: the trust gate is RELAXED for this server. "
-            "Uncalibrated and unbound corpora will be served instead of refused. This is for "
-            "local work only; unset it for anything anyone relies on."
-        )
     if TRANSPORT == "stdio":
         mcp.run()
     elif TRANSPORT == "sse":
