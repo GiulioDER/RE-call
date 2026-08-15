@@ -455,11 +455,17 @@ def test_a_custom_vocabulary_admits_a_status_the_shipped_set_drops(
     _enable(monkeypatch)
     main(["extract", "run", str(pep_corpus)])
     without = capsys.readouterr().out
-    assert "status" not in without, "the shipped vocabulary should not admit `Final`"
+    # File-qualified for symmetry with the assertion below: the echoed
+    # "status vocabulary: ..." line contains the bare word "status", so pin the claim line
+    # itself rather than the substring.
+    assert "pep-0376.md: status" not in without, "the shipped vocabulary should not admit `Final`"
 
     main(["extract", "run", str(pep_corpus), "--status-vocabulary", "Final,Rejected,Deferred"])
     with_flag = capsys.readouterr().out
-    assert "status" in with_flag, "the custom vocabulary did not reach the prompt"
+    # File-qualified, not a bare "status" substring: the echoed
+    # "status vocabulary: Final, Rejected, Deferred" line itself contains the word "status" and
+    # would satisfy a looser check whether or not the vocabulary ever reached extraction.
+    assert "pep-0376.md: status" in with_flag, "the custom vocabulary did not reach the prompt"
     assert "supersession" in with_flag, "the supersession claim was lost"
 
 
@@ -509,7 +515,9 @@ def test_a_degenerate_vocabulary_exits_2_rather_than_refusing_every_status(
     with pytest.raises(SystemExit) as exc:
         main(["extract", "run", str(corpus), "--status-vocabulary", value])
     assert exc.value.code == 2
-    assert expected in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "recall extract: --status-vocabulary: " in err
+    assert expected in err
 
 
 def test_a_one_word_vocabulary_is_a_list_not_a_string(corpus, monkeypatch, capsys):
@@ -549,7 +557,11 @@ def test_show_takes_the_flag_too(pep_corpus, monkeypatch, capsys):
             "Final,Rejected",
         ]
     )
-    assert "status" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    # File-qualified: this is the test's only assertion, and the echoed
+    # "status vocabulary: Final, Rejected" line contains the bare word "status" by itself, so
+    # a substring check alone would pass even if the vocabulary never reached extraction.
+    assert "pep-0376.md: status" in out
 
 
 def test_recheck_measures_against_the_same_vocabulary_it_warmed(
