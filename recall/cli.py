@@ -1425,6 +1425,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "manifest":
         from recall.lineage import IndexManifestV1, ManifestObjectV1
         from recall.manifest import (
+            ObjectReader,
             S3ObjectReader,
             load_inventory,
             load_manifest,
@@ -1442,7 +1443,7 @@ def main(argv: list[str] | None = None) -> None:
             return
         # Chosen from the manifest's own objects rather than assumed. `manifest verify` on a
         # file:// manifest previously failed with an S3 allowlist error before reading anything.
-        reader = None
+        reader: ObjectReader | None = None
         if args.manifest.startswith("s3://"):
             if args.version_id is None or args.sha256 is None or args.size is None:
                 raise SystemExit("an S3 manifest requires --version-id, --sha256 and --size")
@@ -1512,7 +1513,12 @@ def main(argv: list[str] | None = None) -> None:
             ManifestObjectV1,
             PipelineIdentity,
         )
-        from recall.manifest import S3ObjectReader, load_manifest, reader_for_manifest
+        from recall.manifest import (
+            ObjectReader,
+            S3ObjectReader,
+            load_manifest,
+            reader_for_manifest,
+        )
 
         environment = manager.environment
         # The reader is chosen AFTER the manifest is known, not before. Building the S3 reader

@@ -165,11 +165,14 @@ class TestSelection:
         assert r.model == "rerank-2.5"
 
     def test_an_unprefixed_name_still_means_a_local_cross_encoder(self) -> None:
-        """The existing spelling must keep working; this is additive, not a migration."""
-        from recall.rerank import reranker_from_name
+        """The existing spelling must keep working; this is additive, not a migration.
 
-        # Constructed lazily on purpose: building a CrossEncoder would download weights.
-        assert reranker_from_name("BAAI/bge-reranker-base", build=False) == (
+        Asserted through `reranker_kind`, which routes without constructing: building a
+        CrossEncoder would download weights.
+        """
+        from recall.rerank import reranker_kind
+
+        assert reranker_kind("BAAI/bge-reranker-base") == (
             "cross-encoder",
             "BAAI/bge-reranker-base",
         )

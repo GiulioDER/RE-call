@@ -26,7 +26,7 @@ from recall.lineage import (
     canonical_json,
     canonical_sha256,
 )
-from recall.manifest import S3ObjectReader
+from recall.manifest import ObjectReader
 from recall.types import Chunk
 
 Chunker = Callable[[str], list[str]]
@@ -500,7 +500,7 @@ class GenerationManager:
     def build(
         self,
         generation_id: str,
-        reader: S3ObjectReader,
+        reader: ObjectReader,
         embedder: Embedder,
         chunker: Chunker,
         provenance: dict | None = None,

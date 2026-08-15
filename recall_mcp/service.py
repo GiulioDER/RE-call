@@ -518,8 +518,12 @@ _RERANK_TRUE = frozenset({"1", "true", "yes", "on"})
 _RERANK_FALSE = frozenset({"", "0", "false", "no", "off"})
 
 
-def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str] | None:
+def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str | None] | None:
     """`(model, revision)` for the configured reranker, or None when it is off.
+
+    `revision` is None for a cloud model, which has no Hub reference to pin. That is a real
+    difference in guarantee, not a missing value, and the type says so rather than hiding it
+    behind an empty string.
 
     Returns a spec rather than an instance so the decision can be tested without importing torch.
 

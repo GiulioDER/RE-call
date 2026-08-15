@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from recall.embeddings import verify_artifact
 from recall.types import ScoredChunk
@@ -279,7 +279,7 @@ class VoyageReranker:
         api_key: str | None = None,
         top_k: int | None = None,
         max_document_chars: int | None = None,
-        client: object | None = None,
+        client: "Any | None" = None,
     ) -> None:
         import os
         import threading
@@ -301,7 +301,7 @@ class VoyageReranker:
         if self._client is None and not self._api_key:
             raise RuntimeError("VoyageReranker needs VOYAGE_API_KEY (env) or an explicit api_key")
 
-    def _voyage_client(self) -> object:
+    def _voyage_client(self) -> "Any":
         # Taken unconditionally rather than as the second half of a double-check: the unlocked fast
         # path would save an uncontended acquire off a call that crosses the network, and would buy
         # a publication argument with no settled answer on a free-threaded build.
@@ -363,26 +363,28 @@ class FallbackReranker:
             return self.fallback.rerank(query, hits)
 
 
-def reranker_from_name(
-    name: str,
-    *,
-    api_key: str | None = None,
-    build: bool = True,
-) -> object:
-    """Resolve a `RECALL_RERANK_MODEL` spelling to a reranker.
+def reranker_kind(name: str) -> tuple[str, str]:
+    """Route a `RECALL_RERANK_MODEL` spelling to `(kind, model)` WITHOUT constructing anything.
+
+    Separate from `reranker_from_name` so the routing can be asserted without downloading
+    cross-encoder weights. An earlier draft folded both into one function behind a `build` flag,
+    which made its return type a union of "a reranker" and "a description of one" — untypeable at
+    the call site, and mypy said so.
+    """
+    if name == "voyage" or name.startswith("voyage:"):
+        model = name[len("voyage:") :] if name.startswith("voyage:") else DEFAULT_VOYAGE_RERANK_MODEL
+        return ("voyage", model)
+    return ("cross-encoder", name)
+
+
+def reranker_from_name(name: str, *, api_key: str | None = None) -> Reranker:
+    """Build the reranker a `RECALL_RERANK_MODEL` spelling names.
 
     Spellings: ``voyage``, ``voyage:<model>``, or anything else, which stays a LOCAL cross-encoder
     model name. The unprefixed form is deliberately unchanged: this is additive, and an operator
     with `RECALL_RERANK_MODEL=BAAI/bge-reranker-base` set must keep getting exactly what they had.
-
-    `build=False` returns the resolved `(kind, model)` without constructing, so a caller can check
-    the routing without downloading cross-encoder weights.
     """
-    if name == "voyage" or name.startswith("voyage:"):
-        model = name[len("voyage:") :] if name.startswith("voyage:") else DEFAULT_VOYAGE_RERANK_MODEL
-        if not build:
-            return ("voyage", model)
+    kind, model = reranker_kind(name)
+    if kind == "voyage":
         return VoyageReranker(model=model, api_key=api_key)
-    if not build:
-        return ("cross-encoder", name)
-    return CrossEncoderReranker(model=name)
+    return CrossEncoderReranker(model=model)

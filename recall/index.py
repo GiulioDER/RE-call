@@ -374,7 +374,7 @@ class ShadowIndexTarget:
     context_policy: ContextPolicy = ContextPolicy()
 
 
-def head_commit(path) -> str | None:
+def head_commit(path: str | Path) -> str | None:
     """The short HEAD sha of the repository containing `path`, or None outside one.
 
     None rather than a placeholder. "unknown" stored as a value is indistinguishable later from a

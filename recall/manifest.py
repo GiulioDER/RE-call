@@ -7,7 +7,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 from collections.abc import Callable
 from urllib.request import url2pathname
 from urllib.parse import unquote, urlsplit
@@ -95,6 +95,20 @@ class S3Allowlist:
 class VerifiedObject:
     entry: ManifestObjectV1
     data: bytes
+
+
+@runtime_checkable
+class ObjectReader(Protocol):
+    """What a manifest reader must do, independent of where the bytes live.
+
+    Introduced so callers can be typed against the capability rather than against S3 specifically.
+    `recall/cli.py` and `GenerationManager.build` both named `S3ObjectReader` concretely, which is
+    what made the local backend untypeable even once it existed.
+    """
+
+    def fetch(self, entry: ManifestObjectV1) -> VerifiedObject: ...
+
+    def verify(self, manifest: IndexManifestV1) -> tuple[VerifiedObject, ...]: ...
 
 
 class S3ObjectReader:
@@ -266,8 +280,8 @@ def reader_for_manifest(
     manifest: IndexManifestV1,
     *,
     local_roots: "tuple[Path, ...] | list[Path] | None" = None,
-    s3_factory: "Callable[[], object] | None" = None,
-) -> object:
+    s3_factory: "Callable[[], ObjectReader] | None" = None,
+) -> ObjectReader:
     """Pick the reader the manifest's objects actually need.
 
     The CLI used to build `S3ObjectReader.from_environment()` unconditionally, before it knew what
