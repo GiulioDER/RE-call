@@ -129,7 +129,7 @@ class OpenAIAnswerProvider:
         base_url: str = DEFAULT_ANSWER_BASE_URL,
         temperature: float = 0.0,
         max_tokens: int | None = DEFAULT_ANSWER_MAX_TOKENS,
-        request_json_object: bool = True,
+        request_json_object: bool = False,
     ) -> None:
         self.client = client
         self.model_id = model_id
@@ -148,6 +148,18 @@ class OpenAIAnswerProvider:
             # 65,536 ceiling while its answers measured ~850 completion tokens.
             kwargs["max_tokens"] = self.max_tokens
         if self.request_json_object:
+            # ⚠️ OFF by default, and it cannot simply be turned on. OpenAI refuses
+            # `response_format={"type": "json_object"}` with a 400 unless the word "json" appears
+            # somewhere in the messages, and `SYSTEM_PROMPT` says "Return only an object matching
+            # the requested answer envelope" without ever using it. That prompt is frozen: its
+            # body is pinned as SOURCE TEXT by `tests/test_evidence_contract.py`, and editing it
+            # to satisfy a provider flag would move every arm's score for a transport reason.
+            #
+            # Nothing is lost by leaving this off. `parse_answer_envelope` is the actual
+            # guarantee, and it is stricter than JSON mode: exact key set, no extra fields, no
+            # coercion. JSON mode would only have saved the occasional fenced reply, which
+            # `strip_json_fence` already handles. Kept as a flag for a caller whose own prompt
+            # does say "json".
             kwargs["response_format"] = {"type": "json_object"}
         started = time.monotonic()
         reply = self.client.complete(

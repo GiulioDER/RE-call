@@ -151,6 +151,25 @@ def test_the_messages_are_passed_through_unaltered() -> None:
     assert kwargs["temperature"] == 0.0
 
 
+def test_json_mode_is_off_by_default() -> None:
+    """It cannot be on: OpenAI 400s unless the word "json" appears in the messages, and
+    `SYSTEM_PROMPT` never says it. Found by a smoke run, which is what smoke runs are for.
+
+    Nothing is lost: `parse_answer_envelope` is stricter than JSON mode anyway.
+    """
+    from recall.evidence import SYSTEM_PROMPT
+
+    assert "json" not in SYSTEM_PROMPT.lower(), (
+        "if the prompt ever says json, revisit request_json_object; until then it must stay off"
+    )
+    fake = _Fake()
+    OpenAIAnswerProvider(fake)("s", "u")
+    assert "response_format" not in fake.calls[-1][1]
+
+    OpenAIAnswerProvider(fake, request_json_object=True)("s", "u")
+    assert fake.calls[-1][1]["response_format"] == {"type": "json_object"}
+
+
 def test_max_tokens_is_sent_and_can_be_lowered_but_not_silently_dropped() -> None:
     fake = _Fake()
     OpenAIAnswerProvider(fake, max_tokens=256)("s", "u")

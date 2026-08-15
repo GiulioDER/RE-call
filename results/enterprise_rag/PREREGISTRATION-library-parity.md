@@ -138,7 +138,7 @@ prediction.
 |---|---|---|---|
 | J1 | the two arms retrieved identically | `document_ids` byte identical per `question_id` across the two answer files | comparing aggregate recall, which is equal for many different lists |
 | J2 | the prompt did not move | `system_prompt_sha256` in the manifest matches the shipped `SYSTEM_PROMPT` | asserting the constant exists |
-| J3 | context size held | `evidence_items == k` on every row's diagnostics | asserting `max_items` was passed, which does not prove it took effect |
+| J3 | context size held | the item count is identical to what the bespoke arm's budget admits. ⚠️ **NOT `== k`**: the `--max-context-chars` budget binds before `max_items` does at these chunk sizes, so the real counts are 5 to 7 with `k` at 8. Both arms apply the same budget, which is what the constancy rests on | asserting `evidence_items == k`, which the apparatus validation below measured as FALSE, or asserting `max_items` was passed, which does not prove it took effect |
 | J4 | no corpus byte in the instruction channel | assert on the bytes the PROVIDER received, not on the template | asserting `render_evidence_prompt` returns `SYSTEM_PROMPT` |
 | J5 | the arm is not silently broken | `refuse_a_broken_library_arm` raises `SystemExit` above B3's ceiling, after the rows are on disk and BEFORE the manifest, so a refused run keeps its evidence and has no manifest to be mistaken for a result | reporting a mean over the rows that happened to succeed. Until this was written the runner wrote a full file of empty answers, printed a success line and exited 0 |
 | J7 | the diagnostics survive the run | the per row library diagnostics are aggregated into `answering.library.tally` in the manifest | leaving them on the in-memory rows, which `write_answers_stream` strips before writing, so B3 and B6 were unmeasurable and J3 had nothing to read |
@@ -183,3 +183,53 @@ the confound this whole exercise exists to avoid.
   is the substrate for that work, not the work.
 - **Cost.** The library arm makes one model call per question, the same as the bespoke arm, but
   token counts differ with the framing and are not predicted here.
+
+---
+
+## Apparatus validation, 2026-08-15. NOT the parity result
+
+⚠️ **Nothing here is a parity number and none of it scores B1, B7 or B8.** It was run on a
+different substrate on purpose, to prove the plumbing before paying for the real thing: the 89
+document / 20 question calibration fixture, `fastembed` rather than `voyage-4-large`, lexical
+sparse only, no reranker, and **no judge**. Retrieval differs from the baseline, so a correctness
+delta against it would be meaningless. What it can settle is whether the apparatus works and
+whether the invariants hold, and it settled three things that would each have cost a full run.
+
+**What held.**
+
+| check | result |
+|---|---|
+| J1, retrieval identical between arms | **byte identical `document_ids` on all 20 questions** |
+| J2, prompt digest recorded | `5cfe3f40…` in the manifest |
+| J7, diagnostics survive | full tally in `answering.library.tally` |
+| B3, validation failures | **0 of 20**, against a 5% ceiling |
+| B6, mean citations per answered row | **1.64**, inside 1.0 to 4.0 |
+| O3, `info_not_found` does not move | both rows abstained in **both** arms |
+| the model is held constant | manifest records `openai/gpt-4o` for the library arm |
+
+**What did not, and each is worth knowing before the paid run.**
+
+1. 🔑 **J3 was written wrong and this measured it.** I registered "`evidence_items == k` on every
+   row". The observed counts are 5, 6 and 7, never 8, because `--max-context-chars` binds before
+   `max_items` does at these chunk sizes. The invariant is corrected above. Both arms apply the
+   same character budget, which is what constancy actually rests on, and J1 plus the byte level
+   test carry that. Registering an invariant that the apparatus then falsified is the system
+   working, and it is why the check is run before the money is spent rather than after.
+2. ⚠️ **B4 came in at 30%, against a registered 2% to 20%.** Six of twenty rows returned
+   `insufficient_evidence=true`. On a weaker retrieval substrate that is partly expected, so this
+   does not falsify B4 for the real run, but it is the predicted risk showing up in the predicted
+   direction: the citation requirement pushes the model toward abstaining when it cannot tie a
+   statement to a chunk id. One `constrained` row is the sharp case, where the bespoke arm
+   answered in 219 characters and the library arm abstained.
+3. **O1 is in trouble.** I predicted the library arm's answers would be LONGER, since the bespoke
+   prompt asks for "the shortest complete answer" and `SYSTEM_PROMPT` says nothing about length.
+   Median went 140 to 93 characters, in the wrong direction. The medians are dominated by the
+   93 character abstention sentence, so this is not yet a clean read, and the real run must
+   compute B5 over ANSWERED rows only. That is a definition I should have pinned in advance.
+
+**One apparatus defect it found.** OpenAI refuses `response_format={"type": "json_object"}` with
+a 400 unless the word "json" appears somewhere in the messages, and `SYSTEM_PROMPT` never says it.
+JSON mode is therefore off, permanently, and the prompt is not being edited to satisfy a transport
+flag: `parse_answer_envelope` is stricter than JSON mode anyway. Pinned by
+`tests/test_answer_provider.py::test_json_mode_is_off_by_default`, which fails if the prompt ever
+gains the word.
