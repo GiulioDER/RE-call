@@ -195,3 +195,25 @@ def test_the_fleet_detects_a_disabled_safety_axis(monkeypatch):
         "with the safety axis disabled this candidate wins on quality and should now be "
         f"promoted; it still failed on {decision.failures}"
     )
+
+
+def test_the_fleet_declares_what_it_does_not_cover():
+    """Roll every member's blind spot into one visible list.
+
+    Buried per-member, a `does_not_catch` is a comment. Printed together, it is the answer to
+    "what does this fleet NOT certify", which is the question a reader actually has. Run with
+    `-s` to see it.
+    """
+    members = SURFACE_A + SURFACE_B
+    assert len(members) == 14
+
+    print("\nThe eval calibration fleet does NOT catch:")
+    for member in members:
+        print(f"  - {member.name}: {member.does_not_catch}")
+    print(
+        "\nBeyond the members: indexing and embedding are stubbed, so nothing here speaks to "
+        "real retrieval quality. run_trust_eval and run_nearmiss_eval are unreached (both "
+        "build a real store from a dsn internally). LOCOMO, BEAM, MTRAG and the ladder are "
+        "out of scope. Generation and judging are untouched: the 2026-08-09 conditioning bug "
+        "lived in an upstream IBM scorer and this fleet closes its CLASS, not that instance."
+    )
