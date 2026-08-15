@@ -16,7 +16,7 @@ from recall.entailment import EntailmentJudge, resolve_entailment_judge
 from recall.setup import CalibrationResult
 from recall.trust_policy import TrustPolicy
 from recall.embeddings import Embedder, HashingEmbedder
-from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
+from recall.index import head_commit, Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.store import (
@@ -903,6 +903,17 @@ def main(argv: list[str] | None = None) -> None:
     p_build.add_argument("--embedder-revision", default=None)
     p_build.add_argument("--embedder-artifact-digest", default=None)
     p_build.add_argument("--unverified-development", action="store_true")
+    p_build.add_argument(
+        "--project",
+        default=None,
+        help="stamp every chunk with the project that produced it, as `recall index --project` "
+             "does. A calibrated generation without it cannot say where a hit came from.",
+    )
+    p_build.add_argument(
+        "--no-commit-stamp",
+        action="store_true",
+        help="do not record the repository HEAD on each chunk.",
+    )
     p_build.add_argument("--chunker", choices=["text", "code"], default="text")
     p_build.add_argument("--max-chars", type=int, default=800)
     p_build.add_argument("--overlap", type=int, default=80)
@@ -925,6 +936,19 @@ def main(argv: list[str] | None = None) -> None:
         "--glob",
         default=DEFAULT_GLOB,
         help="file glob to index — e.g. '**/*.py' for code (auto-uses code chunking). Default: markdown.",
+    )
+    p_index.add_argument(
+        "--project",
+        default=None,
+        help="stamp every chunk with the project that produced it. Not inferred from the path: a "
+             "directory name is not a project, and a guessed value reads as authoritative while "
+             "being wrong in every worktree.",
+    )
+    p_index.add_argument(
+        "--no-commit-stamp",
+        action="store_true",
+        help="do not record the repository's HEAD on each chunk. The commit is what makes a stale "
+             "chunk DETECTABLE rather than merely suspected, and it cannot be reconstructed later.",
     )
     p_index.add_argument(
         "--allow-prune",
@@ -1400,7 +1424,13 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "manifest":
         from recall.lineage import IndexManifestV1, ManifestObjectV1
-        from recall.manifest import S3ObjectReader, load_inventory, load_manifest
+        from recall.manifest import (
+            ObjectReader,
+            S3ObjectReader,
+            load_inventory,
+            load_manifest,
+            reader_for_manifest,
+        )
 
         if args.manifest_cmd == "create":
             manifest = IndexManifestV1(
@@ -1411,7 +1441,9 @@ def main(argv: list[str] | None = None) -> None:
             Path(args.output).write_text(manifest.to_json(), encoding="utf-8")
             print(f"wrote {args.output} sha256={manifest.digest} objects={len(manifest.objects)}")
             return
-        reader = S3ObjectReader.from_environment()
+        # Chosen from the manifest's own objects rather than assumed. `manifest verify` on a
+        # file:// manifest previously failed with an S3 allowlist error before reading anything.
+        reader: ObjectReader | None = None
         if args.manifest.startswith("s3://"):
             if args.version_id is None or args.sha256 is None or args.size is None:
                 raise SystemExit("an S3 manifest requires --version-id, --sha256 and --size")
@@ -1422,6 +1454,7 @@ def main(argv: list[str] | None = None) -> None:
                 args.size,
                 args.sha256,
             )
+            reader = S3ObjectReader.from_environment()
             manifest = IndexManifestV1.from_json(reader.fetch(reference).data)
         else:
             manifest = load_manifest(args.manifest)
@@ -1429,6 +1462,8 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(
                 f"manifest tenant {manifest.tenant_id!r} does not match --tenant {args.tenant!r}"
             )
+        if reader is None:
+            reader = reader_for_manifest(manifest)
         reader.verify(manifest)
         print(f"verified sha256={manifest.digest} objects={len(manifest.objects)}")
         return
@@ -1478,10 +1513,18 @@ def main(argv: list[str] | None = None) -> None:
             ManifestObjectV1,
             PipelineIdentity,
         )
-        from recall.manifest import S3ObjectReader, load_manifest
+        from recall.manifest import (
+            ObjectReader,
+            S3ObjectReader,
+            load_manifest,
+            reader_for_manifest,
+        )
 
         environment = manager.environment
-        reader = S3ObjectReader.from_environment()
+        # The reader is chosen AFTER the manifest is known, not before. Building the S3 reader
+        # up front needs boto3 and RECALL_S3_ALLOWLIST, so a local-only user hit an S3
+        # configuration error while doing nothing that involved S3.
+        reader = None
         if args.manifest.startswith("s3://"):
             if (
                 args.manifest_version_id is None
@@ -1499,11 +1542,15 @@ def main(argv: list[str] | None = None) -> None:
                 args.manifest_size,
                 args.manifest_sha256,
             )
+            # An s3:// manifest needs the S3 reader to fetch the manifest itself.
+            reader = S3ObjectReader.from_environment()
             manifest = IndexManifestV1.from_json(reader.fetch(reference).data)
         else:
             if environment == "production":
                 raise SystemExit("production generation builds require a versioned S3 manifest")
             manifest = load_manifest(args.manifest)
+        if reader is None:
+            reader = reader_for_manifest(manifest)
         embedder = _make_embedder(args.embedder)
         revision = args.embedder_revision
         provider = args.embedder_provider
@@ -1546,11 +1593,23 @@ def main(argv: list[str] | None = None) -> None:
             pipeline,
             allow_unverified=args.unverified_development,
         )
+        # Same provenance the index path stamps. Without this a CALIBRATED generation carries no
+        # record of which project produced each chunk, and the generation path is the only one
+        # calibration can use.
+        build_provenance = {
+            k: v
+            for k, v in (
+                ("project", args.project),
+                ("indexed_commit", None if args.no_commit_stamp else head_commit(".")),
+            )
+            if v is not None
+        }
         generation_stats = manager.build(
             generation.generation_id,
             reader,
             embedder,
             generation_chunker,
+            provenance=build_provenance,
         )
         print(
             f"built {generation_stats.generation_id}: {generation_stats.objects} objects, "
@@ -1918,7 +1977,18 @@ def main(argv: list[str] | None = None) -> None:
             args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
         ) as store:
             store.check_schema()
-            indexer = Indexer(store, embedder, chunker=chunker, allow_prune=args.allow_prune)
+            # Stamped by default, opt OUT rather than opt in. A corpus indexed without a commit
+            # cannot have one added afterwards, and the run that skips it is always the run nobody
+            # was watching.
+            commit = None if args.no_commit_stamp else head_commit(args.path)
+            indexer = Indexer(
+                store,
+                embedder,
+                chunker=chunker,
+                allow_prune=args.allow_prune,
+                project=args.project,
+                indexed_commit=commit,
+            )
             try:
                 stats = indexer.index_path(args.path, glob=args.glob)
             except PruneGuardTripped as exc:

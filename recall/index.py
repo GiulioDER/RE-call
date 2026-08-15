@@ -374,6 +374,27 @@ class ShadowIndexTarget:
     context_policy: ContextPolicy = ContextPolicy()
 
 
+def head_commit(path: str | Path) -> str | None:
+    """The short HEAD sha of the repository containing `path`, or None outside one.
+
+    None rather than a placeholder. "unknown" stored as a value is indistinguishable later from a
+    commit that happened to be named that, and it makes an absent record look like a taken one.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    sha = out.stdout.strip()
+    return sha if out.returncode == 0 and sha else None
+
+
 class Indexer:
     def __init__(
         self,
@@ -386,6 +407,8 @@ class Indexer:
         context_policy: ContextPolicy = ContextPolicy(),
         shadow: ShadowIndexTarget | None = None,
         sparse_encoder: "SparseEncoderProtocol | None" = None,
+        project: str | None = None,
+        indexed_commit: str | None = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -398,6 +421,20 @@ class Indexer:
         #: this Indexer only — there is no global off switch, because the run that needs one is
         #: always the run you are not watching.
         self._allow_prune = allow_prune
+        #: Where this run's material came from, stamped onto every chunk it writes.
+        #:
+        #: Needed because chunk metadata is built from `document.meta`, the document's own
+        #: frontmatter, and CODE FILES HAVE NONE. Once one corpus holds several repositories, a hit
+        #: that cannot name its origin is a hit the reader has to go and verify by hand.
+        #:
+        #: Absent stays ABSENT rather than being guessed from the path: a directory name is not a
+        #: project any more than it is a branch, and an inferred value reads as authoritative while
+        #: being wrong in every worktree.
+        self.provenance: dict[str, str] = {
+            k: v
+            for k, v in (("project", project), ("indexed_commit", indexed_commit))
+            if v is not None
+        }
         self._max_prune_fraction = _prune_fraction_from_env()
         self._context_policy = context_policy
         self._shadow = shadow
@@ -424,6 +461,15 @@ class Indexer:
             shadow_profile = embedding_profile(shadow.embedder)
             if shadow_profile.context_version != shadow_expected:
                 raise ValueError("shadow embedding profile does not match its context policy")
+
+    def apply_provenance(self, meta: dict) -> dict:
+        """Frontmatter first, provenance LAST, so a document cannot relabel its own origin.
+
+        Chunk metadata merges the document's frontmatter. If frontmatter won, any indexed file
+        could claim to come from another project, and provenance would be an assertion made by the
+        data rather than a record made by the indexer.
+        """
+        return {**meta, **self.provenance}
 
     def index_path(
         self, path: str | Path, glob: str | None = None, files: list[Path] | None = None
@@ -634,7 +680,7 @@ class Indexer:
                             "text_start": structured_chunk.start,
                             "text_end": structured_chunk.end,
                             "heading_hierarchy": list(structured_chunk.headings),
-                            **meta
+                            **self.apply_provenance(meta),
                         },
                     )
                 )
@@ -657,7 +703,7 @@ class Indexer:
                                 "text_start": shadow_piece.start,
                                 "text_end": shadow_piece.end,
                                 "heading_hierarchy": list(shadow_piece.headings),
-                                **meta,
+                                **self.apply_provenance(meta),
                             },
                         )
                     )

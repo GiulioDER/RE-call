@@ -518,8 +518,12 @@ _RERANK_TRUE = frozenset({"1", "true", "yes", "on"})
 _RERANK_FALSE = frozenset({"", "0", "false", "no", "off"})
 
 
-def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str] | None:
+def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str | None] | None:
     """`(model, revision)` for the configured reranker, or None when it is off.
+
+    `revision` is None for a cloud model, which has no Hub reference to pin. That is a real
+    difference in guarantee, not a missing value, and the type says so rather than hiding it
+    behind an empty string.
 
     Returns a spec rather than an instance so the decision can be tested without importing torch.
 
@@ -549,6 +553,25 @@ def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str] | Non
     if not model:
         return (DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION)
     revision = source.get("RECALL_RERANK_REVISION")
+
+    # A cloud model has no Hub reference, so it has no revision to pin. The requirement below is a
+    # Hub property, and applying it here would make the Voyage reranker unselectable while looking
+    # like a safety check.
+    #
+    # ⚠️ The guarantee genuinely differs and is not being papered over. `rerank-2.5` is a name
+    # resolved on Voyage's side: its weights can change under us in a way a pinned Hub revision
+    # cannot. That is a real, smaller guarantee, recorded here so a reader comparing the two
+    # rerankers can see it. It is a reason to know what you are choosing, not a reason to refuse.
+    if model == "voyage" or model.startswith("voyage:"):
+        if revision:
+            raise ValueError(
+                f"RECALL_RERANK_MODEL={model!r} has no Hub revision to pin, so "
+                f"RECALL_RERANK_REVISION={revision!r} cannot be honoured. Accepting it would put a "
+                "pin in every trace that pins nothing, which asserts a guarantee that does not "
+                "exist. Unset RECALL_RERANK_REVISION for a cloud reranker."
+            )
+        return (model, None)
+
     if not revision:
         raise ValueError(
             "RECALL_RERANK_MODEL requires RECALL_RERANK_REVISION. An unpinned Hub reference is "
@@ -609,6 +632,25 @@ def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pr
     from recall.rerank import CrossEncoderReranker
 
     model, revision = spec
+
+    # Voyage primary, local cross-encoder fallback. The fallback is not politeness: a Voyage outage
+    # would otherwise take retrieval down entirely, and reranking is the largest single measured
+    # retrieval gain. `FallbackReranker` counts and logs every fallback, so a run cannot silently
+    # measure a blend of two rerankers — the confound named in this branch's pre-registration.
+    #
+    # The fallback is built EAGERLY, alongside the primary, rather than on first failure. Building a
+    # cross-encoder downloads and loads weights; doing that at the moment Voyage is already failing
+    # turns one outage into a cold start under load, which is when the process can least afford it.
+    if model == "voyage" or model.startswith("voyage:"):
+        from recall.rerank import FallbackReranker, reranker_from_name
+
+        return FallbackReranker(
+            primary=reranker_from_name(model),
+            fallback=CrossEncoderReranker(
+                model=DEFAULT_RERANKER_MODEL, revision=DEFAULT_RERANKER_REVISION
+            ),
+        )
+
     return CrossEncoderReranker(model=model, revision=revision)
 
 
