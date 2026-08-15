@@ -65,3 +65,37 @@ def test_load_dotenv_bad_byte_on_a_key_that_would_apply_discards_the_whole_file(
         load_dotenv(env)
 
     assert "EARLY" not in os.environ  # partial application would be worse than none
+
+
+def test_the_loader_undoes_exactly_what_the_writer_escaped(tmp_path, monkeypatch):
+    """A value written by `_quote_env` must come back identical, escapes and all.
+
+    The loader used to strip the surrounding quotes and stop. That leaves the backslashes in
+    place, and `.strip('"')` then removes every trailing quote it finds, including the one an
+    escape belonged to, so a value containing a quote came back both mangled and a character
+    short. The reasoning arm added the first free text prompts feeding this path, a base URL
+    and a model id, so it is now reachable by typing rather than only in theory.
+    """
+    written = {
+        "Q_QUOTE": 'my model "quoted"',
+        "Q_BACKSLASH": "C:\\models\\bge",
+        "Q_NEWLINE": "first\nsecond",
+        "Q_HASH": "has # hash",
+        "Q_SPACE": "with space",
+        "Q_PLAIN": "plain-value",
+        "Q_EMPTY": "",
+    }
+    from recall.setup import _quote_env
+
+    env = tmp_path / ".env"
+    env.write_text(
+        "\n".join(f"{k}={_quote_env(v)}" for k, v in written.items()) + "\n",
+        encoding="utf-8",
+    )
+    for key in written:
+        monkeypatch.delenv(key, raising=False)
+
+    load_dotenv(env)
+
+    for key, value in written.items():
+        assert os.environ[key] == value, f"{key} did not survive the round trip"

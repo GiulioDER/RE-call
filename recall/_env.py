@@ -10,6 +10,46 @@ import os
 from pathlib import Path
 
 
+#: What `recall.setup._quote_env` writes, mapped back. Keep the two in step: a value this cannot
+#: undo is a value the writer must not produce.
+_ESCAPES = {"\\": "\\", '"': '"', "n": "\n", "r": "\r"}
+
+
+def _unquote(raw: str) -> str:
+    """Undo the quoting `_quote_env` applies, and nothing else.
+
+    This used to be `val.strip().strip('"').strip("'")`, which is wrong in two ways at once on a
+    value the writer escaped. It leaves the backslashes in place, so `my model \\"quoted\\"` comes
+    back carrying them; and `str.strip` removes EVERY trailing quote it finds, including the one
+    that belonged to an escape, so the value also loses a character off the end. A model id or a
+    base URL containing a quote therefore did not survive the trip it had just made.
+
+    An unbalanced or unquoted value is returned as it stands. Guessing at a repair for a
+    hand-written line would be worse than handing back what is actually there.
+    """
+    val = raw.strip()
+    if len(val) < 2 or val[0] != val[-1] or val[0] not in "\"'":
+        return val
+    inner = val[1:-1]
+    if val[0] == "'":
+        # `_quote_env` never emits single quotes, so there is nothing to unescape inside them.
+        return inner
+    out: list[str] = []
+    i = 0
+    while i < len(inner):
+        ch = inner[i]
+        if ch == "\\" and i + 1 < len(inner):
+            nxt = inner[i + 1]
+            # An unrecognised escape keeps both characters rather than silently eating the
+            # backslash: this parser's job is fidelity, not interpretation.
+            out.append(_ESCAPES.get(nxt, "\\" + nxt))
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def load_dotenv(path: str | Path = ".env") -> None:
     """Apply a `.env` ALL-OR-NOTHING: parse the whole file, then set the variables.
 
@@ -50,7 +90,7 @@ def load_dotenv(path: str | Path = ".env") -> None:
             continue
         key, _, val = line.partition("=")
         key = key.strip()
-        val = val.strip().strip('"').strip("'")
+        val = _unquote(val)
         if not key or key in os.environ or key in pending:
             # An exported variable always wins over the file, and so does the file's OWN
             # first occurrence of a key — checked before validity, so a line that was never
