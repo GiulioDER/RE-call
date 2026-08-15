@@ -23,13 +23,18 @@ suite and the linter. Optional extras (`fastembed`, `voyage`, `rerank`, `entail`
 Docker before running `pytest`:
 
 ```bash
-eval "$(scripts/session-db.sh up)"   # or: make db-up
+eval "$(scripts/session-db.sh up)"   # the eval is required, see below
 pytest -v                            # or: make test
 scripts/session-db.sh down           # or: make db-down
 ```
 
 `scripts/session-db.sh up` starts a container scoped to *this* checkout, on its own port, and
 prints the `RECALL_TEST_DSN` to export. `down` removes that container and only that one.
+
+**Run it through `eval`, not `make db-up`.** `make` cannot export into your shell, so `make db-up`
+starts the container and the DSN goes nowhere. That combination used to be harmless because the
+suite had a default; now it means every DB test skips and pytest still exits 0, which is a green
+run that tested nothing. `make test` refuses to start without `RECALL_TEST_DSN` for that reason.
 
 **There is no default DSN.** `tests/conftest.py` reads `RECALL_TEST_DSN` and, when it is unset,
 skips every DB test with a message saying so. It used to fall back to the shared dev container on
@@ -123,7 +128,9 @@ make eval                                                     # ablations + trus
 python -m recall.eval.scale --embedder hashing --filler 50000  # scale + latency
 ```
 
-`make eval` needs the same Docker Postgres as the test suite and runs key-free with the local
+`make eval` needs a Postgres, but **not** the suite's one: it reads `RECALL_DSN`, whereas the suite
+reads `RECALL_TEST_DSN` and has no default at all. Point `RECALL_DSN` at a database you are content
+to write to, which can be the shared `docker compose up -d` container. It runs key-free with the local
 `fastembed` embedder; it adds a Voyage row only if `VOYAGE_API_KEY` is set. It writes
 `results/RESULTS.md` and charts — if your change touches retrieval, trust verdicts, or calibration,
 re-run it and look at whether the numbers moved before claiming they didn't.

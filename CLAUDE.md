@@ -39,7 +39,7 @@ about the code under test. Hours went into debugging tests that were never broke
 
 | Container | Port | Who owns it | Test suite may use it |
 |---|---|---|---|
-| `recall-sess-<hash>` | 5400 to 5520, on 127.0.0.1 | the checkout that started it | yes, this is the one |
+| `recall-sess-<hash>` | 5400 to 5919, on 127.0.0.1 | the checkout that started it | yes, this is the one |
 | `recall-dogfood` | 5433 | shared, long-lived corpus for the `recall` MCP server | **no** |
 | `recall-db-1` | 5432 | shared, from `docker compose up` at the repo root | **no**, demos and manual work only |
 
@@ -83,15 +83,18 @@ a separate project root to the MCP client.
   Drop `--tenant memory` to search `docs/` instead. Rebuild either corpus with the recipe in
   `scripts/session-mcp.sh`. **Index each tenant separately:** re-indexing prunes sources that have
   vanished from disk, so pointing both corpora at one tenant deletes the other.
-- **`code-rag`, `qwen-mcp`, `qwen-vps3`, `vps3-lite`, `mcp-pg-ops`** index `/opt/sentiment_agent`
-  and query the `sentiment_agent` database. They are reachable and useful for that host, but be
-  clear-eyed here: `code_search` on those servers does **not** search recall, and `db_query_ro`
-  does **not** reach recall's tables. Do not use them to answer questions about this repository.
+- **The remaining `http` servers are internal infrastructure for a different project.** They are
+  reachable and useful for that system, but be clear-eyed here: their code and docs search does
+  **not** search recall, and their read-only SQL tool does **not** reach recall's tables. Do not use
+  them to answer questions about this repository. Their names, hosts and purpose are described in
+  `~/.claude/recall-mcp-secrets.json`, outside this tree.
 
-`.mcp.json` is **gitignored and must stay that way.** It carries bearer tokens, and this
-repository is public on PyPI, GitHub and the MCP registry. The tokens live in
-`~/.claude/recall-mcp-secrets.json`, outside the tree. `scripts/session-mcp.sh` refuses to finish
-if the ignore rule has gone missing.
+`.mcp.json` is **gitignored and must stay that way.** This repository is public on PyPI, GitHub and
+the MCP registry, and **both halves of an internal server are disclosure**: the bearer token
+obviously, and the host address too, because an inventory of which machines exist and what runs on
+them is worth something on its own. Neither lives in the tree.
+`scripts/session-mcp.sh` refuses to write the file at all unless the ignore rule is already in
+place, rather than writing it and warning afterwards.
 
 ## Testing
 

@@ -97,13 +97,21 @@ if TYPE_CHECKING:
 
 #: Where an unconfigured run points instead of at a real database.
 #:
-#: Port 1 is reserved and nothing listens on it, on any platform, so every connection attempt is
-#: refused immediately. That property is the whole point. `TEST_DSN` is imported directly by test
-#: modules and used in `psycopg.connect` and `apply_migrations` calls all over the suite, so a
-#: default that merely *usually* gets skipped is not good enough: any path that slips past a
-#: `requires_db` mark has to fail loudly rather than quietly connect to somebody else's database.
-#: The worst outcome here is a confusing connection error. It is never a dropped table.
-_UNCONFIGURED_DSN = "postgresql://recall:recall@127.0.0.1:1/recall"
+#: Port 1 is reserved and nothing listens on it, so a connection there is refused without reaching
+#: any database. That property is the whole point. `TEST_DSN` is imported directly by test modules
+#: and used in `psycopg.connect` and `apply_migrations` calls all over the suite, so a default that
+#: merely *usually* gets skipped is not good enough: any path that slips past a `requires_db` mark
+#: has to fail rather than quietly connect to somebody else's database. The worst outcome here is a
+#: connection error. It is never a dropped table.
+#:
+#: `connect_timeout` is part of the constant rather than left to each call site, and that is not
+#: decoration. "Refused" is not the same as "refused promptly": measured on the Windows host this
+#: is developed on, a refusal on 127.0.0.1 takes ~2.0 s, and libpq's default is to wait
+#: indefinitely, which turned a `psycopg.connect` with no timeout into a **130 second** stall. The
+#: suite has ~110 `psycopg.connect(TEST_DSN...)` sites that pass no timeout of their own; carrying
+#: the bound in the DSN is what stops one forgotten `requires_db` mark from becoming a hang that
+#: reads like a deadlock in the code under test.
+_UNCONFIGURED_DSN = "postgresql://recall:recall@127.0.0.1:1/recall?connect_timeout=2"
 
 #: The test database. Deliberately NOT read from `RECALL_DSN`, and deliberately NOT defaulted to
 #: the shared dev container on port 5432.
@@ -164,16 +172,18 @@ def _db_available() -> bool:
 #: One wording, used by the collection-time mark and by every fixture that refuses at setup, so a
 #: DB-less run reports the same reason however the test was skipped.
 #:
-#: The two cases are worded differently on purpose. "Not reachable" and "never configured" look
-#: identical in a skip summary but call for opposite responses, and reading several hundred skips
-#: that say the container is down, when in fact no DSN was ever exported, wastes the time it takes
-#: to go and inspect a healthy container.
+#: Deliberately a single constant rather than one message per cause. Branching it on
+#: `RECALL_TEST_DSN` reads better in isolation and breaks the guard in
+#: `test_requires_db_coverage.py` that compares this process's constant against a subprocess run
+#: with an explicit DSN: the two processes would compute different text and the comparison would
+#: fail for a reason that has nothing to do with what it is checking. One wording, both causes
+#: named, no environment read at import time.
 DB_UNREACHABLE = (
-    "RECALL_TEST_DSN is not set. Start a database scoped to this checkout with "
-    '`eval "$(scripts/session-db.sh up)"`. The suite DROPs tables and no longer defaults to the '
-    "shared container on port 5432, because concurrent checkouts dropped each other's tables."
-    if not os.environ.get("RECALL_TEST_DSN")
-    else "pgvector DB at RECALL_TEST_DSN is not reachable (`scripts/session-db.sh status`)"
+    "pgvector DB not reachable: RECALL_TEST_DSN is unset or nothing is listening on it. "
+    'Start one scoped to this checkout with `eval "$(scripts/session-db.sh up)"`. '
+    "The suite DROPs tables, so it has no default DSN. It used to fall back to the shared "
+    "`docker compose up -d` container on port 5432, and concurrent checkouts dropped each "
+    "other's tables."
 )
 
 requires_db = pytest.mark.skipif(not _db_available(), reason=DB_UNREACHABLE)

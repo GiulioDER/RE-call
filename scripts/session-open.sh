@@ -43,11 +43,20 @@ fi
 
 say "MCP config"
 if [ -f "$ROOT/.mcp.json" ]; then
+    # Path via argv, not interpolated into a Python literal: a path containing a quote or ending
+    # in a backslash would otherwise produce a syntax error reported as an unknown server count.
     printf '  .mcp.json present (%s servers)\n' \
-        "$(python -c "import json;print(len(json.load(open(r'$ROOT/.mcp.json'))['mcpServers']))" 2>/dev/null || echo '?')"
+        "$(MCP_PATH="$ROOT/.mcp.json" python -c \
+            'import json,os;print(len(json.load(open(os.environ["MCP_PATH"],encoding="utf-8"))["mcpServers"]))' \
+            2>/dev/null || echo '?')"
 else
     printf '  generating...\n'
-    bash "$ROOT/scripts/session-mcp.sh" 2>&1 | sed 's/^/  /'
+    # The generator refuses when .mcp.json is not gitignored, and that refusal is the one thing in
+    # this report that must not scroll past as an indented line. Stop the session on it.
+    if ! bash "$ROOT/scripts/session-mcp.sh" 2>&1 | sed 's/^/  /'; then
+        printf '\n  SESSION SETUP FAILED: see the message above. Not continuing.\n'
+        exit 1
+    fi
 fi
 
 say "Database"

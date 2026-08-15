@@ -44,9 +44,12 @@ else
     bash "$ROOT/scripts/session-db.sh" down 2>&1 | sed 's/^/  /'
 fi
 
+# Ask session-db.sh for the id rather than re-deriving it. Two copies of a derivation drift, and
+# the drift is silent here: this filter would list this checkout's own container under "will not
+# touch" moments after `down` had in fact removed it.
 say "Containers this script will not touch"
 docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null \
-    | grep -Ev "recall-sess-$(printf '%s' "$ROOT" | sha256sum | cut -c1-8)" \
+    | grep -Ev "recall-sess-$(bash "$ROOT/scripts/session-db.sh" id)" \
     | sed 's/^/  /' || printf '  none running\n'
 printf '  Another session may be mid-run against these. Remove them only if you know otherwise.\n'
 
