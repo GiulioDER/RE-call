@@ -25,6 +25,7 @@ from recall.embeddings import embedding_profile_id
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
 from recall.store import DEFAULT_TENANT, PgVectorStore, redacted_dsn
+from recall.trust_policy import TrustPolicy
 from recall_mcp.auth import (
     SCOPE_FORGET,
     SCOPE_READ,
@@ -133,6 +134,20 @@ POOL_SIZE = _read_int_env("RECALL_POOL_SIZE", 8, min_value=1)
 #: multi-tenant deployment runs a server (or a store) per tenant rather than switching
 #: tenants on a shared connection — see PgVectorStore._prepare.
 TENANT = os.environ.get("RECALL_TENANT", DEFAULT_TENANT)
+#: Trust policy for this server instance, resolved from `RECALL_TRUST_MODE`.
+#:
+#: Strict unless the variable reads `development` after `strip().lower()`, which is
+#: `TrustPolicy.from_env`'s rule. A misspelling such as `developmnet` therefore stays strict, which
+#: is the property that matters: degrading on a near-miss would be the worse failure, because the
+#: operator believes the gate is on and it is not.
+#:
+#: This exists because it was documented before it was implemented. `docs/USING_WITH_CLAUDE.md`
+#: names `RECALL_TRUST_MODE` three times and tells users to set it for local work against an
+#: uncalibrated corpus, while the variable appeared nowhere in this package and `search_memory` was
+#: called without `policy=`, so the service applied its strict default and the documented first-run
+#: path returned INDEX_NOT_READY. The CLI honoured the same variable throughout, which is precisely
+#: what let the gap survive unnoticed: one entry point obeyed it and the other silently did not.
+TRUST_POLICY = TrustPolicy.from_env()
 #: Server-side cap on any single statement. A runaway query otherwise holds its connection until
 #: the process dies, and a few of those exhaust the pool while the server still looks healthy.
 # min_value=1: 0 is a valid Postgres statement_timeout meaning "no limit", but here it would
@@ -142,6 +157,19 @@ STATEMENT_TIMEOUT_MS = _read_int_env("RECALL_STATEMENT_TIMEOUT_MS", 15000, min_v
 _T = TypeVar("_T")
 
 _log = get_logger("mcp")
+
+if not TRUST_POLICY.strict:
+    # At module scope, not inside `main()`. The server object is built here too, so a host that
+    # imports `recall_mcp.server:mcp` and runs it itself never calls `main()` and would get a
+    # relaxed gate with no warning at all. Logged at ERROR so a raised log level cannot silence it:
+    # a quiet relaxed gate is indistinguishable from a strict one until something is served that
+    # should have been refused, and by then the answer has already been used. Goes to stderr, so it
+    # cannot corrupt the stdio JSON-RPC stream.
+    _log.error(
+        "RECALL_TRUST_MODE=development: the trust gate is RELAXED for this server. Uncalibrated "
+        "and unbound corpora will be served instead of refused. Local work only; unset it for "
+        "anything anyone relies on."
+    )
 
 
 class TenantProvisioning(Protocol):
@@ -840,6 +868,7 @@ def build_server() -> MCPServer:
                     query,
                     source=source,
                     k=k,
+                    policy=TRUST_POLICY,
                 ).model_dump_json(indent=2)
             )
 
@@ -905,6 +934,7 @@ def build_server() -> MCPServer:
                     source=source,
                     k=k,
                     max_items=max_items,
+                    policy=TRUST_POLICY,
                 ).model_dump_json(indent=2)
             )
 
@@ -950,6 +980,7 @@ def build_server() -> MCPServer:
                         max_steps=max_steps,
                         max_graph_nodes=max_graph_nodes,
                         max_evidence_tokens=max_evidence_tokens,
+                        policy=TRUST_POLICY,
                     ).to_dict(),
                     indent=2,
                     default=str,
@@ -1048,7 +1079,9 @@ def build_server() -> MCPServer:
         store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_audit"):
             return await _to_thread(
-                lambda: reasoning_audit(store, state["embedder"], query=query).model_dump_json(
+                lambda: reasoning_audit(
+                    store, state["embedder"], query=query, policy=TRUST_POLICY
+                ).model_dump_json(
                     indent=2
                 )
             )

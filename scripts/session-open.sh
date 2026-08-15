@@ -12,6 +12,25 @@ cd "$ROOT"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
+# FIRST, before reporting anything else. There is no point describing the branch and the containers
+# of a workspace this session must not be working in, and a refusal buried under four sections of
+# report is a refusal that gets scrolled past. Twenty worktrees, five of them dirty, and the main
+# checkout itself dirty on a two-month-old branch is what this is for.
+say "Workspace"
+# Fail CLOSED when the guard itself is missing. A checkout old enough not to carry
+# `session-space.sh` is exactly the checkout most likely to be a stale shared one, so "the guard is
+# absent" must not read as "the guard passed".
+if [ ! -f "$ROOT/scripts/session-space.sh" ]; then
+    printf '  scripts/session-space.sh is missing from this checkout.\n'
+    printf '  That is itself a warning: this checkout is behind, and stale checkouts are the\n'
+    printf '  shared ones. Update it, or create a fresh worktree off origin/master, before working.\n\n'
+    exit 1
+fi
+if ! bash "$ROOT/scripts/session-space.sh" check 2>&1 | sed 's/^/  /'; then
+    exit 1
+fi
+bash "$ROOT/scripts/session-space.sh" claim 2>&1 | sed 's/^/  /'
+
 say "Checkout"
 printf '  path    %s\n' "$ROOT"
 # Ask git for the branch. The directory name is not the branch, and acting on the directory name

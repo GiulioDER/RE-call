@@ -3,6 +3,37 @@
 This file is loaded into every session in this repository. It records the rules that have been
 paid for in lost work, and the two commands a session opens and closes with.
 
+## One session, one workspace
+
+**Never work in the main checkout, and never in a worktree another session holds.**
+`scripts/session-open.sh` enforces both and stops rather than warning.
+
+```bash
+scripts/session-space.sh new <short-name>   # your own worktree, off origin/master, claimed
+```
+
+Why this is a mechanism and not advice: measured 2026-08-15, this repository had **twenty
+worktrees, five of them holding uncommitted work, and the main checkout itself dirty on a branch two
+months behind master**. Two sessions in one checkout share an index and a working tree, so one
+stages the other's files, a rebase moves HEAD under a session that is mid-edit, and `git log` looks
+fine afterwards because the subjects match. The recorded cost includes a force-push that erased
+three already-pushed commits.
+
+- The **main checkout is refused outright**. It is shared by definition: every worktree resolves its
+  objects through it, and it is the directory every session reaches by habit.
+- Each worktree carries a **claim** naming the session that holds it, written to that worktree's own
+  git directory, so it is never committed and dies with the worktree. A second session is told whose
+  it is and how old the claim is, instead of discovering the collision through a lost edit.
+- A claim goes stale after 12 hours **with no live process**. Liveness is asked of Windows, not of
+  `kill -0`, which cannot see a Windows pid from Git Bash and reported a running `claude.exe` as
+  dead. "Cannot tell" counts as alive: a false alive costs a `release --force`, a false dead costs
+  somebody's in-flight work.
+- If `session-space.sh` is **missing**, `session-open.sh` stops anyway. A checkout old enough to
+  lack it is exactly the stale shared one, so an absent guard must not read as a passing guard.
+
+`scripts/session-space.sh whose` prints the current claim. `release --force` takes over one you are
+certain is abandoned.
+
 ## Open a session
 
 ```bash
@@ -66,14 +97,16 @@ a separate project root to the MCP client.
   store, both out of the `recall-dogfood` corpus on port 5433 (tenants `default` and `memory`,
   1688 and 308 chunks). These are the only servers whose corpus is this project.
 
-  ⚠️ **Their `recall_search` currently refuses**, and this is by design rather than a
-  misconfiguration. `recall_mcp/server.py` never passes a `TrustPolicy`, so the service defaults to
-  strict and **ignores `RECALL_TRUST_MODE`**: the docstring is explicit that a server degrading by
-  omission would degrade in production. An uncalibrated corpus therefore returns
-  `INDEX_NOT_READY`. Lifting it needs a real calibration bound to an immutable generation
-  (`recall calibration calibrate --generation G --queries FILE --publish`), not a flag.
+  They run with `RECALL_TRUST_MODE=development`, set inside the `env` block that
+  `scripts/session-mcp.sh` writes rather than left to your shell: a stdio server launched with an
+  explicit `env` does not inherit exported variables, so a corpus that searches fine from the
+  terminal answered `INDEX_NOT_READY` through the client. Both corpora are uncalibrated and bound
+  to no generation, which a strict server correctly refuses. **That setting is right for a local
+  dogfood index and wrong for anything else**; lifting the refusal properly needs a calibration
+  bound to an immutable generation (`recall calibration calibrate --generation G --queries FILE
+  --publish`).
 
-  Until then the CLI is the working path, because the CLI *does* honour the env var:
+  The same thing from the CLI:
 
   ```bash
   RECALL_DSN=postgresql://recall:recall@127.0.0.1:5433/recall RECALL_EMBEDDER=fastembed \

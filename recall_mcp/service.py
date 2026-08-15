@@ -1561,7 +1561,14 @@ def reasoning_audit(
             "generation_identity_present": bool(response.generation_id),
             "trust_metadata_present": bool(response.trust_state and response.calibration_status),
             "trace_metadata_present": response.reasoning_trace is not None,
-            "development_mode_explicit": policy is not None or response.trust_state == "trusted",
+            # `policy is not None` was a proxy for "a relaxed policy was supplied", and it held only
+            # while callers passed a policy exclusively to relax the gate. Once the server resolves
+            # one from the environment and always passes it, that proxy is constant-True and the
+            # field stops meaning anything. Ask the policy what it is instead of inferring it from
+            # whether it exists.
+            "development_mode_explicit": (
+                (policy is not None and not policy.strict) or response.trust_state == "trusted"
+            ),
         },
     )
 

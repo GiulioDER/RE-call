@@ -103,8 +103,19 @@ root, dsn = os.environ["ROOT"], os.environ["DOGFOOD_DSN"]
 
 
 def dogfood(tenant=None):
-    """One stdio server against the dogfood corpus, optionally scoped to a tenant."""
-    env = {"RECALL_DSN": dsn, "RECALL_EMBEDDER": "fastembed"}
+    """One stdio server against the dogfood corpus, optionally scoped to a tenant.
+
+    RECALL_TRUST_MODE is set HERE and not left to the operator's shell. An MCP stdio server
+    launched with an explicit `env` block does not inherit exported variables, so a corpus that
+    searches fine from the terminal still answered INDEX_NOT_READY through the client. These two
+    servers are local, uncalibrated, developer-only corpora, which is exactly the case the relaxed
+    mode exists for; nothing else should be configured this way.
+    """
+    env = {
+        "RECALL_DSN": dsn,
+        "RECALL_EMBEDDER": "fastembed",
+        "RECALL_TRUST_MODE": "development",
+    }
     if tenant:
         env["RECALL_TENANT"] = tenant
     return {
@@ -118,8 +129,9 @@ def dogfood(tenant=None):
 
 servers = {
     # This project's own docs, and its own memory store. The only servers whose corpus is this
-    # repository. Note their recall_search currently refuses: the MCP server passes no TrustPolicy,
-    # so it is strict regardless of RECALL_TRUST_MODE, and an uncalibrated corpus is INDEX_NOT_READY.
+    # repository. They run with RECALL_TRUST_MODE=development, set in the env block above, because
+    # these corpora are uncalibrated and bound to no generation; a strict server refuses them with
+    # INDEX_NOT_READY, which is correct for anything but a local dogfood index.
     "recall": dogfood(),
     "recall-memory": dogfood("memory"),
 }

@@ -23,12 +23,20 @@ _AUTH_ENV_PREFIXES = ("RECALL_AUTH_", "RECALL_OIDC_")
 #: `RECALL_PORT=99999`, `RECALL_POOL_SIZE=0` or `RECALL_STATEMENT_TIMEOUT_MS=abc` each raise
 #: `ValueError` during collection and take the same five modules to zero tests run. The transport was
 #: simply the first one anyone tripped over; the failure CLASS is "read at import", not "auth".
+#: `RECALL_TRUST_MODE` is the odd one out and the most important to clear. Every other key here
+#: announces itself by raising during collection. This one does not: exported as `development` it
+#: makes `recall_mcp.server.TRUST_POLICY` relaxed at import, and the suite then runs green against a
+#: server whose trust gate is open. README.md, CLAUDE.md and docs/USING_WITH_CLAUDE.md all tell
+#: developers to export exactly this variable for local work, so the shell that is most likely to
+#: run the suite is the one most likely to have it set. A suite whose behaviour depends on what the
+#: operator happened to export is not a suite whose green means anything.
 _IMPORT_TIME_ENV_EXACT = (
     "RECALL_TRANSPORT",
     "RECALL_ENV",
     "RECALL_PORT",
     "RECALL_POOL_SIZE",
     "RECALL_STATEMENT_TIMEOUT_MS",
+    "RECALL_TRUST_MODE",
 )
 
 

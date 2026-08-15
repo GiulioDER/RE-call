@@ -160,9 +160,13 @@ Development mode retrieves, but it cannot claim anything:
 - if you pass an explicit `Calibration`, the verdicts it produces are kept (this is what abstention
   benchmarks measure), but the result is still `degraded` and still not `calibrated`
 
-The CLI reads `RECALL_TRUST_MODE`; anything other than the exact string `development` is strict, so
-a typo cannot open the gate. In development the CLI prints the uncertified threshold it is using
-rather than inheriting one silently.
+The CLI **and the MCP server** both read `RECALL_TRUST_MODE`. The value is matched after
+`strip().lower()`, so `development`, `Development` and `  DEVELOPMENT  ` all relax the gate and
+anything else is strict. A **misspelling** such as `developmnet` therefore cannot open it, which is
+the property this is here for; a capital letter is not a typo, and refusing it would only produce a
+strict server its operator believes is relaxed. In development the CLI prints the uncertified
+threshold it is using rather than inheriting one silently, and the server logs at ERROR on every
+start that its gate is open.
 
 ### What this does not protect against
 
