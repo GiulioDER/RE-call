@@ -26,11 +26,15 @@ Build:
     Settings > General > Social preview. It is a stored upload: committing this file
     does not change what GitHub serves.
 
+    The unlink in step 3 is part of the step. docs/_social_2x.png is a multi-megabyte
+    intermediate; it is covered by .gitignore now, but a failed step 3 still strands it.
+
     Step 2 needs network for Geist, as docs/make_mtrag_abstention.py explains.
 """
 
 from __future__ import annotations
 
+import html
 import pathlib
 import sys
 
@@ -65,6 +69,9 @@ VALUE_RIGHT = 1220          # values share one right-aligned column, clear of th
 ROW_TOP = 246
 ROW_STEP = 82
 BAR_H = 26
+NOTE_DX = 158               # note offset from the label, which the label must not reach
+FOOTER_TOP = 560            # where the footer note and URL begin
+LABEL_PX_PER_CHAR = 9.8     # Geist 19px medium, close enough to catch a collision
 
 COLOR = {"hero": HERO, "warn": WARN, "field": INK_MUTED}
 
@@ -74,9 +81,38 @@ def percent(name: str) -> float:
     return float(label_for(name).rstrip("%"))
 
 
+def _check_layout() -> float:
+    """Refuse to draw a card whose rows do not fit, the way px()/py() refuse a stray mark.
+
+    BARS is meant to be edited, and the canvas is `overflow:hidden`, so a fifth row
+    overprints the footer and a sixth vanishes from the PNG with no error at all.
+    """
+    if not BARS:
+        raise SystemExit("BARS is empty; the card needs at least one system")
+
+    last_bottom = ROW_TOP + (len(BARS) - 1) * ROW_STEP + 12 + BAR_H
+    if last_bottom > FOOTER_TOP:
+        raise SystemExit(
+            f"{len(BARS)} bars need {last_bottom}px but the footer starts at {FOOTER_TOP}px; "
+            f"drop a row or reduce ROW_STEP"
+        )
+
+    for name, _kind, note in BARS:
+        if note and len(name) * LABEL_PX_PER_CHAR + 12 > NOTE_DX:
+            raise SystemExit(
+                f"the note on {name!r} would collide with its label; "
+                f"raise NOTE_DX above {NOTE_DX} or shorten the name"
+            )
+
+    top = max(percent(name) for name, _, _ in BARS)
+    if top <= 0:
+        raise SystemExit("every system in BARS refuses 0 of 55; there is nothing to scale against")
+    return BAR_MAX_W / top
+
+
 def bars() -> str:
     parts: list[str] = []
-    scale = BAR_MAX_W / max(percent(name) for name, _, _ in BARS)
+    scale = _check_layout()
 
     for i, (name, kind, note) in enumerate(BARS):
         value = percent(name)
@@ -89,14 +125,15 @@ def bars() -> str:
         parts.append(
             f'<text x="{BAR_X}" y="{label_y}" font-size="19" '
             f'font-weight="{700 if hero else 500}" '
-            f'fill="{INK if hero else INK_SOFT}" letter-spacing="-0.01em">{name}</text>'
+            f'fill="{INK if hero else INK_SOFT}" letter-spacing="-0.01em">'
+            f'{html.escape(name, quote=False)}</text>'
         )
         # The note rides on the label line. To the right of the value it would either
         # collide with the value column or run off the canvas.
         if note:
             parts.append(
-                f'<text x="{BAR_X + 146}" y="{label_y}" font-size="16" font-weight="500" '
-                f'fill="{WARN}" opacity="0.85">· {note}</text>'
+                f'<text x="{BAR_X + NOTE_DX}" y="{label_y}" font-size="16" font-weight="500" '
+                f'fill="{WARN}" opacity="0.85">· {html.escape(note, quote=False)}</text>'
             )
         # Track, so a short bar still reads as a share of the same span.
         parts.append(

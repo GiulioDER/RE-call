@@ -77,3 +77,6 @@ results/mtrag_generation/algorithmic/*.jsonl
 # documented in CONTRIBUTING.md. It is a throwaway on the CI runner; committing it would ship a
 # second, silently-drifting copy of uv.lock.
 requirements.lock.txt
+
+# Intermediate 2x renders from the docs/ figure generators, never shipped.
+docs/_*_2x.png

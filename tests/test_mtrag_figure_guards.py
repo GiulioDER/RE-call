@@ -16,6 +16,7 @@ import importlib.util
 import io
 import pathlib
 import shutil
+import sys
 import urllib.error
 import urllib.request
 
@@ -277,11 +278,17 @@ def test_import_does_not_touch_the_network_or_the_cache(tmp_path, monkeypatch):
 
 
 def _load_social_card(tmp_path, monkeypatch):
-    """Import the social card generator offline, with its badge fetch disabled."""
+    """Import the social card generator offline, with its badge fetch disabled.
+
+    make_social_card imports its dependency by plain name, which registers it in
+    sys.modules. Without the delitem below the first test's tmp_path copy is reused by
+    every later card test, so each one silently runs against another test's directory.
+    """
     shutil.copy(DOCS / "make_mtrag_abstention.py", tmp_path / "make_mtrag_abstention.py")
     (tmp_path / "glama_score_badge.svg").write_text(
         COMMITTED_BADGE, encoding="utf-8", newline="\n"
     )
+    monkeypatch.delitem(sys.modules, "make_mtrag_abstention", raising=False)
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setattr(
         urllib.request,
@@ -306,12 +313,62 @@ def test_social_card_reproduces_its_committed_html(tmp_path, monkeypatch):
     assert module.build() == committed
 
 
-def test_social_card_rates_match_the_figure(tmp_path, monkeypatch):
-    """Both assets read the same POINTS, so a divergence here means one was hand edited."""
+def test_card_percent_round_trips_the_shared_formatter(tmp_path, monkeypatch):
+    """percent() parses a float back out of label_for's string, so the format is a contract.
+
+    This is a round-trip check, not a cross-asset one: both sides come from label_for.
+    The cross-asset check with teeth is the test below.
+    """
     card = _load_social_card(tmp_path, monkeypatch)
-    figure = load_generator(tmp_path)
+    figure = card.label_for.__globals__
     for name, _kind, _note in card.BARS:
-        assert f"{card.percent(name):.1f}%" == figure.label_for(name), name
+        assert f"{card.percent(name):.1f}%" == figure["label_for"](name), name
+
+
+def test_card_follows_the_figures_data(tmp_path, monkeypatch):
+    """Editing POINTS must move the card, or the two assets can state different numbers.
+
+    Reaches the figure module the card actually bound to, rather than a second copy,
+    which is why _load_social_card has to clear the sys.modules entry first.
+    """
+    card = _load_social_card(tmp_path, monkeypatch)
+    figure_globals = card.label_for.__globals__
+    assert card.percent("llama-3.1-8b") == 32.7
+
+    figure_globals["POINTS"] = [
+        (name, x, 20 if name == "llama-3.1-8b" else hits, *rest)
+        for name, x, hits, *rest in figure_globals["POINTS"]
+    ]
+    assert card.percent("llama-3.1-8b") == 36.4, "the card did not follow the figure's data"
+
+
+def test_card_labels_are_escaped(tmp_path, monkeypatch):
+    """A note is free prose and a name may carry '+', so neither may reach the SVG raw."""
+    card = _load_social_card(tmp_path, monkeypatch)
+    card.label_for.__globals__["POINTS"] = [
+        ("a<b&c", 0.5, 9, "start", 0, 0, "field"),
+    ]
+    card.BARS = (("a<b&c", "field", "beats <em>everything</em>"),)
+    body = card.bars()
+    assert "a&lt;b&amp;c" in body
+    assert "a<b&c</text>" not in body
+    assert "&lt;em&gt;everything&lt;/em&gt;" in body
+
+
+@pytest.mark.parametrize(
+    ("case", "bars", "expected"),
+    [
+        ("empty", (), "empty"),
+        ("too many rows", tuple(("RE-call", "field", "") for _ in range(6)), "footer"),
+        ("note collides", (("c4ai-command-r+", "warn", "a note"),), "collide"),
+    ],
+)
+def test_card_refuses_a_layout_that_does_not_fit(tmp_path, monkeypatch, case, bars, expected):
+    """The canvas is overflow:hidden, so an overlong table would silently lose a row."""
+    card = _load_social_card(tmp_path, monkeypatch)
+    card.BARS = bars
+    with pytest.raises(SystemExit, match=expected):
+        card.bars()
 
 
 def test_social_card_shows_a_system_that_beats_re_call(tmp_path, monkeypatch):
