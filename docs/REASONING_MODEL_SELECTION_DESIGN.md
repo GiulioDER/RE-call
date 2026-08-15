@@ -55,8 +55,8 @@ RECALL_REASONING_API_KEY=sk-or-...
 ```
 
 Answering no writes `RECALL_REASONING=0` and nothing else, so "switched off" and "never configured"
-remain distinguishable in `.env`. This mirrors how `RECALL_ENTAILMENT` is seeded to `"0"` at
-`recall/setup.py:944`.
+remain distinguishable in `.env`. This mirrors how `RECALL_ENTAILMENT` is seeded to `"0"` in the
+`values` dict built by `run_setup_wizard` in `recall/setup.py`.
 
 There is deliberately **no** `RECALL_REASONING_PROVIDER`. The base URL already identifies the
 provider, and `_host_of()` (`recall/truth_extraction/_openai_engine.py:101-142`) already turns it
@@ -75,9 +75,10 @@ duplicate inside a single gitignored `.env` is the lesser cost.
 ### The security question hides cloud providers
 
 Answering yes to "Is data security necessary for this installation?" already hides cloud embedders
-(`recall/setup.py:178-181`). Reasoning sends the query **and the retrieved evidence** to the
-provider, which exposes more than embedding does. Someone who said their data must not leave the
-machine must not be walked into sending retrieved memory to a third party three prompts later.
+in `embedder_choices` in `recall/setup.py`. Reasoning sends the query **and the retrieved
+evidence** to the provider, which exposes more than embedding does. Someone who said their data
+must not leave the machine must not be walked into sending retrieved memory to a third party three
+prompts later.
 
 Under `security_required`, the provider menu offers only the local OpenAI compatible endpoint.
 
@@ -120,13 +121,12 @@ Default no, matching the entailment judge (`_ask_yes_no(..., default=False)`). A
 
 ### 2. Provider
 
-Built by a new `reasoning_provider_choices(probe, *, security_required, cloud_keys)` returning
-`list[Choice]`, following `embedder_choices` (`recall/setup.py:125-210`) in shape, including the
-`available` flag and an `unavailable_note`. The note is composed locally rather than by
-`_why_unavailable` (`recall/setup.py:437`), because that helper reports on
-sentence-transformers, CUDA and free disk, none of which is why an API provider is
-unreachable. Reusing it would send the reader to fix the wrong thing, which is the exact
-failure its own docstring warns about.
+Built by a new `reasoning_provider_choices(probe, *, security_required)` returning `list[Choice]`,
+following `embedder_choices` in `recall/setup.py` in shape, including the `available` flag and an
+`unavailable_note`. The note is composed locally rather than by `_why_unavailable` in
+`recall/setup.py`, because that helper reports on sentence-transformers, CUDA and free disk, none
+of which is why an API provider is unreachable. Reusing it would send the reader to fix the wrong
+thing, which is the exact failure its own docstring warns about.
 
 | Order | label | value | Gate |
 |---|---|---|---|
@@ -134,8 +134,8 @@ failure its own docstring warns about.
 | 2 | `openrouter` | `https://openrouter.ai/api/v1` | `not security_required and probe.internet and _module_available("openai")` |
 | 3 | `openai` | `https://api.openai.com/v1` | same gate |
 
-The local endpoint is first because `_choose` raises `ValueError(f"the first choice for {title} must
-be runnable")` when `choices[0].available` is false (`recall/setup.py:582`). A local endpoint needs
+The local endpoint is first because `_choose` in `recall/setup.py` raises `ValueError(f"the first
+choice for {title} must be runnable")` when `choices[0].available` is false. A local endpoint needs
 no key and no internet, so it is the only entry that is unconditionally offerable.
 
 Choosing `local` prompts for two values rather than showing a menu, because the wizard cannot know
@@ -200,17 +200,22 @@ OPENROUTER_API_KEY:
 The captured key is added to `cloud_keys`, so it is written both as the provider key and as
 `RECALL_REASONING_API_KEY`.
 
-Note that step 1b only runs when the security question is answered no
-(`recall/setup.py:844`), and the cloud providers are only offered in that same case, so this prompt
-fires only when the user skipped the key at 1b and then asked for a cloud provider.
+A blank answer follows the same retry rule as the model id, through `_prompt_twice`: it is asked
+once more, and if the second answer is also blank the step prints a note and writes
+`RECALL_REASONING=0`, without adding anything to `cloud_keys`, rather than writing an arm that
+cannot authenticate.
+
+Note that step 1b only runs when the security question is answered no, in `run_setup_wizard` in
+`recall/setup.py`, and the cloud providers are only offered in that same case, so this prompt fires
+only when the user skipped the key at 1b and then asked for a cloud provider.
 
 ### When nothing is runnable
 
 `reasoning_provider_choices` always returns at least the local endpoint, so the menu cannot be
 empty. If the user selects local and then supplies no model id after being re-asked once, the step
-prints a note and writes `RECALL_REASONING=0`, following the shape used when the entailment judge is
-unsupported (`recall/setup.py:516-533`, where the builder returns `[]` and the caller prints a
-paragraph instead of prompting).
+prints a note and writes `RECALL_REASONING=0`, following the shape used when the entailment judge
+is unsupported in `entailment_choices` in `recall/setup.py`, where the builder returns `[]` and the
+caller prints a paragraph instead of prompting.
 
 ## Failure handling
 
@@ -229,10 +234,12 @@ and any escape turns an optional step into a failed install.
 ## Testing
 
 New unit tests for the choice builders, following `test_embedder_choices_hide_cloud_when_security_is_required`
-(`tests/test_setup.py:9`):
+in `tests/test_setup.py`:
 
 * `reasoning_provider_choices` hides both cloud entries when `security_required` is true.
-* `reasoning_provider_choices` hides both cloud entries when `openai` is not importable.
+* `reasoning_provider_choices` marks both cloud entries unavailable, with a note, when `openai` is
+  not importable. It does not hide them: an unreachable cloud provider still names itself and says
+  why, the same way an unavailable embedder or reranker does.
 * The first returned choice is always `available`, which is the precondition `_choose` enforces.
 * The manual entry option is present for every cloud provider.
 
@@ -251,10 +258,10 @@ The probe is exercised by monkeypatching `openai.OpenAI` with a fake, following
 `tests/test_truth_extraction_engine_openai.py:208-234`. No test performs a network call.
 
 **Every existing wizard test needs its answer list updated.** `tests/test_setup.py` drives the
-wizard with flat positional `iter([...])` lists at nine call sites, prompts unlabelled, so inserting
-a prompt shifts every later answer. The comment at `tests/test_setup.py:48` records this exact
-breakage happening before. This is the largest single cost of the change and it is mechanical, not
-subtle.
+wizard with flat positional `iter([...])` lists, so inserting a prompt shifts every later answer.
+Each list in that file carries an inline comment naming what each answer selects, which is what
+keeps a shift visible in a diff rather than surfacing as an unrelated failure two prompts later.
+This is the largest single cost of the change and it is mechanical, not subtle.
 
 ## Documentation
 

@@ -18,6 +18,7 @@ from recall.setup import (
     reasoning_provider_choices,
     run_setup_wizard,
 )
+from tests.conftest import requires_openai
 
 
 def test_embedder_choices_hide_cloud_when_security_is_required():
@@ -1345,6 +1346,7 @@ def _install_fake_openai(monkeypatch, error: Exception | None = None):
     monkeypatch.setattr(openai, "OpenAI", lambda **kw: _FakeOpenAI(error, **kw))
 
 
+@requires_openai
 def test_the_probe_returns_none_when_the_call_succeeds(monkeypatch):
     _install_fake_openai(monkeypatch)
     result = probe_reasoning_model(
@@ -1353,6 +1355,7 @@ def test_the_probe_returns_none_when_the_call_succeeds(monkeypatch):
     assert result is None
 
 
+@requires_openai
 def test_the_probe_passes_the_endpoint_and_disables_client_retries(monkeypatch):
     """max_retries=0 matches the extraction engine: retries belong to the caller, and a wizard
     probe that silently retries three times reads as a hang."""
@@ -1363,6 +1366,7 @@ def test_the_probe_passes_the_endpoint_and_disables_client_retries(monkeypatch):
     assert _FakeOpenAI.last.kwargs["max_retries"] == 0
 
 
+@requires_openai
 def test_the_probe_reports_the_failure_instead_of_raising(monkeypatch):
     """The probe runs against three providers and an arbitrary user supplied base URL, so the
     set of reachable exception types is not knowable here. Any escape turns an optional step
@@ -1382,6 +1386,7 @@ def test_the_probe_declines_without_the_openai_package(monkeypatch):
     assert "openai" in result
 
 
+@requires_openai
 def test_the_probe_returns_promptly_when_the_call_never_finishes(monkeypatch):
     """httpx's read timeout only bounds the gap between chunks of a streamed response, not the
     whole call, so a client that trickles bytes could keep resetting it forever. The probe's own
@@ -1483,6 +1488,38 @@ def test_choosing_openrouter_and_deepseek_writes_all_four_keys(tmp_path, monkeyp
     assert "RECALL_REASONING_API_KEY=router-key" in env
 
 
+def test_a_key_captured_during_the_interview_is_also_written_under_its_provider_name(
+    tmp_path, monkeypatch
+):
+    """Step 1b is not the only place a cloud key can be given: the interview itself asks for one
+    when it was left blank there, and `_reasoning_interview` folds that answer back into
+    `cloud_keys` so it lands in `.env` under its provider name too, not only under
+    `RECALL_REASONING_API_KEY`. The other cloud test supplies the key at step 1b, so it never
+    exercises this capture path."""
+    monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
+    env, _ = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "n",              # security not required
+            "",               # VOYAGE_API_KEY skipped
+            "",               # OPENAI_API_KEY skipped
+            "",               # OPENROUTER_API_KEY skipped at step 1b
+            "2",              # embedder: fastembed
+            "1",              # reranker: none
+            "1",              # sparse: fts
+            "y",              # reasoning arm enabled
+            "2",              # provider: openrouter
+            "captured-key",   # OPENROUTER_API_KEY, typed during the interview
+            "2",              # model: deepseek chat
+            "n",              # scaffold declined
+            "n",              # calibrate declined
+        ],
+    )
+    assert "OPENROUTER_API_KEY=captured-key" in env
+    assert "RECALL_REASONING_API_KEY=captured-key" in env
+
+
 def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
     monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
     env, _ = _run_wizard(
@@ -1494,7 +1531,7 @@ def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
             "1",        # reranker: none
             "1",        # sparse: fts
             "y",        # reasoning arm enabled
-            "1",        # provider: local endpoint
+            # provider: local endpoint is the sole choice and is announced, not asked
             "",         # base URL: take the default
             "qwen2.5",  # model id
             "n",        # scaffold declined
@@ -1520,7 +1557,7 @@ def test_a_failing_probe_still_writes_the_configuration(tmp_path, monkeypatch):
             "1",       # reranker: none
             "1",       # sparse: fts
             "y",       # reasoning arm enabled
-            "1",       # provider: local endpoint
+            # provider: local endpoint is the sole choice and is announced, not asked
             "",        # base URL default
             "qwen2.5", # model id
             "n",       # scaffold declined
@@ -1542,7 +1579,7 @@ def test_a_blank_model_id_twice_turns_the_arm_off(tmp_path, monkeypatch):
             "1",   # reranker: none
             "1",   # sparse: fts
             "y",   # reasoning arm enabled
-            "1",   # provider: local endpoint
+            # provider: local endpoint is the sole choice and is announced, not asked
             "",    # base URL default
             "",    # model id blank
             "",    # model id blank again
@@ -1604,7 +1641,9 @@ def test_the_wizard_writes_exactly_the_agreed_reasoning_variables(tmp_path, monk
         monkeypatch,
         [
             "y", "2", "1", "1",
-            "y", "1", "", "qwen2.5",
+            # "y" enables the arm; the provider prompt is skipped because local endpoint is the
+            # sole choice under security_required and is announced, not asked.
+            "y", "", "qwen2.5",
             "n", "n",
         ],
     )

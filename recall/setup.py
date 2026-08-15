@@ -750,6 +750,7 @@ def _prompt_twice(
     answer = _prompt(input_fn, print_fn, text)
     if answer:
         return answer
+    print_fn("That was blank. One more try:")
     return _prompt(input_fn, print_fn, text)
 
 
@@ -778,6 +779,10 @@ def _reasoning_interview(
         print_fn,
         "Choose the provider for the reasoning arm:",
         reasoning_provider_choices(probe, security_required=security_required),
+        sole_note=(
+            "Reasoning provider: local endpoint, the only option while data security is "
+            "required. Cloud providers stay withheld until that answer changes."
+        ),
     )
 
     if provider.value == LOCAL_PROVIDER:
