@@ -14,6 +14,7 @@ Nothing here proposes, promotes, or writes. A claim is an observation about text
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Literal
 
@@ -62,6 +63,71 @@ CLAIM_RUNGS: tuple[str, ...] = (
     "target_not_in_corpus",
     "date_not_in_body",
 )
+
+
+def coerce_status_vocabulary(status_vocabulary: Sequence[str] | None) -> tuple[str, ...]:
+    """Resolve a caller's vocabulary, or refuse it. ONE definition, used by both entry points.
+
+    `build_extraction_prompt` and `normalize_extraction` are both public and both take this
+    argument, and they disagreed about every degenerate value: `None` meant "the default" in one
+    and `TypeError` in the other; `()` raised at render time and silently refused every status
+    claim at a BATCH rung in the ladder; a bare `str` passed both and exploded into single
+    characters, so `--status-vocabulary final` rendered `['f', 'i', 'n', 'a', 'l']` into the
+    prompt. A shared coercion is what stops the next value being decided twice.
+    """
+    if status_vocabulary is None:
+        return tuple(STATUS_VOCABULARY)
+    if isinstance(status_vocabulary, str):
+        # `Sequence[str]` accepts `str`, and mypy will not flag it. A single word is the natural
+        # thing to hand a `--status-vocabulary` flag, and it is never what the caller meant.
+        raise ValueError(
+            f"status_vocabulary must be a sequence of words, not the single string "
+            f"{status_vocabulary!r}, which would be read one character at a time"
+        )
+    given = tuple(status_vocabulary)  # materialised once: an iterator must not be walked twice
+    wrong_type = sorted({type(word).__name__ for word in given if not isinstance(word, str)})
+    if wrong_type:
+        # Refused, not stringified. `str(b"Final")` is `"b'Final'"`, which renders into the
+        # prompt and lands in the audit record looking like a word the caller chose.
+        raise ValueError(f"status_vocabulary entries must be strings, not {wrong_type}")
+    # STRIPPED, because `_shape` strips the model's value before comparing. Unstripped, a
+    # `" Final"` from a comma split that forgot to strip renders into the prompt, never matches
+    # the answer, and refuses the whole file at a BATCH rung — which is the exact failure this
+    # parameter exists to remove, reintroduced by the validation meant to prevent it.
+    vocabulary = tuple(word.strip() for word in given)
+    if not vocabulary:
+        raise ValueError(
+            "status_vocabulary is empty: every status claim would be refused, and at a BATCH "
+            "rung, so each file carrying one would lose its other claims too"
+        )
+    blank = [raw for raw, word in zip(given, vocabulary) if not word]
+    if blank:
+        raise ValueError(
+            f"status_vocabulary has entries that are blank once stripped: {blank}. A blank word "
+            f"is rendered into the prompt and can never match an answer"
+        )
+    # One pass, not n². The detector was O(n²) with n² `casefold()` calls and ran twice per
+    # document (once at render, once in the ladder): 2.8 s per call at 4000 words, so a
+    # 792-document corpus would have spent over an hour in argument validation.
+    #
+    # `previous != word` is also what makes an exact repeat harmless: it maps to the same fold
+    # AND the same spelling, so nothing is reported. The old form counted casefold-equal entries
+    # instead, which counts a word against its own duplicate, and aborted the run claiming two
+    # identical words "differ only by case".
+    folded: dict[str, str] = {}
+    collisions: list[str] = []
+    for word in vocabulary:
+        previous = folded.setdefault(word.casefold(), word)
+        if previous != word:
+            collisions.append(word)
+    if collisions:
+        # Matching is case-insensitive, so these are one word to the ladder and two to the
+        # model. Which spelling reaches the store would then depend on list order.
+        raise ValueError(
+            f"status_vocabulary has entries that differ only by case: {sorted(collisions)}. "
+            f"Matching is case-insensitive, so one of them would silently never be stored"
+        )
+    return vocabulary
 
 
 @dataclass(frozen=True)
@@ -136,6 +202,12 @@ class FileExtraction:
     #: The prompt revision that produced this result. Part of the audit identity: the same
     #: engine under a reworded prompt is not the same extractor.
     prompt_revision: str
+    #: The status vocabulary the model was shown. Also part of the audit identity, by exactly the
+    #: argument above: the vocabulary is rendered into the prompt, so changing it IS rewording
+    #: the prompt. It reached the cache key and stopped there, so two runs under different
+    #: vocabularies produced byte-identical records and a reviewer could not tell which list the
+    #: model had been given.
+    status_vocabulary: tuple[str, ...] = STATUS_VOCABULARY
     #: Set when a batch level rung refused the file's whole output. Its `index` is -1,
     #: because the refusal is scoped to the file rather than to any one claim. Recorded
     #: rather than raised: a refusal nobody sees is a refusal nobody reviews.

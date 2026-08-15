@@ -53,6 +53,10 @@ def _refused(
         model_id=engine.model_id,
         revision=engine.revision,
         prompt_revision=prompt.revision,
+        # The refusal record names the same extractor a success would. Omitted, an engine_error
+        # was filed under the shipped memo vocabulary whatever the run had used, which is the
+        # half of the audit identity a failed run most needs to keep.
+        status_vocabulary=prompt.status_vocabulary,
         batch_rejection=ClaimRejection(index=-1, kind="*", rung=rung, reason=reason),
     )
 
@@ -64,25 +68,31 @@ def extract_file_claims(
     corpus_names: Sequence[str],
     engine: ExtractionEngine,
     cache: ExtractionCache | None = None,
+    status_vocabulary: Sequence[str] | None = None,
 ) -> FileExtraction:
     """Extract claims from one document. `text` is the raw file, frontmatter included."""
     body = human_body_of(text)
-    prompt = build_extraction_prompt(file=file, human_body=body, corpus_names=corpus_names)
+    prompt = (
+        build_extraction_prompt(file=file, human_body=body, corpus_names=corpus_names)
+        if status_vocabulary is None
+        else build_extraction_prompt(
+            file=file,
+            human_body=body,
+            corpus_names=corpus_names,
+            status_vocabulary=status_vocabulary,
+        )
+    )
     key = extraction_cache_key(engine=engine, prompt=prompt)
     if cache is not None:
         cached = cache.get(key)
         if cached is not None:
-            return FileExtraction(
-                file=cached.file,
-                claims=cached.claims,
-                rejections=cached.rejections,
-                engine_id=cached.engine_id,
-                model_id=cached.model_id,
-                revision=cached.revision,
-                prompt_revision=cached.prompt_revision,
-                batch_rejection=cached.batch_rejection,
-                cached=True,
-            )
+            # `replace`, not a field-by-field rebuild, and matching what `extract_corpus_claims`
+            # already does. The rebuild listed the fields it knew about, so the NEXT field added
+            # to `FileExtraction` silently took its dataclass default here: `status_vocabulary`
+            # did, which meant a cache HIT reported the shipped memo words for a run that had
+            # used a corpus's own. A hit is the path a re-run takes, so the audit field was
+            # wrong exactly where it would be read.
+            return replace(cached, cached=True)
     # The engine call is guarded SEPARATELY from normalization, and it is guarded broadly. A
     # model engine reaches the network, so it can raise a rate limit, a timeout, a connection
     # reset or a malformed-response error, none of which is an `ExtractionBatchRejected`. Left
@@ -105,7 +115,14 @@ def extract_file_claims(
         )
     try:
         claims, rejections = normalize_extraction(
-            answer, file=file, human_body=body, corpus_names=corpus_names
+            answer,
+            file=file,
+            human_body=body,
+            corpus_names=corpus_names,
+            # The prompt's own vocabulary, never the module default: the model was told this
+            # list, so judging its answer against a different one would refuse a claim it was
+            # invited to make.
+            status_vocabulary=prompt.status_vocabulary,
         )
         batch_rejection = None
     except ExtractionBatchRejected as refused:
@@ -121,6 +138,7 @@ def extract_file_claims(
         model_id=engine.model_id,
         revision=engine.revision,
         prompt_revision=prompt.revision,
+        status_vocabulary=prompt.status_vocabulary,
         batch_rejection=batch_rejection,
     )
     if cache is not None:
