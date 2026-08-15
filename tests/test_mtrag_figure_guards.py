@@ -273,6 +273,55 @@ def test_import_does_not_touch_the_network_or_the_cache(tmp_path, monkeypatch):
 # --- markup integrity ---------------------------------------------------------------
 
 
+# --- the social card, which must agree with the figure ------------------------------
+
+
+def _load_social_card(tmp_path, monkeypatch):
+    """Import the social card generator offline, with its badge fetch disabled."""
+    shutil.copy(DOCS / "make_mtrag_abstention.py", tmp_path / "make_mtrag_abstention.py")
+    (tmp_path / "glama_score_badge.svg").write_text(
+        COMMITTED_BADGE, encoding="utf-8", newline="\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *a, **k: (_ for _ in ()).throw(urllib.error.URLError("offline")),
+    )
+    return load_generator_named(tmp_path, "make_social_card")
+
+
+def load_generator_named(directory: pathlib.Path, stem: str):
+    copied = directory / f"{stem}.py"
+    shutil.copy(DOCS / f"{stem}.py", copied)
+    spec = importlib.util.spec_from_file_location(f"{stem}_{directory.name}", copied)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_social_card_reproduces_its_committed_html(tmp_path, monkeypatch):
+    module = _load_social_card(tmp_path, monkeypatch)
+    committed = (DOCS / "social_card.html").read_text(encoding="utf-8")
+    assert module.build() == committed
+
+
+def test_social_card_rates_match_the_figure(tmp_path, monkeypatch):
+    """Both assets read the same POINTS, so a divergence here means one was hand edited."""
+    card = _load_social_card(tmp_path, monkeypatch)
+    figure = load_generator(tmp_path)
+    for name, _kind, _note in card.BARS:
+        assert f"{card.percent(name):.1f}%" == figure.label_for(name), name
+
+
+def test_social_card_shows_a_system_that_beats_re_call(tmp_path, monkeypatch):
+    """The card must not be cut to put RE-call top. It is second, and that has to show."""
+    card = _load_social_card(tmp_path, monkeypatch)
+    names = [name for name, _, _ in card.BARS]
+    assert "RE-call" in names
+    assert any(card.percent(n) > card.percent("RE-call") for n in names)
+
+
 def test_labels_are_escaped(generator):
     """A model name carrying a metacharacter must not terminate its own <text> element."""
     module, _ = generator
