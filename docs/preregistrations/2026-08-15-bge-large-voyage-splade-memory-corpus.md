@@ -1,9 +1,31 @@
-# Pre-registration: bge-large + Voyage rerank + SPLADE on our own memory corpus
+# Pre-registration: bge-large + Voyage rerank on our own memory corpus
+
+> The filename still says `splade`. It is deliberately not renamed: the file path is this
+> record's identity, and a pre-registration that moves is one nobody can cite. See the
+> amendment below for why SPLADE left the configuration.
 
 **Date:** 2026-08-15   **Status:** predicted, not yet measured
 
 Written and committed **before** the new generation is indexed or calibrated. The gap between these
 predictions and the measurement is the output; the pass rate is not.
+
+> ## Amendment, 2026-08-15, before any measurement
+>
+> **SPLADE is out. The sparse leg is standard Postgres FTS** (`RECALL_SPARSE=fts`), the shipped
+> default. Operator decision, taken after the predictions below were committed and **before the
+> generation was indexed or anything was measured**.
+>
+> This is an amendment and not a rewrite. The SPLADE prediction stays exactly as written and is
+> marked **NOT UNDER TEST** rather than deleted: it is a real, testable prediction and erasing it
+> would make this record look as though SPLADE was never considered. If SPLADE is enabled later it
+> is scored against the number below, unchanged.
+>
+> **Revised combined prediction, with SPLADE removed:** **+0.06 to +0.12** R@100 against the
+> baseline, still dominated by the reranker.
+>
+> One risk this retires. SPLADE requires CUDA, and I had flagged that I did not know whether VPS2
+> has a GPU. With FTS that question no longer gates the deploy, and the configuration is buildable
+> on the target machine by construction rather than by hope.
 
 ## The question
 
@@ -12,28 +34,36 @@ corpus**, and what abstention threshold does it calibrate to?
 
 - **Baseline:** `fastembed` (`BAAI/bge-small-en-v1.5`, 384 dim), Postgres FTS sparse, no reranker,
   uncalibrated, served in `development` trust mode.
-- **Target:** `fastembed:BAAI/bge-large-en-v1.5` (1024 dim), `RECALL_SPARSE=splade`, Voyage
+- **Target:** `fastembed:BAAI/bge-large-en-v1.5` (1024 dim), `RECALL_SPARSE=fts` (amended from splade), Voyage
   `rerank-2.5` with the local cross-encoder as fallback, reasoning layer not exposed, calibrated
   and published against a new immutable generation.
 
-Two corpora, separate tenants, calibrated separately because **a threshold is bound to its corpus**:
+**One `memory` corpus holding both stores**, with each chunk stamped `project` and
+`indexed_commit` so a hit says where it came from and can be filtered by it. Amended from the
+earlier two-tenant plan: separating them by tenant made every cross-project question two
+queries and a manual merge, and provenance-in-metadata gives the attribution without the split.
 
-| Tenant | Source | Size today |
+| Source | project stamp | Size today |
 |---|---|---|
-| `memory` | recall's own store | 61 files, 338 chunks |
-| `sa-memory` | sentiment-agent store | 933 files, not yet indexed here |
+| recall's own store | `recall` | 61 files, 338 chunks |
+| sentiment-agent store | `sentiment` | 933 files, not yet indexed |
+
+**Code stays a separate corpus** under a code embedder, because a threshold is bound to its
+corpus AND its embedder, and one abstention floor cannot serve two score distributions.
 
 ## What I predict
 
 | Change | Predicted effect on R@100 | Confidence |
 |---|---|---|
 | bge-small → bge-large (384 → 1024) | **+0.01 to +0.03** | low |
-| FTS → SPLADE | **+0.02 to +0.04** | medium |
+| ~~FTS → SPLADE~~ **NOT UNDER TEST** (see amendment) | **+0.02 to +0.04** | medium |
 | no rerank → Voyage rerank-2.5 | **+0.06 to +0.11** | medium |
-| All three together | **+0.08 to +0.15**, sublinear in the sum | low |
+| ~~All three together~~ superseded by the amendment | **+0.08 to +0.15**, sublinear in the sum | low |
+| bge-large + Voyage rerank, FTS sparse (**the config actually under test**) | **+0.06 to +0.12** | low |
 
-I predict the **reranker dominates**, that SPLADE is second, and that the embedder upgrade is the
-smallest of the three and may not clear noise on a 61-file corpus at all.
+I predict the **reranker dominates** by a wide margin, and that the embedder upgrade is small
+enough that it may not clear noise on a 61-file corpus at all. With SPLADE withdrawn there are
+two levers under test, not three, and the reranker is expected to carry most of the difference.
 
 **Calibrated abstention threshold:** I predict the published cosine floor lands **above** the
 untuned 0.50 default currently in use, somewhere in **0.55 to 0.70**, and that it differs between
@@ -44,7 +74,8 @@ is evidence the labels are not discriminating rather than evidence the corpora a
 
 - bge-large no better than bge-small, or worse, with a CI including zero. **Plausible**: these are
   short memo chunks, and a larger model helps least where the text is already lexically distinctive.
-- The combined change under +0.05, which would mean the three levers overlap far more than assumed.
+- The combined change under +0.04, which would mean the two remaining levers overlap far more
+  than assumed, or that the reranker does not transfer from benchmark text to memo text.
 - A calibrated threshold at or below 0.50, which would make the whole calibration a no-op against
   today's untuned default.
 - Voyage rerank not beating the local cross-encoder by enough to justify a paid network call per
