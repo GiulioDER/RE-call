@@ -99,3 +99,28 @@ def test_the_loader_undoes_exactly_what_the_writer_escaped(tmp_path, monkeypatch
 
     for key, value in written.items():
         assert os.environ[key] == value, f"{key} did not survive the round trip"
+
+
+def test_a_hand_written_unbalanced_quote_reads_as_it_always_did(tmp_path, monkeypatch):
+    """Fixing the round trip must not change how an existing hand-written file is read.
+
+    The writer only ever emits a matched pair, so unbalanced quoting can only come from somebody
+    editing `.env` themselves. Those files worked before, and an upgrade that silently reinterprets
+    them would break a working install for a reason the reader cannot see. Only a properly quoted
+    value changed behaviour.
+    """
+    env = tmp_path / ".env"
+    env.write_text(
+        'OPEN_ONLY="postgresql://example/db\n'
+        'CLOSE_ONLY=postgresql://example/db"\n'
+        "BARE=postgresql://example/db\n",
+        encoding="utf-8",
+    )
+    for key in ("OPEN_ONLY", "CLOSE_ONLY", "BARE"):
+        monkeypatch.delenv(key, raising=False)
+
+    load_dotenv(env)
+
+    assert os.environ["OPEN_ONLY"] == "postgresql://example/db"
+    assert os.environ["CLOSE_ONLY"] == "postgresql://example/db"
+    assert os.environ["BARE"] == "postgresql://example/db"

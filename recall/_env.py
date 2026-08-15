@@ -24,12 +24,16 @@ def _unquote(raw: str) -> str:
     that belonged to an escape, so the value also loses a character off the end. A model id or a
     base URL containing a quote therefore did not survive the trip it had just made.
 
-    An unbalanced or unquoted value is returned as it stands. Guessing at a repair for a
-    hand-written line would be worse than handing back what is actually there.
+    A line that is NOT a matched quoted pair keeps the old lenient behaviour, stripping a stray
+    outer quote. That is deliberate: a first version of this returned such a line untouched, which
+    reads better in isolation but silently changes how an existing hand-written `.env` is
+    interpreted. Somebody upgrading with `RECALL_SERVING_DSN="postgresql://...` and no closing
+    quote had a working file, and this function's job is to fix the round trip the writer broke,
+    not to start rejecting files that worked yesterday.
     """
     val = raw.strip()
     if len(val) < 2 or val[0] != val[-1] or val[0] not in "\"'":
-        return val
+        return val.strip('"').strip("'")
     inner = val[1:-1]
     if val[0] == "'":
         # `_quote_env` never emits single quotes, so there is nothing to unescape inside them.
