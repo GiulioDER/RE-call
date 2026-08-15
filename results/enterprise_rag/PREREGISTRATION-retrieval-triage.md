@@ -138,3 +138,31 @@ retrieval rather than assuming it was small.
    benchmark's own scorer uses.
 5. **Class imbalance.** Roughly 160 of 500 questions miss gold. AUC handles it; a raw accuracy
    would not, which is why AUC is the registered metric.
+
+---
+
+## Deviation, recorded before the numbers are read: the reranker is disabled
+
+**Appended 2026-08-16. No prediction above is edited.**
+
+The registered plan captured the top-200 **after** reranking. That version measured at ~83
+seconds per question, so 500 questions is about 11.5 hours and roughly $15 of Voyage reranking,
+and the reranker is essentially the whole of both.
+
+⚠️ **T1 and T3 do not need a reranker at all.** The question is whether the gold document is in the
+CANDIDATE POOL, and the pool is produced by the three retrieval legs. The reranker only chooses
+which 8 of the pool survive. So this run uses `--reranker none`, which:
+
+- costs query embeddings only, and finishes in minutes rather than hours;
+- measures the **true fused pool**, where the registered version measured a pool that had already
+  been filtered by the reranker. That is a **more exact** answer to the registered question, not a
+  weaker one.
+
+**What is given up, and it is real.** `recall_at_8` under no reranker is not the shipped
+configuration's top-8, so **T2 is not scored by this run** and T4 and T5 rest on fusion scores
+rather than cross-encoder scores. Both remain open. The triage AUC needs either a local
+cross-encoder or a separate reranked pass, and neither is done here.
+
+⚠️ The 12-question pilot that preceded this is **not** superseded evidence, it is different
+evidence: its pool was reranker-filtered, so its `pool_recovery_rate` of 3/3 and this run's are
+measuring two different pools. They are reported separately and must not be pooled.
