@@ -13,7 +13,7 @@ repository's established convention: a pre-registration lives beside the results
 registration_commit: 4f0a8c83a199367f1db9eb4ffd257902a7eb8573
 registration_authored: 2026-08-15T20:14:54+00:00
 frozen_evidence_digest: 70715fcd64de564ac1fea1ffe54d90458265efaa0543be9f1a56fe425464d2f0
-frozen_anchors_digest: PENDING
+frozen_anchors_digest: dcba3d7338d40937eee56c393fd0cb44de7792e8afedbe68860f59d6254eb560
 ```
 
 The two digests are the apparatus half. The evidence bundles and the fact anchors are frozen
@@ -203,3 +203,43 @@ so the two reasons are not conflated with each other or with a genuine null.
 Both arms read the same frozen bytes, so the A/B comparison is unaffected by either deviation. What
 the deviations cost is the claim that these rows reproduce their ORIGINAL failure: three of four
 do, on gold presence, and `qst_0419` does not.
+
+---
+
+## Apparatus note 2, 2026-08-15: the anchors are frozen and three checks have run
+
+`frozen_anchors_digest` is filled: **`dcba3d73…`**. **48 scorable anchors** across the 11 rows,
+39 positive and 9 negative, plus **12 facts recorded as unanchorable** with a reason each. The
+pre-registration estimated "roughly 40"; the denominator is 48, and it is fixed now.
+
+The anchor file is **not committed**, on the same rule as the evidence fixture: 48 literal strings
+drawn from a live benchmark's answer key are answer-key material. The digest is published and
+`benchmarks/fact_anchors.py` carries the schema, so it can be rebuilt.
+
+### Checks A1, A2, A3, A6: passed
+
+| check | expected | measured |
+|---|---|---|
+| A1, complete answer | 1.0 | 1.0 |
+| A2, empty answer | 0.0 | 0.0 for positives; the row rate is 0.25 because an absent NEGATIVE anchor is vacuously satisfied, which is stated rather than tuned away |
+| A3, previously judged-wrong answers | strictly between 0 and 1 | **0.583 overall** (28/48) |
+| A6, fixture digest recomputed elsewhere | unchanged | unchanged on a second machine, no index, no network |
+
+A4 and A5 test the annotator, which does not exist yet. They run before the arms.
+
+### What A3 shows beyond passing, and it is the encouraging part
+
+The misses land exactly where the judge said the answers were wrong, which is the strongest
+evidence available that the anchors measure the intended thing:
+
+- **`qst_0418`, 5/9.** Every v2 threshold present, and `old_t1_80`, `old_t2_60_79`, `old_t3_30_59`
+  all MISSING. The submitted answer gave the new values and omitted the superseded ones. That is
+  precisely the supersession-synthesis failure the annotation is meant to address.
+- **`qst_0420`, 1/5.** `gib_based`, `egress_rate` and `sampled_bytes` all missing, which is the
+  answer having reported the OLD token-based model.
+- **`qst_0425`, 3/5.** `integrity_values` and `integrity_ref` missing.
+
+⚠️ **These are apparatus numbers, not S1.** The control arm is a fresh generation from the frozen
+evidence under `SYSTEM_PROMPT` and a cheap model; the submitted answers came from a different
+prompt, a different model and a different retrieval. The A-row figure of 0.542 is a prior, not a
+measurement of the C arm, and S1 stays as registered.
