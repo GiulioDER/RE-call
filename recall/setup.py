@@ -699,10 +699,14 @@ def probe_reasoning_model(
             timeout=timeout,
             max_retries=0,
         )
+        # No token cap is sent. `max_tokens` is rejected outright by OpenAI's o series and by
+        # GPT-5, which want `max_completion_tokens`, so capping here would report a working model
+        # as unreachable. Those models are not in the menu but manual entry can name one, and a
+        # probe that cries failure over a working configuration is worse than no probe at all.
+        # The reply to "ping" is a few tokens, which is not worth a compatibility branch.
         client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1,
         )
     except Exception as exc:
         return f"{type(exc).__name__}: {exc}"
