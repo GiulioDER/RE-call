@@ -80,9 +80,19 @@ def test_cli_demo_shows_supersession_redirect(capsys, cli_table):
     assert "rate_limits_v2.md" in out   # the successor is surfaced
 
 
+@requires_db
 def test_cli_legacy_process_global_calibration_form_preserves_the_rejected_artifact(
     tmp_path, monkeypatch
 ):
+    """A rejected calibration must still leave its artifact on disk, with the reason recorded.
+
+    Gated, and pointed at `TEST_DSN`, deliberately. This used to pass neither flag, so it ran
+    against whatever the ambient default DSN resolved to. On a machine with a database on
+    localhost:5432 that meant it quietly exercised THAT database, which is the same shape of
+    mistake the comment on `test_cli_index_then_search` records as having once destroyed a real
+    memory index. On a machine without one it failed rather than skipping, so a clean checkout
+    reported a red suite for a missing service.
+    """
     import json
 
     (tmp_path / "a.md").write_text("cats purr loudly", encoding="utf-8")
@@ -98,7 +108,7 @@ def test_cli_legacy_process_global_calibration_form_preserves_the_rejected_artif
     )
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit) as exc:
-        main(["--embedder", "hashing", "calibrate", str(queries)])
+        main(["--embedder", "hashing", "--dsn", TEST_DSN, "calibrate", str(queries)])
     assert exc.value.code == 1
 
     artifact = tmp_path / "calibration.json"
