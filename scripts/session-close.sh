@@ -196,4 +196,14 @@ EOF
     fi
 fi
 
+say "Workspace"
+if [ "$DRY_RUN" -eq 1 ]; then
+    bash "$ROOT/scripts/session-space.sh" whose 2>&1 | sed 's/^/  /'
+    printf '  --dry-run: claim not released.\n'
+else
+    # Released last, after everything above has reported. A claim dropped early would let another
+    # session move in while this one is still tearing its container down.
+    bash "$ROOT/scripts/session-space.sh" release 2>&1 | sed 's/^/  /'
+fi
+
 printf '\n'
