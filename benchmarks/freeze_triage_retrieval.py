@@ -30,7 +30,6 @@ from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 
 from benchmarks.enterprise_rag import (
-    DEFAULT_RERANK_DOCUMENT_CHARS,
     DEFAULT_SPLADE_MODEL,
     _expected_docs,
     _question_type,
