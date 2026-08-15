@@ -43,10 +43,18 @@ KEY_PATH = PACK / "adjudication_key.json"
 
 VERDICTS = {"Y", "N"}
 
-#: The adjudicated labels, frozen. Item-keyed rather than a tally, because a tally cannot tell a
-#: reversed column or two swapped verdicts from the real thing, and mutation confirmed both pass
-#: a tally unchanged.
-VERDICT_DIGEST = "e4b4d2bf27ffc3841c6be3fd8f437968c01f8553d6e6028d0b4b84825989910f"
+#: Named rather than written inline. A shell heredoc ate this escape three times in one session,
+#: writing the decoded characters into the source where a bytes literal cannot hold them.
+BOM = b"\xef\xbb\xbf"
+
+#: The adjudication, frozen: item, the SENTENCE it judged, its target, and the verdict.
+#:
+#: A tally cannot tell a reversed column from the real one. An item-keyed digest of the verdicts
+#: alone cannot tell a swap of the EVIDENCE from the real one either: exchange two rows' sentences
+#: in both the CSV and the key, leave the verdict column untouched, and every label now answers
+#: the wrong question while the digest is unchanged. Mutation confirmed that passed. Binding the
+#: sentence in is what makes this pin the adjudication rather than just its right-hand column.
+ANSWERED_DIGEST = "f2b5d6969b6515b146a459a98bf8ae1efbaa5157caf50c257ab632d0569d27a3"
 
 #: The row the adjudicator could not decide. Named, because the argument for keeping a blank is
 #: that THIS candidate is undecidable, not that some unspecified one is.
@@ -76,7 +84,7 @@ def _rows() -> list[dict[str, str]]:
 
 
 def _key() -> dict[str, dict[str, str]]:
-    return json.loads(KEY_PATH.read_text(encoding="utf-8"))
+    return json.loads(KEY_PATH.read_text(encoding="utf-8-sig"))
 
 
 def test_the_file_is_shaped_before_anything_reads_it_as_a_pack() -> None:
@@ -97,6 +105,27 @@ def test_the_file_is_shaped_before_anything_reads_it_as_a_pack() -> None:
     for line, row in enumerate(parsed[1:], start=2):
         assert len(row) == 4, f"line {line} has {len(row)} fields, not 4"
 
+    # The key is edited by the same tools and was not covered: a BOM there raised
+    # JSONDecodeError from inside four unrelated tests, none of which named the cause.
+    key_raw = KEY_PATH.read_bytes()
+    assert not key_raw.startswith(BOM), "the key file carries a BOM"
+    assert key_raw.endswith(b"\n"), "the key file has no trailing newline"
+
+    # Bytes were guarded and STRUCTURE was not, which left the same hole one level in: a key
+    # rewritten as a list, or an entry missing a field, still parsed as JSON and then surfaced as
+    # `TypeError: list indices must be integers` or a bare `KeyError` from inside whichever test
+    # happened to subscript it first. The three keys are named here because every consumer below
+    # subscripts all three.
+    key = _key()
+    assert isinstance(key, dict), f"the key must be an object keyed by item, not {type(key).__name__}"
+    malformed = {
+        item: sorted(entry) if isinstance(entry, dict) else type(entry).__name__
+        for item, entry in key.items()
+        if not isinstance(entry, dict)
+        or set(entry) != {"source_pep", "candidate_target", "evidence_sentence"}
+    }
+    assert not malformed, f"key entries are not (source_pep, candidate_target, evidence_sentence): {malformed}"
+
 
 def test_the_committed_verdicts_are_frozen() -> None:
     """The labels themselves, pinned item by item.
@@ -106,11 +135,28 @@ def test_the_committed_verdicts_are_frozen() -> None:
     message claimed the verdicts were "pinned separately". They were not pinned by anything.
     """
     rows = _rows()
-    joined = "".join(f"{r['item']}={r['your_verdict_Y_or_N'].strip()};" for r in rows)
-    assert hashlib.sha256(joined.encode("utf-8")).hexdigest() == VERDICT_DIGEST, (
-        "the adjudicated labels changed. If that is deliberate, re-adjudicate and update the "
-        "digest in the same commit; do not edit one verdict in place"
+    # Row ORDER is asserted separately, below, and the digest is taken over items sorted
+    # numerically. A spreadsheet "sort by sentence" is a routine thing to do to a file handed to
+    # a human, and it changes no label: it must fail with its own message rather than with one
+    # telling the reader to re-adjudicate.
+    ordered = sorted(rows, key=lambda r: int(r["item"]))
+    joined = "".join(
+        f"{r['item']}="
+        f"{hashlib.sha256(r['evidence_sentence'].encode('utf-8')).hexdigest()[:12]}:"
+        f"{r['candidate_target']}="
+        f"{r['your_verdict_Y_or_N'].strip()};"
+        for r in ordered
     )
+    assert hashlib.sha256(joined.encode("utf-8")).hexdigest() == ANSWERED_DIGEST, (
+        "the adjudication changed: a verdict, or the sentence a verdict answers. If that is "
+        "deliberate, re-adjudicate and update the digest in the same commit; do not edit in place"
+    )
+
+
+def test_the_rows_are_in_item_order() -> None:
+    """Separate from the digest, so a reorder reports itself instead of reading as a relabel."""
+    items = [r["item"] for r in _rows()]
+    assert items == [str(i) for i in range(1, len(items) + 1)], "rows are not in item order"
 
 
 def test_every_verdict_is_yes_no_or_deliberately_blank() -> None:
@@ -188,9 +234,13 @@ def test_the_key_carries_the_mapping_the_csv_withholds() -> None:
         # formula character. A raw compare reads that defence as corruption — it did.
         assert _csv_safe(entry["evidence_sentence"]) == row["evidence_sentence"], row["item"]
         assert _csv_safe(entry["candidate_target"]) == row["candidate_target"], row["item"]
+        # Shape only, and the message says so. A well-formed but WRONG stem still passes:
+        # verifying attribution needs the corpus, and the only corpus-gated test here skips
+        # without RECALL_PEPS_DIR. Claiming more than this checks is how the previous version
+        # read as protection it did not provide.
         assert re.fullmatch(r"pep-\d{4}", entry["source_pep"]), (
-            f"item {row['item']}: source_pep {entry['source_pep']!r} is not a PEP stem; the "
-            f"un-blinding record's attribution can be wrong without being empty"
+            f"item {row['item']}: source_pep {entry['source_pep']!r} is not a well-formed PEP "
+            f"stem. This does NOT verify it is the right one"
         )
 
 
