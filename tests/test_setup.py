@@ -10,6 +10,7 @@ from recall.setup import (
     OPENAI_BASE_URL,
     OPENROUTER_BASE_URL,
     embedder_choices,
+    probe_reasoning_model,
     reasoning_model_choices,
     reasoning_provider_choices,
     run_setup_wizard,
@@ -1297,3 +1298,68 @@ def test_reasoning_model_descriptions_quote_no_prices():
     for base_url in (OPENROUTER_BASE_URL, OPENAI_BASE_URL):
         for choice in reasoning_model_choices(base_url):
             assert "$" not in choice.description
+
+
+class _FakeCompletions:
+    def __init__(self, error: Exception | None):
+        self._error = error
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._error is not None:
+            raise self._error
+        return object()
+
+
+class _FakeOpenAI:
+    last: "_FakeOpenAI | None" = None
+
+    def __init__(self, error: Exception | None = None, **kwargs):
+        self.kwargs = kwargs
+        self.chat = type("_Chat", (), {"completions": _FakeCompletions(error)})()
+        _FakeOpenAI.last = self
+
+
+def _install_fake_openai(monkeypatch, error: Exception | None = None):
+    import openai
+
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    monkeypatch.setattr(openai, "OpenAI", lambda **kw: _FakeOpenAI(error, **kw))
+
+
+def test_the_probe_returns_none_when_the_call_succeeds(monkeypatch):
+    _install_fake_openai(monkeypatch)
+    result = probe_reasoning_model(
+        base_url="https://openrouter.ai/api/v1", api_key="k", model="deepseek/deepseek-chat"
+    )
+    assert result is None
+
+
+def test_the_probe_passes_the_endpoint_and_disables_client_retries(monkeypatch):
+    """max_retries=0 matches the extraction engine: retries belong to the caller, and a wizard
+    probe that silently retries three times reads as a hang."""
+    _install_fake_openai(monkeypatch)
+    probe_reasoning_model(base_url="http://localhost:11434/v1", api_key="local", model="qwen")
+    assert _FakeOpenAI.last.kwargs["base_url"] == "http://localhost:11434/v1"
+    assert _FakeOpenAI.last.kwargs["api_key"] == "local"
+    assert _FakeOpenAI.last.kwargs["max_retries"] == 0
+
+
+def test_the_probe_reports_the_failure_instead_of_raising(monkeypatch):
+    """The probe runs against three providers and an arbitrary user supplied base URL, so the
+    set of reachable exception types is not knowable here. Any escape turns an optional step
+    into a failed install."""
+    _install_fake_openai(monkeypatch, error=RuntimeError("model not found"))
+    result = probe_reasoning_model(
+        base_url="https://openrouter.ai/api/v1", api_key="k", model="nope/nope"
+    )
+    assert result is not None
+    assert "model not found" in result
+
+
+def test_the_probe_declines_without_the_openai_package(monkeypatch):
+    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
+    result = probe_reasoning_model(base_url="x", api_key="k", model="m")
+    assert result is not None
+    assert "openai" in result

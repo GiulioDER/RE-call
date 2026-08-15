@@ -671,6 +671,44 @@ def reasoning_model_choices(base_url: str) -> list[Choice]:
     ]
 
 
+def probe_reasoning_model(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: float = 20.0,
+) -> str | None:
+    """Send one minimal completion. `None` when it worked, otherwise what went wrong.
+
+    A wrong key, a retired model id and a local server that is not running are the three likely
+    failures, and each is far cheaper to find here than on the reader's first reasoning query.
+
+    This never raises. It runs against three different providers and a base URL the user typed,
+    so the set of reachable exception types is not knowable from here, and letting one escape
+    would turn an optional step into a failed install. The caller prints the string and writes
+    the configuration regardless.
+    """
+    if not _module_available("openai"):
+        return 'the openai package is not installed, install "recall-rag[extract]"'
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=0,
+        )
+        client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=1,
+        )
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
 def _prompt(
     input_fn: Callable[[str], str],
     print_fn: Callable[..., None],
