@@ -146,8 +146,15 @@ def test_surface_b_member_reaches_its_declared_verdict(member: FleetMember):
     expectation = member.expected
 
     if expectation.raises is not None:
-        with pytest.raises(expectation.raises):
+        with pytest.raises(expectation.raises) as excinfo:
             run_surface_b(member)
+        if expectation.raises_contains is not None:
+            assert expectation.raises_contains in str(excinfo.value), (
+                f"{member.name}: raised {expectation.raises.__name__} but its message does not "
+                f"contain {expectation.raises_contains!r}; message was {str(excinfo.value)!r}. "
+                f"A type match alone cannot tell this failure mode apart from a sibling "
+                f"ValueError raised earlier in the same call."
+            )
         return
 
     decision, _document = run_surface_b(member)

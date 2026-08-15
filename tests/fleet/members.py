@@ -234,9 +234,10 @@ SURFACE_A: tuple[FleetMember, ...] = (
     ),
 )
 
-#: Enough paired questions that a two-sided sign test over all-positive deltas clears 0.05 with
-#: room to spare: 2 * 0.5**12 = 0.000488. Eight would already do it (0.0078); twelve is chosen so
-#: the member does not sit near the boundary of a test it does not otherwise pin.
+#: Enough paired questions that `_paired_sign_p`'s ONE-sided exact permutation test over
+#: all-positive deltas clears 0.05 with room to spare: 0.5**12 = 0.000244. Eight would already
+#: do it (0.5**8 = 0.0039); twelve is chosen so the member does not sit near the boundary of a
+#: test it does not otherwise pin.
 N_PAIRED = 12
 
 #: One corpus, so Holm correction over a single p-value leaves it unchanged and the member is
@@ -264,6 +265,32 @@ class GateExpectation:
     promoted: bool | None = None
     failure_contains: str | None = None
     raises: type[Exception] | None = None
+    #: Substring the raised exception's message must contain. Optional, but strongly
+    #: recommended whenever more than one code path can raise the same `raises` type: a type
+    #: check alone cannot distinguish two failure modes that happen to share a base class.
+    raises_contains: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.raises is not None and (
+            self.promoted is not None or self.failure_contains is not None
+        ):
+            raise ValueError(
+                "raises is set together with promoted or failure_contains. The test's raises "
+                "branch returns before checking either, so a stale value left on the other two "
+                "would silently never be checked; setting only one family makes that visible "
+                "instead of hiding it behind a dead field."
+            )
+        if self.raises_contains is not None and self.raises is None:
+            raise ValueError(
+                "raises_contains is set without raises. There is no exception to read a "
+                "message from without raises, so this field alone can never be checked."
+            )
+        if self.raises is None and self.promoted is None and self.failure_contains is None:
+            raise ValueError(
+                "none of raises, promoted or failure_contains is set. A GateExpectation that "
+                "asserts nothing would pass no matter what the gate did, which is the exact "
+                "silent-pass failure mode this fleet exists to catch."
+            )
 
 
 def _record(
@@ -368,9 +395,11 @@ SURFACE_B: tuple[FleetMember, ...] = (
         build=lambda: _arms(baseline_hits=False, candidate_hits=True),
         # Every paired delta is +1.0 (baseline gold at rank 6 = hit@5 0.0, candidate at rank 1
         # = 1.0), so the bootstrap interval is degenerate at 1.0 and its lower bound clears
-        # zero; a two-sided sign test over 12 positives gives 2*0.5**12 = 0.000488 < 0.05;
-        # both safety deltas are 0.0; superseded_trust_rate is exactly 0.0; security is green;
-        # latency is 100.0 against a 1000.0 budget. No failure remains, so promoted is True.
+        # zero. `_paired_sign_p` is a ONE-sided exact permutation test: with every delta
+        # identical and maximal, exactly 1 of the 2**12 = 4096 sign permutations (all-positive)
+        # ties the observed mean, giving p = 0.5**12 = 0.000244 < 0.05; both safety deltas are
+        # 0.0; superseded_trust_rate is exactly 0.0; security is green; latency is 100.0
+        # against a 1000.0 budget. No failure remains, so promoted is True.
         expected=GateExpectation(promoted=True),
         does_not_catch="whether the bootstrap interval is correctly WIDE; every delta here is "
                        "identical, so the interval is degenerate and its width is never tested",
@@ -412,7 +441,13 @@ SURFACE_B: tuple[FleetMember, ...] = (
         # and raises rather than letting it through. This is the 08-09 failure shape exactly:
         # the gate compares with `>`, every comparison against NaN is False, so an empty class
         # would read identically to a passed check. Documented in aggregate.py; executed here.
-        expected=GateExpectation(raises=ValueError),
+        # `raises_contains` pins the NaN/empty-class reason specifically, so a future change
+        # that made this member's arms UNPAIRED or VACUOUS instead (both also ValueError,
+        # raised earlier in build_gate_input than this NaN check) cannot pass by accident.
+        expected=GateExpectation(
+            raises=ValueError,
+            raises_contains="are NaN because their class is empty",
+        ),
         does_not_catch="a PARTIALLY empty class; one unanswerable question is enough to make "
                        "the rate non-NaN while still being far too few to mean anything",
     ),
@@ -423,7 +458,12 @@ SURFACE_B: tuple[FleetMember, ...] = (
             baseline_hits=False, candidate_hits=True, drop_from_candidate="q00"
         ),
         # A paired test over a set that quietly shrank is not the test that was declared.
-        expected=GateExpectation(raises=UnpairedArms),
+        # `raises_contains` pins the manifest-coverage reason specifically, distinguishing it
+        # from `nan-safety-class`'s NaN reason above (also a ValueError subclass).
+        expected=GateExpectation(
+            raises=UnpairedArms,
+            raises_contains="does not cover the frozen manifest exactly",
+        ),
         does_not_catch="a question present in both arms but with a DIFFERENT input_hash, which "
                        "aggregate.py also refuses and which no member exercises",
     ),
