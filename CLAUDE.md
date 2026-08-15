@@ -62,9 +62,27 @@ Consequences that follow from the rule:
 `scripts/session-mcp.sh` generates `.mcp.json`. Run it once per checkout, since every worktree is
 a separate project root to the MCP client.
 
-- **`recall`** serves recall's own `docs/` out of the `recall-dogfood` corpus. This is the only
-  server whose corpus is this project. Reach for it first when the question is what recall already
-  does or has already decided. Rebuild the corpus with the recipe in `scripts/session-mcp.sh`.
+- **`recall`** serves recall's own `docs/` and **`recall-memory`** serves this project's memory
+  store, both out of the `recall-dogfood` corpus on port 5433 (tenants `default` and `memory`,
+  1688 and 308 chunks). These are the only servers whose corpus is this project.
+
+  ⚠️ **Their `recall_search` currently refuses**, and this is by design rather than a
+  misconfiguration. `recall_mcp/server.py` never passes a `TrustPolicy`, so the service defaults to
+  strict and **ignores `RECALL_TRUST_MODE`**: the docstring is explicit that a server degrading by
+  omission would degrade in production. An uncalibrated corpus therefore returns
+  `INDEX_NOT_READY`. Lifting it needs a real calibration bound to an immutable generation
+  (`recall calibration calibrate --generation G --queries FILE --publish`), not a flag.
+
+  Until then the CLI is the working path, because the CLI *does* honour the env var:
+
+  ```bash
+  RECALL_DSN=postgresql://recall:recall@127.0.0.1:5433/recall RECALL_EMBEDDER=fastembed \
+    RECALL_TRUST_MODE=development python -m recall.cli --tenant memory search "your question"
+  ```
+
+  Drop `--tenant memory` to search `docs/` instead. Rebuild either corpus with the recipe in
+  `scripts/session-mcp.sh`. **Index each tenant separately:** re-indexing prunes sources that have
+  vanished from disk, so pointing both corpora at one tenant deletes the other.
 - **`code-rag`, `qwen-mcp`, `qwen-vps3`, `vps3-lite`, `mcp-pg-ops`** index `/opt/sentiment_agent`
   and query the `sentiment_agent` database. They are reachable and useful for that host, but be
   clear-eyed here: `code_search` on those servers does **not** search recall, and `db_query_ro`

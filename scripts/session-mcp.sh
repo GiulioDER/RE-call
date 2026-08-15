@@ -95,6 +95,23 @@ config = {
                 "RECALL_TRUST_MODE": "development",
             },
         },
+        # The same corpus database, scoped to the `memory` tenant, which holds this project's
+        # memory store rather than its docs. Separate server because the tenant is fixed per
+        # process, and separate TENANT rather than a second table because re-indexing prunes
+        # sources that have vanished from disk: pointed at one tenant, indexing the memory store
+        # would have deleted the 48 indexed docs.
+        "recall-memory": {
+            "type": "stdio",
+            "command": "python",
+            "args": ["-m", "recall_mcp.server"],
+            "cwd": os.environ["ROOT"],
+            "env": {
+                "RECALL_DSN": os.environ["DOGFOOD_DSN"],
+                "RECALL_EMBEDDER": "fastembed",
+                "RECALL_TRUST_MODE": "development",
+                "RECALL_TENANT": "memory",
+            },
+        },
         # The remaining servers index /opt/sentiment_agent and query the sentiment_agent
         # database. They are reachable and useful, but their corpus is NOT recall: `code_search`
         # here will not find recall's source, and `db_query_ro` does not reach recall's tables.
