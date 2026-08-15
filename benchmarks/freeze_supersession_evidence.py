@@ -113,6 +113,35 @@ def _checkpoint_path(out: Path) -> Path:
     return out.with_suffix(out.suffix + ".partial.jsonl")
 
 
+def retrieval_fingerprint(args: argparse.Namespace) -> str:
+    """Every setting that changes what gets retrieved, as one comparable string.
+
+    ⚠️ This exists because resuming is the dangerous half of checkpointing. The first real run of
+    this script died on a Voyage batch ceiling after freezing four rows; the obvious next move was
+    to lower `--rerank-document-chars` and `--resume`, which would have produced a fixture whose
+    first four rows were retrieved under one configuration and whose last seven were retrieved
+    under another. Nothing would have complained, the provenance would have recorded only the
+    SECOND configuration, and the mixed fixture would have been the substrate for every number
+    that followed.
+    """
+    return json.dumps(
+        {
+            "table": args.table,
+            "tenant": args.tenant,
+            "embedder": args.embedder,
+            "k": args.k,
+            "candidate_k": args.candidate_k,
+            "sparse_backend": args.sparse_backend,
+            "splade_model": args.splade_model,
+            "sparse_device": args.sparse_device,
+            "reranker": args.reranker,
+            "rerank_document_chars": args.rerank_document_chars,
+            "gap_threshold": args.gap_threshold,
+        },
+        sort_keys=True,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verify", type=Path, help="check a fixture and exit; needs no index")
@@ -169,12 +198,22 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"questions file is missing {sorted(missing)}; refusing a partial freeze")
 
     checkpoint = _checkpoint_path(args.out)
+    fingerprint = retrieval_fingerprint(args)
     frozen: dict[str, object] = {}
     if args.resume and checkpoint.exists():
         for line in checkpoint.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                row = json.loads(line)
-                frozen[row["question_id"]] = row["evidence"]
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("retrieval_fingerprint") != fingerprint:
+                raise SystemExit(
+                    f"{checkpoint.name} holds {row['question_id']} retrieved under DIFFERENT "
+                    f"settings. Resuming would mix two configurations into one fixture, and the "
+                    f"provenance would record only the second. Delete the checkpoint and "
+                    f"re-freeze every row.\n  checkpoint: {row.get('retrieval_fingerprint')}"
+                    f"\n  now       : {fingerprint}"
+                )
+            frozen[row["question_id"]] = row["evidence"]
         print(f"resumed {len(frozen)} row(s) from {checkpoint.name}", flush=True)
 
     embedder = resolve_embedder(args.embedder)
@@ -241,7 +280,16 @@ def main(argv: list[str] | None = None) -> int:
                 frozen[question_id] = row
                 # Checkpointed BEFORE the next paid call. One transient failure on row 7 used to
                 # discard six completed retrievals with nothing on disk.
-                sink.write(json.dumps({"question_id": question_id, "evidence": row}) + "\n")
+                sink.write(
+                    json.dumps(
+                        {
+                            "question_id": question_id,
+                            "retrieval_fingerprint": fingerprint,
+                            "evidence": row,
+                        }
+                    )
+                    + "\n"
+                )
                 sink.flush()
                 print(f"froze {question_id}: {len(hits)} hits, {len(doc_ids)} docs", flush=True)
 
