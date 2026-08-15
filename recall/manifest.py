@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.request import url2pathname
 from urllib.parse import unquote, urlsplit
 
 from recall.lineage import IndexManifestV1, LineageError, ManifestObjectV1
@@ -185,3 +186,76 @@ def load_inventory(path: str | Path) -> tuple[ManifestObjectV1, ...]:
         "objects": value,
     }
     return IndexManifestV1.from_dict(wrapper).objects
+
+
+class LocalObjectReader:
+    """Read manifest objects from the filesystem, confined to allowed roots.
+
+    Exists so a corpus that lives in a directory can become a generation. Calibration requires a
+    generation and generation build required S3, so before this a single-machine user could not
+    calibrate at all: a documented capability unreachable from the configuration they actually had.
+
+    ⚠️ **This is a weaker guarantee than `S3ObjectReader`, deliberately and visibly.** S3 object
+    versioning pins one specific set of bytes forever, so a manifest entry and its object cannot
+    drift apart. A local file can be rewritten in place after the manifest is written. What this
+    reader provides is **detection**: it hashes what it actually read and refuses when that differs
+    from the entry. It cannot provide prevention, and nothing here should be read as though it does.
+    """
+
+    def __init__(self, roots: "tuple[Path, ...] | list[Path]") -> None:
+        if not roots:
+            raise ValueError("at least one local root must be allowlisted")
+        # Resolved once, so a symlink cannot be swapped underneath the containment check between
+        # construction and read.
+        self._roots = tuple(Path(r).resolve() for r in roots)
+
+    @classmethod
+    def from_environment(cls) -> "LocalObjectReader":
+        raw = os.environ.get("RECALL_LOCAL_ALLOWLIST", "")
+        if not raw:
+            raise ValueError(
+                "RECALL_LOCAL_ALLOWLIST is required for file:// manifest access. Without it a "
+                "manifest could name any file on the machine."
+            )
+        return cls(tuple(Path(p.strip()) for p in raw.split(os.pathsep) if p.strip()))
+
+    def _resolve(self, entry: ManifestObjectV1) -> Path:
+        parsed = urlsplit(entry.uri)
+        if parsed.scheme != "file":
+            raise ObjectNotAllowed(f"{entry.uri!r} is not a file:// object")
+        path = Path(url2pathname(unquote(parsed.path))).resolve()
+        # `is_relative_to` on the RESOLVED path, so `..` and symlinks cannot escape a root. This is
+        # the local analogue of the S3 allowlist: without it a manifest names any file on disk.
+        if not any(path.is_relative_to(root) for root in self._roots):
+            raise ObjectNotAllowed(
+                f"local object {entry.uri!r} is outside RECALL_LOCAL_ALLOWLIST"
+            )
+        return path
+
+    def fetch(self, entry: ManifestObjectV1) -> VerifiedObject:
+        path = self._resolve(entry)
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            # Surfaced as a verification failure, not an OSError, so a caller handling manifest
+            # problems does not have to know which storage backend produced them.
+            raise ManifestVerificationError(
+                f"immutable object {entry.uri} is unavailable: {type(exc).__name__}"
+            ) from exc
+
+        if len(data) != entry.size:
+            raise ManifestVerificationError(
+                f"object size mismatch for {entry.uri}: expected {entry.size}, "
+                f"received {len(data)}"
+            )
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != entry.sha256:
+            raise ManifestVerificationError(
+                f"object checksum mismatch for {entry.uri}: expected {entry.sha256}, "
+                f"received {digest}. A local file changed after its manifest was written; this "
+                f"reader detects that and cannot prevent it."
+            )
+        return VerifiedObject(entry, data)
+
+    def verify(self, manifest: IndexManifestV1) -> tuple[VerifiedObject, ...]:
+        return tuple(self.fetch(entry) for entry in manifest.objects)
