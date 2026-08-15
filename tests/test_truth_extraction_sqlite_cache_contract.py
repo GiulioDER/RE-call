@@ -210,24 +210,129 @@ def test_the_serializer_field_table_matches_the_dataclasses():
         )
 
 
+def test_the_cache_key_covers_every_prompt_field():
+    """The same drift, one module over, and it had no guard at all.
+
+    `status_vocabulary` was added to `ExtractionPrompt` and to `extraction_cache_key` in one
+    commit because a human noticed. A field added to the dataclass alone changes the question the
+    model is asked while leaving the key unchanged, so the second run serves the first run's
+    answer, produced under a prompt it never sent. That is the single failure `_cache.py` exists
+    to prevent, and nothing was checking it.
+
+    `system` and `user` are excluded deliberately: they are rendered FROM the other fields, so
+    hashing them would be the stronger design and a different decision (see `_KEY_PROMPT_FIELDS`).
+    """
+    import dataclasses
+
+    from recall.truth_extraction._cache import _KEY_PROMPT_FIELDS
+    from recall.truth_extraction._prompt import ExtractionPrompt
+
+    declared = {f.name for f in dataclasses.fields(ExtractionPrompt)} - {"system", "user"}
+    assert declared == set(_KEY_PROMPT_FIELDS), (
+        f"the prompt declares {sorted(declared)} and the cache key hashes "
+        f"{sorted(_KEY_PROMPT_FIELDS)}. A field in the first and not the second gives one cache "
+        f"entry to two different prompts."
+    )
+    # And the form table, which the hash actually indexes. A field added to the dataclass AND to
+    # `_KEY_PROMPT_FIELDS` but not here left this test green and raised `KeyError` on file 1 of
+    # a run, out of a function whose own comment states the property "this never raises".
+    from recall.truth_extraction._cache import _KEY_FIELD_FORM
+
+    assert set(_KEY_FIELD_FORM) == set(_KEY_PROMPT_FIELDS), (
+        "every hashed prompt field needs a form; a missing one raises KeyError at ingest time"
+    )
+
+
+def test_the_stored_record_names_the_vocabulary_the_model_was_shown(tmp_path):
+    """The audit identity, which the key had and the RECORD did not.
+
+    `prompt_revision` is stored because "the same engine under a reworded prompt is not the same
+    extractor". A changed vocabulary IS a reworded prompt: it is rendered into the user message.
+    Two runs under different vocabularies used to produce byte-identical records, so a reviewer
+    reading a cached `FileExtraction` could not tell which list the model had been given.
+    """
+    from recall.truth_extraction._engine import DeterministicExtractionEngine
+    from recall.truth_extraction._serialize import extraction_from_json, extraction_to_json
+    from recall.truth_extraction.extract import extract_file_claims
+
+    vocabulary = ("Final", "Rejected")
+    cache = InMemoryExtractionCache()
+    kwargs = dict(
+        file="pep-0376.rst",
+        text="Status: Final\n",
+        corpus_names=("pep-0376.rst",),
+        engine=DeterministicExtractionEngine(),
+        status_vocabulary=vocabulary,
+    )
+    cold = extract_file_claims(cache=cache, **kwargs)  # type: ignore[arg-type]
+    assert cold.status_vocabulary == vocabulary
+    # It survives the round trip, or the record loses it on the way into the cache.
+    assert extraction_from_json(extraction_to_json(cold)) == cold
+
+    # ⚠️ And on the cache HIT, which is where it was wrong. The hit path rebuilt the record field
+    # by field, so the new field silently took its dataclass DEFAULT and a re-run reported the
+    # shipped memo words for a run that had used a corpus's own. A hit is the path a re-run
+    # takes, so the audit field was wrong exactly where it would be read. The first version of
+    # this test passed no cache and could not see it.
+    warm = extract_file_claims(cache=cache, **kwargs)  # type: ignore[arg-type]
+    assert warm.cached is True, "the second call missed the cache, so this proves nothing"
+    assert warm.status_vocabulary == vocabulary, (
+        "a cache hit reported a different vocabulary than the run that produced the entry"
+    )
+    assert warm == replace(cold, cached=True), "the hit lost something else the cold call had"
+
+
+def test_an_engine_failure_records_the_vocabulary_it_was_run_under():
+    """The refusal record names the same extractor a success would.
+
+    `_refused` is one of four `FileExtraction` construction sites, and it dropped the field, so
+    an engine_error was filed under the shipped memo vocabulary whatever the run had used. A
+    failed run is when the audit identity matters most.
+    """
+    from recall.truth_extraction.extract import extract_file_claims
+
+    class _Broken:
+        engine_id, model_id, revision = "e", "m", "r"
+
+        def run(self, prompt):
+            raise RuntimeError("upstream is down")
+
+    extraction = extract_file_claims(
+        file="pep-0376.rst",
+        text="Status: Final\n",
+        corpus_names=("pep-0376.rst",),
+        engine=_Broken(),
+        status_vocabulary=("Final", "Rejected"),
+    )
+    assert extraction.batch_rejection is not None
+    assert extraction.batch_rejection.rung == "engine_error"
+    assert extraction.status_vocabulary == ("Final", "Rejected")
+
+
+def test_the_top_level_field_table_matches_FileExtraction():
+    """`_FIELDS` is pinned for the claim classes; the TOP LEVEL table was maintained by hand.
+
+    It is also the table this change had to edit. A future field with a default added to
+    `FileExtraction` alone would round-trip to that default and compare equal, so `recheck`
+    would report the loss as engine nondeterminism.
+    """
+    import dataclasses
+
+    from recall.truth_extraction._serialize import _TOP_LEVEL_KEYS
+    from recall.truth_extraction.types import FileExtraction
+
+    assert set(_TOP_LEVEL_KEYS) == {f.name for f in dataclasses.fields(FileExtraction)}
+
+
 def test_a_claim_class_that_gained_a_field_is_refused_not_silently_defaulted(tmp_path):
     """Belt and braces for the table above: if drift ever happens, it must not read as drift
     in the ENGINE. A construction failure has to arrive as a cache miss, not a crash."""
     from recall.truth_extraction import _serialize
 
-    payload = json.dumps(
-        {
-            "file": "m.md",
-            "claims": [{"kind": "status", "value": "active"}],  # `quote` missing
-            "rejections": [],
-            "engine_id": "e1",
-            "model_id": "m1",
-            "revision": "r1",
-            "prompt_revision": "p1",
-            "batch_rejection": None,
-            "cached": False,
-        }
-    )
+    # Built from `_payload` rather than restated inline: this test corrupts the CLAIM, and a
+    # second hand-written copy of the top-level shape drifts from the real one and then fails on
+    # the top-level check instead, testing nothing about claims. It did.
+    payload = _payload(claims=[{"kind": "status", "value": "active"}])  # `quote` missing
     with pytest.raises(_serialize.ExtractionPayloadInvalid, match="claim 0 has fields"):
         _serialize.extraction_from_json(payload)
 
@@ -402,6 +507,7 @@ def _payload(**over) -> str:
         "model_id": "m1",
         "revision": "r1",
         "prompt_revision": "p1",
+        "status_vocabulary": ["active", "draft"],
         "batch_rejection": None,
         "cached": False,
     }
@@ -968,6 +1074,38 @@ def test_a_batch_rejection_is_validated_like_any_other(batch):
 
     with pytest.raises(_serialize.ExtractionPayloadInvalid, match="batch rejection"):
         _serialize.extraction_from_json(_payload(batch_rejection=batch))
+
+
+def test_a_row_written_under_the_previous_payload_shape_is_stale_not_corrupt(tmp_path):
+    """The bump itself, which the two tests around this one cannot check.
+
+    Both of them move a row to `CACHE_SCHEMA_VERSION ± 1`, so they pass whatever the constant
+    is and a MISSING bump is invisible to them. This one writes a row the way the previous
+    release wrote it: version 1, and a payload with no `status_vocabulary` key. Left at
+    version 1, the shape check fires and the row is counted as CORRUPT, which is the counter
+    that tells a user their store is damaged. It was not damaged; the shape changed.
+
+    Masked in practice this time because `PROMPT_REVISION` moved in the same change, so those
+    rows are never fetched under a new key. The next payload change that does not also move the
+    prompt revision would not be so lucky.
+    """
+    previous = json.loads(_payload())
+    del previous["status_vocabulary"]
+    with SqliteExtractionCache(_path(tmp_path)) as cache:
+        cache.put("k1", _extraction())
+    with contextlib.closing(sqlite3.connect(_path(tmp_path))) as raw:
+        raw.execute(
+            "UPDATE extraction_entries SET schema_version = 1, payload = ? WHERE cache_key = 'k1'",
+            (json.dumps(previous),),
+        )
+        raw.commit()
+    with SqliteExtractionCache(_path(tmp_path)) as cache:
+        assert cache.get("k1") is None
+        assert cache.stale == 1, "a payload from the previous release must read as stale"
+        assert cache.corrupt == 0, (
+            "a routine shape change was filed as damage, which is the counter that says a store "
+            "needs investigating"
+        )
 
 
 def test_a_row_from_an_older_cache_version_is_stale_too(tmp_path):

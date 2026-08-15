@@ -307,6 +307,66 @@ def test_corpus_name_order_does_not_change_the_question_asked():
     )
 
 
+def test_a_custom_vocabulary_cache_is_actually_rechecked():
+    """The same hazard as corpus name order, one field over, and it silently reported nothing.
+
+    `status_vocabulary` is part of the cache key AND of the rendered prompt. A recheck that did
+    not take it computed a different key for every file, missed every entry, and returned
+    `checked=0` — which `test_a_cold_cache_reports_no_rate_rather_than_zero_drift` shows is
+    correctly reported as "no rate", so nothing anywhere said the measurement had not happened.
+    A determinism number that quietly becomes a non-measurement is worse than a wrong one.
+    """
+    from recall.truth_extraction.extract import extract_file_claims
+
+    # ⚠️ Its own documents, each carrying a STATUS LINE inside the custom vocabulary. `DOCS` has
+    # none, so under it the vocabulary could only affect the cache key and never the ladder
+    # outcome: dropping the ladder argument left the whole suite byte-identical, and the
+    # `mismatched == 0` half of this test was vacuous. With a status line, a recheck that judges
+    # the answer against the shipped list refuses at `claim_shape` and registers as a mismatch.
+    vocabulary = ("Final", "Rejected", "Deferred")
+    docs = {
+        "old_2026-01-01.md": "Status: Final\n\nThe original call.\n",
+        "new_2026-02-01.md": "Status: Final\n\nThis replaces old_2026-01-01.md after review.\n",
+    }
+    names = tuple(sorted(docs))
+    engine = _Counting()
+    cache = InMemoryExtractionCache()
+    # Warmed per file rather than through `extract_corpus_claims`, which deliberately takes no
+    # vocabulary: it is the entry point the WRITER uses, and it stays closed.
+    for file, text in docs.items():
+        warmed = extract_file_claims(
+            file=file, text=text, corpus_names=names, engine=engine, cache=cache,
+            status_vocabulary=vocabulary,
+        )
+        assert warmed.batch_rejection is None, (
+            f"{file} was refused while warming, so this test would compare two refusals"
+        )
+        assert any(type(c).__name__ == "StatusClaim" for c in warmed.claims), (
+            f"{file} produced no status claim, so the vocabulary cannot affect the outcome and "
+            f"this test would be vacuous"
+        )
+
+    without = recheck_cached_extractions(
+        docs, engine=_Counting(), corpus_names=names, cache=cache
+    )
+    assert without.checked == 0, (
+        "the shipped vocabulary must NOT hit a cache warmed under a custom one, or the two "
+        "vocabularies would share an entry"
+    )
+
+    with_vocabulary = recheck_cached_extractions(
+        docs, engine=_Counting(), corpus_names=names, cache=cache,
+        status_vocabulary=vocabulary,
+    )
+    assert with_vocabulary.checked == len(docs), (
+        f"only {with_vocabulary.checked} of {len(docs)} cached files were rechecked"
+    )
+    assert with_vocabulary.mismatched == 0, (
+        "the recheck judged the engine's answer against a different vocabulary than the warm "
+        "run used, and reported the difference as engine drift"
+    )
+
+
 def test_a_cold_cache_reports_no_rate_rather_than_zero_drift():
     """`0.0` would render as "no drift detected" when nothing was measured at all."""
     report = recheck_cached_extractions(

@@ -28,7 +28,6 @@ from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from recall.truth_extraction._prompt import ExtractionPrompt
-from recall.truth_extraction.types import STATUS_VOCABULARY
 
 DETERMINISTIC_EXTRACTION_ENGINE_ID = "recall.truth_extraction.deterministic"
 DETERMINISTIC_EXTRACTION_MODEL_ID = "rules"
@@ -104,9 +103,16 @@ class DeterministicExtractionEngine:
                         "quote": _line_of(body, match.start()),
                     }
                 )
+        # `prompt.status_vocabulary`, not the module constant. Reading the constant meant this
+        # engine emitted the five shipped memo words whatever the caller asked for, so under a
+        # PEP vocabulary a document with a status line produced a claim the ladder then refused
+        # at `claim_shape` — a BATCH rung, which takes the file's supersession claims down with
+        # it. The two arms would also have been measured against different vocabularies while
+        # the report recorded one.
+        vocabulary = {str(word).casefold(): str(word) for word in prompt.status_vocabulary}
         for match in _STATUS_RE.finditer(body):
-            value = match.group("value").lower()
-            if value in STATUS_VOCABULARY:
+            value = vocabulary.get(match.group("value").casefold())
+            if value is not None:
                 claims.append(
                     {"kind": "status", "value": value, "quote": _line_of(body, match.start())}
                 )
