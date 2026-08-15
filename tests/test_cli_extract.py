@@ -455,17 +455,18 @@ def test_a_custom_vocabulary_admits_a_status_the_shipped_set_drops(
     _enable(monkeypatch)
     main(["extract", "run", str(pep_corpus)])
     without = capsys.readouterr().out
-    # File-qualified for symmetry with the assertion below: the echoed
-    # "status vocabulary: ..." line contains the bare word "status", so pin the claim line
-    # itself rather than the substring.
-    assert "pep-0376.md: status" not in without, "the shipped vocabulary should not admit `Final`"
+    # Pinned on ": status" rather than a bare "status": the echoed "status vocabulary: ..." line
+    # itself contains the word "status", so a bare substring check would pass whether or not the
+    # vocabulary ever reached extraction. ": status" only appears on a claim line
+    # (`f"  {file}: {claim.kind}"` in cli.py), never on the echo line, so it pins reach rather
+    # than the print. Checked without a filename so both pep-0345.md and pep-0376.md are
+    # covered, not just the one that happens to be named.
+    assert ": status" not in without, "the shipped vocabulary should not admit `Final`"
 
     main(["extract", "run", str(pep_corpus), "--status-vocabulary", "Final,Rejected,Deferred"])
     with_flag = capsys.readouterr().out
-    # File-qualified, not a bare "status" substring: the echoed
-    # "status vocabulary: Final, Rejected, Deferred" line itself contains the word "status" and
-    # would satisfy a looser check whether or not the vocabulary ever reached extraction.
-    assert "pep-0376.md: status" in with_flag, "the custom vocabulary did not reach the prompt"
+    # Same echo-immunity reasoning as the assertion above.
+    assert ": status" in with_flag, "the custom vocabulary did not reach the prompt"
     assert "supersession" in with_flag, "the supersession claim was lost"
 
 
@@ -477,10 +478,12 @@ def test_the_flag_saves_the_other_claims_from_a_batch_refusal(
     Driven with an engine that answers `final` regardless, because that is what the real model
     did and what the shipped deterministic engine cannot do.
     """
-    import recall.truth_extraction._engine as engine_mod
-
     _enable(monkeypatch)
-    monkeypatch.setattr(engine_mod, "resolve_extraction_engine", lambda *a, **k: _FinalAlways())
+    # `cli.py` imports `resolve_extraction_engine` from the PACKAGE
+    # (`from recall.truth_extraction import resolve_extraction_engine`), which binds it into
+    # `recall.truth_extraction.__init__`'s namespace at import time. Patching
+    # `recall.truth_extraction._engine.resolve_extraction_engine` instead patches a name the CLI
+    # never reads, so it looked like coverage while doing nothing.
     monkeypatch.setattr(
         "recall.truth_extraction.resolve_extraction_engine", lambda *a, **k: _FinalAlways()
     )
@@ -520,14 +523,19 @@ def test_a_degenerate_vocabulary_exits_2_rather_than_refusing_every_status(
     assert expected in err
 
 
-def test_a_one_word_vocabulary_is_a_list_not_a_string(corpus, monkeypatch, capsys):
+def test_a_one_word_vocabulary_is_a_list_not_a_string(pep_corpus, monkeypatch, capsys):
     """`Sequence[str]` accepts `str`, so a bare word would render `['f','i','n','a','l']`.
 
-    The split is what prevents it: `"final".split(",")` is `["final"]`. Accepted, not refused.
+    The split is what prevents it: `"final".split(",")` is `["final"]`. Pinned on REACH, same
+    echo-immunity reasoning as `test_a_custom_vocabulary_admits_a_status_the_shipped_set_drops`:
+    asserting `"final" in out` is satisfied by the echoed "status vocabulary: final" line alone,
+    which prints whatever `--status-vocabulary` was handed whether or not the parsed value ever
+    reached extraction and matched anything. `pep_corpus`, not the plain `corpus` fixture,
+    because `corpus`'s memos have no status line for a one-word vocabulary to reach.
     """
     _enable(monkeypatch)
-    main(["extract", "run", str(corpus), "--status-vocabulary", "final"])
-    assert "final" in capsys.readouterr().out
+    main(["extract", "run", str(pep_corpus), "--status-vocabulary", "final"])
+    assert "pep-0345.md: status" in capsys.readouterr().out
 
 
 def test_the_vocabulary_is_refused_before_any_file_is_read(tmp_path, monkeypatch, capsys):
@@ -558,9 +566,8 @@ def test_show_takes_the_flag_too(pep_corpus, monkeypatch, capsys):
         ]
     )
     out = capsys.readouterr().out
-    # File-qualified: this is the test's only assertion, and the echoed
-    # "status vocabulary: Final, Rejected" line contains the bare word "status" by itself, so
-    # a substring check alone would pass even if the vocabulary never reached extraction.
+    # Same echo-immunity reasoning as
+    # test_a_custom_vocabulary_admits_a_status_the_shipped_set_drops, above.
     assert "pep-0376.md: status" in out
 
 

@@ -475,3 +475,40 @@ def test_the_outage_refusal_names_the_vocabulary_the_run_used() -> None:
         assert result.status_vocabulary == PEP_STATUSES, (
             f"{result.file} filed its refusal under {result.status_vocabulary}"
         )
+
+
+def test_the_write_path_calls_the_closed_door_and_not_the_open_one() -> None:
+    """The convention that makes the door split mean anything, pinned so it cannot go silent.
+
+    `test_the_write_path_stays_closed_to_a_custom_vocabulary` and
+    `test_the_report_entry_point_takes_a_vocabulary_and_the_writer_does_not` both assert on the
+    two functions' SIGNATURES: one takes no vocabulary, the other does. Neither notices which one
+    `recall/rewrite.py` actually calls. Re-point that call site at
+    `extract_corpus_claims_for_report` and pass it a vocabulary, and both signature assertions
+    stay green, `route_relation`'s own refusal is never exercised because nothing upstream would
+    be proposing an out-of-vocabulary status yet, and every test on this branch still passes. The
+    real guarantee that a custom vocabulary never reaches a user's frontmatter is
+    `route_relation` (`recall/rewrite.py:196`), refusing any status outside `STATUS_VOCABULARY`.
+    The door split is defence in depth on top of that guarantee, not a second copy of it, and
+    defence in depth that nobody checks is just a comment.
+
+    An AST walk, not `inspect.getsource` or a text search, for the reason
+    `test_nothing_on_this_path_builds_an_extraction_engine` (`tests/test_mcp_rewrite_plan.py:266`)
+    already is: a `Call` node only appears from an actual call, so a comment that happens to
+    mention the open door's name cannot forge one and a reformatted call cannot hide one.
+    """
+    import ast
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "recall" / "rewrite.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    called = {
+        getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    }
+    assert "extract_corpus_claims" in called, "the write path must call the closed door"
+    assert "extract_corpus_claims_for_report" not in called, (
+        "the write path calls the door that takes a vocabulary; the write path's door is "
+        "supposed to have no knob to turn"
+    )

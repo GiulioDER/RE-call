@@ -271,6 +271,10 @@ def test_nothing_on_this_path_builds_an_extraction_engine():
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
-                if name in {"resolve_extraction_engine", "extract_corpus_claims"}:
+                if name in {
+                    "resolve_extraction_engine",
+                    "extract_corpus_claims",
+                    "extract_corpus_claims_for_report",
+                }:
                     offending.append(f"{path.name}:{node.lineno} {name}()")
     assert not offending, f"recall_mcp reaches the extractor: {offending}"

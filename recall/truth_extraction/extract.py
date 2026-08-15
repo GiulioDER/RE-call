@@ -279,12 +279,12 @@ def extract_corpus_claims_for_report(
 ) -> tuple[FileExtraction, ...]:
     """The same extraction, for output a human READS rather than output a writer acts on.
 
-    `recall extract` and the labelling arms both land here. `status_vocabulary=None` is the
-    shipped memo set, so this is `extract_corpus_claims` plus one knob — but it is a SEPARATE
-    function rather than a keyword on that one, because the writer's door having no knob is the
-    property `test_the_write_path_stays_closed_to_a_custom_vocabulary` pins. Given the knob,
-    that test could only assert on this module's call sites, which is source inspection wearing
-    a different hat.
+    `recall extract` lands here. `status_vocabulary=None` is the shipped memo set, so this is
+    `extract_corpus_claims` plus one knob — but it is a SEPARATE function rather than a keyword
+    on that one, because the writer's door having no knob is the property
+    `test_the_write_path_stays_closed_to_a_custom_vocabulary` pins. Given the knob, that test
+    could only assert on this module's call sites, which is source inspection wearing a
+    different hat.
 
     The shipped set is memo-shaped (`active, draft, deprecated, superseded, withdrawn`). A corpus
     with its own words needs its own list: measured on `python/peps`, `Status: Final` produced

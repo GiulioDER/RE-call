@@ -737,8 +737,15 @@ def _run_extract(args: argparse.Namespace) -> None:
         print(f"\n{len(documents)} file(s) read, {total} claim(s) for review")
         if status_vocabulary is not None:
             # Named only when it is not the default: two runs whose outputs differ have nothing
-            # on screen saying why otherwise.
-            print(f"status vocabulary: {', '.join(status_vocabulary)}")
+            # on screen saying why otherwise. The parenthetical is why: this report is the ONLY
+            # place a custom vocabulary is honoured. `recall rewrite` extracts under the shipped
+            # set regardless, so a status claim printed above can vanish from `rewrite plan`
+            # with nothing else on screen to explain it, right after this command's own closing
+            # line says "review with `recall rewrite plan`".
+            print(
+                f"status vocabulary: {', '.join(status_vocabulary)} "
+                "(measurement only; recall rewrite still writes the shipped set)"
+            )
 
         if cache is not None and getattr(args, "recheck", False):
             from recall.truth_extraction._cache import recheck_cached_extractions

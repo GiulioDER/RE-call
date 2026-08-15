@@ -20,6 +20,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `recall rewrite plan|apply|reject|verify`, which declares reviewed claims in corpus
   frontmatter. `recall rewrite apply` is a dry run by default and requires `--reviewer` and
   `--note` as argparse requirements, so the named human gate fires before any code runs.
+  `recall extract run|show --status-vocabulary W,X,Y` lets a corpus that states status in its
+  own words, not the shipped memo set, be measured without every such claim being refused at a
+  batch rung. It does not widen what `recall rewrite` may write: the write path still extracts
+  under the shipped vocabulary and `route_relation` still refuses anything outside it.
 * Added the `recall_rewrite_plan` MCP tool, read only. There is deliberately no
   `recall_rewrite_apply`: the MCP client is the model, and a reviewer id it can type is a field
   rather than a person. `recall_reasoning_proposals` and `recall reasoning proposals` gain
