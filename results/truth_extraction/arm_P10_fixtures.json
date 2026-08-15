@@ -39,8 +39,8 @@
       "rejection_rungs": []
     }
   },
-  "p7_prediction": "4 of 4 refused",
-  "p7_holds": false,
+  "p10_prediction": "4 of 4 refused",
+  "p10_holds": false,
   "model_calls": 4,
   "cache_hits": 0,
   "batch_failures": {},

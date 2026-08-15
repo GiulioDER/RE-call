@@ -16,7 +16,9 @@ Pattern follows `benchmarks/artifact_contract.py`.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 
 _REQUIRED_PROVENANCE = ("peps_sha", "clone_date", "recall_commit", "generated_at", "invocation")
 
@@ -216,7 +218,7 @@ def validate_arm_result(payload: Mapping[str, object]) -> None:
 
 
 def validate_fixtures_result(payload: Mapping[str, object]) -> None:
-    """Raise `ValueError` unless `payload` is a self-consistent P7 result.
+    """Raise `ValueError` unless `payload` is a self-consistent P10 result.
 
     Separate from `validate_arm_result` because it is a different measurement: no adjudicated
     pack, no precision, no decision-rule tier. Sharing one validator would have meant loosening
@@ -251,28 +253,223 @@ def validate_fixtures_result(payload: Mapping[str, object]) -> None:
             f"refusal came from the language and which from a resolution rung"
         )
 
-    if payload.get("p7_holds") != (refused == total):
+    if payload.get("p10_holds") != (refused == total):
         raise ValueError(
-            f"p7_holds {payload.get('p7_holds')!r} disagrees with {refused} of {total} refused"
+            f"p10_holds {payload.get('p10_holds')!r} disagrees with {refused} of {total} refused"
         )
 
     failures = payload.get("batch_failures")
     if not isinstance(failures, Mapping):
         raise ValueError("fixtures result batch_failures must be an object")
-    # ANY failure, not all of them. P7 is the load-bearing public prediction and it has four
+    # ANY failure, not all of them. P10 is the load-bearing public prediction and it has four
     # data points: a fixture the model never read cannot refuse, so it reads as a refusal and
-    # inflates the score. `== total` let 3 of 4 failures publish `p7_holds: true`.
+    # inflates the score. `== total` let 3 of 4 failures publish `p10_holds: true`.
     if failures:
         raise ValueError(
             f"{len(failures)} of {total} fixtures failed at the batch rung: a fixture that was "
-            f"never read cannot refuse, so an apparatus failure reads here as a perfect P7 "
-            f"score. That is the one way this check can lie, and P7 decides shipping"
+            f"never read cannot refuse, so an apparatus failure reads here as a perfect P10 "
+            f"score. That is the one way this check can lie, and P10 decides shipping"
+        )
+
+
+#: The fields the pre-registration's `## Registration` block must carry. `registration_authored`
+#: is the author date of the commit named by `registration_commit`, in UTC, and it is what I5 is
+#: measured against. Author date rather than committer date because a rebase rewrites the second
+#: and preserves the first, and this branch is expected to be rebased before it lands.
+REGISTRATION_FIELDS = (
+    "registration_commit",
+    "registration_authored",
+    "gold_manifest_digest",
+    "gold_manifest_questions",
+)
+
+#: The `## Registration` section, bounded at the next heading of the same level. Bounded rather
+#: than `.*?`-to-the-first-fence: unbounded, a section that had LOST its yaml block would reach
+#: forward and silently adopt a fence from some later section as the registration.
+_REGISTRATION_SECTION = re.compile(
+    r"^##\s+Registration\s*$(?P<section>(?:(?!^##\s).)*)", re.MULTILINE | re.DOTALL
+)
+
+#: A fenced yaml block inside that section. Counted separately from the heading, because two
+#: blocks under ONE heading is the shape an amended registration takes, and a single
+#: heading-anchored match reports that as "found 1" and silently returns the stale first block.
+_YAML_FENCE = re.compile(r"^```yaml\s*$(?P<body>.*?)^```\s*$", re.MULTILINE | re.DOTALL)
+
+#: A fenced code block, stripped before prediction rows are scanned. The pre-registration already
+#: carries fences (the provenance commands), and an illustrative table row inside one would
+#: otherwise register as a duplicate prediction and take every caller down.
+#:
+#: The opening run is captured and the close must repeat it, because a fixed ``` would MIS-PAIR
+#: on the standard markdown for showing a fenced block: a ```` outer fence containing a ```
+#: inner one. Mis-paired, the match runs from the stray delimiter to the next fence anywhere in
+#: the document and deletes every real prediction row between them. Tildes for the same reason.
+_ANY_FENCE = re.compile(
+    r"^(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^(?P=fence)`*~*\s*$", re.MULTILINE | re.DOTALL
+)
+
+#: A prediction row in the pre-registration: `| P7 | targets naming a file ... | 0 | exactly 0 |`.
+#: Anchored on the id sitting alone in the first cell, so the reasoning prose that mentions "P7"
+#: in passing is not mistaken for a registration of it.
+_PREDICTION_ROW = re.compile(r"^\|\s*\**(?P<id>[PO]\d+)\**\s*\|(?P<rest>.*)$", re.MULTILINE)
+
+#: Per-field shape. Checked at parse time so a malformed registration is blamed on the
+#: registration: unchecked, a quoted timestamp surfaces as "unparseable timestamp for
+#: <artifact>", naming the artifact for a defect in this block, and a quoted digest surfaces as
+#: "the gold manifest digest has moved", which is the worst possible false alarm for a check
+#: whose entire job is to notice that the labels were regenerated.
+_REGISTRATION_SHAPES = {
+    "registration_commit": re.compile(r"^[0-9a-f]{40}$"),
+    "registration_authored": re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2}|Z)$"),
+    "gold_manifest_digest": re.compile(r"^[0-9a-f]{64}$"),
+    "gold_manifest_questions": re.compile(r"^\d+$"),
+}
+
+
+def read_registration(text: str) -> dict[str, str]:
+    """Parse the pre-registration's `## Registration` block, or raise `ValueError`.
+
+    Deliberately not YAML-parsed. The block is four flat scalars, and adding a parser dependency
+    to a validator that runs at every write site would buy nothing but a way for the block to
+    grow structure nobody checks. The cost of that choice is that YAML spellings this does not
+    implement (quoted scalars, trailing comments) must be REFUSED rather than half-read, which is
+    what `_REGISTRATION_SHAPES` does.
+    """
+    sections = [m.group("section") for m in _REGISTRATION_SECTION.finditer(text)]
+    if len(sections) != 1:
+        raise ValueError(
+            f"expected exactly one `## Registration` section, found {len(sections)}: I5 has no "
+            f"anchor otherwise, and two means a reader cannot tell which one is registered"
+        )
+    bodies = [m.group("body") for m in _YAML_FENCE.finditer(sections[0])]
+    if len(bodies) != 1:
+        raise ValueError(
+            f"expected exactly one yaml block under `## Registration`, found {len(bodies)}: an "
+            f"amended registration must REPLACE the block, not sit beside the one it supersedes"
+        )
+
+    out: dict[str, str] = {}
+    for line in bodies[0].splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, value = line.partition(":")
+        if not sep:
+            raise ValueError(f"registration line is not `key: value`: {line!r}")
+        key = key.strip()
+        if key in out:
+            raise ValueError(f"registration key {key!r} appears twice; which one is registered?")
+        out[key] = value.strip()
+
+    missing = [f for f in REGISTRATION_FIELDS if not out.get(f)]
+    if missing:
+        raise ValueError(f"registration block is missing {missing}")
+    for field, shape in _REGISTRATION_SHAPES.items():
+        if not shape.fullmatch(out[field]):
+            raise ValueError(
+                f"registration field {field}={out[field]!r} does not match {shape.pattern}. "
+                f"Quoted scalars and trailing comments are refused rather than half-read, "
+                f"because a half-read value fails later and blames the artifact"
+            )
+    return out
+
+
+def read_prediction_ids(text: str) -> dict[str, str]:
+    """Map every registered prediction id to the rest of its row, lowercased.
+
+    The row text is what makes an id checkable. An artifact publishing `p10_holds` is only
+    correct if the pre-registration's P10 is the fixtures prediction, and the row is the only
+    place that says so.
+    """
+    ids: dict[str, str] = {}
+    for match in _PREDICTION_ROW.finditer(_ANY_FENCE.sub("", text)):
+        key = match.group("id")
+        if key in ids:
+            raise ValueError(f"{key} is registered twice; an id must name one prediction")
+        ids[key] = match.group("rest").strip().lower()
+    if not ids:
+        raise ValueError("no prediction rows found; the pre-registration tables did not parse")
+    return ids
+
+
+def validate_gold_manifest_frozen(
+    registration: Mapping[str, str], header: Mapping[str, object]
+) -> None:
+    """I5's other half: raise unless the gold labels are still the ones that were registered.
+
+    The invariant is "labels frozen before arms", and an ordering check alone does not cover it.
+    An arm generated after the pre-registration, against a gold set REGENERATED after it too,
+    satisfies every timestamp and measures against labels the prediction never saw. The digest is
+    what closes that, it is content rather than history, and so it survives the squash that makes
+    the registration commit unreachable.
+    """
+    for field, key in (("gold_manifest_digest", "digest"), ("gold_manifest_questions", "n_questions")):
+        registered = registration.get(field)
+        if not registered:
+            raise ValueError(f"I5 needs `{field}`; the mapping handed in is not a registration")
+        actual = header.get(key)
+        if str(actual) != str(registered):
+            raise ValueError(
+                f"I5 FAILED: the gold manifest's {key} is {actual!r}, but the pre-registration "
+                f"froze {registered!r}. The labels have moved since the prediction was made, so "
+                f"any precision measured against them is measured against a different instrument"
+            )
+
+
+def validate_registration_ordering(
+    registration: Mapping[str, str], payload: Mapping[str, object], *, artifact: str
+) -> None:
+    """I5: raise unless `payload` was generated strictly after the pre-registration was authored.
+
+    ⚠️ Scoped to ARM artifacts on purpose. `census.json` predates the pre-registration by three
+    days and must: the census is the input the predictions were written against, and the commit
+    subject says so. Holding it to this ordering would invert the experiment.
+
+    Strictly after, not at-or-after. Equal timestamps mean the two were written in one action,
+    which is the shape a backdated pre-registration takes.
+    """
+    provenance = payload.get("_provenance")
+    if not isinstance(provenance, Mapping):
+        raise ValueError(f"{artifact}: I5 needs a _provenance block to read `generated_at` from")
+    raw = provenance.get("generated_at")
+    if not isinstance(raw, str) or not raw:
+        raise ValueError(f"{artifact}: I5 needs a `generated_at`, found {raw!r}")
+    # `.get`, not `[...]`. This function is exported and is called from the runner's write site,
+    # where an unhandled KeyError would crash the run instead of taking the refusal path.
+    registered = registration.get("registration_authored")
+    if not registered:
+        raise ValueError(
+            "I5 needs `registration_authored`; the mapping handed in is not a registration block"
+        )
+    try:
+        generated = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(f"{artifact}: unparseable `generated_at` {raw!r}: {exc}") from exc
+    try:
+        authored = datetime.fromisoformat(registered)
+    except ValueError as exc:
+        # Named apart from the artifact's own timestamp on purpose: this one is a defect in the
+        # pre-registration, and reporting it against the artifact sends the reader to the wrong file.
+        raise ValueError(f"unparseable `registration_authored` {registered!r}: {exc}") from exc
+    if generated.tzinfo is None or authored.tzinfo is None:
+        raise ValueError(
+            f"{artifact}: I5 timestamps must carry an offset; a naive one compares two clocks"
+        )
+    if generated <= authored:
+        raise ValueError(
+            f"I5 FAILED for {artifact}: generated {generated.isoformat()} at or before the "
+            f"pre-registration was authored ({authored.isoformat()}). Either the result predates "
+            f"its own prediction, or the pre-registration was written after the result existed"
         )
 
 
 __all__ = [
     "ARM_VERDICTS",
+    "REGISTRATION_FIELDS",
+    "read_prediction_ids",
+    "read_registration",
     "validate_arm_result",
     "validate_census",
     "validate_fixtures_result",
+    "validate_gold_manifest_frozen",
+    "validate_registration_ordering",
 ]

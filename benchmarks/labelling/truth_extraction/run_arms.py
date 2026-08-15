@@ -39,8 +39,11 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.labelling.truth_extraction.artifact_contract import (
+    read_registration,
     validate_arm_result,
     validate_fixtures_result,
+    validate_gold_manifest_frozen,
+    validate_registration_ordering,
 )
 from benchmarks.labelling.truth_extraction.peps_header import paragraphs
 from recall.eval.metrics import wilson_ci
@@ -58,6 +61,10 @@ PACK = Path(__file__).resolve().parent
 CSV_PATH = PACK / "adjudication.csv"
 KEY_PATH = PACK / "adjudication_key.json"
 FIXTURES = PACK / "fixtures"
+GOLD_MANIFEST = PACK / "gold.manifest.jsonl"
+#: I5 is registered as "checked by the runner", and the invariant table's own next row names "a
+#: validator that runs only in tests" as the vacuous shape to avoid. So the write site reads it.
+PREREG = PACK.parents[2] / "results" / "truth_extraction" / "PREREGISTRATION-prose-extraction.md"
 
 #: PEP cross-reference forms, the one thing R1 is allowed to gain. Frozen in the
 #: pre-registration so the extension cannot be widened after seeing a score.
@@ -357,7 +364,7 @@ def preregistered_verdict(report: dict[str, Any], sibling_proposals: int | None 
     this function can never return `HIGH CONFIDENCE`, and that is the rule working: a result too
     good to believe must be disbelieved before it is tiered, not tiered and then questioned.
 
-    The P7 clause — any transplanted fixture proposed fails the public bridge regardless of every
+    The P10 clause — any transplanted fixture proposed fails the public bridge regardless of every
     other number — is NOT applied here. It is measured by the `fixtures` arm against a different
     corpus, and folding a verdict this function cannot see into its output would be asserting a
     result it never read.
@@ -428,17 +435,24 @@ def _record_identity(result: ArmResult, extraction: Any) -> None:
 def fixtures_arm(
     engine: Any, cache: Any = None, fixtures: Path = FIXTURES
 ) -> tuple[ArmResult, dict[str, Any]]:
-    """P7, the load-bearing public prediction: M1 must refuse all four transplanted failures.
+    """P10, the load-bearing public prediction: M1 must refuse all four transplanted failures.
 
     These are the four survivors of `recall/fix.py`'s mechanical rules on the private 792-memo
     corpus, every one wrong on review: reported speech, two partial scope, one hedged. They are
     the public bridge to a private result, because anyone can run them.
 
     ⚠️ A refusal only counts if it is SEMANTIC. Dropping a claim because its target is not in the
-    corpus would be the target-resolution rung doing the work, and P7 would be measuring the
+    corpus would be the target-resolution rung doing the work, and P10 would be measuring the
     corpus list rather than the model's reading. So the corpus is built from the fixtures' own
     wikilinks: every target they name IS resolvable, and a refusal has to come from the language.
     The rung that refused each claim is recorded so a reader can check that.
+
+    ⚠️ **This is P10, not P7**, and it was published as P7 until the identifiers were checked
+    against the pre-registration rather than against the previous line of code. The
+    pre-registration's P7 is a different prediction on a different instrument: "targets naming a
+    file outside the corpus, M1, exactly 0", measured on the 38 adjudicated rows. Nothing here
+    scores it. `test_prereg_authority.py` now refuses an artifact whose prediction id does not
+    resolve to the matching pre-registration row, so the two cannot drift again.
     """
     from recall.truth_extraction.extract import extract_file_claims
 
@@ -482,10 +496,10 @@ def fixtures_arm(
         "proposed_items": result.proposed,
         "corpus_names": names,
         "per_fixture": detail,
-        # P7 predicts exactly 4 of 4. Stated as the prediction it is, so a reader does not have
+        # P10 predicts exactly 4 of 4. Stated as the prediction it is, so a reader does not have
         # to hold the pre-registration open beside the artifact.
-        "p7_prediction": "4 of 4 refused",
-        "p7_holds": len(result.refused) == len(paths),
+        "p10_prediction": "4 of 4 refused",
+        "p10_holds": len(result.refused) == len(paths),
     }
 
 
@@ -654,6 +668,12 @@ def main() -> None:
     corpus = {p.stem for p in args.peps_dir.glob("pep-*.rst")}
     if not corpus:
         raise SystemExit(f"no pep-*.rst under {args.peps_dir}")
+    # I5's startup-knowable half, for the same reason and in the same place. Everything about the
+    # pre-registration except the comparison against `generated_at` can be checked before the
+    # first engine call: the file existing, its block parsing, its fields being well formed, the
+    # gold labels still matching their frozen digest. Discovering any of those inside `_emit`
+    # would discard a paid model run over a markdown edit.
+    _read_registration_or_exit()
     provenance = build_provenance(
         args.peps_dir, invocation, ArmResult(arm="pre-flight"),
         corpus_files=None if args.arm == "fixtures" else len(corpus),
@@ -700,6 +720,36 @@ def main() -> None:
     _emit(report, args.out)
 
 
+def registration_block() -> dict[str, str]:
+    """The pre-registration's registration block, with the gold labels confirmed still frozen.
+
+    Everything here is knowable without running an arm, which is why `main` calls it during
+    pre-flight as well: a markdown edit that breaks the block should not be discovered after
+    paying for thirty model calls. `_emit` calls it again rather than taking it as a parameter,
+    because a parameter would have a value that means "skip I5", and this module's write site
+    already argues at length against exactly that shape.
+    """
+    if not PREREG.is_file():
+        raise ValueError(
+            f"I5 cannot be established: no pre-registration at {PREREG}. A result whose "
+            f"prediction is not on disk is not publishable, so this refuses rather than skipping"
+        )
+    registration = read_registration(PREREG.read_text(encoding="utf-8"))
+    lines = GOLD_MANIFEST.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        raise ValueError(f"I5 cannot be established: {GOLD_MANIFEST} is empty")
+    validate_gold_manifest_frozen(registration, json.loads(lines[0]))
+    return registration
+
+
+def _read_registration_or_exit() -> dict[str, str]:
+    """Pre-flight. `SystemExit` rather than a traceback, matching the other startup refusals."""
+    try:
+        return registration_block()
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"pre-flight: {exc}") from exc
+
+
 def _emit(
     report: dict[str, Any],
     out: Path | None,
@@ -711,8 +761,20 @@ def _emit(
     The validator is a parameter with a default rather than a flag, because a flag would have a
     value that turns validation OFF, and the one artifact that needed a different check is
     exactly the one that would have been written with it off.
+
+    I5 is applied here, unconditionally and with no parameter to disable it, for the same reason.
+    Every payload reaching `_emit` is an ARM result: the census is written by `census.py` and
+    never passes through here, which is what keeps the input the predictions were written
+    against out of an ordering only their outputs must satisfy. A missing pre-registration is a
+    refusal rather than a skip, because "the anchor was absent so I5 passed" is the vacuous
+    reading of an invariant whose whole subject is a document existing beforehand.
     """
     validator(report)
+    validate_registration_ordering(
+        registration_block(),
+        report,
+        artifact=str(out) if out else report.get("arm", "<unnamed arm>"),
+    )
     print(json.dumps(report, indent=2))
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)

@@ -4,6 +4,23 @@ Written 2026-08-14, **before either arm has been run and before `adjudication.cs
 Branch `claude/truth-extraction-prereg` off `0a5da42`. Committed ahead of every result so the
 prediction cannot be revised to fit it.
 
+## Registration
+
+```yaml
+registration_commit: 938caad28409b1543b1670be75e9040d808f736c
+registration_authored: 2026-08-14T19:30:04+00:00
+gold_manifest_digest: 9e53dc7b20ee18cd1386eb25d2053bdaa4f026d42a621c8b581c25b113bad297
+gold_manifest_questions: 51
+```
+
+I5 is asserted against this block by `tests/test_prereg_authority.py`, which refuses any arm
+artifact generated at or before `registration_authored` and any gold manifest whose digest has
+moved. The commit is the anchor a reader can check without trusting this file: it was pushed to
+`origin/claude/truth-extraction-prereg` on the public repository before any arm ran, so
+`git show 938caad` dates it independently of whatever the working tree now says. That external
+check matters because the branch is expected to reach `master` as a squash, after which
+`938caad` is no longer reachable from `master` and only the pushed branch carries the date.
+
 **Prior work** (searched before writing, per `benchmarks/EXPERIMENT-CONVENTION.md`):
 
 - 🔑 `recall/fix.py:1-31`. The decisive prior and the reason this experiment exists. Rule based

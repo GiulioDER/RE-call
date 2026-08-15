@@ -23,7 +23,7 @@ Properties, one test each:
   14. A well-formed payload is not refused.
   15. The write site calls the validator, and a refused payload never lands on disk.
   16. The decision rule maps each region to the tier the pre-registration fixed.
-  17. The fixtures (P7) result has its own validator, and it refuses the one shape that would let
+  17. The fixtures (P10) result has its own validator, and it refuses the one shape that would let
       an apparatus failure read as a perfect score.
   18. An extractor identity that changes mid-run is refused rather than recorded as one identity.
 """
@@ -39,6 +39,7 @@ from benchmarks.labelling.truth_extraction.artifact_contract import (
     validate_arm_result,
     validate_fixtures_result,
 )
+from benchmarks.labelling.truth_extraction import run_arms
 from benchmarks.labelling.truth_extraction.run_arms import (
     ArmResult,
     _emit,
@@ -114,8 +115,8 @@ def _fixtures_ok() -> dict:
             "partial_scope_scope": {"proposed": [], "rejection_rungs": []},
             "reported_speech": {"proposed": [], "rejection_rungs": []},
         },
-        "p7_prediction": "4 of 4 refused",
-        "p7_holds": True,
+        "p10_prediction": "4 of 4 refused",
+        "p10_holds": True,
         "model_calls": 4,
         "cache_hits": 0,
         "batch_failures": {},
@@ -308,8 +309,19 @@ def test_a_well_formed_arm_result_is_accepted():
     validate_arm_result(_ok())  # must not raise
 
 
-def test_the_write_site_validates_before_it_writes(tmp_path: Path):
-    """And a refused payload must not be on disk afterwards, which is why validation is first."""
+def test_the_write_site_validates_before_it_writes(tmp_path: Path, monkeypatch):
+    """And a refused payload must not be on disk afterwards, which is why validation is first.
+
+    `_emit` also enforces I5 against the real pre-registration, which would silently couple this
+    module's hardcoded `generated_at` to a date in `results/`: amending `registration_authored`
+    to any instant after 2026-08-15T10:00:00Z would turn a test about validator ORDERING red
+    with an I5 message naming a pytest temp path, and nothing here would point a reader at the
+    cause. So the registration is stubbed to a fixed instant this module owns. The real wiring is
+    covered where it belongs, in `tests/test_prereg_authority.py`.
+    """
+    monkeypatch.setattr(
+        run_arms, "registration_block", lambda: {"registration_authored": "2020-01-01T00:00:00+00:00"}
+    )
     payload = _ok()
     payload["verdict"] = "looks good"
     out = tmp_path / "arm.json"
@@ -615,11 +627,11 @@ def test_a_corpus_with_uncommitted_changes_is_refused(monkeypatch, tmp_path):
         arms.build_provenance(tmp_path, "inv", ArmResult(arm="t"), corpus_files=733)
 
 
-def test_any_fixture_failing_refuses_the_p7_result():
-    """P7 has four data points and decides shipping.
+def test_any_fixture_failing_refuses_the_p10_result():
+    """P10 has four data points and decides shipping.
 
     A fixture the model never read cannot refuse, so it reads as a refusal and inflates the
-    score. `== total` let 3 of 4 failures publish `p7_holds: true`.
+    score. `== total` let 3 of 4 failures publish `p10_holds: true`.
     """
     payload = _fixtures_ok()
     payload["batch_failures"] = {"hedged": "reply was not JSON"}
@@ -649,16 +661,16 @@ def test_the_fixtures_counts_must_add_up():
         validate_fixtures_result(payload)
 
 
-def test_p7_holds_must_agree_with_the_counts():
+def test_p10_holds_must_agree_with_the_counts():
     payload = _fixtures_ok()
     payload["refused"], payload["proposed"] = 3, 1
-    payload["p7_holds"] = True
-    with pytest.raises(ValueError, match="p7_holds"):
+    payload["p10_holds"] = True
+    with pytest.raises(ValueError, match="p10_holds"):
         validate_fixtures_result(payload)
 
 
 def test_a_fixtures_run_where_every_call_failed_is_refused():
-    """The one way a refusal check can lie: nothing ran, so nothing proposed, so P7 "held"."""
+    """The one way a refusal check can lie: nothing ran, so nothing proposed, so P10 "held"."""
     payload = _fixtures_ok()
     payload["batch_failures"] = {name: "reply was not JSON" for name in payload["per_fixture"]}
     with pytest.raises(ValueError, match="apparatus failure"):

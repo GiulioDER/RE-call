@@ -44,11 +44,11 @@ when it meant "the older one".
 | `recall/eval/peps_trust_queries.json` | 62 trust queries (42 successor / 20 abstain), one row per superseded PEP rather than one row per edge, replacing a shipped successor arm of n=4 |
 | `results/truth_extraction/arm_R1_rules.json` | the rules arm: 9 proposals, 8 decided, precision **0.375**, Wilson [0.137, 0.694] |
 | `results/truth_extraction/arm_M1_model.json` | the model arm under `truth-extraction-prompt-v2`: 2 proposals, both wrong, precision **0.00**, Wilson [0.000, 0.658] |
-| `results/truth_extraction/arm_P7_fixtures.json` | the public bridge: **2 of 4 transplanted fixtures PROPOSED**, so P7 fails |
+| `results/truth_extraction/arm_P10_fixtures.json` | the public bridge: **2 of 4 transplanted fixtures PROPOSED**, so P10 fails |
 
 **Read the three together, because no one of them is the result.**
 
-**P7 decides it, and P7 failed.** The pre-registered rule's top row reads "any transplanted
+**P10 decides it, and P10 failed.** The pre-registered rule's top row reads "any transplanted
 fixture proposed → fails the public bridge → reviewing aid at most, whatever else holds". The
 model proposed an edge on both partial-scope fixtures — `Supersedes the *inferred* "maker" claim
 in [[curate_wallets_2026-07-14]]` and `Supersedes the scope in
