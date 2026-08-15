@@ -243,3 +243,85 @@ evidence available that the anchors measure the intended thing:
 evidence under `SYSTEM_PROMPT` and a cheap model; the submitted answers came from a different
 prompt, a different model and a different retrieval. The A-row figure of 0.542 is a prior, not a
 measurement of the C arm, and S1 stays as registered.
+
+---
+
+## Result (2026-08-15)
+
+**Status: measured.** 22 calls, `openai/gpt-4o-mini`, temperature 0, both arms over the frozen
+evidence `70715fcd…` and the frozen anchors `dcba3d73…`. No judge. **No prediction above is
+edited.**
+
+### The verdict: the probe cannot tell, and it says so for a reason it also measured
+
+🔑 **Two of seven UNANNOTATED rows returned different answers between the arms.** On those rows the
+annotator did not fire, so both arms sent a byte-identical prompt to the same model at temperature
+0. **Temperature 0 is not determinism.** One of those rows, `qst_0320`, moved 0.33 to 0.00, which
+is a larger swing than the entire measured effect.
+
+So the measured S2 delta of **+0.042** sits inside a noise floor this run demonstrated at ±0.33 on
+a single row. Re-running the same arm twice would produce a different delta. This is the
+uninformative outcome the pre-registration declared live rather than hypothetical, and it is worse
+than anticipated: the obstacle is not only n=4, it is that the instrument is not repeatable.
+
+### Score
+
+| # | registered | measured | verdict |
+|---|---|---|---|
+| S1 | C hit rate, A rows: 0.45, [0.20, 0.70] | **0.875** | **FALSIFIED**, far above |
+| S2 | Δ A rows: +0.15, [0.00, +0.35] | **+0.042** | inside the interval, but see the ceiling below |
+| S3 | Δ B rows: 0.00, [−0.05, +0.05] | **−0.050** over 6; **−0.056** over the 5 unannotated | at/over the boundary, and caused by nondeterminism |
+| S4 | A pairs annotated: exactly 3 of 4 | **3 of 4** | **CORRECT**, and the miss is `qst_0419`, named in advance |
+| S5 | B rows annotated: exactly 0 of 6 | **1 of 6** | **FALSIFIED**, and the premise was mine |
+| S6 | length ratio S÷C: 1.15, [1.0, 1.4] | **0.907** | **FALSIFIED**, answers got SHORTER |
+| B3 | validation failures: 0% to 5% | **0 of 22** | correct |
+| O1 | only annotated rows move | only `qst_0420` moved, and it fired | **HELD** |
+| O2 | S loses no anchor C found | none lost on any A row | **HELD** |
+
+### What was wrong, and why, taken one at a time
+
+**S1 is the most informative failure.** I predicted the control would score 0.45 because these rows
+were judged wrong. It scored **0.875**, against the SUBMITTED answers' 0.542 on the same anchors.
+The library path over frozen evidence is far better on anchored facts than the harness that
+produced the judged-wrong answers. ⚠️ **That undercuts the probe's premise**: if the control already
+carries 87.5% of the anchored facts, then whatever made these rows wrong is mostly NOT a missing
+anchored fact, and an instrument built from those anchors cannot see the thing that is broken.
+
+**S2's interval was impossible.** With C at 0.875 the maximum achievable delta is +0.125, so the
+registered interval's upper half could never have been reached. A prediction should not be able to
+be unreachable by construction; the fix is to predict against the HEADROOM, not the raw rate.
+
+**S5's premise was mine, not the detector's.** I wrote that the B rows "contain one document each
+and have no sibling to supersede". That is their GOLD count. Every retrieved bundle holds about
+eight documents, so the annotator can fire on any of them, and on `qst_0310` it did. Apparatus
+check A5, which tests a genuinely single-document bundle, passes. The detector obeyed its rule; the
+prediction rested on a confusion between gold-document count and bundle-document count.
+
+**S6 went the wrong way**, as O1 in the parity pre-registration also predicted wrongly for a
+different arm. Twice now I have predicted that removing length guidance lengthens answers, and
+twice the answers got shorter.
+
+### The one encouraging signal, stated with its width
+
+**O1 held.** The only row whose score moved is `qst_0420`, and it is a row where the annotator
+fired, and it moved **+0.20** in the predicted direction. It is also the row whose successor
+document says, in prose, *"This is a working doc intended to supersede the older Confluence page"*.
+The other two annotated rows were already at 1.00 and had no room to move.
+
+⚠️ **One row is not evidence of an effect.** A single unannotated row moved −0.33 on an identical
+prompt in this same run. O1 holding is consistent with the mechanism working and equally consistent
+with one lucky draw.
+
+### What I would change before spending anything further
+
+1. **Repeat each arm n times and measure the nondeterminism directly**, rather than assuming
+   temperature 0 gives repeatability. That is now a known property of this apparatus and it should
+   be a pre-registered quantity, not a discovery.
+2. **Predict against headroom**, never against a raw rate that may already sit near 1.0.
+3. **Pick rows where the control actually fails the anchors.** S1 says the four A rows are mostly
+   already anchored-correct under this substrate, which makes them the wrong rows for this
+   instrument.
+4. ⚠️ **Reconsider the target entirely.** `ANALYSIS-where-reasoning-could-help.md`, written after
+   this was registered, segments all 500 rows and finds this cell is worth **3.2 aggregate points**
+   while retrieval-side reasoning is worth **21.6**. This probe was scoped before that analysis
+   existed, it has now run, and its result does not argue for extending it.
