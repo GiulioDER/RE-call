@@ -6,14 +6,15 @@ of the result so the prediction cannot be revised to fit it, per `docs/RESEARCH_
 ## Registration
 
 ```yaml
-registration_commit: PENDING
-registration_authored: PENDING
+registration_commit: d31d538b0d770769ba0d30b051afe029989b9abb
+registration_authored: 2026-08-15T18:00:26+00:00
 baseline_artifact: benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.judge_gpt54_medium.no_correction.summary.json
 baseline_judge: gpt-5.4 medium reasoning, no correction, no citation stripping
 ```
 
-⚠️ The two `PENDING` fields are filled by the commit that lands this file, in the same commit, and
-the runner refuses an artifact generated at or before `registration_authored`. This is the same
+`registration_commit` is the commit that INTRODUCED this file, filled in by the commit
+immediately after it, which is the only order in which a file can name its own commit. Any arm
+artifact generated at or before `registration_authored` predates its own prediction. This is the same
 mechanism `results/truth_extraction/PREREGISTRATION-prose-extraction.md` uses, for the same reason:
 until it existed, "the prediction came first" was a sentence rather than an assertion.
 
