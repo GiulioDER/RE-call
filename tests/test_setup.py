@@ -9,6 +9,7 @@ from recall.setup import (
     MANUAL_MODEL,
     OPENAI_BASE_URL,
     OPENROUTER_BASE_URL,
+    _prompt_twice,
     embedder_choices,
     probe_reasoning_model,
     reasoning_model_choices,
@@ -60,6 +61,7 @@ def test_setup_wizard_writes_env_and_accepts_api_keys(tmp_path, monkeypatch):
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
+        "n",  # reasoning arm declined
         "n",  # scaffold CLAUDE.md / memory/? declined
         "n",
     ])
@@ -113,6 +115,7 @@ def test_setup_wizard_skips_blank_calibration_inputs(tmp_path, monkeypatch):
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
+        "n",  # reasoning arm declined
         "n",  # scaffold CLAUDE.md / memory/? declined
         "y",
         "",
@@ -175,6 +178,7 @@ def test_setup_wizard_treats_calibration_directory_as_output_folder(tmp_path, mo
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
+        "n",  # reasoning arm declined
         "n",  # scaffold CLAUDE.md / memory/? declined
         "y",
         str(tmp_path / "queries.json"),
@@ -236,6 +240,7 @@ def test_setup_wizard_can_enable_entailment_judge(tmp_path, monkeypatch):
         "1",  # sparse backend menu
         "y",
         "1",
+        "n",  # reasoning arm declined
         "n",  # scaffold CLAUDE.md / memory/? declined
         "n",
     ])
@@ -518,6 +523,7 @@ def test_setup_wizard_scaffolds_claude_md_and_memory_and_indexes(tmp_path, monke
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
+        "n",  # reasoning arm declined
         "y",  # scaffold CLAUDE.md / memory/? accepted
         "n",
     ])
@@ -573,6 +579,7 @@ def test_setup_wizard_survives_scaffold_failure_and_still_writes_env(tmp_path, m
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
+        "n",  # reasoning arm declined
         "y",  # scaffold CLAUDE.md / memory/? accepted, but scaffold_claude_md raises
         "n",
     ])
@@ -630,6 +637,7 @@ def test_setup_wizard_skips_scaffold_when_declined(tmp_path, monkeypatch):
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
+        "n",  # reasoning arm declined
         "n",  # scaffold CLAUDE.md / memory/? declined
         "n",
     ])
@@ -684,6 +692,7 @@ def test_setup_wizard_scaffold_prompt_defaults_to_yes_on_blank_answer(tmp_path, 
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
+        "n",  # reasoning arm declined
         "",  # scaffold CLAUDE.md / memory/? blank answer takes the default (yes)
         "n",
     ])
@@ -741,6 +750,7 @@ def test_setup_wizard_still_scaffolds_when_calibration_output_path_is_invalid(
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
+        "n",  # reasoning arm declined
         "y",  # scaffold CLAUDE.md / memory/? accepted
         "y",  # calibrate now? accepted
         str(tmp_path / "queries.json"),
@@ -800,6 +810,7 @@ def test_a_real_choice_is_still_offered_as_a_menu(tmp_path, monkeypatch):
         "1",  # reranker menu, genuinely offered
         "2",  # sparse menu, genuinely offered: splade
         "n",  # entailment
+        "n",  # reasoning arm declined
         "n",  # scaffold
         "n",  # calibrate
     ])
@@ -841,6 +852,7 @@ def test_a_sole_embedder_says_what_it_costs_rather_than_offering_a_menu(tmp_path
         "", "", "",  # the three API keys, all blank, so no cloud embedder appears
         "1",  # reranker menu, still offered because unavailable options are listed
         "1",  # sparse backend menu, same
+        "n",  # reasoning arm declined
         "n",  # scaffold
         "n",  # calibrate
     ])
@@ -882,7 +894,7 @@ def test_options_this_machine_cannot_run_are_still_listed_and_marked(tmp_path, m
     """
     monkeypatch.setattr("recall.setup.probe_hardware", _no_extras_probe)
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
-    answers = iter(["n", "", "", "", "1", "1", "1", "n", "n"])
+    answers = iter(["n", "", "", "", "1", "1", "1", "n", "n", "n"])
     output = io.StringIO()
 
     run_setup_wizard(
@@ -910,7 +922,7 @@ def test_picking_an_unavailable_reranker_explains_and_keeps_the_baseline(
     """
     monkeypatch.setattr("recall.setup.probe_hardware", _no_extras_probe)
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
-    answers = iter(["n", "", "", "", "1", "2", "1", "n", "n"])  # reranker 2 is not installed
+    answers = iter(["n", "", "", "", "1", "2", "1", "n", "n", "n"])  # reranker 2 is not installed
     output = io.StringIO()
 
     run_setup_wizard(
@@ -931,7 +943,7 @@ def test_picking_unavailable_splade_explains_and_keeps_postgres_fts(tmp_path, mo
     """Same rule on the sparse menu, where the baseline is `postgres fts` rather than `none`."""
     monkeypatch.setattr("recall.setup.probe_hardware", _no_extras_probe)
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
-    answers = iter(["n", "", "", "", "1", "1", "2", "n", "n"])  # sparse 2 is not installed
+    answers = iter(["n", "", "", "", "1", "1", "2", "n", "n", "n"])  # sparse 2 is not installed
     output = io.StringIO()
 
     run_setup_wizard(
@@ -1066,6 +1078,7 @@ def test_setup_auto_prepares_an_empty_mismatched_table(tmp_path, monkeypatch):
         "4",  # fastembed large, 1024 wide
         "1",  # reranker
         "1",  # sparse
+        "n",  # reasoning arm declined
         "n",  # scaffold
         "n",  # calibrate
     ])
@@ -1109,7 +1122,7 @@ def test_setup_requires_a_migration_dsn_to_fix_a_dimension_mismatch(tmp_path, mo
         "recall.schema.apply_migrations",
         lambda dsn, *, table, dim: applied.append((dsn, table, dim)) or (),
     )
-    answers = iter(["n", "", "", "", "4", "1", "1", "n", "n"])
+    answers = iter(["n", "", "", "", "4", "1", "1", "n", "n", "n"])
 
     run_setup_wizard(
         dsn="postgresql://example/recall",
@@ -1132,7 +1145,7 @@ def test_the_width_check_asks_about_the_table_the_caller_uses(tmp_path, monkeypa
     monkeypatch.setattr("recall.setup.probe_hardware", lambda: _roomy_probe(10 * 1024**3))
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
     monkeypatch.setattr("recall.setup._schema_prepare_state", spy)
-    answers = iter(["n", "", "", "", "2", "1", "1", "n", "n"])
+    answers = iter(["n", "", "", "", "2", "1", "1", "n", "n", "n"])
 
     run_setup_wizard(
         dsn="postgresql://example/recall",
@@ -1363,3 +1376,155 @@ def test_the_probe_declines_without_the_openai_package(monkeypatch):
     result = probe_reasoning_model(base_url="x", api_key="k", model="m")
     assert result is not None
     assert "openai" in result
+
+
+def _run_wizard(tmp_path, monkeypatch, answers, probe=None):
+    probe = probe or HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=100 * 1024**3,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=False,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    it = iter(answers)
+    output = io.StringIO()
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _p="": next(it),
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+    return (tmp_path / ".env").read_text(encoding="utf-8"), output.getvalue()
+
+
+def test_prompt_twice_accepts_the_second_answer_after_a_blank():
+    answers = iter(["", "qwen2.5"])
+    assert _prompt_twice(lambda _p="": next(answers), lambda *a, **k: None, "Model id: ") == "qwen2.5"
+
+
+def test_prompt_twice_gives_up_after_two_blanks():
+    """Giving up rather than looping is what stops a piped stdin spinning forever."""
+    answers = iter(["", ""])
+    assert _prompt_twice(lambda _p="": next(answers), lambda *a, **k: None, "Model id: ") == ""
+
+
+def test_declining_the_reasoning_arm_writes_only_the_off_flag(tmp_path, monkeypatch):
+    """`off` and `never configured` must stay distinguishable in .env, which is why the flag is
+    written rather than implied by the absence of a model."""
+    env, _ = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",   # security required
+            "2",   # embedder: fastembed
+            "1",   # reranker: none
+            "1",   # sparse: fts
+            "n",   # reasoning arm declined
+            "n",   # scaffold declined
+            "n",   # calibrate declined
+        ],
+    )
+    assert "RECALL_REASONING=0" in env
+    assert "RECALL_REASONING_MODEL" not in env
+
+
+def test_choosing_openrouter_and_deepseek_writes_all_four_keys(tmp_path, monkeypatch):
+    monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
+    env, _ = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "n",              # security not required
+            "",               # VOYAGE_API_KEY skipped
+            "",               # OPENAI_API_KEY skipped
+            "router-key",     # OPENROUTER_API_KEY
+            "2",              # embedder: fastembed
+            "1",              # reranker: none
+            "1",              # sparse: fts
+            "y",              # reasoning arm enabled
+            "2",              # provider: openrouter
+            "2",              # model: deepseek chat, second now that gpt-4o mini leads
+            "n",              # scaffold declined
+            "n",              # calibrate declined
+        ],
+    )
+    assert "RECALL_REASONING=1" in env
+    assert "RECALL_REASONING_MODEL=deepseek/deepseek-chat" in env
+    assert "RECALL_REASONING_BASE_URL=https://openrouter.ai/api/v1" in env
+    assert "RECALL_REASONING_API_KEY=router-key" in env
+
+
+def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
+    monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
+    env, _ = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",        # security required, so only the local provider is offered
+            "2",        # embedder: fastembed
+            "1",        # reranker: none
+            "1",        # sparse: fts
+            "y",        # reasoning arm enabled
+            "1",        # provider: local endpoint
+            "",         # base URL: take the default
+            "qwen2.5",  # model id
+            "n",        # scaffold declined
+            "n",        # calibrate declined
+        ],
+    )
+    assert "RECALL_REASONING_BASE_URL=http://localhost:11434/v1" in env
+    assert "RECALL_REASONING_MODEL=qwen2.5" in env
+    assert "RECALL_REASONING_API_KEY=local" in env
+
+
+def test_a_failing_probe_still_writes_the_configuration(tmp_path, monkeypatch):
+    """A transient fault must never block an install over a choice that is probably correct."""
+    monkeypatch.setattr(
+        "recall.setup.probe_reasoning_model", lambda **kw: "RuntimeError: model not found"
+    )
+    env, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",       # security required
+            "2",       # embedder: fastembed
+            "1",       # reranker: none
+            "1",       # sparse: fts
+            "y",       # reasoning arm enabled
+            "1",       # provider: local endpoint
+            "",        # base URL default
+            "qwen2.5", # model id
+            "n",       # scaffold declined
+            "n",       # calibrate declined
+        ],
+    )
+    assert "model not found" in output
+    assert "RECALL_REASONING=1" in env
+    assert "RECALL_REASONING_MODEL=qwen2.5" in env
+
+
+def test_a_blank_model_id_twice_turns_the_arm_off(tmp_path, monkeypatch):
+    env, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",   # security required
+            "2",   # embedder: fastembed
+            "1",   # reranker: none
+            "1",   # sparse: fts
+            "y",   # reasoning arm enabled
+            "1",   # provider: local endpoint
+            "",    # base URL default
+            "",    # model id blank
+            "",    # model id blank again
+            "n",   # scaffold declined
+            "n",   # calibrate declined
+        ],
+    )
+    assert "RECALL_REASONING=0" in env
+    assert "RECALL_REASONING_MODEL" not in env
+    assert "no model id" in output

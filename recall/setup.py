@@ -713,6 +713,100 @@ def probe_reasoning_model(
     return None
 
 
+def _prompt_twice(
+    input_fn: Callable[[str], str],
+    print_fn: Callable[..., None],
+    text: str,
+) -> str:
+    """Ask, and on a blank answer ask once more. Empty when both answers are blank.
+
+    A stray Enter should not cost the reader the whole wizard, and giving up after the second
+    blank stops a scripted or piped stdin from looping forever. Both places that need a model id
+    share this so the retry rule lives in exactly one place.
+    """
+    answer = _prompt(input_fn, print_fn, text)
+    if answer:
+        return answer
+    return _prompt(input_fn, print_fn, text)
+
+
+def _reasoning_interview(
+    input_fn: Callable[[str], str],
+    print_fn: Callable[..., None],
+    probe: HardwareProbe,
+    *,
+    security_required: bool,
+    cloud_keys: dict[str, str],
+) -> dict[str, str]:
+    """Ask yes or no, then provider, then model. Returns the keys to write.
+
+    Always returns `RECALL_REASONING`, so that switched off and never configured stay
+    distinguishable in the file. `cloud_keys` may gain a provider key the user supplies here,
+    which is why it is taken as a mutable dict rather than a mapping.
+    """
+    off = {"RECALL_REASONING": "0"}
+    if not _ask_yes_no(
+        input_fn, print_fn, "Enable the optional reasoning arm?", default=False
+    ):
+        return off
+
+    provider = _choose(
+        input_fn,
+        print_fn,
+        "Choose the provider for the reasoning arm:",
+        reasoning_provider_choices(probe, security_required=security_required),
+    )
+
+    if provider.value == LOCAL_PROVIDER:
+        base_url = (
+            _prompt(
+                input_fn,
+                print_fn,
+                f"Base URL for the local endpoint [{LOCAL_BASE_URL_DEFAULT}]: ",
+            )
+            or LOCAL_BASE_URL_DEFAULT
+        )
+        api_key = LOCAL_API_KEY
+        model = _prompt_twice(input_fn, print_fn, "Model id: ")
+    else:
+        base_url = provider.value
+        key_name = (
+            "OPENROUTER_API_KEY" if base_url == OPENROUTER_BASE_URL else "OPENAI_API_KEY"
+        )
+        api_key = cloud_keys.get(key_name, "")
+        if not api_key:
+            api_key = _prompt(input_fn, print_fn, f"{key_name}: ")
+            if api_key:
+                cloud_keys[key_name] = api_key
+        model_choice = _choose(
+            input_fn,
+            print_fn,
+            "Choose the model for the reasoning arm:",
+            reasoning_model_choices(base_url),
+        )
+        model = model_choice.value
+        if model == MANUAL_MODEL:
+            model = _prompt_twice(input_fn, print_fn, "Model id: ")
+
+    if not model:
+        print_fn("Reasoning arm skipped: no model id was given.")
+        return off
+
+    failure = probe_reasoning_model(base_url=base_url, api_key=api_key, model=model)
+    if failure is None:
+        print_fn(f"Reasoning arm verified against {model}.")
+    else:
+        print_fn(f"Could not reach {model}: {failure}")
+        print_fn("Writing the settings anyway. Correct them in .env and try again.")
+
+    return {
+        "RECALL_REASONING": "1",
+        "RECALL_REASONING_MODEL": model,
+        "RECALL_REASONING_BASE_URL": base_url,
+        "RECALL_REASONING_API_KEY": api_key,
+    }
+
+
 def _prompt(
     input_fn: Callable[[str], str],
     print_fn: Callable[..., None],
@@ -1087,6 +1181,14 @@ def run_setup_wizard(
             'pip install "recall-rag[entail]". Rerun setup and choose it again once it can run.'
         )
 
+    reasoning_values = _reasoning_interview(
+        input_fn,
+        print_fn,
+        probe,
+        security_required=security_required,
+        cloud_keys=cloud_keys,
+    )
+
     scaffold_requested = _ask_yes_no(
         input_fn,
         print_fn,
@@ -1146,6 +1248,7 @@ def run_setup_wizard(
             if key and value:
                 values[key] = value
 
+    values.update(reasoning_values)
     values.update(cloud_keys)
 
     if _ask_yes_no(
