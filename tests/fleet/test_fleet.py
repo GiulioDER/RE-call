@@ -108,3 +108,28 @@ def test_surface_a_member_is_not_vacuous(member: FleetMember):
         member.expected[field] != twin.expected.get(field)
         for field in member.expected
     ), f"{member.name} is indistinguishable from the clean twin on every field it declares"
+
+
+def test_the_fleet_detects_a_broken_recall_metric(monkeypatch):
+    """Mutate the code under test and require the fleet to notice.
+
+    Green tests are evidence of nothing until they have been shown to go red, and a test
+    written after a fix and never shown to fail is a hypothesis rather than a guard. If this
+    passes, the surface A members are decorative and THAT is the finding.
+    """
+    import recall.eval.harness as harness
+
+    monkeypatch.setattr(harness, "recall_at_k", lambda *args, **kwargs: 1.0)
+
+    # boundary-rank-6 is the member whose r_at_5 is 0.0 by construction, so a recall_at_k
+    # pinned to 1.0 must move it. Picking the member by name rather than by index keeps this
+    # honest if the table is reordered.
+    member = next(m for m in SURFACE_A if m.name == "boundary-rank-6")
+    actual = run_surface_a(member)
+
+    assert actual["r_at_5"] != pytest.approx(
+        member.expected["r_at_5"], abs=1e-9
+    ), (
+        "a recall_at_k stubbed to 1.0 did not change boundary-rank-6's r_at_5, so the fleet "
+        "is not actually reading this metric"
+    )
