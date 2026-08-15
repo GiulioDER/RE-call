@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -289,6 +289,7 @@ def run_nearmiss_eval(
     dsn: str, embedders: list[Embedder], judge: EntailmentJudge,
     corpus_dir: Path | None = None, queries_path: Path | None = None,
     nearmiss_path: Path | None = None, k: int = 10,
+    store_factory: Callable[[Embedder], AbstractContextManager[PgVectorStore]] | None = None,
 ) -> list[NearMissEvalResult]:
     """Score the three abstention arms per embedder on answerable / far-gap / near-miss queries.
 
@@ -304,6 +305,16 @@ def run_nearmiss_eval(
     LEAVE-ONE-OUT: the calibration judging a query is refitted with that query's sample removed
     (`_loo_calibrations`), so no query is ever scored by a threshold that saw it. The entail-only
     arm is exempt — its threshold is a fixed -1.0 that is fitted to nothing.
+
+    `store_factory` is a TEST SEAM, not a serving feature. Every existing caller omits it and
+    gets EXACTLY today's behaviour: `None` (the default) builds the same corpus-indexed
+    `_throwaway_store(dsn, emb, corpus_dir, "nm_")` this function has always used, so the default
+    path is byte-for-byte unchanged. When supplied, `store_factory(emb)` replaces that context
+    manager entirely — `dsn` and `corpus_dir` are then not touched to build the store, and a
+    caller handing in a store that was never indexed against the corpus gets back exactly
+    whatever THAT store returns, with no validation that it resembles a real index. It exists so
+    a scripted, in-memory store (see `tests/fleet/scripted.py`) can drive this function without a
+    database; it is not documented in any README and must not be treated as public API.
     """
     corpus_dir = corpus_dir or (EVAL_DIR / "corpus")
     queries = json.loads(
@@ -316,9 +327,14 @@ def run_nearmiss_eval(
     answerable = [q for q in plain if q["answerable"]]
     gaps = [q for q in plain if not q["answerable"]]
 
+    def _default_factory(emb: Embedder) -> "AbstractContextManager[PgVectorStore]":
+        return _throwaway_store(dsn, emb, corpus_dir, "nm_")
+
+    factory = store_factory or _default_factory
+
     results: list[NearMissEvalResult] = []
     for emb in embedders:
-        with _throwaway_store(dsn, emb, corpus_dir, "nm_") as store:
+        with factory(emb) as store:
             # measure_top_cosines walks `plain` in order and splits by label, so ans_cos is
             # positionally aligned with `answerable` and unans_cos with `gaps` — that alignment
             # is what lets a held-out fold be matched back to the query it belongs to.
@@ -444,6 +460,7 @@ def _tkey(hit: TrustedHit) -> str:
 def run_trust_eval(
     dsn: str, embedders: list[Embedder], corpus_dir: Path | None = None,
     queries_path: Path | None = None, touch_stale: bool = True,
+    store_factory: Callable[[Embedder], AbstractContextManager[PgVectorStore]] | None = None,
 ) -> list[TrustEvalResult]:
     """Score the validity-sensitive queries in three modes per embedder.
 
@@ -459,6 +476,16 @@ def run_trust_eval(
     unanswerable queries): a query counts as stale-trusted only if a stale id still carries
     verdict `ok`. Also reports successor accuracy, abstention accuracy, and the answerable-MRR
     regression check (trust must not change ordinary retrieval quality).
+
+    `store_factory` is a TEST SEAM, not a serving feature. Every existing caller omits it and
+    gets EXACTLY today's behaviour: `None` (the default) builds the same corpus-indexed
+    `_throwaway_store(dsn, emb, corpus_dir, "trust_")` this function has always used, so the
+    default path is byte-for-byte unchanged. When supplied, `store_factory(emb)` replaces that
+    context manager entirely — `dsn` and `corpus_dir` are then not touched to build the store, and
+    a caller handing in a store that was never indexed against the corpus gets back exactly
+    whatever THAT store returns, with no validation that it resembles a real index. It exists so
+    a scripted, in-memory store (see `tests/fleet/scripted.py`) can drive this function without a
+    database; it is not documented in any README and must not be treated as public API.
     """
     corpus_dir = corpus_dir or (EVAL_DIR / "corpus")
     queries = json.loads(
@@ -467,9 +494,14 @@ def run_trust_eval(
     plain = [q for q in queries if not q.get("trust")]
     trust_qs = [q for q in queries if q.get("trust")]
 
+    def _default_factory(emb: Embedder) -> "AbstractContextManager[PgVectorStore]":
+        return _throwaway_store(dsn, emb, corpus_dir, "trust_")
+
+    factory = store_factory or _default_factory
+
     results: list[TrustEvalResult] = []
     for emb in embedders:
-        with _throwaway_store(dsn, emb, corpus_dir, "trust_") as store:
+        with factory(emb) as store:
             if touch_stale:
                 store.touch_files(sorted(
                     {sid.rsplit(":", 1)[0] for q in trust_qs for sid in q["stale_ids"]}

@@ -329,6 +329,28 @@ def _positive_int(value: str) -> int:
     return number
 
 
+def _parse_status_vocabulary(raw: str | None) -> tuple[str, ...] | None:
+    """Parse `--status-vocabulary`. `None` means the shipped memo set.
+
+    The split is the flag's SHAPE; every judgement about the result belongs to
+    `coerce_status_vocabulary`, which already refuses an empty list, a bare string, blank and
+    non-str entries and casefold collisions, and which strips. Deliberately NOT the labelling
+    runner's `tuple(v.strip() for v in raw.split(",") if v.strip())`: that comprehension swallows
+    exactly the blanks the coercion exists to refuse, so `Final,,Rejected` would pass quietly and
+    `,` would collapse to an empty vocabulary — which refuses every status claim at a BATCH rung,
+    the original defect re-entered through the flag added to remove it.
+    """
+    if raw is None:
+        return None
+    from recall.truth_extraction.types import coerce_status_vocabulary
+
+    try:
+        return coerce_status_vocabulary(raw.split(","))
+    except ValueError as exc:
+        print(f"recall extract: --status-vocabulary: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
 def _rejected_claims(ledger_path: Path) -> frozenset[str]:
     """Every claim key a human has rejected, read without creating the ledger.
 
@@ -577,7 +599,7 @@ def _run_extract(args: argparse.Namespace) -> None:
     """
     from recall.frontmatter import encodable_name
     from recall.truth_extraction import resolve_extraction_engine
-    from recall.truth_extraction.extract import extract_corpus_claims
+    from recall.truth_extraction.extract import extract_corpus_claims_for_report
 
     try:
         engine = resolve_extraction_engine()
@@ -591,6 +613,12 @@ def _run_extract(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         raise SystemExit(2)
+
+    # Parsed BEFORE the path check and before the glob, because it depends on nothing about the
+    # corpus. The sibling `--recheck` check below carries the same reasoning from the other
+    # direction: a flag error knowable at parse time must not arrive after a corpus of model
+    # calls has been paid for, under a complete-looking report.
+    status_vocabulary = _parse_status_vocabulary(args.status_vocabulary)
 
     root = Path(args.path if args.extract_cmd == "run" else args.file)
     if not root.exists():
@@ -685,8 +713,12 @@ def _run_extract(args: argparse.Namespace) -> None:
             raise SystemExit(2) from exc
 
     try:
-        extractions = extract_corpus_claims(
-            documents, engine=engine, corpus_names=corpus_names, cache=cache
+        extractions = extract_corpus_claims_for_report(
+            documents,
+            engine=engine,
+            corpus_names=corpus_names,
+            cache=cache,
+            status_vocabulary=status_vocabulary,
         )
         for name, reason in unreadable:
             print(f"  UNREADABLE {name}: {reason}")
@@ -703,6 +735,17 @@ def _run_extract(args: argparse.Namespace) -> None:
                 )
         total = sum(len(item.claims) for item in extractions)
         print(f"\n{len(documents)} file(s) read, {total} claim(s) for review")
+        if status_vocabulary is not None:
+            # Named only when it is not the default: two runs whose outputs differ have nothing
+            # on screen saying why otherwise. The parenthetical is why: this report is the ONLY
+            # place a custom vocabulary is honoured. `recall rewrite` extracts under the shipped
+            # set regardless, so a status claim printed above can vanish from `rewrite plan`
+            # with nothing else on screen to explain it, right after this command's own closing
+            # line says "review with `recall rewrite plan`".
+            print(
+                f"status vocabulary: {', '.join(status_vocabulary)} "
+                "(measurement only; recall rewrite still writes the shipped set)"
+            )
 
         if cache is not None and getattr(args, "recheck", False):
             from recall.truth_extraction._cache import recheck_cached_extractions
@@ -711,7 +754,15 @@ def _run_extract(args: argparse.Namespace) -> None:
             # so passing the document keys instead produced a different key for every file, every
             # lookup missed, and the report read "0 checked, rate not measured" without saying why.
             report = recheck_cached_extractions(
-                documents, engine=engine, corpus_names=corpus_names, cache=cache
+                documents,
+                engine=engine,
+                corpus_names=corpus_names,
+                cache=cache,
+                # The SAME vocabulary the extraction ran with, for the same reason as
+                # `corpus_names`: it is in the cache key AND the prompt. Omitted, every lookup
+                # misses and the report reads `checked=0` — a determinism measurement that
+                # silently became a non-measurement.
+                status_vocabulary=status_vocabulary,
             )
             rate = "not measured" if report.mismatch_rate is None else f"{report.mismatch_rate:.3f}"
             print(
@@ -1026,6 +1077,14 @@ def main(argv: list[str] | None = None) -> None:
         help="persist extraction results at PATH, so re-ingesting an unchanged memo does not "
         "re-pay for it. Also what makes --recheck possible.",
     )
+    _status_vocabulary_help = (
+        "comma-separated lifecycle words this corpus uses, e.g. Final,Rejected,Deferred. "
+        "Defaults to the memo set. Matching is case-insensitive and the spelling given here "
+        "is what is stored. This does NOT widen what `recall rewrite` may write."
+    )
+    p_extract_run.add_argument(
+        "--status-vocabulary", default=None, metavar="W,X,Y", help=_status_vocabulary_help
+    )
     _extract_show_blurb = (
         "Show the claims and refusals for a single file. Targets are resolved against the "
         "file's own directory, not against the file alone. This writes nothing."
@@ -1035,6 +1094,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_extract_show.add_argument("file")
     p_extract_show.add_argument("--glob", default=DEFAULT_GLOB)
+    p_extract_show.add_argument(
+        "--status-vocabulary", default=None, metavar="W,X,Y", help=_status_vocabulary_help
+    )
 
     # No `_opens_db` here either: review and declaration are filesystem work.
     p_rewrite = sub.add_parser(

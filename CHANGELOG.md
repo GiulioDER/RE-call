@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Added
+
+* `recall extract run|show --status-vocabulary W,X,Y` lets a corpus that states status in its
+  own words, not the shipped memo set, be measured without every such claim being refused at a
+  batch rung. It does not widen what `recall rewrite` may write: the write path still extracts
+  under the shipped vocabulary and `route_relation` still refuses anything outside it.
+
 ### Measured
 
 * **Truth extraction is a reviewing aid, and the pre-registration says so before the numbers do.**
@@ -24,11 +31,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   predicted ranges. An earlier write up reported P1 as falsified by comparing R1's Wilson *upper*
   bound against 0.70, which is the decision rule's gate on the Wilson *lower* bound and not P1's
   floor of 0.60. That claim is withdrawn in both files.
-* **The finding worth carrying is a mechanism, not a rate.** The model's characteristic error is
-  reading a claim about something *inside* a document as a claim about the document. Both of its
-  false positives on the adjudicated rows and both of its fixture proposals are partial scope:
-  four for four across two corpora sharing no text, and the same error the rules it replaces made
-  on the private corpus.
+* **The finding worth carrying is a mechanism, not a rate.** Every one of the model's four
+  proposals across both corpora asserts an edge broader than its evidence sentence supports:
+  three read a claim about something *inside* a document as a claim about the document, and the
+  fourth asserts a jointly conditioned supersession unconditionally. It is the same error the
+  rules it replaces made on the private corpus.
 * Recall on PEPs is published as a **corpus fact** rather than a model result: 47 authored header
   edges, 8 restated in prose at either end, and only 3 restated by the document the extractor is
   actually given, so the operative ceiling is 0.064. Documents with a structured field for a
