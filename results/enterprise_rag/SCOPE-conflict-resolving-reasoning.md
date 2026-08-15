@@ -144,3 +144,72 @@ committed BEFORE the first measurement: the predicted fact-hit delta on the four
 prediction that the six B rows do NOT move (they are a different mechanism, and if they move, the
 probe is measuring something other than what it thinks), and the invariant that no arm may reach
 the instruction channel with a corpus byte.
+
+---
+
+## Step 0, run 2026-08-15: the signal exists, and it is directional
+
+**Zero API spend and no index.** The gold document ids are in `questions.jsonl` and the corpus is
+local, so the eight documents behind the four A rows were read straight off disk. Nothing was
+retrieved and nothing was generated.
+
+### Finding 1: every A pair carries in-text supersession markers
+
+| row | markers found in the successor document |
+|---|---|
+| `qst_0418` | `v2`, `updated` |
+| `qst_0419` | `legacy`, `replace`, `previously`, `updated` |
+| `qst_0420` | `supersede`, `no longer`, `updated`, `migrated` |
+| `qst_0425` | `no longer`, `updated`, `v1` |
+
+### Finding 2: the markers are DIRECTIONAL, and the successor announces itself
+
+This is the part that decides whether the mechanism is cheap. In all four pairs the newer document
+says so about itself, in prose:
+
+- `qst_0420`: *"This is a working doc intended to supersede the older Confluence page for day-to-day
+  ops."*
+- `qst_0425`: *"`signature` is no longer a direct embedded blob in v1"*, under a heading
+  *"Integrity (updated in v1)"*.
+- `qst_0418`: *"includes the v2 scoring thresholds and updated templates"*, plus a dated changelog
+  line *"2026-03-16 — Updated classifier thresholds to v2"*.
+- `qst_0419`: *"capture deltas, open questions, and the updated requirements"*. The weakest of the
+  four, and the one to expect a miss on: the OLDER document also contains `legacy` and `replace`.
+
+🔑 **So the ordering does not need cross-document entity resolution.** It is a within-document
+self-declaration: the document that describes itself as superseding, updated, or the new version is
+the current one. That is a much smaller mechanism than a graph edge between two documents.
+
+### Finding 3: dates are present, and in one pair they alone would order the documents
+
+Every document carries ISO dates in its body. In `qst_0420` they separate cleanly, the older
+document spanning 2025-11 to 2026-01 and the newer 2026-01-22 to 2026-02-27. In `qst_0418` the two
+documents quote the SAME dates, so dates alone are not sufficient and the marker text is doing the
+work. Dates are a corroborating signal, not the primary one.
+
+### Finding 4, unplanned: the shipped nine-word vocabulary is too LOOSE here, not just too narrow
+
+`status_pos` matched **8 of 8** documents and `status_neg` **6 of 8**. Words like "on", "active",
+"valid" and "off" appear in any long technical document. So on this corpus the only thing
+preventing the shipped detector from firing spuriously is the subject conjunct, which happens to
+never match.
+
+⛔ **This retires the idea of widening the vocabulary, and strengthens it into a warning.** Widening
+it, or relaxing subject matching, would produce false contradictions on ordinary prose, and every
+false contradiction becomes an ABSTENTION via `_fail_closed`. The failure mode of a looser detector
+is not noise, it is refusing to answer questions it could have answered.
+
+### What step 0 settles
+
+- **The signal is in the TEXT, not in metadata.** No frontmatter, no validity windows, and
+  `indexed_at` is uniform. So the work belongs in the **answer layer**, reading retrieved chunk
+  text, and not in the graph or trust layers. That was the architectural question, and it is
+  answered.
+- **The mechanism can be small**: detect a self-declared successor marker per evidence item,
+  annotate the item, and let the answer assert the current value while labelling the superseded
+  one. No new edges, no entity resolution, no schema change.
+- **`qst_0419` is the expected miss**, and it is named in advance so a 3-of-4 result is not
+  retold afterwards as a success.
+
+**Still not measured:** whether annotating the evidence actually changes the answer. That is the
+A/B, it needs a pre-registration first, and it is 11 rows on a cheap model with no judge.
