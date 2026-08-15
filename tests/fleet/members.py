@@ -17,6 +17,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from recall.eval.promotion.aggregate import UnpairedArms
+from recall.eval.promotion.manifest import FrozenQuestion
+from recall.eval.promotion.records import QuestionRecord
+
 
 @dataclass(frozen=True)
 class FleetMember:
@@ -227,5 +231,214 @@ SURFACE_A: tuple[FleetMember, ...] = (
         },
         does_not_catch="the defect it documents. It asserts today's wrong value, so it will "
                        "go red when the inconsistency is FIXED, which is the intended signal",
+    ),
+)
+
+#: Enough paired questions that a two-sided sign test over all-positive deltas clears 0.05 with
+#: room to spare: 2 * 0.5**12 = 0.000488. Eight would already do it (0.0078); twelve is chosen so
+#: the member does not sit near the boundary of a test it does not otherwise pin.
+N_PAIRED = 12
+
+#: One corpus, so Holm correction over a single p-value leaves it unchanged and the member is
+#: about the gate's decision rather than about the correction.
+CORPUS = "fleet"
+
+GATE_KWARGS = {
+    "manifest_digest": "fleet-digest",
+    "baseline_label": "baseline",
+    "candidate_label": "candidate",
+    "security_green": True,
+    "latency_budget_ms": 1000.0,
+    "certified_latency_p95_ms": 100.0,
+    # 200 rather than the 10_000 default: no member asserts on a bootstrap-derived interval
+    # BOUND, only on whether the lower bound clears zero, and with every delta identical at
+    # +1.0 or 0.0 the interval is degenerate at that value for any sample count.
+    "bootstrap_samples": 200,
+}
+
+
+@dataclass(frozen=True)
+class GateExpectation:
+    """What the gate must do. `raises` and the other two are mutually exclusive."""
+
+    promoted: bool | None = None
+    failure_contains: str | None = None
+    raises: type[Exception] | None = None
+
+
+def _record(
+    qid: str,
+    gold: str | None,
+    retrieved: tuple[str, ...],
+    *,
+    verdict: str = "ok",
+    input_hash: str = "fleet-hash",
+) -> QuestionRecord:
+    """One arm's outcome for one question.
+
+    `gold=None` means unanswerable: `QuestionRecord.answerable` is
+    `bool(expected_relevance_labels)`, so an empty tuple IS the unanswerable label.
+    `verdict="abstained"` is what `.abstained` reads, and it must not be `"unverified"` on
+    every row of an arm or `build_safety` reports superseded_trust_rate as NOT MEASURED.
+    """
+    return QuestionRecord(
+        question_id=qid,
+        corpus=CORPUS,
+        expected_relevance_labels=(gold,) if gold else (),
+        retrieved_chunk_ids=retrieved,
+        rank_positions=tuple(range(1, len(retrieved) + 1)),
+        dense_cosine=0.8,
+        confidence=0.8,
+        trust_verdict=verdict,
+        embedding_profile_id="scripted",
+        retrieval_profile="legacy",
+        generation="legacy",
+        candidate_pool=20,
+        reranking_status="not_configured",
+        stage_timings={"total": 10.0},
+        input_hash=input_hash,
+        output_hash=f"out-{qid}",
+    )
+
+
+def _frozen(qid: str, gold: str | None) -> FrozenQuestion:
+    return FrozenQuestion(
+        question_id=qid,
+        corpus=CORPUS,
+        input_hash="fleet-hash",
+        expected_relevance_labels=(gold,) if gold else (),
+    )
+
+
+def _hit(qid: str) -> tuple[str, ...]:
+    """Gold at rank 1, so hit@5 is 1.0."""
+    return (f"gold_{qid}.md:0",) + tuple(f"filler_{qid}_{i}.md:0" for i in range(9))
+
+
+def _miss(qid: str) -> tuple[str, ...]:
+    """Gold at rank 6, so hit@5 is 0.0 while the id is still retrieved."""
+    return (
+        tuple(f"filler_{qid}_{i}.md:0" for i in range(5))
+        + (f"gold_{qid}.md:0",)
+        + tuple(f"tail_{qid}_{i}.md:0" for i in range(4))
+    )
+
+
+def _arms(
+    *,
+    candidate_hits: bool,
+    baseline_hits: bool,
+    candidate_abstains_on_answerable: bool = False,
+    include_unanswerable: bool = True,
+    drop_from_candidate: str | None = None,
+):
+    """Build a paired pair of arms plus the frozen manifest they must both cover."""
+    frozen, baseline, candidate = [], [], []
+    for index in range(N_PAIRED):
+        qid = f"q{index:02d}"
+        gold = f"gold_{qid}.md:0"
+        frozen.append(_frozen(qid, gold))
+        baseline.append(_record(qid, gold, _hit(qid) if baseline_hits else _miss(qid)))
+        if qid == drop_from_candidate:
+            continue
+        candidate.append(
+            _record(
+                qid,
+                gold,
+                _hit(qid) if candidate_hits else _miss(qid),
+                verdict="abstained" if candidate_abstains_on_answerable else "ok",
+            )
+        )
+    if include_unanswerable:
+        # Both arms need at least one unanswerable question or `build_safety` raises on a NaN
+        # false_confidence. `verdict="abstained"` is the CORRECT behaviour on an unanswerable
+        # question, so gap_false_confident_rate is 0.0 on both arms.
+        for index in range(2):
+            qid = f"u{index}"
+            frozen.append(_frozen(qid, None))
+            baseline.append(_record(qid, None, (), verdict="abstained"))
+            candidate.append(_record(qid, None, (), verdict="abstained"))
+    return baseline, candidate, frozen, dict(GATE_KWARGS)
+
+
+SURFACE_B: tuple[FleetMember, ...] = (
+    FleetMember(
+        name="treatment-strictly-better",
+        defect="none: the clean twin, a candidate that must be allowed through",
+        build=lambda: _arms(baseline_hits=False, candidate_hits=True),
+        # Every paired delta is +1.0 (baseline gold at rank 6 = hit@5 0.0, candidate at rank 1
+        # = 1.0), so the bootstrap interval is degenerate at 1.0 and its lower bound clears
+        # zero; a two-sided sign test over 12 positives gives 2*0.5**12 = 0.000488 < 0.05;
+        # both safety deltas are 0.0; superseded_trust_rate is exactly 0.0; security is green;
+        # latency is 100.0 against a 1000.0 budget. No failure remains, so promoted is True.
+        expected=GateExpectation(promoted=True),
+        does_not_catch="whether the bootstrap interval is correctly WIDE; every delta here is "
+                       "identical, so the interval is degenerate and its width is never tested",
+    ),
+    FleetMember(
+        name="identical-arms",
+        defect="candidate identical to baseline, so there is no improvement to promote",
+        build=lambda: _arms(baseline_hits=True, candidate_hits=True),
+        # Every delta is exactly 0.0, so the interval does not clear zero and no corpus
+        # improves. The gate must refuse.
+        expected=GateExpectation(
+            promoted=False, failure_contains="bootstrap interval does not clear zero"
+        ),
+        does_not_catch="a candidate that is better on MRR but not on hit@5; the gate's primary "
+                       "axis is hit@5 and no member exercises the MRR reported beside it",
+    ),
+    FleetMember(
+        name="safety-regressed",
+        defect="quality improves while the candidate wrongly abstains on every answerable question",
+        build=lambda: _arms(
+            baseline_hits=False, candidate_hits=True, candidate_abstains_on_answerable=True
+        ),
+        # false_abstention goes 0.0 -> 1.0, a regression far beyond the 0.02 tolerance, so the
+        # safety axis must veto a candidate that wins on quality. This is the member that
+        # proves the safety axis can FIRE rather than merely being reported.
+        expected=GateExpectation(
+            promoted=False, failure_contains="false abstention regresses"
+        ),
+        does_not_catch="a regression just BELOW the two-point tolerance; it tests that the "
+                       "check fires, not where its boundary sits",
+    ),
+    FleetMember(
+        name="nan-safety-class",
+        defect="an arm with no unanswerable questions, so a safety rate has no data",
+        build=lambda: _arms(
+            baseline_hits=False, candidate_hits=True, include_unanswerable=False
+        ),
+        # `build_safety` computes gap_false_confident_rate over an empty class, which is NaN,
+        # and raises rather than letting it through. This is the 08-09 failure shape exactly:
+        # the gate compares with `>`, every comparison against NaN is False, so an empty class
+        # would read identically to a passed check. Documented in aggregate.py; executed here.
+        expected=GateExpectation(raises=ValueError),
+        does_not_catch="a PARTIALLY empty class; one unanswerable question is enough to make "
+                       "the rate non-NaN while still being far too few to mean anything",
+    ),
+    FleetMember(
+        name="unpaired-arms",
+        defect="a frozen question missing from the candidate arm",
+        build=lambda: _arms(
+            baseline_hits=False, candidate_hits=True, drop_from_candidate="q00"
+        ),
+        # A paired test over a set that quietly shrank is not the test that was declared.
+        expected=GateExpectation(raises=UnpairedArms),
+        does_not_catch="a question present in both arms but with a DIFFERENT input_hash, which "
+                       "aggregate.py also refuses and which no member exercises",
+    ),
+    FleetMember(
+        name="latency-pending",
+        defect="an otherwise promotable candidate with no certified latency measurement",
+        build=lambda: (
+            *_arms(baseline_hits=False, candidate_hits=True)[:3],
+            {**GATE_KWARGS, "certified_latency_p95_ms": None},
+        ),
+        # `certified_latency_p95_ms` defaults to None, which the gate treats as PENDING, and
+        # PENDING FAILS. It is the single explicit door named in aggregate.py's docstring, and
+        # a door that silently stopped blocking would look exactly like one never opened.
+        expected=GateExpectation(promoted=False, failure_contains="PENDING"),
+        does_not_catch="a NaN latency, which the gate refuses on a different branch and which "
+                       "no member exercises",
     ),
 )

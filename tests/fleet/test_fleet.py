@@ -4,7 +4,8 @@ from __future__ import annotations
 import pytest
 
 from recall.eval.harness import _score_config
-from tests.fleet.members import SURFACE_A, FleetMember
+from recall.eval.promotion.aggregate import decide
+from tests.fleet.members import SURFACE_A, SURFACE_B, FleetMember
 from tests.fleet.scripted import QueryKeyedStore, ScriptedEmbedder
 
 
@@ -133,3 +134,33 @@ def test_the_fleet_detects_a_broken_recall_metric(monkeypatch):
         "a recall_at_k stubbed to 1.0 did not change boundary-rank-6's r_at_5, so the fleet "
         "is not actually reading this metric"
     )
+
+
+def run_surface_b(member: FleetMember):
+    baseline, candidate, frozen, kwargs = member.build()
+    return decide(baseline, candidate, frozen, **kwargs)
+
+
+@pytest.mark.parametrize("member", SURFACE_B, ids=lambda m: m.name)
+def test_surface_b_member_reaches_its_declared_verdict(member: FleetMember):
+    expectation = member.expected
+
+    if expectation.raises is not None:
+        with pytest.raises(expectation.raises):
+            run_surface_b(member)
+        return
+
+    decision, _document = run_surface_b(member)
+    assert decision.promoted is expectation.promoted, (
+        f"{member.name} ({member.defect}): expected promoted={expectation.promoted}, got "
+        f"{decision.promoted} with failures {decision.failures}"
+    )
+    if expectation.failure_contains is not None:
+        assert any(expectation.failure_contains in f for f in decision.failures), (
+            f"{member.name}: no failure mentions {expectation.failure_contains!r}; "
+            f"failures were {decision.failures}"
+        )
+
+
+def test_surface_b_has_six_members():
+    assert len(SURFACE_B) == 6
