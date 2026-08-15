@@ -1413,7 +1413,12 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "manifest":
         from recall.lineage import IndexManifestV1, ManifestObjectV1
-        from recall.manifest import S3ObjectReader, load_inventory, load_manifest
+        from recall.manifest import (
+            S3ObjectReader,
+            load_inventory,
+            load_manifest,
+            reader_for_manifest,
+        )
 
         if args.manifest_cmd == "create":
             manifest = IndexManifestV1(
@@ -1424,7 +1429,9 @@ def main(argv: list[str] | None = None) -> None:
             Path(args.output).write_text(manifest.to_json(), encoding="utf-8")
             print(f"wrote {args.output} sha256={manifest.digest} objects={len(manifest.objects)}")
             return
-        reader = S3ObjectReader.from_environment()
+        # Chosen from the manifest's own objects rather than assumed. `manifest verify` on a
+        # file:// manifest previously failed with an S3 allowlist error before reading anything.
+        reader = None
         if args.manifest.startswith("s3://"):
             if args.version_id is None or args.sha256 is None or args.size is None:
                 raise SystemExit("an S3 manifest requires --version-id, --sha256 and --size")
@@ -1435,6 +1442,7 @@ def main(argv: list[str] | None = None) -> None:
                 args.size,
                 args.sha256,
             )
+            reader = S3ObjectReader.from_environment()
             manifest = IndexManifestV1.from_json(reader.fetch(reference).data)
         else:
             manifest = load_manifest(args.manifest)
@@ -1442,6 +1450,8 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(
                 f"manifest tenant {manifest.tenant_id!r} does not match --tenant {args.tenant!r}"
             )
+        if reader is None:
+            reader = reader_for_manifest(manifest)
         reader.verify(manifest)
         print(f"verified sha256={manifest.digest} objects={len(manifest.objects)}")
         return
@@ -1491,10 +1501,13 @@ def main(argv: list[str] | None = None) -> None:
             ManifestObjectV1,
             PipelineIdentity,
         )
-        from recall.manifest import S3ObjectReader, load_manifest
+        from recall.manifest import S3ObjectReader, load_manifest, reader_for_manifest
 
         environment = manager.environment
-        reader = S3ObjectReader.from_environment()
+        # The reader is chosen AFTER the manifest is known, not before. Building the S3 reader
+        # up front needs boto3 and RECALL_S3_ALLOWLIST, so a local-only user hit an S3
+        # configuration error while doing nothing that involved S3.
+        reader = None
         if args.manifest.startswith("s3://"):
             if (
                 args.manifest_version_id is None
@@ -1512,11 +1525,15 @@ def main(argv: list[str] | None = None) -> None:
                 args.manifest_size,
                 args.manifest_sha256,
             )
+            # An s3:// manifest needs the S3 reader to fetch the manifest itself.
+            reader = S3ObjectReader.from_environment()
             manifest = IndexManifestV1.from_json(reader.fetch(reference).data)
         else:
             if environment == "production":
                 raise SystemExit("production generation builds require a versioned S3 manifest")
             manifest = load_manifest(args.manifest)
+        if reader is None:
+            reader = reader_for_manifest(manifest)
         embedder = _make_embedder(args.embedder)
         revision = args.embedder_revision
         provider = args.embedder_provider

@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from collections.abc import Callable
 from urllib.request import url2pathname
 from urllib.parse import unquote, urlsplit
 
@@ -259,3 +260,43 @@ class LocalObjectReader:
 
     def verify(self, manifest: IndexManifestV1) -> tuple[VerifiedObject, ...]:
         return tuple(self.fetch(entry) for entry in manifest.objects)
+
+
+def reader_for_manifest(
+    manifest: IndexManifestV1,
+    *,
+    local_roots: "tuple[Path, ...] | list[Path] | None" = None,
+    s3_factory: "Callable[[], object] | None" = None,
+) -> object:
+    """Pick the reader the manifest's objects actually need.
+
+    The CLI used to build `S3ObjectReader.from_environment()` unconditionally, before it knew what
+    the manifest contained. That needs boto3 and `RECALL_S3_ALLOWLIST`, so a local-only user hit an
+    S3 configuration error while doing nothing that involved S3.
+
+    A manifest mixing `s3://` and `file://` objects is REFUSED. It would carry two different
+    immutability guarantees at once: the S3 half pinned to a version, the local half only
+    detectable after the fact. One lineage record would then describe both, true of one half and
+    overstated for the other, with nothing downstream able to tell which hit came from which.
+
+    `s3_factory` is injectable so the choice can be tested without boto3 or an allowlist.
+    """
+    if not manifest.objects:
+        raise ValueError("manifest has no objects, so no reader can be chosen for it")
+
+    schemes = {urlsplit(entry.uri).scheme for entry in manifest.objects}
+    if len(schemes) > 1:
+        raise ValueError(
+            f"manifest mixes object schemes {sorted(schemes)}. A generation built from it would "
+            "carry one lineage record describing two different immutability guarantees: S3 objects "
+            "are pinned to a version, local files are only checked after the fact. Split it."
+        )
+
+    scheme = schemes.pop()
+    if scheme == "file":
+        if local_roots is not None:
+            return LocalObjectReader(local_roots)
+        return LocalObjectReader.from_environment()
+    if scheme == "s3":
+        return (s3_factory or S3ObjectReader.from_environment)()
+    raise ValueError(f"manifest objects use unsupported scheme {scheme!r}")
