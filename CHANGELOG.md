@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Added
+
+* `recall extract run|show --status-vocabulary W,X,Y` lets a corpus that states status in its
+  own words, not the shipped memo set, be measured without every such claim being refused at a
+  batch rung. It does not widen what `recall rewrite` may write: the write path still extracts
+  under the shipped vocabulary and `route_relation` still refuses anything outside it.
+
 ## [0.9.5] (2026-08-15)
 
 ### Added

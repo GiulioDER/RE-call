@@ -86,7 +86,15 @@ _TOP_LEVEL_SCALARS: dict[str, type] = {
     "cached": bool,
 }
 
-_TOP_LEVEL_KEYS = frozenset(_TOP_LEVEL_SCALARS) | {"claims", "rejections", "batch_rejection"}
+_TOP_LEVEL_KEYS = frozenset(_TOP_LEVEL_SCALARS) | {
+    "claims",
+    "rejections",
+    "batch_rejection",
+    # A tuple of strings, so it is not a plain scalar and is checked below with the lists. It is
+    # stored for the same reason `prompt_revision` is: the vocabulary is rendered into the
+    # prompt, so a record that omits it names an extractor that could have been shown any list.
+    "status_vocabulary",
+}
 
 
 def _checked(cls: type, obj: object, *, what: str) -> dict[str, Any]:
@@ -167,6 +175,7 @@ def extraction_to_json(extraction: FileExtraction) -> str:
             "model_id": extraction.model_id,
             "revision": extraction.revision,
             "prompt_revision": extraction.prompt_revision,
+            "status_vocabulary": list(extraction.status_vocabulary),
             "batch_rejection": (
                 None
                 if extraction.batch_rejection is None
@@ -207,10 +216,18 @@ def extraction_from_json(text: str) -> FileExtraction:
                 f"payload field {name!r} is {type(raw[name]).__name__}, "
                 f"expected {want.__name__}"
             )
-    for name in ("claims", "rejections"):
+    for name in ("claims", "rejections", "status_vocabulary"):
         if type(raw[name]) is not list:
             raise ExtractionPayloadInvalid(
                 f"payload field {name!r} is {type(raw[name]).__name__}, expected list"
+            )
+    # Element types too. Everything else here is checked to the leaf, and a vocabulary holding a
+    # number would round trip into a tuple that compares unequal to the one stored, which
+    # `recheck` reports as the engine disagreeing with itself rather than as a bad payload.
+    for index, word in enumerate(raw["status_vocabulary"]):
+        if type(word) is not str:
+            raise ExtractionPayloadInvalid(
+                f"status_vocabulary[{index}] is {type(word).__name__}, expected str"
             )
     batch = raw["batch_rejection"]
     return FileExtraction(
@@ -226,6 +243,7 @@ def extraction_from_json(text: str) -> FileExtraction:
         model_id=raw["model_id"],
         revision=raw["revision"],
         prompt_revision=raw["prompt_revision"],
+        status_vocabulary=tuple(raw["status_vocabulary"]),
         batch_rejection=(
             None if batch is None else _rejection_from_object(batch, what="batch rejection")
         ),

@@ -34,7 +34,12 @@ from recall.truth_extraction.types import FileExtraction
 
 #: Bumped when the stored shape changes. Stored per ROW rather than in a `user_version` pragma,
 #: so a store written across a bump degrades entry by entry instead of being condemned whole.
-CACHE_SCHEMA_VERSION = 1
+#:
+#: v2: `FileExtraction` gained `status_vocabulary`, so a v1 payload is missing a required
+#: top-level key. Without the bump those rows are refused and counted as CORRUPT, which is the
+#: counter reserved for damage; a routine shape change belongs under `stale`. The distinction is
+#: not cosmetic: `corrupt` is the number that says a store needs investigating.
+CACHE_SCHEMA_VERSION = 2
 
 _TABLE = "extraction_entries"
 

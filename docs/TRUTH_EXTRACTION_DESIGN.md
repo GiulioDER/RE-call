@@ -188,8 +188,8 @@ the exact failure the trust layer exists to prevent, caused by the tool meant to
 Verb subparsers under a group noun, matching `cli.py:487`.
 
 ```
-recall extract run <path> [--glob] [--limit N] [--recheck] [--cache PATH]
-recall extract show <file>
+recall extract run <path> [--glob] [--limit N] [--recheck] [--cache PATH] [--status-vocabulary W,X,Y]
+recall extract show <file> [--glob] [--status-vocabulary W,X,Y]
 
 recall rewrite plan <path> [--glob]
 recall rewrite apply <path> --proposal <id> --reviewer <id> --note "..." [--apply]
@@ -206,6 +206,27 @@ non-empty content.
 
 `recall extract run` refuses with an actionable message when the extra is absent, mirroring
 `entailment.py:62`. Help text states the dry run default.
+
+### The status vocabulary is configurable for measurement and closed for writing
+
+The shipped set is memo-shaped: `active, draft, deprecated, superseded, withdrawn`. A corpus using
+other words states statuses the ladder cannot admit, and `claim_shape` is a BATCH rung, so one such
+claim refuses the whole document. Measured on `python/peps`, the model read `Status: Final` and
+emitted `final`: 12 of 30 documents were refused outright and lost their supersession claims along
+with the status one. Refusing was correct behaviour against the wrong list.
+
+`--status-vocabulary` supplies the corpus's own words. Matching is case-insensitive, and the
+spelling given on the flag is the one stored, so `Final` in the corpus and `final` from the model
+agree. The list is part of the cache key as well as the prompt: two vocabularies never share an
+entry, because they send different instructions and can only get different answers.
+
+⚠️ It does not widen what may be WRITTEN. `recall rewrite` validates the derived block against the
+shipped `STATUS_VOCABULARY` at `route_relation`, and a value the trust layer has no meaning for must
+not reach a user's memo because a research run named it. That closure rests on `route_relation`,
+and the entry points are split so the write path's door has no knob to turn: it calls
+`extract_corpus_claims`, which takes no vocabulary, while `recall extract` calls
+`extract_corpus_claims_for_report`, which does. Both delegate to one loop, so the vocabulary
+reaches the outage path's cache lookup and refusal record as well as the per-file call.
 
 ## MCP surface
 
@@ -258,6 +279,12 @@ reports the mismatch rate. A non-zero rate means the cache, not the sampler, is 
 reproducible, which is worth knowing before a cache eviction silently renumbers every proposal id
 derived from it. Recheck is currently written against `1cfc81`'s cache and must be reimplemented
 onto `ardinghelli`'s, which keys on engine plus prompt.
+
+Pre-existing, not introduced here and not fixed here: `recall extract run`'s own extraction pass
+warms the cache that `--recheck` then reads, so a cold-cache run measures within-run repeatability
+(does the second call agree with the first, made moments ago in the same process) rather than
+determinism ACROSS runs, which is the thing worth knowing before trusting a cached id months
+later. This has applied to `corpus_names` since before `--status-vocabulary` existed.
 
 **Treat a non-empty proposal list as a question, not an answer.** The rule based prior narrowed 60
 prose markers to four candidates and all four were wrong. This is a reviewing aid, not an

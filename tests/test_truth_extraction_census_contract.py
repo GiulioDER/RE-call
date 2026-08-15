@@ -16,7 +16,13 @@ Properties, one test each:
   10. The writer emits LF regardless of platform.
   11. The blind CSV exposes no arm / model / judge / score / rule / system column.
   12. The un-blinding key is a separate file, and every CSV item has an entry in it.
-  13. The verdict column ships blank — blank is "undecidable", per score_beam_labels.py:29.
+  13. The BUILDER emits a blank verdict column, so a rebuild never carries a previous round's
+      verdicts forward. Asserted by running it, not by grepping its source. Blank means
+      "undecidable" and is excluded from the denominator, per
+      `benchmarks/labelling/score_beam_labels.read_verdict` (named, not line-numbered: a line
+      number in prose goes stale on the next edit, and this one already had). The committed
+      pack's own labels are pinned in `tests/test_truth_extraction_adjudication.py`.
+  13b. The builder applies `_csv_safe` when it WRITES, which nothing covered.
   14. Every row names a candidate target; the unprovable-target class is excluded, not guessed.
   15. The committed row count recomputes from the corpus (skips loudly without RECALL_PEPS_DIR).
   16. The PEPs SHA format validator accepts a real 40-hex SHA and refuses malformed input.
@@ -158,12 +164,12 @@ KEY_PATH = _TE / "adjudication_key.json"
 
 
 def _csv_rows() -> list[dict[str, str]]:
-    with CSV_PATH.open(encoding="utf-8", newline="") as handle:
+    with CSV_PATH.open(encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
 
 
 def test_blind_csv_leaks_no_arm_model_or_judge_column():
-    with CSV_PATH.open(encoding="utf-8", newline="") as handle:
+    with CSV_PATH.open(encoding="utf-8-sig", newline="") as handle:
         header = next(csv.reader(handle))
     leaky = [
         column
@@ -184,9 +190,96 @@ def test_every_csv_item_has_a_key_entry():
     assert items == set(json.loads(KEY_PATH.read_text(encoding="utf-8")))
 
 
-def test_verdict_column_ships_blank():
-    rows = _csv_rows()
-    assert rows and all(row["your_verdict_Y_or_N"] == "" for row in rows)
+def test_the_builder_emits_a_blank_verdict_column(tmp_path):
+    """Asserted on the BUILDER, not on the committed pack, because the pack is now labelled.
+
+    This used to read `all(row["your_verdict_Y_or_N"] == "")` over the committed CSV, which was
+    right while the sheet was waiting for an adjudicator and became false the moment one filled it
+    in. Deleting it would have lost the property that still matters: a REBUILD must hand the next
+    adjudicator an empty column, never carry a previous round's verdicts forward, which is how a
+    labelling exercise quietly turns into a measurement of the last labelling exercise.
+
+    Asserted by RUNNING the builder, not by grepping its source. The first version of this test
+    matched the literal `"your_verdict_Y_or_N": ""` in `build_adjudication.py`, which was both
+    too weak and too brittle: a builder rewritten to carry a previous round's verdicts forward
+    passed as long as the literal survived in a comment, while three benign reformattings of a
+    CORRECT builder (single quotes, a named constant, a line break before the value) turned it
+    red. `build_rows` runs on a two-file synthetic corpus in about a second, so there is no
+    reason to assert on bytes.
+
+    The committed pack's own verdicts are pinned separately, in
+    `tests/test_truth_extraction_adjudication.py::test_the_committed_verdicts_are_frozen`.
+    """
+    from benchmarks.labelling.truth_extraction.build_adjudication import build_rows
+
+    corpus = tmp_path / "peps"
+    corpus.mkdir()
+    (corpus / "pep-0001.rst").write_text(
+        "PEP: 1\nTitle: One\nStatus: Active\n\n\nThis PEP is superseded by :pep:`2`.\n",
+        encoding="utf-8",
+    )
+    (corpus / "pep-0002.rst").write_text(
+        "PEP: 2\nTitle: Two\nStatus: Active\n\n\nNothing to see.\n", encoding="utf-8"
+    )
+
+    rows, key = build_rows(corpus, seed=0, limit=None)
+
+    assert rows, "the synthetic corpus must yield a candidate, or this test proves nothing"
+    assert all(row["your_verdict_Y_or_N"] == "" for row in rows), (
+        "a rebuild must hand the next adjudicator an empty column"
+    )
+    assert set(key) == {row["item"] for row in rows}
+
+
+def test_the_builder_applies_the_injection_defence_when_it_writes(tmp_path):
+    """The defence at BUILD time, asserted DOWNSTREAM of the code that applies it.
+
+    `_csv_safe` is applied where the pack is serialised, not in `build_rows`, so removing it left
+    the whole suite green while the pack shipped raw `+`-leading cells for a spreadsheet to
+    execute.
+
+    The first attempt to close that gap reimplemented the `DictWriter` block in this test's own
+    body and therefore asserted on its own copy: deleting `_csv_safe` from the real writer still
+    passed. A guard that reimplements what it guards is testing itself. The block now lives in
+    `write_pack`, which `main` calls and this test calls, so there is one definition and the
+    assertion sits downstream of it.
+    """
+    import csv as _csv
+
+    from benchmarks.labelling.truth_extraction.build_adjudication import build_rows, write_pack
+
+    rows, key = build_rows(_formula_corpus(tmp_path), seed=0, limit=None)
+    assert rows, "the fixture must yield a candidate, or this test proves nothing"
+
+    csv_path, key_path = write_pack(rows, key, tmp_path / "pack")
+
+    with csv_path.open(encoding="utf-8", newline="") as handle:
+        parsed = list(_csv.DictReader(handle))
+    defended = [r for r in parsed if r["evidence_sentence"].startswith("'")]
+    assert defended, (
+        "a sentence opening with a formula character must reach the CSV with its apostrophe"
+    )
+    # The key is the un-blinding record and must keep the RAW sentence: the two files hold the
+    # same text in different forms on purpose, and a defence applied to both would make the
+    # CSV/key comparison unable to see a spreadsheet stripping it.
+    stored = json.loads(key_path.read_text(encoding="utf-8"))
+    assert not any(e["evidence_sentence"].startswith("'") for e in stored.values()), (
+        "the key must store the raw sentence, not the injection-defended form"
+    )
+
+
+def _formula_corpus(tmp_path):
+    """A corpus whose marker sentence opens with `-`, so `_csv_safe` has work to do."""
+    corpus = tmp_path / "peps"
+    corpus.mkdir()
+    (corpus / "pep-0001.rst").write_text(
+        "PEP: 1\nTitle: One\nStatus: Active\n\n\n- superseded by :pep:`2` in the list above.\n",
+        encoding="utf-8",
+    )
+    (corpus / "pep-0002.rst").write_text(
+        "PEP: 2\nTitle: Two\nStatus: Active\n\n\nNothing.\n", encoding="utf-8"
+    )
+    return corpus
 
 
 def test_every_row_names_a_candidate_target():
