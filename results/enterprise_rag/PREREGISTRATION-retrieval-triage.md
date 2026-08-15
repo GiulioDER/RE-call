@@ -5,8 +5,8 @@
 ## Registration
 
 ```yaml
-registration_commit: PENDING
-registration_authored: PENDING
+registration_commit: c8828db65f0577aa7b999e5bb4fee46fe7515e61
+registration_authored: 2026-08-15T21:52:54+00:00
 label_source: results/enterprise_rag/judgements.gpt-5.4.medium.json
 retrieval_fixture_digest: PENDING
 ```
