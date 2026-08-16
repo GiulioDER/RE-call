@@ -397,6 +397,93 @@ def builtin_guard(root: Path, git_dir: Path, is_main: bool, session_id: str, pid
     )
 
 
+def trunk_ref(root: Path) -> str | None:
+    """The remote trunk, never the local ref.
+
+    The local `master` here is routinely stale, and a stale base looks exactly
+    like a regression. No fetch: a hook must not put the network on the
+    session-start path, so this compares against whatever was last fetched.
+    """
+    for candidate in ("origin/master", "origin/main"):
+        rc, _ = git(root, "rev-parse", "--verify", "-q", candidate, timeout=10)
+        if rc == 0:
+            return candidate
+    return None
+
+
+def rules_drift(root: Path, ref: str | None) -> list:
+    """Is the project's own instruction file the current one?
+
+    Measured 2026-08-16 across both projects on this machine: **6 of 41
+    checkouts** carried current project rules. In recall, 17 of 21 worktrees had
+    no CLAUDE.md at all, because the file landed on master on 2026-08-15 and
+    every older worktree predates it. A session in one of those runs with none of
+    the rules it believes it has, and nothing anywhere says so.
+
+    This REPORTS and never repairs, for two reasons. The content of a rules file
+    is loaded by the harness from disk before this hook runs, so injecting it
+    here would mean acting on rules that are not in the file I can see. And a
+    local difference is not always staleness: an ablation arm is a deliberate
+    difference, and a hook that pushed you to "fix" it would quietly end the
+    experiment. So absence is stated plainly, and difference is stated neutrally.
+    """
+    if not ref:
+        return []
+    lines = []
+    names = ["CLAUDE.md"]
+
+    # Follow @-imports from BOTH the local file and the trunk's copy, and take
+    # the union. Reading only the local one is subtly wrong in the case that
+    # matters most: a checkout stale enough to predate an import line would not
+    # list the file it is missing, so precisely the worst-off checkouts would be
+    # told nothing. Reading only the trunk misses a local-only import.
+    sources = []
+    local_root_rules = root / "CLAUDE.md"
+    if local_root_rules.is_file():
+        try:
+            sources.append(local_root_rules.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError):
+            pass
+    rc, trunk_text = git(root, "show", f"{ref}:CLAUDE.md")
+    if rc == 0 and trunk_text:
+        sources.append(trunk_text)
+
+    for text in sources:
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("@") and stripped.endswith(".md") and " " not in stripped:
+                candidate = stripped[1:]
+                if candidate not in names and len(names) < 6:
+                    names.append(candidate)
+
+    for name in names:
+        rc, remote_hash = git(root, "rev-parse", f"{ref}:{name}")
+        if rc != 0 or not remote_hash:
+            continue  # not tracked on the trunk; there is nothing to be stale against
+        local = root / name
+        if not local.is_file():
+            _, missed = git(root, "log", "--oneline", f"HEAD..{ref}", "--", name)
+            n = len([x for x in missed.splitlines() if x.strip()])
+            lines.append(
+                f"rules  {name} is ABSENT from this checkout but tracked on {ref}"
+                + (f" ({n} commit(s) to it not here)" if n else "")
+                + f". You are working without it. Read it without switching branch: "
+                f"git show {ref}:{name}"
+            )
+            continue
+        rc, local_hash = git(root, "hash-object", str(local))
+        if rc == 0 and local_hash and local_hash != remote_hash:
+            _, missed = git(root, "log", "--oneline", f"HEAD..{ref}", "--", name)
+            n = len([x for x in missed.splitlines() if x.strip()])
+            lines.append(
+                f"rules  {name} differs from {ref}"
+                + (f", which has {n} commit(s) to it that this checkout lacks" if n else "")
+                + f". Could be a behind checkout, local edits, or a deliberate variant. "
+                f"Compare before assuming: git diff {ref} -- {name}"
+            )
+    return lines
+
+
 def orient(root: Path) -> list:
     """Branch, position against the remote trunk, and foreign changes."""
     lines = []
@@ -404,15 +491,7 @@ def orient(root: Path) -> list:
     _, head = git(root, "log", "--oneline", "-1")
     lines.append(f"branch  {branch}   head  {head}")
 
-    # Against origin/master, never the local ref, which goes stale here
-    # routinely; a stale base looks exactly like a regression. No fetch: a hook
-    # must not put the network on the session-start path.
-    ref = None
-    for candidate in ("origin/master", "origin/main"):
-        rc, _ = git(root, "rev-parse", "--verify", "-q", candidate, timeout=10)
-        if rc == 0:
-            ref = candidate
-            break
+    ref = trunk_ref(root)
     if ref:
         _, behind = git(root, "rev-list", "--count", f"HEAD..{ref}")
         _, ahead = git(root, "rev-list", "--count", f"{ref}..HEAD")
@@ -547,6 +626,11 @@ def build_report(payload: dict, state: dict) -> str | None:
             else:
                 state["mcp_action"] = "failed"
                 extra.append(f"MCP  session-mcp.sh FAILED: {tail[:300]}")
+
+    # Is the instruction file I was given the current one? Reported whether or
+    # not the workspace was refused: a refused workspace still tells you
+    # something about the checkout you landed in.
+    extra += rules_drift(root, trunk_ref(root))
 
     # Containers, only when there is something to say. A hook that reports
     # "nothing found" on every session start trains you to skip reading it.

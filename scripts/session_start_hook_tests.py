@@ -35,8 +35,12 @@ def sh(*args, cwd=None):
     return subprocess.run(args, cwd=cwd, capture_output=True, text=True)
 
 
-def new_repo(name, worktree=True):
-    """A throwaway repo with an optional linked worktree."""
+def new_repo(name, worktree=True, rules=None):
+    """A throwaway repo with an optional linked worktree.
+
+    `rules` commits a CLAUDE.md and points refs/remotes/origin/master at the
+    result, so drift can be tested without a real remote.
+    """
     base = SCRATCH / name
     if base.exists():
         subprocess.run(["cmd", "/c", "rmdir", "/s", "/q", str(base)], capture_output=True)
@@ -46,7 +50,11 @@ def new_repo(name, worktree=True):
     sh("git", "config", "user.name", "t", cwd=base)
     (base / "a.txt").write_text("x")
     sh("git", "add", "a.txt", cwd=base)
+    if rules is not None:
+        (base / "CLAUDE.md").write_text(rules, newline="\n")
+        sh("git", "add", "CLAUDE.md", cwd=base)
     sh("git", "commit", "-qm", "init", cwd=base)
+    sh("git", "update-ref", "refs/remotes/origin/master", "HEAD", cwd=base)
     if worktree:
         sh("git", "worktree", "add", "-q", "-b", "wt", "./wt", "HEAD", cwd=base)
         return base, base / "wt"
@@ -211,6 +219,62 @@ def test_foreign_session_space_falls_back():
           out.splitlines()[0])
 
 
+# ---------------------------------------------------------------- rules drift
+def test_rules_drift():
+    """The measured failure: 17 of 21 recall worktrees had no CLAUDE.md at all."""
+    m = load()
+    base, wt = new_repo("rules", rules="# rules\n\nsome standing instruction\n")
+
+    out, _ = report(m, wt, session="R1")
+    check("rules: an identical CLAUDE.md says nothing", "rules  " not in out,
+          out.splitlines()[-1][:80])
+
+    (wt / "CLAUDE.md").unlink()
+    out, _ = report(m, wt, session="R1")
+    ok = "rules  CLAUDE.md is ABSENT" in out and "git show origin/master:CLAUDE.md" in out
+    check("rules: an absent CLAUDE.md is reported with the command to read it", ok,
+          [x for x in out.splitlines() if x.startswith("rules")][:1])
+
+    (wt / "CLAUDE.md").write_text("# rules\n\nlocally changed\n", newline="\n")
+    out, _ = report(m, wt, session="R1")
+    line = [x for x in out.splitlines() if x.startswith("rules")]
+    ok = bool(line) and "differs from origin/master" in line[0] and "ABSENT" not in line[0]
+    check("rules: a differing CLAUDE.md is reported as differing, not absent", ok, line[:1])
+
+    # An ablation arm is a deliberate difference. The report must describe, not
+    # instruct: a hook that pushed a repair here would end the experiment.
+    ok = bool(line) and "deliberate variant" in line[0] and "fix" not in line[0].lower()
+    check("rules: a difference is reported neutrally, with no repair instruction", ok, line[:1])
+
+    base2, wt2 = new_repo("norules")  # no CLAUDE.md tracked anywhere
+    out, _ = report(m, wt2, session="R2")
+    check("rules: a repo with no tracked CLAUDE.md says nothing", "rules  " not in out)
+
+
+def test_rules_drift_follows_imports():
+    m = load()
+    base, wt = new_repo("rulesimport", rules="# rules\n\n@CLAUDE-lessons.md\n")
+    (base / "CLAUDE-lessons.md").write_text("# lessons\n", newline="\n")
+    sh("git", "add", "CLAUDE-lessons.md", cwd=base)
+    sh("git", "commit", "-qm", "lessons", cwd=base)
+    sh("git", "update-ref", "refs/remotes/origin/master", "HEAD", cwd=base)
+    # The worktree was cut BEFORE the lessons commit, so it lacks the file: the
+    # exact shape of the 11 sentiment-agent checkouts missing CLAUDE-lessons.md.
+    out, _ = report(m, wt, session="R3")
+    check("rules: an @-imported file that is absent here is reported",
+          "CLAUDE-lessons.md is ABSENT" in out,
+          [x for x in out.splitlines() if x.startswith("rules")][:2])
+
+    # The case that matters most: a checkout so stale its CLAUDE.md predates the
+    # import line cannot name the file it is missing. Imports must therefore be
+    # read from the trunk too, or the worst-off checkouts are told nothing.
+    (wt / "CLAUDE.md").write_text("# rules\n\nold copy, no import line\n", newline="\n")
+    out, _ = report(m, wt, session="R3")
+    check("rules: an import the STALE local file does not mention is still checked",
+          "CLAUDE-lessons.md is ABSENT" in out,
+          [x for x in out.splitlines() if x.startswith("rules")][:2])
+
+
 # ---------------------------------------------------------------- core behaviour
 def live_windows_pid():
     """A pid that is certainly alive, in the numbering tasklist understands.
@@ -263,6 +327,8 @@ if __name__ == "__main__":
         test_cannot_tell_liveness_is_alive,
         test_non_object_payload_is_logged_not_silent,
         test_foreign_session_space_falls_back,
+        test_rules_drift,
+        test_rules_drift_follows_imports,
     ]:
         try:
             fn()
