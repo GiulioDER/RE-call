@@ -246,8 +246,9 @@ class TestPercentEncodingRoundTrip:
 
         The decode runs before the authority guard, so guarding only the authority left these
         three raising `urllib.error.URLError` out of `_resolve` on 3.14/POSIX — untyped, past
-        every caller written to handle manifest problems. `Path.as_uri()` cannot emit them, but a
-        hand-written manifest can.
+        every caller written to handle manifest problems. `recall`'s own inventory cannot emit
+        this form (it resolves before `as_uri()`, and `resolve()` collapses a POSIX `//` root),
+        but bare `Path("//share/x.md").as_uri()` does, so a hand-written manifest can.
 
         Asserted as "one of the reader's two declared exception types" rather than a single class,
         because which one fires legitimately differs by platform and version. What must never

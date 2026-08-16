@@ -277,8 +277,13 @@ class LocalObjectReader:
             # left this hole open: a URI whose PATH begins with `//` (`file:////share/x.md`,
             # `file://localhost//share/x.md`) reads as an authority to 3.14's POSIX
             # `url2pathname` and raises `URLError`, which is an OSError and would propagate
-            # untyped through `verify()` and `generation build`. `Path.as_uri()` cannot produce
-            # these, but a hand-written or third-party manifest can.
+            # untyped through `verify()` and `generation build`.
+            #
+            # `recall`'s own inventory cannot emit this form, because it calls `as_uri()` on
+            # paths `candidate_files` has already resolved and `resolve()` collapses a POSIX `//`
+            # root to `/`. Bare `Path("//share/x.md").as_uri()` DOES produce it on POSIX, so the
+            # form is reachable from a hand-written or third-party manifest, and from any caller
+            # that skips the resolve.
             raise ObjectNotAllowed(
                 f"local object {entry.uri!r} does not name a readable local path "
                 f"({type(exc).__name__})."
