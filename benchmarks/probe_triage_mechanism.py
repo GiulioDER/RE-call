@@ -317,9 +317,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     # The complement of M2's counted set, by construction: one predicate, recorded once per row
     # in the loop above and used both ways here.
     flat = [None if inv else p for p, inv in zip(published, inverted_flags, strict=True)]
-    print(_matched(flat, published, labels,
-                   "M6 AUC of ratio_8_over_1 outside the inverted regime",
-                   "predicted 0.60, 0.52 to 0.68"))
+    # No matched baseline here, unlike M4 and M5: M6 IS the published feature on a subset, so a
+    # "published ratio on those same rows" column would print the same number twice and read as
+    # agreement between two measurements rather than one number restated.
+    m6, m6_n, m6_pos = _auc_over(flat, labels)
+    print(f"  M6 AUC of ratio_8_over_1 outside the inverted regime = {m6:.4f}   "
+          f"on n={m6_n} ({m6_pos} positive)   [predicted 0.60, 0.52 to 0.68]")
 
     p3 = spearman(inverted_top, published)
     print(f"  P3 Spearman(inversions, ratio_8_over_1)          = {p3:+.4f}   "

@@ -164,3 +164,112 @@ merely looks like it.
    returns 0.0 out of range. Both fixes change feature values on affected rows, so the probe records
    how many rows moved and A4 is checked against the **pre-fix** definition to keep the comparison
    honest.
+
+---
+
+## Result, Pass A (2026-08-16)
+
+**Status: measured**, offline from fixture `b6405b77…`, 500 questions of which **470 carry gold**
+and are scoreable. No model, no judge, no network. **No prediction above is edited.**
+
+### Apparatus first, and it all passes
+
+| # | check | result |
+|---|---|---|
+| A1 | fixture digest | **PASSED**, `b6405b77…` |
+| A2 | seeded random feature; label as a feature | **0.4718**; **1.0000** |
+| A4 | per-row agreement with `explore_triage_signal`, 1e-9 | **PASSED on all 470 rows** |
+| A4 | published `ratio_8_over_1` AUC reproduced | **0.6375**, the published number exactly |
+| — | rows where the guard changes the feature | **0 of 470** |
+| — | rows where the registration's two phrasings of "inverted" disagree | **0 of 470** |
+
+🔑 A2's random control came in at **0.4718**, the same value the first registered run reported.
+Two independently written scorers reaching the same random control on the same seed is the
+strongest single sign that this probe measures what the earlier one measured.
+
+The last two rows explain why the eleven defects bug review found moved no number here: **none was
+active on this fixture.** No pool is shorter than 8, no rank-1 score is negative, no key is
+missing. They were fixed because being latent is not being harmless.
+
+### The registered numbers
+
+| # | quantity | predicted | measured | verdict |
+|---|---|---|---|---|
+| M1 | mean per-query Spearman(position, dense score) | −0.55, [−0.30, −0.75] | **−0.3383** | **inside**, at the weak edge |
+| M2 | fraction with dense(rank 8) > dense(rank 1) | 0.12, [0.05, 0.25] | **0.1596** (75/470) | **inside** |
+| M3 | AUC of top-8 inversions, the pure disagreement feature | 0.60, [0.53, 0.68] | **0.5845** | **inside; clears the 0.53 falsifier** |
+| M6 | AUC of `ratio_8_over_1` outside the inverted regime | 0.60, [0.52, 0.68] | **0.6361** (n=395) | **inside** |
+| P3 | Spearman(inversions, `ratio_8_over_1`) | \|rho\| > 0.5 | **+0.5791** | **HELD** |
+| M4, M5 | need the fused score and per-leg ranks | — | not scoreable on capture 1 | Pass B running |
+
+### 🔑 The mechanism survives its falsifier, and explains part of the feature, not all of it
+
+**M3 = 0.5845.** A count of inversions in the top 8 uses no score magnitude at all: it asks only
+how often fusion placed a chunk above one the dense leg scored higher. That alone predicts a
+retrieval miss and clears the registered kill threshold of 0.53. **Leg disagreement is a real part
+of what `ratio_8_over_1` reads.**
+
+**It is nonetheless the weaker feature (0.5845 against 0.6375), and P3 says the two share only
+33.5% of their rank variance** (rho 0.579, squared). Disagreement is a component, not the whole
+story. The withdrawn "flatness" reading is not reinstated by this, and the feature is not now
+explained.
+
+⚠️ **Multiplicity, stated because the previous document had to be corrected for omitting it.** At
+158 positives the standard error is 0.0398. M3's distance from chance is 0.0845, which clears a
+single-comparison 1.96 SE (0.0780) but **not** a Bonferroni bound over the three registered looks
+(2.39 SE = 0.0952). **M3 is suggestive, not established.** M6 clears both bounds, but M6 is the
+published feature restricted to a subset: the existing number restated on 395 rows, not
+independent evidence.
+
+### What M6 settles, which is worth more than its AUC
+
+The feature's power does **not** come from the 75 inverted rows. Removing every row where rank 8
+outscores rank 1 leaves the AUC essentially unchanged, 0.6361 against 0.6375 on all 470. So
+`ratio_8_over_1` is a **graded score across ordinary queries, not a rare-event detector firing on
+a strange 16%**. P1 predicted M3 and M6 would both clear 0.55, and both do.
+
+### M1 came in weak, and that is the informative miss
+
+I predicted −0.55 and measured **−0.3383**, inside the interval only because the interval was
+wide. Fusion and the dense leg agree **less** than I expected: the ranking the system serves is
+substantially unlike the ranking the dense scores imply. That is more room for a disagreement
+statistic to work in rather than less, so it is consistent with M3, but the size of the error is
+the part worth keeping.
+
+---
+
+## ⛔ Apparatus failure found while starting Pass B: the query embedder is NOT deterministic
+
+**Appended 2026-08-16. This falsifies a known-answer check of the FIRST pre-registration, and is
+recorded here because this is where it was found.**
+
+`PREREGISTRATION-retrieval-triage.md` registers R1: *"retrieval of the same question twice →
+byte-identical ranked list … retrieval has no sampling, so this must hold, and if it does not the
+whole fixture is unusable."* **No result for it was ever reported.** A 3-question capture-2 pilot
+disagreed with capture 1 on one question, so I measured R1 directly.
+
+- **42.5% of query-embedding call pairs differ**: 17 of 40 questions, each embedded twice on the
+  same host in the same process, `voyage:voyage-4-large`.
+- Lowest cosine between two embeddings of one string: **0.998545**. Largest component delta:
+  **6.4e-3**.
+- The retrieval path does **not** use `recall.cache`, which is opt-in and reaches only `index.py`,
+  so every question is embedded live and this variance enters every run.
+
+**What it does to a fixture.** On the one pilot question that re-embedded differently: all 199
+shared documents shifted by about −0.008 cosine, 105 of 200 pool positions moved, and the top-8
+changed. Yet `ratio_8_over_1` moved by **+0.00126** and the `missed_any` label did **not** flip.
+
+**So the perturbation is large in the pool and small in the quantities that were published, on a
+sample of one.** How small across 470 rows is not yet known, and I decline to guess.
+
+### What this changes
+
+1. ⛔ **A3 above is unachievable as an identity check and is withdrawn as one.** "Identical on
+   every question" cannot hold when 42.5% of embeddings differ. It is not being weakened to fit a
+   result; it is being replaced by the measurement it should have been.
+2. 🔑 **Pass B now measures reproducibility as well as M4 and M5.** Capture 2 against capture 1
+   over all 470 scoreable rows gives the label-flip rate, the feature's run-to-run movement, and
+   the movement of the headline AUC. Better use of the same run, at no extra cost.
+3. ⚠️ **Every AUC in this line of work carries an unmeasured run-to-run component**, the 0.642 and
+   the 0.6375 included. Not wrong, but quoted to four decimals with no reproducibility interval.
+   Pass B supplies the interval that should have accompanied them.
