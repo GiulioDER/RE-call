@@ -78,11 +78,20 @@ _process_alive() {
     kill -0 "$pid" 2>/dev/null
 }
 
+# Liveness is asked FIRST, and the timestamp only afterwards.
+#
+# Asking the timestamp first inverts the rule this whole file is built on. A
+# claim whose `claimed_epoch` is missing or truncated, but whose process is
+# running, belongs to a LIVE session, and treating it as stale hands away a
+# worktree somebody is working in. Reproduced 2026-08-16 against a running
+# claude.exe: a claim file of `session=OTHER` plus a live pid and no epoch was
+# taken over without the liveness check ever being consulted. A torn write from
+# a concurrent claim produces exactly that file.
 _claim_is_stale() {
     local when age
-    when="$(_read_key claimed_epoch)"
-    case "$when" in ''|*[!0-9]*) return 0 ;; esac  # unreadable claim is stale
     _process_alive "$(_read_key pid)" && return 1
+    when="$(_read_key claimed_epoch)"
+    case "$when" in ''|*[!0-9]*) return 0 ;; esac  # no live process, no readable stamp
     age=$(( $(_epoch) - when ))
     [ "$age" -gt $(( STALE_HOURS * 3600 )) ]
 }
@@ -142,19 +151,100 @@ EOF
     return 0
 }
 
+# Take the claim atomically, so two sessions starting at once cannot both be
+# told they hold this worktree.
+#
+# `cmd_check` and the write are tens of milliseconds apart, with git calls in
+# between, and a plain `> "$f"` truncates before it writes. Two concurrent runs
+# on one unclaimed worktree were BOTH told they had claimed it, and a reader
+# arriving mid-write saw a half-written claim, which is the input that
+# `_claim_is_stale` used to mishandle. So:
+#
+#   - taking an UNCLAIMED worktree goes through `set -C` (noclobber), where the
+#     create is the atomic step and exactly one racer can win;
+#   - taking over a stale claim writes a temp file and `mv`s it into place,
+#     which is atomic on the same filesystem and never leaves a torn file.
+# `mkdir` is the atomic primitive, because noclobber is NOT one here.
+#
+# `set -C` looks like the portable answer and is not. Measured 2026-08-16 on
+# this machine: four concurrent `claim` runs against one unclaimed worktree ALL
+# reported success under noclobber, because MSYS does not implement the
+# redirection as an O_EXCL create. `mkdir` is atomic on every filesystem this
+# runs on, and it fails cleanly when the directory is already there.
+#
+# A lock held by a process that died is bounded by LOCK_WAIT rather than by a
+# timestamp: failing to acquire it means some other session is mid-claim, and
+# refusing is the safe direction. The trap releases ours even if the body dies.
+LOCK_WAIT="${RECALL_CLAIM_LOCK_WAIT:-50}"   # x 0.1s
+
+_claim_lock() {
+    local lock i
+    lock="$1.lock"
+    i=0
+    while ! mkdir "$lock" 2>/dev/null; do
+        i=$((i + 1))
+        if [ "$i" -gt "$LOCK_WAIT" ]; then
+            return 1
+        fi
+        sleep 0.1
+    done
+    return 0
+}
+
 cmd_claim() {
     cmd_check || return 1
-    local f
+    local f holder rc
     f="$(_claim_file)"
-    {
-        printf 'session=%s\n' "${SESSION_ID:-unknown}"
-        printf 'pid=%s\n' "$SESSION_PID"
-        printf 'branch=%s\n' "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
-        printf 'worktree=%s\n' "$(_toplevel)"
-        printf 'claimed_at=%s\n' "$(_now)"
-        printf 'claimed_epoch=%s\n' "$(_epoch)"
-    } > "$f"
-    echo "session-space: claimed $(basename "$(_toplevel)") for this session" >&2
+
+    if ! _claim_lock "$f"; then
+        echo "session-space: another session is claiming this worktree right now." >&2
+        echo "session-space: not taking it. Take your own space with: session-space.sh new <name>" >&2
+        return 1
+    fi
+    # shellcheck disable=SC2064 - expand $f now, deliberately
+    trap "rmdir '$f.lock' 2>/dev/null" EXIT INT TERM
+
+    # Re-check INSIDE the lock. The check above ran before we held it, so a
+    # racer may have claimed the worktree in between; without this the lock only
+    # serialises the writes instead of deciding who owns the thing.
+    holder="$(_read_key session)"
+    if [ -n "$holder" ] && [ "$holder" != "$SESSION_ID" ] && ! _claim_is_stale; then
+        cat >&2 <<EOF
+session-space: another session (${holder}) claimed this worktree at the same moment
+and won. Do not edit here. Take your own space:
+
+  scripts/session-space.sh new <short-name>
+EOF
+        rmdir "$f.lock" 2>/dev/null
+        trap - EXIT INT TERM
+        return 1
+    fi
+
+    # Write beside the claim and move it into place, so a concurrent reader
+    # never parses a half-written file. A torn claim is not a harmless one: it
+    # is the input the staleness test has to judge.
+    rc=0
+    if ! _claim_body > "$f.$$.tmp" 2>/dev/null; then
+        echo "session-space: could not write a claim in $(dirname "$f")" >&2
+        rc=1
+    elif ! mv -f "$f.$$.tmp" "$f" 2>/dev/null; then
+        rm -f "$f.$$.tmp"
+        echo "session-space: could not replace the claim file $f" >&2
+        rc=1
+    fi
+    rmdir "$f.lock" 2>/dev/null
+    trap - EXIT INT TERM
+    [ "$rc" -eq 0 ] && echo "session-space: claimed $(basename "$(_toplevel)") for this session" >&2
+    return "$rc"
+}
+
+_claim_body() {
+    printf 'session=%s\n' "${SESSION_ID:-unknown}"
+    printf 'pid=%s\n' "$SESSION_PID"
+    printf 'branch=%s\n' "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    printf 'worktree=%s\n' "$(_toplevel)"
+    printf 'claimed_at=%s\n' "$(_now)"
+    printf 'claimed_epoch=%s\n' "$(_epoch)"
 }
 
 cmd_release() {
