@@ -84,9 +84,14 @@ if [ "${1:-}" = "--check" ]; then
     SECRETS="$SECRETS" python <<'PY'
 import json, os
 d = json.load(open(os.environ["SECRETS"], encoding="utf-8")).get("servers", {})
-print(f"  remote servers configured: {len(d)}")
+included = bool(os.environ.get("RECALL_MCP_INCLUDE_REMOTE"))
+print("  would write: recall, recall-memory (this project's own corpus)")
+print(f"  remote servers available: {len(d)}, included: {'YES' if included else 'no'}")
 for name, cfg in sorted(d.items()):
     print(f"    - {name} (auth: {'yes' if cfg.get('token') else 'none'})")
+if not included:
+    print("  their corpus is /opt/sentiment_agent, not this repository.")
+    print("  set RECALL_MCP_INCLUDE_REMOTE=1 to add them anyway.")
 PY
     exit 0
 fi
@@ -136,14 +141,27 @@ servers = {
     "recall-memory": dogfood("memory"),
 }
 
-for name, cfg in remote.items():
-    url = cfg.get("url")
-    if not url:
-        raise SystemExit(f"session-mcp: server {name!r} has no url")
-    entry = {"type": "http", "url": url}
-    if cfg.get("token"):
-        entry["headers"] = {"Authorization": f"Bearer {cfg['token']}"}
-    servers[name] = entry
+# The internal servers are OFF by default here, and that is a deliberate reversal.
+#
+# Their corpus is /opt/sentiment_agent: `code_search` does not search recall, and `db_query_ro`
+# does not reach recall's tables. Asked about this repository they do not error, they answer
+# confidently about the wrong one, which is the most expensive failure mode on this list. They also
+# cost standing context in every session: `mcp-pg-ops` alone is 38 tool definitions against 2 calls
+# ever, measured over 147,119 tool calls.
+#
+# They remain one variable away for the sessions that genuinely want them, and they are configured
+# by default in sentiment-agent's own checkouts, where that corpus IS the project:
+#
+#   RECALL_MCP_INCLUDE_REMOTE=1 scripts/session-mcp.sh
+if os.environ.get("RECALL_MCP_INCLUDE_REMOTE"):
+    for name, cfg in remote.items():
+        url = cfg.get("url")
+        if not url:
+            raise SystemExit(f"session-mcp: server {name!r} has no url")
+        entry = {"type": "http", "url": url}
+        if cfg.get("token"):
+            entry["headers"] = {"Authorization": f"Bearer {cfg['token']}"}
+        servers[name] = entry
 
 out = os.environ["OUT"]
 # newline="\n": this repo is eol=lf and Python would otherwise write CRLF on Windows.

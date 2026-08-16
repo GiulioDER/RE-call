@@ -53,6 +53,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -397,6 +398,109 @@ def builtin_guard(root: Path, git_dir: Path, is_main: bool, session_id: str, pid
     )
 
 
+#: Which remote MCP servers belong to which project, keyed by the origin
+#: `owner/repo` slug, which is the only project identifier stable across
+#: worktrees (a worktree's directory name is not even its branch). Lives beside
+#: the secrets file, outside every repo, because the server list is a host
+#: inventory and that is disclosure on its own.
+MCP_POLICY = Path.home() / ".claude" / "mcp-projects.json"
+MCP_SECRETS = Path(os.environ.get("RECALL_MCP_SECRETS", "")) if os.environ.get(
+    "RECALL_MCP_SECRETS") else Path.home() / ".claude" / "recall-mcp-secrets.json"
+
+
+def repo_slug(root: Path) -> str | None:
+    """`owner/repo` from the origin remote, or None."""
+    rc, url = git(root, "remote", "get-url", "origin")
+    if rc != 0 or not url:
+        return None
+    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", url.strip())
+    return m.group(1) if m else None
+
+
+def generate_mcp_generic(root: Path, slug: str | None) -> tuple[str, str]:
+    """Write `.mcp.json` for a project that ships no generator of its own.
+
+    Measured 2026-08-16: **4 of 41 checkouts** across both projects had an
+    `.mcp.json`, so 37 of 41 sessions started with no MCP servers at all. That,
+    not reliability, is why the servers go unused. recall ships
+    `scripts/session-mcp.sh`; sentiment-agent ships nothing, and it is the
+    project whose corpus those servers actually are.
+
+    The server list is **curated per project, not maximal**. Loading everything
+    everywhere costs a standing context budget for tools that are never called
+    (`mcp-pg-ops` is 38 tool definitions against 2 calls ever), and it puts one
+    project's code search in front of a session working on another, which does
+    not error: it answers confidently about the wrong repository.
+
+    Returns (action, message) for the report and the log.
+    """
+    if not slug:
+        return "no-origin", "no origin remote, so no project identity to select servers by"
+    try:
+        policy = json.loads(MCP_POLICY.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "no-policy", f"no server policy at {MCP_POLICY}"
+    wanted = (policy.get("projects") or {}).get(slug)
+    if wanted is None:
+        wanted = policy.get("default") or []
+    if not wanted:
+        return "none-configured", f"no servers configured for {slug}"
+
+    # Refuse BEFORE writing, never after. The file carries bearer tokens and
+    # internal host addresses; checking afterwards would mean warning about a
+    # file that already exists on disk with real credentials in it.
+    rc, _ = git(root, "check-ignore", "-q", ".mcp.json")
+    if rc != 0:
+        return "refused-not-ignored", (
+            ".mcp.json is NOT gitignored in this checkout, so it was not written. "
+            "It would carry bearer tokens and internal host addresses. "
+            "Add '.mcp.json' to .gitignore first."
+        )
+    try:
+        secrets = json.loads(MCP_SECRETS.read_text(encoding="utf-8")).get("servers") or {}
+    except (OSError, ValueError):
+        return "no-secrets", f"no secrets file at {MCP_SECRETS}"
+
+    servers, missing = {}, []
+    for name in wanted:
+        cfg = secrets.get(name)
+        if not cfg or not cfg.get("url"):
+            missing.append(name)
+            continue
+        entry = {"type": "http", "url": cfg["url"]}
+        if cfg.get("token"):
+            entry["headers"] = {"Authorization": f"Bearer {cfg['token']}"}
+        servers[name] = entry
+    if not servers:
+        return "no-servers-resolved", f"none of {wanted} are in the secrets file"
+
+    try:
+        with (root / ".mcp.json").open("w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"mcpServers": servers}, fh, indent=2)
+            fh.write("\n")
+    except OSError as exc:
+        return "write-failed", f"could not write .mcp.json: {exc}"
+    note = f"wrote .mcp.json for {slug}: {', '.join(sorted(servers))}"
+    if missing:
+        note += f" (not in secrets file: {', '.join(missing)})"
+    return "generated", note
+
+
+def mcp_measurement_note(detail: str) -> str:
+    """The one line that turns every session start into a data point.
+
+    Whether a `.mcp.json` written here is early enough for the client to read it
+    is still an open, pre-registered question, so this states both outcomes
+    rather than asserting the predicted one.
+    """
+    return (
+        f"MCP  {detail}. **This session's own MCP tool list is the measurement**: if those "
+        "servers are absent, the client had already read the missing file and they arrive "
+        "only on the next session in this checkout. Record which it was in "
+        "docs/preregistrations/2026-08-16-sessionstart-hook-mcp-ordering.md"
+    )
+
+
 def trunk_ref(root: Path) -> str | None:
     """The remote trunk, never the local ref.
 
@@ -601,31 +705,39 @@ def build_report(payload: dict, state: dict) -> str | None:
     mcp_json = root / ".mcp.json"
     state["mcp_json_existed_before_hook"] = mcp_json.exists()
     state["mcp_action"] = "already-present" if mcp_json.exists() else "n/a"
-    if mcp_sh.is_file() and not mcp_json.exists():
+    if not mcp_json.exists():
         if blocked:
             state["mcp_action"] = "skipped-workspace-refused"
             extra.append("MCP  .mcp.json not generated (workspace refused first)")
-        else:
+        elif mcp_sh.is_file():
+            # The repo ships a generator, so it decides its own server list.
             rc, message = run_script(mcp_sh, cwd=str(root))
             tail = message.splitlines()[-1] if message else "ok"
             if rc == 0:
                 state["mcp_action"] = "generated"
-                extra.append(
-                    f"MCP  generated .mcp.json: {tail}. **This session's own MCP tool list is "
-                    "the measurement**: if recall/recall-memory are absent, the client had "
-                    "already read the missing file and they arrive only on the next session "
-                    "here. Record which it was in "
-                    "docs/preregistrations/2026-08-16-sessionstart-hook-mcp-ordering.md"
-                )
+                extra.append(mcp_measurement_note(tail))
             elif rc == LAUNCH_FAILED:
                 state["mcp_action"] = "launch-failed"
                 extra.append(
                     "MCP  .mcp.json MISSING and session-mcp.sh could not be run "
-                    f"({tail[:120]}). No recall/qwen MCP tools this session."
+                    f"({tail[:120]}). No MCP tools this session."
                 )
             else:
                 state["mcp_action"] = "failed"
                 extra.append(f"MCP  session-mcp.sh FAILED: {tail[:300]}")
+        else:
+            # No generator in the repo: use the global per-project policy. This
+            # is the path that reaches sentiment-agent's 20 checkouts, which
+            # ship nothing and are where the qwen servers are the right corpus.
+            action, message = generate_mcp_generic(root, repo_slug(root))
+            state["mcp_action"] = action
+            if action == "generated":
+                extra.append(mcp_measurement_note(message))
+            elif action in ("refused-not-ignored", "write-failed", "no-secrets"):
+                extra.append(f"MCP  NOT written: {message}")
+            # Anything else (no policy entry for this project, no origin) is the
+            # ordinary case for a repo that is simply not meant to have servers,
+            # and saying so on every session start would be noise.
 
     # Is the instruction file I was given the current one? Reported whether or
     # not the workspace was refused: a refused workspace still tells you

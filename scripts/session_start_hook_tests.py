@@ -5,6 +5,7 @@ test, so every guard here is exercised with the input that used to defeat it.
 """
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -275,6 +276,64 @@ def test_rules_drift_follows_imports():
           [x for x in out.splitlines() if x.startswith("rules")][:2])
 
 
+# ---------------------------------------------------------------- mcp policy
+def _mcp_fixture(tmp: Path, slug, wanted, gitignored=True):
+    """A repo with an origin, a policy file and a secrets file, all throwaway."""
+    m = load()
+    base, wt = new_repo("mcp-" + slug.split("/")[-1])
+    sh("git", "remote", "add", "origin", f"https://example.invalid/{slug}.git", cwd=base)
+    if gitignored:
+        (base / ".gitignore").write_text(".mcp.json\n", newline="\n")
+        sh("git", "add", ".gitignore", cwd=base)
+        sh("git", "commit", "-qm", "ignore", cwd=base)
+        (wt / ".gitignore").write_text(".mcp.json\n", newline="\n")
+    policy = tmp / "policy.json"
+    policy.write_text(json.dumps({"projects": {slug: wanted}, "default": []}), newline="\n")
+    secrets = tmp / "secrets.json"
+    secrets.write_text(json.dumps({"servers": {
+        "qwen-mcp": {"url": "http://h.invalid:49555/mcp", "token": "T"},
+        "vps3-lite": {"url": "http://h.invalid:49556/mcp"},
+        "code-rag": {"url": "http://h.invalid:8765/mcp", "token": "T"},
+    }}), newline="\n")
+    m.MCP_POLICY = policy
+    m.MCP_SECRETS = secrets
+    return m, base, wt
+
+
+def test_mcp_generic_generator():
+    tmp = SCRATCH / "mcpcfg"
+    tmp.mkdir(parents=True, exist_ok=True)
+
+    m, base, wt = _mcp_fixture(tmp, "GiulioDER/sentiment-agent", ["qwen-mcp", "vps3-lite"])
+    check("mcp: the origin slug is the project key",
+          m.repo_slug(wt) == "GiulioDER/sentiment-agent", m.repo_slug(wt))
+
+    action, msg = m.generate_mcp_generic(wt, m.repo_slug(wt))
+    written = json.loads((wt / ".mcp.json").read_text(encoding="utf-8"))
+    names = sorted(written["mcpServers"])
+    check("mcp: writes exactly the curated server list",
+          action == "generated" and names == ["qwen-mcp", "vps3-lite"], f"{action}: {names}")
+
+    check("mcp: a token becomes an Authorization header",
+          written["mcpServers"]["qwen-mcp"]["headers"]["Authorization"] == "Bearer T")
+    check("mcp: a server with no token gets no auth header",
+          "headers" not in written["mcpServers"]["vps3-lite"])
+    check("mcp: an uncurated server is NOT written",
+          "code-rag" not in written["mcpServers"])
+
+    # The refusal that must fire: this file carries bearer tokens.
+    m2, base2, wt2 = _mcp_fixture(tmp, "GiulioDER/leaky-repo", ["qwen-mcp"], gitignored=False)
+    action, msg = m2.generate_mcp_generic(wt2, m2.repo_slug(wt2))
+    check("mcp: REFUSES to write when .mcp.json is not gitignored",
+          action == "refused-not-ignored" and not (wt2 / ".mcp.json").exists(), msg[:70])
+
+    # A project with no entry must be silent, not an error.
+    m3, base3, wt3 = _mcp_fixture(tmp, "GiulioDER/unlisted", [])
+    action, _ = m3.generate_mcp_generic(wt3, m3.repo_slug(wt3))
+    check("mcp: a project with no configured servers writes nothing",
+          action == "none-configured" and not (wt3 / ".mcp.json").exists(), action)
+
+
 # ---------------------------------------------------------------- core behaviour
 def live_windows_pid():
     """A pid that is certainly alive, in the numbering tasklist understands.
@@ -328,6 +387,7 @@ if __name__ == "__main__":
         test_non_object_payload_is_logged_not_silent,
         test_foreign_session_space_falls_back,
         test_rules_drift,
+        test_mcp_generic_generator,
         test_rules_drift_follows_imports,
     ]:
         try:
