@@ -42,7 +42,7 @@ if ! git -C "$ROOT" check-ignore -q .mcp.json 2>/dev/null; then
     exit 1
 fi
 
-if [ ! -f "$SECRETS" ]; then
+if [ ! -f "$SECRETS" ] && [ -n "${RECALL_MCP_INCLUDE_REMOTE:-}" ]; then
     cat >&2 <<EOF
 session-mcp: no secrets file at $SECRETS
 
@@ -83,7 +83,10 @@ if [ "${1:-}" = "--check" ]; then
     echo "  .mcp.json is gitignored: yes"
     SECRETS="$SECRETS" python <<'PY'
 import json, os
-d = json.load(open(os.environ["SECRETS"], encoding="utf-8")).get("servers", {})
+try:
+    d = json.load(open(os.environ["SECRETS"], encoding="utf-8")).get("servers", {})
+except OSError:
+    d = {}
 included = bool(os.environ.get("RECALL_MCP_INCLUDE_REMOTE"))
 print("  would write: recall, recall-memory (this project's own corpus)")
 print(f"  remote servers available: {len(d)}, included: {'YES' if included else 'no'}")
@@ -99,10 +102,19 @@ fi
 SECRETS="$SECRETS" OUT="$OUT" ROOT="$ROOT" DOGFOOD_DSN="$DOGFOOD_DSN" python <<'PY'
 import json, os
 
-secrets = json.load(open(os.environ["SECRETS"], encoding="utf-8"))
-remote = secrets.get("servers")
-if not remote:
-    raise SystemExit("session-mcp: the secrets file has no 'servers' object")
+# Only the remote half needs the secrets file, so a checkout without one still
+# gets the two local dogfood servers instead of nothing. Requiring it
+# unconditionally survived the change that made the remote servers opt-in, and
+# turned "no secrets file" into "no MCP at all".
+want_remote = bool(os.environ.get("RECALL_MCP_INCLUDE_REMOTE"))
+remote = {}
+if want_remote:
+    try:
+        remote = json.load(open(os.environ["SECRETS"], encoding="utf-8")).get("servers") or {}
+    except OSError:
+        raise SystemExit(f"session-mcp: no secrets file at {os.environ['SECRETS']}") from None
+    if not remote:
+        raise SystemExit("session-mcp: the secrets file has no 'servers' object")
 
 root, dsn = os.environ["ROOT"], os.environ["DOGFOOD_DSN"]
 
@@ -153,7 +165,7 @@ servers = {
 # by default in sentiment-agent's own checkouts, where that corpus IS the project:
 #
 #   RECALL_MCP_INCLUDE_REMOTE=1 scripts/session-mcp.sh
-if os.environ.get("RECALL_MCP_INCLUDE_REMOTE"):
+if want_remote:
     for name, cfg in remote.items():
         url = cfg.get("url")
         if not url:

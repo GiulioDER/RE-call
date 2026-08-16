@@ -84,5 +84,39 @@ else
     no "no .tmp strays left in the git dir" "$strays found"
 fi
 
+# --- 7. an orphaned lock is reclaimable -------------------------------------
+# AUDIT-2 BUG-003: the first version of the lock could not be reclaimed. A holder
+# killed without running its trap blocked every future claim in that worktree
+# forever, `release --force` did not clear it, and `whose` reported "unclaimed"
+# at the same time. The SessionStart hook creates exactly that state on its own
+# timeout path, which uses `taskkill /T /F` and runs no trap.
+rm -f "$CLAIM"
+mkdir -p "$CLAIM.lock"
+printf '999999999\n' > "$CLAIM.lock/pid"        # a pid that is certainly dead
+if CLAUDE_CODE_SESSION_ID=ORPHAN bash "$SPACE" claim >/dev/null 2>&1; then
+    ok "a lock held by a dead pid is broken, not waited for"
+else
+    no "a lock held by a dead pid is broken, not waited for" "claim still refused"
+fi
+[ -d "$CLAIM.lock" ] && no "the lock is released after a successful claim" "lock still present" \
+                     || ok "the lock is released after a successful claim"
+
+# --- 8. a lock held by a LIVE pid is respected -------------------------------
+# The control: if test 7 passed because the lock is always broken, this fails.
+LIVE_PID2=$(tasklist //FI "IMAGENAME eq claude.exe" //NH 2>/dev/null | awk 'NF{print $2; exit}')
+mkdir -p "$CLAIM.lock"; printf '%s\n' "$LIVE_PID2" > "$CLAIM.lock/pid"
+if RECALL_CLAIM_LOCK_WAIT=3 CLAUDE_CODE_SESSION_ID=OTHER2 bash "$SPACE" claim >/dev/null 2>&1; then
+    no "a lock held by a LIVE pid is respected" "claim succeeded; test 7 proves nothing"
+else
+    ok "a lock held by a LIVE pid is respected"
+fi
+
+# --- 9. release --force clears a stranded lock -------------------------------
+if CLAUDE_CODE_SESSION_ID=ANY bash "$SPACE" release --force >/dev/null 2>&1; [ ! -d "$CLAIM.lock" ]; then
+    ok "release --force clears a stranded lock"
+else
+    no "release --force clears a stranded lock" "lock survived the documented recovery"
+fi
+
 printf '\n%d/%d passed\n' "$pass" "$((pass+fail))"
 [ "$fail" -eq 0 ]

@@ -160,9 +160,8 @@ EOF
 # arriving mid-write saw a half-written claim, which is the input that
 # `_claim_is_stale` used to mishandle. So:
 #
-#   - taking an UNCLAIMED worktree goes through `set -C` (noclobber), where the
-#     create is the atomic step and exactly one racer can win;
-#   - taking over a stale claim writes a temp file and `mv`s it into place,
+#   - acquiring the lock is the atomic step, so exactly one racer can proceed;
+#   - the claim itself is then written to a temp file and `mv`d into place,
 #     which is atomic on the same filesystem and never leaves a torn file.
 # `mkdir` is the atomic primitive, because noclobber is NOT one here.
 #
@@ -172,22 +171,46 @@ EOF
 # redirection as an O_EXCL create. `mkdir` is atomic on every filesystem this
 # runs on, and it fails cleanly when the directory is already there.
 #
-# A lock held by a process that died is bounded by LOCK_WAIT rather than by a
-# timestamp: failing to acquire it means some other session is mid-claim, and
-# refusing is the safe direction. The trap releases ours even if the body dies.
-LOCK_WAIT="${RECALL_CLAIM_LOCK_WAIT:-50}"   # x 0.1s
+# ⚠️ A LOCK MUST BE RECLAIMABLE. The first version of this was not, and that made
+# it the only permanent failure state in the whole mechanism: a holder killed
+# without running its trap left the directory behind, every later `claim` in that
+# worktree failed forever, `release --force` did not remove it, and `whose`
+# cheerfully reported "unclaimed" at the same time. The SessionStart hook creates
+# exactly that state on its own timeout path, which uses `taskkill /T /F` and
+# runs no trap. So the lock records its holder's pid and any lock whose holder is
+# gone is broken rather than waited for.
+LOCK_WAIT="${RECALL_CLAIM_LOCK_WAIT:-20}"   # x 0.1s; each sleep is a process spawn here
+#: A lock directory with no readable pid is either a racer mid-creation (which
+#: takes microseconds) or an orphan from a process killed between the two. Wait a
+#: few rounds, then treat it as an orphan; the alternative is the permanent wedge.
+LOCK_NOPID_ROUNDS=10
 
 _claim_lock() {
-    local lock i
+    local lock i owner
     lock="$1.lock"
     i=0
     while ! mkdir "$lock" 2>/dev/null; do
+        owner="$(cat "$lock/pid" 2>/dev/null)"
+        if [ -n "$owner" ]; then
+            # "Cannot tell" counts as alive here too, so a live holder is never
+            # robbed; only a demonstrably dead one has its lock broken.
+            if ! _process_alive "$owner"; then
+                echo "session-space: breaking a lock held by dead pid $owner" >&2
+                rm -rf "$lock" 2>/dev/null
+                continue
+            fi
+        elif [ "$i" -ge "$LOCK_NOPID_ROUNDS" ]; then
+            echo "session-space: breaking an orphaned lock with no holder recorded" >&2
+            rm -rf "$lock" 2>/dev/null
+            continue
+        fi
         i=$((i + 1))
         if [ "$i" -gt "$LOCK_WAIT" ]; then
             return 1
         fi
         sleep 0.1
     done
+    printf '%s\n' "$SESSION_PID" > "$lock/pid" 2>/dev/null
     return 0
 }
 
@@ -202,7 +225,7 @@ cmd_claim() {
         return 1
     fi
     # shellcheck disable=SC2064 - expand $f now, deliberately
-    trap "rmdir '$f.lock' 2>/dev/null" EXIT INT TERM
+    trap "rm -rf '$f.lock' 2>/dev/null" EXIT INT TERM
 
     # Re-check INSIDE the lock. The check above ran before we held it, so a
     # racer may have claimed the worktree in between; without this the lock only
@@ -215,7 +238,7 @@ and won. Do not edit here. Take your own space:
 
   scripts/session-space.sh new <short-name>
 EOF
-        rmdir "$f.lock" 2>/dev/null
+        rm -rf "$f.lock" 2>/dev/null
         trap - EXIT INT TERM
         return 1
     fi
@@ -232,7 +255,7 @@ EOF
         echo "session-space: could not replace the claim file $f" >&2
         rc=1
     fi
-    rmdir "$f.lock" 2>/dev/null
+    rm -rf "$f.lock" 2>/dev/null
     trap - EXIT INT TERM
     [ "$rc" -eq 0 ] && echo "session-space: claimed $(basename "$(_toplevel)") for this session" >&2
     return "$rc"
@@ -257,6 +280,10 @@ cmd_release() {
         return 1
     fi
     rm -f "$f"
+    # Also clear any lock. A `--force` release exists for a worktree whose holder
+    # is gone, and a holder that is gone is exactly the case that can have left a
+    # lock behind; leaving it would mean the documented recovery does not recover.
+    rm -rf "$f.lock" 2>/dev/null
     echo "session-space: released" >&2
 }
 
