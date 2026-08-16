@@ -107,3 +107,75 @@ and needs only that somebody read the log and record the result here.
 To settle it deliberately instead, re-authenticate the CLI (`claude login`) and run the method as
 written above. Until one or the other happens, this question is open, and the hook's message
 deliberately states both outcomes rather than asserting the predicted one.
+
+## Result (2026-08-17): confound 1 was the operative cause, and it makes the stated metric blind
+
+**Status: the ordering question is still open. The failure it was written to explain is solved.**
+The prediction above is unchanged and stays that way.
+
+### What was measured
+
+The planned method is still impossible: `claude -p` returns `401 OAuth access token has been
+revoked` on this machine, re-verified today. So a different instrument was used, one that does not
+need a session at all. In this checkout, with `.mcp.json` present on disk in front of it:
+
+```
+$ claude mcp list
+recall: python -m recall_mcp.server - ⏸ Pending approval (run `claude` to approve)
+recall-memory: python -m recall_mcp.server - ⏸ Pending approval (run `claude` to approve)
+```
+
+Supporting audit of the client's own config (`~/.claude.json`), same day:
+
+| Quantity | Value |
+|---|---|
+| tracked projects | 306 |
+| projects with any approved `.mcp.json` server | **0** |
+| projects with project-scope servers defined in the client config | 0 |
+| this checkout's `hasTrustDialogAccepted` | `true` |
+
+And an apparatus check the original method did not have: the server was driven directly over
+stdio, with the exact `command`, `args`, `cwd` and `env` from the generated `.mcp.json`. It
+completed the MCP handshake, listed 10 tools, and answered a real query with 5 hits and
+`abstained: false`. **The server is not the problem, and neither is the file.**
+
+### What this does to the metric
+
+The registered metric is "fraction of fresh sessions in which the `recall` server appears in the
+session's own tool inventory", predicted 0/3. That metric cannot separate the two explanations,
+because an unapproved server is absent from the inventory no matter when the file was written.
+0/3 was guaranteed before the first run, by a cause the experiment was not measuring.
+
+Confound 1, **"Approval, not ordering"**, was named in advance, and its mitigation was void. The
+mitigation was a control run in a checkout that already had `.mcp.json`, on the reasoning that the
+control "shares the approval state". It did share it: both were **equally unapproved**, so the
+control could only ever have reproduced the treatment. A control that shares the confound does not
+exclude the confound. That is the transferable lesson here, and it is worth more than the result.
+
+### Scoring the predictions honestly
+
+- **Primary prediction (no tools in the hook's own session): outcome correct, mechanism wrong.**
+  There were no tools, but not because the client read the file too early. It would equally have
+  had no tools had the file been written a week earlier.
+- **Secondary prediction: correct, and it was the real answer.** It reads, verbatim: "they appear
+  only after an approval prompt for project-scoped servers, so the win would not be automatic in a
+  fresh checkout anyway." The half-sentence hedge was the finding, and it sat unread for a day
+  because the primary prediction's outcome matched and nothing forced a look at why.
+- Deferred-method rows in `~/.claude/session-start.log` at time of writing: 368 rows, 4
+  `generated` (treatment), 15 `already-present` (control condition). This worktree contributed one
+  of each. Neither condition produced a `recall` tool in any session, which is consistent with a
+  cause that is indifferent to both.
+
+### What changed as a result
+
+`scripts/session_mcp_approve.py`, called by `scripts/session-mcp.sh` immediately after it writes
+`.mcp.json`, records the approval for that checkout in the client's config. It carries **only
+server names** across that boundary, never a URL or a token, and it refuses to reverse a server
+the operator has explicitly disabled. 12 tests, and the five mutants that matter were each caught
+by the test that names them.
+
+### What is still open
+
+Whether a hook-written `.mcp.json` reaches its own session is **still unmeasured**, and is now
+measurable for the first time: once a checkout is approved, tool-absence stops being overdetermined
+and the registered method finally means what it says. It needs `claude login` first.

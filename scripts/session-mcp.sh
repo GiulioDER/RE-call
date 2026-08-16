@@ -182,3 +182,17 @@ with open(out, "w", encoding="utf-8", newline="\n") as fh:
     fh.write("\n")
 print(f"session-mcp: wrote {out} ({len(servers)} servers)")
 PY
+
+# Writing the file is only half of it. A project-scoped server sits at "pending approval" until
+# the CLIENT has recorded the approval for this directory, and a non-interactive session can
+# never answer that prompt. Measured 2026-08-17: 306 tracked projects on this machine, zero with
+# an approved .mcp.json server, while `claude mcp list` reported both recall servers as
+# "⏸ Pending approval" with the file sitting on disk in front of it.
+#
+# So the correct fix for "the servers never load" is not to write the file EARLIER, it is to
+# approve it. Only the names cross into the client config; the definitions and the secrets stay
+# here. See scripts/session_mcp_approve.py for what this deliberately does not do.
+#
+# Never fatal: a session whose servers stay pending is degraded, not stopped.
+python "$ROOT/scripts/session_mcp_approve.py" --root "$ROOT" --from-mcp-json "$OUT" || \
+    echo "session-mcp: approval step failed; servers will stay pending" >&2
