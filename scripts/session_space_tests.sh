@@ -23,10 +23,38 @@ else
 fi
 
 # --- 2. a live pid with NO epoch must NOT be stale --------------------------
-# A REAL Windows pid, because $$ from Git Bash is not one and tasklist cannot
-# see it. Using $$ here made this test pass for the wrong reason.
-LIVE_PID=$(tasklist //FI "IMAGENAME eq claude.exe" //NH 2>/dev/null | awk 'NF{print $2; exit}')
-[ -z "$LIVE_PID" ] && { echo "SKIP: no live claude.exe to test against"; exit 2; }
+# A REAL Windows pid, because $$ from Git Bash is NOT one and tasklist cannot see
+# it: using $$ made this test pass for the wrong reason once already.
+#
+# ANY live Windows process will do, not specifically claude.exe. Requiring
+# claude.exe meant the suite exited "SKIP" wherever one was not running, which is
+# every CI runner, so the test that proves a live claim is protected would never
+# have executed in CI at all.
+# ⚠️ DIGITS ONLY, and that is the entire point of this function.
+#
+# `tasklist //FI ...` with no match prints "INFO: No tasks are running which
+# match the specified criteria." on STDOUT and exits 0, so `awk '{print $2}'`
+# harvests the literal string **"No"**. That is not a rejected value: it flows
+# into the claim file as `pid=No`, and `_process_alive` treats an unparseable pid
+# as ALIVE, so the test still passes. Mutation-tested: with a real pid, breaking
+# session-space.sh's liveness check turns test 2 RED; with `pid=No` the same
+# broken code passes. Every CI runner is a machine with no claude.exe, so this
+# made the suite run in CI without testing anything there.
+_live_pid() {
+    local p
+    p=$(tasklist //FI "IMAGENAME eq claude.exe" //NH 2>/dev/null \
+        | awk 'NF>1 && $2 ~ /^[0-9]+$/ {print $2; exit}')
+    if [ -z "$p" ]; then
+        p=$(tasklist //NH 2>/dev/null | awk 'NF>1 && $2 ~ /^[0-9]+$/ {print $2; exit}')
+    fi
+    printf '%s' "$p"
+}
+# `|| true`: awk exits early, tasklist takes SIGPIPE, and under `-eo pipefail`
+# the substitution's status is 141, which would kill the suite at this line.
+LIVE_PID=$(_live_pid) || true
+case "$LIVE_PID" in
+    ''|*[!0-9]*) echo "FAIL: no numeric live pid available (got '${LIVE_PID}')" >&2; exit 1 ;;
+esac
 printf 'session=OTHER\npid=%s\n' "$LIVE_PID" > "$CLAIM"
 cd "$WT"
 if CLAUDE_CODE_SESSION_ID=ME bash "$SPACE" check >/dev/null 2>&1; then
@@ -44,20 +72,41 @@ else
 fi
 
 # --- 3. concurrent claim on an unclaimed worktree: one winner ---------------
+# REPEATED, because one round is a coin toss. Measured against a deliberately
+# broken pid: a single round of 4 racers caught the defect only 2 times in 5, so
+# a one-shot version of this test would miss a real regression 60% of the time.
+# Five rounds take it to ~92%, and the fixed code is green in every round, so the
+# repetition buys sensitivity without buying flaky reds.
+ROUNDS="${RECALL_RACE_ROUNDS:-5}"
+race_bad=0
+for round in $(seq 1 "$ROUNDS"); do
 rm -f "$CLAIM"
 outdir="$BASE/out"; mkdir -p "$outdir"
+# ⚠️ `env -u CLAUDE_PID`, deliberately, and the whole test depends on it.
+#
+# With CLAUDE_PID exported, all four racers record the SAME live Windows pid, so
+# no racer ever judges another's lock dead and the test passes for a reason that
+# has nothing to do with the locking. Without it, each records its own pid, which
+# is the real contended case AND the documented manual workflow. That difference
+# is not academic: it is exactly why this passed here and produced TWO winners on
+# a clean CI runner. A test that only exercises the easy path when the ambient
+# environment happens to be rich is a test of the environment.
 for s in A B C D; do
-    ( CLAUDE_CODE_SESSION_ID="$s" bash "$SPACE" claim >"$outdir/$s.log" 2>&1; echo $? > "$outdir/$s.rc" ) &
+    ( env -u CLAUDE_PID CLAUDE_CODE_SESSION_ID="$s" bash "$SPACE" claim \
+        >"$outdir/$s.log" 2>&1; echo $? > "$outdir/$s.rc" ) &
 done
 wait
 winners=0
 for s in A B C D; do
     [ "$(cat "$outdir/$s.rc")" = "0" ] && winners=$((winners+1))
 done
-if [ "$winners" -eq 1 ]; then
-    ok "concurrent claim has exactly one winner (n=4)"
+[ "$winners" -eq 1 ] || { race_bad=$((race_bad+1)); race_detail="round $round: winners=$winners"; }
+done
+if [ "$race_bad" -eq 0 ]; then
+    ok "concurrent claim has exactly one winner (n=4, ${ROUNDS} rounds)"
 else
-    no "concurrent claim has exactly one winner (n=4)" "winners=$winners"
+    no "concurrent claim has exactly one winner (n=4, ${ROUNDS} rounds)" \
+       "$race_bad of $ROUNDS rounds wrong; last: ${race_detail:-}"
 fi
 
 # --- 4. the claim file is never torn ---------------------------------------
@@ -102,13 +151,24 @@ fi
                      || ok "the lock is released after a successful claim"
 
 # --- 8. a lock held by a LIVE pid is respected -------------------------------
-# The control: if test 7 passed because the lock is always broken, this fails.
-LIVE_PID2=$(tasklist //FI "IMAGENAME eq claude.exe" //NH 2>/dev/null | awk 'NF{print $2; exit}')
+# The declared control for test 7: if test 7 passed because the lock is ALWAYS
+# broken, this must fail.
+#
+# ⚠️ The claim must be removed first. Test 7 leaves the worktree claimed by ORPHAN
+# with a fresh epoch, so without this the refusal comes from the existing claim
+# and the control passes with no lock present at all: verified by deleting the
+# mkdir below and still getting 11/11. A control that cannot fail is not a
+# control.
+rm -f "$CLAIM"
+LIVE_PID2=$(_live_pid) || true
 mkdir -p "$CLAIM.lock"; printf '%s\n' "$LIVE_PID2" > "$CLAIM.lock/pid"
-if RECALL_CLAIM_LOCK_WAIT=3 CLAUDE_CODE_SESSION_ID=OTHER2 bash "$SPACE" claim >/dev/null 2>&1; then
+out8=$(RECALL_CLAIM_LOCK_WAIT=3 CLAUDE_CODE_SESSION_ID=OTHER2 bash "$SPACE" claim 2>&1)
+if [ $? -eq 0 ]; then
     no "a lock held by a LIVE pid is respected" "claim succeeded; test 7 proves nothing"
+elif printf '%s' "$out8" | grep -qi "claiming this worktree right now"; then
+    ok "a lock held by a LIVE pid is respected (refused BY THE LOCK)"
 else
-    ok "a lock held by a LIVE pid is respected"
+    no "a lock held by a LIVE pid is respected" "refused, but not by the lock: $out8"
 fi
 
 # --- 9. release --force clears a stranded lock -------------------------------
