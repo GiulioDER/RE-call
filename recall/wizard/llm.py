@@ -27,6 +27,7 @@ commit.
 from __future__ import annotations
 
 import json
+import re
 import random
 import urllib.error
 import urllib.request
@@ -57,6 +58,7 @@ __all__ = [
     "OPENAI_BASE_URL",
     "OPENROUTER_BASE_URL",
     "CatalogueModel",
+    "OpenAICompatClient",
     "generate_llm",
     "model_choices",
     "openai_catalogue",
@@ -124,6 +126,159 @@ class LLMClient(Protocol):
 
     def complete_json(self, *, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
         ...
+
+
+class OpenAICompatClient:
+    """The one concrete `LLMClient`, for OpenAI, OpenRouter and any local endpoint.
+
+    One class for all three because they speak the same protocol; only `base_url` differs, which
+    is what lets the provider page change a URL and nothing else.
+
+    Structured output is requested through `response_format`, not asked for in prose. A model told
+    to "return JSON" returns JSON with a preamble often enough to matter, and a malformed batch
+    here does not fail loudly — it yields fewer questions than the certification floor needs, which
+    surfaces much later as a thin query set blamed on the corpus. Endpoints that reject
+    `json_schema` fall back to `json_object`, then to a bare call, so a local server without
+    schema support still works rather than being unusable.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: float = 180.0,
+    ) -> None:
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            # Guarded, matching `truth_extraction/_openai_engine.py` and `embeddings.py`, whose
+            # docstring states the convention: "an optional extra whose absence surfaces as a bare
+            # ModuleNotFoundError reads as a bug in the library rather than a choice the user has
+            # not yet made". `openai` is in no extra a wizard user would have installed.
+            raise ImportError(
+                'the LLM query generator requires: pip install "recall-rag[extract]". '
+                "Without it, use the offline generator in recall.wizard.queryset, which needs "
+                "neither a key nor a network."
+            ) from exc
+
+        self.model = model
+        # `max_retries=0`: a retry here re-sends several thousand tokens, and the caller would
+        # rather see the failure than pay for it twice.
+        self._client = OpenAI(
+            api_key=api_key.strip() or "unused-local-key",
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=0,
+        )
+
+    def complete_json(self, *, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        formats: list[dict[str, Any] | None] = [
+            {
+                "type": "json_schema",
+                "json_schema": {"name": "query_set", "strict": True, "schema": schema},
+            },
+            {"type": "json_object"},
+            None,
+        ]
+        last: Exception | None = None
+        for response_format in formats:
+            kwargs: dict[str, Any] = {"model": self.model, "messages": messages}
+            if response_format is not None:
+                kwargs["response_format"] = response_format
+            try:
+                completion = self._client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                if _is_unrecoverable(exc):
+                    # A bad key, an unknown model or a refused connection is not fixed by a
+                    # different response_format. Retrying it three times costs three round trips
+                    # (against `max_retries=0`, chosen two lines up to avoid paying twice) and
+                    # ends in a message about model output, pointing the user at their corpus
+                    # rather than at their key.
+                    #
+                    # A rate limit is separated out because it is the one member of this set that
+                    # is TRANSIENT. Telling a throttled user to check their credentials sends them
+                    # to rotate a key that was never wrong.
+                    if type(exc).__name__ == "RateLimitError":
+                        raise QuerySetError(
+                            f"the endpoint rate-limited this request ({_safe_reason(exc)}). "
+                            "Nothing is misconfigured; wait and run the wizard again, or choose a "
+                            "model with more headroom."
+                        ) from exc
+                    raise QuerySetError(
+                        f"the endpoint refused the request ({_safe_reason(exc)}). Check the API "
+                        f"key, the model id {self.model!r}, and that the endpoint is reachable."
+                    ) from exc
+                last = exc
+                _log.warning(
+                    "response_format %s refused (%s); trying the next one",
+                    (response_format or {}).get("type", "none"),
+                    type(exc).__name__,
+                )
+                continue
+            try:
+                # Inside the try: an empty or absent `choices` is exactly what OpenRouter returns
+                # for an upstream failure (HTTP 200 with an `error` body), and what OpenAI's
+                # content filter and several local servers return. Outside it, that escaped as a
+                # raw IndexError/TypeError and skipped the fallback entirely.
+                choices = getattr(completion, "choices", None) or []
+                if not choices:
+                    raise ValueError("the response carried no choices")
+                content = (choices[0].message.content or "").strip()
+                parsed = json.loads(_strip_code_fence(content))
+                if not isinstance(parsed, dict):
+                    # `dict(json.loads("[]"))` is `{}` and succeeds, which is precisely the empty
+                    # dict this class exists to never return: it would surface much later as a
+                    # thin query set blamed on the corpus.
+                    raise ValueError(f"top-level JSON is {type(parsed).__name__}, not an object")
+                return parsed
+            except Exception as exc:
+                last = exc
+                _log.warning("could not parse the response as JSON (%s)", type(exc).__name__)
+                continue
+        raise QuerySetError(
+            "the model returned nothing usable through any response format "
+            f"({_safe_reason(last) if last is not None else 'no response'})"
+        )
+
+
+#: Exception class names that no change of `response_format` can fix. Matched by name rather than
+#: by import, so this module does not depend on `openai` being present to classify an error.
+_UNRECOVERABLE = frozenset(
+    {
+        "AuthenticationError",
+        "PermissionDeniedError",
+        "NotFoundError",
+        "APIConnectionError",
+        "APITimeoutError",
+        "RateLimitError",
+    }
+)
+
+
+def _is_unrecoverable(exc: BaseException) -> bool:
+    return type(exc).__name__ in _UNRECOVERABLE
+
+
+#: The opening fence and its optional language tag, with or without a trailing newline. Splitting
+#: on the first newline instead discarded the whole payload for a single-line fenced reply
+#: (```json {"a": 1}``` became ""), which models do emit.
+_FENCE_OPEN = re.compile(r"^```[A-Za-z0-9_+-]*[ \t]*\n?")
+
+
+def _strip_code_fence(text: str) -> str:
+    """Drop a ```json fence when a model adds one despite being asked for raw JSON."""
+    if not text.startswith("```"):
+        return text
+    body = _FENCE_OPEN.sub("", text, count=1).rsplit("```", 1)[0].strip()
+    # Never return less than nothing: if the unwrap emptied the payload, the caller is better off
+    # trying to parse the original and reporting a real JSON error.
+    return body or text
 
 
 # --------------------------------------------------------------------------------------
@@ -499,20 +654,31 @@ def generate_llm(
 
     rng = random.Random(seed)
     sample_size = min(len(chunks), per_class * CHUNKS_PER_PROMPT_MULTIPLIER)
-    candidates = [chunks[i] for i in sorted(rng.sample(range(len(chunks)), sample_size))]
 
-    # Trimmed by characters, not by count. A chunk is up to 800 characters, so a count-based bound
-    # says nothing about how large the prompt actually gets.
-    excerpts: list[str] = []
+    # Trimmed by characters, not by count: a chunk is up to 800 characters, so a count-based bound
+    # says nothing about how large the prompt gets.
+    #
+    # Filled in SAMPLED order with `continue`, not sorted order with `break`. This is the second
+    # time this exact mistake was made in this package — see the same lesson at
+    # `recall/wizard/queryset.py`'s sampling loop — and it produces the same result: trimming a
+    # sorted sample from the tail keeps only its lowest-indexed part. Measured on this
+    # repository's `docs/` at the default, sorted-and-break showed the model 39 chunks drawn from
+    # 3 of 51 files; sampled-and-continue fills the same budget with 40 chunks from 21 of 51. A
+    # question set written from three documents is not a question set about the corpus.
+    #
+    # `continue` also matters on its own: one oversized chunk near the front should skip itself,
+    # not end the selection.
+    kept: list[int] = []
     budget = MAX_PROMPT_CHARS
-    for excerpt in candidates:
-        if len(excerpt) > budget:
-            break
-        excerpts.append(excerpt)
-        budget -= len(excerpt)
+    for index in rng.sample(range(len(chunks)), sample_size):
+        if len(chunks[index]) <= budget:
+            budget -= len(chunks[index])
+            kept.append(index)
+    # Sorted only for presentation, so excerpts reach the model in corpus order.
+    excerpts = [chunks[i] for i in sorted(kept)]
     if not excerpts:
         raise QuerySetError(
-            f"the first chunk is longer than the {MAX_PROMPT_CHARS} character prompt budget"
+            f"every sampled chunk is longer than the {MAX_PROMPT_CHARS} character prompt budget"
         )
 
     # Generous margin. Duplicates and gap questions that reused the corpus's subject matter are

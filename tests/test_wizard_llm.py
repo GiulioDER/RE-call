@@ -18,6 +18,7 @@ not branch on which produced the set.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -365,6 +366,70 @@ def test_the_prompt_is_bounded_by_characters_not_chunk_count() -> None:
     assert len(sent) <= L.MAX_PROMPT_CHARS + 500, len(sent)  # + the instruction text
 
 
+def test_the_excerpts_span_the_corpus_rather_than_its_head() -> None:
+    """Trimming a SORTED sample from the tail keeps only its lowest-indexed part.
+
+    The same mistake as the offline generator's sampling loop, made a second time in this package.
+    Measured on this repository's `docs/` at the default: sorted-and-break showed the model 39
+    chunks from 3 of 51 files, sampled-and-continue 40 chunks from 21 of 51, on the same budget.
+    A question set written from three documents is not a question set about the corpus.
+
+    Measured over DOCUMENTS, not over index range. Chunks from one document are contiguous, so the
+    bias shows up as "three files" long before it shows up as "low indices" — an earlier version of
+    this test asserted `max(index) > 200` and passed against the buggy code, because a 60-chunk
+    sample from 400 still reaches index 200 once sorted.
+
+    The chunk size is chosen so only about a third of the sample fits the budget, matching the
+    ratio measured on the real corpus (39 of 120). That ratio is what makes the head bias bite.
+    """
+    docs, per_doc = 20, 20
+    corpus = [f"doc{_token(d)} part{_token(p)} " + "y" * 1240 for d in range(docs) for p in range(per_doc)]
+    assert L.MAX_PROMPT_CHARS // len(corpus[0]) < 20 * L.CHUNKS_PER_PROMPT_MULTIPLIER // 2
+
+    client = _FakeClient(
+        [_payload([f"a{i}" for i in range(40)], [f"zzz{i}" for i in range(40)])]
+    )
+    L.generate_llm(corpus, client=client, per_class=20, seed=0)
+
+    sent = client.calls[0]["user"]
+    reached = {d for d in range(docs) if f"doc{_token(d)} " in sent}
+    # 10, measured rather than chosen. Swept over 200 seeds against this exact selection logic:
+    # sorted-and-break reaches at most 9 documents (mean 6.5), sampled-and-continue at least 9
+    # (mean 12.6). The two distributions do not overlap at 10. An earlier threshold of 12 sat on
+    # the fixed code's own mean, so 18.5% of seeds would have turned a CORRECT implementation red
+    # the moment the budget, the multiplier or the padding changed.
+    assert len(reached) >= 10, f"excerpts came from only {len(reached)} of {docs} documents"
+
+
+def _token(i: int) -> str:
+    """A unique alphabetic marker per chunk index, with no digits to disturb tokenisation."""
+    syllables = ("ka", "lo", "mi", "ru", "ta", "ne", "vo", "shi", "pe", "du")
+    return syllables[i // 100 % 10] + syllables[i // 10 % 10] + syllables[i % 10]
+
+
+def test_an_oversized_chunk_is_skipped_rather_than_ending_the_selection() -> None:
+    """`break` let one long chunk truncate everything after it in the iteration order.
+
+    Ten oversized chunks interleaved with ten small ones, so the result does not depend on where a
+    single giant happens to land in the sampled permutation — an earlier version used one giant
+    and passed or failed by luck of the seed.
+    """
+    corpus: list[str] = []
+    for i in range(10):
+        corpus.append(f"small{_token(i)} " + "a" * 100)
+        corpus.append("x" * (L.MAX_PROMPT_CHARS + 10))
+
+    client = _FakeClient([_payload([f"a{i}" for i in range(9)], [f"zzz{i}" for i in range(9)])])
+    L.generate_llm(corpus, client=client, per_class=6, seed=0)
+
+    sent = client.calls[0]["user"]
+    kept = sum(1 for i in range(10) if f"small{_token(i)} " in sent)
+    # Every small chunk sampled must survive: they all fit, and skipping a giant costs nothing.
+    # Stopping at the first giant leaves at most a couple.
+    assert kept >= 7, f"only {kept} of the small chunks reached the prompt"
+    assert "x" * 200 not in sent, "an oversized chunk was included"
+
+
 def test_the_model_menu_is_short_enough_to_read(monkeypatch) -> None:
     """`recall.setup._choose` prints every entry as a numbered line before prompting, and the live
     OpenRouter roster is ~390 models."""
@@ -433,6 +498,236 @@ def test_the_openai_roster_excludes_models_that_cannot_chat(monkeypatch) -> None
     monkeypatch.setattr(L, "_fetch", lambda url, **kw: body)
     ids = [m.id for m in L.openai_catalogue("sk-test")]
     assert ids == ["gpt-5.6-luna", "gpt-5.6-terra"]
+
+
+# --------------------------------------------------------------------------------------
+# The concrete client
+# --------------------------------------------------------------------------------------
+
+
+class _FakeCompletions:
+    """Stands in for `client.chat.completions`, recording the response_format it was given."""
+
+    def __init__(self, script) -> None:
+        self.script = script
+        self.formats: list[str] = []
+
+    def create(self, **kwargs):
+        self.formats.append((kwargs.get("response_format") or {}).get("type", "none"))
+        outcome = self.script(kwargs)
+        if isinstance(outcome, Exception):
+            raise outcome
+
+        class _M:
+            content = outcome
+
+        class _C:
+            message = _M()
+
+        class _R:
+            choices = [_C()]
+
+        return _R()
+
+
+def _client_with(script) -> tuple[L.OpenAICompatClient, _FakeCompletions]:
+    client = L.OpenAICompatClient.__new__(L.OpenAICompatClient)
+    client.model = "test-model"
+    fake = _FakeCompletions(script)
+
+    class _Chat:
+        completions = fake
+
+    class _Inner:
+        chat = _Chat()
+
+    client._client = _Inner()
+    return client, fake
+
+
+def test_the_client_asks_for_a_json_schema_first() -> None:
+    """Structured output is requested, not asked for in prose."""
+    client, fake = _client_with(lambda kw: '{"answerable": [], "unanswerable": []}')
+    assert client.complete_json(system="s", user="u", schema=_SCHEMA_STUB) == {
+        "answerable": [],
+        "unanswerable": [],
+    }
+    assert fake.formats == ["json_schema"]
+
+
+def test_an_endpoint_that_rejects_json_schema_falls_back() -> None:
+    """A local server without schema support must still work rather than be unusable."""
+
+    def script(kw):
+        fmt = (kw.get("response_format") or {}).get("type")
+        if fmt == "json_schema":
+            return ValueError("response_format.json_schema is not supported")
+        return '{"answerable": [], "unanswerable": []}'
+
+    client, fake = _client_with(script)
+    client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+    assert fake.formats == ["json_schema", "json_object"]
+
+
+def test_a_fenced_response_is_still_parsed() -> None:
+    """Models add ```json despite being told to return raw JSON."""
+    client, _ = _client_with(lambda kw: '```json\n{"answerable": [], "unanswerable": []}\n```')
+    assert client.complete_json(system="s", user="u", schema=_SCHEMA_STUB) == {
+        "answerable": [],
+        "unanswerable": [],
+    }
+
+
+def test_unparseable_output_from_every_format_raises_rather_than_returning_empty() -> None:
+    """Returning {} would surface much later as a thin query set blamed on the corpus."""
+    client, fake = _client_with(lambda kw: "I'm sorry, I can't help with that.")
+    with pytest.raises(QuerySetError, match="nothing usable"):
+        client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+    assert fake.formats == ["json_schema", "json_object", "none"]
+
+
+_SCHEMA_STUB = {"type": "object", "properties": {}}
+
+
+class _Unauthorized(Exception):
+    """Named to match what the openai SDK raises, which is how `_is_unrecoverable` classifies."""
+
+
+_Unauthorized.__name__ = "AuthenticationError"
+
+
+def test_an_auth_failure_is_not_retried_under_every_response_format() -> None:
+    """A 401 is not fixed by a different response_format.
+
+    Retrying it three times costs three round trips against `max_retries=0`, and the final message
+    would be about model output, pointing the user at their corpus rather than at their key.
+    """
+    client, fake = _client_with(lambda kw: _Unauthorized("Incorrect API key provided"))
+    with pytest.raises(QuerySetError, match="endpoint refused"):
+        client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+    assert fake.formats == ["json_schema"], "must fail on the first attempt, not the third"
+
+
+def test_a_rate_limit_does_not_tell_the_user_to_check_their_key() -> None:
+    """A 429 is the one transient member of the unrecoverable set.
+
+    It must still fail fast rather than burn three round trips, but sending a throttled user to
+    rotate a key that was never wrong is the wrong instruction.
+    """
+
+    class _Throttled(Exception):
+        pass
+
+    _Throttled.__name__ = "RateLimitError"
+
+    client, fake = _client_with(lambda kw: _Throttled("429 Too Many Requests"))
+    with pytest.raises(QuerySetError) as exc:
+        client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+    assert "rate-limited" in str(exc.value)
+    assert "Check the API key" not in str(exc.value)
+    assert fake.formats == ["json_schema"], "still fails fast, not three times"
+
+
+def test_the_api_key_cannot_reach_the_final_error_message() -> None:
+    """`{last!r}` put the raw exception repr into the message, undoing `_safe_reason`.
+
+    httpx raises with the whole `Bearer <key>` header in its message for a key carrying an
+    interior invalid character, which `.strip()` cannot remove.
+    """
+    secret = "sk-secret-ABC123"
+    client, _ = _client_with(lambda kw: ValueError(f"Invalid header value b'Bearer {secret}'"))
+    with pytest.raises(QuerySetError) as exc:
+        client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+    assert secret not in str(exc.value), str(exc.value)
+
+
+@pytest.mark.parametrize("choices", [[], None])
+def test_a_response_with_no_choices_stays_in_the_declared_exception_type(choices) -> None:
+    """OpenRouter returns HTTP 200 with an error body and no choices for an upstream failure.
+
+    What matters is the LINE PLACEMENT, not the explicit emptiness check: reading
+    `completion.choices[0]` outside the parse `try` let an IndexError (empty list) or TypeError
+    (None) escape as a raw exception and skip the fallback entirely. Asserting `QuerySetError`
+    over all three formats is what distinguishes the two, because with the read inside the try the
+    loop absorbs it and exhausts the formats normally.
+
+    An earlier version of this test deleted only the `if not choices` line, which changes nothing:
+    `choices[0]` raises anyway and the same `except` catches it. The test stayed green and proved
+    nothing.
+    """
+
+    class _NoChoices:
+        pass
+
+    _NoChoices.choices = choices
+
+    client, fake = _client_with(lambda kw: _NoChoices())
+    with pytest.raises(QuerySetError, match="nothing usable"):
+        client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+    assert fake.formats == ["json_schema", "json_object", "none"], "the fallback must still run"
+
+
+@pytest.mark.parametrize("body", ["[]", '[["a","b"]]', "[1,2]", '"hello"', "null"])
+def test_non_object_json_is_refused_rather_than_coerced(body) -> None:
+    """`dict(json.loads("[]"))` is `{}` and succeeds — the empty dict this class must never return.
+
+    `'[["a","b"]]'` is worse: it coerces into a fabricated `{"a": "b"}`.
+    """
+    client, _ = _client_with(lambda kw: body)
+    with pytest.raises(QuerySetError, match="nothing usable"):
+        client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ('```json {"a": 1}```', {"a": 1}),
+        ('```{"a": 1}```', {"a": 1}),
+        ('```json\n{"a": 1}\n```', {"a": 1}),
+        ('{"a": 1}', {"a": 1}),
+    ],
+)
+def test_every_fence_shape_a_model_emits_is_unwrapped(raw, expected) -> None:
+    """A single-line fence had no newline after the opener, so the payload was discarded whole."""
+    client, _ = _client_with(lambda kw: raw)
+    assert client.complete_json(system="s", user="u", schema=_SCHEMA_STUB) == expected
+
+
+def test_the_constructor_configures_the_sdk_client(monkeypatch) -> None:
+    """No test executed `__init__` at all, so a wrong kwarg would have shipped green."""
+    seen: dict = {}
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    fake_module = type(sys)("openai")
+    fake_module.OpenAI = _FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+
+    L.OpenAICompatClient(
+        base_url="http://localhost:11434/v1", api_key="  sk-padded  ", model="m", timeout=9.0
+    )
+    assert seen["api_key"] == "sk-padded", "a pasted key's whitespace must be stripped"
+    assert seen["max_retries"] == 0, "a retry re-sends thousands of tokens"
+    assert seen["base_url"] == "http://localhost:11434/v1"
+    assert seen["timeout"] == 9.0
+
+
+def test_a_missing_openai_extra_says_how_to_fix_it(monkeypatch) -> None:
+    """A bare ModuleNotFoundError reads as a library bug rather than an uninstalled extra."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def deny(name, *args, **kwargs):
+        if name == "openai":
+            raise ImportError("No module named 'openai'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", deny)
+    with pytest.raises(ImportError, match=r"recall-rag\[extract\]"):
+        L.OpenAICompatClient(base_url="x", api_key="k", model="m")
 
 
 def test_the_schema_forces_the_two_classes_apart() -> None:
