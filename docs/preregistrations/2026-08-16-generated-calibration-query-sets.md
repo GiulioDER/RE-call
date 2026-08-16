@@ -125,6 +125,48 @@ Predicting an outcome does not reveal a broken harness, and exit code 0 is not a
   That sentence is precisely the risk this measurement exists to quantify, and it is why
   certification alone is not the outcome being predicted.
 
+## Apparatus note, written 2026-08-16 before any measurement
+
+Recorded here rather than in a commit message because it changes how the offline arm's result
+should be read, and it must be on the record before the number exists.
+
+The offline generator's first implementation ranked candidate terms by document frequency alone.
+Run against this repository's `docs/` (1809 chunks) it produced:
+
+```
+why was doubly sources_not_found fell decided this way
+what is the behaviour of id_rsa promo_ uuid8
+how is launching test_bench_conversation_indices advertised handled here
+```
+
+Every one of those tokens is genuinely rare and none is a topic. A question built from an
+identifier retrieves the single chunk containing that symbol, which would have produced excellent
+separability while measuring string matching rather than retrieval. Measuring that would have
+measured my implementation, not the approach.
+
+Changed before measuring: terms are ranked by `tf * log(N/df)` rather than rarity alone, so a word
+used five times in a chunk beats a word used once; symbols are excluded (`_`, digits, length > 24);
+and a markdown heading, where the chunk has one, is preferred over any inferred term. Output now
+reads like `what does this project say about truncated registry conforming` and
+`where is retrieval profiles budget bounded cost described`.
+
+**This is where tuning stops.** The remaining awkwardness is the genuine limit of a semantics-free
+generator on prose, and it is the thing the prediction above is about. Further polishing would be
+choosing the result.
+
+Also measured while checking the apparatus: only **13 of the 25** shipped off-topic subjects are
+disjoint from this corpus (penguins, espresso, coral, harpsichord and eight others appear in it),
+giving **65** distinct gap questions. So 65 is this corpus's hard ceiling on `per_class`, the
+default of 40 sits below it with modest headroom, and 66 is refused with both numbers named. A
+corpus overlapping more of the pool caps lower and is refused rather than served a gap class that
+shares its vocabulary — which is the right failure, but it means **the size of the shipped
+off-topic pool, not the corpus, is what bounds how large a generated query set can be.** Widening
+that pool is the obvious lever if a thin set turns out to be what limits certification.
+
+Sampling reliability, measured over 300 seeds on the same corpus after the fix: 0/300 failures at
+`per_class=20` and 0/300 at `per_class=40`, against 1.1% and 2.3% before it. Output is identical
+across a re-run, so the determinism the comparison depends on holds.
+
 ## Confounds I can name now
 
 - **The LLM writes an "unanswerable" question the corpus does answer.** recall's `docs/` covers
