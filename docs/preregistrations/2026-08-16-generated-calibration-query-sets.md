@@ -1,6 +1,7 @@
 # Pre-registration: can a generated labelled query set certify a calibration on a real corpus?
 
-**Date:** 2026-08-16   **Status:** predicted, not yet measured
+**Date:** 2026-08-16   **Status:** MEASURED 2026-08-16 — see the Result section at the foot.
+Prediction below is unedited.
 
 ## The question
 
@@ -198,3 +199,88 @@ because of this change.
   pinned bge-small revision is wrong the build refuses, which is a loud failure; but if it silently
   falls back to `--unverified-development` the artifact still certifies while binding to something
   production would refuse. Check the generation's `verified` flag before reading any result.
+
+---
+
+## Result (2026-08-16)
+
+**Status:** measured
+
+Corpus: this repository's `docs/`, 52 objects, 1793 chunks in generation
+`gen_af48372b781d40f5b6c8db5b8cefb26e`, `fastembed` bge-small, 384 dim, n = 40 per class per arm.
+
+| | ARM A offline | ARM B LLM | predicted A | predicted B |
+|---|---|---|---|---|
+| certified | **yes** | **yes** | yes | yes |
+| threshold | **0.7050** | **0.6620** | 0.70–0.80 | 0.55–0.70 |
+| AUC | 0.9806 | 1.0000 | — | — |
+| AUC 95% lower bound | **0.9496** | **1.0000** | 0.97–1.00 | 0.92–0.98 |
+| median cosine, answerable | 0.751 | 0.784 | — | — |
+| median cosine, gap | 0.629 | 0.554 | — | — |
+| gap below the weakest answerable | 36/40 | 40/40 | — | — |
+
+### The headline prediction is falsified, in magnitude and in direction
+
+Predicted: `threshold_offline − threshold_llm ≥ 0.05`. **Measured: +0.043.** The sign is right and
+the size is not, so the claim as registered fails.
+
+The more interesting failure is the reasoning behind it. I predicted the offline generator would
+score **higher** on separability, because its answerable queries are built from its own chunk's
+words and its gap class is maximally disjoint, and that this apparent strength would be an artefact
+inflating the threshold. **The opposite happened on every metric.** The LLM arm separated perfectly
+(AUC 1.000, all 40 gap queries below the weakest answerable) while the offline arm did not
+(0.9806, 36/40), and the offline arm's AUC lower bound came in **below** its predicted range while
+the LLM's came in **above** its own.
+
+Why the reasoning was wrong: a bag of three distinctive terms is not semantically close to the
+chunk it came from. Offline answerable queries median **0.751** against the LLM's **0.784**, so the
+model's fluent questions retrieve their own material *better* than term-bags do, not worse. And the
+offline gap class is drawn from a 13-subject list that survives the corpus filter, so it is
+narrower and closer to the corpus (median 0.629) than the LLM's freely-written questions (0.554).
+The offline generator is weaker at both ends, not artificially strong at either.
+
+### What this changes
+
+The product decision is unchanged but for a different reason than registered. **Prefer the LLM
+generator whenever a key or a local endpoint exists**, and say plainly that the offline fallback
+buys privacy at the cost of a thinner, noisier set — not, as predicted, at the cost of an
+over-abstaining threshold.
+
+Both arms certify, so the wizard's central claim holds: **a generated set can replace hand
+labelling on a real corpus.** That is the question this was written to answer, and the answer is
+yes for both generators.
+
+### Apparatus checks, all three as registered
+
+1. **Known-answer.** The shipped `recall/eval/queries.json` ran after 6 `trust` entries were
+   stripped, reported 20/20, and produced threshold 0.707 with AUC 0.868 [0.752, 0.983]. Rejected
+   for falling under 0.90, which is the expected outcome for a set written against a different
+   corpus, and the point is that it ran and reported plausible numbers.
+2. **Negative control.** Forty offline answerable queries split arbitrarily, half relabelled
+   unanswerable: AUC **0.495 [0.314, 0.676]**, rejected. The certification path does not certify
+   noise, which is what makes the two arms above meaningful.
+3. **Determinism.** `generate_offline(seed=0)` produced byte-identical output across a re-run.
+
+### Confounds, measured rather than asserted
+
+- ⚠️ **Arm B's perfect separation is partly manufactured by my own filter.** Of 80 gap questions
+  the model produced, **40 were dropped** for reusing the corpus's subject vocabulary, leaving
+  exactly 40. The dropped ones are by construction the *closest* to the corpus, so the surviving
+  gap class is the easy half. AUC 1.000 should be read as "1.000 after the borderline gap questions
+  were removed", not as a property of the model's output. A fair rerun would keep every gap
+  question the model labelled and measure what that costs.
+- **This also validated the margin.** `asked = per_class * 2` left exactly 40 survivors. The
+  earlier `per_class + max(5, per_class // 2)` would have yielded 60 asked, ~30 surviving, and the
+  arm would have failed outright rather than measured.
+- **Answerable-side overlap is not what distinguished the arms.** Corpus-word overlap was 1.00
+  (offline) against 0.95 (LLM), essentially the same, so the LLM did not win by quoting less. Mean
+  question length 8.0 words against 11.8.
+- **An AUC of exactly 1.000 makes its own interval degenerate.** The reported bound [1.000, 1.000]
+  is what Hanley–McNeil gives for perfect separation at n=40/40; it is not evidence that separation
+  would be perfect on unseen questions.
+- **The generation is `verified: false`** (`unverified_reason: "explicit development build"`,
+  `revision: null`). There is **no pinned revision for bge-small anywhere in the tree**, so
+  `--unverified-development` was the only way to build. Production would refuse this generation.
+  That is a real gap for the wizard, not a detail of this run: as things stand the wizard cannot
+  produce a verified generation with the default embedder.
+- **One corpus, one embedder.** Nothing here licenses a claim about a prose corpus or another model.

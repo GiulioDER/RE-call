@@ -57,6 +57,7 @@ __all__ = [
     "OPENAI_BASE_URL",
     "OPENROUTER_BASE_URL",
     "CatalogueModel",
+    "OpenAICompatClient",
     "generate_llm",
     "model_choices",
     "openai_catalogue",
@@ -124,6 +125,88 @@ class LLMClient(Protocol):
 
     def complete_json(self, *, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
         ...
+
+
+class OpenAICompatClient:
+    """The one concrete `LLMClient`, for OpenAI, OpenRouter and any local endpoint.
+
+    One class for all three because they speak the same protocol; only `base_url` differs, which
+    is what lets the provider page change a URL and nothing else.
+
+    Structured output is requested through `response_format`, not asked for in prose. A model told
+    to "return JSON" returns JSON with a preamble often enough to matter, and a malformed batch
+    here does not fail loudly — it yields fewer questions than the certification floor needs, which
+    surfaces much later as a thin query set blamed on the corpus. Endpoints that reject
+    `json_schema` fall back to `json_object`, then to a bare call, so a local server without
+    schema support still works rather than being unusable.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: float = 180.0,
+    ) -> None:
+        from openai import OpenAI
+
+        self.model = model
+        # `max_retries=0`: a retry here re-sends several thousand tokens, and the caller would
+        # rather see the failure than pay for it twice.
+        self._client = OpenAI(
+            api_key=api_key.strip() or "unused-local-key",
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=0,
+        )
+
+    def complete_json(self, *, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        formats: list[dict[str, Any] | None] = [
+            {
+                "type": "json_schema",
+                "json_schema": {"name": "query_set", "strict": True, "schema": schema},
+            },
+            {"type": "json_object"},
+            None,
+        ]
+        last: Exception | None = None
+        for response_format in formats:
+            kwargs: dict[str, Any] = {"model": self.model, "messages": messages}
+            if response_format is not None:
+                kwargs["response_format"] = response_format
+            try:
+                completion = self._client.chat.completions.create(**kwargs)
+            except Exception as exc:  # noqa: BLE001 - the next format is the fallback
+                last = exc
+                _log.warning(
+                    "response_format %s refused (%s); trying the next one",
+                    (response_format or {}).get("type", "none"),
+                    type(exc).__name__,
+                )
+                continue
+            content = (completion.choices[0].message.content or "").strip()
+            try:
+                return dict(json.loads(_strip_code_fence(content)))
+            except Exception as exc:  # noqa: BLE001 - a later format may parse
+                last = exc
+                _log.warning("could not parse the response as JSON (%s)", type(exc).__name__)
+                continue
+        raise QuerySetError(
+            f"the model returned nothing usable through any response format ({last!r})"
+        )
+
+
+def _strip_code_fence(text: str) -> str:
+    """Drop a ```json fence when a model adds one despite being asked for raw JSON."""
+    if not text.startswith("```"):
+        return text
+    body = text.split("\n", 1)[1] if "\n" in text else ""
+    return body.rsplit("```", 1)[0].strip()
 
 
 # --------------------------------------------------------------------------------------

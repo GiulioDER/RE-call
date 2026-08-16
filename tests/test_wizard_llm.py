@@ -392,7 +392,12 @@ def test_the_excerpts_span_the_corpus_rather_than_its_head() -> None:
 
     sent = client.calls[0]["user"]
     reached = {d for d in range(docs) if f"doc{_token(d)} " in sent}
-    assert len(reached) >= 12, f"excerpts came from only {len(reached)} of {docs} documents"
+    # 10, measured rather than chosen. Swept over 200 seeds against this exact selection logic:
+    # sorted-and-break reaches at most 9 documents (mean 6.5), sampled-and-continue at least 9
+    # (mean 12.6). The two distributions do not overlap at 10. An earlier threshold of 12 sat on
+    # the fixed code's own mean, so 18.5% of seeds would have turned a CORRECT implementation red
+    # the moment the budget, the multiplier or the padding changed.
+    assert len(reached) >= 10, f"excerpts came from only {len(reached)} of {docs} documents"
 
 
 def _token(i: int) -> str:
@@ -492,6 +497,95 @@ def test_the_openai_roster_excludes_models_that_cannot_chat(monkeypatch) -> None
     monkeypatch.setattr(L, "_fetch", lambda url, **kw: body)
     ids = [m.id for m in L.openai_catalogue("sk-test")]
     assert ids == ["gpt-5.6-luna", "gpt-5.6-terra"]
+
+
+# --------------------------------------------------------------------------------------
+# The concrete client
+# --------------------------------------------------------------------------------------
+
+
+class _FakeCompletions:
+    """Stands in for `client.chat.completions`, recording the response_format it was given."""
+
+    def __init__(self, script) -> None:
+        self.script = script
+        self.formats: list[str] = []
+
+    def create(self, **kwargs):
+        self.formats.append((kwargs.get("response_format") or {}).get("type", "none"))
+        outcome = self.script(kwargs)
+        if isinstance(outcome, Exception):
+            raise outcome
+
+        class _M:
+            content = outcome
+
+        class _C:
+            message = _M()
+
+        class _R:
+            choices = [_C()]
+
+        return _R()
+
+
+def _client_with(script) -> tuple[L.OpenAICompatClient, _FakeCompletions]:
+    client = L.OpenAICompatClient.__new__(L.OpenAICompatClient)
+    client.model = "test-model"
+    fake = _FakeCompletions(script)
+
+    class _Chat:
+        completions = fake
+
+    class _Inner:
+        chat = _Chat()
+
+    client._client = _Inner()
+    return client, fake
+
+
+def test_the_client_asks_for_a_json_schema_first() -> None:
+    """Structured output is requested, not asked for in prose."""
+    client, fake = _client_with(lambda kw: '{"answerable": [], "unanswerable": []}')
+    assert client.complete_json(system="s", user="u", schema=_SCHEMA_STUB) == {
+        "answerable": [],
+        "unanswerable": [],
+    }
+    assert fake.formats == ["json_schema"]
+
+
+def test_an_endpoint_that_rejects_json_schema_falls_back() -> None:
+    """A local server without schema support must still work rather than be unusable."""
+
+    def script(kw):
+        fmt = (kw.get("response_format") or {}).get("type")
+        if fmt == "json_schema":
+            return ValueError("response_format.json_schema is not supported")
+        return '{"answerable": [], "unanswerable": []}'
+
+    client, fake = _client_with(script)
+    client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+    assert fake.formats == ["json_schema", "json_object"]
+
+
+def test_a_fenced_response_is_still_parsed() -> None:
+    """Models add ```json despite being told to return raw JSON."""
+    client, _ = _client_with(lambda kw: '```json\n{"answerable": [], "unanswerable": []}\n```')
+    assert client.complete_json(system="s", user="u", schema=_SCHEMA_STUB) == {
+        "answerable": [],
+        "unanswerable": [],
+    }
+
+
+def test_unparseable_output_from_every_format_raises_rather_than_returning_empty() -> None:
+    """Returning {} would surface much later as a thin query set blamed on the corpus."""
+    client, fake = _client_with(lambda kw: "I'm sorry, I can't help with that.")
+    with pytest.raises(QuerySetError, match="nothing usable"):
+        client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+    assert fake.formats == ["json_schema", "json_object", "none"]
+
+
+_SCHEMA_STUB = {"type": "object", "properties": {}}
 
 
 def test_the_schema_forces_the_two_classes_apart() -> None:
