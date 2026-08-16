@@ -75,3 +75,35 @@ and wrote it. A 0/3 with no file written measures a broken hook, not the orderin
    are slow to start, a session could report them as absent for a reason unrelated to file ordering.
 4. **Self-fulfilling file state.** A worktree reused from an earlier run would already have
    `.mcp.json`, turning a treatment run into a control. Each run therefore uses a fresh worktree.
+
+## Apparatus failure (2026-08-16)
+
+**Status: still predicted, not yet measured.** The prediction above is unchanged and must stay that
+way.
+
+The control run never produced a number. `claude -p` in a checkout that already had `.mcp.json`
+returned:
+
+```
+Failed to authenticate. API Error: 401 OAuth access token has been revoked.
+```
+
+so no session started, and the three treatment runs were not attempted. This is exactly what the
+control was for: without it, three treatment runs would have returned "no `recall` tools" for a
+reason that has nothing to do with file ordering, and 0/3 would have looked like a confirmed
+prediction. **Exit code 0 is not a measurement, and neither is a 401.**
+
+Static inspection was tried as a substitute and is not available: the CLI installs as a native
+`claude.exe`, with no JS bundle to read the hook-versus-MCP ordering out of.
+
+### Deferred method, at zero extra cost
+
+The hook now records every session start to `~/.claude/session-start.log`, one JSON row carrying
+`mcp_json_existed_before_hook` and `mcp_action`. The next session started in a checkout where the
+hook writes `.mcp.json` (`mcp_action: "generated"`) **is** a treatment run, and that session's own
+tool inventory is the outcome. So the experiment now runs itself as a by-product of ordinary work,
+and needs only that somebody read the log and record the result here.
+
+To settle it deliberately instead, re-authenticate the CLI (`claude login`) and run the method as
+written above. Until one or the other happens, this question is open, and the hook's message
+deliberately states both outcomes rather than asserting the predicted one.
