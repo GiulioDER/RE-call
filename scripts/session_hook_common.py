@@ -116,6 +116,12 @@ def process_alive(pid: str, budget_left=None) -> bool:
     """
     if not pid:
         return False
+    # `msys:<n>`, written by session-space.sh when no Windows pid is available.
+    # tasklist cannot see that namespace at all, so the only honest answer is
+    # "cannot tell", which is ALIVE. Reading it as dead let racers break each
+    # other's live locks: four concurrent claims, two winners, on a clean runner.
+    if pid.startswith("msys:"):
+        return True
     if not pid.isdigit():
         return True                      # unparseable: cannot tell
     if os.name == "nt":

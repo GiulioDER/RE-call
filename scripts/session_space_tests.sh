@@ -72,20 +72,41 @@ else
 fi
 
 # --- 3. concurrent claim on an unclaimed worktree: one winner ---------------
+# REPEATED, because one round is a coin toss. Measured against a deliberately
+# broken pid: a single round of 4 racers caught the defect only 2 times in 5, so
+# a one-shot version of this test would miss a real regression 60% of the time.
+# Five rounds take it to ~92%, and the fixed code is green in every round, so the
+# repetition buys sensitivity without buying flaky reds.
+ROUNDS="${RECALL_RACE_ROUNDS:-5}"
+race_bad=0
+for round in $(seq 1 "$ROUNDS"); do
 rm -f "$CLAIM"
 outdir="$BASE/out"; mkdir -p "$outdir"
+# ⚠️ `env -u CLAUDE_PID`, deliberately, and the whole test depends on it.
+#
+# With CLAUDE_PID exported, all four racers record the SAME live Windows pid, so
+# no racer ever judges another's lock dead and the test passes for a reason that
+# has nothing to do with the locking. Without it, each records its own pid, which
+# is the real contended case AND the documented manual workflow. That difference
+# is not academic: it is exactly why this passed here and produced TWO winners on
+# a clean CI runner. A test that only exercises the easy path when the ambient
+# environment happens to be rich is a test of the environment.
 for s in A B C D; do
-    ( CLAUDE_CODE_SESSION_ID="$s" bash "$SPACE" claim >"$outdir/$s.log" 2>&1; echo $? > "$outdir/$s.rc" ) &
+    ( env -u CLAUDE_PID CLAUDE_CODE_SESSION_ID="$s" bash "$SPACE" claim \
+        >"$outdir/$s.log" 2>&1; echo $? > "$outdir/$s.rc" ) &
 done
 wait
 winners=0
 for s in A B C D; do
     [ "$(cat "$outdir/$s.rc")" = "0" ] && winners=$((winners+1))
 done
-if [ "$winners" -eq 1 ]; then
-    ok "concurrent claim has exactly one winner (n=4)"
+[ "$winners" -eq 1 ] || { race_bad=$((race_bad+1)); race_detail="round $round: winners=$winners"; }
+done
+if [ "$race_bad" -eq 0 ]; then
+    ok "concurrent claim has exactly one winner (n=4, ${ROUNDS} rounds)"
 else
-    no "concurrent claim has exactly one winner (n=4)" "winners=$winners"
+    no "concurrent claim has exactly one winner (n=4, ${ROUNDS} rounds)" \
+       "$race_bad of $ROUNDS rounds wrong; last: ${race_detail:-}"
 fi
 
 # --- 4. the claim file is never torn ---------------------------------------

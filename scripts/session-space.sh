@@ -32,7 +32,29 @@ set -uo pipefail
 STALE_HOURS="${RECALL_CLAIM_STALE_HOURS:-12}"
 
 SESSION_ID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
-SESSION_PID="${CLAUDE_PID:-$$}"
+
+# The recorded pid MUST be one `tasklist` can see, or mutual exclusion collapses.
+#
+# `${CLAUDE_PID:-$$}` was wrong outside a Claude session, which is both the
+# documented manual workflow and every CI runner. `$$` is an MSYS pid and
+# tasklist cannot see it, so `_process_alive` calls the holder DEAD, every racer
+# breaks every other racer's live lock, and the lock stops being a lock.
+# Measured on a clean Windows runner: four concurrent claims produced TWO
+# winners. It passed here only because CLAUDE_PID was exported into all four, so
+# they recorded the same live pid, which is a false green from an env var.
+#
+# MSYS exposes the real Windows pid at /proc/<pid>/winpid. Note `/proc/$$/`, not
+# `/proc/self/`: inside a command substitution `self` is the subshell, which has
+# already exited by the time anyone checks it.
+_win_pid() {
+    local w
+    w="$(cat "/proc/$$/winpid" 2>/dev/null)"
+    case "$w" in
+        ''|*[!0-9]*) printf 'msys:%s' "$$" ;;   # tagged, so it reads as "cannot tell"
+        *)           printf '%s' "$w" ;;
+    esac
+}
+SESSION_PID="${CLAUDE_PID:-$(_win_pid)}"
 
 _git_dir()        { git rev-parse --git-dir 2>/dev/null; }
 _git_common_dir() { git rev-parse --git-common-dir 2>/dev/null; }
@@ -66,6 +88,10 @@ _process_alive() {
     local pid
     pid="$1"
     [ -z "$pid" ] && return 1
+    # A pid from a namespace tasklist cannot see. Not a claim of death: it is
+    # "cannot tell", which is ALIVE, so an msys-held lock is waited for rather
+    # than broken. The 12h age test still ages a genuinely abandoned one out.
+    case "$pid" in msys:*) return 0 ;; esac
     case "$pid" in *[!0-9]*) return 0 ;; esac  # unparseable: assume alive
     if command -v tasklist >/dev/null 2>&1; then
         tasklist //FI "PID eq $pid" //NH 2>/dev/null | grep -q "$pid" && return 0
