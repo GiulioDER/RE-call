@@ -67,3 +67,51 @@ per-query routing, it is a ranking that makes a fixed budget go further.
   flag is measuring the wrong thing, and a ratio of ranked scores is nearly free to compute.
 - **Nothing about the reranker.** This fixture has no cross-encoder, and reranking is precisely
   what would reshape the score curve this feature reads.
+
+---
+
+## Correction, 2026-08-16: the number stands, the MECHANISM story was wrong
+
+Found by checking a number that should have been impossible: `ratio_8_over_1` reaches **2.726**,
+meaning the item at rank 8 outscores the item at rank 1. That cannot happen in a list sorted by
+score, so the list is not sorted by score.
+
+**It is not.** All **500 of 500** ranked lists are non-monotonic in `score`. `recall/retriever.py:301`
+sorts by the **RRF fused rank**, while `hit.score` carries a different quantity that the dense leg
+supplied. A real example of the first ten: `0.7321, 0.7450, 0.7327, 0.6811, 0.6879, …`.
+
+### What survives
+
+**The empirical result is unaffected.** `ratio_8_over_1` is a real, cheap, query-time feature and it
+predicts:
+
+- whole-set AUC **0.6375**;
+- across **10 independent split seeds**, test AUC mean **0.637**, stdev **0.025**, range **0.593 to
+  0.681**. Every seed beats chance;
+- miss rate by quintile of the feature: **19.1% → 36.2% → 46.8%**, roughly monotone through the
+  middle, with an inversion at each end (Q1 22.3% above Q2, Q5 43.6% below Q4).
+
+The budget curve is unaffected too, because it was computed from the same feature values.
+
+### What does NOT survive
+
+⛔ **The sentence "a FLAT score curve predicts a retrieval miss, because nothing stood out" is
+withdrawn.** It described a ranking-score curve, and these values are not the ranking criterion.
+The feature is the ratio of the dense score of the 8th RRF-ranked chunk to that of the 1st, which
+is a different and less intuitive thing. **I do not currently have an explanation for why it
+predicts.**
+
+That distinction matters more than it might look. A signal with a mechanism generalises to other
+corpora and rerankers by argument; a signal without one generalises only by measurement. Until the
+mechanism is established this is an empirical regularity of this fixture, and the honest next step
+is to find out what the feature is actually reading.
+
+### Two further hazards this exposed
+
+- **5 of 500 lists contain a NEGATIVE score.** A ratio whose denominator can be negative or near
+  zero is not a well-behaved feature, and no guard exists.
+- **`at()` returns 0.0 out of range.** Every list here is exactly 200 long so it never fired, but
+  on a shorter list it would manufacture a ratio of 0.0.
+
+Neither changes the measured numbers on this fixture. Both must be fixed before the feature is
+computed anywhere else.
