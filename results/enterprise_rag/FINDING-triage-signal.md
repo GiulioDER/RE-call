@@ -115,3 +115,48 @@ is to find out what the feature is actually reading.
 
 Neither changes the measured numbers on this fixture. Both must be fixed before the feature is
 computed anywhere else.
+
+---
+
+## Second correction, 2026-08-16: two of my three rows were TEST-SELECTED
+
+Found by bug review. The protocol at the top of this document says the winner is ranked on train
+and reported on test. The results table does not honour that for two of its three rows.
+
+- **`missed_any` is protocol-clean.** `ratio_8_over_1` WAS the train winner there, and its 0.642 is
+  a genuine held-out number.
+- ⛔ **`recoverable` (0.632) and `absent` (0.589) are NOT held out for this feature.** On
+  `recoverable` the train winner was `n_clauses`; `ratio_8_over_1` did not win, and I read its test
+  AUC out of a printed column of twelve. That is selecting on the test set, which is the exact
+  thing the split exists to prevent, and the document then leaned on those two rows for the claim
+  that the effect is "stable at 0.63 to 0.64 across all three labels".
+
+**That stability claim is withdrawn.** One protocol-clean held-out number survives: **0.642 on
+`missed_any`**.
+
+⚠️ **And it carries no multiplicity correction.** Roughly 30 features were searched across 3
+labels; the 2-SE bound of 0.111 is a single-comparison threshold applied to a winner chosen from
+that many looks. Against a Bonferroni-ish correction it is not comfortably clear of chance.
+
+### What still supports the feature, stated at its real strength
+
+- Whole-set AUC **0.6375** on all 500, and 10-seed test-half AUCs ranging **0.593 to 0.681** with
+  stdev 0.025. ⚠️ These are robustness evidence, not independent confirmation: the feature was
+  chosen on this same dataset, so re-splitting it cannot undo the selection.
+- Quintile miss rates **19.1% → 36.2% → 46.8%** through the middle.
+
+**The honest summary is weaker than this document's first version.** There is one held-out AUC of
+0.642 for a feature selected from about thirty on the same corpus, with an unexplained mechanism.
+That is a lead worth a fresh pre-registration on different data. It is not an established signal.
+
+### What the review CLEARED
+
+- **The padding artifact I worried about cannot produce this.** A pool shorter than 8 yields a
+  ratio of 0.0, which sits below every genuine value, so padded rows score as strongly NOT-a-miss.
+  Injecting 100 such rows into a null feature was measured at AUC 0.3275: the confound runs the
+  safe way and depresses rather than inflates.
+- **`auc()` is exact**: 6,000 fuzz trials against `sklearn.roc_auc_score` with heavy ties and class
+  imbalance, zero mismatches.
+- **Label direction, `recall_at_k` arithmetic and the train/test split are all correct.** The split
+  is unbiased at 0.5009 over 10,000 draws and hashes only the question id, so it cannot correlate
+  with the label.

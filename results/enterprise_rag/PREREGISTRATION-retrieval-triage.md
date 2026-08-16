@@ -242,3 +242,21 @@ question; it does not say we can currently read it.
    the noise band; an eighth is unlikely to escape it. The `score_decay` direction and the
    question-type spread both suggest the signal is real but not linear in any single scalar.
 3. **`recall_at_8` needs the reranker** before any claim about the shipped configuration's top-8.
+
+### Correction, 2026-08-16: two of the eight registered features were never computed
+
+Found by bug review, not by me. `freeze_triage_retrieval.py` writes no `question` key into the
+fixture, and `analyse_triage.py` reads it as `row.get("question", "")`. So **`conjunctions` and
+`question_words` were empty strings on all 500 rows** and could only ever score 0.500, which is
+this AUC implementation's all-ties value. Both were published above at exactly `0.500`, and that
+number is the signature of a dead feature rather than a measured null.
+
+**Six features were tested, not eight.** T4's verdict is unaffected: a constant feature can only
+score 0.500, which is below the 0.537 reported as best, so the null stands and no ranking changes.
+What is corrected is the claim that the query-text hypothesis was tested. It was not, for those two
+features. `query_chars` and the other query-shape features were computed from real data.
+
+⚠️ The failure mode is worth naming, because it is the third instance this session: a missing input
+silently becoming a constant, and a constant silently reporting as a clean null. `.get()` with a
+default is the mechanism every time. The fix is to read the key with `[]` so an absent field raises
+instead of masquerading as a measurement.
