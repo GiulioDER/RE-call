@@ -8,7 +8,7 @@
 registration_commit: c8828db65f0577aa7b999e5bb4fee46fe7515e61
 registration_authored: 2026-08-15T21:52:54+00:00
 label_source: results/enterprise_rag/judgements.gpt-5.4.medium.json
-retrieval_fixture_digest: PENDING
+retrieval_fixture_digest: b6405b77a2d75472e03c651c2b51b9a62bde4a6d0da6f1c65597091e7492a774
 ```
 
 ## The question
@@ -166,3 +166,79 @@ cross-encoder or a separate reranked pass, and neither is done here.
 ⚠️ The 12-question pilot that preceded this is **not** superseded evidence, it is different
 evidence: its pool was reranker-filtered, so its `pool_recovery_rate` of 3/3 and this run's are
 measuring two different pools. They are reported separately and must not be pooled.
+
+---
+
+## Result (2026-08-16)
+
+**Status: measured.** All 500 questions, `--reranker none`, fixture `b6405b77…`. No generation, no
+judge, no sampling. **No prediction above is edited.**
+
+### The headline is split, and one half is the registered killer
+
+| # | registered | measured | verdict |
+|---|---|---|---|
+| T1 | `pool_recovery_rate` 0.45, [0.20, 0.70] | **0.635** (176/277) | **CORRECT** |
+| T2 | `recall_at_8` 0.72, [0.65, 0.80] | 0.626 (464/741) | **not scored by this run**, no reranker |
+| T3 | `recall_at_200` 0.88, [0.78, 0.96] | **0.864** (640/741) | **CORRECT** |
+| T4 | `triage_auc` best feature 0.70, [0.55, 0.85] | **0.537** | 🔑 **FALSIFIED, at the killer threshold** |
+| T5 | `gap_warning` AUC 0.55, [0.50, 0.68] | 0.5015 | inside, at the floor: it is chance |
+| O1 | best feature is a retrieval-score one | `query_chars`, a TEXT feature | **falsified** |
+| O2 | pool lift > +0.10 | **+0.2375** | **HELD** |
+
+### 🔑 T1 holds: the missing evidence is mostly already retrieved
+
+**176 of 277 missed gold documents (63.5%) were sitting in the candidate pool** and were discarded
+at the `k=8` cut. `recall_at_200` is 0.864 against 0.626 at k=8, a lift of **+0.24**.
+
+So on this corpus the retrieval "failures" are **mostly a budget decision, not a retrieval-quality
+failure**. A competitor with a large context window wins those rows without retrieving any better
+than this system does. That is the competitive thesis, and it survived its test.
+
+### 🔑 T4 fails, and the pre-registration says to report this as loudly as a success
+
+**The best single query-time feature scored AUC 0.537.** The registered falsifier reads: *"T4 at or
+below 0.55: there is no query-time triage signal, and 'know in advance when reasoning is needed'
+fails on this evidence."*
+
+It is worse than the number alone suggests. The random control R2 scored **0.4718**, and at n=470
+the standard error is about 0.023, so **anything between roughly 0.45 and 0.55 is indistinguishable
+from random**. Every feature tested falls in that band:
+
+- `query_chars` 0.537, `neg_top1_score` 0.532, `gap_warning` 0.5015, `question_words` 0.500,
+  `conjunctions` 0.500, `distinct_docs_topk` 0.4985, `neg_mean_topk` 0.4533.
+
+⚠️ **The shipped `gap_warning` scores 0.5015. It is pure chance on this task.** T5's interval
+included that, so T5 is technically correct, but the useful statement is that the flag carries no
+information about whether retrieval missed the gold.
+
+**On this evidence, we cannot tell in advance which queries need more depth.** The half of the
+strategy that makes selective depth a product rather than a cost does not have support yet.
+
+### One post-hoc observation, flagged as post-hoc and NOT counted
+
+`score_decay` scored **0.3644**, which is meaningfully BELOW chance and therefore anti-predictive:
+reversed, it would score 0.636. The direction is intuitive, a flat score profile meaning nothing
+stood out. ⛔ **This is not a result of this experiment.** Its sign would be chosen after seeing the
+data, which is exactly the fitting the registration warned about. It is a hypothesis for a NEW
+pre-registration with a held-out split, and it must not be reported as a 0.636 triage signal.
+
+### O3, free and unregistered as a prediction, but the most actionable table here
+
+Gold-missed rate by question type: `completeness` **90%**, `project_related` **77.5%**,
+`semantic` 47.2%, `conflicting_info` 40%, `basic` 18.3%, `constrained` 16.7%, `miscellaneous` 15%,
+`intra_document_reasoning` **5%**.
+
+An 18x spread between the best and worst type. ⚠️ `question_type` is a benchmark label and is NOT
+available at query time, so this is not a triage feature. It says the signal EXISTS in the
+question; it does not say we can currently read it.
+
+### What follows
+
+1. **T1 supports raising depth**, and T4 says we cannot yet target it. Selective depth is
+   unsupported today; *unconditional* depth is supported but pays the abstention cost the
+   registration named.
+2. **The next question is not another feature sweep.** Seven hand-picked features all landed inside
+   the noise band; an eighth is unlikely to escape it. The `score_decay` direction and the
+   question-type spread both suggest the signal is real but not linear in any single scalar.
+3. **`recall_at_8` needs the reranker** before any claim about the shipped configuration's top-8.
