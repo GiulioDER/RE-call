@@ -50,7 +50,6 @@ It never breaks a session. Every failure path degrades to a message.
 
 from __future__ import annotations
 
-import errno
 import json
 import os
 import re
@@ -312,31 +311,70 @@ def claim_body(session_id: str, pid: str, branch: str, root: Path) -> str:
     )
 
 
-def take_claim(claim_file: Path, body: str, replacing: bool) -> bool:
-    """Write the claim. Returns True only if this session actually holds it.
+#: Rounds of 50ms to wait for the claim lock, and how many of those to tolerate a
+#: lock directory carrying no holder pid before treating it as an orphan.
+LOCK_ROUNDS = 20
+LOCK_NOPID_ROUNDS = 10
 
-    Two sessions starting at once on one unclaimed worktree were BOTH told they
-    held it, because the read and the write are tens of milliseconds apart with
-    two git calls in between. O_EXCL makes taking an unclaimed worktree the
-    atomic step, so exactly one of them wins.
 
-    A takeover of a genuinely stale claim cannot use O_EXCL (the file exists), so
-    it goes through a temp file and an atomic replace, which also means no reader
-    ever sees the truncated file that `write_text` would leave behind.
+def acquire_claim_lock(lock_dir: Path, pid: str) -> bool:
+    """Take the claim lock, breaking one whose holder is demonstrably gone.
+
+    `os.mkdir` is the atomic primitive, mirroring scripts/session-space.sh so the
+    two implementations really do match rather than merely claim to.
+
+    **Why a lock at all, when the create was already O_EXCL.** An exclusive
+    *create* only decides who may make a file that does not exist. Taking over a
+    STALE claim is a compare-and-swap on a file that does, and no single
+    filesystem call does that. Fixing only the create left the takeover racing
+    through `os.replace`, and two sessions taking over one stale claim were both
+    told they had won, 3 trials out of 3. Faking it by unlinking first is worse:
+    the second racer's unlink deletes the WINNER's freshly written claim.
+
+    A lock must be reclaimable or it becomes the only permanent failure state in
+    the mechanism, so it records its holder and a dead holder's lock is broken.
+    "Cannot tell" counts as alive here too.
     """
-    try:
-        if not replacing:
-            fd = os.open(claim_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(body)
+    for i in range(LOCK_ROUNDS):
+        try:
+            os.mkdir(lock_dir)
+            try:
+                (lock_dir / "pid").write_text(pid, encoding="utf-8")
+            except OSError:
+                pass
             return True
-        tmp = claim_file.with_name(claim_file.name + f".{os.getpid()}.tmp")
+        except FileExistsError:
+            owner = ""
+            try:
+                owner = (lock_dir / "pid").read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                pass
+            if (owner and not process_alive(owner)) or (not owner and i >= LOCK_NOPID_ROUNDS):
+                shutil.rmtree(lock_dir, ignore_errors=True)
+                continue
+            time.sleep(0.05)
+        except OSError:
+            return False
+    return False
+
+
+def write_claim(claim_file: Path, body: str) -> bool:
+    """Write the claim body. Only ever called while holding the lock.
+
+    Temp-then-replace, so a reader never sees a torn file and a crash cannot
+    leave the zero-byte claim that used to wedge the worktree. The temp is
+    removed on failure rather than left behind in the git directory.
+    """
+    tmp = claim_file.with_name(f"{claim_file.name}.{os.getpid()}.tmp")
+    try:
         tmp.write_text(body, encoding="utf-8", newline="\n")
         os.replace(tmp, claim_file)
         return True
-    except OSError as exc:
-        if not replacing and exc.errno == errno.EEXIST:
-            return False  # lost the race; the other session holds it
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
         return False
 
 
@@ -359,43 +397,52 @@ def builtin_guard(root: Path, git_dir: Path, is_main: bool, session_id: str, pid
         )
 
     claim_file = git_dir / "claude-session-claim"
-    claim = read_claim(claim_file)
-    holder = claim.get("session", "")
-    existed = bool(claim)
-    if holder and holder != session_id and not claim_is_stale(claim):
-        alive = "alive" if process_alive(claim.get("pid", "")) else "no longer running"
+    lock_dir = claim_file.with_name(claim_file.name + ".lock")
+    if not acquire_claim_lock(lock_dir, pid):
         return (
-            f"This worktree is CLAIMED by another session ({holder}, since "
-            f"{claim.get('claimed_at', '?')}, pid {claim.get('pid', '?')} {alive}). "
-            "Do not edit here: that session may be mid-rebase, and a shared index "
-            "loses one side silently. Take your own worktree off origin/master.",
+            "Another session is claiming this worktree right now, so this one did not take "
+            f"it. If that is wrong, the lock is at {lock_dir} and "
+            "`scripts/session-space.sh release --force` clears it.",
             [],
         )
+    try:
+        # Read, decide and write all INSIDE the lock. The decision is about a file
+        # another session may be rewriting, so a check taken before the lock is a
+        # check about the past, and that is exactly what let two sessions both
+        # take over one stale claim.
+        claim = read_claim(claim_file)
+        holder = claim.get("session", "")
+        # Existence is a question about the FILE, not about whether it parsed.
+        # Asking `bool(claim)` wedged a worktree permanently: a zero-byte or
+        # unparseable claim took the create path, the create failed because the
+        # file was right there, and every later session was refused with a
+        # permissions diagnosis that no permission change could clear. This hook
+        # can produce exactly that file by being killed mid-write.
+        existed = claim_file.exists()
+        if holder and holder != session_id and not claim_is_stale(claim):
+            alive = "alive" if process_alive(claim.get("pid", "")) else "no longer running"
+            return (
+                f"This worktree is CLAIMED by another session ({holder}, since "
+                f"{claim.get('claimed_at', '?')}, pid {claim.get('pid', '?')} {alive}). "
+                "Do not edit here: that session may be mid-rebase, and a shared index "
+                "loses one side silently. Take your own worktree off origin/master.",
+                [],
+            )
 
-    _, branch = git(root, "rev-parse", "--abbrev-ref", "HEAD")
-    body = claim_body(session_id, pid, branch, root)
-    if take_claim(claim_file, body, replacing=existed):
-        notes = []
-        if existed and holder and holder != session_id:
-            notes.append(f"took over a stale claim from {holder}")
-        return None, notes
-    # Lost the O_EXCL race, or could not write. Either way this session does NOT
-    # hold the worktree, and saying "claimed" here is the failure this guard
-    # exists to prevent.
-    now = read_claim(claim_file)
-    other = now.get("session", "")
-    if other and other != session_id:
+        _, branch = git(root, "rev-parse", "--abbrev-ref", "HEAD")
+        if write_claim(claim_file, claim_body(session_id, pid, branch, root)):
+            notes = []
+            if existed and holder and holder != session_id:
+                notes.append(f"took over a stale claim from {holder}")
+            return None, notes
         return (
-            f"Another session ({other}) claimed this worktree at the same moment "
-            "and won. Do not edit here; take your own worktree off origin/master.",
+            f"Could not write the claim file ({claim_file}). This workspace is "
+            "NOT claimed, so the next session will be told it is free. Fix the "
+            "permissions or work somewhere else.",
             [],
         )
-    return (
-        f"Could not write the claim file ({claim_file}). This workspace is "
-        "NOT claimed, so the next session will be told it is free. Fix the "
-        "permissions or work somewhere else.",
-        [],
-    )
+    finally:
+        shutil.rmtree(lock_dir, ignore_errors=True)
 
 
 #: Which remote MCP servers belong to which project, keyed by the origin
@@ -413,7 +460,18 @@ def repo_slug(root: Path) -> str | None:
     rc, url = git(root, "remote", "get-url", "origin")
     if rc != 0 or not url:
         return None
-    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", url.strip())
+    url = url.strip()
+    # Taking the last two segments of ANY origin turned a local path into a
+    # plausible identity: `C:/Users/gde00/Documents/recall` became
+    # `Documents/recall`. That identity selects which servers get written, and
+    # the written file carries bearer tokens, so a fabricated slug is a
+    # credential-placement bug waiting for a non-empty `default` policy.
+    if re.match(r"^file://", url, re.I):
+        return None                                        # a path dressed as a URL
+    if not (re.match(r"^(https?|ssh|git)://", url, re.I)      # https://host/owner/repo
+            or re.match(r"^[^/\\@]+@[^/\\:]+:", url)):        # git@host:owner/repo
+        return None
+    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", url)
     return m.group(1) if m else None
 
 
@@ -440,9 +498,14 @@ def generate_mcp_generic(root: Path, slug: str | None) -> tuple[str, str]:
         policy = json.loads(MCP_POLICY.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return "no-policy", f"no server policy at {MCP_POLICY}"
-    wanted = (policy.get("projects") or {}).get(slug)
+    if not isinstance(policy, dict):
+        return "policy-malformed", f"{MCP_POLICY} is not a JSON object"
+    projects = policy.get("projects")
+    wanted = projects.get(slug) if isinstance(projects, dict) else None
     if wanted is None:
         wanted = policy.get("default") or []
+    if not isinstance(wanted, list):
+        return "policy-malformed", f"the server list for {slug} is not a list"
     if not wanted:
         return "none-configured", f"no servers configured for {slug}"
 
@@ -450,21 +513,33 @@ def generate_mcp_generic(root: Path, slug: str | None) -> tuple[str, str]:
     # internal host addresses; checking afterwards would mean warning about a
     # file that already exists on disk with real credentials in it.
     rc, _ = git(root, "check-ignore", "-q", ".mcp.json")
-    if rc != 0:
+    if rc != 0 and rc != 1:
+        # Three outcomes, not two: ignored, not ignored, and could-not-tell.
+        # Collapsing the third into the second asserts a fact never established
+        # and sends the reader to edit a .gitignore that is already correct.
+        return "ignore-check-failed", (
+            "could not verify whether .mcp.json is gitignored, so nothing was written. "
+            "The file would carry bearer tokens and internal host addresses, and an "
+            "unverified ignore rule is not a verified one."
+        )
+    if rc == 1:
         return "refused-not-ignored", (
             ".mcp.json is NOT gitignored in this checkout, so it was not written. "
             "It would carry bearer tokens and internal host addresses. "
             "Add '.mcp.json' to .gitignore first."
         )
     try:
-        secrets = json.loads(MCP_SECRETS.read_text(encoding="utf-8")).get("servers") or {}
+        raw = json.loads(MCP_SECRETS.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return "no-secrets", f"no secrets file at {MCP_SECRETS}"
+    secrets = raw.get("servers") if isinstance(raw, dict) else None
+    if not isinstance(secrets, dict):
+        return "secrets-malformed", f"{MCP_SECRETS} has no 'servers' object"
 
     servers, missing = {}, []
     for name in wanted:
         cfg = secrets.get(name)
-        if not cfg or not cfg.get("url"):
+        if not isinstance(cfg, dict) or not cfg.get("url"):
             missing.append(name)
             continue
         entry = {"type": "http", "url": cfg["url"]}
@@ -508,6 +583,9 @@ def trunk_ref(root: Path) -> str | None:
     like a regression. No fetch: a hook must not put the network on the
     session-start path, so this compares against whatever was last fetched.
     """
+    rc, head = git(root, "rev-parse", "--abbrev-ref", "origin/HEAD", timeout=10)
+    if rc == 0 and head and "/" in head:
+        return head
     for candidate in ("origin/master", "origin/main"):
         rc, _ = git(root, "rev-parse", "--verify", "-q", candidate, timeout=10)
         if rc == 0:

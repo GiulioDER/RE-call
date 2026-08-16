@@ -334,6 +334,118 @@ def test_mcp_generic_generator():
           action == "none-configured" and not (wt3 / ".mcp.json").exists(), action)
 
 
+# ------------------------------------------------- second audit, 2026-08-16 (post-merge)
+def test_concurrent_takeover_of_a_stale_claim_has_one_winner():
+    """AUDIT-2 BUG-001: the O_EXCL fix covered only the UNCLAIMED case.
+
+    Racing a STALE claim went through os.replace, which is atomic but not
+    exclusive, so both sessions were told they had won, 3 trials out of 3.
+    """
+    base, wt = new_repo("audit2-001")
+    cf = claim_path(wt)
+    for trial in range(3):
+        cf.write_text("session=GONE\npid=999999999\nclaimed_epoch=1\n", encoding="utf-8")
+
+        def attempt(sid):
+            return report(load(), wt, session=sid)[0]
+
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            outs = list(ex.map(attempt, [f"A{trial}", f"B{trial}"]))
+        winners = sum(1 for o in outs if "Workspace claimed for this session" in o)
+        if winners != 1:
+            check(f"BUG-001 stale-claim race has one winner (trial {trial})", False,
+                  f"winners={winners}")
+            return
+    check("BUG-001 stale-claim race has exactly one winner (3 trials)", True)
+
+
+def test_unparseable_claim_does_not_wedge_the_worktree():
+    """AUDIT-2 BUG-002: `existed = bool(claim)` wedged a worktree permanently.
+
+    A zero-byte claim took the create path, the create failed EEXIST because the
+    file was right there, and every later session was refused with a permissions
+    diagnosis that no permission change could clear. The hook produces exactly
+    that file if it is killed between the create and the write.
+    """
+    m = load()
+    base, wt = new_repo("audit2-002")
+    cf = claim_path(wt)
+    for label, content in (("zero-byte", b""), ("garbage", b"garbage\n"), ("blank", b"   \n")):
+        cf.write_bytes(content)
+        out, st = report(m, wt, session="ME")
+        ok = "WORKSPACE REFUSED" not in out and st.get("outcome") == "claimed"
+        if not ok:
+            check(f"BUG-002 an unparseable claim ({label}) does not wedge", False,
+                  out.splitlines()[0][:90])
+            return
+    check("BUG-002 zero-byte/garbage/blank claims all recover", True)
+
+
+def test_ignore_check_that_cannot_run_is_not_reported_as_unignored():
+    """AUDIT-2 BUG-004: could-not-tell was collapsed into 'not ignored'."""
+    tmp = SCRATCH / "mcpcfg2"
+    tmp.mkdir(parents=True, exist_ok=True)
+    m, base, wt = _mcp_fixture(tmp, "GiulioDER/sentiment-agent", ["qwen-mcp"])
+    real_git = m.git
+    m.git = lambda root, *a, **k: (
+        (m.LAUNCH_FAILED, "") if a[:1] == ("check-ignore",) else real_git(root, *a, **k))
+    action, msg = m.generate_mcp_generic(wt, "GiulioDER/sentiment-agent")
+    ok = action == "ignore-check-failed" and not (wt / ".mcp.json").exists()
+    check("BUG-004 an unrunnable ignore check is not reported as 'not gitignored'", ok,
+          f"{action}: {msg[:70]}")
+
+
+def test_malformed_config_cannot_erase_the_workspace_verdict():
+    """AUDIT-2 BUG-005: wrong-shape JSON raised and replaced a REFUSED verdict."""
+    tmp = SCRATCH / "mcpcfg3"
+    tmp.mkdir(parents=True, exist_ok=True)
+    for label, policy, secrets in (
+        ("policy is a list", "[]", '{"servers":{}}'),
+        ("projects is a list", '{"projects":[]}', '{"servers":{}}'),
+        ("secrets is a list", '{"projects":{"GiulioDER/x":["qwen-mcp"]}}', "[]"),
+        ("server entry is a string",
+         '{"projects":{"GiulioDER/x":["qwen-mcp"]}}', '{"servers":{"qwen-mcp":"nope"}}'),
+    ):
+        m, base, wt = _mcp_fixture(tmp, "GiulioDER/x", ["qwen-mcp"])
+        m.MCP_POLICY.write_text(policy, newline="\n")
+        m.MCP_SECRETS.write_text(secrets, newline="\n")
+        try:
+            action, _ = m.generate_mcp_generic(wt, "GiulioDER/x")
+        except Exception as exc:
+            check(f"BUG-005 malformed config ({label}) does not raise", False,
+                  f"{type(exc).__name__}: {exc}")
+            return
+        if action == "generated":
+            check(f"BUG-005 malformed config ({label}) writes nothing", False, action)
+            return
+    check("BUG-005 four malformed config shapes all degrade without raising", True)
+
+
+def test_repo_slug_rejects_a_local_path_origin():
+    """AUDIT-2 BUG-008: any path yielded a plausible slug, which selects servers."""
+    m = load()
+    base, wt = new_repo("audit2-008")
+    bad = ["C:/Users/gde00/Documents/recall", "/c/Users/gde00/Documents/sentiment_agent",
+           "file:///c/repos/recall", "../sibling/repo"]
+    good = {"https://github.com/GiulioDER/RE-call.git": "GiulioDER/RE-call",
+            "git@github.com:GiulioDER/sentiment-agent.git": "GiulioDER/sentiment-agent"}
+    for url in bad:
+        sh("git", "remote", "remove", "origin", cwd=base)
+        sh("git", "remote", "add", "origin", url, cwd=base)
+        got = m.repo_slug(wt)
+        if got is not None:
+            check("BUG-008 a local-path origin yields no slug", False, f"{url} -> {got}")
+            return
+    for url, want in good.items():
+        sh("git", "remote", "remove", "origin", cwd=base)
+        sh("git", "remote", "add", "origin", url, cwd=base)
+        got = m.repo_slug(wt)
+        if got != want:
+            check("BUG-008 control: a real hosting URL still resolves", False, f"{url} -> {got}")
+            return
+    check("BUG-008 local paths rejected, hosting URLs still resolve", True)
+
+
 # ---------------------------------------------------------------- core behaviour
 def live_windows_pid():
     """A pid that is certainly alive, in the numbering tasklist understands.
@@ -388,6 +500,11 @@ if __name__ == "__main__":
         test_foreign_session_space_falls_back,
         test_rules_drift,
         test_mcp_generic_generator,
+        test_concurrent_takeover_of_a_stale_claim_has_one_winner,
+        test_unparseable_claim_does_not_wedge_the_worktree,
+        test_ignore_check_that_cannot_run_is_not_reported_as_unignored,
+        test_malformed_config_cannot_erase_the_workspace_verdict,
+        test_repo_slug_rejects_a_local_path_origin,
         test_rules_drift_follows_imports,
     ]:
         try:
