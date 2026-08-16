@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from recall.lineage import EmbedderIdentity
-from recall.wizard.identity import ArtifactIdentity, artifact_identity_for
+from recall.wizard.identity import ArtifactIdentity, _artifact_digest, artifact_identity_for
 
 
 class _Onnx:
@@ -36,8 +36,12 @@ class _Inner:
         self.model = _Onnx(model_dir)
 
 
-class _FakeEmbedder:
-    """Shaped like `FastEmbedEmbedder`: a private `_model` wrapping an ONNX model with a dir."""
+class FastEmbedEmbedder:  # noqa: N801 - the guard matches on this exact class name
+    """Shaped like the real `FastEmbedEmbedder`, and NAMED like it.
+
+    `artifact_identity_for` guards on the class name before writing `provider="fastembed"`
+    into a lineage record, so a fake that is merely shaped like one is correctly refused.
+    """
 
     def __init__(self, model_dir: Path, name: str = "BAAI/bge-small-en-v1.5") -> None:
         self._model = _Inner(model_dir)
@@ -75,14 +79,14 @@ def artifact(tmp_path: Path) -> Path:
 
 def test_the_identity_is_accepted_as_immutable_by_lineage(artifact: Path) -> None:
     """The whole point. `EmbedderIdentity.verified` is what production checks."""
-    got = artifact_identity_for(_FakeEmbedder(artifact))
+    got = artifact_identity_for(FastEmbedEmbedder(artifact))
     assert got is not None
 
     identity = EmbedderIdentity(
         provider=got.provider,
         model=got.model,
         dimension=384,
-        revision=got.revision,
+        revision=got.lineage_revision,
         artifact_digest=got.artifact_digest,
     )
     assert identity.verified is True
@@ -90,7 +94,7 @@ def test_the_identity_is_accepted_as_immutable_by_lineage(artifact: Path) -> Non
 
 def test_an_identity_with_only_the_digest_is_still_verified(artifact: Path) -> None:
     """A digest alone is immutable, so a cache layout with no snapshot dir still works."""
-    got = artifact_identity_for(_FakeEmbedder(artifact))
+    got = artifact_identity_for(FastEmbedEmbedder(artifact))
     assert got is not None
     assert EmbedderIdentity(
         provider=got.provider, model=got.model, dimension=384, artifact_digest=got.artifact_digest
@@ -102,19 +106,20 @@ def test_an_identity_with_only_the_digest_is_still_verified(artifact: Path) -> N
 # --------------------------------------------------------------------------------------
 
 
-def test_the_digest_is_the_librarys_own_tree_digest(artifact: Path) -> None:
-    """Not a second implementation that could drift from what `verify_artifact` checks."""
-    from recall.embeddings import artifact_tree_sha256
+def test_the_digest_is_this_modules_own(artifact: Path) -> None:
+    """Deliberately not `artifact_tree_sha256`: that one refuses the symlinks an HF cache is
+    made of, and sorts Path objects, which is case-folded on Windows and not on POSIX."""
+    from recall.wizard.identity import _artifact_digest
 
-    got = artifact_identity_for(_FakeEmbedder(artifact))
+    got = artifact_identity_for(FastEmbedEmbedder(artifact))
     assert got is not None
-    assert got.artifact_digest == artifact_tree_sha256(artifact)
+    assert got.artifact_digest == _artifact_digest(artifact)
     assert len(got.artifact_digest) == 64
 
 
 def test_the_revision_comes_from_the_snapshot_directory(artifact: Path) -> None:
     """fastembed lays out `.../snapshots/<revision>/`, which is the provider's published id."""
-    got = artifact_identity_for(_FakeEmbedder(artifact))
+    got = artifact_identity_for(FastEmbedEmbedder(artifact))
     assert got is not None
     assert got.revision == "52398278842ec682c6f32300af41344b1c0b0bb2"
     assert got.provider == "fastembed"
@@ -127,7 +132,7 @@ def test_a_layout_with_no_snapshot_directory_reports_no_revision(tmp_path: Path)
     plain = tmp_path / "weights"
     plain.mkdir()
     (plain / "model.onnx").write_bytes(b"x")
-    got = artifact_identity_for(_FakeEmbedder(plain))
+    got = artifact_identity_for(FastEmbedEmbedder(plain))
     assert got is not None
     assert got.revision is None
     assert got.artifact_digest
@@ -135,9 +140,9 @@ def test_a_layout_with_no_snapshot_directory_reports_no_revision(tmp_path: Path)
 
 def test_the_digest_changes_when_the_weights_change(artifact: Path) -> None:
     """Otherwise it would name an identity that does not track the bytes."""
-    before = artifact_identity_for(_FakeEmbedder(artifact))
+    before = artifact_identity_for(FastEmbedEmbedder(artifact))
     (artifact / "model_optimized.onnx").write_bytes(b"different weights")
-    after = artifact_identity_for(_FakeEmbedder(artifact))
+    after = artifact_identity_for(FastEmbedEmbedder(artifact))
     assert before is not None and after is not None
     assert before.artifact_digest != after.artifact_digest
 
@@ -183,14 +188,14 @@ def test_it_never_raises_when_introspection_explodes(tmp_path: Path) -> None:
 
 def test_a_model_directory_that_vanished_returns_none(tmp_path: Path) -> None:
     missing = tmp_path / "gone"
-    assert artifact_identity_for(_FakeEmbedder(missing)) is None
+    assert artifact_identity_for(FastEmbedEmbedder(missing)) is None
 
 
 def test_an_empty_model_directory_returns_none(tmp_path: Path) -> None:
-    """`artifact_tree_sha256` raises on a directory with no files; that must not escape."""
+    """The digest raises on a directory with no files; that must not escape."""
     empty = tmp_path / "empty"
     empty.mkdir()
-    assert artifact_identity_for(_FakeEmbedder(empty)) is None
+    assert artifact_identity_for(FastEmbedEmbedder(empty)) is None
 
 
 # --------------------------------------------------------------------------------------
@@ -213,8 +218,15 @@ def test_the_real_fastembed_embedder_yields_a_verified_identity() -> None:
         pytest.skip("fastembed weights are not available here")
 
     got = artifact_identity_for(embedder)
-    if got is None:
-        pytest.skip("fastembed's internals moved; the fallback is --unverified-development")
+    # NOT a skip. An earlier version skipped here "because fastembed's internals may have moved",
+    # which silently absorbed the real failure: on Linux the HF cache is symlinks into ../../blobs
+    # and the digest refused them, so this returned None on every deployment platform while the
+    # suite stayed green. If a resolvable fastembed embedder yields no identity, that is the
+    # defect this test exists to catch.
+    assert got is not None, (
+        "a working fastembed embedder must yield an artifact identity; None here means the "
+        "cache layout or fastembed's internals changed and the module needs updating"
+    )
 
     assert isinstance(got, ArtifactIdentity)
     assert got.provider == "fastembed"
@@ -223,10 +235,113 @@ def test_the_real_fastembed_embedder_yields_a_verified_identity() -> None:
         provider=got.provider,
         model=got.model,
         dimension=embedder.dim,
-        revision=got.revision,
+        revision=got.lineage_revision,
         artifact_digest=got.artifact_digest,
     )
     assert identity.verified is True
     # And the digest really is over the bytes on disk.
     assert got.path.is_dir()
     assert hashlib.sha256 is not None  # keep the import meaningful
+
+
+# --------------------------------------------------------------------------------------
+# The three structural findings, each measured before it was fixed
+# --------------------------------------------------------------------------------------
+
+
+def test_a_snapshot_of_symlinks_into_blobs_still_digests(tmp_path: Path) -> None:
+    """The HF cache layout on Linux and macOS, which is where recall is deployed and CI'd.
+
+    `huggingface_hub` fills `snapshots/<rev>/` with symlinks into `../../blobs/<sha>`; Windows
+    falls back to real copies, which is why the first version of this module measured fine locally
+    and returned None on every Linux install. `artifact_tree_sha256` refuses a symlink leaving its
+    root, and `artifact_identity_for` swallowed that into a None.
+    """
+    import os
+
+    repo = tmp_path / "models--qdrant--bge-small-en-v1.5-onnx-q"
+    blobs = repo / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / "deadbeef").write_bytes(b"weights")
+    snap = repo / "snapshots" / ("5" * 40)
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_bytes(b"{}")
+    try:
+        os.symlink(blobs / "deadbeef", snap / "model.onnx")
+    except OSError:
+        pytest.skip("creating a symlink needs privilege on this machine")
+
+    got = artifact_identity_for(FastEmbedEmbedder(snap))
+    assert got is not None, "the HF cache layout must be digestible"
+    assert len(got.artifact_digest) == 64
+
+
+def test_the_digest_ordering_is_the_same_on_every_platform(tmp_path: Path) -> None:
+    """Sorting Path objects is case-folded on Windows and case-sensitive on POSIX, so identical
+    weights hashed to two different digests depending on the machine."""
+    from pathlib import PurePosixPath, PureWindowsPath
+
+    names = ["README.md", "config.json", "Tokenizer.json", "model.onnx"]
+    win = [p.name for p in sorted(PureWindowsPath("/r") / n for n in names)]
+    pos = [p.name for p in sorted(PurePosixPath("/r") / n for n in names)]
+    assert win != pos, "precondition: these orders really do differ by platform"
+
+    # The module sorts by the POSIX-form relative path, which is identical everywhere.
+    d = tmp_path / "snap"
+    d.mkdir()
+    for n in names:
+        (d / n).write_bytes(n.encode())
+    ordered = sorted((p for p in d.rglob("*") if p.is_file()),
+                     key=lambda p: p.relative_to(d).as_posix())
+    assert [p.name for p in ordered] == sorted(names)
+    assert len(_artifact_digest(d)) == 64
+
+
+def test_a_revision_from_another_repo_is_not_offered_to_lineage(artifact: Path) -> None:
+    """fastembed serves BAAI/... out of qdrant/..., so the snapshot SHA is a qdrant commit.
+
+    Recording it under the BAAI name yields a revision nobody can resolve. The raw value is still
+    reported, attributed to the repo it belongs to; only `lineage_revision` withholds it.
+    """
+    got = artifact_identity_for(FastEmbedEmbedder(artifact))
+    assert got is not None
+    assert got.source_repo == "qdrant/bge-small-en-v1.5-onnx-q"
+    assert got.model == "BAAI/bge-small-en-v1.5"
+    assert got.revision == "5239827884" + "2ec682c6f32300af41344b1c0b0bb2"
+    assert got.lineage_revision is None, "a cross-repo revision must not reach a lineage record"
+
+
+def test_a_matching_repo_does_offer_its_revision(artifact: Path) -> None:
+    """The other half: when the model IS the source repo, the revision is usable."""
+    got = artifact_identity_for(
+        FastEmbedEmbedder(artifact, name="qdrant/bge-small-en-v1.5-onnx-q")
+    )
+    assert got is not None
+    assert got.lineage_revision == got.revision
+
+
+def test_a_non_hex_snapshot_name_is_not_a_revision(tmp_path: Path) -> None:
+    """A user-provisioned `.../snapshots/latest/` is not a published commit, and
+    `EmbedderIdentity` applies no format check of its own."""
+    snap = tmp_path / "models--org--repo" / "snapshots" / "latest"
+    snap.mkdir(parents=True)
+    (snap / "model.onnx").write_bytes(b"x")
+    got = artifact_identity_for(FastEmbedEmbedder(snap))
+    assert got is not None
+    assert got.revision is None
+
+
+def test_a_non_fastembed_embedder_is_not_stamped_with_fastembed_provenance(
+    artifact: Path,
+) -> None:
+    """`provider` goes verbatim into a lineage record treated as immutable evidence, and the
+    attribute chains probed are generic (`_model_dir` is not a fastembed-only name)."""
+
+    class SentenceTransformerEmbedder:  # noqa: N801 - mirrors the real class name
+        def __init__(self, model_dir: Path) -> None:
+            self._model = _Inner(model_dir)
+
+        name = "sentence-transformers/all-MiniLM-L6-v2"
+        dim = 384
+
+    assert artifact_identity_for(SentenceTransformerEmbedder(artifact)) is None
