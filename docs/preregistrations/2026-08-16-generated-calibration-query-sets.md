@@ -167,6 +167,16 @@ Sampling reliability, measured over 300 seeds on the same corpus after the fix: 
 `per_class=20` and 0/300 at `per_class=40`, against 1.1% and 2.3% before it. Output is identical
 across a re-run, so the determinism the comparison depends on holds.
 
+**A third apparatus defect, caught before measuring and worth recording because it would have
+invalidated the offline arm outright.** The oversampling fix above iterated the pool in sorted
+order and stopped at `per_class`, so only its lowest-indexed quarter was ever examined. Measured on
+`docs/`: the 40 answerable questions came from **3 of 51 files**, all alphabetically first, over
+chunk indices 2..513 of 1813. That is the head-of-corpus bias the sampling exists to prevent,
+reintroduced by the fix for a different problem, and a threshold fitted to three documents would
+have been reported as a threshold for the corpus. Iterating in sampled order instead: **21 of 51
+files**, indices 82..1741. The offline arm's number should be read as covering the corpus only
+because of this change.
+
 ## Confounds I can name now
 
 - **The LLM writes an "unanswerable" question the corpus does answer.** recall's `docs/` covers

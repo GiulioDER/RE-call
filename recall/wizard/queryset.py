@@ -213,11 +213,18 @@ def chunks_from_directory(root: str | Path, glob: str = DEFAULT_GLOB) -> list[st
     for file in files:
         try:
             body = file.read_text(encoding="utf-8", errors="replace")
+        except (FileNotFoundError, NotADirectoryError):
+            # Raced away between the walk and the read, so it is not part of the corpus. Skipped
+            # rather than fatal, matching `index_path` (`recall/index.py:575`), because a wizard
+            # is pointed at a live user directory where an editor swap file or a cloud-sync
+            # placeholder can vanish mid-run, and aborting the whole install over one is worse
+            # than generating questions from the rest.
+            continue
         except OSError as exc:
-            # Collected, never discarded. Swallowing these made an unreadable corpus
-            # indistinguishable from an empty one, and a partly unreadable corpus shrink in
-            # silence — so the sampling below would run on a corpus the caller never learned was
-            # truncated. Mode-600 or root-owned files are the ordinary cause on Linux.
+            # Everything else IS collected. A permission error or an I/O error means the file is
+            # still there and still part of the corpus, so skipping it would let a partly
+            # unreadable corpus shrink in silence and the sampling below would run on a corpus the
+            # caller never learned was truncated.
             unreadable.append(f"{file} ({type(exc).__name__})")
             continue
         chunks.extend(chunk_text(body))
@@ -381,7 +388,12 @@ def generate_offline(
 
     entries: list[dict[str, Any]] = []
     used_subjects: set[str] = set()
-    for index in sorted(pool):
+    # Iterated in SAMPLED order, not sorted order. Sorting the pool and stopping at `per_class`
+    # takes only its lowest-indexed quarter, which is the head-of-corpus bias the sample exists to
+    # avoid — and oversampling made it worse rather than better, because the tail of the pool is
+    # never reached. Measured on this repository's `docs/` at the default: sorted order drew all
+    # 40 questions from 3 of 51 files, sampled order from 21 of 51.
+    for index in pool:
         if len(entries) == per_class:
             break
         subject = _subject_of(chunks[index], df, total)
