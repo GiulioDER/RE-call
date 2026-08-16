@@ -365,6 +365,65 @@ def test_the_prompt_is_bounded_by_characters_not_chunk_count() -> None:
     assert len(sent) <= L.MAX_PROMPT_CHARS + 500, len(sent)  # + the instruction text
 
 
+def test_the_excerpts_span_the_corpus_rather_than_its_head() -> None:
+    """Trimming a SORTED sample from the tail keeps only its lowest-indexed part.
+
+    The same mistake as the offline generator's sampling loop, made a second time in this package.
+    Measured on this repository's `docs/` at the default: sorted-and-break showed the model 39
+    chunks from 3 of 51 files, sampled-and-continue 40 chunks from 21 of 51, on the same budget.
+    A question set written from three documents is not a question set about the corpus.
+
+    Measured over DOCUMENTS, not over index range. Chunks from one document are contiguous, so the
+    bias shows up as "three files" long before it shows up as "low indices" — an earlier version of
+    this test asserted `max(index) > 200` and passed against the buggy code, because a 60-chunk
+    sample from 400 still reaches index 200 once sorted.
+
+    The chunk size is chosen so only about a third of the sample fits the budget, matching the
+    ratio measured on the real corpus (39 of 120). That ratio is what makes the head bias bite.
+    """
+    docs, per_doc = 20, 20
+    corpus = [f"doc{_token(d)} part{_token(p)} " + "y" * 1240 for d in range(docs) for p in range(per_doc)]
+    assert L.MAX_PROMPT_CHARS // len(corpus[0]) < 20 * L.CHUNKS_PER_PROMPT_MULTIPLIER // 2
+
+    client = _FakeClient(
+        [_payload([f"a{i}" for i in range(40)], [f"zzz{i}" for i in range(40)])]
+    )
+    L.generate_llm(corpus, client=client, per_class=20, seed=0)
+
+    sent = client.calls[0]["user"]
+    reached = {d for d in range(docs) if f"doc{_token(d)} " in sent}
+    assert len(reached) >= 12, f"excerpts came from only {len(reached)} of {docs} documents"
+
+
+def _token(i: int) -> str:
+    """A unique alphabetic marker per chunk index, with no digits to disturb tokenisation."""
+    syllables = ("ka", "lo", "mi", "ru", "ta", "ne", "vo", "shi", "pe", "du")
+    return syllables[i // 100 % 10] + syllables[i // 10 % 10] + syllables[i % 10]
+
+
+def test_an_oversized_chunk_is_skipped_rather_than_ending_the_selection() -> None:
+    """`break` let one long chunk truncate everything after it in the iteration order.
+
+    Ten oversized chunks interleaved with ten small ones, so the result does not depend on where a
+    single giant happens to land in the sampled permutation — an earlier version used one giant
+    and passed or failed by luck of the seed.
+    """
+    corpus: list[str] = []
+    for i in range(10):
+        corpus.append(f"small{_token(i)} " + "a" * 100)
+        corpus.append("x" * (L.MAX_PROMPT_CHARS + 10))
+
+    client = _FakeClient([_payload([f"a{i}" for i in range(9)], [f"zzz{i}" for i in range(9)])])
+    L.generate_llm(corpus, client=client, per_class=6, seed=0)
+
+    sent = client.calls[0]["user"]
+    kept = sum(1 for i in range(10) if f"small{_token(i)} " in sent)
+    # Every small chunk sampled must survive: they all fit, and skipping a giant costs nothing.
+    # Stopping at the first giant leaves at most a couple.
+    assert kept >= 7, f"only {kept} of the small chunks reached the prompt"
+    assert "x" * 200 not in sent, "an oversized chunk was included"
+
+
 def test_the_model_menu_is_short_enough_to_read(monkeypatch) -> None:
     """`recall.setup._choose` prints every entry as a numbered line before prompting, and the live
     OpenRouter roster is ~390 models."""

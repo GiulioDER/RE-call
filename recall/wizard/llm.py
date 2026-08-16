@@ -499,20 +499,31 @@ def generate_llm(
 
     rng = random.Random(seed)
     sample_size = min(len(chunks), per_class * CHUNKS_PER_PROMPT_MULTIPLIER)
-    candidates = [chunks[i] for i in sorted(rng.sample(range(len(chunks)), sample_size))]
 
-    # Trimmed by characters, not by count. A chunk is up to 800 characters, so a count-based bound
-    # says nothing about how large the prompt actually gets.
-    excerpts: list[str] = []
+    # Trimmed by characters, not by count: a chunk is up to 800 characters, so a count-based bound
+    # says nothing about how large the prompt gets.
+    #
+    # Filled in SAMPLED order with `continue`, not sorted order with `break`. This is the second
+    # time this exact mistake was made in this package — see the same lesson at
+    # `recall/wizard/queryset.py`'s sampling loop — and it produces the same result: trimming a
+    # sorted sample from the tail keeps only its lowest-indexed part. Measured on this
+    # repository's `docs/` at the default, sorted-and-break showed the model 39 chunks drawn from
+    # 3 of 51 files; sampled-and-continue fills the same budget with 40 chunks from 21 of 51. A
+    # question set written from three documents is not a question set about the corpus.
+    #
+    # `continue` also matters on its own: one oversized chunk near the front should skip itself,
+    # not end the selection.
+    kept: list[int] = []
     budget = MAX_PROMPT_CHARS
-    for excerpt in candidates:
-        if len(excerpt) > budget:
-            break
-        excerpts.append(excerpt)
-        budget -= len(excerpt)
+    for index in rng.sample(range(len(chunks)), sample_size):
+        if len(chunks[index]) <= budget:
+            budget -= len(chunks[index])
+            kept.append(index)
+    # Sorted only for presentation, so excerpts reach the model in corpus order.
+    excerpts = [chunks[i] for i in sorted(kept)]
     if not excerpts:
         raise QuerySetError(
-            f"the first chunk is longer than the {MAX_PROMPT_CHARS} character prompt budget"
+            f"every sampled chunk is longer than the {MAX_PROMPT_CHARS} character prompt budget"
         )
 
     # Generous margin. Duplicates and gap questions that reused the corpus's subject matter are
