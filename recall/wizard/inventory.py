@@ -20,7 +20,8 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path, PurePath
 from typing import Any
 
 from recall.index import candidate_files
@@ -74,29 +75,66 @@ def media_type_for(path: Path) -> str:
     return guessed or FALLBACK_MEDIA_TYPE
 
 
+#: Read size for the streaming digest. Bounds peak memory at one buffer rather than one file, so
+#: a stray multi-gigabyte file matched by a wide glob cannot end the run with a `MemoryError`.
+_READ_CHUNK_BYTES = 1024 * 1024
+
+
 def _entry(path: Path) -> dict[str, Any]:
     """One inventory entry for `path`.
 
-    The bytes are read ONCE and both `size` and `sha256` derive from that single read. Taking the
-    size from `stat()` and the digest from a separate read would describe two different states of a
-    file being written concurrently, and `LocalObjectReader.fetch` checks length before digest, so
-    the mismatch would surface as a size error naming neither cause.
+    Size and digest come from ONE open handle, streamed. Taking the size from `stat()` and the
+    digest from a separate read would describe two different states of a file being written
+    concurrently, and `LocalObjectReader.fetch` checks length before digest, so the mismatch would
+    surface as a size error naming neither cause.
+
+    The URI is the WALKED path, not `path.resolve()`. Resolving looked more careful and was wrong:
+    `_confined_to` keeps the path it walked while filtering on the resolved one, so a symlink and
+    its target both inside the corpus are two walked paths, and resolving collapsed them to one
+    URI. `IndexManifestV1` then refused the whole manifest for a duplicate URI, naming no file.
+    Using the walked path also keeps this module's claim honest: `index_path` indexes both as two
+    distinct sources, so an inventory that merged them would describe a different corpus than the
+    one indexing would read. The reader resolves before its containment check, so a symlink still
+    reads its target's bytes, which is what the digest here is taken over.
     """
-    data = path.read_bytes()
-    digest = hashlib.sha256(data).hexdigest()
+    digest = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as handle:
+        while chunk := handle.read(_READ_CHUNK_BYTES):
+            digest.update(chunk)
+            size += len(chunk)
+    hexdigest = digest.hexdigest()
     return {
         # `as_uri()` percent-encodes, which is what `url2pathname` reverses on the reader side.
-        # `resolve()` first, because a manifest entry has to name one absolute path and the reader
-        # resolves before its containment check.
-        "uri": path.resolve().as_uri(),
-        "version_id": digest,
+        # It requires an absolute path; `candidate_files` resolves the root before walking, so
+        # every path it yields is already absolute.
+        "uri": path.as_uri(),
+        "version_id": hexdigest,
         "media_type": media_type_for(path),
-        "size": len(data),
-        "sha256": digest,
+        "size": size,
+        "sha256": hexdigest,
     }
 
 
-def build_inventory(root: str | Path, glob: str = DEFAULT_GLOB) -> list[dict[str, Any]]:
+@dataclass(frozen=True)
+class InventoryReport:
+    """What an inventory run produced, including what it could not read.
+
+    `vanished` is carried out to the caller rather than logged or dropped. A file that disappeared
+    between the walk and the read is absorbed so one deletion cannot end the run, but absorbing it
+    silently would mean an inventory could describe fewer files than the corpus holds with nothing
+    saying so — and the corpus fingerprint that gets calibrated is computed from exactly this list.
+    """
+
+    entries: list[dict[str, Any]]
+    vanished: int
+
+    @property
+    def written(self) -> int:
+        return len(self.entries)
+
+
+def build_inventory_report(root: str | Path, glob: str = DEFAULT_GLOB) -> InventoryReport:
     """Inventory entries for every file under `root` matching `glob`, sorted by URI.
 
     Refuses an empty result. `IndexManifestV1` accepts an empty object tuple, so an empty corpus
@@ -104,33 +142,69 @@ def build_inventory(root: str | Path, glob: str = DEFAULT_GLOB) -> list[dict[str
     — a green run that certifies nothing. `candidate_files` refuses a glob mismatch for the same
     reason, and this extends that refusal to the case where the glob matched but the tree was bare.
     """
+    if PurePath(glob).is_absolute() or glob.startswith(("/", "\\")):
+        # `Path.glob` raises NotImplementedError("Non-relative patterns are unsupported"), which
+        # is neither ValueError nor OSError, so it escaped the CLI's catch as a bare traceback on
+        # what is a natural first guess for somebody who has just been shown an absolute path.
+        raise ValueError(
+            f"the glob {glob!r} is absolute. It is applied relative to the path argument, so pass "
+            f"a pattern like '**/*.md' and give the directory as the path."
+        )
     files = candidate_files(root, glob)
-    if not files:
+    entries: list[dict[str, Any]] = []
+    vanished = 0
+    for file in files:
+        try:
+            entries.append(_entry(file))
+        except (FileNotFoundError, NotADirectoryError):
+            # A file listed by the walk and gone by the read. `index_path` absorbs exactly this
+            # (recall/index.py:575), and an inventory that aborted the whole corpus over one
+            # deleted file would be strictly worse than the walk it claims to mirror. Counted, not
+            # silent: the caller reports it.
+            vanished += 1
+        except OSError as exc:
+            # Everything else is named. On Windows the common one is a file held open by another
+            # process, and `[Errno 13]` alone tells the reader nothing about which file or how far
+            # the run got.
+            raise OSError(
+                f"cannot read {str(file)!r} while building the inventory "
+                f"({type(exc).__name__}: {exc}). {len(entries)} of {len(files)} file(s) had been "
+                f"read. Close anything holding the file open, or narrow the glob."
+            ) from exc
+    if not entries:
         raise ValueError(
             f"no files under {str(Path(root).resolve())!r} match the glob {glob!r}, so there is "
             f"nothing to index. An empty inventory builds an empty generation, which calibrates "
             f"against nothing and reports success. Check the path and the glob."
         )
-    return sorted((_entry(f) for f in files), key=lambda e: e["uri"])
+    return InventoryReport(
+        entries=sorted(entries, key=lambda e: e["uri"]),
+        vanished=vanished,
+    )
+
+
+def build_inventory(root: str | Path, glob: str = DEFAULT_GLOB) -> list[dict[str, Any]]:
+    """Just the entries, for callers that do not need the skip count."""
+    return build_inventory_report(root, glob).entries
 
 
 def write_inventory(
     root: str | Path,
     output: str | Path,
     glob: str = DEFAULT_GLOB,
-) -> int:
-    """Write the inventory for `root` to `output` as JSON. Returns the entry count.
+) -> InventoryReport:
+    """Write the inventory for `root` to `output` as JSON, and report what it contains.
 
     `newline="\\n"` because a manifest's identity is the digest of its bytes: letting Python
     translate to CRLF on Windows would give the same corpus two different corpus fingerprints
     depending on which machine built it, and a fingerprint change is what
     `CALIBRATION_STALE` reports.
     """
-    entries = build_inventory(root, glob)
+    report = build_inventory_report(root, glob)
     path = Path(output)
     if path.parent != Path(""):
         path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump(entries, handle, indent=2, ensure_ascii=False)
+        json.dump(report.entries, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
-    return len(entries)
+    return report

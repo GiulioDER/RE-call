@@ -122,26 +122,38 @@ def _windows_memory_status() -> tuple[int, int] | None:
     ctypes rather than psutil, so this adds no dependency to a package whose install footprint is
     the thing the wizard is trying to keep small.
     """
-    import ctypes
+    # The guard opens BEFORE the import and before the Structure subclass. Defining a
+    # `ctypes.Structure` computes its layout at class-creation time, which calls `ctypes.sizeof`,
+    # so a class statement here is executable code that can raise — a `try` placed after it looks
+    # like it covers the function and does not. Found by the test for this guard rather than by
+    # reading it.
+    try:
+        import ctypes
 
-    class _MemoryStatusEx(ctypes.Structure):
-        _fields_ = [
-            ("dwLength", ctypes.c_ulong),
-            ("dwMemoryLoad", ctypes.c_ulong),
-            ("ullTotalPhys", ctypes.c_ulonglong),
-            ("ullAvailPhys", ctypes.c_ulonglong),
-            ("ullTotalPageFile", ctypes.c_ulonglong),
-            ("ullAvailPageFile", ctypes.c_ulonglong),
-            ("ullTotalVirtual", ctypes.c_ulonglong),
-            ("ullAvailVirtual", ctypes.c_ulonglong),
-            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-        ]
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
 
-    status = _MemoryStatusEx()
-    status.dwLength = ctypes.sizeof(_MemoryStatusEx)
-    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
+            return None
+        return int(status.ullTotalPhys), int(status.ullAvailPhys)
+    except Exception:
+        # Owns its own guard rather than relying on `probe_ram`'s. The docstring promises "None on
+        # any failure", and a promise kept only by the current single caller is one added caller
+        # away from being false. `ctypes.windll` does not exist off Windows, `import ctypes` can
+        # fail on a stripped build, and an FFI failure raises OSError.
         return None
-    return int(status.ullTotalPhys), int(status.ullAvailPhys)
 
 
 def probe_ram() -> tuple[int | None, int | None]:
@@ -216,7 +228,9 @@ def probe_virtualization(*, docker_running: bool = False) -> bool | None:
         return None
     # `systeminfo` is slow but present on every Windows edition, and its wording is stable.
     result = _run(["systeminfo"], timeout=60.0)
-    if not result or result.returncode != 0:
+    # `isinstance` as well as truthiness: the parsing below is outside the `except` above, so a
+    # `stdout` that is None or bytes would raise out of a probe that promises never to.
+    if not result or result.returncode != 0 or not isinstance(result.stdout, str):
         return None
     text = result.stdout.lower()
     if "virtualization enabled in firmware: yes" in text:
@@ -247,13 +261,13 @@ def probe_cuda_vram() -> int | None:
         ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
         timeout=10.0,
     )
-    if not result or result.returncode != 0:
+    if not result or result.returncode != 0 or not isinstance(result.stdout, str):
         return None
-    first = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
     try:
+        first = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
         # nvidia-smi reports MiB under `nounits`.
         return int(first.strip()) * 1024**2
-    except ValueError:
+    except (ValueError, IndexError):
         return None
 
 

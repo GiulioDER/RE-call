@@ -187,6 +187,55 @@ class TestPercentEncodingRoundTrip:
         )
         assert LocalObjectReader(roots=(tmp_path,)).fetch(entry).data == body
 
+    def test_a_unc_authority_is_part_of_the_path_not_discarded(self) -> None:
+        """`file://nas1/share/a.md` must resolve to `\\\\nas1\\share\\a.md`, not `\\share\\a.md`.
+
+        `_resolve` passed only `parsed.path` to `url2pathname`, dropping the authority, which
+        rebased a network-share corpus onto the current local drive. `Path("//nas1/share/a.md")
+        .as_uri()` produces exactly this URI and `ManifestObjectV1` accepts it, so the inventory
+        builder emits it for any corpus on a share — an ordinary layout on the platform the
+        installer targets. The result was either a spurious "outside RECALL_LOCAL_ALLOWLIST" or,
+        under a broad root, a checksum failure against a different local file.
+
+        Asserted on the resolver rather than through `fetch`, because the test host has no share
+        to read from; what regressed was the path arithmetic, and that is what this pins.
+        """
+        import pathlib
+        import sys
+
+        from recall.manifest import LocalObjectReader
+
+        if sys.platform != "win32":
+            pytest.skip("UNC paths are a Windows concept")
+
+        share = pathlib.PurePath("//nas1/share/docs/alpha.md")
+        uri = pathlib.Path(share).as_uri()
+        assert uri.startswith("file://nas1/"), f"precondition changed: {uri}"
+
+        entry = ManifestObjectV1(
+            uri=uri,
+            version_id="a" * 64,
+            media_type="text/markdown",
+            size=1,
+            sha256="a" * 64,
+        )
+        reader = LocalObjectReader(roots=(pathlib.Path("//nas1/share/docs"),))
+        assert str(reader._resolve(entry)).startswith("\\\\nas1\\share")
+
+    def test_a_localhost_authority_is_not_re_prefixed(self, tmp_path: pathlib.Path) -> None:
+        """`file://localhost/path` means this machine per RFC 8089, not a share called localhost."""
+        from recall.manifest import LocalObjectReader
+
+        uri, digest, size = _write(tmp_path, "local.md", b"here")
+        entry = ManifestObjectV1(
+            uri=uri.replace("file://", "file://localhost", 1),
+            version_id=digest,
+            media_type="text/markdown",
+            size=size,
+            sha256=digest,
+        )
+        assert LocalObjectReader(roots=(tmp_path,)).fetch(entry).data == b"here"
+
     def test_a_literal_percent_name_does_not_resolve_to_its_decoded_neighbour(
         self, tmp_path: pathlib.Path
     ) -> None:

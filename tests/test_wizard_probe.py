@@ -65,8 +65,42 @@ def test_probe_system_never_raises_and_always_reports(monkeypatch: pytest.Monkey
 
     result = P.probe_system()
     assert isinstance(result, P.SystemProbe)
-    assert result.python_executable  # always knowable
+    # NOT `assert result.python_executable`. `probe_system` deliberately permits the empty string
+    # (an embedded or frozen interpreter reports one), and
+    # `test_store_python_survives_a_missing_executable` pins that as a supported state. Asserting
+    # truthiness claimed a guarantee the code declines to make, and would fail where the code is
+    # behaving exactly as designed.
+    assert isinstance(result.python_executable, str)
     assert result.docker_running is False  # unknown collapses to "not usable", never to True
+
+
+@pytest.mark.parametrize("stdout", [None, b"6144", ""])
+def test_parsing_probes_survive_an_adverse_stdout(
+    monkeypatch: pytest.MonkeyPatch, stdout
+) -> None:
+    """Cover the seam the never-raises test skips over.
+
+    That test patches `subprocess.run` to raise, so `_run` returns None and every parsing line is
+    unreachable. Patching `_run` itself instead is what actually exercises `result.stdout`.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(P.shutil, "which", lambda _: "nvidia-smi")
+    monkeypatch.setattr(P, "_torch", lambda: None)
+    monkeypatch.setattr(
+        P, "_run", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout, "")
+    )
+    assert P.probe_virtualization() is None
+    assert P.probe_cuda_vram() is None
+
+
+def test_windows_memory_status_owns_its_own_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Its docstring promises None on any failure, so it must not depend on its caller's try."""
+    import ctypes
+
+    monkeypatch.setattr(
+        ctypes, "sizeof", lambda *_: (_ for _ in ()).throw(OSError("FFI is broken"))
+    )
+    assert P._windows_memory_status() is None
 
 
 # --------------------------------------------------------------------------------------

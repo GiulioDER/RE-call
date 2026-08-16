@@ -52,9 +52,10 @@ def test_entries_are_accepted_by_manifest_object(corpus: Path) -> None:
 def test_output_round_trips_through_load_inventory(corpus: Path, tmp_path: Path) -> None:
     """`recall manifest create --objects` reads this file; it must parse without help."""
     out = tmp_path / "inventory.json"
-    count = write_inventory(corpus, out)
+    report = write_inventory(corpus, out)
     objects = load_inventory(out)
-    assert len(objects) == count == 3  # three .md files, the .py is not in the default glob
+    assert len(objects) == report.written == 3  # three .md; the .py is outside the default glob
+    assert report.vanished == 0
 
 
 def test_default_glob_is_markdown_and_glob_is_honoured(corpus: Path) -> None:
@@ -251,6 +252,127 @@ def test_entry_with_a_mismatched_version_id_is_refused_by_the_validator(corpus: 
     entry["version_id"] = "not-the-digest"
     with pytest.raises(LineageError, match="version_id must be its content digest"):
         ManifestObjectV1(**entry)
+
+
+def test_a_file_vanishing_between_the_walk_and_the_read_is_skipped_not_fatal(
+    corpus: Path,
+) -> None:
+    """`index_path` absorbs exactly this; an inventory that aborted would be worse than the walk.
+
+    On Windows the commoner trigger is not deletion but a file held open by another process, and
+    losing an entire corpus scan to one locked file is not acceptable in an installer.
+    """
+    import recall.wizard.inventory as module
+
+    real_entry = module._entry
+    seen = {"n": 0}
+
+    def racing_entry(path: Path):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            (corpus / "beta.md").unlink()
+        return real_entry(path)
+
+    module._entry = racing_entry
+    try:
+        report = module.build_inventory_report(corpus)
+    finally:
+        module._entry = real_entry
+
+    assert report.written == 2
+    assert report.vanished == 1
+
+
+def test_every_file_vanishing_still_refuses(corpus: Path) -> None:
+    """Skipping must not turn a wholly-gone corpus into a silent empty inventory."""
+    import recall.wizard.inventory as module
+
+    def gone(path: Path):
+        raise FileNotFoundError(2, "No such file or directory", str(path))
+
+    real_entry = module._entry
+    module._entry = gone
+    try:
+        with pytest.raises(ValueError, match="nothing to index"):
+            module.build_inventory(corpus)
+    finally:
+        module._entry = real_entry
+
+
+def test_an_unreadable_file_names_itself_and_the_progress(corpus: Path) -> None:
+    """A PermissionError must not surface as a bare errno with no file and no context."""
+    import recall.wizard.inventory as module
+
+    def denied(path: Path):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    real_entry = module._entry
+    module._entry = denied
+    try:
+        with pytest.raises(OSError) as exc:
+            module.build_inventory(corpus)
+    finally:
+        module._entry = real_entry
+    assert "alpha.md" in str(exc.value)
+    assert "0 of 3" in str(exc.value)
+
+
+@pytest.mark.parametrize("glob", ["/home/user/**/*.md", "C:/docs/**/*.md"])
+def test_an_absolute_glob_is_refused_with_advice(corpus: Path, glob: str) -> None:
+    """`Path.glob` raises NotImplementedError here, which is neither ValueError nor OSError."""
+    with pytest.raises(ValueError, match="absolute"):
+        build_inventory(corpus, glob=glob)
+
+
+def test_entry_names_the_walked_path_and_does_not_resolve_it(tmp_path: Path) -> None:
+    """The property behind the symlink fix, asserted without needing symlink privilege.
+
+    The symlink test below skips on a Windows machine without developer mode, so on the platform
+    the installer targets it guards nothing. This pins the same change directly: `_entry` must
+    describe the path it was handed. Resolving is what collapsed a link and its target onto one
+    URI and made `IndexManifestV1` refuse the manifest for a duplicate.
+    """
+    import recall.wizard.inventory as module
+
+    path = _write(tmp_path / "walked" / "a.md", b"payload")
+    assert module._entry(path)["uri"] == path.as_uri()
+
+
+def test_a_symlink_and_its_target_stay_two_distinct_entries(corpus: Path) -> None:
+    """Resolving in `_entry` collapsed them to one URI, and the manifest then refused itself.
+
+    `_confined_to` keeps the walked path while filtering on the resolved one, so both are yielded.
+    `index_path` indexes them as two sources, so an inventory that merged them would describe a
+    corpus different from the one indexing reads.
+    """
+    link = corpus / "link-to-alpha.md"
+    try:
+        link.symlink_to(corpus / "alpha.md")
+    except (OSError, NotImplementedError):
+        pytest.skip("creating a symlink needs privilege on this machine")
+
+    entries = build_inventory(corpus)
+    uris = [e["uri"] for e in entries]
+
+    assert len(uris) == len(set(uris)), "duplicate URIs would make manifest create refuse"
+    assert any(u.endswith("/link-to-alpha.md") for u in uris)
+    # The manifest is the real judge: it refuses a duplicate URI outright.
+    from recall.lineage import IndexManifestV1
+
+    IndexManifestV1("t", "v", tuple(ManifestObjectV1(**e) for e in entries))
+
+
+def test_a_large_file_does_not_have_to_fit_in_memory(tmp_path: Path) -> None:
+    """The digest is streamed, so peak memory is one buffer rather than one file."""
+    from recall.wizard.inventory import _READ_CHUNK_BYTES
+
+    root = tmp_path / "big"
+    payload = b"x" * (_READ_CHUNK_BYTES * 3 + 7)
+    _write(root / "big.md", payload)
+
+    entry = build_inventory(root)[0]
+    assert entry["size"] == len(payload)
+    assert entry["sha256"] == hashlib.sha256(payload).hexdigest()
 
 
 def test_json_output_is_lf_and_utf8(corpus: Path, tmp_path: Path) -> None:

@@ -246,7 +246,19 @@ class LocalObjectReader:
         # existing file. The containment check below still held, so nothing escaped the allowlist;
         # what broke is that legitimate corpus files became unreadable, reported as a checksum or
         # availability failure that named neither the file nor the cause.
-        path = Path(url2pathname(parsed.path)).resolve()
+        # The authority is part of the path for a UNC share, and dropping it silently rebased the
+        # file onto the current local drive: `file://nas1/share/docs/a.md` resolved to
+        # `\share\docs\a.md`, i.e. `C:\share\docs\a.md`. `Path("//nas1/share/...").as_uri()`
+        # produces exactly that URI, so a network-share corpus, which is an ordinary thing to have
+        # on the platform this targets, was unreadable. `localhost` and the empty authority both
+        # mean "this machine" per RFC 8089 and must NOT be re-prefixed.
+        authority = parsed.netloc
+        encoded = (
+            f"//{authority}{parsed.path}"
+            if authority and authority.lower() != "localhost"
+            else parsed.path
+        )
+        path = Path(url2pathname(encoded)).resolve()
         # `is_relative_to` on the RESOLVED path, so `..` and symlinks cannot escape a root. This is
         # the local analogue of the S3 allowlist: without it a manifest names any file on disk.
         if not any(path.is_relative_to(root) for root in self._roots):

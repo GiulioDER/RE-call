@@ -1451,13 +1451,19 @@ def main(argv: list[str] | None = None) -> None:
             from recall.wizard.inventory import write_inventory
 
             try:
-                count = write_inventory(args.path, args.output, args.glob)
-            except (ValueError, OSError) as exc:
-                # `candidate_files` and `build_inventory` both refuse loudly and their messages
-                # name the way forward (the glob, the path). Re-raising as SystemExit keeps that
-                # message and drops a traceback nobody running an install wizard can act on.
+                report = write_inventory(args.path, args.output, args.glob)
+            except (ValueError, OSError, NotImplementedError, MemoryError) as exc:
+                # `candidate_files` and `build_inventory_report` both refuse loudly and their
+                # messages name the way forward (the glob, the path). Re-raising as SystemExit
+                # keeps that message and drops a traceback nobody running an install wizard can
+                # act on. `NotImplementedError` is in the set because `Path.glob` raises it for a
+                # non-relative pattern, and `MemoryError` because a wide glob can meet a file
+                # larger than RAM; neither is a ValueError or an OSError, so both used to escape.
                 raise SystemExit(str(exc)) from exc
-            print(f"wrote {args.output} objects={count}")
+            skipped = (
+                f", {report.vanished} skipped (disappeared while reading)" if report.vanished else ""
+            )
+            print(f"wrote {args.output} objects={report.written}{skipped}")
             return
 
         if args.manifest_cmd == "create":
