@@ -30,12 +30,31 @@ fi
 # claude.exe meant the suite exited "SKIP" wherever one was not running, which is
 # every CI runner, so the test that proves a live claim is protected would never
 # have executed in CI at all.
+# ⚠️ DIGITS ONLY, and that is the entire point of this function.
+#
+# `tasklist //FI ...` with no match prints "INFO: No tasks are running which
+# match the specified criteria." on STDOUT and exits 0, so `awk '{print $2}'`
+# harvests the literal string **"No"**. That is not a rejected value: it flows
+# into the claim file as `pid=No`, and `_process_alive` treats an unparseable pid
+# as ALIVE, so the test still passes. Mutation-tested: with a real pid, breaking
+# session-space.sh's liveness check turns test 2 RED; with `pid=No` the same
+# broken code passes. Every CI runner is a machine with no claude.exe, so this
+# made the suite run in CI without testing anything there.
 _live_pid() {
-    tasklist //FI "IMAGENAME eq claude.exe" //NH 2>/dev/null | awk 'NF>1{print $2; exit}'
-    tasklist //NH 2>/dev/null | awk 'NF>1 && $2 ~ /^[0-9]+$/ {print $2; exit}'
+    local p
+    p=$(tasklist //FI "IMAGENAME eq claude.exe" //NH 2>/dev/null \
+        | awk 'NF>1 && $2 ~ /^[0-9]+$/ {print $2; exit}')
+    if [ -z "$p" ]; then
+        p=$(tasklist //NH 2>/dev/null | awk 'NF>1 && $2 ~ /^[0-9]+$/ {print $2; exit}')
+    fi
+    printf '%s' "$p"
 }
-LIVE_PID=$(_live_pid | head -1)
-[ -z "$LIVE_PID" ] && { echo "FAIL: could not find ANY live pid to test against" >&2; exit 1; }
+# `|| true`: awk exits early, tasklist takes SIGPIPE, and under `-eo pipefail`
+# the substitution's status is 141, which would kill the suite at this line.
+LIVE_PID=$(_live_pid) || true
+case "$LIVE_PID" in
+    ''|*[!0-9]*) echo "FAIL: no numeric live pid available (got '${LIVE_PID}')" >&2; exit 1 ;;
+esac
 printf 'session=OTHER\npid=%s\n' "$LIVE_PID" > "$CLAIM"
 cd "$WT"
 if CLAUDE_CODE_SESSION_ID=ME bash "$SPACE" check >/dev/null 2>&1; then
@@ -111,13 +130,24 @@ fi
                      || ok "the lock is released after a successful claim"
 
 # --- 8. a lock held by a LIVE pid is respected -------------------------------
-# The control: if test 7 passed because the lock is always broken, this fails.
-LIVE_PID2=$(_live_pid | head -1)
+# The declared control for test 7: if test 7 passed because the lock is ALWAYS
+# broken, this must fail.
+#
+# ⚠️ The claim must be removed first. Test 7 leaves the worktree claimed by ORPHAN
+# with a fresh epoch, so without this the refusal comes from the existing claim
+# and the control passes with no lock present at all: verified by deleting the
+# mkdir below and still getting 11/11. A control that cannot fail is not a
+# control.
+rm -f "$CLAIM"
+LIVE_PID2=$(_live_pid) || true
 mkdir -p "$CLAIM.lock"; printf '%s\n' "$LIVE_PID2" > "$CLAIM.lock/pid"
-if RECALL_CLAIM_LOCK_WAIT=3 CLAUDE_CODE_SESSION_ID=OTHER2 bash "$SPACE" claim >/dev/null 2>&1; then
+out8=$(RECALL_CLAIM_LOCK_WAIT=3 CLAUDE_CODE_SESSION_ID=OTHER2 bash "$SPACE" claim 2>&1)
+if [ $? -eq 0 ]; then
     no "a lock held by a LIVE pid is respected" "claim succeeded; test 7 proves nothing"
+elif printf '%s' "$out8" | grep -qi "claiming this worktree right now"; then
+    ok "a lock held by a LIVE pid is respected (refused BY THE LOCK)"
 else
-    ok "a lock held by a LIVE pid is respected"
+    no "a lock held by a LIVE pid is respected" "refused, but not by the lock: $out8"
 fi
 
 # --- 9. release --force clears a stranded lock -------------------------------

@@ -334,6 +334,63 @@ def test_git_unavailable_is_not_reported_as_not_a_repo():
           row.get("outcome") == "git-unavailable", str(row)[:120])
 
 
+def test_corrupt_common_module_still_writes_a_row():
+    """BUG-201: only ImportError was caught; a truncated copy is a SyntaxError."""
+    import shutil
+    lone = SCRATCH / "corrupt-install"
+    shutil.rmtree(lone, ignore_errors=True)
+    lone.mkdir(parents=True)
+    shutil.copy(HOOK, lone / "session_end_workspace.py")
+    common = Path(HOOK).with_name("session_hook_common.py").read_text(encoding="utf-8")
+    (lone / "session_hook_common.py").write_text(common[:800], encoding="utf-8")  # truncated
+    log = lone / "row.log"
+    p = subprocess.run([sys.executable, str(lone / "session_end_workspace.py")],
+                       input=json.dumps({"session_id": "X", "cwd": str(SCRATCH)}),
+                       capture_output=True, text=True,
+                       env=dict(os.environ, RECALL_SESSION_LOG=str(log)))
+    row = json.loads(log.read_text(encoding="utf-8").splitlines()[-1]) if log.exists() else None
+    check("BUG-201 a CORRUPT common module exits 0 and still writes a row",
+          p.returncode == 0 and row and row.get("outcome") == "no-common-module",
+          f"rc={p.returncode} row={str(row)[:80]} stderr={p.stderr[:50]!r}")
+
+
+def test_outcome_reflects_an_unreleased_claim():
+    """BUG-202: outcome said 'closed' while the claim was left in place."""
+    m = load()
+    base, wt = new_repo("end-claimstuck")
+    gd = git_dir_of(wt)
+    (gd / "claude-session-claim").write_text("session=ME\npid=1234\n", encoding="utf-8")
+    lock = gd / "claude-session-claim.lock"
+    lock.mkdir()
+    (lock / "pid").write_text(str(os.getpid()), encoding="utf-8")  # live holder
+    m.remove_own_container = lambda root: ("none", "stub")
+    m.main.__globals__["remove_own_container"] = m.remove_own_container
+    m.read_payload = lambda timeout=5.0: {"session_id": "ME", "cwd": str(wt)}
+    m.main.__globals__["read_payload"] = m.read_payload
+    os.environ["RECALL_SESSION_LOG"] = str(TEST_LOG)
+    m.main()
+    row = json.loads(TEST_LOG.read_text(encoding="utf-8").splitlines()[-1])
+    check("BUG-202 a claim left in place is NOT reported as closed",
+          row.get("outcome") == "closed-with-claim-not-released"
+          and "left in place" in str(row.get("claim")), str(row)[:130])
+
+
+def test_survey_runs_on_the_non_owner_path():
+    """BUG-203: the reorder moved survey inside the owner branch, so the paths
+    that matter most (main checkout, refused worktree) recorded no dirty work."""
+    base, wt = new_repo("end-surveypath")
+    gd = git_dir_of(wt)
+    (gd / "claude-session-claim").write_text("session=OTHER\npid=1234\n", encoding="utf-8")
+    (wt / "dirty.txt").write_text("work someone will want to know about")
+    p, row = run_hook({"session_id": "ME", "cwd": str(wt), "reason": "other"})
+    check("BUG-203 a non-owner close still records the uncommitted work",
+          row and row.get("outcome") == "closed-not-owner" and row.get("uncommitted") == 1,
+          str(row)[:150])
+    check("BUG-204 the row names the directory it inspected",
+          row and row.get("root") and "end-surveypath" in str(row.get("root")),
+          str(row.get("root")))
+
+
 def test_survey_reports_but_does_not_tidy():
     m = load()
     base, wt = new_repo("end-survey")
@@ -368,6 +425,9 @@ if __name__ == "__main__":
                test_missing_common_module_still_writes_a_row,
                test_claim_survives_a_failed_container_teardown,
                test_git_unavailable_is_not_reported_as_not_a_repo,
+               test_corrupt_common_module_still_writes_a_row,
+               test_outcome_reflects_an_unreleased_claim,
+               test_survey_runs_on_the_non_owner_path,
                test_survey_reports_but_does_not_tidy):
         try:
             fn()

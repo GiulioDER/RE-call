@@ -273,7 +273,19 @@ _claim_body() {
 cmd_release() {
     local f holder
     f="$(_claim_file)"
-    [ -f "$f" ] || { echo "session-space: nothing to release" >&2; return 0; }
+    # A stranded LOCK with no claim file is a real state, and it is the one that
+    # blocks every future claim in this worktree. Returning early on "no claim"
+    # meant the documented recovery could not recover it: `release --force`
+    # printed "nothing to release" and left the lock exactly where it was.
+    if [ ! -f "$f" ]; then
+        if [ -d "$f.lock" ]; then
+            rm -rf "$f.lock" 2>/dev/null
+            echo "session-space: no claim, but cleared a stranded lock" >&2
+            return 0
+        fi
+        echo "session-space: nothing to release" >&2
+        return 0
+    fi
     holder="$(_read_key session)"
     if [ "$holder" != "$SESSION_ID" ] && [ "${1:-}" != "--force" ]; then
         echo "session-space: claim belongs to ${holder}, not this session. Use --force if you are sure." >&2

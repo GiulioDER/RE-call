@@ -72,8 +72,11 @@ try:
         release_claim_lock,
         run,
     )
-except ImportError as exc:  # pragma: no cover - exercised by a subprocess test
-    _IMPORT_ERROR = str(exc)
+except Exception as exc:  # noqa: BLE001 - pragma: no cover, exercised by a subprocess test
+    # NOT just ImportError. A half-copied module raises SyntaxError, which is not
+    # an ImportError, and that put the hook straight back to exit 1 with no row.
+    # Under a copy-by-hand install a truncated file is as likely as a missing one.
+    _IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 #: A hook at session end competes with the process actually exiting, so it gets a
 #: tighter budget than the start hook.
@@ -262,6 +265,7 @@ def write_row(row: dict) -> None:
 def main() -> int:
     row: dict = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                  "outcome": "error"}
+    surveyed_root = None
     if _IMPORT_ERROR:
         row["outcome"] = "no-common-module"
         row["detail"] = (f"{_IMPORT_ERROR}. session_hook_common.py must be installed "
@@ -298,6 +302,7 @@ def main() -> int:
             return 0
 
         cwd = row["cwd"] or os.getcwd()
+        row["cwd_effective"] = cwd
         if not Path(cwd).is_dir():
             row["outcome"] = "cwd-unusable"
             row["detail"] = f"cannot enter {cwd!r}; nothing was released or removed"
@@ -316,6 +321,8 @@ def main() -> int:
             return 0
 
         root = Path(top)
+        surveyed_root = root
+        row["root"] = str(root)
         rc, git_dir = git(cwd, "rev-parse", "--absolute-git-dir", timeout=TIMEOUT,
                           budget_left=budget_left)
         if rc in (LAUNCH_FAILED, NOT_ATTEMPTED):
@@ -358,19 +365,29 @@ def main() -> int:
         if status in ("removed", "none"):
             row["claim"] = release_claim(Path(git_dir), session_id,
                                          os.environ.get("CLAUDE_PID", str(os.getpid())))
-            row["outcome"] = "closed"
+            # Only the literal "released" may read as closed. A claim left in
+            # place by a stranded lock, or an unlink that failed, leaves this
+            # worktree claimed, and a row saying "closed" beside it is the same
+            # conflation the container branch was fixed to avoid.
+            row["outcome"] = ("closed" if row["claim"] == "released"
+                              else "closed-with-claim-not-released")
         else:
             row["claim"] = ("left in place: the container step reported "
                             f"{status!r}, so this checkout still owns something")
             row["outcome"] = f"closed-with-{status}-container"
-        # Survey LAST: it is reporting, and reporting must not spend the budget
-        # the acting steps need. Five git subprocesses ahead of the teardown is
-        # how a slow git turned into "claim released, container untouched".
-        row.update(survey(root))
     except Exception as exc:  # noqa: BLE001 - a shutdown must not be blocked
         row["outcome"] = "error"
         row["error"] = f"{type(exc).__name__}: {exc}"[:200]
     finally:
+        # Survey last in TIME, so reporting cannot spend the budget the acting
+        # steps need, but on EVERY path that knows a root, and outside the
+        # try/except above so a failure here cannot rewrite a completed
+        # teardown's outcome as "error".
+        if surveyed_root is not None:
+            try:
+                row.update(survey(surveyed_root))
+            except Exception as exc:  # noqa: BLE001
+                row["survey_error"] = f"{type(exc).__name__}: {exc}"[:120]
         row["elapsed_s"] = round(time.monotonic() - _STARTED, 2)
         write_row(row)
     return 0
