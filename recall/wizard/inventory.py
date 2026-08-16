@@ -120,15 +120,23 @@ def _entry(path: Path) -> dict[str, Any]:
 def _is_non_relative_pattern(glob: str) -> bool:
     """Whether `Path.glob` will refuse this pattern, decided identically on every platform.
 
-    `pathlib` refuses a pattern with a drive OR a root. Testing `PurePath(glob).is_absolute()`
-    matched neither Windows form under a POSIX interpreter: `C:/docs/**/*.md` is not absolute to
-    `PurePosixPath`, and `C:docs/*.md` is drive-relative so it is not absolute on Windows either.
-    Both reach `Path.glob` and raise there.
+    Testing `PurePath(glob).is_absolute()` matched neither Windows form under a POSIX interpreter:
+    `C:/docs/**/*.md` is not absolute to `PurePosixPath`, and `C:docs/*.md` is drive-relative so
+    it is not absolute on Windows either. What those two then do DIFFERS by platform, which is the
+    whole reason to decide it here rather than let the library decide: on Windows both raise
+    `NotImplementedError` inside `Path.glob`, while on POSIX both are legal patterns that match
+    nothing, so the run fell through to the empty-corpus error and the advice about the glob was
+    never printed.
 
     `ntpath.splitdrive` is used on every platform on purpose. It recognises `C:`, `C:/` and
     `//server/share`, and importing it under POSIX is free, so one predicate covers both flavours
     and this refusal does not change shape with the host. `os.path.splitroot` would be the exact
     equivalent of pathlib's own test but only exists from 3.12, and this package supports 3.11.
+
+    The deliberate cost: on POSIX a directory really can be named `C:`, so a pattern like
+    `C:docs/*.md` is legal there and is refused anyway. Refusing it identically everywhere is
+    worth more than serving that corpus layout, but the message must not tell a POSIX reader
+    their pattern is "absolute" when it is not.
     """
     if glob.startswith(("/", "\\")):
         return True
@@ -167,8 +175,9 @@ def build_inventory_report(root: str | Path, glob: str = DEFAULT_GLOB) -> Invent
         # is neither ValueError nor OSError, so it escaped the CLI's catch as a bare traceback on
         # what is a natural first guess for somebody who has just been shown an absolute path.
         raise ValueError(
-            f"the glob {glob!r} is not relative. It is applied relative to the path argument, so "
-            f"pass a pattern like '**/*.md' and give the directory as the path."
+            f"the glob {glob!r} names a drive or a root, and is refused on every platform so the "
+            f"same pattern behaves the same everywhere. It is applied relative to the path "
+            f"argument, so pass a pattern like '**/*.md' and give the directory as the path."
         )
     files = candidate_files(root, glob)
     entries: list[dict[str, Any]] = []

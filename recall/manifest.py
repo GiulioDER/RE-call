@@ -270,7 +270,19 @@ class LocalObjectReader:
         # exact defect the authority was carried to avoid. Decoding the path alone and prefixing
         # the anchor directly is version-independent.
         authority = unquote(parsed.netloc)
-        local = url2pathname(parsed.path)
+        try:
+            local = url2pathname(parsed.path)
+        except (OSError, ValueError) as exc:
+            # The decode runs BEFORE the authority guard below, so guarding only the authority
+            # left this hole open: a URI whose PATH begins with `//` (`file:////share/x.md`,
+            # `file://localhost//share/x.md`) reads as an authority to 3.14's POSIX
+            # `url2pathname` and raises `URLError`, which is an OSError and would propagate
+            # untyped through `verify()` and `generation build`. `Path.as_uri()` cannot produce
+            # these, but a hand-written or third-party manifest can.
+            raise ObjectNotAllowed(
+                f"local object {entry.uri!r} does not name a readable local path "
+                f"({type(exc).__name__})."
+            ) from exc
         if authority and authority.lower() != "localhost":
             if not _unc_supported():
                 # 3.14's POSIX `url2pathname` raises `URLError` here, which is neither

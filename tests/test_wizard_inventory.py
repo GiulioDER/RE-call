@@ -364,7 +364,7 @@ def test_a_non_relative_glob_is_refused_with_advice(corpus: Path, glob: str) -> 
     to the empty-corpus error, and the test failed on the only platform CI runs. The predicate is
     now `ntpath.splitdrive` plus a leading separator, which decides identically everywhere.
     """
-    with pytest.raises(ValueError, match="not relative"):
+    with pytest.raises(ValueError, match="drive or a root"):
         build_inventory(corpus, glob=glob)
 
 

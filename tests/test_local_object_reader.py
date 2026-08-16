@@ -231,6 +231,44 @@ class TestPercentEncodingRoundTrip:
                 f"authority {authority!r} was dropped: {resolved}"
             )
 
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "file:////share/x.md",
+            "file://localhost//share/x.md",
+            "file://nas1//share/x.md",
+        ],
+    )
+    def test_a_path_beginning_with_a_double_slash_stays_in_the_readers_vocabulary(
+        self, tmp_path: pathlib.Path, uri: str
+    ) -> None:
+        """A `//`-prefixed PATH is read as an authority by 3.14's POSIX `url2pathname`.
+
+        The decode runs before the authority guard, so guarding only the authority left these
+        three raising `urllib.error.URLError` out of `_resolve` on 3.14/POSIX — untyped, past
+        every caller written to handle manifest problems. `Path.as_uri()` cannot emit them, but a
+        hand-written manifest can.
+
+        Asserted as "one of the reader's two declared exception types" rather than a single class,
+        because which one fires legitimately differs by platform and version. What must never
+        happen is a third type, or a successful read.
+        """
+        from recall.manifest import (
+            LocalObjectReader,
+            ManifestVerificationError,
+            ObjectNotAllowed,
+        )
+
+        entry = ManifestObjectV1(
+            uri=uri,
+            version_id="a" * 64,
+            media_type="text/markdown",
+            size=1,
+            sha256="a" * 64,
+        )
+        with pytest.raises((ObjectNotAllowed, ManifestVerificationError)):
+            LocalObjectReader(roots=(tmp_path,)).fetch(entry)
+
     def test_a_remote_authority_is_refused_in_the_readers_own_vocabulary(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
