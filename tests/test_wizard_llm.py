@@ -263,6 +263,178 @@ def test_a_gap_query_the_model_copied_from_the_corpus_is_dropped() -> None:
     assert len(gap) == 3
 
 
+def test_the_vocabulary_filter_agrees_with_the_offline_generators_own_disjointness_test() -> None:
+    """Two independent judgements of "does this subject appear in the corpus" must not disagree.
+
+    This is the test that would have caught the filter's first version. Against a REALISTIC corpus
+    it rejected 83 of the 125 questions in the project's own certified-disjoint off-topic pool,
+    because it intersected every corpus token filtered only by `len(w) > 4` — so "should",
+    "before" and "engine" were all treated as subject matter, and `generate_llm` raised on any
+    real corpus after the paid model call. A three-chunk fixture with 24 word types cannot show
+    that; a corpus with real English can.
+
+    The invariant: a pool question is rejected exactly when `offtopic_subjects_absent_from` says
+    its subject is not disjoint from the corpus.
+    """
+    from pathlib import Path
+
+    from recall.eval.synthetic import _OFFTOPIC_SUBJECTS, _OFFTOPIC_TEMPLATES
+
+    from recall.wizard.queryset import chunks_from_directory, offtopic_subjects_absent_from
+
+    # This repository's own `docs/`, deliberately. A synthetic fixture cannot exercise the defect:
+    # the first version of the filter looked fine on three short chunks and failed on real prose,
+    # and a fixture built by repeating a chunk makes every term look ubiquitous, which sends the
+    # df ceiling degenerate rather than testing it. `docs/` is also the corpus the ceiling was
+    # tuned against, and it genuinely discusses 12 of the 25 off-topic subjects, so both the
+    # accept and the reject path are real.
+    docs = Path(__file__).resolve().parents[1] / "docs"
+    if not docs.is_dir():
+        pytest.skip("docs/ is not present in this checkout")
+    corpus = chunks_from_directory(docs)
+
+    disjoint = set(offtopic_subjects_absent_from(corpus))
+    subject_words = L._corpus_subject_words(corpus)
+
+    disagreements = []
+    for subject in _OFFTOPIC_SUBJECTS:
+        for template in _OFFTOPIC_TEMPLATES:
+            query = template.format(s=subject)
+            rejected = L._reuses_corpus_vocabulary(query, subject_words)
+            if rejected != (subject not in disjoint):
+                disagreements.append((query, rejected, subject in disjoint))
+
+    assert not disagreements, f"filters disagree on {len(disagreements)} question(s): {disagreements[:3]}"
+    # Both paths really were exercised, so this cannot pass by rejecting or accepting everything.
+    assert 0 < len(disjoint) < len(_OFFTOPIC_SUBJECTS)
+
+
+def test_an_on_topic_question_is_still_caught() -> None:
+    """Loosening the filter must not stop it doing its job. All four were measured as caught."""
+    from pathlib import Path
+
+    from recall.wizard.queryset import chunks_from_directory
+
+    docs = Path(__file__).resolve().parents[1] / "docs"
+    if not docs.is_dir():
+        pytest.skip("docs/ is not present in this checkout")
+    subject_words = L._corpus_subject_words(chunks_from_directory(docs))
+
+    for question in (
+        "how do i tune the abstention threshold for my corpus",
+        "what happens when a generation is promoted before it is calibrated",
+        "which postgres extension does the index require",
+        "how long does indexing take for a thousand documents",
+    ):
+        assert L._reuses_corpus_vocabulary(question, subject_words), question
+
+
+def test_a_corpus_of_near_identical_chunks_does_not_disable_the_filter() -> None:
+    """An empty subject set makes `_reuses_corpus_vocabulary` return False for everything.
+
+    That is a guard that stops guarding while every test feeding it a large corpus still passes.
+    At a 5% ceiling with no floor, a corpus whose chunks resemble each other produced exactly
+    that.
+    """
+    corpus = ["# Note\n\nThe replication topology tolerates a single regional failure.\n"] * 30
+    subject_words = L._corpus_subject_words(corpus)
+    assert subject_words, "an empty subject set silently disables the filter"
+    assert L._reuses_corpus_vocabulary(
+        "how does the replication topology tolerate a regional failure", subject_words
+    )
+
+
+def test_the_prompt_is_bounded_by_characters_not_chunk_count() -> None:
+    """A count-based bound says nothing about size: 120 chunks measured 75k characters on real
+    docs, against the 8k the docstring claimed, and more than a local endpoint's context.
+
+    `per_class` must be large enough that the budget actually binds. At 3 the sample is 9 chunks,
+    about 7 200 characters, which is under the budget however the code behaves — so an earlier
+    version of this test passed with the budget check deleted.
+    """
+    per_class = 20
+    fat = ["x" * 800 for _ in range(500)]
+    unbounded = per_class * L.CHUNKS_PER_PROMPT_MULTIPLIER * 800
+    assert unbounded > L.MAX_PROMPT_CHARS, "precondition: the budget must actually bind here"
+
+    client = _FakeClient(
+        [_payload([f"a{i}" for i in range(40)], [f"zzz{i}" for i in range(40)])]
+    )
+    L.generate_llm(fat, client=client, per_class=per_class)
+    sent = client.calls[0]["user"]
+    assert len(sent) <= L.MAX_PROMPT_CHARS + 500, len(sent)  # + the instruction text
+
+
+def test_the_model_menu_is_short_enough_to_read(monkeypatch) -> None:
+    """`recall.setup._choose` prints every entry as a numbered line before prompting, and the live
+    OpenRouter roster is ~390 models."""
+    many = [
+        L.CatalogueModel(f"vendor/model-{i}", completion_price=1e-7 * i) for i in range(400)
+    ]
+    monkeypatch.setattr(L, "openrouter_catalogue", lambda: many)
+    choices = L.model_choices(L.OPENROUTER_BASE_URL)
+    assert len(choices) == L.MENU_LIMIT + 1  # + manual entry
+    assert choices[-1].value == L.MANUAL_MODEL
+
+
+def test_a_non_list_data_field_falls_back_rather_than_raising(monkeypatch) -> None:
+    """`{"data": null}` is an ordinary gateway error shape and used to escape as a TypeError."""
+    for body in (b'{"data": null}', b'{"data": 5}', b'{"data": {"a": 1}}'):
+        monkeypatch.setattr(L, "_fetch", lambda url, _b=body, **kw: _b)
+        assert L.openrouter_catalogue() == list(L.PINNED_OPENROUTER_MODELS)
+
+
+def test_a_pasted_key_with_a_trailing_newline_still_works(monkeypatch) -> None:
+    """Copying a key out of a terminal brings a trailing newline, which is header-illegal."""
+    seen: dict[str, str] = {}
+
+    def capture(url, *, headers=None, **kw):
+        seen.update(headers or {})
+        return json.dumps({"data": [{"id": "gpt-5.6-luna"}]}).encode()
+
+    monkeypatch.setattr(L, "_fetch", capture)
+    L.openai_catalogue("sk-secret-ABC123\n")
+    assert seen["Authorization"] == "Bearer sk-secret-ABC123"
+
+
+def test_an_api_key_never_reaches_a_log_line(caplog) -> None:
+    """`http.client` raises ValueError("Invalid header value %r" % value) whose value is the whole
+    `Bearer <key>` header, and logging `%s` of that exception wrote the key into a warning.
+
+    The key here carries an EMBEDDED newline, not a trailing one. A trailing newline is removed by
+    the `.strip()` above, so the exception never fires and this test would pass with the log
+    redaction deleted — which is exactly what it did until the guard was mutated. Embedded is the
+    case `.strip()` cannot fix, so it is the case that exercises the redaction.
+    """
+    import logging
+
+    secret = "sk-secret-ABC123"
+    with caplog.at_level(logging.DEBUG):
+        models = L.openai_catalogue(f"{secret}\nEXTRA")
+    assert models == list(L.PINNED_OPENAI_MODELS), "the bad header must fall back, not raise"
+    assert secret not in caplog.text, caplog.text
+
+
+def test_the_openai_roster_excludes_models_that_cannot_chat(monkeypatch) -> None:
+    """Offering `text-embedding-3-small` as the thing that writes your questions is the same
+    defect the OpenRouter path was fixed for."""
+    body = json.dumps(
+        {
+            "data": [
+                {"id": "gpt-5.6-luna"},
+                {"id": "text-embedding-3-small"},
+                {"id": "whisper-1"},
+                {"id": "dall-e-3"},
+                {"no_id": True},
+                {"id": "gpt-5.6-terra"},
+            ]
+        }
+    ).encode()
+    monkeypatch.setattr(L, "_fetch", lambda url, **kw: body)
+    ids = [m.id for m in L.openai_catalogue("sk-test")]
+    assert ids == ["gpt-5.6-luna", "gpt-5.6-terra"]
+
+
 def test_the_schema_forces_the_two_classes_apart() -> None:
     """Structured output, not free-text parsing: a malformed batch must fail loudly rather than
     silently yield fewer queries than the certification floor needs."""
