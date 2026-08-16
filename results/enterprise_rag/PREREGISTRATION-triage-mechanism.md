@@ -5,7 +5,8 @@
 ## Registration
 
 ```yaml
-registration_commit: TO BE FILLED BY THE COMMIT THAT ADDS THIS FILE
+registration_commit: 1a153cd3ae746786af3eff228d2fabbd5098fa9e  # the commit that ADDED this file
+registration_note: a commit cannot carry its own hash, so this line was written by the next commit
 label_source: the retrieval fixture's own gold membership (mechanical, no judge)
 existing_fixture_digest: b6405b77a2d75472e03c651c2b51b9a62bde4a6d0da6f1c65597091e7492a774
 supersedes_nothing: this is a NEW question, not a re-measurement of the triage sweep
