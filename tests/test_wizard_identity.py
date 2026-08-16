@@ -395,3 +395,40 @@ def test_a_dangling_symlink_refuses_rather_than_hashing_a_partial_tree(tmp_path:
     assert artifact_identity_for(FastEmbedEmbedder(snap)) is not None
     blob.unlink()  # the cache is now incomplete
     assert artifact_identity_for(FastEmbedEmbedder(snap)) is None
+
+
+def test_a_directory_symlink_refuses_rather_than_hiding_its_contents(tmp_path: Path) -> None:
+    """The dangling-link fix one level up, and the same silent-omission failure.
+
+    A live directory symlink passes the dangling check, fails `is_file()`, and `rglob` does not
+    descend into it — so everything underneath is omitted from the digest with no error, and the
+    result is recorded as immutable provenance for a tree it does not cover.
+    """
+    import os
+
+    repo = tmp_path / "models--org--repo"
+    outside = repo / "extra"
+    outside.mkdir(parents=True)
+    (outside / "hidden.bin").write_bytes(b"never hashed")
+    snap = repo / "snapshots" / ("9" * 40)
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_bytes(b"{}")
+    try:
+        os.symlink(outside, snap / "linked", target_is_directory=True)
+    except OSError:
+        pytest.skip("creating a symlink needs privilege on this machine")
+
+    assert artifact_identity_for(FastEmbedEmbedder(snap)) is None
+
+
+def test_an_actionable_refusal_reaches_the_log(tmp_path: Path, caplog) -> None:
+    """"Your cache is incomplete" is the one failure a reader can fix, so it must not be logged
+    as a bare class name indistinguishable from a fastembed internals change."""
+    import logging
+
+    empty = tmp_path / "models--org--repo" / "snapshots" / ("3" * 40)
+    empty.mkdir(parents=True)
+    with caplog.at_level(logging.WARNING):
+        assert artifact_identity_for(FastEmbedEmbedder(empty)) is None
+    assert "has no files" in caplog.text
+    assert str(empty) in caplog.text

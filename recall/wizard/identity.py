@@ -163,6 +163,14 @@ def _artifact_digest(directory: Path) -> str:
     )
     files = []
     for candidate in candidates:
+        if candidate.is_symlink() and candidate.is_dir():
+            # Refused for the same reason as a dangling link, one level up. A live directory
+            # symlink passes the dangling check and fails `is_file()`, so it is dropped — and
+            # `rglob` does not descend into a directory symlink (explicit as `recurse_symlinks`
+            # from 3.13, implicit before), so nothing underneath is yielded either. The digest
+            # would then silently cover less than the tree it names. `huggingface_hub` only ever
+            # links files, so this is a layout nobody should produce rather than one to support.
+            raise ValueError(f"model artifact contains a directory symlink: {candidate}")
         if candidate.is_symlink() and not candidate.exists():
             # Refused, not skipped. `is_file()` follows the link and returns False for a dangling
             # one, so a snapshot whose blobs were cleaned up, or copied without `-a`, would hash
@@ -220,6 +228,13 @@ def artifact_identity_for(embedder: Any) -> ArtifactIdentity | None:
             artifact_digest=digest,
             path=directory,
         )
+    except ValueError as exc:
+        # The refusals this module raises itself are the ones a reader can act on — a pruned cache
+        # can be re-downloaded — and their messages name the offending path. Logging only the class
+        # made "your cache is incomplete" indistinguishable from "fastembed moved an attribute".
+        # These messages are locally produced and carry a path, never a credential.
+        _log.warning("could not resolve an artifact identity: %s", exc)
+        return None
     except Exception as exc:  # noqa: BLE001 - a probe returns, it does not raise
         _log.warning("could not resolve an artifact identity (%s)", type(exc).__name__)
         return None
