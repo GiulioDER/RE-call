@@ -273,3 +273,100 @@ sample of one.** How small across 470 rows is not yet known, and I decline to gu
 3. ⚠️ **Every AUC in this line of work carries an unmeasured run-to-run component**, the 0.642 and
    the 0.6375 included. Not wrong, but quoted to four decimals with no reproducibility interval.
    Pass B supplies the interval that should have accompanied them.
+
+---
+
+## Result, Pass B (2026-08-16)
+
+**Status: measured.** Capture 2, digest `f94c1f5d…`, 500 questions, 470 scoreable, 8h31m on VPS2,
+`--reranker none`, same retrieval settings as capture 1 (ten shared fingerprint keys, all equal).
+**No prediction above is edited.**
+
+### 🔑 M4: the registered bet is CORRECT, and my reason for it was WRONG
+
+| # | registered | measured | verdict |
+|---|---|---|---|
+| M4 | 0.55, [0.50, 0.63] | **0.5687** | **inside the interval** |
+| P2 | M4 below the published ratio | **0.5687 vs 0.6489** on the same 470 rows | **HELD** |
+
+**The true RRF fused score, which is the quantity that actually orders the list, predicts a
+retrieval miss WORSE than the dense cosine that was captured by accident.** That was the
+counterintuitive half of this registration and the opposite of the assumption it inherited.
+
+⛔ **But the mechanism I gave for it is refuted, by a check I registered myself.** I predicted the
+fused ratio would lose *because* RRF quantises it into a handful of levels by leg count, and
+registered confound 4 so the tie explanation would be checkable rather than asserted. Measured:
+**468 distinct values across 470 rows.** The fused ratio is essentially continuous, so ties explain
+nothing. The prediction stands, the reasoning behind it does not, and I do not have a replacement.
+
+⚠️ **And M4 does not clear chance on its own.** At 160 positives the SE is 0.0395; M4's distance
+from 0.5 is 0.0687 against a 1.96 SE bound of 0.0775. So the defensible claim is the COMPARISON
+(P2), not the level: the fused ratio is worse than the dense proxy, and is not itself a signal.
+
+### ⛔ M5 is FALSIFIED, and the sign is not being flipped after the fact
+
+| # | registered | measured | verdict |
+|---|---|---|---|
+| M5 | 0.58, [0.50, 0.66] | **0.4220** | **FALSIFIED: outside the interval, and on the wrong side of chance** |
+
+`legs_hit` at rank 8 is **anti**-predictive as registered: more legs finding the rank-8 chunk means
+*fewer* misses, not more.
+
+⛔ **Reversed it would read 0.578, almost exactly the predicted magnitude. That number is NOT being
+claimed.** Choosing a sign after seeing the data is precisely the error
+`PREREGISTRATION-retrieval-triage.md` flagged when `score_decay` came in at 0.3644, and it is not
+committed here in the other direction. M5 failed.
+
+🔑 **What the failure exposes is a defect in my own registration.** M3 predicts that *disagreement*
+between the legs marks a miss. M5, as I wrote it, predicted that *agreement* does. Those two cannot
+both be true, and I did not notice the contradiction when registering them. The data picks the M3
+direction, and M5's measured 0.4220 is consistent with M3's 0.5940 once read as "agreement is
+good". The lesson is not about legs; it is that a registration needs its predictions checked
+against each other before it is committed.
+
+### Everything scored twice, and the reproducibility interval that never existed
+
+| quantity | capture 1 | capture 2 | movement |
+|---|---:|---:|---:|
+| **published `ratio_8_over_1`** | 0.6375 | **0.6489** | **+0.0114** |
+| M6, ratio outside the inverted regime | 0.6361 | 0.6478 | +0.0117 |
+| M3, top-8 inversions | 0.5845 | 0.5940 | +0.0095 |
+| M2, inverted fraction | 0.1596 | 0.1638 | +0.0042 |
+| P3, Spearman(inversions, ratio) | 0.5791 | 0.5832 | +0.0041 |
+| M1, mean Spearman | −0.3383 | −0.3379 | +0.0004 |
+
+**Churn between the two runs**, over all 500 rows:
+
+- ranked lists identical in document **and** score: **343/500 (68.6%)**;
+- top-8 identical in document and score: **365/500 (73.0%)**;
+- document order identical, scores ignored: 382/500 (76.4%), the weaker identity;
+- `missed_any` labels flipped: **2 of 470 (0.4%)**, 158 positives against 160;
+- `ratio_8_over_1` movement: mean **0.0021**, max **0.1431**.
+
+🔑 **A single re-run moves the headline AUC by 0.0114.** Against a 1.96 SE noise band of 0.0775,
+run-to-run variation is roughly a seventh of the sampling noise, so it does not overturn any
+verdict here. **That is the reassuring version of the R1 failure**: 31.4% of ranked lists differ
+between runs, and almost none of it reaches the label, because a perturbed query vector reorders
+the deep pool while the top-8 and the gold membership mostly survive.
+
+⚠️ **Two captures give one difference, not a distribution.** 0.0114 is the size of one re-run, and
+a lower bound on what an honest confidence interval needs. Every number in this line of work should
+now carry roughly ±0.01 for re-run variation, in addition to its sampling error.
+
+### Registered scorecard, complete
+
+| # | predicted | measured | verdict |
+|---|---|---|---|
+| M1 | −0.55 | −0.3379 | inside, weak edge |
+| M2 | 0.12 | 0.1638 | inside |
+| M3 | 0.60 | 0.5940 | inside; clears the falsifier; single-comparison bound only |
+| M4 | 0.55, and below the proxy | 0.5687, proxy 0.6489 | **inside; P2 HELD; mechanism refuted** |
+| M5 | 0.58 | 0.4220 | ⛔ **FALSIFIED** |
+| M6 | 0.60 | 0.6478 | inside |
+| P1 | M3 and M6 both above 0.55 | 0.5940, 0.6478 | HELD |
+| P3 | \|rho\| > 0.5 | 0.5832 | HELD |
+
+**Five of six registered quantities inside their intervals, one falsified, and the mechanism claim
+behind the one I most wanted to be right is dead.** `ratio_8_over_1` remains an empirical
+regularity whose leg-disagreement component is real (M3, P3) but partial, and whose advantage over
+the true ranking criterion is now measured rather than assumed, and still unexplained.
