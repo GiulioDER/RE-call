@@ -140,3 +140,69 @@ class TestLocalObjectReader:
         (tmp_path / "e.md").unlink()
         with pytest.raises(ManifestVerificationError, match="unavailable"):
             LocalObjectReader(roots=(tmp_path,)).fetch(entry)
+
+
+class TestPercentEncodingRoundTrip:
+    """`_resolve` must reverse `Path.as_uri()` exactly, for every filename the OS permits.
+
+    It did not. `_resolve` called `url2pathname(unquote(path))`, and `url2pathname` already
+    percent-decodes, so the path was decoded twice. Measured on 3.14/win32 against `as_uri()`
+    output, 3 of 8 sample names resolved wrongly: `hash#tag.md` and `quest?ion.md` were truncated
+    at the decoded delimiter, and a file genuinely named `percent%20literal.md` resolved to
+    `percent literal.md`, a different file.
+
+    The containment check was never bypassed, so this was not an escape. It made legitimate corpus
+    files unreadable and reported it as a checksum or availability failure naming neither the file
+    nor the cause — which for a wizard building a manifest from a user's own directory is an
+    install that fails for no visible reason.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "plain.md",
+            "with space.md",
+            "hash#tag.md",
+            "quest?ion.md",
+            "percent%20literal.md",
+            "plus+sign.md",
+            "unicode-éè.md",
+            "ampersand&and.md",
+            "bracket[1].md",
+        ],
+    )
+    def test_a_name_the_filesystem_accepts_round_trips(
+        self, tmp_path: pathlib.Path, name: str
+    ) -> None:
+        body = f"body of {name}".encode()
+        try:
+            uri, digest, size = _write(tmp_path, name, body)
+        except OSError:
+            pytest.skip(f"filesystem refuses the name {name!r}")
+
+        from recall.manifest import LocalObjectReader
+
+        entry = ManifestObjectV1(
+            uri=uri, version_id=digest, media_type="text/markdown", size=size, sha256=digest
+        )
+        assert LocalObjectReader(roots=(tmp_path,)).fetch(entry).data == body
+
+    def test_a_literal_percent_name_does_not_resolve_to_its_decoded_neighbour(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """The sharpest case: both files exist, so a double decode reads the wrong one silently.
+
+        Without the two digests differing this would still pass under the old behaviour, because
+        the reader would find *a* file. It is the digest check that turns the wrong path into a
+        visible failure, and this asserts the right bytes come back rather than merely that some
+        bytes did.
+        """
+        from recall.manifest import LocalObjectReader
+
+        uri, digest, size = _write(tmp_path, "percent%20literal.md", b"the literal-percent file")
+        _write(tmp_path, "percent literal.md", b"the space file")
+
+        entry = ManifestObjectV1(
+            uri=uri, version_id=digest, media_type="text/markdown", size=size, sha256=digest
+        )
+        assert LocalObjectReader(roots=(tmp_path,)).fetch(entry).data == b"the literal-percent file"

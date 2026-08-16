@@ -238,7 +238,15 @@ class LocalObjectReader:
         parsed = urlsplit(entry.uri)
         if parsed.scheme != "file":
             raise ObjectNotAllowed(f"{entry.uri!r} is not a file:// object")
-        path = Path(url2pathname(unquote(parsed.path))).resolve()
+        # `url2pathname` ALONE. It already percent-decodes, so wrapping it in `unquote` decoded
+        # twice and resolved a different file than the manifest named. Measured on 3.14/win32
+        # against `Path.as_uri()` output: `hash#tag.md` resolved to `...\hash` and
+        # `quest?ion.md` to `...\quest` (truncated at the decoded delimiter), while a file
+        # genuinely named `percent%20literal.md` resolved to `percent literal.md` — a DIFFERENT
+        # existing file. The containment check below still held, so nothing escaped the allowlist;
+        # what broke is that legitimate corpus files became unreadable, reported as a checksum or
+        # availability failure that named neither the file nor the cause.
+        path = Path(url2pathname(parsed.path)).resolve()
         # `is_relative_to` on the RESOLVED path, so `..` and symlinks cannot escape a root. This is
         # the local analogue of the S3 allowlist: without it a manifest names any file on disk.
         if not any(path.is_relative_to(root) for root in self._roots):
