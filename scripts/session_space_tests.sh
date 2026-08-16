@@ -23,10 +23,19 @@ else
 fi
 
 # --- 2. a live pid with NO epoch must NOT be stale --------------------------
-# A REAL Windows pid, because $$ from Git Bash is not one and tasklist cannot
-# see it. Using $$ here made this test pass for the wrong reason.
-LIVE_PID=$(tasklist //FI "IMAGENAME eq claude.exe" //NH 2>/dev/null | awk 'NF{print $2; exit}')
-[ -z "$LIVE_PID" ] && { echo "SKIP: no live claude.exe to test against"; exit 2; }
+# A REAL Windows pid, because $$ from Git Bash is NOT one and tasklist cannot see
+# it: using $$ made this test pass for the wrong reason once already.
+#
+# ANY live Windows process will do, not specifically claude.exe. Requiring
+# claude.exe meant the suite exited "SKIP" wherever one was not running, which is
+# every CI runner, so the test that proves a live claim is protected would never
+# have executed in CI at all.
+_live_pid() {
+    tasklist //FI "IMAGENAME eq claude.exe" //NH 2>/dev/null | awk 'NF>1{print $2; exit}'
+    tasklist //NH 2>/dev/null | awk 'NF>1 && $2 ~ /^[0-9]+$/ {print $2; exit}'
+}
+LIVE_PID=$(_live_pid | head -1)
+[ -z "$LIVE_PID" ] && { echo "FAIL: could not find ANY live pid to test against" >&2; exit 1; }
 printf 'session=OTHER\npid=%s\n' "$LIVE_PID" > "$CLAIM"
 cd "$WT"
 if CLAUDE_CODE_SESSION_ID=ME bash "$SPACE" check >/dev/null 2>&1; then
@@ -103,7 +112,7 @@ fi
 
 # --- 8. a lock held by a LIVE pid is respected -------------------------------
 # The control: if test 7 passed because the lock is always broken, this fails.
-LIVE_PID2=$(tasklist //FI "IMAGENAME eq claude.exe" //NH 2>/dev/null | awk 'NF{print $2; exit}')
+LIVE_PID2=$(_live_pid | head -1)
 mkdir -p "$CLAIM.lock"; printf '%s\n' "$LIVE_PID2" > "$CLAIM.lock/pid"
 if RECALL_CLAIM_LOCK_WAIT=3 CLAUDE_CODE_SESSION_ID=OTHER2 bash "$SPACE" claim >/dev/null 2>&1; then
     no "a lock held by a LIVE pid is respected" "claim succeeded; test 7 proves nothing"

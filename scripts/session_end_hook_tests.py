@@ -232,6 +232,108 @@ def test_unusable_cwd_is_not_reported_as_not_a_repo():
           row and row.get("outcome") == "not-a-git-repo", str(row)[:110])
 
 
+# ------------------------------------------------- AUDIT-4: the three cases that let P0s ship
+def test_no_claim_file_means_no_teardown():
+    """BUG-102: 'no claim' was read as 'mine', and the MAIN checkout never has one.
+
+    session-space.sh refuses the main checkout before it would write a claim, so
+    the shared checkout is permanently in this state. An auditor proved the old
+    code force-removed a real container labelled for a different session.
+    """
+    m = load()
+    base, wt = new_repo("end-noclaim")
+    assert not (git_dir_of(wt) / "claude-session-claim").exists()
+    calls = []
+
+    def fake_run(args, cwd=None, timeout=10, env=None, budget_left=None):
+        calls.append(list(args))
+        return (0, "deadbeefcafe", "") if args[:3] == ["docker", "ps", "-aq"] else (0, "", "")
+
+    m.run = fake_run
+    m.main.__globals__["run"] = fake_run
+    m.read_payload = lambda timeout=5.0: {"session_id": "SOME-OTHER", "cwd": str(wt)}
+    m.main.__globals__["read_payload"] = m.read_payload
+    os.environ["RECALL_SESSION_LOG"] = str(TEST_LOG)
+    m.main()
+    removes = [c for c in calls if c[:3] == ["docker", "rm", "-f"]]
+    row = json.loads(TEST_LOG.read_text(encoding="utf-8").splitlines()[-1])
+    check("BUG-102 an absent claim performs ZERO docker rm",
+          not removes, f"{len(removes)} rm call(s): {removes}")
+    check("BUG-102 and it says ownership was not established",
+          row.get("outcome") == "closed-not-owner"
+          and "no claim" in str(row.get("container_detail", "")), str(row)[:130])
+
+
+def test_unreadable_payload_touches_nothing():
+    """BUG-103: an unread payload lost `reason`, defeating the clear-skip."""
+    m = load()
+    base, wt = new_repo("end-badpayload")
+    calls = []
+    m.run = lambda *a, **k: (calls.append(list(a[0])), (0, "", ""))[1]
+    m.main.__globals__["run"] = m.run
+    m.read_payload = lambda timeout=5.0: {"_stdin": "timed out"}
+    m.main.__globals__["read_payload"] = m.read_payload
+    os.environ["RECALL_SESSION_LOG"] = str(TEST_LOG)
+    m.main()
+    row = json.loads(TEST_LOG.read_text(encoding="utf-8").splitlines()[-1])
+    check("BUG-103 an unreadable payload performs no docker call at all",
+          not calls and row.get("outcome") == "payload-unreadable", f"{calls} {row}"[:130])
+
+
+def test_missing_common_module_still_writes_a_row():
+    """BUG-101: the install copies single files; two are needed, so this happens."""
+    import shutil
+    lone = SCRATCH / "lone-install"
+    if lone.exists():
+        shutil.rmtree(lone, ignore_errors=True)
+    lone.mkdir(parents=True)
+    # Exactly the install shape: the hook alone, WITHOUT session_hook_common.py.
+    shutil.copy(HOOK, lone / "session_end_workspace.py")
+    log = lone / "row.log"
+    p = subprocess.run([sys.executable, str(lone / "session_end_workspace.py")],
+                       input=json.dumps({"session_id": "X", "cwd": str(SCRATCH)}),
+                       capture_output=True, text=True,
+                       env=dict(os.environ, RECALL_SESSION_LOG=str(log)))
+    row = json.loads(log.read_text(encoding="utf-8").splitlines()[-1]) if log.exists() else None
+    check("BUG-101 a missing session_hook_common exits 0 and STILL writes a row",
+          p.returncode == 0 and row is not None
+          and row.get("outcome") == "no-common-module",
+          f"rc={p.returncode} row={str(row)[:90]} stderr={p.stderr[:60]!r}")
+
+
+def test_claim_survives_a_failed_container_teardown():
+    """BUG-105: releasing after a failed teardown strands an unattributable container."""
+    m = load()
+    base, wt = new_repo("end-failedteardown")
+    gd = git_dir_of(wt)
+    (gd / "claude-session-claim").write_text("session=ME\npid=1234\n", encoding="utf-8")
+    m.remove_own_container = lambda root: ("failed", "could not remove abc123")
+    m.main.__globals__["remove_own_container"] = m.remove_own_container
+    m.read_payload = lambda timeout=5.0: {"session_id": "ME", "cwd": str(wt)}
+    m.main.__globals__["read_payload"] = m.read_payload
+    os.environ["RECALL_SESSION_LOG"] = str(TEST_LOG)
+    m.main()
+    row = json.loads(TEST_LOG.read_text(encoding="utf-8").splitlines()[-1])
+    check("BUG-105 a failed teardown leaves the claim in place",
+          (gd / "claude-session-claim").exists()
+          and "left in place" in str(row.get("claim", "")), str(row)[:130])
+
+
+def test_git_unavailable_is_not_reported_as_not_a_repo():
+    """BUG-104: 'git would not run' is not a fact about the directory."""
+    m = load()
+    base, wt = new_repo("end-nogit")
+    m.git = lambda *a, **k: (m.LAUNCH_FAILED, "")
+    m.main.__globals__["git"] = m.git
+    m.read_payload = lambda timeout=5.0: {"session_id": "ME", "cwd": str(wt)}
+    m.main.__globals__["read_payload"] = m.read_payload
+    os.environ["RECALL_SESSION_LOG"] = str(TEST_LOG)
+    m.main()
+    row = json.loads(TEST_LOG.read_text(encoding="utf-8").splitlines()[-1])
+    check("BUG-104 an unrunnable git is 'git-unavailable', not 'not-a-git-repo'",
+          row.get("outcome") == "git-unavailable", str(row)[:120])
+
+
 def test_survey_reports_but_does_not_tidy():
     m = load()
     base, wt = new_repo("end-survey")
@@ -241,9 +343,11 @@ def test_survey_reports_but_does_not_tidy():
     check("uncommitted work is LEFT on disk", (wt / "dirty.txt").exists())
     after = sh("git", "status", "--porcelain", cwd=wt).stdout
     check("nothing was staged", "A  " not in after and "M  " not in after, after.strip()[:60])
-    check("BUG-012 an unmeasured field is None, never an empty string",
-          s["commits_ahead_of_trunk"] is None or isinstance(s["commits_ahead_of_trunk"], int),
-          str(s["commits_ahead_of_trunk"]))
+    m2 = load()
+    m2.git = lambda *a, **k: (m2.LAUNCH_FAILED, "")
+    dead = m2.survey(wt)
+    check("BUG-107 EVERY survey field is None when git fails, including the list",
+          all(v is None for v in dead.values()), str(dead))
 
 
 if __name__ == "__main__":
@@ -259,6 +363,11 @@ if __name__ == "__main__":
                test_clear_does_not_tear_anything_down,
                test_always_writes_a_row,
                test_unusable_cwd_is_not_reported_as_not_a_repo,
+               test_no_claim_file_means_no_teardown,
+               test_unreadable_payload_touches_nothing,
+               test_missing_common_module_still_writes_a_row,
+               test_claim_survives_a_failed_container_teardown,
+               test_git_unavailable_is_not_reported_as_not_a_repo,
                test_survey_reports_but_does_not_tidy):
         try:
             fn()

@@ -52,15 +52,28 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from session_hook_common import (  # noqa: E402
-    LAUNCH_FAILED,
-    NOT_ATTEMPTED,
-    acquire_claim_lock,
-    git,
-    read_claim,
-    release_claim_lock,
-    run,
-)
+
+#: The import is GUARDED because it is an install-shape dependency, and an
+#: unguarded one is a silent no-op waiting to happen. These hooks are installed
+#: by copying single files into ~/.claude/hooks/; the start hook needs one file
+#: and this one needs two, so copying "the hook" the way you copied the last one
+#: leaves the module missing. At module level, outside every handler, that is
+#: ModuleNotFoundError, exit 1, and NO log row: indistinguishable from the hook
+#: not being installed, which is exactly what the docstring above promises
+#: cannot happen. So it degrades to a row that names the missing file instead.
+_IMPORT_ERROR = None
+try:
+    from session_hook_common import (  # noqa: E402
+        LAUNCH_FAILED,
+        NOT_ATTEMPTED,
+        acquire_claim_lock,
+        git,
+        read_claim,
+        release_claim_lock,
+        run,
+    )
+except ImportError as exc:  # pragma: no cover - exercised by a subprocess test
+    _IMPORT_ERROR = str(exc)
 
 #: A hook at session end competes with the process actually exiting, so it gets a
 #: tighter budget than the start hook.
@@ -91,12 +104,15 @@ def read_payload(timeout: float = 5.0) -> dict:
     def _read():
         try:
             box["raw"] = sys.stdin.read()
-        except (OSError, ValueError):
+        except Exception as exc:  # noqa: BLE001 - a traceback here breaks the promise
             box["raw"] = ""
+            box["err"] = type(exc).__name__
 
     t = threading.Thread(target=_read, daemon=True)
     t.start()
     t.join(timeout)
+    if box.get("err"):
+        return {"_stdin": f"unreadable: {box['err']}"}
     raw = box.get("raw")
     if raw is None:
         return {"_stdin": "timed out"}
@@ -157,15 +173,36 @@ def remove_own_container(root: Path) -> tuple[str, str]:
     ids = [x for x in out.splitlines() if x.strip()]
     if not ids:
         return "none", "no container carries this checkout's label"
-    removed, failed = [], []
+    # Three buckets, not two. "Never launched" and "timed out" are not the same
+    # fact as "docker said no", and on the timeout path the removal may actually
+    # have succeeded, so calling it a failure can be wrong in both directions.
+    removed, failed, unattempted = [], [], []
     for cid in ids:
         rc, _, _ = run(["docker", "rm", "-f", cid], timeout=20, budget_left=budget_left)
-        (removed if rc == 0 else failed).append(cid[:12])
-    if failed and not removed:
-        return "failed", f"could not remove {', '.join(failed)}"
+        if rc == 0:
+            removed.append(cid[:12])
+        elif rc == NOT_ATTEMPTED:
+            unattempted.append(cid[:12])
+        elif rc == LAUNCH_FAILED:
+            # Re-ask before asserting: a timed-out rm may have completed.
+            rc2, still, _ = run(["docker", "ps", "-aq", "--filter", f"id={cid}"],
+                                timeout=10, budget_left=budget_left)
+            (removed if rc2 == 0 and not still.strip() else failed).append(cid[:12])
+        else:
+            failed.append(cid[:12])
+    parts = []
+    if removed:
+        parts.append("removed " + ", ".join(removed))
     if failed:
-        return "partial", f"removed {', '.join(removed)}; FAILED {', '.join(failed)}"
-    return "removed", ", ".join(removed)
+        parts.append("FAILED " + ", ".join(failed))
+    if unattempted:
+        parts.append("NOT ATTEMPTED (budget) " + ", ".join(unattempted))
+    detail = "; ".join(parts)
+    if failed:
+        return ("failed" if not removed else "partial"), detail
+    if unattempted:
+        return ("not-attempted" if not removed else "partial"), detail
+    return "removed", detail
 
 
 def survey(root: Path) -> dict:
@@ -174,7 +211,9 @@ def survey(root: Path) -> dict:
     Anything not measured is recorded as None, never as an empty string: the log
     is this hook's only output, and "could not tell" must not read as "nothing".
     """
-    out: dict = {"branch": None, "uncommitted": None, "uncommitted_sample": [],
+    # EVERY field, including the list. An unmeasured sample left as [] reads as
+    # "no dirty files", which is the ambiguity this rule exists to remove.
+    out: dict = {"branch": None, "uncommitted": None, "uncommitted_sample": None,
                  "commits_ahead_of_trunk": None}
     rc, dirty = git(root, "status", "--porcelain", timeout=TIMEOUT, budget_left=budget_left)
     if rc == 0:
@@ -223,8 +262,24 @@ def write_row(row: dict) -> None:
 def main() -> int:
     row: dict = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                  "outcome": "error"}
+    if _IMPORT_ERROR:
+        row["outcome"] = "no-common-module"
+        row["detail"] = (f"{_IMPORT_ERROR}. session_hook_common.py must be installed "
+                         "beside this hook; nothing was released or removed.")
+        row["elapsed_s"] = round(time.monotonic() - _STARTED, 2)
+        write_row(row)
+        return 0
     try:
         payload = read_payload()
+        # An unread payload is not a blank one. `reason` is lost with it, so the
+        # `clear` skip silently stops protecting anything, and session_id is lost
+        # too, so ownership cannot be established. Refuse rather than proceed on
+        # defaults: this path ends in `docker rm -f`.
+        if payload.get("_stdin"):
+            row["outcome"] = "payload-unreadable"
+            row["stdin"] = payload["_stdin"]
+            row["detail"] = "nothing was released or removed"
+            return 0
         # str() rather than a bare slice: a non-string session_id raised
         # TypeError here, escaped, and was swallowed by the top-level handler
         # before any row was written. A silent no-op is indistinguishable from
@@ -249,43 +304,69 @@ def main() -> int:
             return 0
         rc, top = git(cwd, "rev-parse", "--show-toplevel", timeout=TIMEOUT,
                       budget_left=budget_left)
+        if rc in (LAUNCH_FAILED, NOT_ATTEMPTED):
+            # "git would not run" is not a fact about this directory. Reporting
+            # it as one sends whoever reads the log looking for the wrong thing,
+            # and this log is the hook's only output.
+            row["outcome"] = "git-unavailable"
+            row["detail"] = f"git returned {rc}; nothing was released or removed"
+            return 0
         if rc != 0 or not top:
             row["outcome"] = "not-a-git-repo"
             return 0
 
         root = Path(top)
-        row.update(survey(root))
         rc, git_dir = git(cwd, "rev-parse", "--absolute-git-dir", timeout=TIMEOUT,
                           budget_left=budget_left)
+        if rc in (LAUNCH_FAILED, NOT_ATTEMPTED):
+            row["outcome"] = "git-unavailable"
+            row["detail"] = f"git returned {rc} locating the git dir"
+            return 0
         if rc != 0 or not git_dir:
             row["outcome"] = "no-git-dir"
             return 0
 
-        # Ownership decides everything that follows. A session refused this
-        # workspace still runs, and `recall.checkout` labels the checkout rather
-        # than the session, so an unconditional teardown would destroy the
-        # legitimate holder's database.
+        # Ownership decides everything that follows, and it requires POSITIVE
+        # identity. An absent claim is not consent: the main checkout never
+        # carries one, because session-space.sh refuses that checkout before it
+        # would write one, so "no claim means mine" let a session end in the
+        # shared checkout and force-remove another session's running database.
+        # Proven by an auditor against a real labelled container. The label is
+        # per-CHECKOUT, so it cannot distinguish sessions; only the claim can.
         claim_file = Path(git_dir) / "claude-session-claim"
         holder = read_claim(claim_file).get("session", "")
-        ours = (not claim_file.exists()) or (bool(session_id) and holder == session_id)
         row["claim_holder"] = holder[:8] if holder else None
+        ours = bool(session_id) and bool(holder) and holder == session_id
 
         if not ours:
+            whose = holder[:8] if holder else "unrecorded"
+            why = ("no claim on this checkout" if not claim_file.exists()
+                   else f"claimed by {whose}")
             row["container"] = "skipped"
-            row["container_detail"] = f"this checkout is claimed by {holder[:8]}"
-            row["claim"] = f"left in place: not this session's claim (holder={holder[:8]})"
+            row["container_detail"] = f"ownership not established: {why}"
+            row["claim"] = f"left in place: not this session's claim (holder={whose})"
             row["outcome"] = "closed-not-owner"
             return 0
 
-        # Container first, claim LAST. Releasing first lets the next session
-        # claim the worktree and start a container that this filter would then
-        # match and remove.
+        # Container FIRST, claim LAST, and the claim only if the container is
+        # provably gone. Releasing early lets the next session claim the worktree
+        # and start a container this filter would then match; releasing after a
+        # FAILED teardown strands a container that nothing can later attribute,
+        # because session-db.sh only reports orphans whose checkout has vanished.
         status, detail = remove_own_container(root)
         row["container"], row["container_detail"] = status, detail
-        row["claim"] = release_claim(Path(git_dir), session_id,
-                                     os.environ.get("CLAUDE_PID", str(os.getpid())))
-        row["outcome"] = ("closed" if status in ("removed", "none")
-                          else f"closed-with-{status}-container")
+        if status in ("removed", "none"):
+            row["claim"] = release_claim(Path(git_dir), session_id,
+                                         os.environ.get("CLAUDE_PID", str(os.getpid())))
+            row["outcome"] = "closed"
+        else:
+            row["claim"] = ("left in place: the container step reported "
+                            f"{status!r}, so this checkout still owns something")
+            row["outcome"] = f"closed-with-{status}-container"
+        # Survey LAST: it is reporting, and reporting must not spend the budget
+        # the acting steps need. Five git subprocesses ahead of the teardown is
+        # how a slow git turned into "claim released, container untouched".
+        row.update(survey(root))
     except Exception as exc:  # noqa: BLE001 - a shutdown must not be blocked
         row["outcome"] = "error"
         row["error"] = f"{type(exc).__name__}: {exc}"[:200]
