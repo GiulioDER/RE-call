@@ -18,6 +18,7 @@ not branch on which produced the set.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -586,6 +587,127 @@ def test_unparseable_output_from_every_format_raises_rather_than_returning_empty
 
 
 _SCHEMA_STUB = {"type": "object", "properties": {}}
+
+
+class _Unauthorized(Exception):
+    """Named to match what the openai SDK raises, which is how `_is_unrecoverable` classifies."""
+
+
+_Unauthorized.__name__ = "AuthenticationError"
+
+
+def test_an_auth_failure_is_not_retried_under_every_response_format() -> None:
+    """A 401 is not fixed by a different response_format.
+
+    Retrying it three times costs three round trips against `max_retries=0`, and the final message
+    would be about model output, pointing the user at their corpus rather than at their key.
+    """
+    client, fake = _client_with(lambda kw: _Unauthorized("Incorrect API key provided"))
+    with pytest.raises(QuerySetError, match="endpoint refused"):
+        client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+    assert fake.formats == ["json_schema"], "must fail on the first attempt, not the third"
+
+
+def test_the_api_key_cannot_reach_the_final_error_message() -> None:
+    """`{last!r}` put the raw exception repr into the message, undoing `_safe_reason`.
+
+    httpx raises with the whole `Bearer <key>` header in its message for a key carrying an
+    interior invalid character, which `.strip()` cannot remove.
+    """
+    secret = "sk-secret-ABC123"
+    client, _ = _client_with(lambda kw: ValueError(f"Invalid header value b'Bearer {secret}'"))
+    with pytest.raises(QuerySetError) as exc:
+        client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+    assert secret not in str(exc.value), str(exc.value)
+
+
+@pytest.mark.parametrize("choices", [[], None])
+def test_a_response_with_no_choices_stays_in_the_declared_exception_type(choices) -> None:
+    """OpenRouter returns HTTP 200 with an error body and no choices for an upstream failure.
+
+    What matters is the LINE PLACEMENT, not the explicit emptiness check: reading
+    `completion.choices[0]` outside the parse `try` let an IndexError (empty list) or TypeError
+    (None) escape as a raw exception and skip the fallback entirely. Asserting `QuerySetError`
+    over all three formats is what distinguishes the two, because with the read inside the try the
+    loop absorbs it and exhausts the formats normally.
+
+    An earlier version of this test deleted only the `if not choices` line, which changes nothing:
+    `choices[0]` raises anyway and the same `except` catches it. The test stayed green and proved
+    nothing.
+    """
+
+    class _NoChoices:
+        pass
+
+    _NoChoices.choices = choices
+
+    client, fake = _client_with(lambda kw: _NoChoices())
+    with pytest.raises(QuerySetError, match="nothing usable"):
+        client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+    assert fake.formats == ["json_schema", "json_object", "none"], "the fallback must still run"
+
+
+@pytest.mark.parametrize("body", ["[]", '[["a","b"]]', "[1,2]", '"hello"', "null"])
+def test_non_object_json_is_refused_rather_than_coerced(body) -> None:
+    """`dict(json.loads("[]"))` is `{}` and succeeds — the empty dict this class must never return.
+
+    `'[["a","b"]]'` is worse: it coerces into a fabricated `{"a": "b"}`.
+    """
+    client, _ = _client_with(lambda kw: body)
+    with pytest.raises(QuerySetError, match="nothing usable"):
+        client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ('```json {"a": 1}```', {"a": 1}),
+        ('```{"a": 1}```', {"a": 1}),
+        ('```json\n{"a": 1}\n```', {"a": 1}),
+        ('{"a": 1}', {"a": 1}),
+    ],
+)
+def test_every_fence_shape_a_model_emits_is_unwrapped(raw, expected) -> None:
+    """A single-line fence had no newline after the opener, so the payload was discarded whole."""
+    client, _ = _client_with(lambda kw: raw)
+    assert client.complete_json(system="s", user="u", schema=_SCHEMA_STUB) == expected
+
+
+def test_the_constructor_configures_the_sdk_client(monkeypatch) -> None:
+    """No test executed `__init__` at all, so a wrong kwarg would have shipped green."""
+    seen: dict = {}
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    fake_module = type(sys)("openai")
+    fake_module.OpenAI = _FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+
+    L.OpenAICompatClient(
+        base_url="http://localhost:11434/v1", api_key="  sk-padded  ", model="m", timeout=9.0
+    )
+    assert seen["api_key"] == "sk-padded", "a pasted key's whitespace must be stripped"
+    assert seen["max_retries"] == 0, "a retry re-sends thousands of tokens"
+    assert seen["base_url"] == "http://localhost:11434/v1"
+    assert seen["timeout"] == 9.0
+
+
+def test_a_missing_openai_extra_says_how_to_fix_it(monkeypatch) -> None:
+    """A bare ModuleNotFoundError reads as a library bug rather than an uninstalled extra."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def deny(name, *args, **kwargs):
+        if name == "openai":
+            raise ImportError("No module named 'openai'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", deny)
+    with pytest.raises(ImportError, match=r"recall-rag\[extract\]"):
+        L.OpenAICompatClient(base_url="x", api_key="k", model="m")
 
 
 def test_the_schema_forces_the_two_classes_apart() -> None:

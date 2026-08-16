@@ -27,6 +27,7 @@ commit.
 from __future__ import annotations
 
 import json
+import re
 import random
 import urllib.error
 import urllib.request
@@ -149,7 +150,18 @@ class OpenAICompatClient:
         model: str,
         timeout: float = 180.0,
     ) -> None:
-        from openai import OpenAI
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            # Guarded, matching `truth_extraction/_openai_engine.py` and `embeddings.py`, whose
+            # docstring states the convention: "an optional extra whose absence surfaces as a bare
+            # ModuleNotFoundError reads as a bug in the library rather than a choice the user has
+            # not yet made". `openai` is in no extra a wizard user would have installed.
+            raise ImportError(
+                'the LLM query generator requires: pip install "recall-rag[extract]". '
+                "Without it, use the offline generator in recall.wizard.queryset, which needs "
+                "neither a key nor a network."
+            ) from exc
 
         self.model = model
         # `max_retries=0`: a retry here re-sends several thousand tokens, and the caller would
@@ -181,7 +193,17 @@ class OpenAICompatClient:
                 kwargs["response_format"] = response_format
             try:
                 completion = self._client.chat.completions.create(**kwargs)
-            except Exception as exc:  # noqa: BLE001 - the next format is the fallback
+            except Exception as exc:
+                if _is_unrecoverable(exc):
+                    # A bad key, an unknown model or a refused connection is not fixed by a
+                    # different response_format. Retrying it three times costs three round trips
+                    # (against `max_retries=0`, chosen two lines up to avoid paying twice) and
+                    # ends in a message about model output, pointing the user at their corpus
+                    # rather than at their key.
+                    raise QuerySetError(
+                        f"the endpoint refused the request ({_safe_reason(exc)}). Check the API "
+                        f"key, the model id {self.model!r}, and that the endpoint is reachable."
+                    ) from exc
                 last = exc
                 _log.warning(
                     "response_format %s refused (%s); trying the next one",
@@ -189,24 +211,64 @@ class OpenAICompatClient:
                     type(exc).__name__,
                 )
                 continue
-            content = (completion.choices[0].message.content or "").strip()
             try:
-                return dict(json.loads(_strip_code_fence(content)))
-            except Exception as exc:  # noqa: BLE001 - a later format may parse
+                # Inside the try: an empty or absent `choices` is exactly what OpenRouter returns
+                # for an upstream failure (HTTP 200 with an `error` body), and what OpenAI's
+                # content filter and several local servers return. Outside it, that escaped as a
+                # raw IndexError/TypeError and skipped the fallback entirely.
+                choices = getattr(completion, "choices", None) or []
+                if not choices:
+                    raise ValueError("the response carried no choices")
+                content = (choices[0].message.content or "").strip()
+                parsed = json.loads(_strip_code_fence(content))
+                if not isinstance(parsed, dict):
+                    # `dict(json.loads("[]"))` is `{}` and succeeds, which is precisely the empty
+                    # dict this class exists to never return: it would surface much later as a
+                    # thin query set blamed on the corpus.
+                    raise ValueError(f"top-level JSON is {type(parsed).__name__}, not an object")
+                return parsed
+            except Exception as exc:
                 last = exc
                 _log.warning("could not parse the response as JSON (%s)", type(exc).__name__)
                 continue
         raise QuerySetError(
-            f"the model returned nothing usable through any response format ({last!r})"
+            "the model returned nothing usable through any response format "
+            f"({_safe_reason(last) if last is not None else 'no response'})"
         )
+
+
+#: Exception class names that no change of `response_format` can fix. Matched by name rather than
+#: by import, so this module does not depend on `openai` being present to classify an error.
+_UNRECOVERABLE = frozenset(
+    {
+        "AuthenticationError",
+        "PermissionDeniedError",
+        "NotFoundError",
+        "APIConnectionError",
+        "APITimeoutError",
+        "RateLimitError",
+    }
+)
+
+
+def _is_unrecoverable(exc: BaseException) -> bool:
+    return type(exc).__name__ in _UNRECOVERABLE
+
+
+#: The opening fence and its optional language tag, with or without a trailing newline. Splitting
+#: on the first newline instead discarded the whole payload for a single-line fenced reply
+#: (```json {"a": 1}``` became ""), which models do emit.
+_FENCE_OPEN = re.compile(r"^```[A-Za-z0-9_+-]*[ \t]*\n?")
 
 
 def _strip_code_fence(text: str) -> str:
     """Drop a ```json fence when a model adds one despite being asked for raw JSON."""
     if not text.startswith("```"):
         return text
-    body = text.split("\n", 1)[1] if "\n" in text else ""
-    return body.rsplit("```", 1)[0].strip()
+    body = _FENCE_OPEN.sub("", text, count=1).rsplit("```", 1)[0].strip()
+    # Never return less than nothing: if the unwrap emptied the payload, the caller is better off
+    # trying to parse the original and reporting a real JSON error.
+    return body or text
 
 
 # --------------------------------------------------------------------------------------
