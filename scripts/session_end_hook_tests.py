@@ -1,13 +1,19 @@
 """Regression tests for the SessionEnd workspace hook.
 
-The two that matter are refusals: this hook must not release a claim it does not
-own, and must not remove a container it did not start. Both are exercised with
-the input that would defeat a careless implementation, and each has a control so
-a hook that refuses everything cannot pass.
+Every test here names the defect it pins. The ones that matter are refusals, and
+each has a control, because a hook that refuses everything would otherwise pass
+the whole file.
+
+Two lessons from the audit of the first version are built into the shape of this
+file. The container test asserts **the exact argv the hook passed**, not what a
+stub chose to return: asserting the stub's return value tested the stub. And the
+log is redirected to a temp file via RECALL_SESSION_LOG, so these tests neither
+read another session's rows nor append noise to a log meant to be counted later.
 """
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -15,11 +21,13 @@ from pathlib import Path
 
 HOOK = str(Path(__file__).resolve().parent / "session_end_hook.py")
 SCRATCH = Path(tempfile.gettempdir()) / "recall-endtests"
+TEST_LOG = SCRATCH / "session-end.log"
 
 results = []
 
 
 def load():
+    sys.path.insert(0, str(Path(HOOK).parent))
     spec = importlib.util.spec_from_file_location("endhook", HOOK)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
@@ -54,73 +62,174 @@ def git_dir_of(wt: Path) -> Path:
     return Path(sh("git", "rev-parse", "--absolute-git-dir", cwd=wt).stdout.strip())
 
 
-def test_releases_only_its_own_claim():
+def run_hook(payload: dict, env_extra=None):
+    """Invoke the hook as the harness does, with the log redirected."""
+    env = dict(os.environ, RECALL_SESSION_LOG=str(TEST_LOG))
+    env.update(env_extra or {})
+    before = TEST_LOG.read_text(encoding="utf-8").count("\n") if TEST_LOG.exists() else 0
+    p = subprocess.run([sys.executable, HOOK], input=json.dumps(payload),
+                       capture_output=True, text=True, env=env)
+    rows = TEST_LOG.read_text(encoding="utf-8").splitlines() if TEST_LOG.exists() else []
+    return p, (json.loads(rows[-1]) if len(rows) > before else None)
+
+
+# ------------------------------------------------- AUDIT-3 BUG-003: positive identity
+def test_release_requires_positive_identity():
     m = load()
-    base, wt = new_repo("end-claim")
+    base, wt = new_repo("end-identity")
     gd = git_dir_of(wt)
     cf = gd / "claude-session-claim"
 
-    # THE REFUSAL: a claim held by another session must survive.
-    cf.write_text("session=SOMEONE-ELSE\npid=1234\nclaimed_epoch=1\n", encoding="utf-8")
-    msg = m.release_claim(gd, "ME")
-    check("a claim owned by ANOTHER session is left in place",
-          cf.exists() and "left in place" in msg, msg)
+    for label, holder, sid in (
+        ("another session's claim", "SOMEONE-ELSE", "ME"),
+        ("an EMPTY session id", "SOMEONE-ELSE", ""),
+        ("a claim with no session= line", None, "ME"),
+    ):
+        cf.write_text(("" if holder is None else f"session={holder}\n") + "pid=1234\n",
+                      encoding="utf-8")
+        msg = m.release_claim(gd, sid, "999")
+        if not (cf.exists() and "left in place" in msg):
+            check(f"BUG-003 refuses to release: {label}", False, msg)
+            return
+    check("BUG-003 refuses to release on any unproven ownership (3 shapes)", True)
 
-    # The control: our own claim must actually be released, or the test above
-    # would pass for a hook that never releases anything.
-    cf.write_text("session=ME\npid=1234\nclaimed_epoch=1\n", encoding="utf-8")
-    msg = m.release_claim(gd, "ME")
-    check("control: our OWN claim is released", not cf.exists() and msg == "released", msg)
-
-    check("no claim to release is not an error",
-          m.release_claim(gd, "ME") == "no claim to release")
+    cf.write_text("session=ME\npid=1234\n", encoding="utf-8")
+    msg = m.release_claim(gd, "ME", "999")
+    check("BUG-003 control: our OWN claim IS released",
+          not cf.exists() and msg == "released", msg)
 
 
-def test_release_also_clears_a_stranded_lock():
-    """A lock outliving the claim blocks the next session, as it once did."""
+# ------------------------------------------------- AUDIT-3 BUG-004: never break a live lock
+def test_never_breaks_a_live_lock():
     m = load()
-    base, wt = new_repo("end-lock")
+    base, wt = new_repo("end-livelock")
     gd = git_dir_of(wt)
     cf = gd / "claude-session-claim"
-    cf.write_text("session=ME\npid=1234\nclaimed_epoch=1\n", encoding="utf-8")
+    cf.write_text("session=ME\npid=1234\n", encoding="utf-8")
     lock = gd / "claude-session-claim.lock"
     lock.mkdir()
-    (lock / "pid").write_text("999999999")
-    m.release_claim(gd, "ME")
-    check("releasing also clears a stranded lock", not lock.exists() and not cf.exists())
+    (lock / "pid").write_text(str(os.getpid()), encoding="utf-8")  # certainly alive
+    msg = m.release_claim(gd, "ME", "999")
+    check("BUG-004 a lock held by a LIVE process is not broken",
+          cf.exists() and "another session holds the claim lock" in msg, msg)
+    check("BUG-004 the live lock still exists afterwards", lock.exists())
+
+    # Control: a lock whose holder is dead must be reclaimable, or the above
+    # would pass for a hook that can never acquire a lock at all.
+    (lock / "pid").write_text("999999999", encoding="utf-8")
+    msg = m.release_claim(gd, "ME", "999")
+    check("BUG-004 control: a DEAD holder's lock is broken and the claim released",
+          not cf.exists() and msg == "released", msg)
 
 
-def test_removes_only_its_own_container():
-    """Selection is by the recall.checkout LABEL, never by a name pattern."""
+# ------------------------------------------------- AUDIT-3 BUG-013: assert the argv, not the stub
+def test_container_filter_is_exactly_this_checkout():
     m = load()
-    base, wt = new_repo("end-container")
+    base, wt = new_repo("end-filter")
     calls = []
 
-    def fake_run(args, cwd=None, timeout=10):
-        calls.append(args)
+    def fake_run(args, cwd=None, timeout=10, env=None, budget_left=None):
+        calls.append(list(args))
         if args[:3] == ["docker", "ps", "-aq"]:
-            # Only a container labelled with THIS checkout is ever returned.
-            wanted = f"label=recall.checkout={str(wt).replace(chr(92), '/')}"
-            return (0, "deadbeefcafe") if wanted in args else (0, "")
-        return (0, "")
+            return (0, "deadbeefcafe", "")
+        return (0, "", "")
 
     m.run = fake_run
-    msg = m.remove_own_container(wt)
-    filters = [a for c in calls for a in c if str(a).startswith("label=")]
-    check("the container query filters on recall.checkout for THIS checkout",
-          any("recall.checkout=" in f and "end-container" in f for f in filters),
-          str(filters))
-    check("a labelled container is removed", "removed" in msg and "deadbeef" in msg, msg)
+    status, detail = m.remove_own_container(wt)
+    query = next((c for c in calls if c[:3] == ["docker", "ps", "-aq"]), [])
+    expected = f"label=recall.checkout={str(wt).replace(chr(92), '/')}"
+    check("BUG-013 the docker filter argv is exactly this checkout's label",
+          expected in query, f"expected {expected!r} in {query!r}")
+    check("BUG-013 the query is filtered at all (no bare docker ps)",
+          "--filter" in query, str(query))
     removes = [c for c in calls if c[:3] == ["docker", "rm", "-f"]]
-    check("exactly one container removed, by id", len(removes) == 1, str(removes))
+    check("removal is by id, exactly once",
+          len(removes) == 1 and removes[0][3] == "deadbeefcafe", str(removes))
+    check("status reports removed", status == "removed" and "deadbeef" in detail, detail)
 
-    # THE REFUSAL: a different checkout's container must not be touched.
-    calls.clear()
-    other = wt.parent / "some-other-checkout"
-    msg = m.remove_own_container(other)
-    removes = [c for c in calls if c[:3] == ["docker", "rm", "-f"]]
-    check("another checkout's container is NOT removed",
-          not removes and "none started by this checkout" in msg, msg)
+
+def test_docker_unavailable_is_not_reported_as_none():
+    """BUG-007: 'could not check' must not read as 'nothing to clean up'."""
+    m = load()
+    base, wt = new_repo("end-dockerdown")
+    m.run = lambda *a, **k: (m.LAUNCH_FAILED, "", "could not launch")
+    status, detail = m.remove_own_container(wt)
+    check("BUG-007 an unrunnable docker is 'unknown', not 'none'",
+          status == "unknown" and "NOT checked" in detail, f"{status}: {detail}")
+    m2 = load()
+    m2.run = lambda *a, **k: (m2.NOT_ATTEMPTED, "", "budget")
+    status, detail = m2.remove_own_container(wt)
+    check("BUG-007 an unattempted query is 'not-attempted', not 'none'",
+          status == "not-attempted", f"{status}: {detail}")
+
+
+# ------------------------------------------------- AUDIT-3 BUG-001 / BUG-002: gating and order
+def test_container_is_not_touched_when_the_claim_is_someone_elses():
+    """BUG-001: a session refused the workspace must not tear down the holder's DB."""
+    base, wt = new_repo("end-notowner")
+    gd = git_dir_of(wt)
+    (gd / "claude-session-claim").write_text("session=OTHER\npid=1234\n", encoding="utf-8")
+    p, row = run_hook({"session_id": "ME", "cwd": str(wt), "reason": "other"})
+    check("BUG-001 a non-owner does not touch the container",
+          row and row.get("container") == "skipped"
+          and row.get("outcome") == "closed-not-owner", str(row)[:130])
+    check("BUG-001 the other session's claim survives",
+          (gd / "claude-session-claim").exists())
+
+
+def test_container_removed_before_claim_released():
+    """BUG-002: releasing first lets the next session's new container match."""
+    m = load()
+    base, wt = new_repo("end-order")
+    gd = git_dir_of(wt)
+    (gd / "claude-session-claim").write_text("session=ME\npid=1234\n", encoding="utf-8")
+    order = []
+    real_release = m.release_claim
+    m.remove_own_container = lambda root: (order.append("container"), ("none", "stub"))[1]
+    m.release_claim = lambda *a, **k: (order.append("claim"), real_release(*a, **k))[1]
+    os.environ["RECALL_SESSION_LOG"] = str(TEST_LOG)
+    m.main.__globals__["remove_own_container"] = m.remove_own_container
+    m.main.__globals__["release_claim"] = m.release_claim
+    sys.stdin = None  # main reads via read_payload; patch it instead
+    m.read_payload = lambda timeout=5.0: {"session_id": "ME", "cwd": str(wt)}
+    m.main.__globals__["read_payload"] = m.read_payload
+    m.main()
+    check("BUG-002 the container is removed BEFORE the claim is released",
+          order == ["container", "claim"], str(order))
+
+
+# ------------------------------------------------- AUDIT-3 BUG-010 / BUG-008
+def test_clear_does_not_tear_anything_down():
+    base, wt = new_repo("end-clear")
+    gd = git_dir_of(wt)
+    cf = gd / "claude-session-claim"
+    cf.write_text("session=ME\npid=1234\n", encoding="utf-8")
+    p, row = run_hook({"session_id": "ME", "cwd": str(wt), "reason": "clear"})
+    check("BUG-010 reason=clear is skipped entirely",
+          row and row.get("outcome") == "skipped-clear", str(row)[:110])
+    check("BUG-010 the claim survives a clear", cf.exists())
+
+
+def test_always_writes_a_row():
+    """BUG-008: a non-string session_id produced no row at all."""
+    for label, payload in (("non-string session_id", {"session_id": 123, "cwd": str(SCRATCH)}),
+                           ("null session_id", {"session_id": None, "cwd": str(SCRATCH)}),
+                           ("empty payload", {})):
+        p, row = run_hook(payload)
+        if p.returncode != 0 or row is None:
+            check(f"BUG-008 a row is always written ({label})", False,
+                  f"rc={p.returncode} row={row}")
+            return
+    check("BUG-008 a row is written for every payload shape (3 shapes)", True)
+
+
+def test_unusable_cwd_is_not_reported_as_not_a_repo():
+    p, row = run_hook({"session_id": "X", "cwd": "/c/definitely/not/here", "reason": "other"})
+    check("an unusable cwd is cwd-unusable, not not-a-git-repo",
+          row and row.get("outcome") == "cwd-unusable", str(row)[:110])
+    p, row = run_hook({"session_id": "X", "cwd": str(SCRATCH), "reason": "other"})
+    check("control: a real non-repo directory still reports not-a-git-repo",
+          row and row.get("outcome") == "not-a-git-repo", str(row)[:110])
 
 
 def test_survey_reports_but_does_not_tidy():
@@ -132,55 +241,25 @@ def test_survey_reports_but_does_not_tidy():
     check("uncommitted work is LEFT on disk", (wt / "dirty.txt").exists())
     after = sh("git", "status", "--porcelain", cwd=wt).stdout
     check("nothing was staged", "A  " not in after and "M  " not in after, after.strip()[:60])
-
-
-def test_unusable_cwd_is_not_reported_as_not_a_repo():
-    """A path we cannot enter and a path that is not a repo are different facts.
-
-    An MSYS-style `/c/...` cwd arrives as a real string Windows cannot resolve.
-    Calling that "not a git repo" hid a skipped cleanup behind a plausible
-    outcome, which is the same error shape this whole guard exists to avoid.
-    """
-    log = Path.home() / ".claude" / "session-end.log"
-    payload = json.dumps({"session_id": "X", "cwd": "/c/definitely/not/here", "reason": "clear"})
-    p = subprocess.run([sys.executable, HOOK], input=payload, capture_output=True, text=True)
-    last = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
-    check("an unusable cwd is recorded as cwd-unusable, not not-a-git-repo",
-          p.returncode == 0 and last.get("outcome") == "cwd-unusable", str(last)[:110])
-
-    # Control: a real directory that genuinely is not a repo still says so.
-    payload = json.dumps({"session_id": "X", "cwd": str(SCRATCH), "reason": "clear"})
-    subprocess.run([sys.executable, HOOK], input=payload, capture_output=True, text=True)
-    last = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
-    check("control: a real non-repo directory still reports not-a-git-repo",
-          last.get("outcome") == "not-a-git-repo", str(last)[:110])
-
-
-def test_never_raises_and_always_logs():
-    log = Path.home() / ".claude" / "session-end.log"
-    before = len(log.read_text(encoding="utf-8").splitlines()) if log.exists() else 0
-    for payload in ('{"session_id":"x","cwd":"' + str(SCRATCH).replace("\\", "/") + '"}',
-                    "[]", "not json at all", ""):
-        p = subprocess.run([sys.executable, HOOK], input=payload,
-                           capture_output=True, text=True)
-        if p.returncode != 0 or "Traceback" in p.stderr:
-            check("every payload shape exits 0 without a traceback", False,
-                  f"payload={payload[:20]!r} rc={p.returncode} {p.stderr[:80]!r}")
-            return
-    after = len(log.read_text(encoding="utf-8").splitlines()) if log.exists() else 0
-    check("every payload shape exits 0 without a traceback", True)
-    check("a row is written even for unusable payloads", after >= before + 4,
-          f"log rows {before} -> {after}")
+    check("BUG-012 an unmeasured field is None, never an empty string",
+          s["commits_ahead_of_trunk"] is None or isinstance(s["commits_ahead_of_trunk"], int),
+          str(s["commits_ahead_of_trunk"]))
 
 
 if __name__ == "__main__":
     SCRATCH.mkdir(parents=True, exist_ok=True)
-    for fn in (test_releases_only_its_own_claim,
-               test_release_also_clears_a_stranded_lock,
-               test_removes_only_its_own_container,
-               test_survey_reports_but_does_not_tidy,
+    if TEST_LOG.exists():
+        TEST_LOG.unlink()
+    for fn in (test_release_requires_positive_identity,
+               test_never_breaks_a_live_lock,
+               test_container_filter_is_exactly_this_checkout,
+               test_docker_unavailable_is_not_reported_as_none,
+               test_container_is_not_touched_when_the_claim_is_someone_elses,
+               test_container_removed_before_claim_released,
+               test_clear_does_not_tear_anything_down,
+               test_always_writes_a_row,
                test_unusable_cwd_is_not_reported_as_not_a_repo,
-               test_never_raises_and_always_logs):
+               test_survey_reports_but_does_not_tidy):
         try:
             fn()
         except Exception as exc:
