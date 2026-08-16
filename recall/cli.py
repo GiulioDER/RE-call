@@ -884,6 +884,19 @@ def main(argv: list[str] | None = None) -> None:
     p_manifest_create.add_argument("--corpus-version", required=True)
     p_manifest_create.add_argument("--objects", required=True, help="JSON array of object entries")
     p_manifest_create.add_argument("--output", required=True)
+    # The producer for `create --objects`. Without it, `file://` manifests were reachable only by
+    # hand-writing a JSON array with a correct sha256 per file, which is why a corpus in a
+    # directory could not realistically become a generation, and therefore could not be calibrated.
+    p_manifest_inventory = manifest_sub.add_parser(
+        "inventory", help="build a file:// object inventory from a local directory"
+    )
+    p_manifest_inventory.add_argument("path")
+    p_manifest_inventory.add_argument(
+        "--glob",
+        default=DEFAULT_GLOB,
+        help="file glob to inventory — e.g. '**/*.py' for code. Default: markdown.",
+    )
+    p_manifest_inventory.add_argument("--output", required=True)
     p_manifest_verify = manifest_sub.add_parser("verify", help="verify every immutable S3 object")
     p_manifest_verify.add_argument("manifest")
     p_manifest_verify.add_argument("--version-id")
@@ -1431,6 +1444,34 @@ def main(argv: list[str] | None = None) -> None:
             load_manifest,
             reader_for_manifest,
         )
+
+        if args.manifest_cmd == "inventory":
+            # Handled before anything tenant- or reader-shaped is built. An inventory describes a
+            # directory and belongs to no tenant yet; `create` is where a tenant is attached.
+            from recall.wizard.inventory import write_inventory
+
+            try:
+                report = write_inventory(args.path, args.output, args.glob)
+            except (ValueError, OSError, NotImplementedError, MemoryError) as exc:
+                # `candidate_files` and `build_inventory_report` both refuse loudly and their
+                # messages name the way forward (the glob, the path). Re-raising as SystemExit
+                # keeps that message and drops a traceback nobody running an install wizard can
+                # act on. `NotImplementedError` is in the set because `Path.glob` raises it for a
+                # non-relative pattern, and `MemoryError` because a wide glob can meet a file
+                # larger than RAM; neither is a ValueError or an OSError, so both used to escape.
+                # `str(MemoryError())` is the empty string, so re-raising the message alone would
+                # exit 1 printing a blank line: the one member of this tuple for which "keeps that
+                # message" was false. The class name is the diagnosis when there is no message.
+                raise SystemExit(
+                    str(exc)
+                    or f"{type(exc).__name__} while building the inventory from {args.path!r}. "
+                    "Narrow --glob, or free memory."
+                ) from exc
+            skipped = (
+                f", {report.vanished} skipped (disappeared while reading)" if report.vanished else ""
+            )
+            print(f"wrote {args.output} objects={report.written}{skipped}")
+            return
 
         if args.manifest_cmd == "create":
             manifest = IndexManifestV1(

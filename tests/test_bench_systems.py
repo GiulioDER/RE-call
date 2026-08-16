@@ -1176,11 +1176,26 @@ def _skip_if_the_account_cannot_pay(exc: BaseException) -> None:
         )
 
 
+#: This test calls OpenRouter for real and spends credit on every run. Gating it on the API key
+#: alone meant that anyone who had configured a key — which is everyone who uses the cloud
+#: embedder or the extraction engine — paid for it on every `pytest tests/`, including runs that
+#: had nothing to do with benchmarks. Opt in explicitly instead:
+#:
+#:     RECALL_RUN_PAID_TESTS=1 python -m pytest tests/test_bench_systems.py
+#:
+#: The key check stays, because the opt-in says "I am willing to spend", not "I have an account".
+_PAID_TESTS_OPT_IN = "RECALL_RUN_PAID_TESTS"
+
+
 @pytest.mark.skipif(
-    not (os.environ.get("OPENROUTER_API_KEY") and _mem0_installed()),
-    # NB: this checks the key EXISTS, not that it can pay — and it cannot check that without
-    # spending money. The billing case is handled inside the test instead.
-    reason="needs mem0ai + OPENROUTER_API_KEY",
+    not (
+        os.environ.get(_PAID_TESTS_OPT_IN)
+        and os.environ.get("OPENROUTER_API_KEY")
+        and _mem0_installed()
+    ),
+    # NB: the key check verifies a key EXISTS, not that it can pay — and it cannot check that
+    # without spending money. The billing case is handled inside the test instead.
+    reason=f"spends OpenRouter credit; set {_PAID_TESTS_OPT_IN}=1 with mem0ai + OPENROUTER_API_KEY",
 )
 def test_mem0_system_smoke() -> None:
     """Round-trip proof, mirroring `test_recall_system_indexes_and_retrieves`.
