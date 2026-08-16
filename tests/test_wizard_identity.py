@@ -164,17 +164,29 @@ def test_an_embedder_with_no_local_artifact_returns_none() -> None:
 
 
 def test_an_object_whose_internals_are_absent_returns_none() -> None:
-    class _Opaque:
+    """Named FastEmbedEmbedder ON PURPOSE, so it gets past the class guard.
+
+    This test is about "internals absent", not "wrong class". When the guard was added as the
+    first statement it started returning at the guard, and the test passed without ever reaching
+    the introspection it exists to exercise.
+    """
+
+    class FastEmbedEmbedder:  # noqa: N801 - must match the guard to reach the probing
         name = "mystery"
         dim = 8
 
-    assert artifact_identity_for(_Opaque()) is None
+    assert artifact_identity_for(FastEmbedEmbedder()) is None
 
 
 def test_it_never_raises_when_introspection_explodes(tmp_path: Path) -> None:
-    """The wizard probe convention: unknown is an answer, a traceback during install is not."""
+    """The wizard probe convention: unknown is an answer, a traceback during install is not.
 
-    class _Hostile:
+    Named FastEmbedEmbedder so the class guard lets it through to the exploding properties. With
+    the plain name it returned at the guard, and this — the only test of the module's stated
+    "a probe returns, it does not raise" contract — proved nothing.
+    """
+
+    class FastEmbedEmbedder:  # noqa: N801 - must match the guard to reach the probing
         @property
         def name(self):
             raise RuntimeError("boom")
@@ -183,7 +195,7 @@ def test_it_never_raises_when_introspection_explodes(tmp_path: Path) -> None:
         def _model(self):
             raise RuntimeError("boom")
 
-    assert artifact_identity_for(_Hostile()) is None
+    assert artifact_identity_for(FastEmbedEmbedder()) is None
 
 
 def test_a_model_directory_that_vanished_returns_none(tmp_path: Path) -> None:
@@ -281,20 +293,30 @@ def test_the_digest_ordering_is_the_same_on_every_platform(tmp_path: Path) -> No
     weights hashed to two different digests depending on the machine."""
     from pathlib import PurePosixPath, PureWindowsPath
 
+    import hashlib as _h
+
     names = ["README.md", "config.json", "Tokenizer.json", "model.onnx"]
     win = [p.name for p in sorted(PureWindowsPath("/r") / n for n in names)]
     pos = [p.name for p in sorted(PurePosixPath("/r") / n for n in names)]
     assert win != pos, "precondition: these orders really do differ by platform"
 
-    # The module sorts by the POSIX-form relative path, which is identical everywhere.
     d = tmp_path / "snap"
     d.mkdir()
     for n in names:
         (d / n).write_bytes(n.encode())
-    ordered = sorted((p for p in d.rglob("*") if p.is_file()),
-                     key=lambda p: p.relative_to(d).as_posix())
-    assert [p.name for p in ordered] == sorted(names)
-    assert len(_artifact_digest(d)) == 64
+
+    # An INDEPENDENT oracle, not a re-implementation of the module's sort. An earlier version of
+    # this test sorted the files itself and then only asserted the digest was 64 characters long,
+    # so changing the module's ordering changed nothing the test looked at and the guard could not
+    # fail. Comparing against a digest computed here from a fixed, platform-independent order is
+    # what makes a different ordering in the module show up.
+    expected = _h.sha256()
+    for n in sorted(names):  # plain str sort == the POSIX-relative-path order the module uses
+        expected.update(n.encode("utf-8"))
+        expected.update(b"\x00")
+        expected.update((d / n).read_bytes())
+
+    assert _artifact_digest(d) == expected.hexdigest()
 
 
 def test_a_revision_from_another_repo_is_not_offered_to_lineage(artifact: Path) -> None:
@@ -345,3 +367,31 @@ def test_a_non_fastembed_embedder_is_not_stamped_with_fastembed_provenance(
         dim = 384
 
     assert artifact_identity_for(SentenceTransformerEmbedder(artifact)) is None
+
+
+def test_a_dangling_symlink_refuses_rather_than_hashing_a_partial_tree(tmp_path: Path) -> None:
+    """`is_file()` follows a link and returns False for a broken one, so it would be dropped.
+
+    A snapshot whose blobs were cleaned up, or copied without `-a`, would then hash only the
+    surviving files and record that as immutable provenance for bytes that are not there. On
+    Linux every file in the snapshot IS a link into ../../blobs, so this is the platform this
+    module targets.
+    """
+    import os
+
+    repo = tmp_path / "models--org--repo"
+    blobs = repo / "blobs"
+    blobs.mkdir(parents=True)
+    blob = blobs / "cafe"
+    blob.write_bytes(b"weights")
+    snap = repo / "snapshots" / ("7" * 40)
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_bytes(b"{}")
+    try:
+        os.symlink(blob, snap / "model.onnx")
+    except OSError:
+        pytest.skip("creating a symlink needs privilege on this machine")
+
+    assert artifact_identity_for(FastEmbedEmbedder(snap)) is not None
+    blob.unlink()  # the cache is now incomplete
+    assert artifact_identity_for(FastEmbedEmbedder(snap)) is None

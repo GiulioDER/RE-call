@@ -158,10 +158,21 @@ def _artifact_digest(directory: Path) -> str:
     here and not in the enterprise path: this reads a cache the user's own process just populated,
     and the digest is recorded rather than served.
     """
-    files = sorted(
-        (p for p in directory.rglob("*") if p.is_file()),
-        key=lambda p: p.relative_to(directory).as_posix(),
+    candidates = sorted(
+        directory.rglob("*"), key=lambda p: p.relative_to(directory).as_posix()
     )
+    files = []
+    for candidate in candidates:
+        if candidate.is_symlink() and not candidate.exists():
+            # Refused, not skipped. `is_file()` follows the link and returns False for a dangling
+            # one, so a snapshot whose blobs were cleaned up, or copied without `-a`, would hash
+            # the surviving files and record that partial digest as immutable provenance for
+            # bytes that are not there. The function this replaced used `resolve(strict=True)`
+            # and raised; keeping that behaviour matters most on Linux, where every file in the
+            # snapshot IS a link into `../../blobs`.
+            raise ValueError(f"model artifact symlink is dangling: {candidate}")
+        if candidate.is_file():
+            files.append(candidate)
     if not files:
         raise ValueError(f"model artifact has no files: {directory}")
     digest = hashlib.sha256()
@@ -183,9 +194,10 @@ def artifact_identity_for(embedder: Any) -> ArtifactIdentity | None:
     """
     try:
         # Guarded on the class, because `provider` below is written verbatim into a lineage record
-        # that is treated as immutable evidence. The attribute chains probed above are generic
-        # (`_model_dir` is not a fastembed-only name), so without this a SentenceTransformer-backed
-        # embedder that grew a model directory would be stamped with fastembed provenance.
+        # that is treated as immutable evidence. The attribute chains probed by
+        # `_model_directory` are generic (`_model_dir` is not a fastembed-only name), so without
+        # this a SentenceTransformer-backed embedder that grew a model directory would be stamped
+        # with fastembed provenance.
         if type(embedder).__name__ != "FastEmbedEmbedder":
             return None
 
