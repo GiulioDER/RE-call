@@ -40,6 +40,9 @@ from recall.eval.synthetic import _OFFTOPIC_SUBJECTS, _OFFTOPIC_TEMPLATES
 from recall.eval.vocab import word_tokens
 from recall.index import chunk_text
 from recall.lint import DEFAULT_GLOB
+from recall.observability import get_logger
+
+_log = get_logger("wizard.queryset")
 
 #: The certification floor, imported rather than restated. A local `20` here could drift away from
 #: the number `Calibration.certified` actually tests, and the failure would be a set that this
@@ -210,15 +213,22 @@ def chunks_from_directory(root: str | Path, glob: str = DEFAULT_GLOB) -> list[st
 
     chunks: list[str] = []
     unreadable: list[str] = []
+    vanished = 0
     for file in files:
         try:
             body = file.read_text(encoding="utf-8", errors="replace")
-        except (FileNotFoundError, NotADirectoryError):
+        except (FileNotFoundError, NotADirectoryError) as exc:
             # Raced away between the walk and the read, so it is not part of the corpus. Skipped
             # rather than fatal, matching `index_path` (`recall/index.py:575`), because a wizard
             # is pointed at a live user directory where an editor swap file or a cloud-sync
             # placeholder can vanish mid-run, and aborting the whole install over one is worse
             # than generating questions from the rest.
+            #
+            # Logged AND counted, which is the rest of what `index_path` does and what a bare
+            # `continue` here dropped. A half-vanished corpus that generated questions from the
+            # remainder with no signal is the same silence this function refuses elsewhere.
+            _log.warning("skipping %s: it vanished before it could be read (%s)", file, exc)
+            vanished += 1
             continue
         except OSError as exc:
             # Everything else IS collected. A permission error or an I/O error means the file is
@@ -238,9 +248,15 @@ def chunks_from_directory(root: str | Path, glob: str = DEFAULT_GLOB) -> list[st
             "questions about only the readable part."
         )
     if not chunks:
+        # The vanished count is named here, because without it an unmounted share or an offline
+        # cloud-sync folder — where every file is found by the walk and gone by the read — reports
+        # as a glob mismatch and sends the reader to fix a pattern that was correct.
+        raced = (
+            f" ({vanished} of {len(files)} file(s) disappeared while being read)" if vanished else ""
+        )
         raise QuerySetError(
-            f"no chunks under {str(root_path.resolve())!r} matching {glob!r}, so there is nothing "
-            "to build answerable questions from."
+            f"no chunks under {str(root_path.resolve())!r} matching {glob!r}{raced}, so there is "
+            "nothing to build answerable questions from."
         )
     return chunks
 

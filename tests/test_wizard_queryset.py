@@ -356,27 +356,57 @@ def test_a_file_that_vanished_mid_walk_is_skipped_not_fatal(tmp_path, monkeypatc
     assert chunks and all("swap file" not in c for c in chunks)
 
 
-def test_the_sample_spreads_across_the_corpus_rather_than_its_head(tmp_path) -> None:
+def test_an_all_vanished_corpus_does_not_blame_the_glob(tmp_path, monkeypatch) -> None:
+    """An unmounted share finds every file in the walk and none in the read.
+
+    Without the count in the message that reports as "no chunks matching '**/*.md'", which sends
+    the reader to fix a pattern that was correct.
+    """
+    root = tmp_path / "docs"
+    root.mkdir()
+    for name in ("a.md", "b.md"):
+        (root / name).write_text(f"# {name}\n\nbody.\n", encoding="utf-8")
+
+    def gone(self, *args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", str(self))
+
+    monkeypatch.setattr(Path, "read_text", gone)
+    with pytest.raises(QuerySetError) as exc:
+        chunks_from_directory(root)
+    assert "2 of 2" in str(exc.value)
+    assert "disappeared" in str(exc.value)
+
+
+def test_the_sample_spreads_across_the_corpus_rather_than_its_head() -> None:
     """Oversampling plus `sorted(pool)` took only the pool's lowest-indexed quarter.
 
     Measured on this repository's `docs/` at the default: sorted order drew all 40 questions from
     3 of 51 files, sampled order from 21 of 51 — the exact head-of-corpus bias the sampling
     comment says it exists to prevent, reintroduced by the oversampling fix.
-    """
-    # 200 chunks, each identifiable by a unique subject, so provenance is readable off the query.
-    corpus = [f"# Section {_word(i)}\n\nThe {_word(i)} subsystem behaves distinctly.\n" for i in range(200)]
-    answerable = [e["query"] for e in generate_offline(corpus, per_class=20, seed=0) if e["answerable"]]
 
+    The first version of this test was a guard that could not fail. Its token helper had period
+    100, so `_word(i) == _word(i + 100)`: every match counted twice, and `max(positions) > 100`
+    was satisfied by any match at all. It passed verbatim against the buggy code. The token is now
+    unique across the whole range, and the margin is real — sorted order reaches position 33..64,
+    sampled order 166..199.
+    """
+    corpus = [f"# Section {_word(i)}\n\nThe {_word(i)} subsystem behaves distinctly.\n" for i in range(200)]
+    assert len({_word(i) for i in range(200)}) == 200, "tokens must identify one chunk each"
+
+    answerable = [e["query"] for e in generate_offline(corpus, per_class=20, seed=0) if e["answerable"]]
     positions = [i for i in range(200) if any(_word(i) in q for q in answerable)]
-    assert len(positions) >= 15, f"only {len(positions)} of 20 questions traced to a chunk"
-    # If only the head of the pool were used, every position would sit in the first fifth.
+
+    assert len(positions) == 20, f"{len(positions)} chunks traced, expected exactly 20"
     assert max(positions) > 100, f"sample never reached past chunk {max(positions)} of 200"
 
 
 def _word(i: int) -> str:
-    """A pronounceable unique token per chunk index, with no digits so `_is_prose` keeps it."""
+    """A pronounceable token unique for every `i` below 1000, alphabetic so `_is_prose` keeps it.
+
+    Three syllables, not two. Two gave a period of 100 and made the test above vacuous.
+    """
     syllables = ("ka", "lo", "mi", "ru", "ta", "ne", "vo", "shi", "pe", "du")
-    return syllables[i // 10 % 10] + syllables[i % 10] + "x"
+    return syllables[i // 100 % 10] + syllables[i // 10 % 10] + syllables[i % 10] + "x"
 
 
 # --------------------------------------------------------------------------------------
