@@ -32,6 +32,7 @@ import sys
 import psycopg
 
 from recall.store import PgVectorStore
+from benchmarks.console import use_utf8_output
 
 #: Dropping is irreversible, so the sweep is an ALLOWLIST rather than a pattern the caller supplies.
 #: A typo in `--prefix` must not be able to reach a production table.
@@ -39,6 +40,7 @@ DEFAULT_PREFIXES = ("pfull_", "psmoke_", "parity_")
 
 
 def main() -> int:
+    use_utf8_output()  # argparse prints this module's docstring; cp1252 cannot
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dsn", required=True)
     parser.add_argument(

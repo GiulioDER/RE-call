@@ -33,6 +33,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from benchmarks.console import use_utf8_output
 from benchmarks.analyse_triage import auc, load_question_text
 from benchmarks.explore_triage_signal import _labels, build_features
 
@@ -191,6 +192,7 @@ def _digest(evidence: Mapping[str, Any]) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    use_utf8_output()  # argparse prints this module's docstring; cp1252 cannot
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--retrieval", type=Path, required=True)
     parser.add_argument("--questions", type=Path, required=True)

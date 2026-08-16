@@ -28,6 +28,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from benchmarks.console import use_utf8_output
 
 #: Phrases by which a document declares ITSELF the newer one. Drawn from step 0, which read the
 #: eight gold documents behind the four supersession rows and found the successor announcing
@@ -183,6 +184,7 @@ def run_arm(
 
 
 def main(argv: list[str] | None = None) -> int:
+    use_utf8_output()  # argparse prints this module's docstring; cp1252 cannot
     from recall._env import load_dotenv
 
     parser = argparse.ArgumentParser(description=__doc__)

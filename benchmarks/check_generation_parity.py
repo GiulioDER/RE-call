@@ -84,6 +84,7 @@ from recall.index import Indexer
 from recall.migration import validate_generation_parity
 from recall.store import PgVectorStore
 from recall_mcp.service import make_embedder
+from benchmarks.console import use_utf8_output
 
 #: The baseline is FIRST and is the raw-context profile. Every comparison is
 #: `baseline vs candidate`, three independent pairs, never a tournament between the candidates.
@@ -261,6 +262,7 @@ def _parity(active: PgVectorStore, shadow: PgVectorStore, expected_sources: int)
 
 
 def main() -> int:
+    use_utf8_output()  # argparse prints this module's docstring; cp1252 cannot
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dsn", required=True)
     parser.add_argument("--corpus-dir", required=True, type=Path)

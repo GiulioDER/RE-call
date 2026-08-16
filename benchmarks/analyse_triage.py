@@ -23,6 +23,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from benchmarks.console import use_utf8_output
+
 
 def load_question_text(questions: Path, needed: Iterable[str]) -> dict[str, str]:
     """Question text for every id in `needed`, or an error naming what is missing.
@@ -123,6 +125,7 @@ def features(row: Mapping[str, Any], question: str, top_k: int) -> dict[str, flo
 
 
 def main(argv: list[str] | None = None) -> int:
+    use_utf8_output()  # argparse prints this module's docstring; cp1252 cannot
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--retrieval", type=Path, required=True)
     parser.add_argument("--questions", type=Path, required=True,

@@ -36,6 +36,7 @@ from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 
+from benchmarks.console import use_utf8_output
 from benchmarks.enterprise_rag import (
     DEFAULT_SPLADE_MODEL,
     _expected_docs,
@@ -55,6 +56,7 @@ CAPTURE_SCHEMA = 2
 
 
 def main(argv: list[str] | None = None) -> int:
+    use_utf8_output()  # argparse prints this module's docstring; cp1252 cannot
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--questions", type=Path, required=True)
     parser.add_argument("--dsn", required=True)
