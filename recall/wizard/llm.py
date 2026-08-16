@@ -200,6 +200,16 @@ class OpenAICompatClient:
                     # (against `max_retries=0`, chosen two lines up to avoid paying twice) and
                     # ends in a message about model output, pointing the user at their corpus
                     # rather than at their key.
+                    #
+                    # A rate limit is separated out because it is the one member of this set that
+                    # is TRANSIENT. Telling a throttled user to check their credentials sends them
+                    # to rotate a key that was never wrong.
+                    if type(exc).__name__ == "RateLimitError":
+                        raise QuerySetError(
+                            f"the endpoint rate-limited this request ({_safe_reason(exc)}). "
+                            "Nothing is misconfigured; wait and run the wizard again, or choose a "
+                            "model with more headroom."
+                        ) from exc
                     raise QuerySetError(
                         f"the endpoint refused the request ({_safe_reason(exc)}). Check the API "
                         f"key, the model id {self.model!r}, and that the endpoint is reachable."

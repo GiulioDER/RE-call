@@ -608,6 +608,26 @@ def test_an_auth_failure_is_not_retried_under_every_response_format() -> None:
     assert fake.formats == ["json_schema"], "must fail on the first attempt, not the third"
 
 
+def test_a_rate_limit_does_not_tell_the_user_to_check_their_key() -> None:
+    """A 429 is the one transient member of the unrecoverable set.
+
+    It must still fail fast rather than burn three round trips, but sending a throttled user to
+    rotate a key that was never wrong is the wrong instruction.
+    """
+
+    class _Throttled(Exception):
+        pass
+
+    _Throttled.__name__ = "RateLimitError"
+
+    client, fake = _client_with(lambda kw: _Throttled("429 Too Many Requests"))
+    with pytest.raises(QuerySetError) as exc:
+        client.complete_json(system="s", user="u", schema=_SCHEMA_STUB)
+    assert "rate-limited" in str(exc.value)
+    assert "Check the API key" not in str(exc.value)
+    assert fake.formats == ["json_schema"], "still fails fast, not three times"
+
+
 def test_the_api_key_cannot_reach_the_final_error_message() -> None:
     """`{last!r}` put the raw exception repr into the message, undoing `_safe_reason`.
 
