@@ -200,27 +200,63 @@ class TestPercentEncodingRoundTrip:
         Asserted on the resolver rather than through `fetch`, because the test host has no share
         to read from; what regressed was the path arithmetic, and that is what this pins.
         """
-        import pathlib
-        import sys
+        pytest.importorskip("os")
+        import os
+        import socket
 
         from recall.manifest import LocalObjectReader
 
-        if sys.platform != "win32":
+        if os.name != "nt":
             pytest.skip("UNC paths are a Windows concept")
 
-        share = pathlib.PurePath("//nas1/share/docs/alpha.md")
-        uri = pathlib.Path(share).as_uri()
-        assert uri.startswith("file://nas1/"), f"precondition changed: {uri}"
+        # Parametrised over the LOCAL hostname as well as a foreign one. The first fix handed a
+        # reconstructed `//authority/path` back to `url2pathname`, which on 3.13+ re-splits it and
+        # takes the local branch when the authority is this machine — so `//MYHOST/share`, exactly
+        # what `as_uri()` yields for a share on the local box, still collapsed to `C:\share`.
+        # `nas1` can never equal the hostname, so the original test could not see it.
+        for authority in ("nas1", socket.gethostname()):
+            uri = pathlib.Path(f"//{authority}/share/docs/alpha.md").as_uri()
+            assert uri.startswith(f"file://{authority}/"), f"precondition changed: {uri}"
 
+            entry = ManifestObjectV1(
+                uri=uri,
+                version_id="a" * 64,
+                media_type="text/markdown",
+                size=1,
+                sha256="a" * 64,
+            )
+            reader = LocalObjectReader(roots=(pathlib.Path(f"//{authority}/share/docs"),))
+            resolved = str(reader._resolve(entry))
+            assert resolved.startswith(f"\\\\{authority}\\share"), (
+                f"authority {authority!r} was dropped: {resolved}"
+            )
+
+    def test_a_remote_authority_is_refused_in_the_readers_own_vocabulary(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Off Windows a UNC authority must raise ObjectNotAllowed, not urllib's URLError.
+
+        3.14's POSIX `url2pathname` raises `URLError` for a non-local authority. That is neither
+        of the two exception types this reader declares, so it would propagate untyped through
+        `verify()` and `generation build`, past every caller written to handle manifest problems.
+        """
+        import recall.manifest as manifest_module
+        from recall.manifest import LocalObjectReader, ObjectNotAllowed
+
+        # `_unc_supported`, NOT `os.name`. Patching `os.name` directly makes `pathlib` pick
+        # `PosixPath` on a Windows host and every subsequent path operation raises
+        # `UnsupportedOperation`, including the reader's own `roots` resolution — the test then
+        # fails for a reason unrelated to what it is testing.
+        monkeypatch.setattr(manifest_module, "_unc_supported", lambda: False)
         entry = ManifestObjectV1(
-            uri=uri,
+            uri="file://nas1/share/docs/alpha.md",
             version_id="a" * 64,
             media_type="text/markdown",
             size=1,
             sha256="a" * 64,
         )
-        reader = LocalObjectReader(roots=(pathlib.Path("//nas1/share/docs"),))
-        assert str(reader._resolve(entry)).startswith("\\\\nas1\\share")
+        with pytest.raises(ObjectNotAllowed, match="remote authority"):
+            LocalObjectReader(roots=(tmp_path,)).fetch(entry)
 
     def test_a_localhost_authority_is_not_re_prefixed(self, tmp_path: pathlib.Path) -> None:
         """`file://localhost/path` means this machine per RFC 8089, not a share called localhost."""

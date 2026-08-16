@@ -133,6 +133,49 @@ def test_manifest_inventory_refuses_an_empty_result(tmp_path, capsys) -> None:
     assert "nothing to index" in str(exc.value)
 
 
+def test_manifest_inventory_reports_files_that_vanished(tmp_path, monkeypatch, capsys) -> None:
+    """A shorter inventory than the corpus must say so: the fingerprint is computed from it."""
+    import recall.wizard.inventory as module
+
+    root = _corpus(tmp_path)
+    real_entry = module._entry
+    seen = {"n": 0}
+
+    def racing(path):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            (root / "sub" / "two.md").unlink()
+        return real_entry(path)
+
+    monkeypatch.setattr(module, "_entry", racing)
+    main(["manifest", "inventory", str(root), "--output", str(tmp_path / "inv.json")])
+    out = capsys.readouterr().out
+    assert "objects=1" in out
+    assert "1 skipped" in out
+
+
+def test_an_exception_with_no_message_still_says_something(tmp_path, monkeypatch) -> None:
+    """`str(MemoryError())` is empty, so re-raising the message alone printed a blank line.
+
+    It is in the caught set precisely so a wide glob meeting a huge file is diagnosable, and the
+    catch's stated purpose is that the message survives. For this member it did not.
+    """
+    import pytest
+
+    import recall.wizard.inventory as module
+
+    root = _corpus(tmp_path)
+
+    def out_of_memory(path):
+        raise MemoryError()
+
+    monkeypatch.setattr(module, "_entry", out_of_memory)
+    with pytest.raises(SystemExit) as exc:
+        main(["manifest", "inventory", str(root), "--output", str(tmp_path / "inv.json")])
+    assert "MemoryError" in str(exc.value)
+    assert str(exc.value).strip(), "exiting with a blank message diagnoses nothing"
+
+
 def test_manifest_inventory_needs_no_database(tmp_path, monkeypatch, capsys) -> None:
     """It touches only the filesystem, so it must not trip the insecure-DSN refusal.
 

@@ -314,14 +314,66 @@ def test_an_unreadable_file_names_itself_and_the_progress(corpus: Path) -> None:
     finally:
         module._entry = real_entry
     assert "alpha.md" in str(exc.value)
-    assert "0 of 3" in str(exc.value)
+    assert "1 of 3" in str(exc.value)
+    assert exc.value.errno == 13, "errno must survive, not only appear in the text"
 
 
-@pytest.mark.parametrize("glob", ["/home/user/**/*.md", "C:/docs/**/*.md"])
-def test_an_absolute_glob_is_refused_with_advice(corpus: Path, glob: str) -> None:
-    """`Path.glob` raises NotImplementedError here, which is neither ValueError nor OSError."""
-    with pytest.raises(ValueError, match="absolute"):
+def test_progress_in_the_error_counts_attempted_files_not_written_ones(corpus: Path) -> None:
+    """A skipped file must not make the position understate itself.
+
+    Reporting `len(entries)` meant a run that had already handled two files and skipped one said
+    "0 of 3", which is the opposite of the "how far the run got" the message promises.
+    """
+    import recall.wizard.inventory as module
+
+    real_entry = module._entry
+    order = {"n": 0}
+
+    def flaky(path: Path):
+        order["n"] += 1
+        if order["n"] <= 2:
+            raise FileNotFoundError(2, "No such file or directory", str(path))
+        raise PermissionError(13, "Permission denied", str(path))
+
+    module._entry = flaky
+    try:
+        with pytest.raises(OSError) as exc:
+            module.build_inventory(corpus)
+    finally:
+        module._entry = real_entry
+
+    assert "3 of 3" in str(exc.value)
+    assert "2 skipped" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "glob",
+    [
+        "/home/user/**/*.md",  # rooted, both flavours
+        "\\\\server\\share\\**\\*.md",  # UNC
+        "C:/docs/**/*.md",  # drive + root
+        "C:docs/*.md",  # drive-relative: NOT is_absolute() on either flavour
+    ],
+)
+def test_a_non_relative_glob_is_refused_with_advice(corpus: Path, glob: str) -> None:
+    """`Path.glob` raises NotImplementedError here, which is neither ValueError nor OSError.
+
+    Every parameter must be refused on EVERY platform. The first version of this test used
+    `PurePath(glob).is_absolute()` as the guard and asserted the same cases; under a POSIX
+    interpreter `C:/docs/**/*.md` is not absolute, so the guard never fired, the run fell through
+    to the empty-corpus error, and the test failed on the only platform CI runs. The predicate is
+    now `ntpath.splitdrive` plus a leading separator, which decides identically everywhere.
+    """
+    with pytest.raises(ValueError, match="not relative"):
         build_inventory(corpus, glob=glob)
+
+
+@pytest.mark.parametrize("glob", ["**/*.md", "*.md", "sub/*.md", "**/*"])
+def test_an_ordinary_relative_glob_is_not_refused(corpus: Path, glob: str) -> None:
+    """The other half of the guard: it must not start rejecting normal patterns."""
+    from recall.wizard.inventory import _is_non_relative_pattern
+
+    assert _is_non_relative_pattern(glob) is False
 
 
 def test_entry_names_the_walked_path_and_does_not_resolve_it(tmp_path: Path) -> None:
@@ -362,17 +414,31 @@ def test_a_symlink_and_its_target_stay_two_distinct_entries(corpus: Path) -> Non
     IndexManifestV1("t", "v", tuple(ManifestObjectV1(**e) for e in entries))
 
 
-def test_a_large_file_does_not_have_to_fit_in_memory(tmp_path: Path) -> None:
-    """The digest is streamed, so peak memory is one buffer rather than one file."""
+@pytest.mark.parametrize("extra", [0, 1, -1, 7])
+def test_the_streamed_digest_is_correct_across_chunk_boundaries(tmp_path: Path, extra: int) -> None:
+    """Streaming replaced a whole-file read, so the risk is a boundary, not memory.
+
+    This asserts what it can actually check. It does not measure memory, and an earlier name
+    (`..._does_not_have_to_fit_in_memory`) claimed that it did.
+    """
     from recall.wizard.inventory import _READ_CHUNK_BYTES
 
-    root = tmp_path / "big"
-    payload = b"x" * (_READ_CHUNK_BYTES * 3 + 7)
+    root = tmp_path / f"big{extra}"
+    payload = b"x" * max(0, _READ_CHUNK_BYTES * 2 + extra)
     _write(root / "big.md", payload)
 
     entry = build_inventory(root)[0]
     assert entry["size"] == len(payload)
     assert entry["sha256"] == hashlib.sha256(payload).hexdigest()
+
+
+def test_an_empty_file_gets_the_empty_digest(tmp_path: Path) -> None:
+    """The read loop must terminate on a zero-byte file rather than spin."""
+    root = tmp_path / "zero"
+    _write(root / "empty.md", b"")
+    entry = build_inventory(root)[0]
+    assert entry["size"] == 0
+    assert entry["sha256"] == hashlib.sha256(b"").hexdigest()
 
 
 def test_json_output_is_lf_and_utf8(corpus: Path, tmp_path: Path) -> None:

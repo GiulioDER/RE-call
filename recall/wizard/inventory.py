@@ -20,8 +20,9 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import ntpath
 from dataclasses import dataclass
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import Any
 
 from recall.index import candidate_files
@@ -116,6 +117,25 @@ def _entry(path: Path) -> dict[str, Any]:
     }
 
 
+def _is_non_relative_pattern(glob: str) -> bool:
+    """Whether `Path.glob` will refuse this pattern, decided identically on every platform.
+
+    `pathlib` refuses a pattern with a drive OR a root. Testing `PurePath(glob).is_absolute()`
+    matched neither Windows form under a POSIX interpreter: `C:/docs/**/*.md` is not absolute to
+    `PurePosixPath`, and `C:docs/*.md` is drive-relative so it is not absolute on Windows either.
+    Both reach `Path.glob` and raise there.
+
+    `ntpath.splitdrive` is used on every platform on purpose. It recognises `C:`, `C:/` and
+    `//server/share`, and importing it under POSIX is free, so one predicate covers both flavours
+    and this refusal does not change shape with the host. `os.path.splitroot` would be the exact
+    equivalent of pathlib's own test but only exists from 3.12, and this package supports 3.11.
+    """
+    if glob.startswith(("/", "\\")):
+        return True
+    drive, _ = ntpath.splitdrive(glob)
+    return bool(drive)
+
+
 @dataclass(frozen=True)
 class InventoryReport:
     """What an inventory run produced, including what it could not read.
@@ -142,13 +162,13 @@ def build_inventory_report(root: str | Path, glob: str = DEFAULT_GLOB) -> Invent
     — a green run that certifies nothing. `candidate_files` refuses a glob mismatch for the same
     reason, and this extends that refusal to the case where the glob matched but the tree was bare.
     """
-    if PurePath(glob).is_absolute() or glob.startswith(("/", "\\")):
+    if _is_non_relative_pattern(glob):
         # `Path.glob` raises NotImplementedError("Non-relative patterns are unsupported"), which
         # is neither ValueError nor OSError, so it escaped the CLI's catch as a bare traceback on
         # what is a natural first guess for somebody who has just been shown an absolute path.
         raise ValueError(
-            f"the glob {glob!r} is absolute. It is applied relative to the path argument, so pass "
-            f"a pattern like '**/*.md' and give the directory as the path."
+            f"the glob {glob!r} is not relative. It is applied relative to the path argument, so "
+            f"pass a pattern like '**/*.md' and give the directory as the path."
         )
     files = candidate_files(root, glob)
     entries: list[dict[str, Any]] = []
@@ -166,10 +186,18 @@ def build_inventory_report(root: str | Path, glob: str = DEFAULT_GLOB) -> Invent
             # Everything else is named. On Windows the common one is a file held open by another
             # process, and `[Errno 13]` alone tells the reader nothing about which file or how far
             # the run got.
+            #
+            # Progress counts ATTEMPTED files, not written ones. Reporting `len(entries)` made
+            # every skipped file understate the position, so a run that had already handled four
+            # of five said "0 of 5". `errno` and the filename are carried on the exception rather
+            # than only interpolated into its text, so a caller can still branch on them.
+            attempted = len(entries) + vanished + 1
             raise OSError(
-                f"cannot read {str(file)!r} while building the inventory "
-                f"({type(exc).__name__}: {exc}). {len(entries)} of {len(files)} file(s) had been "
-                f"read. Close anything holding the file open, or narrow the glob."
+                exc.errno,
+                f"cannot read this file while building the inventory ({type(exc).__name__}). "
+                f"{attempted} of {len(files)} file(s) attempted, {vanished} skipped as missing. "
+                f"Close anything holding the file open, or narrow the glob",
+                str(file),
             ) from exc
     if not entries:
         raise ValueError(

@@ -1459,7 +1459,14 @@ def main(argv: list[str] | None = None) -> None:
                 # act on. `NotImplementedError` is in the set because `Path.glob` raises it for a
                 # non-relative pattern, and `MemoryError` because a wide glob can meet a file
                 # larger than RAM; neither is a ValueError or an OSError, so both used to escape.
-                raise SystemExit(str(exc)) from exc
+                # `str(MemoryError())` is the empty string, so re-raising the message alone would
+                # exit 1 printing a blank line: the one member of this tuple for which "keeps that
+                # message" was false. The class name is the diagnosis when there is no message.
+                raise SystemExit(
+                    str(exc)
+                    or f"{type(exc).__name__} while building the inventory from {args.path!r}. "
+                    "Narrow --glob, or free memory."
+                ) from exc
             skipped = (
                 f", {report.vanished} skipped (disappeared while reading)" if report.vanished else ""
             )

@@ -203,6 +203,16 @@ def load_inventory(path: str | Path) -> tuple[ManifestObjectV1, ...]:
     return IndexManifestV1.from_dict(wrapper).objects
 
 
+def _unc_supported() -> bool:
+    """Whether this platform can address a `\\\\server\\share` path.
+
+    A named seam rather than an inline `os.name` test, so a test can exercise the non-Windows
+    refusal branch without patching `os.name` itself — which `pathlib` reads to choose its Path
+    class, so patching it breaks every path operation in the process, including the reader's own.
+    """
+    return os.name == "nt"
+
+
 class LocalObjectReader:
     """Read manifest objects from the filesystem, confined to allowed roots.
 
@@ -252,13 +262,29 @@ class LocalObjectReader:
         # produces exactly that URI, so a network-share corpus, which is an ordinary thing to have
         # on the platform this targets, was unreadable. `localhost` and the empty authority both
         # mean "this machine" per RFC 8089 and must NOT be re-prefixed.
-        authority = parsed.netloc
-        encoded = (
-            f"//{authority}{parsed.path}"
-            if authority and authority.lower() != "localhost"
-            else parsed.path
-        )
-        path = Path(url2pathname(encoded)).resolve()
+        # The UNC anchor is built here rather than handed back to `url2pathname` as a
+        # `//authority/path` string. On 3.13+ that function re-splits what it is given and takes
+        # the LOCAL branch whenever the authority is this machine's own hostname, so
+        # `file://MYHOST/share/docs/a.md` — which `Path("//MYHOST/share/docs/a.md").as_uri()`
+        # produces for a share on the local machine — collapsed back to `C:\share\docs\a.md`, the
+        # exact defect the authority was carried to avoid. Decoding the path alone and prefixing
+        # the anchor directly is version-independent.
+        authority = unquote(parsed.netloc)
+        local = url2pathname(parsed.path)
+        if authority and authority.lower() != "localhost":
+            if not _unc_supported():
+                # 3.14's POSIX `url2pathname` raises `URLError` here, which is neither
+                # `ObjectNotAllowed` nor `ManifestVerificationError` and would propagate untyped
+                # through `verify()` and `generation build`. A UNC share is a Windows concept, so
+                # this is refused in the reader's own vocabulary instead.
+                raise ObjectNotAllowed(
+                    f"local object {entry.uri!r} names the remote authority {authority!r}. "
+                    "A UNC share cannot be read on this platform; rewrite the manifest with a "
+                    "local path."
+                )
+            path = Path(f"//{authority}{local}").resolve()
+        else:
+            path = Path(local).resolve()
         # `is_relative_to` on the RESOLVED path, so `..` and symlinks cannot escape a root. This is
         # the local analogue of the S3 allowlist: without it a manifest names any file on disk.
         if not any(path.is_relative_to(root) for root in self._roots):
