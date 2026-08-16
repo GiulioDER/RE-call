@@ -30,6 +30,12 @@ def auc(scores: Sequence[float], labels: Sequence[int]) -> float:
     `labels` is 1 for the POSITIVE class, which here is "gold was missed", so an AUC above 0.5
     means a higher feature value predicts a miss.
     """
+    # ⚠️ NaN FIRST. Tie detection uses `==`, and NaN never equals itself, so NaNs never group
+    # and never raise: an all-NaN feature returns 0.0, 0.5 or 1.0 purely by row order, and prints
+    # as an ordinary number. sklearn refuses the same input. A NaN cosine round-trips through JSON
+    # invisibly, so this is reachable rather than theoretical.
+    if any(s != s for s in scores):
+        raise ValueError("NaN in scores; refusing to compute an AUC that would be row-order noise")
     pairs = sorted(zip(scores, labels, strict=True), key=lambda p: p[0])
     ranks: list[float] = [0.0] * len(pairs)
     i = 0
@@ -55,8 +61,9 @@ def features(row: Mapping[str, Any], top_k: int) -> dict[str, float]:
     scores = [float(hit["score"]) for hit in ranked[:top_k]]
     top = scores[0] if scores else 0.0
     last = scores[-1] if scores else 0.0
-    question = row.get("question", "")
-    text = str(question).lower()
+    # `[...]`, never `.get(..., "")`. A missing key used to become an empty string, which made
+    # `conjunctions` and `question_words` constant on every row and report as a clean 0.500 null.
+    text = str(row["question"]).lower()
     return {
         "neg_top1_score": -top,
         "neg_mean_topk": -(sum(scores) / len(scores)) if scores else 0.0,
@@ -105,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         feats.append(features(row, args.top_k))
         per_type.setdefault(row["question_type"], []).append(label)
 
+    if not gold_total:
+        raise SystemExit("no row in the fixture has expected_doc_ids; nothing to score")
     print()
     print("=== T2 / T3 / T1 ===")
     print(f"  recall_at_{args.top_k:<4}      = {gold_at_k}/{gold_total} = {gold_at_k/gold_total:.4f}")
@@ -120,7 +129,6 @@ def main(argv: list[str] | None = None) -> int:
     for name in feats[0]:
         value = auc([f[name] for f in feats], labels)
         ranked_auc.append((value, name))
-    random.Random(args.seed).shuffle(feats)  # R2 uses a fresh random feature, not a shuffle of one
     rnd = [random.Random(args.seed + i).random() for i in range(len(labels))]
     for value, name in sorted(ranked_auc, reverse=True):
         mark = "  <- shipped gap_warning" if name == "gap_warning" else ""

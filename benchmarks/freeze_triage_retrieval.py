@@ -61,10 +61,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     load_dotenv()
 
+    # Everything that changes WHAT IS RETRIEVED. The env var sets HNSW search depth, so a
+    # resume under a different value mixes two candidate-pool depths into one fixture, which is
+    # exactly what this guard exists to stop; it was recorded in provenance but not fingerprinted.
     fingerprint = json.dumps(
-        {k: getattr(args, k) for k in
-         ("table", "tenant", "embedder", "top_k", "pool_k", "candidate_k",
-          "sparse_backend", "reranker", "rerank_document_chars", "sparse_device")},
+        {
+            **{k: getattr(args, k) for k in
+               ("table", "tenant", "embedder", "top_k", "pool_k", "candidate_k",
+                "sparse_backend", "reranker", "rerank_document_chars", "sparse_device")},
+            "questions": str(args.questions.resolve()),
+            "limit": args.limit,
+            "hnsw_ef_search_multiplier": os.environ.get("RECALL_HNSW_EF_SEARCH_MULTIPLIER"),
+        },
         sort_keys=True,
     )
     checkpoint = args.out.with_suffix(args.out.suffix + ".partial.jsonl")
@@ -113,6 +121,10 @@ def main(argv: list[str] | None = None) -> int:
                     for hit in result.hits
                 ]
                 row = {
+                    # ⚠️ Written because `analyse_triage` and `explore_triage_signal` compute
+                    # query-text features from it. It was absent, they read it with a default,
+                    # and two registered features were silently constant across all 500 rows.
+                    "question": question.question,
                     "question_type": _question_type(question),
                     "expected_doc_ids": sorted(_expected_docs(question)),
                     "gap_warning": result.gap_warning,

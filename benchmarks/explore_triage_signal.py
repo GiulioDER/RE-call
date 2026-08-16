@@ -54,10 +54,16 @@ def build_features(row: Mapping[str, Any], question: str, top_k: int) -> dict[st
     words = text.split()
 
     def at(i: int) -> float:
-        return scores[i] if i < len(scores) else 0.0
+        # BOTH bounds. Guarding only the upper one let `at(-1)` index from the wrong end, so an
+        # empty pool raised IndexError from inside a feature builder.
+        return scores[i] if 0 <= i < len(scores) else 0.0
 
-    total = sum(scores) or 1.0
-    probabilities = [s / total for s in scores if s > 0]
+    # Normalised over the KEPT scores, not over all of them. Filtering the numerator only left
+    # "probabilities" summing to 10.0 on a mixed-sign pool, which inverts the sign of the entropy,
+    # and a negative total made math.log raise. Dense cosines do go negative at depth 200.
+    kept = [s for s in scores if s > 0]
+    kept_total = sum(kept)
+    probabilities = [s / kept_total for s in kept] if kept_total > 0 else []
     entropy = -sum(p * math.log(p) for p in probabilities) if probabilities else 0.0
 
     docs_top8 = [h["doc_id"] for h in ranked[:top_k]]
@@ -69,7 +75,10 @@ def build_features(row: Mapping[str, Any], question: str, top_k: int) -> dict[st
         "score_at_8": at(7),
         "score_at_20": at(19),
         "score_at_50": at(49),
-        "score_at_199": at(len(scores) - 1),
+        # Named for what it IS: the last entry of whatever pool this row has. Called
+        # `score_at_199` it mixed "rank 200" and "rank 9" under one name across uneven pools.
+        "score_at_pool_end": at(len(scores) - 1),
+        "pool_depth": float(len(scores)),
         "decay_1_to_8": at(0) - at(7),
         "decay_8_to_50": at(7) - at(49),
         "decay_1_to_50": at(0) - at(49),
@@ -137,12 +146,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         for line in args.questions.read_text(encoding="utf-8").splitlines() if line.strip()
     }
 
+    # ⚠️ A silent join failure zeroes every query-text feature and is indistinguishable in the
+    # output from "text features carry no signal". A PARTIAL failure is worse: the affected rows
+    # get all-zero text features while the rest are real, manufacturing a split in every one.
+    absent = set(rows) - set(questions)
+    if absent:
+        raise SystemExit(
+            f"{len(absent)} fixture question ids are absent from --questions, e.g. "
+            f"{sorted(absent)[:3]}. Refusing to score text features against empty strings."
+        )
+
     data: dict[str, list[tuple[dict[str, float], int]]] = {"train": [], "test": []}
     for qid, row in rows.items():
         label = _labels(row, args.top_k)[args.label]
         if label is None:
             continue
-        feats = build_features(row, questions.get(qid, ""), args.top_k)
+        feats = build_features(row, questions[qid], args.top_k)
         data[_split(qid, args.seed)].append((feats, label))
 
     for part, items in data.items():
@@ -160,20 +179,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     # its sign flipped, and hiding that would repeat the score_decay mistake in reverse.
     ordered = sorted(train_auc.items(), key=lambda kv: -abs(kv[1] - 0.5))
 
-    print(f"{'feature':24} {'TRAIN auc':>10} {'|dist|':>7}   {'TEST auc':>9}  {'inflation':>9}")
-    for name, tr in ordered[:12]:
+    # ⚠️ Only the FIRST row is held out. Printing a test column for twelve features is the exact
+    # affordance for selecting on test, and it was used that way once already: a feature that did
+    # not win on train had its test AUC quoted as if it had. The rest are marked, loudly.
+    print(f"{'feature':24} {'TRAIN':>8} {'TEST':>8} {'signed':>8} {'infl':>7}  note")
+    for rank, (name, tr) in enumerate(ordered[:12]):
         te = auc([f[name] for f, _ in data["test"]], [y for _, y in data["test"]])
-        print(f"{name:24} {tr:>10.4f} {abs(tr-0.5):>7.3f}   {te:>9.4f}  {abs(tr-0.5)-abs(te-0.5):>+9.3f}")
+        # Scored in the direction TRAIN chose. Selecting on |dist| while reporting |dist| let a
+        # feature reverse direction between the halves and still read as a surviving signal.
+        signed = te if tr > 0.5 else 1.0 - te
+        flip = " SIGN FLIP" if (tr - 0.5) * (te - 0.5) < 0 else ""
+        note = "held out" if rank == 0 else "NOT held out"
+        print(f"{name:24} {tr:>8.4f} {te:>8.4f} {signed:>8.4f} "
+              f"{abs(tr-0.5)-abs(te-0.5):>+7.3f}  {note}{flip}")
 
     winner = ordered[0][0]
-    test_auc = auc([f[winner] for f, _ in data["test"]], [y for _, y in data["test"]])
+    winner_train = ordered[0][1]
+    raw_test = auc([f[winner] for f, _ in data["test"]], [y for _, y in data["test"]])
+    test_auc = raw_test if winner_train > 0.5 else 1.0 - raw_test
     n = len(data["test"])
     positives = sum(y for _, y in data["test"])
     se = math.sqrt(0.25 / min(positives, n - positives)) if 0 < positives < n else float("nan")
     print()
-    print(f"WINNER on train: {winner}")
-    print(f"  honest TEST auc = {test_auc:.4f}   (|dist from 0.5| = {abs(test_auc-0.5):.4f})")
+    print(f"WINNER on train: {winner}  (train {winner_train:.4f})")
+    print(f"  honest TEST auc = {test_auc:.4f}, scored in the TRAIN direction "
+          f"(|dist| = {abs(test_auc-0.5):.4f})")
     print(f"  rough test SE   ~ {se:.4f}; anything within ~2 SE of 0.5 is not a signal")
+    print(f"  ⚠️  {len(names)} features x this label were searched. The 2-SE bound is a SINGLE")
+    print("     comparison threshold and carries no multiplicity correction.")
     return 0
 
 
