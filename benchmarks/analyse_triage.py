@@ -19,9 +19,46 @@ from __future__ import annotations
 import argparse
 import json
 import random
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+
+def load_question_text(questions: Path, needed: Iterable[str]) -> dict[str, str]:
+    """Question text for every id in `needed`, or an error naming what is missing.
+
+    ⚠️ The reason this is a function and not a dict comprehension at the call site: the first run
+    published `conjunctions` and `question_words` at exactly 0.500 as measured nulls, when in fact
+    the text was an empty string on all 500 rows and 0.500 is what this AUC returns for a constant.
+    A join that silently defaults cannot be distinguished from a feature that carries no signal, so
+    this one refuses instead: an unresolvable id and a blank question are both errors.
+
+    Extra ids in the file are fine. A fixture may be a `--limit` pilot over the same benchmark.
+    """
+    text: dict[str, str] = {}
+    for line in questions.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            row = json.loads(line)
+            # `.strip()` mirrors `benchmarks.enterprise_rag._text`, which is what produced the
+            # string the retrieval actually embedded. Joining the raw value instead would score
+            # text features against a string that differs from the one that was retrieved on, and
+            # differ silently, since only the whitespace moves.
+            text[row["question_id"]] = str(row["question"]).strip()
+
+    wanted = set(needed)
+    absent = wanted - set(text)
+    if absent:
+        raise SystemExit(
+            f"{len(absent)} fixture question ids are absent from {questions.name}, e.g. "
+            f"{sorted(absent)[:3]}. Refusing to score text features against empty strings."
+        )
+    blank = sorted(qid for qid in wanted if not str(text[qid]).strip())
+    if blank:
+        raise SystemExit(
+            f"{len(blank)} question(s) are blank in {questions.name}, e.g. {blank[:3]}. "
+            "A blank question is the exact input that made two features report a false null."
+        )
+    return {qid: text[qid] for qid in wanted}
 
 
 def auc(scores: Sequence[float], labels: Sequence[int]) -> float:
@@ -55,22 +92,31 @@ def auc(scores: Sequence[float], labels: Sequence[int]) -> float:
     return (rank_sum - positives * (positives + 1) / 2) / (positives * negatives)
 
 
-def features(row: Mapping[str, Any], top_k: int) -> dict[str, float]:
+def features(row: Mapping[str, Any], question: str, top_k: int) -> dict[str, float]:
     """Query-time features only. Nothing here may consult the answer or the gold set."""
     ranked = row["ranked"]
     scores = [float(hit["score"]) for hit in ranked[:top_k]]
     top = scores[0] if scores else 0.0
     last = scores[-1] if scores else 0.0
-    # `[...]`, never `.get(..., "")`. A missing key used to become an empty string, which made
-    # `conjunctions` and `question_words` constant on every row and report as a clean 0.500 null.
-    text = str(row["question"]).lower()
+    # Passed in from `load_question_text`, never read off the row with a default. The first
+    # capture wrote no `question` key at all, so reading it from the fixture makes this scorer
+    # unable to score that fixture; the join makes both captures scoreable and still fails loudly.
+    text = question.lower()
     return {
         "neg_top1_score": -top,
         "neg_mean_topk": -(sum(scores) / len(scores)) if scores else 0.0,
         "score_decay": top - last,
-        "gap_warning": 1.0 if row.get("gap_warning") else 0.0,
+        # `[...]`, never `.get(..., default)`. An absent key becomes a constant, a constant scores
+        # exactly 0.500 in this AUC, and 0.500 is indistinguishable from a measured null: that is
+        # how `conjunctions` and `question_words` were published as nulls without being computed.
+        # `gap_warning`'s own 0.5015 is a published number that would have been unfalsifiable the
+        # same way. Both keys are present in every capture, so indexing costs nothing today and
+        # refuses loudly the day a capture stops writing one.
+        "gap_warning": 1.0 if row["gap_warning"] else 0.0,
         "distinct_docs_topk": float(len({h["doc_id"] for h in ranked[:top_k]})),
-        "query_chars": float(row.get("query_chars", 0)),
+        # From the joined text, not the row, so this and `explore_triage_signal` cannot report two
+        # different lengths for one question depending on which side stripped whitespace.
+        "query_chars": float(len(question)),
         "conjunctions": float(sum(text.count(w) for w in (" and ", " versus ", " vs "))),
         "question_words": float(sum(text.count(w) for w in ("what", "who", "when", "which", "how"))),
     }
@@ -79,12 +125,15 @@ def features(row: Mapping[str, Any], top_k: int) -> dict[str, float]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--retrieval", type=Path, required=True)
+    parser.add_argument("--questions", type=Path, required=True,
+                        help="the benchmark jsonl; joined by question_id for the text features")
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
 
     payload = json.loads(args.retrieval.read_text(encoding="utf-8"))
     rows = payload["evidence"]
+    question_text = load_question_text(args.questions, rows)
     print(f"questions in fixture: {len(rows)}")
 
     gold_total = gold_at_k = gold_in_pool = 0
@@ -93,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     feats: list[dict[str, float]] = []
     per_type: dict[str, list[int]] = {}
 
-    for row in rows.values():
+    for question_id, row in rows.items():
         gold = set(row["expected_doc_ids"])
         if not gold:
             continue
@@ -109,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
 
         label = 0 if gold <= at_k else 1
         labels.append(label)
-        feats.append(features(row, args.top_k))
+        feats.append(features(row, question_text[question_id], args.top_k))
         per_type.setdefault(row["question_type"], []).append(label)
 
     if not gold_total:

@@ -1,12 +1,19 @@
 """One retrieval pass over the benchmark, capturing the pool AND the top-k, for the triage probe.
 
-Pre-registered at `results/enterprise_rag/PREREGISTRATION-retrieval-triage.md` (`c8828db`).
+Pre-registered at `results/enterprise_rag/PREREGISTRATION-retrieval-triage.md` (`c8828db`), and
+extended for `results/enterprise_rag/PREREGISTRATION-triage-mechanism.md` (`1a153cd`).
 
-One `search(k=pool_k)` per question gives both halves: the reranked ordering's first 8 entries are
-what the shipped `k=8` configuration would have returned, and the whole list is the pool. So the
-expensive part, one rerank of the fused candidate set, is paid once per question rather than
-twice, and the top-8 is a prefix of the pool by construction rather than by a second call that
-might order differently.
+One retrieval per question gives both halves: the ordering's first 8 entries are what the `k=8`
+configuration would have returned, and the whole list is the pool. So the expensive part, one
+encode plus three index queries, is paid once per question rather than twice, and the top-8 is a
+prefix of the pool by construction rather than by a second call that might order differently.
+
+⚠️ **Two quantities that `search()` discards are captured here**, because the first run's fixture
+could not answer what its own winning feature was reading. `search()` orders by the RRF fused
+score and then reports each hit's DENSE cosine, so a fixture built from its output records a curve
+that is not the ranking criterion. `benchmarks.fusion_detail.fuse` recovers the fused score and
+each leg's rank off the same `_Legs` seam, at no extra retrieval cost. Its ranked output is pinned
+to `search()`'s by `tests/test_bench_fusion_detail.py`.
 
 Checkpointed per question and resumable, with the retrieval fingerprint carried on every row: the
 supersession freeze died on a provider batch ceiling partway through, and resuming under changed
@@ -38,6 +45,13 @@ from benchmarks.enterprise_rag import (
     load_questions,
 )
 from benchmarks.freeze_supersession_evidence import evidence_digest
+from benchmarks.fusion_detail import dense_gap_warning, fuse
+
+#: Bumped whenever a row gains or loses a field. It is part of the retrieval fingerprint, so a
+#: `.partial.jsonl` written by an earlier capture is REFUSED rather than resumed into a fixture
+#: where some rows carry fused scores and others do not. Every other fingerprint input was
+#: unchanged between capture 1 and capture 2, so without this the mixing would have been silent.
+CAPTURE_SCHEMA = 2
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -72,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
             "questions": str(args.questions.resolve()),
             "limit": args.limit,
             "hnsw_ef_search_multiplier": os.environ.get("RECALL_HNSW_EF_SEARCH_MULTIPLIER"),
+            "capture_schema": CAPTURE_SCHEMA,
         },
         sort_keys=True,
     )
@@ -92,6 +107,15 @@ def main(argv: list[str] | None = None) -> int:
     questions = load_questions(args.questions, limit=args.limit)
     embedder = resolve_embedder(args.embedder)
     reranker = build_reranker(args.reranker, max_document_chars=args.rerank_document_chars)
+    # ⛔ Refused, not warned about. This capture reads the FUSED ordering directly off the legs,
+    # which is what makes the fused score and the per-leg ranks available at all; a reranker would
+    # reorder the pool afterwards and simply not be applied here. Accepting the flag and ignoring
+    # it would produce a fixture whose provenance claims a reranker that never ran.
+    if reranker is not None:
+        raise SystemExit(
+            f"--reranker {args.reranker!r}: this capture records the fused ordering and cannot "
+            "apply a reranker. Pass --reranker none, or use a capture that reranks."
+        )
     sparse_encoder = build_sparse_encoder(
         args.sparse_backend, model=args.splade_model,
         accept_noncommercial_license=False, device=args.sparse_device,
@@ -103,23 +127,41 @@ def main(argv: list[str] | None = None) -> int:
         store.check_schema()
         retriever = HybridRetriever(
             store, embedder, candidate_k=args.candidate_k,
-            reranker=reranker,  # type: ignore[arg-type]
+            # Always None: anything else was refused above. Passed anyway so the retriever is
+            # built the same way it is everywhere else, rather than by a shape unique to here.
+            reranker=reranker,
             gap_threshold=DEFAULT_GAP_THRESHOLD,
             sparse_backend=args.sparse_backend, sparse_encoder=sparse_encoder,
             retrieval_profile=f"enterprise-rag:{args.sparse_backend}",
         )
-        with checkpoint.open("a", encoding="utf-8", newline="\n") as sink:
+        # ⚠️ `"w"` without `--resume`, not `"a"`. Appending to a checkpoint this run will not read
+        # builds a file holding two fingerprints, which is unresumable: a later `--resume` hits
+        # the first foreign line and exits, discarding however many hours of THIS capture's rows
+        # came after it. Adding `capture_schema` to the fingerprint makes that mixture likelier,
+        # so the fix ships with it rather than after it.
+        with checkpoint.open("a" if args.resume else "w", encoding="utf-8", newline="\n") as sink:
             for i, question in enumerate(questions, 1):
                 if question.question_id in rows:
                     continue
-                result = retriever.search(question.question, k=args.pool_k)
+                legs = retriever._retrieve_legs(question.question, source=None)
+                fused = fuse(legs)[: args.pool_k]
                 ranked = [
                     {
-                        "doc_id": str(hit.chunk.metadata.get("doc_id") or hit.chunk.source),
-                        "score": hit.score,
+                        "doc_id": str(f.hit.chunk.metadata.get("doc_id") or f.hit.chunk.source),
+                        # The DENSE cosine, unchanged from capture 1 so the two fixtures compare.
+                        "score": f.hit.score,
+                        # The quantity that actually ordered this list. New in capture 2.
+                        "fused_score": f.fused_score,
+                        # Zero-based per-leg rank, `null` where the leg did not return the chunk.
+                        # Order is `fusion_detail.LEG_NAMES`: dense, lexical, learned.
+                        "ranks": list(f.ranks),
                     }
-                    for hit in result.hits
+                    for f in fused
                 ]
+                # From the DENSE candidate scores, and deduplicated the way `search()` does it.
+                # Restating that here with a comment claiming equivalence is how the two drift,
+                # so the mirroring lives beside `fuse()` and is pinned by the same test.
+                gap = dense_gap_warning(legs, DEFAULT_GAP_THRESHOLD)
                 row = {
                     # ⚠️ Written because `analyse_triage` and `explore_triage_signal` compute
                     # query-text features from it. It was absent, they read it with a default,
@@ -127,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
                     "question": question.question,
                     "question_type": _question_type(question),
                     "expected_doc_ids": sorted(_expected_docs(question)),
-                    "gap_warning": result.gap_warning,
+                    "gap_warning": gap,
                     "query_chars": len(question.question),
                     "ranked": ranked,
                 }
@@ -143,8 +185,16 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "_provenance": {
             "generated_at": datetime.now(UTC).isoformat(),
-            "preregistration_commit": "c8828db65f0577aa7b999e5bb4fee46fe7515e61",
+            # Both, and keyed off the schema: a capture-2 fixture answers the mechanism
+            # registration as well as the original one, and a fixture that names only the
+            # registration it no longer serves is provenance that reads as correct.
+            "preregistration_commits": [
+                "c8828db65f0577aa7b999e5bb4fee46fe7515e61",  # retrieval triage, capture 1
+                *(["1a153cd3ae746786af3eff228d2fabbd5098fa9e"]  # triage mechanism, capture 2
+                  if CAPTURE_SCHEMA >= 2 else []),
+            ],
             "retrieval_fingerprint": fingerprint,
+            "capture_schema": CAPTURE_SCHEMA,
             "hnsw_ef_search_multiplier": os.environ.get("RECALL_HNSW_EF_SEARCH_MULTIPLIER"),
             "n_questions": len(rows),
             "retrieval_sha256": digest,

@@ -37,7 +37,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from benchmarks.analyse_triage import auc
+from benchmarks.analyse_triage import auc, load_question_text
 
 
 def _split(question_id: str, seed: int) -> str:
@@ -105,7 +105,9 @@ def build_features(row: Mapping[str, Any], question: str, top_k: int) -> dict[st
                                  or " vs " in text) else 0.0,
         "n_quoted": float(text.count('"') + text.count("`")),
         "n_digits": float(sum(c.isdigit() for c in text)),
-        "gap_warning": 1.0 if row.get("gap_warning") else 0.0,
+        # `[...]`, not `.get`. See `analyse_triage.features`: an absent key is a constant, and a
+        # constant is exactly 0.500 here, which reads as a measured null rather than a dead input.
+        "gap_warning": 1.0 if row["gap_warning"] else 0.0,
     }
     # Interactions: the registered sweep tested only scalars, and the question-type spread
     # suggested the signal is not linear in any one of them.
@@ -141,20 +143,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     rows = json.loads(args.retrieval.read_text(encoding="utf-8"))["evidence"]
-    questions = {
-        json.loads(line)["question_id"]: json.loads(line)["question"]
-        for line in args.questions.read_text(encoding="utf-8").splitlines() if line.strip()
-    }
-
     # ⚠️ A silent join failure zeroes every query-text feature and is indistinguishable in the
     # output from "text features carry no signal". A PARTIAL failure is worse: the affected rows
     # get all-zero text features while the rest are real, manufacturing a split in every one.
-    absent = set(rows) - set(questions)
-    if absent:
-        raise SystemExit(
-            f"{len(absent)} fixture question ids are absent from --questions, e.g. "
-            f"{sorted(absent)[:3]}. Refusing to score text features against empty strings."
-        )
+    # One implementation, shared with `analyse_triage`, and covered by its tests.
+    questions = load_question_text(args.questions, rows)
 
     data: dict[str, list[tuple[dict[str, float], int]]] = {"train": [], "test": []}
     for qid, row in rows.items():
