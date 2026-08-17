@@ -327,6 +327,8 @@ if QApplication is not None:
                 QTableWidget#filesTable, QTableWidget#githubTable, QTableWidget#calibrationTable { background: transparent; }
                 QTableWidget#filesTable::item, QTableWidget#githubTable::item, QTableWidget#calibrationTable::item { background: transparent; }
                 QHeaderView::section { background: #1a1d1a; color: #d7d2c4; font-family: "Consolas"; font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 10px; border: 0; border-bottom: 1px solid #596057; }
+                QTableWidget#filesTable QHeaderView, QTableWidget#githubTable QHeaderView { background: transparent; }
+                QTableWidget#filesTable QHeaderView::section, QTableWidget#githubTable QHeaderView::section { background: transparent; }
                 QTableCornerButton::section { background: transparent; border: 0; }
                 QFrame#queueActions { background: #151815; border: 1px solid #465047; border-radius: 3px; }
                 QFrame#queueActions QPushButton { padding: 0px 14px; }
