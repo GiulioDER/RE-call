@@ -17,7 +17,9 @@ from recall.embeddings import (
     Embedder,
     FastEmbedEmbedder,
     HashingEmbedder,
+    REMOTE_MODEL_CODE_OPT_IN,
     embedding_profile_id,
+    resolve_embedder,
 )
 from recall.guards import staleness
 from recall.context import context_policy_for_profile
@@ -60,7 +62,14 @@ from recall.reasoning_proposals import (
     ProposalProtocolReport,
     deterministic_inference_proposals,
 )
-from recall.rerank import DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION, Reranker
+from recall.rerank import (
+    COREB_CODE_RERANKER_MODEL,
+    DEFAULT_RERANKER_MODEL,
+    DEFAULT_RERANKER_REVISION,
+    KNOWN_RERANKER_REVISIONS,
+    RERANKER_MODEL_ALIASES,
+    Reranker,
+)
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import trusted_search
@@ -138,13 +147,12 @@ DEFAULT_MAX_INDEX_BYTES = 20_000_000  # 20 MB
 
 
 def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
-    """Return the embedder backend by name ('fastembed' local default, or offline 'hashing').
+    """Return the embedder backend by name.
 
-    Environment parsing only. The profile vocabulary, every identity field and the construction
-    itself belong to `recall.embedding_registry`; this function used to carry a second copy of
-    the vocabulary as a profile-ID -> context-version dict literal, which is how a profile could
-    exist here and be missing from `context_policy_for_profile`'s map: no error, wrong context
-    mode, vectors that silently disagree with the ones already stored.
+    Registered local profiles still belong to `recall.embedding_registry`; this boundary resolves
+    those first so profile identity stays single-sourced. Without `RECALL_EMBED_PROFILE`, the MCP
+    server accepts the shared `recall.embeddings.resolve_embedder` spellings, including explicit
+    cloud and research-model aliases.
     """
     values = dict(os.environ) if env is None else env
     profile = values.get("RECALL_EMBED_PROFILE", "").strip()
@@ -181,7 +189,15 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
                 ", ".join(f"{k}={v}" for k, v in record.measurements),
             )
         return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest)
-    raise ValueError(f"unknown embedder: {name!r} (use 'fastembed' or 'hashing')")
+    try:
+        return resolve_embedder(name, env=values)
+    except ValueError as exc:
+        if "unknown embedder" not in str(exc):
+            raise
+        raise ValueError(
+            f"unknown embedder: {name!r} (use 'fastembed', 'hashing', or any "
+            "recall.embeddings resolver spelling)"
+        ) from exc
 
 
 def make_profile_embedder(
@@ -552,6 +568,7 @@ def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str | None
     model = source.get("RECALL_RERANK_MODEL")
     if not model:
         return (DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION)
+    model = RERANKER_MODEL_ALIASES.get(model, model)
     revision = source.get("RECALL_RERANK_REVISION")
 
     # A cloud model has no Hub reference, so it has no revision to pin. The requirement below is a
@@ -573,12 +590,40 @@ def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str | None
         return (model, None)
 
     if not revision:
-        raise ValueError(
-            "RECALL_RERANK_MODEL requires RECALL_RERANK_REVISION. An unpinned Hub reference is "
-            "mutable, and the shipped revision pin belongs to the shipped weights only — reusing "
-            "it would name the wrong artifact in every trace."
-        )
+        revision = KNOWN_RERANKER_REVISIONS.get(model)
+        if not revision:
+            raise ValueError(
+                "RECALL_RERANK_MODEL requires RECALL_RERANK_REVISION unless it names a built-in "
+                "pinned reranker. An unpinned Hub reference is mutable, and the shipped revision "
+                "pin belongs to the shipped weights only — reusing it would name the wrong "
+                "artifact in every trace."
+            )
     return (model, revision)
+
+
+def _positive_env(values: dict[str, str], name: str, default: int) -> int:
+    raw = values.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if parsed < 1:
+        raise ValueError(f"{name} must be positive")
+    return parsed
+
+
+def _remote_model_code_enabled(values: dict[str, str]) -> bool:
+    return values.get(REMOTE_MODEL_CODE_OPT_IN, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_remote_model_code_enabled(values: dict[str, str], model: str) -> None:
+    if not _remote_model_code_enabled(values):
+        raise ValueError(
+            f"{model} requires {REMOTE_MODEL_CODE_OPT_IN}=1 because its Transformers loader "
+            "executes model repository code"
+        )
 
 
 def _validate_quality_reranker_config(values: dict[str, str]) -> tuple[str, str]:
@@ -626,9 +671,31 @@ def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pr
             artifact_sha256=digest,
             inference_threads=profile.inference_threads,
         )
+    if profile.name == "code":
+        rerank_values = dict(values)
+        rerank_values.setdefault("RECALL_RERANK", "1")
+        rerank_values.setdefault("RECALL_RERANK_MODEL", "coreb-code")
+        spec = resolve_reranker(rerank_values)
+        assert spec is not None
+        model, revision = spec
+        if model != COREB_CODE_RERANKER_MODEL:
+            raise ValueError("the code retrieval profile requires RECALL_RERANK_MODEL=coreb-code")
+        _require_remote_model_code_enabled(values, "coreb-code")
+        from recall.rerank import QwenYesNoReranker
+
+        return QwenYesNoReranker(
+            model=model,
+            revision=revision,
+            inference_threads=profile.inference_threads,
+            batch_size=_positive_env(values, "RECALL_RERANK_BATCH_SIZE", 4),
+            trust_remote_code=True,
+        )
     spec = resolve_reranker(values)
     if spec is None:
         return None
+    model, revision = spec
+    if model == COREB_CODE_RERANKER_MODEL:
+        raise ValueError("coreb-code requires RECALL_RETRIEVAL_PROFILE=code")
     from recall.rerank import CrossEncoderReranker
 
     model, revision = spec
@@ -758,8 +825,18 @@ def startup_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
     """
     values = dict(os.environ) if env is None else env
     profile = resolve_retrieval_profile(values)
-    if profile.reranker:
+    if profile.name == "quality":
         _validate_quality_reranker_config(values)
+    elif profile.name == "code":
+        rerank_values = dict(values)
+        rerank_values.setdefault("RECALL_RERANK", "1")
+        rerank_values.setdefault("RECALL_RERANK_MODEL", "coreb-code")
+        spec = resolve_reranker(rerank_values)
+        assert spec is not None
+        if spec[0] != COREB_CODE_RERANKER_MODEL:
+            raise ValueError("the code retrieval profile requires RECALL_RERANK_MODEL=coreb-code")
+        _require_remote_model_code_enabled(values, "coreb-code")
+        _positive_env(values, "RECALL_RERANK_BATCH_SIZE", 4)
     return profile
 
 

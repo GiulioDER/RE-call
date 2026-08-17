@@ -1,6 +1,8 @@
+from types import SimpleNamespace
+
 import pytest
 
-from recall.rerank import CrossEncoderReranker, NoOpReranker, Reranker
+from recall.rerank import CrossEncoderReranker, NoOpReranker, QwenYesNoReranker, Reranker
 from recall.types import Chunk, ScoredChunk
 
 
@@ -12,6 +14,99 @@ def test_noop_preserves_order():
     hits = [_hit("a", "alpha"), _hit("b", "beta")]
     assert NoOpReranker().rerank("q", hits) == hits
     assert isinstance(NoOpReranker(), Reranker)
+
+
+class _FakeTokenizer:
+    def __call__(self, prompt, **kwargs):
+        del kwargs
+        prompts = prompt if isinstance(prompt, list) else [prompt]
+        return {"prompt": prompts}
+
+    def convert_tokens_to_ids(self, token):
+        return {"no": 0, "yes": 1}[token]
+
+
+class _FakeQwenModel:
+    def __init__(self):
+        self.calls = 0
+
+    def eval(self):
+        return self
+
+    def __call__(self, prompt):
+        import numpy as np
+
+        self.calls += 1
+        rows = []
+        for item in prompt:
+            document = item.split("<Document>: ", 1)[1]
+            yes = 10.0 if "python generators" in document else 1.0
+            rows.append([[0.0, yes]])
+        return SimpleNamespace(logits=np.array(rows))
+
+
+class _LeftPaddingTokenizer(_FakeTokenizer):
+    def __call__(self, prompt, **kwargs):
+        import numpy as np
+
+        del kwargs
+        prompts = prompt if isinstance(prompt, list) else [prompt]
+        return {
+            "prompt": prompts,
+            "attention_mask": np.array([[0, 1, 1], [1, 1, 1]]),
+        }
+
+
+class _PositionSensitiveQwenModel:
+    def __init__(self):
+        self.calls = 0
+
+    def eval(self):
+        return self
+
+    def __call__(self, prompt, attention_mask):
+        import numpy as np
+
+        del prompt, attention_mask
+        self.calls += 1
+        logits = np.zeros((2, 3, 2))
+        logits[0, 1, 1] = 1.0
+        logits[0, 2, 1] = 10.0
+        logits[1, 2, 1] = 5.0
+        return SimpleNamespace(logits=logits)
+
+
+def test_qwen_yes_no_reranker_uses_yes_minus_no_score_and_preserves_hits():
+    hits = [
+        _hit("irrelevant", "the weather in antarctica"),
+        _hit("relevant", "python generators explained"),
+    ]
+
+    model = _FakeQwenModel()
+    reranked = QwenYesNoReranker(
+        tokenizer=_FakeTokenizer(),
+        causal_lm=model,
+    ).rerank("how do python generators work", hits)
+
+    assert [hit.chunk.id for hit in reranked] == ["relevant", "irrelevant"]
+    assert reranked[0] is hits[1]
+    assert model.calls == 1
+
+
+def test_qwen_yes_no_reranker_scores_the_last_nonpad_token_with_left_padding():
+    hits = [
+        _hit("relevant", "python generators explained"),
+        _hit("irrelevant", "the weather in antarctica"),
+    ]
+
+    model = _PositionSensitiveQwenModel()
+    reranked = QwenYesNoReranker(
+        tokenizer=_LeftPaddingTokenizer(),
+        causal_lm=model,
+    ).rerank("how do python generators work", hits)
+
+    assert [hit.chunk.id for hit in reranked] == ["relevant", "irrelevant"]
+    assert model.calls == 1
 
 
 try:

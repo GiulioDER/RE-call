@@ -544,6 +544,8 @@ Choose one service cost profile per process:
 
 * `RECALL_RETRIEVAL_PROFILE=quality` uses the same candidate pool and the local pinned reranker. It returns five hits and budgets 1500 ms. The reranker scores the COMPLETE fused candidate pool before truncation, so a relevant passage sitting just below the fused cutoff can still be rescued, which is the only reason the stage exists.
 
+* `RECALL_RETRIEVAL_PROFILE=code` uses the same candidate pool and the pinned CoREB code reranker. It returns five hits, has a ten-second budget, and admits a single running request with a pair queued by default. This profile is deliberately separate from the legacy reranker switch because a four-billion-parameter causal-LM reranker is not safe to expose through an unbudgeted process profile.
+
 Run separate deployments when both profiles are required. Clients cannot select the expensive path per request: the profile is read from the process environment and a request's `k` is clamped down to the profile's returned count, never raised. Leaving `RECALL_RETRIEVAL_PROFILE` unset preserves the legacy `RECALL_RERANK` switch exactly; setting the two to values that contradict each other refuses **startup**, not the first search.
 
 ### The latency budget at request time
@@ -558,11 +560,11 @@ The budget is charged **once**. `budget_exceeded` is computed on the work a requ
 
 The **legacy profile enforces no budget**, and reports `latency_budget_ms` as `null` rather than as the 24-day sentinel the code uses internally. `budget_exceeded` is then always false.
 
-Each profile carries its **own** concurrency budget rather than one shared default: fast admits 8 concurrent with 32 queued, quality 2 with 8, legacy 4 with 16. Quality's per-request budget is six times fast's, so an equal queue depth would make its clients wait roughly six times as long; the numbers hold `queue_capacity * latency_budget_ms` within one order of magnitude (fast 8000 slot-ms, quality 12000). These values are a policy choice, not a measurement, and the latency blocker in `archive/ENTERPRISE_PROGRAM_STATUS.md` is why. `RECALL_SEARCH_CONCURRENCY` and `RECALL_SEARCH_QUEUE` override them for the selected profile.
+Each profile carries its **own** concurrency budget rather than one shared default. The fixed profiles deliberately narrow queue capacity as the per-request budget rises, so a slow reranked profile cannot accumulate the same waiting population as the fast profile. These values are a policy choice, not a measurement, and the latency blocker in `archive/ENTERPRISE_PROGRAM_STATUS.md` is why. `RECALL_SEARCH_CONCURRENCY` and `RECALL_SEARCH_QUEUE` override them for the selected profile.
 
 The admission gate is entered inside a worker thread, so its capacity is denominated in threads whether or not it says so. The server therefore **sizes the worker pool from the profile** at startup (`worker_thread_budget`: admission capacity plus eight reserved threads), and only ever raises it. Without that, fast's 8 + 32 would exactly equal anyio's 40-token default: the request that should be shed would never reach the gate at all, it would wait in anyio's limiter, which has no timeout and no counter, and `recall_retrieval_rejected_total` would read zero while clients waited unboundedly. The reserved headroom keeps queued searches from starving `recall_index`, `recall_forget`, `recall_stats` and token validation.
 
-`RECALL_RERANK_THREADS` bounds inference threads **on the quality profile only**; it is not read on the legacy `RECALL_RERANK` path. One reranker is built per worker process, under a construction lock: a cache lookup is not a lock, and a cold start under load would otherwise have every concurrent first request load its own copy of the model. A construction that fails is cached too, so a broken artifact fails immediately instead of re-hashing the model tree on every request.
+`RECALL_RERANK_THREADS` bounds inference threads on reranked fixed profiles (`quality` and `code`); it is not read on the legacy `RECALL_RERANK` path. One reranker is built per worker process, under a construction lock: a cache lookup is not a lock, and a cold start under load would otherwise have every concurrent first request load its own copy of the model. A construction that fails is cached too, so a broken artifact fails immediately instead of re-hashing the model tree on every request.
 
 ### The quality profile's reranker is pinned by digest
 
