@@ -85,8 +85,8 @@ leave it off.
 `ms-marco-MiniLM-L-6-v2` is the default because it was *measured* to be right, not because it was
 already there: `bge-reranker-base`, 12× the parameters and four years newer, is statistically
 **indistinguishable** at 6.3× the cost. Override with `RECALL_RERANK_MODEL`, which then **requires**
-`RECALL_RERANK_REVISION` — an unpinned Hub reference is mutable and the shipped pin belongs to the
-shipped weights only.
+`RECALL_RERANK_REVISION` unless it names a built-in pinned alias such as `coreb-code`. An unpinned
+Hub reference is mutable and the shipped pin belongs to the shipped weights only.
 
 ⚠️ A value that is neither truthy nor falsey (`RECALL_RERANK=treu`) is **refused** rather than read
 as "off". A server that quietly ignored the flag would be fast, silent, and indistinguishable from

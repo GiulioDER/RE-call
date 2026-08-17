@@ -47,6 +47,8 @@ mcp = ["mcp>=2,<3", "psycopg-pool>=3.2", "PyJWT[crypto]>=2.10.1,<3"]
 # ">=0.2", is still installable, and its client takes `api_key` and nothing else, so construction
 # would raise TypeError before the dim probe on an environment that already had it.
 voyage = ["voyageai>=0.2.2"]
+# OpenAI-compatible embeddings, including OpenRouter-hosted models.
+openai = ["openai>=1.0"]
 s3 = ["boto3>=1.35"]
 # Learned sparse retrieval uses transformers directly. Model weights are user-provisioned.
 sparse = ["transformers>=4.40,<6", "torch>=2.0,<3"]

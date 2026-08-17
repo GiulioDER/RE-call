@@ -5,7 +5,7 @@ import math
 import os
 import random
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -855,6 +855,34 @@ class FastEmbedEmbedder:
         return [[float(x) for x in vec] for vec in self._encoder(self._passage_mode)(texts)]
 
 
+SFR_CODE_EMBEDDER_MODEL = "Salesforce/SFR-Embedding-Code-2B_R"
+SFR_CODE_EMBEDDER_REVISION = "c73d8631a005876ed5abde34db514b1fb6566973"
+REMOTE_MODEL_CODE_OPT_IN = "RECALL_ACCEPT_REMOTE_MODEL_CODE"
+
+
+def _truthy_env(value: str | None) -> bool:
+    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_research_model_opt_in(source: Mapping[str, str], model: str) -> None:
+    if not _truthy_env(source.get("RECALL_ACCEPT_RESEARCH_MODEL_LICENSE")):
+        raise ValueError(
+            f"{model} is a research/Gemma-terms model, not a default RE-call shipping model. "
+            "Set RECALL_ACCEPT_RESEARCH_MODEL_LICENSE=1 to use the named research alias, or pass "
+            "the full st:<model> spelling if you are deliberately managing the licence outside "
+            "RE-call."
+        )
+
+
+def _require_remote_model_code_opt_in(source: Mapping[str, str], model: str) -> None:
+    if not _truthy_env(source.get(REMOTE_MODEL_CODE_OPT_IN)):
+        raise ValueError(
+            f"{model} requires Hugging Face remote model code. Set {REMOTE_MODEL_CODE_OPT_IN}=1 "
+            "only after reviewing the pinned model revision and accepting that the model repository "
+            "can execute Python code during load."
+        )
+
+
 class SentenceTransformerEmbedder:
     """Any `sentence-transformers` model by name or local path — including one fine-tuned here.
 
@@ -868,15 +896,26 @@ class SentenceTransformerEmbedder:
     Requires `pip install "recall-rag[rerank]"` (or `[entail]`) — both pull sentence-transformers.
     """
 
-    def __init__(self, model: str, batch_size: int = 64) -> None:
+    def __init__(
+        self,
+        model: str,
+        batch_size: int = 64,
+        *,
+        trust_remote_code: bool = False,
+        revision: str | None = None,
+        name: str | None = None,
+    ) -> None:
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError(
                 'SentenceTransformerEmbedder requires: pip install "recall-rag[rerank]"'
             ) from exc
-        self._model = SentenceTransformer(model)
-        self._name = f"st:{model}"
+        kwargs: dict[str, object] = {"trust_remote_code": trust_remote_code}
+        if revision is not None:
+            kwargs["revision"] = revision
+        self._model = SentenceTransformer(model, **kwargs)
+        self._name = name or f"st:{model}"
         self._batch_size = batch_size
         self._dim = int(self._model.get_sentence_embedding_dimension())
 
@@ -1059,9 +1098,9 @@ class OpenAICompatEmbedder:
     which is the whole reason this backend exists. The request/response shape is OpenAI's
     ``/v1/embeddings``, so the stock ``openai`` SDK works unchanged against OpenRouter's endpoint.
 
-    ``dimensions`` is deliberately never sent: ``text-embedding-3-small`` returns its native
-    1536-wide vector, and some OpenAI-compatible proxies reject the parameter. Both arms of the
-    benchmark therefore compare at the model's native width.
+    ``dimensions`` is optional rather than implicit: ``text-embedding-3-small`` returns its native
+    1536-wide vector when the field is omitted, while newer OpenRouter embedding models such as
+    Gemini Embedding 2 expose selectable output widths.
     """
 
     def __init__(
@@ -1071,6 +1110,8 @@ class OpenAICompatEmbedder:
         base_url: str = "https://openrouter.ai/api/v1",
         batch_size: int = 128,
         max_retries: int = 3,
+        dimensions: int | None = None,
+        name_prefix: str = "openai",
     ) -> None:
         key = api_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
         if not key:
@@ -1081,7 +1122,9 @@ class OpenAICompatEmbedder:
         try:
             from openai import OpenAI
         except ImportError as exc:  # pragma: no cover - exercised only without the SDK
-            raise ImportError("OpenAICompatEmbedder requires: pip install openai") from exc
+            raise ImportError(
+                'OpenAICompatEmbedder requires: pip install "recall-rag[openai]"'
+            ) from exc
         # `max_retries=0` because `retry_with_backoff` in `_embed_one_batch` owns the retry
         # policy. The SDK default is 2 retries, which does not replace ours but multiplies with
         # it: one 429 costs 3 x 3 = 9 requests rather than the 3 the policy asks for, and the
@@ -1093,9 +1136,12 @@ class OpenAICompatEmbedder:
         # has just said it is overloaded.
         self._client = OpenAI(api_key=key, base_url=base_url, max_retries=0)
         self._model = model
-        self._name = f"openai:{model}"
+        self._name = f"{name_prefix}:{model}"
         self._batch_size = batch_size
         self._max_retries = max_retries
+        if dimensions is not None and dimensions < 1:
+            raise ValueError("dimensions must be positive")
+        self._dimensions = dimensions
         # Probe the width once, the same way the other cloud embedder does, so a store can be built
         # at the matching ``dim`` before the first real batch is embedded.
         self._dim = len(self._embed_one_batch(["probe"])[0])
@@ -1109,10 +1155,15 @@ class OpenAICompatEmbedder:
         return self._name
 
     def _embed_one_batch(self, batch: list[str]) -> list[list[float]]:
+        request: dict[str, object] = {
+            "model": self._model,
+            "input": batch,
+            "encoding_format": "float",
+        }
+        if self._dimensions is not None:
+            request["dimensions"] = self._dimensions
         result = retry_with_backoff(
-            lambda: self._client.embeddings.create(
-                model=self._model, input=batch, encoding_format="float"
-            ),
+            lambda: self._client.embeddings.create(**request),
             attempts=self._max_retries,
         )
         return [[float(x) for x in item.embedding] for item in result.data]
@@ -1124,12 +1175,26 @@ class OpenAICompatEmbedder:
         return batched_embed(texts, self._embed_one_batch, batch_size=self._batch_size)
 
 
+def _optional_dimensions(source: Mapping[str, str]) -> int | None:
+    raw = source.get("RECALL_EMBED_DIMENSIONS", "").strip()
+    if not raw:
+        return None
+    try:
+        dimensions = int(raw)
+    except ValueError as exc:
+        raise ValueError("RECALL_EMBED_DIMENSIONS must be a positive integer") from exc
+    if dimensions < 1:
+        raise ValueError("RECALL_EMBED_DIMENSIONS must be a positive integer")
+    return dimensions
+
+
 def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     """Build an embedder from a short config string.
 
     Supported spellings:
     ``hashing``, ``fastembed``, ``fastembed:<model>``, ``st:<model>``,
-    ``voyage``, ``voyage:<model>``, ``openai`` and ``openai:<model>``.
+    ``sfr-code``, ``voyage``, ``voyage:<model>``, ``openai``, ``openai:<model>``,
+    ``openrouter`` and ``openrouter:<model>``.
     """
     if name == "hashing" or name.startswith("hashing-") or name.startswith("hashing:"):
         return HashingEmbedder(dim=64)
@@ -1137,9 +1202,18 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         return FastEmbedEmbedder()
     if name.startswith("fastembed:"):
         return FastEmbedEmbedder(model_name=name[len("fastembed:"):])
+    source = os.environ if env is None else env
     if name.startswith("st:"):
         return SentenceTransformerEmbedder(name[3:])
-    source = os.environ if env is None else env
+    if name == "sfr-code":
+        _require_research_model_opt_in(source, SFR_CODE_EMBEDDER_MODEL)
+        _require_remote_model_code_opt_in(source, SFR_CODE_EMBEDDER_MODEL)
+        return SentenceTransformerEmbedder(
+            SFR_CODE_EMBEDDER_MODEL,
+            trust_remote_code=True,
+            revision=SFR_CODE_EMBEDDER_REVISION,
+            name=f"sfr-code:{SFR_CODE_EMBEDDER_MODEL}",
+        )
     if name == "voyage":
         return VoyageEmbedder(api_key=source.get("VOYAGE_API_KEY"))
     if name.startswith("voyage:"):
@@ -1148,14 +1222,38 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         )
     if name == "openai":
         return OpenAICompatEmbedder(
-            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY")
+            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            dimensions=_optional_dimensions(source),
         )
     if name.startswith("openai:"):
         return OpenAICompatEmbedder(
             model=name[len("openai:"):],
             api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            dimensions=_optional_dimensions(source),
+        )
+    if name == "openrouter":
+        return OpenAICompatEmbedder(
+            model="google/gemini-embedding-2",
+            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            dimensions=_optional_dimensions(source),
+            name_prefix="openrouter",
+        )
+    if name == "gemini-embedding-2":
+        return OpenAICompatEmbedder(
+            model="google/gemini-embedding-2",
+            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            dimensions=_optional_dimensions(source),
+            name_prefix="openrouter",
+        )
+    if name.startswith("openrouter:"):
+        return OpenAICompatEmbedder(
+            model=name[len("openrouter:"):],
+            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            dimensions=_optional_dimensions(source),
+            name_prefix="openrouter",
         )
     raise ValueError(
         f"unknown embedder: {name!r} (use hashing, fastembed, fastembed:<model>, "
-        "st:<model>, voyage, voyage:<model>, openai, or openai:<model>)"
+        "st:<model>, sfr-code, voyage, voyage:<model>, openai, openai:<model>, "
+        "openrouter, or openrouter:<model>)"
     )

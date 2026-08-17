@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 from recall.embeddings import verify_artifact
 from recall.types import ScoredChunk
@@ -25,6 +26,15 @@ DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 #: owner (or a compromise) can swap the weights and every consumer silently picks them up on the
 #: next cold cache. Pinning makes the resolved artifact immutable (mirrors DEFAULT_QNLI_REVISION).
 DEFAULT_RERANKER_REVISION = "c5ee24cb16019beea0893ab7796b1df96625c6b8"
+COREB_CODE_RERANKER_MODEL = "hq-bench/coreb-code-reranker"
+COREB_CODE_RERANKER_REVISION = "24d2ad50bb4a53149cfd3c42c0e966e954cdbcf1"
+RERANKER_MODEL_ALIASES = {
+    "coreb-code": COREB_CODE_RERANKER_MODEL,
+}
+KNOWN_RERANKER_REVISIONS = {
+    DEFAULT_RERANKER_MODEL: DEFAULT_RERANKER_REVISION,
+    COREB_CODE_RERANKER_MODEL: COREB_CODE_RERANKER_REVISION,
+}
 
 #: The reranker the QUALITY retrieval profile is pinned to, as an identity rather than a name.
 #:
@@ -90,6 +100,164 @@ class CrossEncoderReranker:
         # cross-encoder logit is an unbounded relevance score in different units; leaking it
         # into `score` would corrupt every downstream consumer that reads it as a cosine
         # (the trust layer's thresholds and calibrated confidence in particular).
+        return [hits[i] for i in order]
+
+
+class QwenYesNoReranker:
+    """Reorder hits with a Qwen-style yes/no causal-LM reranker.
+
+    CoREB's code reranker is fine-tuned from Qwen3-Reranker-4B and is not a
+    `sentence-transformers.CrossEncoder`. Its published score is the logit difference between the
+    next-token "yes" and "no" answers, so it needs a dedicated loader instead of the cross-encoder
+    path above.
+    """
+
+    _PREFIX = (
+        "<|im_start|>system\n"
+        "Judge whether the Document meets the requirements based on the Query and the Instruct "
+        'provided. Note that the answer can only be "yes" or "no".<|im_end|>\n'
+        "<|im_start|>user\n"
+    )
+    _SUFFIX = "<|im_end|>\n<|im_start|>assistant\n"
+    _INSTRUCT = "Given a code search query, does the following code snippet match the query intent?"
+
+    def __init__(
+        self,
+        model: str = COREB_CODE_RERANKER_MODEL,
+        revision: str | None = COREB_CODE_RERANKER_REVISION,
+        *,
+        max_length: int = 8192,
+        batch_size: int = 4,
+        inference_threads: int | None = None,
+        trust_remote_code: bool = False,
+        tokenizer: object | None = None,
+        causal_lm: object | None = None,
+    ) -> None:
+        if inference_threads is not None:
+            if inference_threads < 1:
+                raise ValueError("inference_threads must be positive")
+            try:
+                import torch
+
+                torch.set_num_threads(inference_threads)
+            except ImportError:  # pragma: no cover
+                pass
+        if tokenizer is None or causal_lm is None:
+            try:
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+            except ImportError as exc:  # pragma: no cover
+                raise ImportError(
+                    'QwenYesNoReranker requires: pip install "transformers" "torch"'
+                ) from exc
+            tokenizer = AutoTokenizer.from_pretrained(
+                model, revision=revision, trust_remote_code=trust_remote_code
+            )
+            causal_lm = AutoModelForCausalLM.from_pretrained(
+                model,
+                revision=revision,
+                trust_remote_code=trust_remote_code,
+                torch_dtype="auto",
+            )
+        self._tokenizer: Any = tokenizer
+        self._model: Any = causal_lm
+        self._max_length = max_length
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        self._batch_size = batch_size
+        eval_method = getattr(self._model, "eval", None)
+        if callable(eval_method):
+            eval_method()
+        tokenizer_for_ids = cast(Any, self._tokenizer)
+        self._yes_id = tokenizer_for_ids.convert_tokens_to_ids("yes")
+        self._no_id = tokenizer_for_ids.convert_tokens_to_ids("no")
+        if self._yes_id is None or self._no_id is None:
+            raise ValueError("reranker tokenizer must expose yes/no token ids")
+
+    def _prompt(self, query: str, document: str) -> str:
+        return (
+            f"{self._PREFIX}<Instruct>: {self._INSTRUCT}\n"
+            f"<Query>: {query}\n<Document>: {document}{self._SUFFIX}"
+        )
+
+    def _device(self) -> object | None:
+        device = getattr(self._model, "device", None)
+        if device is not None:
+            return cast(object, device)
+        parameters = getattr(self._model, "parameters", None)
+        if callable(parameters):
+            try:
+                return cast(object, next(parameters()).device)
+            except (StopIteration, AttributeError, TypeError):
+                return None
+        return None
+
+    def _score_batch(self, query: str, documents: list[str]) -> list[float]:
+        prompts = [self._prompt(query, document) for document in documents]
+        inputs = self._tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=self._max_length,
+        )
+        device = self._device()
+        if device is not None:
+            move = getattr(inputs, "to", None)
+            if callable(move):
+                inputs = move(device)
+            else:
+                inputs = {
+                    key: value.to(device) if hasattr(value, "to") else value
+                    for key, value in inputs.items()
+                }
+        try:
+            import torch
+
+            guard = torch.inference_mode()
+        except ImportError:  # pragma: no cover - used by fake-model unit tests
+            guard = nullcontext()
+        with guard:
+            outputs = self._model(**inputs)
+        logits = outputs.logits
+        attention_mask = inputs.get("attention_mask") if hasattr(inputs, "get") else None
+        if attention_mask is None:
+            scores = logits[:, -1, self._yes_id] - logits[:, -1, self._no_id]
+        else:
+            positions = self._last_nonpad_positions(attention_mask)
+            scores = [
+                logits[row, position, self._yes_id] - logits[row, position, self._no_id]
+                for row, position in enumerate(positions)
+            ]
+        detach = getattr(scores, "detach", None)
+        if callable(detach):
+            scores = detach()
+        cpu = getattr(scores, "cpu", None)
+        if callable(cpu):
+            scores = cpu()
+        values = scores.tolist() if hasattr(scores, "tolist") else list(scores)
+        return [float(value) for value in values]
+
+    def _last_nonpad_positions(self, attention_mask: object) -> list[int]:
+        rows = attention_mask.tolist() if hasattr(attention_mask, "tolist") else attention_mask
+        positions: list[int] = []
+        for row in rows:  # type: ignore[union-attr]
+            last: int | None = None
+            for index, value in enumerate(row):
+                if bool(value):
+                    last = index
+            if last is None:
+                raise ValueError("reranker tokenizer returned an empty attention row")
+            positions.append(last)
+        return positions
+
+    def rerank(self, query: str, hits: list[ScoredChunk]) -> list[ScoredChunk]:
+        if not hits:
+            return hits
+        scores: list[float] = []
+        for i in range(0, len(hits), self._batch_size):
+            batch = [hit.chunk.text for hit in hits[i : i + self._batch_size]]
+            scores.extend(self._score_batch(query, batch))
+        order = sorted(range(len(hits)), key=lambda i: scores[i], reverse=True)
         return [hits[i] for i in order]
 
 

@@ -15,6 +15,7 @@ from dataclasses import replace
 import pytest
 
 from recall.profiles import (
+    CODE_PROFILE,
     FAST_PROFILE,
     LEGACY_PROFILE,
     MAX_ADMISSION_CAPACITY,
@@ -31,7 +32,7 @@ from recall.profiles import (
 # --------------------------------------------------------------------------------------------
 
 
-def test_fast_and_quality_match_the_published_specification() -> None:
+def test_fast_quality_and_code_match_the_published_specification() -> None:
     """The two numbers an operator reads off the doc are the two numbers the code uses."""
     assert (FAST_PROFILE.candidate_k, FAST_PROFILE.returned_k) == (20, 5)
     assert FAST_PROFILE.reranker is False
@@ -39,10 +40,15 @@ def test_fast_and_quality_match_the_published_specification() -> None:
     assert (QUALITY_PROFILE.candidate_k, QUALITY_PROFILE.returned_k) == (20, 5)
     assert QUALITY_PROFILE.reranker is True
     assert QUALITY_PROFILE.latency_budget_ms == 1500
+    assert (CODE_PROFILE.candidate_k, CODE_PROFILE.returned_k) == (20, 5)
+    assert CODE_PROFILE.reranker is True
+    assert CODE_PROFILE.latency_budget_ms == 10_000
+    assert CODE_PROFILE.max_concurrency == 1
+    assert CODE_PROFILE.inference_threads == 1
 
 
 def test_an_unknown_profile_name_is_refused() -> None:
-    with pytest.raises(ValueError, match="must be 'fast' or 'quality'"):
+    with pytest.raises(ValueError, match="must be 'fast', 'quality', or 'code'"):
         resolve_retrieval_profile({"RECALL_RETRIEVAL_PROFILE": "premium"})
 
 
@@ -55,7 +61,14 @@ def test_legacy_rerank_switch_survives_only_while_no_profile_is_selected() -> No
 
 @pytest.mark.parametrize(
     ("profile", "rerank"),
-    [("fast", "true"), ("fast", "on"), ("quality", "false"), ("quality", "0")],
+    [
+        ("fast", "true"),
+        ("fast", "on"),
+        ("quality", "false"),
+        ("quality", "0"),
+        ("code", "false"),
+        ("code", "0"),
+    ],
 )
 def test_a_conflicting_profile_and_legacy_switch_refuses(profile: str, rerank: str) -> None:
     with pytest.raises(ValueError, match="conflicts"):
@@ -65,7 +78,7 @@ def test_a_conflicting_profile_and_legacy_switch_refuses(profile: str, rerank: s
 
 
 @pytest.mark.parametrize(
-    ("profile", "rerank"), [("fast", "off"), ("quality", "1")]
+    ("profile", "rerank"), [("fast", "off"), ("quality", "1"), ("code", "1")]
 )
 def test_an_agreeing_profile_and_legacy_switch_is_accepted(profile: str, rerank: str) -> None:
     """Agreement is not a conflict. Only a contradiction refuses."""
@@ -430,6 +443,37 @@ def test_startup_accepts_the_pinned_reranker_and_loads_nothing() -> None:
     assert profile.inference_threads == 1
 
 
+def test_startup_accepts_the_code_profile_without_quality_artifact() -> None:
+    from recall_mcp.service import startup_retrieval_profile
+
+    profile = startup_retrieval_profile(
+        {"RECALL_RETRIEVAL_PROFILE": "code", "RECALL_ACCEPT_REMOTE_MODEL_CODE": "1"}
+    )
+    assert profile.name == "code"
+    assert profile.reranker is True
+    assert profile.latency_budget_ms == 10_000
+    assert profile.inference_threads == 1
+
+
+def test_startup_refuses_code_profile_without_remote_model_code_opt_in() -> None:
+    from recall_mcp.service import startup_retrieval_profile
+
+    with pytest.raises(ValueError, match="RECALL_ACCEPT_REMOTE_MODEL_CODE"):
+        startup_retrieval_profile({"RECALL_RETRIEVAL_PROFILE": "code"})
+
+
+def test_startup_refuses_code_profile_with_non_coreb_model() -> None:
+    from recall_mcp.service import startup_retrieval_profile
+
+    with pytest.raises(ValueError, match="requires RECALL_RERANK_MODEL=coreb-code"):
+        startup_retrieval_profile(
+            {
+                "RECALL_RETRIEVAL_PROFILE": "code",
+                "RECALL_RERANK_MODEL": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+            }
+        )
+
+
 def test_startup_returns_the_digest_it_validated_not_the_one_it_was_given() -> None:
     """Validating a normalised value and returning the raw one re-opens the hole it closed.
 
@@ -459,7 +503,11 @@ def test_each_module_constant_equals_what_its_own_resolver_produces() -> None:
     in `1`, so the exported constant and the resolved profile were unequal objects describing the
     same configuration.
     """
-    for name, constant in (("fast", FAST_PROFILE), ("quality", QUALITY_PROFILE)):
+    for name, constant in (
+        ("fast", FAST_PROFILE),
+        ("quality", QUALITY_PROFILE),
+        ("code", CODE_PROFILE),
+    ):
         assert resolve_retrieval_profile({"RECALL_RETRIEVAL_PROFILE": name}) == constant
 
 

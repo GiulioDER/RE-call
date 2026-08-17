@@ -10,9 +10,10 @@ Copy `.env.example` to `.env` and fill it in. The `.env` file is only read by lo
 
 ```dotenv
 
-# Optional: enables the Voyage cloud embedder row in the evaluation (`make eval`).
-# Everything else in the project runs key-free with the local FastEmbed embedder.
+# Optional: enables cloud embedders. Everything else in the project runs key-free with the local
+# FastEmbed embedder.
 VOYAGE_API_KEY=
+OPENROUTER_API_KEY=
 
 # Deployment environment: development (default) | test | production. Selects the production
 # code paths: the v1 GenerationStore for `search` and `forget`, generation mode in the MCP
@@ -33,6 +34,12 @@ VOYAGE_API_KEY=
 # RECALL_MIGRATION_DSN=postgresql://recall_migrator:...@localhost:5432/recall
 # RECALL_DSN=postgresql://recall:recall@localhost:5432/recall   # deprecated serving fallback
 # RECALL_EMBEDDER=fastembed          # or "hashing" for the fully-offline embedder
+# RECALL_EMBEDDER=gemini-embedding-2 # OpenRouter google/gemini-embedding-2
+# RECALL_EMBEDDER=openrouter:<provider/model>  # any other OpenRouter embedding model
+# RECALL_EMBED_DIMENSIONS=1536       # optional for OpenAI-compatible embedders
+# RECALL_EMBEDDER=sfr-code           # Salesforce/SFR-Embedding-Code-2B_R, research/Gemma terms
+# RECALL_ACCEPT_RESEARCH_MODEL_LICENSE=1
+# RECALL_ACCEPT_REMOTE_MODEL_CODE=1  # required only for models that need trust_remote_code
 # RECALL_INDEX_ROOT=/srv/recall/corpus  # corpus-only root for the MCP recall_index tool
 # Legacy RECALL_CALIBRATION files are import-only evidence; v1 search resolves calibration from Postgres.
 
@@ -108,7 +115,7 @@ RECALL_MODEL_CACHE=
 RECALL_MODEL_SHA256=
 RECALL_QWEN_MODEL_PATH=
 
-# Fixed service cost profile. Run separate processes for fast and quality traffic; a client
+# Fixed service cost profile. Run separate processes for fast, quality, and code traffic; a client
 # cannot select the expensive path per request. Leaving this unset keeps the pre-profile
 # behaviour, in which the legacy RECALL_RERANK switch still decides reranking. Setting BOTH to
 # values that contradict each other refuses STARTUP, not the first search.
@@ -116,8 +123,9 @@ RECALL_QWEN_MODEL_PATH=
 # unset   = 20 candidates/leg, RECALL_RERANK decides reranking, k not clamped,
 #           NO budget (nothing is ever shed on time, budget_exceeded is always false),
 #           4 concurrent + 16 queued.  <-- this is what the line below selects as shipped
-# fast    = 20 candidates/leg, no reranker,     returns 5,  250 ms budget, 8 concurrent + 32 queued
-# quality = 20 candidates/leg, pinned reranker, returns 5, 1500 ms budget, 2 concurrent +  8 queued
+# fast    = 20 candidates/leg, no reranker,       returns 5,   250 ms budget, 8 concurrent + 32 queued
+# quality = 20 candidates/leg, pinned reranker,   returns 5,  1500 ms budget, 2 concurrent +  8 queued
+# code    = 20 candidates/leg, CoREB code rerank, returns 5, 10000 ms budget, 1 concurrent  +  2 queued
 #
 # The budget is enforced at the door: a request that cannot START within it is shed before the
 # query is embedded. A request that queued and then ran fast is NOT reported over budget; the
@@ -130,9 +138,8 @@ RECALL_QWEN_MODEL_PATH=
 RECALL_RETRIEVAL_PROFILE=
 # RECALL_SEARCH_CONCURRENCY=
 # RECALL_SEARCH_QUEUE=
-# Quality profile only, all three. RECALL_RERANK_THREADS is NOT read on the legacy RECALL_RERANK
-# path. The PATH is deployment specific; only the DIGEST is enforced, and it must equal the value
-# pinned in recall/rerank.py. The model name and Hub revision recorded next to it
+# Quality profile local artifact settings. The PATH is deployment specific; only the DIGEST is
+# enforced, and it must equal the value pinned in recall/rerank.py. The model name and Hub revision recorded next to it
 # (cross-encoder/ms-marco-MiniLM-L-6-v2, c5ee24cb...) are provenance, not a runtime check: the
 # quality profile loads from a local tree with local_files_only, where the revision is unused.
 # The digest is a hash of that whole provisioned TREE, so it identifies one provisioned directory
@@ -141,6 +148,12 @@ RECALL_RETRIEVAL_PROFILE=
 RECALL_RERANK_THREADS=1
 RECALL_RERANK_PATH=
 RECALL_RERANK_SHA256=
+# Code reranking uses the bounded `code` profile. `coreb-code` expands to the pinned
+# hq-bench/coreb-code-reranker revision and uses the Qwen yes/no causal-LM scoring path.
+# RECALL_RETRIEVAL_PROFILE=code
+# RECALL_RERANK_MODEL=coreb-code
+# RECALL_RERANK_BATCH_SIZE=4
+# RECALL_ACCEPT_REMOTE_MODEL_CODE=1
 
 # Candidate shadow artifacts may differ from the active generation.
 RECALL_SHADOW_MODEL_CACHE=

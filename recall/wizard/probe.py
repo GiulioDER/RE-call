@@ -145,7 +145,8 @@ def _windows_memory_status() -> tuple[int, int] | None:
 
         status = _MemoryStatusEx()
         status.dwLength = ctypes.sizeof(_MemoryStatusEx)
-        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
+        windll = getattr(ctypes, "windll")
+        if not windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
             return None
         return int(status.ullTotalPhys), int(status.ullAvailPhys)
     except Exception:

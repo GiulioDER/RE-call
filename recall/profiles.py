@@ -6,7 +6,7 @@ import threading
 from dataclasses import dataclass
 from typing import Literal
 
-RetrievalProfileName = Literal["legacy", "fast", "quality"]
+RetrievalProfileName = Literal["legacy", "fast", "quality", "code"]
 
 #: The legacy profile's budget: a sentinel meaning "no budget is enforced", not a 24-day limit.
 #: Kept as a large int rather than `None` so the timeout arithmetic has no special case, but it
@@ -109,6 +109,11 @@ FAST_PROFILE = RetrievalProfile("fast", 20, 5, False, 250, max_concurrency=8, qu
 QUALITY_PROFILE = RetrievalProfile(
     "quality", 20, 5, True, 1500, max_concurrency=2, queue_capacity=8, inference_threads=1
 )
+#: Code reranking uses a 4B causal-LM scorer, so it gets its own bounded profile instead of the
+#: unbudgeted legacy reranker switch.
+CODE_PROFILE = RetrievalProfile(
+    "code", 20, 5, True, 10_000, max_concurrency=1, queue_capacity=2, inference_threads=1
+)
 #: Legacy keeps 4/16 and an effectively infinite budget: it is the pre-profile behaviour, and a
 #: deployment that never opted into a profile must not acquire shedding it did not ask for.
 LEGACY_PROFILE = RetrievalProfile("legacy", 20, 5, False, NO_BUDGET_SENTINEL_MS)
@@ -119,15 +124,23 @@ def resolve_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
     values = os.environ if env is None else env
     selected = values.get("RECALL_RETRIEVAL_PROFILE", "").strip().lower()
     legacy_rerank = values.get("RECALL_RERANK", "").strip().lower()
-    if selected not in {"", "fast", "quality"}:
-        raise ValueError("RECALL_RETRIEVAL_PROFILE must be 'fast' or 'quality'")
+    if selected not in {"", "fast", "quality", "code"}:
+        raise ValueError("RECALL_RETRIEVAL_PROFILE must be 'fast', 'quality', or 'code'")
     if selected and legacy_rerank:
         enabled = legacy_rerank in {"1", "true", "yes", "on"}
-        if enabled != (selected == "quality"):
+        if enabled != (selected in {"quality", "code"}):
             raise ValueError(
                 "RECALL_RETRIEVAL_PROFILE conflicts with the legacy RECALL_RERANK setting"
             )
-    base = QUALITY_PROFILE if selected == "quality" else FAST_PROFILE if selected == "fast" else LEGACY_PROFILE
+    base = (
+        QUALITY_PROFILE
+        if selected == "quality"
+        else CODE_PROFILE
+        if selected == "code"
+        else FAST_PROFILE
+        if selected == "fast"
+        else LEGACY_PROFILE
+    )
 
     def _positive(name: str, default: int) -> int:
         raw = values.get(name)

@@ -3749,6 +3749,9 @@ mcp = [
     { name = "psycopg-pool" },
     { name = "pyjwt", extra = ["crypto"] },
 ]
+openai = [
+    { name = "openai" },
+]
 pool = [
     { name = "psycopg-pool" },
 ]
@@ -3785,6 +3788,7 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'finetune'" },
     { name = "openai", marker = "extra == 'bench'", specifier = ">=1.0" },
     { name = "openai", marker = "extra == 'extract'", specifier = ">=1.0" },
+    { name = "openai", marker = "extra == 'openai'", specifier = ">=1.0" },
     { name = "pgvector", specifier = ">=0.4" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
     { name = "psycopg-pool", marker = "extra == 'dev'", specifier = ">=3.2" },
@@ -3805,7 +3809,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'sparse'", specifier = ">=4.40,<6" },
     { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.2.2" },
 ]
-provides-extras = ["fastembed", "pool", "mcp", "voyage", "s3", "sparse", "rerank", "entail", "eval", "extract", "finetune", "langchain", "llamaindex", "bench", "dev"]
+provides-extras = ["fastembed", "pool", "mcp", "voyage", "openai", "s3", "sparse", "rerank", "entail", "eval", "extract", "finetune", "langchain", "llamaindex", "bench", "dev"]
 
 [[package]]
 name = "referencing"
