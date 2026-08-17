@@ -6,12 +6,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from benchmarks import enterprise_rag
 from benchmarks.enterprise_rag import (
     EnterpriseDoc,
+    EnterpriseQuestion,
     QueryCachedEmbedder,
     apply_top_config,
     build_parser,
     doc_chunks,
+    expand_retrieval_hits,
     generated_answer,
     index_documents,
     load_documents,
@@ -377,6 +382,65 @@ def test_reasoning_summary_records_expansion_and_fallback_rates() -> None:
         "capture_stability_rate": None,
         "model": None,
     }
+
+
+def test_closed_loop_skips_cheap_provider_after_depth_resolves_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    question = EnterpriseQuestion(
+        question_id="qst_1",
+        question="Who owns the project?",
+        raw={"expected_doc_ids": ["dsid_2"]},
+    )
+    initial = ScoredChunk(
+        chunk=doc_chunks(
+            EnterpriseDoc("dsid_1", "github", "project", "The project is incomplete.")
+        )[0],
+        score=0.5,
+        indexed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    depth = ScoredChunk(
+        chunk=doc_chunks(
+            EnterpriseDoc("dsid_2", "github", "owner", "Ada owns the project.")
+        )[0],
+        score=0.9,
+        indexed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    class _Store:
+        pass
+
+    class _Embedder:
+        pass
+
+    calls: list[str] = []
+
+    def fake_retrieve(*_args: Any, **kwargs: Any) -> tuple[list[str], list[ScoredChunk], bool]:
+        del kwargs
+        calls.append(_args[2])
+        return ["dsid_2"], [depth], False
+
+    monkeypatch.setattr(enterprise_rag, "retrieve_docs", fake_retrieve)
+    ids, _, diagnostics = expand_retrieval_hits(
+        question,
+        _Store(),
+        _Embedder(),
+        initial_hits=[initial],
+        initial_gap_warning=True,
+        k=8,
+        candidate_k=80,
+        sparse_backend="lexical",
+        sparse_encoder=None,
+        reranker=None,
+        gap_threshold=0.5,
+        arm="closed_loop",
+        provider=None,
+        expansion_cache=None,
+    )
+
+    assert ids == ["dsid_1", "dsid_2"]
+    assert calls == ["Who owns the project?"]
+    assert diagnostics["provider_skipped_reason"] == "depth_resolved"
 
 
 def test_query_cached_embedder_reuses_query_vectors(tmp_path: Path) -> None:

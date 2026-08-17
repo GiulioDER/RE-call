@@ -44,3 +44,7 @@ Depth expansion recovered the two missed expected documents from the baseline. T
 The result is a retrieval signal only. It does not establish answer correctness, abstention safety, citation validity, or promotion eligibility. The expensive model remains disabled and the promotion gate remains pending. The complete machine-readable record is `results/real-reasoning-20260817/retrieval-value-summary.json`.
 
 The first cheap-model attempt was discarded as an apparatus failure because the activation variable was wrong and a direct probe showed the model consuming the output budget in hidden reasoning before returning JSON. The measured reruns used the corrected activation variable and `reasoning_effort=minimal`.
+
+## Depth-gated follow-up
+
+The closed loop was then corrected so the cheap provider runs only when the deterministic depth pass still reports an evidence gap. On the same indexed fixture, depth resolved all 20 questions. The corrected closed loop retained 1.0000 document recall, 1.0000 exact document coverage, and 1.00 capture stability, while making zero cheap provider calls and leaving the reasoning cache empty. This confirms that the loop can avoid model spend when depth already resolves the retrieval gap.

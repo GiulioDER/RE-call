@@ -607,6 +607,27 @@ def _expand_retrieval(
         )
         bundle = build_evidence_bundle(retrieval, request.evidence_policy)
 
+    if depth_result is not None and not (depth_result.gap_warning or depth_result.abstained):
+        initial_ids = {hit.chunk.id for hit in initial_retrieval.hits}
+        return (
+            retrieval,
+            bundle,
+            RetrievalExpansionTrace(
+                attempted=True,
+                rounds=1,
+                proposals=(depth_proposal,) if depth_proposal is not None else (),
+                executed_queries=tuple(executed_queries),
+                accepted_chunk_ids=tuple(
+                    hit.chunk.id
+                    for hit in depth_result.hits
+                    if hit.verdict == "ok" and hit.chunk.id not in initial_ids
+                ),
+                provider_skipped_reason="depth_resolved",
+            ),
+            (),
+            0,
+        )
+
     if provider is None:
         if depth_result is None:
             return (
@@ -1252,6 +1273,7 @@ def _optional_expansion_trace(value: object) -> RetrievalExpansionTrace | None:
             str(chunk_id) for chunk_id in _sequence(payload.get("accepted_chunk_ids", ()))
         ),
         fallback_reason=_optional_str(payload.get("fallback_reason")),
+        provider_skipped_reason=_optional_str(payload.get("provider_skipped_reason")),
     )
 
 

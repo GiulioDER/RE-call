@@ -291,6 +291,7 @@ class RetrievalExpansionTrace:
     executed_queries: tuple[str, ...] = ()
     accepted_chunk_ids: tuple[str, ...] = ()
     fallback_reason: str | None = None
+    provider_skipped_reason: str | None = None
 
 
 def merge_trusted_results(

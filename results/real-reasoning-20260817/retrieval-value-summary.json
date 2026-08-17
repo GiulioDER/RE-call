@@ -62,6 +62,19 @@
       "generated_queries_with_expected_docs": 20,
       "questions_with_any_useful_query_on_generated_expected_questions": 10,
       "generated_expected_questions": 10
+    },
+    "closed_loop_depth_gated": {
+      "document_recall": 1.0,
+      "exact_doc_set_coverage": 1.0,
+      "hit_expected_docs": 29,
+      "capture_stability_rate": 1.0,
+      "expanded_rows": 20,
+      "fallback_rows": 0,
+      "queries_total": 20,
+      "cheap_provider_calls": 0,
+      "provider_model_configured": "openai/gpt-5-nano",
+      "provider_revision_configured": "openrouter-2026-08-18-depth-gated",
+      "reasoning_cache_entries": 0
     }
   },
   "interpretation": {
@@ -70,6 +83,8 @@
     "baseline_to_closed_loop_absolute_recall_delta": 0.06896551724137931,
     "depth_to_cheap_absolute_recall_delta": 0.0,
     "depth_to_closed_loop_absolute_recall_delta": 0.0,
+    "depth_gated_closed_loop_additional_retrieval_gain_over_depth": 0.0,
+    "depth_gated_closed_loop_avoided_cheap_provider_calls": 20,
     "cheap_model_additional_retrieval_gain_over_depth": false,
     "expensive_model_allowed": false,
     "reason": "Retrieval value was measured without the independent answer judge. The expensive model remains blocked until the full promotion gate is evaluated separately."

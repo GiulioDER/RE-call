@@ -553,9 +553,10 @@ def expand_retrieval_hits(
     fallback_reason: str | None = None
     model_metadata: dict[str, object] | None = None
     passes = 1
+    depth_gap_warning: bool | None = None
 
     if arm in {"depth", "closed_loop"}:
-        _, depth_hits, _ = retrieve_docs(
+        _, depth_hits, depth_gap_warning = retrieve_docs(
             store,
             embedder,
             question.question,
@@ -569,6 +570,17 @@ def expand_retrieval_hits(
         hits = _merge_scored_hits(hits, depth_hits)
         passes = 2
         queries.append(question.question)
+
+    if arm == "closed_loop" and not depth_gap_warning and depth_hits:
+        return _doc_ids_from_hits(hits, k=k), hits, {
+            "arm": arm,
+            "passes": passes,
+            "expanded": len(hits) > len(initial_hits),
+            "queries": queries,
+            "fallback_reason": None,
+            "provider_skipped_reason": "depth_resolved",
+            "model": None,
+        }
 
     if arm in {"cheap", "closed_loop"}:
         if provider is None:

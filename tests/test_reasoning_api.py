@@ -265,8 +265,10 @@ def test_retrieval_expansion_tries_depth_before_the_cheap_provider() -> None:
     )
 
     assert response.outcome == "answered"
-    assert calls == ["depth", "rewrite"]
-    assert provider_evidence == ["first", "second"]
+    assert calls == ["depth"]
+    assert provider_evidence == []
+    assert response.diagnostics.retrieval_expansion is not None
+    assert response.diagnostics.retrieval_expansion.provider_skipped_reason == "depth_resolved"
 
 
 def test_depth_expansion_can_run_without_a_cheap_provider() -> None:
