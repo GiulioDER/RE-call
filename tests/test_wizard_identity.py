@@ -563,7 +563,7 @@ def test_an_embedder_that_cannot_name_its_model_returns_none(artifact: Path) -> 
     """
     assert artifact_identity_for(FastEmbedEmbedder(artifact, name="")) is None
 
-    class FastEmbedEmbedder_NoName:  # noqa: N801 - the guard matches on the name below
+    class FastEmbedEmbedder_NoName:  # noqa: N801 - renamed below to match the guard
         """Missing the attribute entirely, which `getattr(..., "name", "")` also reduces to ""."""
 
         def __init__(self, model_dir: Path) -> None:
@@ -571,8 +571,15 @@ def test_an_embedder_that_cannot_name_its_model_returns_none(artifact: Path) -> 
 
         dim = 384
 
+    # Renamed rather than declared as `class FastEmbedEmbedder`, which would make the name local
+    # to this function and silently shadow the module-level double used further down.
     FastEmbedEmbedder_NoName.__name__ = "FastEmbedEmbedder"
-    assert artifact_identity_for(FastEmbedEmbedder_NoName(artifact)) is None
+    nameless = FastEmbedEmbedder_NoName(artifact)
+    assert type(nameless).__name__ == "FastEmbedEmbedder", (
+        "precondition: without the rename above this returns at the class guard and the "
+        "empty-name branch is never reached, so the assertion below would prove nothing"
+    )
+    assert artifact_identity_for(nameless) is None
 
     # The precondition, so the two Nones above are attributable to the missing name and not to
     # the artifact: the same directory with a name does yield an identity.
