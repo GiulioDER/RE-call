@@ -170,3 +170,66 @@ dense retrieval on technical corpora rather than of any one corpus.
 required 20 — caused by a broken label: `recall/wizard/identity.py` was named in the draft but is
 absent from the index, because the code corpus was indexed BEFORE #349 added that file. The
 corpus is stale relative to master, which is itself worth knowing.
+
+## Measured, 2026-08-17: certified re-fit, and the transfer test
+
+Artefact: `results/code-transfer-test-2026-08-17.json`.
+
+| tenant | n answerable | threshold | separability | separation | sample floor met |
+|---|---:|---:|---:|---:|---|
+| `re-call-code` | 22 | **0.6620** | 0.990 | −0.0324 | yes |
+| `mem-bench-code` | 22 | **0.6060** | 0.972 | −0.0972 | yes |
+
+**Threshold difference 0.0560**, paired bootstrap 95% CI **[0.0046, 0.0864]**, 10,000 resamples,
+seed 20260817.
+
+### The re-fit did not move the number
+
+Three queries were added to `re-call-code` to clear the certification floor of 20, taking n from
+19 to 22. **The threshold stayed at exactly 0.6620.** That is the check worth having: the
+extension was a sample-size repair and is demonstrably not a threshold repair. Both fits are on
+record so the claim is verifiable rather than asserted.
+
+⚠️ Stated plainly because it matters more than the reassurance: **the queries were added after
+seeing the first result.** The justification is that the first fit was short by one sample due to
+a broken label, not that its number was unwelcome — and the unchanged threshold is consistent with
+that, though it does not prove it.
+
+### Scoring the prediction
+
+**"Threshold difference between `re-call-code` and `mem-bench-code` < 0.10."** **CONFIRMED** at
+**0.0560**, with the whole interval [0.0046, 0.0864] below 0.10.
+
+The interval is informative in both directions, and the second reading is the more useful one:
+
+- **It stays below 0.10**, so a single code threshold is defensible across these two tenants: a
+  corpus calibrated on one would mis-set the other by under six hundredths of a cosine.
+- **It excludes zero**, so the thresholds are genuinely *different*, not the same number measured
+  twice. One shared code threshold is a compromise, not a free lunch, and the direction is
+  consistent: the corpus with the weaker labels calibrates lower.
+
+That answers what the companion record could not test. Applied to the 21 code tenants, it says
+per-tenant calibration is a refinement rather than a necessity — provided the spread across all 21
+resembles the spread across these two, which two tenants cannot establish.
+
+### The overlap now holds four times out of four
+
+| corpus | embedder | separation |
+|---|---|---:|
+| memory | bge-large | −0.048 |
+| re-call-code (n=19) | voyage-code-3 | −0.007 |
+| re-call-code (n=22) | voyage-code-3 | −0.032 |
+| mem-bench-code | voyage-code-3 | −0.097 |
+
+In every case the worst answerable query scores below the best unanswerable one, so **no single
+cosine threshold cleanly separates answerable from unanswerable on any corpus measured here**.
+Two embedders, three corpora, prose and code. This is no longer an observation about one corpus;
+it is the normal condition, and a calibrated threshold is always a least-bad cut rather than a
+boundary.
+
+⚠️ **The `mem-bench-code` labels are weaker than the `re-call-code` ones and its numbers should
+carry less weight.** I have read recall's source throughout this work and have not read
+mem-bench's; its queries were derived from module names, which makes them lexically close to their
+target file and probably easier than a real user question. That biases its answerable distribution
+upward. Its worse separation (−0.0972) and lower separability (0.972) are consistent with a
+noisier label set rather than a worse corpus.
