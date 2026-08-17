@@ -14,6 +14,7 @@ format before paying for a full answer run.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -38,11 +39,16 @@ from recall.reasoning_expansion import (
     ExpansionProposal,
     ExpansionReport,
     ExpansionRequest,
+    EXPANSION_PROMPT_DIGEST,
+    MAX_EXPANSION_EVIDENCE_CHARS,
+    MAX_EXPANSION_EVIDENCE_ITEMS,
+    MAX_EXPANSION_QUERIES,
     OpenAIExpansionProvider,
     resolve_expansion_provider,
 )
 from recall.store import PgVectorStore
 from recall.types import Chunk, ScoredChunk
+from benchmarks.artifact_contract import load_published_artifact
 
 DEFAULT_TABLE = "bench_enterprise_rag_chunks"
 DEFAULT_TENANT = "enterprise-rag"
@@ -53,6 +59,7 @@ DEFAULT_BATCH_CHUNKS = 256
 DEFAULT_CHUNK_CHARS = 800
 DEFAULT_CHUNK_OVERLAP = 80
 DEFAULT_RERANK_DOCUMENT_CHARS = 4_000
+MAX_RETRIEVAL_CAPTURES = 10
 DEFAULT_MODEL = "openai/gpt-4o"
 DEFAULT_SPLADE_MODEL = "prithivida/Splade_PP_en_v1"
 DEFAULT_VOYAGE_RERANKER = "rerank-2.5"
@@ -462,18 +469,31 @@ def _merge_scored_hits(initial: Sequence[ScoredChunk], additions: Sequence[Score
 
 
 def _expansion_evidence(hits: Sequence[ScoredChunk]) -> tuple[Mapping[str, object], ...]:
-    return tuple(
-        {
-            "chunk_id": hit.chunk.id,
-            "source": hit.chunk.source,
-            "text": hit.chunk.text,
-        }
-        for hit in hits
-    )
+    evidence: list[Mapping[str, object]] = []
+    used_chars = 0
+    for hit in hits:
+        if len(evidence) >= MAX_EXPANSION_EVIDENCE_ITEMS:
+            break
+        remaining = MAX_EXPANSION_EVIDENCE_CHARS - used_chars
+        if remaining <= 0:
+            break
+        text = hit.chunk.text[:remaining]
+        evidence.append(
+            {"chunk_id": hit.chunk.id, "source": hit.chunk.source, "text": text}
+        )
+        used_chars += len(text)
+    return tuple(evidence)
 
 
-def _expansion_report_to_cache(report: ExpansionReport) -> dict[str, object]:
+def _expansion_report_to_cache(
+    report: ExpansionReport,
+    *,
+    context: Mapping[str, object],
+    provider_metadata: Mapping[str, object],
+) -> dict[str, object]:
     return {
+        "context": dict(context),
+        "provider_metadata": dict(provider_metadata),
         "proposals": [
             {
                 "id": proposal.id,
@@ -491,6 +511,8 @@ def _expansion_report_from_cache(payload: Mapping[str, Any]) -> ExpansionReport:
     raw = payload.get("proposals", [])
     if not isinstance(raw, list):
         raise ValueError("reasoning cache proposals must be an array")
+    if len(raw) > MAX_EXPANSION_QUERIES:
+        raise ValueError("reasoning cache exceeds the expansion query limit")
     return ExpansionReport(
         proposals=tuple(
             ExpansionProposal(
@@ -504,6 +526,42 @@ def _expansion_report_from_cache(payload: Mapping[str, Any]) -> ExpansionReport:
             if isinstance(item, Mapping)
         )
     )
+
+
+def _expansion_cache_context(
+    question: EnterpriseQuestion,
+    store: PgVectorStore,
+    *,
+    k: int,
+    candidate_k: int,
+    sparse_backend: str,
+    gap_threshold: float,
+    arm: str,
+    provider: OpenAIExpansionProvider,
+) -> dict[str, object]:
+    provider_identity = provider.provider_metadata().to_dict()
+    return {
+        "question_sha256": hashlib.sha256(question.question.encode("utf-8")).hexdigest(),
+        "tenant": store.tenant,
+        "table": store.table,
+        "generation_id": store.generation_id,
+        "k": k,
+        "candidate_k": candidate_k,
+        "sparse_backend": sparse_backend,
+        "gap_threshold": gap_threshold,
+        "arm": arm,
+        "provider_id": provider_identity["provider_id"],
+        "model_id": provider_identity["model_id"],
+        "model_revision": provider_identity["model_revision"],
+        "prompt_digest": EXPANSION_PROMPT_DIGEST,
+    }
+
+
+def _expansion_cache_matches(
+    payload: Mapping[str, Any], context: Mapping[str, object]
+) -> bool:
+    cached_context = payload.get("context")
+    return isinstance(cached_context, Mapping) and dict(cached_context) == dict(context)
 
 
 def load_reasoning_cache(path: Path | None) -> dict[str, Any]:
@@ -554,6 +612,20 @@ def expand_retrieval_hits(
     model_metadata: dict[str, object] | None = None
     passes = 1
     depth_gap_warning: bool | None = None
+    cache_context = (
+        _expansion_cache_context(
+            question,
+            store,
+            k=k,
+            candidate_k=candidate_k,
+            sparse_backend=sparse_backend,
+            gap_threshold=gap_threshold,
+            arm=arm,
+            provider=provider,
+        )
+        if provider is not None
+        else None
+    )
 
     if arm in {"depth", "closed_loop"}:
         _, depth_hits, depth_gap_warning = retrieve_docs(
@@ -599,12 +671,18 @@ def expand_retrieval_hits(
             )
             try:
                 cached = expansion_cache.get(question.question_id) if expansion_cache else None
-                if isinstance(cached, Mapping):
+                if cache_context is not None and isinstance(cached, Mapping) and _expansion_cache_matches(
+                    cached, cache_context
+                ):
                     report = _expansion_report_from_cache(cached)
                 else:
                     report = provider(expansion_request)
                     if expansion_cache is not None:
-                        expansion_cache[question.question_id] = _expansion_report_to_cache(report)
+                        expansion_cache[question.question_id] = _expansion_report_to_cache(
+                            report,
+                            context=cache_context or {},
+                            provider_metadata=provider.provider_metadata().to_dict(),
+                        )
                 if not isinstance(report, ExpansionReport):
                     raise TypeError("cheap provider returned an invalid report")
                 proposals = sorted(
@@ -766,15 +844,17 @@ def retrieval_capture_summary(captures: Sequence[Mapping[str, Any]]) -> dict[str
         {str(value) for value in capture.get("document_ids", ())}
         for capture in captures
     ]
-    jaccards: list[float] = []
+    jaccard_sum = 0.0
+    pair_count = 0
     for index, left in enumerate(document_sets):
         for right in document_sets[index + 1 :]:
             union = left | right
-            jaccards.append(len(left & right) / len(union) if union else 1.0)
+            jaccard_sum += len(left & right) / len(union) if union else 1.0
+            pair_count += 1
     return {
         "count": len(captures),
         "stable": len({tuple(sorted(values)) for values in document_sets}) == 1,
-        "mean_document_jaccard": sum(jaccards) / len(jaccards) if jaccards else 1.0,
+        "mean_document_jaccard": jaccard_sum / pair_count if pair_count else 1.0,
     }
 
 
@@ -798,8 +878,10 @@ def _answers(
     expansion_cache: dict[str, Any] | None,
     retrieval_captures: int = 1,
 ) -> Iterator[Mapping[str, Any]]:
-    if retrieval_captures < 1:
-        raise ValueError("retrieval_captures must be at least 1")
+    if retrieval_captures < 1 or retrieval_captures > MAX_RETRIEVAL_CAPTURES:
+        raise ValueError(
+            f"retrieval_captures must be between 1 and {MAX_RETRIEVAL_CAPTURES}"
+        )
     for question in questions:
         capture_rows: list[dict[str, Any]] = []
         first_answer: tuple[
@@ -1204,10 +1286,7 @@ def _optional_number(value: object) -> float | None:
 def load_promotion_metrics(path: Path | None) -> dict[str, Any] | None:
     if path is None:
         return None
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("promotion metrics must be a JSON object")
-    return payload
+    return load_published_artifact(path)
 
 
 def sha256_file(path: Path) -> str:
@@ -1323,8 +1402,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("none", "depth", "cheap", "closed_loop"),
         default="none",
         help=(
-            "retrieval expansion arm. cheap and closed_loop require the explicitly configured "
-            "RECALL_REASONING_EXPANSION_MODEL; the answer model remains --model"
+            "retrieval expansion arm. cheap and closed_loop require "
+            "RECALL_REASONING_EXPANSION=1, RECALL_REASONING_EXPANSION_MODEL, and "
+            "RECALL_REASONING_API_KEY; the answer model remains --model"
         ),
     )
     parser.add_argument("--model", default=os.environ.get("ENTERPRISE_RAG_MODEL", DEFAULT_MODEL))
@@ -1366,8 +1446,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     apply_top_config(args)
-    if args.retrieval_captures < 1:
-        raise ValueError("--retrieval-captures must be at least 1")
+    if args.retrieval_captures < 1 or args.retrieval_captures > MAX_RETRIEVAL_CAPTURES:
+        raise ValueError(
+            f"--retrieval-captures must be between 1 and {MAX_RETRIEVAL_CAPTURES}"
+        )
     started = datetime.now(UTC).isoformat()
     t0 = time.perf_counter()
     embedder = resolve_embedder(args.embedder)

@@ -46,7 +46,7 @@ The MCP server is `python -m recall_mcp.server`. Its supported tools are:
 | `recall_index` | Index allowed files beneath `RECALL_INDEX_ROOT`. |
 | `recall_forget` | Erase indexed source material. |
 | `recall_stats` | Report counters and operational state. |
-| `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. |
+| `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `expand_retrieval=true` only when the cheap expansion provider is configured. |
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
 | `recall_reasoning_audit` | Report reasoning integration state and diagnostics. |
@@ -68,6 +68,13 @@ The static README viewer uses these provider locale identifiers: `english`, `ita
 `hindi`, and `turkish`. Other provider identifiers may be passed to the MCP or CLI presentation
 surfaces. An unsupported identifier or provider failure leaves canonical text unchanged and marks
 the localized object as a fallback.
+
+The `recall_reasoning_query` MCP tool accepts `expand_retrieval`, defaulting to `false`. Enabling it
+requires `RECALL_REASONING_EXPANSION=1`, `RECALL_REASONING_EXPANSION_MODEL`, and
+`RECALL_REASONING_API_KEY`. The provider uses the configured OpenRouter compatible base URL,
+minimal reasoning effort by default, one model call, and at most three generated retrieval queries.
+The provider receives bounded retrieval data as untrusted input. It cannot create citations or
+trusted evidence directly.
 
 The CLI accepts the same additive presentation option, for example:
 

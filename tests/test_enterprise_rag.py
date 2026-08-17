@@ -497,3 +497,36 @@ def test_retrieval_capture_summary_reports_variance() -> None:
     assert summary["count"] == 3
     assert summary["stable"] is False
     assert summary["mean_document_jaccard"] == (1.0 + 1 / 3 + 1 / 3) / 3
+
+
+def test_retrieval_capture_summary_does_not_materialize_pair_scores() -> None:
+    captures = [{"document_ids": [str(index)]} for index in range(10)]
+    summary = retrieval_capture_summary(captures)
+
+    assert summary["count"] == 10
+    assert summary["mean_document_jaccard"] == 0.0
+
+
+def test_retrieval_capture_limit_is_bounded() -> None:
+    with pytest.raises(ValueError, match="between 1 and 10"):
+        list(
+            enterprise_rag._answers(
+                [],
+                object(),
+                object(),
+                k=1,
+                candidate_k=1,
+                mode="extractive",
+                model="model",
+                api_key=None,
+                max_chars=100,
+                sparse_backend="none",
+                sparse_encoder=None,
+                reranker=None,
+                gap_threshold=0.1,
+                reasoning_arm="none",
+                expansion_provider=None,
+                expansion_cache=None,
+                retrieval_captures=11,
+            )
+        )

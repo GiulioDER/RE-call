@@ -7,9 +7,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 import json
+import math
 import os
 import time
 from typing import Any, Literal, Protocol
+from urllib.parse import urlparse
 
 from recall.provider_metadata import ProviderMetadata
 from recall.reasoning_proposals import ProviderFailure
@@ -19,6 +21,9 @@ ExpansionMode = Literal["depth", "rewrite", "decompose"]
 
 MAX_EXPANSION_QUERIES = 3
 MAX_RETRIEVAL_ROUNDS = 2
+MAX_EXPANSION_QUERY_CHARS = 2_000
+MAX_EXPANSION_EVIDENCE_ITEMS = 5
+MAX_EXPANSION_EVIDENCE_CHARS = 12_000
 
 
 @dataclass(frozen=True)
@@ -38,8 +43,12 @@ class ExpansionProposal:
     def __post_init__(self) -> None:
         if not self.id.strip():
             raise ValueError("expansion proposal id must be non-empty")
+        if self.mode not in ("depth", "rewrite", "decompose"):
+            raise ValueError("expansion proposal mode must be depth, rewrite, or decompose")
         if not self.query.strip():
             raise ValueError("expansion proposal query must be non-empty")
+        if len(self.query) > MAX_EXPANSION_QUERY_CHARS:
+            raise ValueError("expansion proposal query is too long")
 
 
 @dataclass(frozen=True)
@@ -59,6 +68,8 @@ class ExpansionRequest:
             raise ValueError("expansion request query must be non-empty")
         if self.max_queries < 1:
             raise ValueError("max_queries must be positive")
+        if self.max_queries > MAX_EXPANSION_QUERIES:
+            raise ValueError(f"max_queries must not exceed {MAX_EXPANSION_QUERIES}")
         if self.candidate_pool_size < 0:
             raise ValueError("candidate_pool_size must be non-negative")
 
@@ -125,8 +136,10 @@ class OpenAIExpansionProvider:
     ) -> None:
         if not model_id.strip():
             raise ValueError("expansion model id must be non-empty")
-        if cost_per_1k_tokens is not None and cost_per_1k_tokens < 0:
-            raise ValueError("cost_per_1k_tokens must be non-negative")
+        if cost_per_1k_tokens is not None and (
+            not math.isfinite(cost_per_1k_tokens) or cost_per_1k_tokens < 0
+        ):
+            raise ValueError("cost_per_1k_tokens must be finite and non-negative")
         if reasoning_effort not in {"none", "minimal", "low", "medium", "high"}:
             raise ValueError("reasoning_effort must be one of none, minimal, low, medium, high")
         self.client = client
@@ -156,49 +169,60 @@ class OpenAIExpansionProvider:
             separators=(",", ":"),
         )
         started = time.perf_counter()
-        response = self.client.chat.completions.create(
-            model=self.model_id,
-            messages=[
-                {"role": "system", "content": EXPANSION_SYSTEM_PROMPT},
-                {"role": "user", "content": f"<retrieval_data>{user}</retrieval_data>"},
-            ],
-            temperature=0,
-            max_tokens=512,
-            response_format={"type": "json_object"},
-            reasoning_effort=self.reasoning_effort,
-        )
-        content = _response_content(response)
-        payload = json.loads(content)
-        if not isinstance(payload, Mapping):
-            raise ValueError("expansion response must be a JSON object")
-        raw_proposals = payload.get("proposals", [])
-        if not isinstance(raw_proposals, list):
-            raise ValueError("expansion proposals must be an array")
-        proposals: list[ExpansionProposal] = []
-        seen_queries: set[str] = set()
-        for index, raw in enumerate(raw_proposals[: request.max_queries]):
-            if not isinstance(raw, Mapping):
-                raise ValueError("expansion proposal must be an object")
-            mode = raw.get("mode")
-            query = str(raw.get("query", "")).strip()
-            if mode not in ("depth", "rewrite", "decompose"):
-                raise ValueError("expansion proposal has an invalid mode")
-            if not query or query in seen_queries:
-                continue
-            seen_queries.add(query)
-            parents = raw.get("parent_chunk_ids", [])
-            if not isinstance(parents, list) or not all(isinstance(item, str) for item in parents):
-                raise ValueError("parent_chunk_ids must be an array of strings")
-            proposals.append(
-                ExpansionProposal(
-                    id=f"expansion_{index}",
-                    mode=mode,
-                    query=query,
-                    rationale=str(raw.get("rationale", ""))[:500],
-                    parent_chunk_ids=tuple(parents),
-                )
+        response: object | None = None
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_id,
+                messages=[
+                    {"role": "system", "content": EXPANSION_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"<retrieval_data>{user}</retrieval_data>"},
+                ],
+                temperature=0,
+                max_tokens=512,
+                response_format={"type": "json_object"},
+                reasoning_effort=self.reasoning_effort,
             )
-        usage = getattr(response, "usage", None)
+            content = _response_content(response)
+            payload = json.loads(content)
+            if not isinstance(payload, Mapping):
+                raise ValueError("expansion response must be a JSON object")
+            raw_proposals = payload.get("proposals", [])
+            if not isinstance(raw_proposals, list):
+                raise ValueError("expansion proposals must be an array")
+            proposals: list[ExpansionProposal] = []
+            seen_queries: set[str] = set()
+            for index, raw in enumerate(raw_proposals[: request.max_queries]):
+                if not isinstance(raw, Mapping):
+                    raise ValueError("expansion proposal must be an object")
+                mode = raw.get("mode")
+                query = str(raw.get("query", "")).strip()
+                if mode not in ("depth", "rewrite", "decompose"):
+                    raise ValueError("expansion proposal has an invalid mode")
+                if not query or query in seen_queries:
+                    continue
+                seen_queries.add(query)
+                parents = raw.get("parent_chunk_ids", [])
+                if not isinstance(parents, list) or not all(
+                    isinstance(item, str) for item in parents
+                ):
+                    raise ValueError("parent_chunk_ids must be an array of strings")
+                proposals.append(
+                    ExpansionProposal(
+                        id=f"expansion_{index}",
+                        mode=mode,
+                        query=query,
+                        rationale=str(raw.get("rationale", ""))[:500],
+                        parent_chunk_ids=tuple(parents),
+                    )
+                )
+        except Exception:
+            self._record_metadata(response, started)
+            raise
+        self._record_metadata(response, started)
+        return ExpansionReport(proposals=tuple(proposals), provider_metadata=(self._last_metadata,))
+
+    def _record_metadata(self, response: object | None, started: float) -> None:
+        usage = getattr(response, "usage", None) if response is not None else None
         prompt_tokens = _usage_int(usage, "prompt_tokens")
         completion_tokens = _usage_int(usage, "completion_tokens")
         total_tokens = _usage_int(usage, "total_tokens")
@@ -220,7 +244,6 @@ class OpenAIExpansionProvider:
             monetary_cost_usd=cost,
             prompt_digest=EXPANSION_PROMPT_DIGEST,
         )
-        return ExpansionReport(proposals=tuple(proposals), provider_metadata=(self._last_metadata,))
 
     def provider_metadata(self) -> ProviderMetadata:
         return self._last_metadata
@@ -247,14 +270,24 @@ def resolve_expansion_provider(
         from openai import OpenAI
     except ImportError as exc:
         raise ValueError("the openai extra is required for reasoning expansion") from exc
+    raw_timeout = source.get("RECALL_REASONING_TIMEOUT", "30").strip()
+    timeout = float(raw_timeout)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("RECALL_REASONING_TIMEOUT must be finite and positive")
+    base_url = source.get("RECALL_REASONING_BASE_URL", "https://openrouter.ai/api/v1").strip()
+    parsed_url = urlparse(base_url)
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        raise ValueError("RECALL_REASONING_BASE_URL must be an absolute http(s) URL")
     client = OpenAI(
         api_key=key,
-        base_url=source.get("RECALL_REASONING_BASE_URL", "https://openrouter.ai/api/v1"),
-        timeout=float(source.get("RECALL_REASONING_TIMEOUT", "30")),
+        base_url=base_url,
         max_retries=0,
+        timeout=timeout,
     )
     raw_cost = source.get("RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS")
     cost = float(raw_cost) if raw_cost else None
+    if cost is not None and (not math.isfinite(cost) or cost < 0):
+        raise ValueError("RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS must be finite and non-negative")
     reasoning_effort = source.get("RECALL_REASONING_EXPANSION_EFFORT", "minimal").strip().lower()
     return OpenAIExpansionProvider(
         client,
@@ -345,16 +378,27 @@ def merge_trusted_results(
 def evidence_payload(result: TrustedResult) -> tuple[Mapping[str, object], ...]:
     """Return corpus data for a provider as data, never as instructions."""
 
-    return tuple(
-        {
-            "chunk_id": hit.chunk.id,
-            "source": hit.provenance.source,
-            "text": hit.chunk.text,
-            "verdict": hit.verdict,
-        }
-        for hit in result.hits
-        if hit.verdict == "ok"
-    )
+    items: list[Mapping[str, object]] = []
+    used_chars = 0
+    for hit in result.hits:
+        if hit.verdict != "ok" or len(items) >= MAX_EXPANSION_EVIDENCE_ITEMS:
+            continue
+        remaining = MAX_EXPANSION_EVIDENCE_CHARS - used_chars
+        if remaining <= 0:
+            break
+        text = hit.chunk.text[:remaining]
+        if not text:
+            break
+        items.append(
+            {
+                "chunk_id": hit.chunk.id,
+                "source": hit.provenance.source,
+                "text": text,
+                "verdict": hit.verdict,
+            }
+        )
+        used_chars += len(text)
+    return tuple(items)
 
 
 __all__ = [
@@ -363,6 +407,9 @@ __all__ = [
     "ExpansionReport",
     "ExpansionRequest",
     "MAX_EXPANSION_QUERIES",
+    "MAX_EXPANSION_QUERY_CHARS",
+    "MAX_EXPANSION_EVIDENCE_ITEMS",
+    "MAX_EXPANSION_EVIDENCE_CHARS",
     "MAX_RETRIEVAL_ROUNDS",
     "ReasoningExpansionProvider",
     "ReasoningExpansionRetriever",
