@@ -14,7 +14,7 @@ from recall.desktop.github import GithubImport, download_repository
 
 try:
     from PySide6.QtCore import QItemSelectionModel, QObject, QPoint, QRunnable, QThreadPool, QTimer, Qt, Signal
-    from PySide6.QtGui import QColor, QPixmap, QPolygon
+    from PySide6.QtGui import QColor, QPolygon
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -252,8 +252,6 @@ if QApplication is not None:
                 """
                 QMainWindow, QWidget { background: #0e100f; color: #f4f1e8; font-family: "Segoe UI Variable Text", "Segoe UI"; font-size: 13px; }
                 QLabel { color: #b6b7ac; }
-                QLabel#brand { color: #f4f1e8; font-family: "Segoe UI Variable Display", "Segoe UI"; font-size: 32px; font-weight: 700; letter-spacing: -1px; }
-                QLabel#brandLogo { background: transparent; border: 0; }
                 QLabel#runtimeLabel { color: #b6b7ac; font-family: "Consolas"; font-size: 11px; }
                 QLabel#status { color: #b6b7ac; font-size: 12px; }
                 QFrame#identityRule { background: #d7a52a; border: 0; }
@@ -324,27 +322,6 @@ if QApplication is not None:
             outer.addWidget(identity_rule)
             header = QHBoxLayout()
             header.setSpacing(8)
-            logo = QLabel()
-            logo.setObjectName("brandLogo")
-            logo.setAccessibleName("RE-call")
-            logo.setToolTip("RE-call")
-            logo_path = Path(__file__).with_name("assets") / "re_call_logo.png"
-            logo_pixmap = QPixmap(str(logo_path))
-            if logo_pixmap.isNull():
-                logo.setText("RE-call")
-                logo.setObjectName("brand")
-            else:
-                logo.setFixedSize(84, 84)
-                logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                logo.setPixmap(
-                    logo_pixmap.scaled(
-                        84,
-                        84,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                )
-            header.addWidget(logo)
             header.addStretch()
             self.main_button = self._make_nav_button("MAIN", 0)
             self.github_button = self._make_nav_button("GITHUB", 1)
