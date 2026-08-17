@@ -15,6 +15,7 @@ whole plan, which is the "prefer impossible over detectable" form of that constr
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -94,14 +95,31 @@ def test_memory_stays_uncalibrated_on_purpose(tmp_path: Path) -> None:
         # absorbs the input and this branch never runs while the test still passes.
         (
             {"calibrated": False, "writable": True, "serving_environment": "production"},
-            "production refuses local filesystem indexing",
+            "refuses to run under production",
         ),
+        # `serving_environment` moved to development on purpose: the uncalibrated-in-production
+        # guard sits above the strict guard, so leaving the base's production value here would have
+        # this case testing that one instead. `calibrated=False` is what does the work.
         (
-            {"calibrated": False, "trust_mode": TrustMode.STRICT},
+            {
+                "calibrated": False,
+                "serving_environment": "development",
+                "trust_mode": TrustMode.STRICT,
+            },
             "an uncalibrated corpus cannot be served strictly",
+        ),
+        # The seventh combination, and it fails worse than the other six: no generation under
+        # production means `GenerationStore.snapshot` raises from outside `trusted_search`'s try
+        # block, so the caller gets a bare exception rather than a refusal.
+        (
+            {"calibrated": False, "trust_mode": TrustMode.DEVELOPMENT},
+            "cannot be served under production",
         ),
         ({"tenant": "   "}, "tenant must be non-empty"),
         ({"serving_environment": "staging"}, "serving_environment must be one of"),
+        ({"chunker": "Code"}, "chunker must be one of"),
+        ({"chunker": "prose", "calibrated": False, "serving_environment": "development",
+          "trust_mode": TrustMode.DEVELOPMENT}, "chunker must be one of"),
     ],
 )
 def test_a_contradictory_spec_is_unbuildable(
@@ -154,7 +172,10 @@ def test_one_embedder_for_the_whole_plan(tmp_path: Path) -> None:
     )
 
     assert plan.embedder == "fastembed"
-    assert not any(hasattr(c, "embedder") for c in plan.corpora)
+    # On the FIELD SET, not `hasattr`. `hasattr` also matches a property or a method, so it would
+    # keep passing if `embedder` arrived as a computed attribute, which is the same drift wearing a
+    # different hat.
+    assert "embedder" not in {f.name for f in dataclasses.fields(CorpusSpec)}
 
 
 def test_two_corpora_cannot_share_a_tenant(tmp_path: Path) -> None:
@@ -204,6 +225,48 @@ def test_the_calibrated_view_excludes_the_writable_tenant(tmp_path: Path) -> Non
     assert [c.tenant for c in plan.calibrated] == ["docs", "code"]
     assert all(c.calibrated for c in plan.calibrated)
     assert "memory" not in [c.tenant for c in plan.calibrated]
+
+
+def test_a_relative_root_is_refused_because_it_would_stamp_the_wizards_own_commit() -> None:
+    """The provenance bug `commit_root` exists to prevent, reintroduced one layer up.
+
+    `head_commit` shells out to `git -C <path>`, which resolves a relative path against the calling
+    process's working directory and then walks upward looking for a repository. Measured before this
+    guard: `docs_corpus(Path("docs")).build_request()` stamped THIS repository's HEAD onto what is
+    nominally the user's corpus. Absent provenance is safe; present-and-wrong is not.
+    """
+    with pytest.raises(ValueError, match="root must be absolute"):
+        docs_corpus(Path("docs"))
+
+    with pytest.raises(ValueError, match="root must be absolute"):
+        memory_corpus(Path("memory"))
+
+
+def test_a_root_that_is_a_file_is_refused(tmp_path: Path) -> None:
+    """Absent is allowed, because the wizard creates the memory directory. A FILE is not."""
+    a_file = tmp_path / "not-a-dir.md"
+    a_file.write_text("x", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exists and is not a directory"):
+        docs_corpus(a_file)
+
+    # And an absent absolute root still builds, since the wizard may create it.
+    assert memory_corpus(tmp_path / "does-not-exist-yet").root.name == "does-not-exist-yet"
+
+
+def test_a_list_of_corpora_becomes_a_tuple_so_the_plan_cannot_be_widened(tmp_path: Path) -> None:
+    """`frozen=True` blocks rebinding, not mutation, and the annotation is not a runtime constraint.
+
+    A list was accepted, and appending to it reinstated the duplicate tenant `CorpusPlan` exists to
+    refuse — after construction, past the check. Re-indexing a tenant prunes what is absent from the
+    new manifest, so a duplicate does not merge, it deletes.
+    """
+    plan = CorpusPlan(embedder="fastembed", corpora=[docs_corpus(tmp_path / "docs")])
+
+    assert isinstance(plan.corpora, tuple)
+    with pytest.raises(AttributeError):
+        plan.corpora.append(docs_corpus(tmp_path / "other"))  # type: ignore[attr-defined]
+    assert hash(plan), "a frozen plan must stay hashable, which a list field silently prevents"
 
 
 def test_the_build_request_carries_the_corpus_chunker_and_root(tmp_path: Path) -> None:
