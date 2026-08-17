@@ -8,6 +8,7 @@ from typing import Any
 
 from benchmarks.enterprise_rag import (
     EnterpriseDoc,
+    QueryCachedEmbedder,
     apply_top_config,
     build_parser,
     doc_chunks,
@@ -15,10 +16,14 @@ from benchmarks.enterprise_rag import (
     index_documents,
     load_documents,
     load_questions,
+    reasoning_promotion_gate,
+    retrieval_capture_summary,
+    reasoning_summary,
     read_answer_rows,
     write_answers_stream,
     write_answers,
 )
+from recall.cache import EmbeddingCache
 from recall.types import ScoredChunk
 from recall.types import Chunk
 
@@ -315,3 +320,116 @@ def test_parser_exposes_resume_and_sparse_device() -> None:
 
     assert args.resume is True
     assert args.sparse_device == "cuda"
+
+
+def test_parser_exposes_reasoning_arm_and_cache() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--questions",
+            "questions.jsonl",
+            "--documents",
+            "docs.zip",
+            "--out",
+            "answers.jsonl",
+            "--reasoning-arm",
+            "closed_loop",
+            "--reasoning-cache",
+            "expansions.json",
+            "--embedding-cache",
+            "vectors.sqlite",
+            "--retrieval-captures",
+            "3",
+        ]
+    )
+
+    assert args.reasoning_arm == "closed_loop"
+    assert args.reasoning_cache == Path("expansions.json")
+    assert args.embedding_cache == Path("vectors.sqlite")
+    assert args.retrieval_captures == 3
+
+
+def test_reasoning_summary_records_expansion_and_fallback_rates() -> None:
+    summary = reasoning_summary(
+        [
+            {"_diagnostics": {"reasoning": {"expanded": True, "passes": 2, "queries": ["q"]}}},
+            {
+                "_diagnostics": {
+                    "reasoning": {
+                        "expanded": False,
+                        "passes": 1,
+                        "queries": [],
+                        "fallback_reason": "provider_failure",
+                    }
+                }
+            },
+        ]
+    )
+
+    assert summary == {
+        "rows": 2,
+        "expanded_rows": 1,
+        "expanded_rate": 0.5,
+        "fallback_rows": 1,
+        "fallback_rate": 0.5,
+        "passes_total": 3,
+        "queries_total": 1,
+        "capture_stability_rate": None,
+        "model": None,
+    }
+
+
+def test_query_cached_embedder_reuses_query_vectors(tmp_path: Path) -> None:
+    class FakeEmbedder:
+        dim = 2
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            self.calls += 1
+            return [[float(len(text)), 1.0] for text in texts]
+
+    inner = FakeEmbedder()
+    with EmbeddingCache(tmp_path / "vectors.sqlite") as cache:
+        embedder = QueryCachedEmbedder(inner, cache)
+        assert embedder.embed_query("same") == embedder.embed_query("same")
+    assert inner.calls == 1
+
+
+def test_reasoning_promotion_gate_stays_pending_without_independent_metrics() -> None:
+    gate = reasoning_promotion_gate(None)
+    assert gate["status"] == "pending"
+    assert gate["expensive_model_allowed"] is False
+
+
+def test_reasoning_promotion_gate_requires_all_safety_signals() -> None:
+    metrics = {
+        "baseline_correctness": 0.50,
+        "candidate_correctness": 0.54,
+        "useful_expansion_precision": True,
+        "stable_repeated_captures": True,
+        "validation_failure_rate": 0.01,
+        "no_material_false_abstention": True,
+        "info_not_found_correctness": 0.95,
+    }
+    assert reasoning_promotion_gate(metrics)["expensive_model_allowed"] is True
+
+    metrics["candidate_correctness"] = 0.52
+    gate = reasoning_promotion_gate(metrics)
+    assert gate["status"] == "blocked"
+    assert "correctness_delta_at_least_3_points" in gate["failed"]
+
+
+def test_retrieval_capture_summary_reports_variance() -> None:
+    summary = retrieval_capture_summary(
+        [
+            {"document_ids": ["a", "b"]},
+            {"document_ids": ["a", "b"]},
+            {"document_ids": ["a", "c"]},
+        ]
+    )
+    assert summary["count"] == 3
+    assert summary["stable"] is False
+    assert summary["mean_document_jaccard"] == (1.0 + 1 / 3 + 1 / 3) / 3

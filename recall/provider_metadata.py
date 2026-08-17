@@ -23,6 +23,7 @@ class ProviderMetadata:
     total_tokens: int | None = None
     latency_ms: int | None = None
     monetary_cost_usd: float | None = None
+    prompt_digest: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.provider_id, str) or not self.provider_id.strip():
@@ -58,6 +59,7 @@ class ProviderMetadata:
             "total_tokens": self.total_tokens,
             "latency_ms": self.latency_ms,
             "monetary_cost_usd": self.monetary_cost_usd,
+            "prompt_digest": self.prompt_digest,
         }
 
     @classmethod
@@ -77,6 +79,7 @@ class ProviderMetadata:
             total_tokens=_optional_int(payload.get("total_tokens")),
             latency_ms=_optional_int(payload.get("latency_ms")),
             monetary_cost_usd=_optional_float(payload.get("monetary_cost_usd")),
+            prompt_digest=_optional_str(payload.get("prompt_digest")),
         )
 
 

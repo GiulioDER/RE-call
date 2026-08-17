@@ -27,3 +27,20 @@ The reasoning provider is opt in and separate from the answer provider. Expansio
 ## Confounds I can name now
 
 The calibration fixture is small. Local fastembed and Postgres execution are deterministic enough for this capture, but reranker and learned sparse arms are excluded. The cheap model can change output if the provider routes differently, so the model id, revision, prompt digest, cache, and usage metadata will be retained. This run measures retrieval value only, not answer correctness.
+
+## Retrieval-only result
+
+Measured on 2026-08-17 with three captures per question and no answer judge:
+
+| Arm | Document recall | Exact document coverage | Capture stability |
+| --- | ---: | ---: | ---: |
+| `none` | 0.9310 | 0.8750 | 1.00 |
+| `depth` | 1.0000 | 1.0000 | 1.00 |
+| `cheap` | 1.0000 | 1.0000 | 0.80 |
+| `closed_loop` | 1.0000 | 1.0000 | 0.95 |
+
+Depth expansion recovered the two missed expected documents from the baseline. The cheap and closed loop arms reached the same retrieval ceiling, so no additional retrieval gain over depth was observed on this fixture. Among generated queries for questions with expected documents, useful query precision was 39 of 39 for the cheap cache and 20 of 20 for the closed loop cache. The cheap arm produced 33 retrieval queries and the closed loop arm produced 40. The provider was OpenRouter `openai/gpt-5-nano`, revision `openrouter-2026-08-17`, with minimal reasoning effort.
+
+The result is a retrieval signal only. It does not establish answer correctness, abstention safety, citation validity, or promotion eligibility. The expensive model remains disabled and the promotion gate remains pending. The complete machine-readable record is `results/real-reasoning-20260817/retrieval-value-summary.json`.
+
+The first cheap-model attempt was discarded as an apparatus failure because the activation variable was wrong and a direct probe showed the model consuming the output budget in hidden reasoning before returning JSON. The measured reruns used the corrected activation variable and `reasoning_effort=minimal`.

@@ -17,8 +17,9 @@ from recall.reasoning import (
     reasoning_response_from_dict,
 )
 from recall.provider_metadata import ProviderMetadata
+from recall.reasoning_expansion import ExpansionProposal, ExpansionReport
 from recall.reasoning_graph import ReasoningGraphNode, build_reasoning_graph
-from recall.reasoning_planner import ReasoningBudgetUsage, ReasoningTrace
+from recall.reasoning_planner import ReasoningBudget, ReasoningBudgetUsage, ReasoningTrace
 from recall.reasoning_proposals import InferenceProposal, ProposalProtocolReport
 from recall.types import (
     Chunk,
@@ -57,13 +58,19 @@ def _hit(chunk: Chunk, *, verdict: str = "ok") -> TrustedHit:
     )
 
 
-def _result(*hits: TrustedHit, tenant: str = "acme", generation: str = "gen_1") -> TrustedResult:
+def _result(
+    *hits: TrustedHit,
+    tenant: str = "acme",
+    generation: str = "gen_1",
+    gap_warning: bool = False,
+    abstained: bool = False,
+) -> TrustedResult:
     return TrustedResult(
         query="who owns rollout?",
         hits=list(hits),
-        abstained=False,
+        abstained=abstained,
         reason="",
-        gap_warning=False,
+        gap_warning=gap_warning,
         staleness=StalenessReport(False, NOW, timedelta(0), timedelta(days=1)),
         diagnostics=RetrievalDiagnostics(
             embedding_profile="embed-a",
@@ -85,9 +92,12 @@ def _request(
     retrieval: TrustedResult,
     *,
     policy: ReasoningPolicy | None = None,
+    budget: ReasoningBudget | None = None,
     graph=None,
     proposals=(),
     answer=None,
+    expansion_provider=None,
+    expansion_retriever=None,
 ) -> ReasoningRequest:
     def retrieve(_request: ReasoningRequest) -> TrustedResult:
         return retrieval
@@ -111,9 +121,12 @@ def _request(
             retriever=retrieve,
             graph_provider=graph_provider if graph is not None else None,
             proposal_provider=proposal_provider if proposals else None,
+            expansion_provider=expansion_provider,
+            expansion_retriever=expansion_retriever,
             answer_provider=answer,
         ),
         policy=policy or ReasoningPolicy(),
+        budget=budget or ReasoningBudget(),
     )
 
 
@@ -136,6 +149,175 @@ def test_reasoning_answers_with_trusted_citation() -> None:
     assert response.trusted_evidence.items[0].chunk_id == "c1"
     assert response.calibration_status == "certified"
     assert response.generation_id == "gen_1"
+
+
+def test_retrieval_expansion_rebuilds_evidence_before_answering() -> None:
+    first = _chunk("first", "first.md", "The first document identifies the project.")
+    second = _chunk("second", "second.md", "The second document contains the owner: Ada.")
+    initial = _result(_hit(first))
+    expanded = _result(_hit(second))
+    calls: list[str] = []
+
+    def expansion_provider(_request):
+        return ExpansionReport(
+            proposals=(
+                ExpansionProposal(
+                    id="rewrite_1",
+                    mode="rewrite",
+                    query="who owns the project",
+                    rationale="the initial evidence does not contain an owner",
+                    parent_chunk_ids=("first",),
+                ),
+            )
+        )
+
+    def expansion_retriever(_request, proposal, _initial):
+        calls.append(proposal.query)
+        return expanded
+
+    def answer(_system: str, user: str):
+        assert "second" in user
+        return {
+            "answer": "Ada owns the project.",
+            "citations": ["second"],
+            "insufficient_evidence": False,
+        }
+
+    response = reason(
+        _request(
+            initial,
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            budget=ReasoningBudget(max_model_calls=1),
+            expansion_provider=expansion_provider,
+            expansion_retriever=expansion_retriever,
+            answer=answer,
+        )
+    )
+
+    assert response.outcome == "answered"
+    assert response.answer == "Ada owns the project."
+    assert calls == ["who owns the project"]
+    assert response.diagnostics.retrieval_expansion is not None
+    assert response.diagnostics.retrieval_expansion.accepted_chunk_ids == ("second",)
+    assert [item.chunk_id for item in response.trusted_evidence.items] == ["first", "second"]
+
+
+def test_retrieval_expansion_provider_failure_preserves_baseline() -> None:
+    chunk = _chunk("first", "first.md", "The first document contains the answer.")
+
+    def expansion_provider(_request):
+        raise TimeoutError("cheap model unavailable")
+
+    response = reason(
+        _request(
+            _result(_hit(chunk)),
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            budget=ReasoningBudget(max_model_calls=1),
+            expansion_provider=expansion_provider,
+            expansion_retriever=lambda *_args: _result(_hit(chunk)),
+            answer=lambda _system, _user: {
+                "answer": "The first document contains the answer.",
+                "citations": ["first"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    assert response.outcome == "answered"
+    assert response.citations[0].chunk_id == "first"
+    assert response.refusal_reason is None
+    assert response.provider_failures[0].message == "TimeoutError"
+    assert response.diagnostics.retrieval_expansion is not None
+    assert response.diagnostics.retrieval_expansion.fallback_reason == "provider_failure"
+
+
+def test_retrieval_expansion_tries_depth_before_the_cheap_provider() -> None:
+    first = _chunk("first", "first.md", "The first document is incomplete.")
+    second = _chunk("second", "second.md", "The second document contains the owner: Ada.")
+    initial = _result(_hit(first), gap_warning=True)
+    depth = _result(_hit(second))
+    calls: list[str] = []
+    provider_evidence: list[str] = []
+
+    def expansion_provider(request):
+        provider_evidence.extend(item["chunk_id"] for item in request.evidence)
+        return ExpansionReport(
+            proposals=(ExpansionProposal("rewrite", "rewrite", "owner of the project"),)
+        )
+
+    def expansion_retriever(_request, proposal, _initial):
+        calls.append(proposal.mode)
+        return depth
+
+    response = reason(
+        _request(
+            initial,
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            budget=ReasoningBudget(max_model_calls=1),
+            expansion_provider=expansion_provider,
+            expansion_retriever=expansion_retriever,
+            answer=lambda _system, _user: {
+                "answer": "Ada owns the project.",
+                "citations": ["second"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    assert response.outcome == "answered"
+    assert calls == ["depth", "rewrite"]
+    assert provider_evidence == ["first", "second"]
+
+
+def test_depth_expansion_can_run_without_a_cheap_provider() -> None:
+    first = _chunk("first", "first.md", "The first document is incomplete.")
+    second = _chunk("second", "second.md", "The second document contains the owner: Ada.")
+
+    response = reason(
+        _request(
+            _result(_hit(first), gap_warning=True),
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            expansion_retriever=lambda *_args: _result(_hit(second)),
+            answer=lambda _system, _user: {
+                "answer": "Ada owns the project.",
+                "citations": ["second"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    assert response.outcome == "answered"
+    assert response.provider_failures == ()
+    assert response.diagnostics.retrieval_expansion is not None
+    assert response.diagnostics.retrieval_expansion.accepted_chunk_ids == ("second",)
+
+
+def test_retrieval_expansion_rejects_mismatched_generation() -> None:
+    first = _chunk("first", "first.md", "The first document contains the answer.")
+    second = _chunk("second", "second.md", "Foreign generation evidence.")
+    foreign = _result(_hit(second), generation="gen_2")
+
+    response = reason(
+        _request(
+            _result(_hit(first)),
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            budget=ReasoningBudget(max_model_calls=1),
+            expansion_provider=lambda _request: ExpansionReport(
+                proposals=(ExpansionProposal("depth_1", "depth", "who owns the project"),)
+            ),
+            expansion_retriever=lambda *_args: foreign,
+            answer=lambda _system, _user: {
+                "answer": "The first document contains the answer.",
+                "citations": ["first"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    assert response.outcome == "answered"
+    assert [item.chunk_id for item in response.trusted_evidence.items] == ["first"]
+    assert response.diagnostics.retrieval_expansion is not None
+    assert response.diagnostics.retrieval_expansion.fallback_reason == "expanded_retrieval_failure"
 
 
 def test_reasoning_rejects_demoted_and_unretrieved_citations() -> None:
