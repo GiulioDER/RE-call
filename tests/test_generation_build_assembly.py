@@ -56,6 +56,7 @@ def _run_build(
     *flags: str,
     embedder: str = "hashing",
     resolved: object | None = None,
+    captured: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Drive the real CLI path and capture what it hands `GenerationManager`.
 
@@ -63,6 +64,13 @@ def _run_build(
     standing leaked a stub embedder into the *second* call of any test that runs two flag sets and
     compares them — which is most of them, and which silently turned a comparison into a
     tautology before it turned into a failure.
+
+    `captured` lets the caller own the dict, so it survives a `SystemExit` raised out of `cli_main`.
+    Without that, a refusal test could assert the exit code and NOT that the refusal happened before
+    `manager.create`, because the return value is discarded when the exception propagates. A refusal
+    relocated below `create`, written in this file's own idiom of `print(..., file=sys.stderr)` then
+    `raise SystemExit(2)`, would have kept every arm green while writing the orphan row those tests
+    exist to prevent.
     """
     # `exist_ok` because several tests below call this twice to compare two flag sets, and a
     # second call must land on the same corpus: the point of comparison is the flags.
@@ -76,7 +84,8 @@ def _run_build(
     manifest_path = tmp_path / "man.json"
     manifest_path.write_text(manifest.to_json(), encoding="utf-8")
 
-    captured: dict[str, Any] = {}
+    if captured is None:
+        captured = {}
 
     def fake_create(
         self: GenerationManager,
@@ -413,12 +422,20 @@ def test_the_cli_refuses_a_bad_chunking_flag_at_parse_time(
     operator then got an uncaught `ValueError` and a stack trace where the refusal is supposed to be
     a one-line message. `--max-chars 0` in particular used to reach `manager.create`, write the
     generation row, and only then fail, leaving an orphan.
+
+    The orphan is the harm, so it is asserted rather than described: `create` must not have been
+    reached. The caller owns `seen`, so it survives the `SystemExit` that discards `_run_build`'s
+    return value — without that, this test could not tell a parse-time refusal from one relocated
+    below `create`, which is the only difference that matters here.
     """
+    seen: dict[str, object] = {}
+
     with pytest.raises(SystemExit) as exit_info:
-        _run_build(tmp_path, monkeypatch, *flags)
+        _run_build(tmp_path, monkeypatch, *flags, captured=seen)
 
     assert exit_info.value.code == 2, "a bad flag must be an argparse refusal, not a traceback"
     assert expected in capsys.readouterr().err
+    assert "pipeline" not in seen, "the refusal must precede manager.create, or it leaves an orphan"
 
 
 def test_the_cli_accepts_the_smallest_valid_chunking(

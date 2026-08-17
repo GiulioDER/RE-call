@@ -13,6 +13,7 @@ is not a missing record: it is a confident and false one.
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -225,8 +226,17 @@ def test_the_recorded_overlap_is_the_one_the_chunker_will_actually_use() -> None
     assert chunker_for(BuildRequest(max_chars=800, overlap=80))[1].configuration["overlap"] == 80
 
     # And the callable is bound to the same value the record names, so the pair still agree.
+    #
+    # Asserted STRUCTURALLY, on the partial's keywords, not by comparing outputs. Outputs cannot
+    # see this: `chunk_text` applies the same clamp internally, so binding 80 and binding 50 produce
+    # identical chunks and an output comparison holds either way. That left the reason for clamping
+    # the binding at all — that the record's correctness must not depend on another module's
+    # internal clamp continuing to exist — asserted by nothing. If `_split_oversized` ever loses its
+    # clamp, now that `effective_overlap` is a named function and the recording caller applies it,
+    # this is the line that notices.
     text = ("para. " * 60 + "\n\n") * 12
     callable_, identity = chunker_for(BuildRequest(max_chars=200, overlap=80))
+    assert callable_.keywords["overlap"] == identity.configuration["overlap"]
     assert callable_(text) == chunk_text(
         text, max_chars=200, overlap=identity.configuration["overlap"]
     )
@@ -237,13 +247,44 @@ def test_two_requests_that_chunk_identically_record_one_fingerprint() -> None:
 
     Without the clamp in the record these two fingerprinted differently while producing the same
     chunks, which is the whole harm: the wizard calibrates one generation and serves another.
+
+    ⚠️ The premise is measured on `chunk_text` DIRECTLY, not through the two partials. Comparing the
+    partials was the obvious way to write it and the fix made it a tautology: both are now bound to
+    the clamped value, so they carry byte-identical keywords and the comparison cannot fail for any
+    input — it passed on `text=""`, which is exactly the fixture inadequacy its own message claims to
+    rule out. Before the fix the two partials carried 80 and 50 and the comparison meant something.
+    A guard whose subject changes under it stops being a guard.
     """
+    text = ("para. " * 60 + "\n\n") * 12
+    assert chunk_text(text, max_chars=200, overlap=80) == chunk_text(
+        text, max_chars=200, overlap=50
+    ), "the fixture has no oversized block, so it cannot show the fingerprint problem"
+
     asked = chunker_for(BuildRequest(max_chars=200, overlap=80))
     clamped = chunker_for(BuildRequest(max_chars=200, overlap=50))
-
-    text = ("para. " * 60 + "\n\n") * 12
-    assert asked[0](text) == clamped[0](text), "the fixture cannot show the fingerprint problem"
     assert asked[1] == clamped[1]
+
+
+def test_the_embedder_is_examined_before_the_chunker() -> None:
+    """The evaluation order `pipeline_for` chose deliberately, pinned rather than commented.
+
+    Before the extraction, a request invalid in both its embedder identity and its chunker surfaced
+    the embedder's `LineageError`. An intermediate shape flipped that to the chunker's `ValueError`,
+    which reads as a no-op and is not: it changes which of two problems an operator is told about
+    first. Only a comment recorded the decision, and that comment had already gone stale, quoting a
+    message no longer present anywhere in the tree.
+    """
+    from recall.generation_build import pipeline_for
+    from recall.lineage import LineageError
+
+    # Invalid embedder identity (no revision, no digest, no reason) AND an invalid chunker.
+    smuggled = object.__new__(BuildRequest)
+    for field in dataclasses.fields(BuildRequest):
+        object.__setattr__(smuggled, field.name, getattr(BuildRequest(), field.name))
+    object.__setattr__(smuggled, "chunker", "Code")
+
+    with pytest.raises(LineageError):
+        pipeline_for(_FakeEmbedder(), smuggled)
 
 
 def test_the_chunker_decision_point_also_refuses_a_smuggled_chunk_size() -> None:

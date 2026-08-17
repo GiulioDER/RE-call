@@ -10,6 +10,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* **`recall generation build` recorded an overlap the chunker never used, and correcting it moves
+  the pipeline fingerprint.** The chunker clamps overlap to `max_chars // 4`; the generation's
+  `ChunkerIdentity` recorded what was asked for. So the record described a pipeline that did not
+  run, and it was reachable with default arguments: `--max-chars 200` with the default overlap of
+  80 chunked at 50 and recorded 80. Two configurations producing byte-identical chunks therefore
+  fingerprinted differently, and a calibration binds to that fingerprint.
+
+  ⚠️ **This is a deliberate break on rebuild, in exactly one region.** The recorded value changes
+  only when `overlap > max_chars // 4`, which at the default overlap means any `--max-chars` below
+  320. The default 800/80 is unchanged. Generations already in a database are immutable and
+  unaffected, but rebuilding such a corpus with identical flags now yields a different
+  `pipeline_fingerprint`, which costs the cross-generation chunk reuse keyed on that column and
+  the binding of any calibration measured against the old generation. Re-run
+  `recall calibration calibrate --publish` against the new generation. The pre-upgrade record was
+  false, so there is no version of this that is both correct and non-breaking. `recall index` is
+  unaffected: it takes neither flag and builds no pipeline identity.
+
 * **The MCP server now honours `RECALL_TRUST_MODE`.** `docs/USING_WITH_CLAUDE.md` has told users to
   set it since the document was written, and it did nothing: the variable appeared nowhere in
   `recall_mcp`, and `search_memory` and `evidence_memory` were both called without `policy=`, so the

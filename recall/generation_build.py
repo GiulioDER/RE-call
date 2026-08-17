@@ -223,8 +223,11 @@ def pipeline_for(
     contradictory identity, because there is no parameter for one.
     """
     # `embedder_identity` FIRST, which is the order the code this replaced failed in. On a request
-    # that is invalid in both ways, evaluating the chunker first surfaces `unknown chunker` where
-    # the extracted code surfaced the embedder's `LineageError`. That reads as a no-op and is not.
+    # invalid in both ways, evaluating the chunker first surfaces "chunker must be one of …" where
+    # the extracted code surfaced the embedder's `LineageError`. That reads as a no-op and is not,
+    # so it is pinned by a test rather than left to this comment — an earlier version of this note
+    # quoted a message that no longer existed anywhere in the tree, which is how a comment ends up
+    # being the only record of a decision.
     embedder_record = embedder_identity(embedder, request)
     chunker, chunker_identity = chunker_for(request)
     return chunker, PipelineIdentity(embedder_record, chunker_identity)
