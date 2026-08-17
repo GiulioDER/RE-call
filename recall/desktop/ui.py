@@ -1,0 +1,1653 @@
+"""Small PySide6 desktop shell for the first RE-call workflow."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from importlib.metadata import PackageNotFoundError, version
+from typing import Any
+
+from recall.desktop.models import RuntimeProfile, SourceCategory, SourceSelection
+from recall.desktop.runtime import RuntimeManager, RuntimeErrorBase, create_runtime
+from recall.desktop.sources import CODE_EXTENSIONS, DOCUMENT_EXTENSIONS, collect_files, classify, display_type
+from recall.desktop.github import GithubImport, download_repository
+
+
+try:
+    from PySide6.QtCore import QItemSelectionModel, QObject, QRunnable, QRect, QThreadPool, QTimer, Qt, Signal
+    from PySide6.QtWidgets import (
+        QAbstractItemView,
+        QApplication,
+        QComboBox,
+        QCheckBox,
+        QFileDialog,
+        QFrame,
+        QFormLayout,
+        QHBoxLayout,
+        QHeaderView,
+        QLabel,
+        QInputDialog,
+        QGridLayout,
+        QMainWindow,
+        QMessageBox,
+        QProgressBar,
+        QPushButton,
+        QGroupBox,
+        QLineEdit,
+        QStyle,
+        QStyleOptionHeader,
+        QStyledItemDelegate,
+        QStackedWidget,
+        QTableWidget,
+        QTableWidgetItem,
+        QVBoxLayout,
+        QWidget,
+    )
+except ImportError:  # pragma: no cover, exercised on environments without the desktop extra
+    QApplication = None  # type: ignore[assignment]
+
+
+if QApplication is not None:
+
+    def _project_name(value: str) -> str:
+        """Show one project entry for the paired docs and code scopes."""
+        text = value.strip()
+        for suffix in ("-docs", "-code"):
+            if text.endswith(suffix):
+                return text[: -len(suffix)]
+        return text
+
+
+    def _format_summary() -> str:
+        suffixes = sorted(
+            suffix.removeprefix(".").upper()
+            for suffix in DOCUMENT_EXTENSIONS | CODE_EXTENSIONS
+        )
+        midpoint = (len(suffixes) + 1) // 2
+        first_line = ", ".join(suffixes[:midpoint])
+        second_line = ", ".join(suffixes[midpoint:])
+        return f"Available formats: {first_line}\n{second_line}"
+
+    class _DropZone(QFrame):
+        dropped = Signal(list)
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.setAcceptDrops(True)
+            self.setObjectName("dropZone")
+            layout = QVBoxLayout(self)
+            layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.setSpacing(4)
+            label = QLabel("DROP FILES HERE")
+            label.setObjectName("dropTitle")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            layout.addWidget(label)
+            hint = QLabel(_format_summary())
+            hint.setObjectName("dropHint")
+            hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hint.setWordWrap(False)
+            hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            layout.addWidget(hint)
+            note = QLabel("Unsupported files will be skipped")
+            note.setObjectName("dropNote")
+            note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            note.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            layout.addWidget(note)
+            self.setMinimumHeight(180)
+
+        def dragEnterEvent(self, event: Any) -> None:
+            if event.mimeData().hasUrls():
+                event.acceptProposedAction()
+
+        def dragMoveEvent(self, event: Any) -> None:
+            if event.mimeData().hasUrls():
+                event.acceptProposedAction()
+
+        def dropEvent(self, event: Any) -> None:
+            paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+            if paths:
+                self.dropped.emit(paths)
+            event.acceptProposedAction()
+
+
+    class _FocuslessItemDelegate(QStyledItemDelegate):
+        """Keep selected table rows highlighted without drawing Qt focus boxes."""
+
+        def paint(self, painter: Any, option: Any, index: Any) -> None:
+            option.state &= ~QStyle.StateFlag.State_HasFocus
+            super().paint(painter, option, index)
+
+
+    class _FileHeader(QHeaderView):
+        """Keep the descending marker native-sized while placing it below the label."""
+
+        def __init__(self, parent: QWidget | None = None) -> None:
+            super().__init__(Qt.Orientation.Horizontal, parent)
+            self._descending_section = -1
+            self.setSectionsClickable(True)
+            self.setSortIndicatorShown(True)
+
+        def setDescendingSection(self, section: int) -> None:
+            self._descending_section = section
+            self.viewport().update()
+
+        def paintSection(self, painter: Any, rect: Any, logical_index: int) -> None:
+            super().paintSection(painter, rect, logical_index)
+            if logical_index != self._descending_section:
+                return
+
+            option = QStyleOptionHeader()
+            option.rect = rect
+            option.section = logical_index
+            option.orientation = Qt.Orientation.Horizontal
+            option.sortIndicator = QStyleOptionHeader.SortIndicator.SortDown
+            mark_size = self.style().pixelMetric(QStyle.PixelMetric.PM_HeaderMarkSize, option, self)
+            mark_size = max(6, mark_size)
+            option.rect = QRect(
+                rect.center().x() - mark_size // 2,
+                rect.bottom() - mark_size - 4,
+                mark_size,
+                mark_size,
+            )
+            self.style().drawPrimitive(
+                QStyle.PrimitiveElement.PE_IndicatorHeaderArrow,
+                option,
+                painter,
+                self,
+            )
+
+
+    class _HiddenSortItem(QTableWidgetItem):
+        """Keep a sortable value without painting a duplicate behind a cell widget."""
+
+        _SORT_ROLE = Qt.ItemDataRole.UserRole + 1
+
+        def __init__(self, sort_value: str) -> None:
+            super().__init__("")
+            self.setData(self._SORT_ROLE, sort_value.casefold())
+
+        def __lt__(self, other: QTableWidgetItem) -> bool:
+            left = str(self.data(self._SORT_ROLE) or "")
+            right = str(other.data(self._SORT_ROLE) or "")
+            return left < right
+
+
+    class _WorkerSignals(QObject):
+        done = Signal(object)
+        failed = Signal(str)
+
+
+    class _Worker(QRunnable):
+        def __init__(self, fn: Any) -> None:
+            super().__init__()
+            self.fn = fn
+            self.signals = _WorkerSignals()
+
+        def run(self) -> None:
+            try:
+                self.signals.done.emit(self.fn())
+            except Exception as exc:  # noqa: BLE001
+                self.signals.failed.emit(str(exc))
+
+
+    class MainWindow(QMainWindow):
+        def __init__(self, profile: RuntimeProfile, runtime: RuntimeManager | None = None) -> None:
+            super().__init__()
+            self.profile = profile
+            self.runtime = runtime or create_runtime(profile)
+            self.pool = QThreadPool(self)
+            self.pending_files: list[tuple[Path, SourceCategory]] = []
+            self.pending_scopes: list[dict[str, Any]] = []
+            self.calibration_snapshot: Any = None
+            self._project_names: list[str] = [self.profile.default_tenant]
+            self._last_scope_index = 0
+            self._config_dirty = False
+            self._calibration_required = False
+            self._calibration_targets_by_row: list[tuple[str, str, str]] = []
+            self._calibration_results: dict[str, Any] = {}
+            self._latest_release: Any = None
+            self._calibration_running = False
+            self._api_keys: dict[str, str] = {"OpenRouter": "", "Voyage": "", "OpenAI": ""}
+            self.github_pending: list[tuple[Path, SourceCategory]] = []
+            self.github_root: Path | None = None
+            self.github_import: GithubImport | None = None
+            self._active_config_type = "Documents"
+            self._pipeline_configs: dict[str, dict[str, Any]] = {
+                source_type: {
+                    "embedder": "Hashing offline",
+                    "reranker": "Disabled",
+                    "splade": False,
+                    "judge": "Disabled",
+                    "reasoning": "Disabled",
+                    "model": "hashing-64",
+                    "reranker_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+                    "arm": "Threshold",
+                }
+                for source_type in ("Documents", "Memory", "Code")
+            }
+            self.setWindowTitle("RE-call")
+            self.resize(980, 760)
+            self._build_ui()
+
+        def _build_ui(self) -> None:
+            self.setStyleSheet(
+                """
+                QMainWindow, QWidget { background: #070808; color: #f3f0e8; font-family: "Segoe UI"; }
+                QLabel { color: #a6a398; }
+                QLabel#brand { color: #f3f0e8; font-family: "Segoe UI"; font-size: 31px; font-weight: 700; letter-spacing: -1px; }
+                QLabel#runtimeLabel { color: #a6a398; font-family: "Segoe UI"; font-size: 11px; }
+                QLabel#status { color: #a6a398; }
+                QFrame#identityRule { background: #e0a629; border: 0; }
+                QFrame#dropZone { background: #0c0e0d; border: 1px dashed #64665d; border-radius: 3px; padding: 16px; }
+                QFrame#dropZone:hover { border-color: #e0a629; background: #11130f; }
+                QFrame#dropZone QLabel { background: transparent; }
+                QLabel#dropTitle { color: #f3f0e8; font-family: "Segoe UI"; font-size: 23px; font-weight: 700; letter-spacing: 0.6px; }
+                QLabel#dropHint { color: #a6a398; font-size: 10px; line-height: 1.2; }
+                QLabel#dropNote { color: #77776d; font-size: 12px; }
+                QPushButton { background: #101210; color: #f3f0e8; border: 1px solid #55574f; border-radius: 0px; padding: 9px 14px; min-height: 34px; font-family: "Segoe UI"; font-size: 12px; font-weight: 600; }
+                QPushButton:hover { background: #1a1b16; border-color: #e0a629; }
+                QPushButton:pressed { background: #070808; }
+                QPushButton:disabled { background: #0b0c0b; color: #77776d; border-color: #2d302b; }
+                QPushButton:focus, QComboBox:focus, QLineEdit:focus, QCheckBox:focus { outline: none; border: 1px solid #e0a629; }
+                QPushButton#navButton { background: #0c0e0d; color: #f3f0e8; border-color: #64665d; border-radius: 0px; padding: 0px; min-height: 0px; font-family: "Segoe UI"; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+                QPushButton#navButton:hover, QPushButton#navButton:checked { background: #e0a629; border-color: #e0a629; color: #070808; }
+                QPushButton#startButton { background: #e0a629; color: #070808; border-color: #e0a629; padding: 7px 16px; min-height: 34px; font-weight: 700; }
+                QPushButton#startButton:hover { background: #f0bd3f; border-color: #f0bd3f; }
+                QPushButton#startButton:pressed { background: #070808; }
+                QPushButton#startButton:disabled { background: #171811; color: #77776d; border-color: #3a3b32; }
+                QComboBox { background: #0c0e0d; color: #f3f0e8; border: 1px solid #55574f; border-radius: 2px; padding: 6px 10px; min-width: 120px; }
+                QComboBox:hover, QComboBox:focus { border-color: #e0a629; }
+                QComboBox#tenantCellCombo { background: transparent; border: 0; border-radius: 0; padding: 2px 6px; min-width: 0; }
+                QComboBox#tenantCellCombo:hover, QComboBox#tenantCellCombo:focus { background: transparent; border: 1px solid #e0a629; }
+                QComboBox#tenantCellCombo::drop-down { background: transparent; border: 0; width: 18px; }
+                QComboBox QAbstractItemView { background: #101210; color: #f3f0e8; selection-background-color: #e0a629; selection-color: #070808; border: 1px solid #55574f; }
+                QTableWidget { background: #0c0e0d; color: #f3f0e8; border: 1px solid #55574f; border-radius: 3px; gridline-color: #252824; selection-background-color: #2e2b1d; selection-color: #f3f0e8; padding: 4px; }
+                QTableWidget::item { color: #f3f0e8; padding: 8px; border-bottom: 1px solid #252824; }
+                QTableWidget::item:selected { background: #2e2b1d; color: #f3f0e8; }
+                QHeaderView::section { background: #161814; color: #c7c1ae; font-family: "Segoe UI"; font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 9px; border: 0; border-bottom: 1px solid #55574f; }
+                QTableCornerButton::section { background: transparent; border: 0; }
+                QFrame#queueActions { background: #0c0e0d; border: 1px solid #55574f; border-radius: 2px; }
+                QFrame#queueActions QPushButton { padding: 7px 13px; }
+                QWidget#calibrationActionsCell { background: #0c0e0d; }
+                QPushButton#tableActionButton { padding: 2px 6px; min-height: 0px; font-size: 11px; }
+                QPushButton#tableActionButton:focus { outline: none; border: 1px solid #e0a629; background: #1a1b16; }
+                QProgressBar { background: #0c0e0d; color: #f3f0e8; border: 1px solid #55574f; border-radius: 2px; height: 14px; text-align: center; }
+                QProgressBar::chunk { background: #e0a629; border-radius: 1px; }
+                QScrollBar:vertical { background: #0c0e0d; width: 10px; margin: 0; }
+                QScrollBar::handle:vertical { background: #55574f; border-radius: 1px; min-height: 24px; }
+                QFrame#runtimeStatus { background: #0c0e0d; border: 1px solid #55574f; border-radius: 0px; padding: 4px 8px; }
+                QFrame#runtimeStatus QLabel#runtimeLabel { background: transparent; }
+                QPushButton#reconnectButton { color: #f0bd3f; border-color: #a37312; padding: 7px 11px; }
+                QLabel#connectionLight { min-width: 10px; max-width: 10px; min-height: 10px; max-height: 10px; border-radius: 5px; }
+                QGroupBox { color: #f3f0e8; border: 1px solid #55574f; border-radius: 3px; margin-top: 12px; padding: 14px; }
+                QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #e0a629; }
+                QLineEdit { background: #0c0e0d; color: #f3f0e8; border: 1px solid #55574f; border-radius: 2px; padding: 7px 10px; }
+                QCheckBox { color: #f3f0e8; spacing: 8px; }
+                QCheckBox::indicator { width: 16px; height: 16px; }
+                QTableWidget#calibrationTable { border-radius: 3px; }
+                QLabel#pageTitle { color: #f3f0e8; font-family: "Segoe UI"; font-size: 23px; font-weight: 700; }
+                QLabel#pageIntro { color: #a6a398; }
+                QLabel#warningLabel { color: #b69b5c; background: #100f0a; border: 1px solid #5f4b18; border-radius: 2px; padding: 10px; }
+                QLabel#successLabel { color: #8ac58a; }
+                QLabel#mutedLabel { color: #77776d; }
+                """
+            )
+            root = QWidget()
+            outer = QVBoxLayout(root)
+            identity_rule = QFrame()
+            identity_rule.setObjectName("identityRule")
+            identity_rule.setFixedHeight(3)
+            outer.addWidget(identity_rule)
+            header = QHBoxLayout()
+            brand = QLabel("RE-call")
+            brand.setObjectName("brand")
+            header.addWidget(brand)
+            header.addStretch()
+            self.main_button = self._make_nav_button("MAIN", 0)
+            self.github_button = self._make_nav_button("GITHUB", 1)
+            self.calibration_button = self._make_nav_button("CALIBRATION", 2)
+            self.config_button = self._make_nav_button("CONFIG", 3)
+            self.settings_button = self._make_nav_button("SETTINGS", 4)
+            header.addWidget(self.main_button)
+            header.addWidget(self.github_button)
+            header.addWidget(self.calibration_button)
+            header.addWidget(self.config_button)
+            header.addWidget(self.settings_button)
+            outer.addLayout(header)
+
+            self.pages = QStackedWidget()
+            self.queue_page = QWidget()
+            queue_outer = QVBoxLayout(self.queue_page)
+            self.pages.addWidget(self.queue_page)
+            outer.addWidget(self.pages, 1)
+
+            controls = QHBoxLayout()
+            controls.addWidget(QLabel("Default project"))
+            self.scope = QComboBox()
+            self.scope.setMinimumWidth(230)
+            self._populate_scopes(self._project_names)
+            self.scope.currentIndexChanged.connect(self._scope_changed)
+            controls.addWidget(self.scope)
+            controls.addWidget(QLabel("New files use this project; adjust tenants per row"))
+            self.start_button = QPushButton("Start indexing")
+            self.start_button.setObjectName("startButton")
+            self.start_button.setEnabled(False)
+            self.start_button.clicked.connect(self._start_embedding)
+            controls.addStretch()
+            queue_outer.addLayout(controls)
+
+            zone = _DropZone()
+            zone.dropped.connect(self._accept_drop)
+            queue_outer.addWidget(zone)
+
+            self.files = QTableWidget(0, 3)
+            self.files.setHorizontalHeaderLabels(["FILE NAME", "TENANT", "TYPE"])
+            self.files.setHorizontalHeader(_FileHeader(self.files))
+            self.files.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+            self.files.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            self.files.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            self.files.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.files.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.files.setItemDelegate(_FocuslessItemDelegate(self.files))
+            self.files.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.files.verticalHeader().setVisible(False)
+            self.files.verticalHeader().setDefaultSectionSize(36)
+            self.files.setShowGrid(False)
+            self.files.setCornerButtonEnabled(False)
+            self.files.setSortingEnabled(True)
+            self.files.horizontalHeader().setSortIndicatorShown(True)
+            self.files.horizontalHeader().setMinimumHeight(46)
+            self.files.horizontalHeader().sortIndicatorChanged.connect(self._update_file_sort_indicator)
+            table_frame = QWidget()
+            table_stack = QGridLayout(table_frame)
+            table_stack.setContentsMargins(0, 0, 0, 0)
+            table_stack.setSpacing(0)
+            table_stack.addWidget(self.files, 0, 0)
+            actions = QFrame()
+            actions.setObjectName("queueActions")
+            action_layout = QHBoxLayout(actions)
+            action_layout.setContentsMargins(6, 5, 6, 5)
+            action_layout.setSpacing(6)
+            browse = QPushButton("Browse")
+            browse.clicked.connect(self._browse)
+            clear = QPushButton("Clear")
+            clear.clicked.connect(self._clear_files)
+            self.cancel_button = QPushButton("Cancel")
+            self.cancel_button.clicked.connect(self._cancel_selected_files)
+            action_layout.addWidget(browse)
+            action_layout.addWidget(clear)
+            action_layout.addWidget(self.cancel_button)
+            table_stack.addWidget(
+                actions,
+                0,
+                0,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
+            )
+            start_holder = QFrame()
+            start_holder.setObjectName("queueActions")
+            start_layout = QHBoxLayout(start_holder)
+            start_layout.setContentsMargins(6, 5, 6, 5)
+            start_layout.addWidget(self.start_button)
+            table_stack.addWidget(
+                start_holder,
+                0,
+                0,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
+            )
+            queue_outer.addWidget(table_frame, 1)
+            self.progress = QProgressBar()
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+            queue_outer.addWidget(self.progress)
+
+            footer = QHBoxLayout()
+            self.status = QLabel("Connect to a runtime to begin.")
+            self.status.setObjectName("status")
+            footer.addWidget(self.status, 1)
+            self.reconnect_button = QPushButton("Reconnect")
+            self.reconnect_button.setObjectName("reconnectButton")
+            self.reconnect_button.clicked.connect(self._reconnect)
+            self.reconnect_button.setVisible(True)
+            footer.addWidget(self.reconnect_button)
+            runtime_status = QFrame()
+            runtime_status.setObjectName("runtimeStatus")
+            runtime_status.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            runtime_layout = QHBoxLayout(runtime_status)
+            runtime_layout.setContentsMargins(8, 4, 8, 4)
+            self.connection_light = QLabel()
+            self.connection_light.setObjectName("connectionLight")
+            runtime_layout.addWidget(self.connection_light)
+            self.runtime_label = QLabel()
+            self.runtime_label.setObjectName("runtimeLabel")
+            self.runtime_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            runtime_layout.addWidget(self.runtime_label)
+            footer.addWidget(runtime_status)
+            queue_outer.addLayout(footer)
+            self._set_runtime_state(False)
+            self.github_page = self._build_github_page()
+            self.calibration_page = self._build_calibration_page()
+            self.config_page = self._build_config_page()
+            self.settings_page = self._build_settings_page()
+            self.pages.addWidget(self.github_page)
+            self.pages.addWidget(self.calibration_page)
+            self.pages.addWidget(self.config_page)
+            self.pages.addWidget(self.settings_page)
+            self.setCentralWidget(root)
+            self._run(self._prepare_runtime, self._runtime_ready, self._runtime_failed)
+            self.update_timer = QTimer(self)
+            self.update_timer.setInterval(6 * 60 * 60 * 1000)
+            self.update_timer.timeout.connect(lambda: self._run(self._check_update_safely, self._update_checked))
+            self.update_timer.start()
+
+        def _make_nav_button(self, label: str, page_index: int) -> QPushButton:
+            button = QPushButton(label)
+            button.setObjectName("navButton")
+            button.setCheckable(True)
+            button.setFixedSize(112, 34)
+            button.clicked.connect(lambda _checked=False: self._show_page(page_index))
+            return button
+
+        def _show_page(self, page_index: int) -> None:
+            self.pages.setCurrentIndex(page_index)
+            for index, button in (
+                (0, self.main_button),
+                (1, self.github_button),
+                (2, self.calibration_button),
+                (3, self.config_button),
+                (4, self.settings_button),
+            ):
+                button.setChecked(index == page_index)
+            if page_index == 2:
+                self._refresh_calibration_table()
+
+        def _build_github_page(self) -> QWidget:
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            title = QLabel("GITHUB")
+            title.setObjectName("pageTitle")
+            layout.addWidget(title)
+            intro = QLabel(
+                "Download a public repository into a local review queue. Choose what to import, "
+                "approve the files, then start indexing from Main."
+            )
+            intro.setObjectName("pageIntro")
+            intro.setWordWrap(True)
+            layout.addWidget(intro)
+
+            source_group = QGroupBox("Repository source")
+            source_form = QFormLayout(source_group)
+            self.github_url_edit = QLineEdit()
+            self.github_url_edit.setPlaceholderText("https://github.com/owner/repository")
+            self.github_scope_combo = QComboBox()
+            self.github_scope_combo.addItems(["Full repository", "Code only", "Documents only"])
+            self.github_tenant_combo = QComboBox()
+            self._populate_github_tenants(self._project_names)
+            source_form.addRow("Repository URL", self.github_url_edit)
+            source_form.addRow("Import scope", self.github_scope_combo)
+            source_form.addRow("Project", self.github_tenant_combo)
+            layout.addWidget(source_group)
+
+            self.github_table = QTableWidget(0, 3)
+            self.github_table.setHorizontalHeaderLabels(["FILE NAME", "TENANT", "TYPE"])
+            self.github_table.setHorizontalHeader(_FileHeader(self.github_table))
+            self.github_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+            self.github_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            self.github_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            self.github_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.github_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.github_table.setItemDelegate(_FocuslessItemDelegate(self.github_table))
+            self.github_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.github_table.verticalHeader().setVisible(False)
+            self.github_table.verticalHeader().setDefaultSectionSize(36)
+            self.github_table.setShowGrid(False)
+            self.github_table.setCornerButtonEnabled(False)
+            layout.addWidget(self.github_table, 1)
+
+            actions = QHBoxLayout()
+            self.github_download_button = QPushButton("Download repository")
+            self.github_download_button.setObjectName("startButton")
+            self.github_download_button.clicked.connect(self._download_github)
+            self.github_clear_button = QPushButton("Clear")
+            self.github_clear_button.clicked.connect(self._clear_github)
+            self.github_approve_button = QPushButton("Approve files and open queue")
+            self.github_approve_button.setEnabled(False)
+            self.github_approve_button.clicked.connect(self._approve_github)
+            actions.addWidget(self.github_download_button)
+            actions.addWidget(self.github_clear_button)
+            actions.addStretch()
+            actions.addWidget(self.github_approve_button)
+            layout.addLayout(actions)
+
+            self.github_status = QLabel("Enter a repository URL to begin.")
+            self.github_status.setObjectName("status")
+            self.github_status.setWordWrap(True)
+            layout.addWidget(self.github_status)
+            return page
+
+        def _build_config_page(self) -> QWidget:
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            title = QLabel("PIPELINE CONFIGURATION")
+            title.setObjectName("pageTitle")
+            layout.addWidget(title)
+            intro = QLabel(
+                "Choose the retrieval components RE-call should use for new indexing and search jobs. "
+                "These choices are runtime-wide and must remain compatible with the detected machine."
+            )
+            intro.setObjectName("pageIntro")
+            intro.setWordWrap(True)
+            layout.addWidget(intro)
+
+            type_row = QHBoxLayout()
+            type_row.addWidget(QLabel("Configuration for file type"))
+            self.config_type_combo = QComboBox()
+            self.config_type_combo.addItems(["Documents", "Memory", "Code"])
+            self.config_type_combo.currentTextChanged.connect(self._switch_config_type)
+            type_row.addWidget(self.config_type_combo)
+            type_row.addStretch()
+            layout.addLayout(type_row)
+
+            pipeline = QGroupBox("Retrieval stack")
+            form = QFormLayout(pipeline)
+            self.embedder_combo = QComboBox()
+            self.embedder_combo.addItems(
+                [
+                    "Hashing offline",
+                    "Sentence Transformers local",
+                    "SFR code local",
+                    "OpenAI-compatible cloud",
+                    "Voyage cloud (unavailable)",
+                    "BGE local (unavailable)",
+                ]
+            )
+            self._disable_config_items(
+                self.embedder_combo,
+                {"Voyage cloud (unavailable)", "BGE local (unavailable)"},
+            )
+            self.reranker_combo = QComboBox()
+            self.reranker_combo.addItems(
+                [
+                    "Disabled",
+                    "Local cross-encoder",
+                    "Local code reranker",
+                    "Local model path",
+                    "Voyage reranker (unavailable)",
+                    "BGE reranker (unavailable)",
+                ]
+            )
+            self._disable_config_items(
+                self.reranker_combo,
+                {"Voyage reranker (unavailable)", "BGE reranker (unavailable)"},
+            )
+            self.splade_check = QCheckBox("Enable learned sparse SPLADE retrieval")
+            self.splade_check.setEnabled(False)
+            self.splade_status = QLabel("Checking CUDA and VRAM capability…")
+            self.splade_status.setObjectName("mutedLabel")
+            splade_row = QWidget()
+            splade_layout = QHBoxLayout(splade_row)
+            splade_layout.setContentsMargins(0, 0, 0, 0)
+            splade_layout.addWidget(self.splade_check)
+            splade_layout.addWidget(self.splade_status, 1)
+            self.judge_combo = QComboBox()
+            self.judge_combo.addItems(["Disabled", "Local entailment judge", "Remote LLM judge"])
+            self.reasoning_combo = QComboBox()
+            self.reasoning_combo.addItems(["Disabled", "Enabled"])
+            self.model_edit = QLineEdit("hashing-64")
+            self.model_edit.setPlaceholderText("Embedder model identifier or pinned alias")
+            self.reranker_model_edit = QLineEdit("cross-encoder/ms-marco-MiniLM-L-6-v2")
+            self.reranker_model_edit.setPlaceholderText("Local reranker model id or artifact path")
+            self.arm_combo = QComboBox()
+            self.arm_combo.addItems(["Threshold", "Stacked", "Entail only"])
+            form.addRow("Embedder", self.embedder_combo)
+            form.addRow("Re-ranker", self.reranker_combo)
+            form.addRow("SPLADE", splade_row)
+            form.addRow("Judge", self.judge_combo)
+            form.addRow("Reasoning", self.reasoning_combo)
+            form.addRow("Embedder model", self.model_edit)
+            form.addRow("Reranker model/path", self.reranker_model_edit)
+            form.addRow("Calibration arm", self.arm_combo)
+            layout.addWidget(pipeline)
+
+            self.configuration_warning = QLabel(
+                "BGE and Voyage remain visible as unavailable options. Any new configuration set requires a complete corpus calibration before it can be activated."
+            )
+            self.configuration_warning.setObjectName("warningLabel")
+            self.configuration_warning.setWordWrap(True)
+            layout.addWidget(self.configuration_warning)
+            config_actions = QHBoxLayout()
+            config_actions.addStretch()
+            save = QPushButton("Save configuration")
+            save.clicked.connect(self._save_configuration)
+            config_actions.addWidget(save)
+            layout.addLayout(config_actions)
+            layout.addStretch()
+
+            for control in (
+                self.embedder_combo,
+                self.reranker_combo,
+                self.judge_combo,
+                self.reasoning_combo,
+                self.arm_combo,
+            ):
+                control.currentTextChanged.connect(self._configuration_changed)
+            self.splade_check.stateChanged.connect(self._configuration_changed)
+            self.model_edit.textChanged.connect(self._configuration_changed)
+            self.reranker_model_edit.textChanged.connect(self._configuration_changed)
+            self._load_config_type(self._active_config_type)
+            self._run(self._probe_hardware, self._hardware_probe_done, self._hardware_probe_failed)
+            return page
+
+        def _disable_config_items(self, combo: QComboBox, labels: set[str]) -> None:
+            model = combo.model()
+            for index in range(combo.count()):
+                if combo.itemText(index) not in labels:
+                    continue
+                item = getattr(model, "item", lambda _index: None)(index)
+                if item is not None:
+                    item.setEnabled(False)
+                    item.setToolTip("Unavailable in this RE-call build")
+
+        def _config_controls(self) -> tuple[Any, ...]:
+            return (
+                self.embedder_combo,
+                self.reranker_combo,
+                self.splade_check,
+                self.judge_combo,
+                self.reasoning_combo,
+                self.model_edit,
+                self.reranker_model_edit,
+                self.arm_combo,
+            )
+
+        def _capture_config(self) -> dict[str, Any]:
+            return {
+                "embedder": self.embedder_combo.currentText(),
+                "reranker": self.reranker_combo.currentText(),
+                "splade": self.splade_check.isChecked(),
+                "judge": self.judge_combo.currentText(),
+                "reasoning": self.reasoning_combo.currentText(),
+                "model": self.model_edit.text(),
+                "reranker_model": self.reranker_model_edit.text(),
+                "arm": self.arm_combo.currentText(),
+            }
+
+        def _load_config_type(self, source_type: str) -> None:
+            values = self._pipeline_configs[source_type]
+            controls = self._config_controls()
+            for control in controls:
+                control.blockSignals(True)
+            self.embedder_combo.setCurrentText(str(values["embedder"]))
+            self.reranker_combo.setCurrentText(str(values["reranker"]))
+            self.splade_check.setChecked(bool(values["splade"]))
+            self.judge_combo.setCurrentText(str(values["judge"]))
+            self.reasoning_combo.setCurrentText(str(values["reasoning"]))
+            self.model_edit.setText(str(values["model"]))
+            self.reranker_model_edit.setText(str(values["reranker_model"]))
+            self.arm_combo.setCurrentText(str(values["arm"]))
+            for control in controls:
+                control.blockSignals(False)
+
+        def _switch_config_type(self, source_type: str) -> None:
+            if source_type == self._active_config_type:
+                return
+            self._pipeline_configs[self._active_config_type] = self._capture_config()
+            self._active_config_type = source_type
+            self._load_config_type(source_type)
+            self.configuration_warning.setText(
+                f"{source_type} has its own pipeline set. BGE and Voyage are unavailable. Any change requires a complete calibration."
+            )
+
+        def _build_calibration_page(self) -> QWidget:
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            title = QLabel("CORPUS CALIBRATION")
+            title.setObjectName("pageTitle")
+            layout.addWidget(title)
+            safety = QLabel(
+                "Select one row at a time. Run calibration test creates a draft only. It does not activate a new threshold. Review the draft before publishing it."
+            )
+            safety.setObjectName("warningLabel")
+            safety.setWordWrap(True)
+            layout.addWidget(safety)
+            self.calibration_table = QTableWidget(0, 6)
+            self.calibration_table.setObjectName("calibrationTable")
+            self.calibration_table.setHorizontalHeaderLabels(
+                ["PROJECT", "CORPUS", "STATUS", "LAST CALIBRATED", "CORPUS FINGERPRINT", "ACTIONS"]
+            )
+            self.calibration_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            self.calibration_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            self.calibration_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            self.calibration_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            self.calibration_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+            self.calibration_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Fixed)
+            self.calibration_table.setColumnWidth(5, 176)
+            self.calibration_table.verticalHeader().setVisible(False)
+            self.calibration_table.verticalHeader().setDefaultSectionSize(42)
+            self.calibration_table.setShowGrid(False)
+            self.calibration_table.setItemDelegate(_FocuslessItemDelegate(self.calibration_table))
+            self.calibration_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.calibration_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.calibration_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.calibration_table.itemSelectionChanged.connect(self._sync_calibration_action_surfaces)
+            table_frame = QWidget()
+            table_stack = QGridLayout(table_frame)
+            table_stack.setContentsMargins(0, 0, 0, 0)
+            table_stack.setSpacing(0)
+            table_stack.addWidget(self.calibration_table, 0, 0)
+
+            refresh_actions = QFrame()
+            refresh_actions.setObjectName("queueActions")
+            refresh_layout = QHBoxLayout(refresh_actions)
+            refresh_layout.setContentsMargins(6, 5, 6, 5)
+            refresh_layout.setSpacing(6)
+            self.refresh_calibration_button = QPushButton("Refresh")
+            self.refresh_calibration_button.clicked.connect(self._refresh_calibration_table)
+            refresh_layout.addWidget(self.refresh_calibration_button)
+            self.cancel_calibration_button = QPushButton("Cancel")
+            self.cancel_calibration_button.clicked.connect(self._cancel_selected_calibrations)
+            refresh_layout.addWidget(self.cancel_calibration_button)
+            table_stack.addWidget(
+                refresh_actions,
+                0,
+                0,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
+            )
+
+            run_actions = QFrame()
+            run_actions.setObjectName("queueActions")
+            run_layout = QHBoxLayout(run_actions)
+            run_layout.setContentsMargins(6, 5, 6, 5)
+            run_layout.setSpacing(6)
+            self.run_selected_calibration_button = QPushButton("Run")
+            self.run_selected_calibration_button.clicked.connect(self._run_selected_calibration)
+            run_layout.addWidget(self.run_selected_calibration_button)
+            table_stack.addWidget(
+                run_actions,
+                0,
+                0,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
+            )
+            layout.addWidget(table_frame, 1)
+            self.calibration_page_status = QLabel("")
+            self.calibration_page_status.setObjectName("mutedLabel")
+            layout.addWidget(self.calibration_page_status)
+            return page
+
+        def _build_settings_page(self) -> QWidget:
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            title = QLabel("SETTINGS")
+            title.setObjectName("pageTitle")
+            layout.addWidget(title)
+            user_settings = QGroupBox("User settings")
+            user_form = QFormLayout(user_settings)
+            self.language_combo = QComboBox()
+            self.language_combo.addItems(["English", "Italiano", "Deutsch", "Español"])
+            self.language_combo.currentTextChanged.connect(
+                lambda language: self.settings_status.setText(f"Language preference set to {language}.")
+            )
+            user_form.addRow("Language", self.language_combo)
+            layout.addWidget(user_settings)
+
+            provider_keys = QGroupBox("Provider API keys")
+            provider_layout = QHBoxLayout(provider_keys)
+            key_form = QFormLayout()
+            self.openrouter_key_edit = QLineEdit()
+            self.openrouter_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.openrouter_key_edit.setPlaceholderText("OpenRouter key")
+            self.voyage_key_edit = QLineEdit()
+            self.voyage_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.voyage_key_edit.setPlaceholderText("Voyage key")
+            self.openai_key_edit = QLineEdit()
+            self.openai_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.openai_key_edit.setPlaceholderText("OpenAI key")
+            key_form.addRow("OpenRouter", self.openrouter_key_edit)
+            key_form.addRow("Voyage", self.voyage_key_edit)
+            key_form.addRow("OpenAI", self.openai_key_edit)
+            key_actions = QHBoxLayout()
+            key_actions.addStretch()
+            save_keys = QPushButton("Save API keys")
+            save_keys.clicked.connect(self._save_api_keys)
+            key_actions.addWidget(save_keys)
+            key_form.addRow("", key_actions)
+            provider_layout.addLayout(key_form, 2)
+            layout.addWidget(provider_keys)
+
+            updates = QGroupBox("RE-call updates")
+            update_layout = QHBoxLayout(updates)
+            update_main = QVBoxLayout()
+            self.update_result_label = QLabel("No release check has been run from this page.")
+            self.update_result_label.setObjectName("mutedLabel")
+            self.update_result_label.setWordWrap(True)
+            update_actions = QHBoxLayout()
+            self.check_update_button = QPushButton("Check for updates")
+            self.check_update_button.clicked.connect(self._check_update_from_settings)
+            self.apply_update_button = QPushButton("Apply update")
+            self.apply_update_button.setEnabled(False)
+            self.apply_update_button.clicked.connect(self._apply_update_from_settings)
+            update_actions.addWidget(self.check_update_button)
+            update_actions.addWidget(self.apply_update_button)
+            update_actions.addStretch()
+            update_main.addLayout(update_actions)
+            update_layout.addLayout(update_main, 2)
+            update_info = QVBoxLayout()
+            self.version_label = QLabel(f"Client version: {self._current_version()}")
+            update_info.addWidget(self.version_label)
+            self.update_result_label.setMaximumWidth(250)
+            update_info.addWidget(self.update_result_label)
+            update_info.addStretch()
+            update_layout.addLayout(update_info, 1)
+            layout.addWidget(updates)
+
+            info = QGroupBox("Runtime information")
+            info_layout = QHBoxLayout(info)
+            info_form = QFormLayout()
+            info_form.addRow("Endpoint / compose", QLabel(self.profile.endpoint or self.profile.compose_file or "Not configured"))
+            info_form.addRow("Pinned RE-call version", QLabel(self.profile.pinned_version or "Not pinned"))
+            info_layout.addLayout(info_form, 2)
+            runtime_info = QVBoxLayout()
+            runtime_caption = QLabel("Runtime")
+            runtime_caption.setObjectName("mutedLabel")
+            runtime_info.addWidget(runtime_caption)
+            runtime_value = QLabel(self.profile.mode.value)
+            runtime_value.setObjectName("successLabel")
+            runtime_info.addWidget(runtime_value)
+            self.settings_status = QLabel("Settings are stored locally for this prototype.")
+            self.settings_status.setObjectName("mutedLabel")
+            self.settings_status.setWordWrap(True)
+            self.settings_status.setMaximumWidth(250)
+            runtime_info.addSpacing(8)
+            runtime_info.addWidget(self.settings_status)
+            runtime_info.addStretch()
+            info_layout.addLayout(runtime_info, 1)
+            layout.addWidget(info)
+            layout.addStretch()
+            return page
+
+        def _save_api_keys(self) -> None:
+            self._api_keys = {
+                "OpenRouter": self.openrouter_key_edit.text().strip(),
+                "Voyage": self.voyage_key_edit.text().strip(),
+                "OpenAI": self.openai_key_edit.text().strip(),
+            }
+            self.settings_status.setText(
+                "API keys saved for this session. They will be used by the configured provider when the installer secure store is connected."
+            )
+
+        def _configuration_changed(self, *_args: Any) -> None:
+            self._config_dirty = True
+            self._calibration_required = True
+            self.configuration_warning.setText(
+                "Configuration changed. Save it, then run a complete calibration before activating the new set."
+            )
+
+        def _save_configuration(self) -> None:
+            if self.splade_check.isChecked() and not self.splade_check.isEnabled():
+                self.status.setText("SPLADE cannot be enabled because this machine does not meet the CUDA and VRAM requirements.")
+                return
+            forbidden = ("bge", "voyage")
+            selected_models = (self.model_edit.text().lower(), self.reranker_model_edit.text().lower())
+            if any(token in model for model in selected_models for token in forbidden):
+                self.status.setText("BGE and Voyage models are not available in this RE-call configuration.")
+                return
+            self._pipeline_configs[self._active_config_type] = self._capture_config()
+            self._config_dirty = False
+            self._calibration_required = True
+            self.configuration_warning.setText(
+                f"{self._active_config_type} configuration saved. A complete calibration is required before this set can be activated."
+            )
+            self.status.setText("Configuration saved. Open Calibration to certify the new set.")
+
+        def _probe_hardware(self) -> Any:
+            from recall.wizard.probe import probe_system
+
+            return probe_system()
+
+        def _hardware_probe_done(self, result: Any) -> None:
+            from recall.wizard.probe import splade_is_feasible
+
+            hardware = getattr(result, "hardware", None)
+            cuda = bool(getattr(hardware, "cuda_available", False))
+            vram = getattr(result, "cuda_vram_bytes", None)
+            feasible = splade_is_feasible(cuda_available=cuda, vram_bytes=vram)
+            self.splade_check.setEnabled(feasible)
+            if feasible:
+                gib = vram / (1024**3) if isinstance(vram, int) else 0
+                self.splade_status.setText(f"CUDA available, {gib:.1f} GiB VRAM detected")
+                self.splade_status.setObjectName("successLabel")
+            else:
+                self.splade_status.setText("Unavailable: CUDA GPU with at least 6 GiB VRAM is required")
+            self.splade_status.style().unpolish(self.splade_status)
+            self.splade_status.style().polish(self.splade_status)
+
+        def _hardware_probe_failed(self, message: str) -> None:
+            self.splade_check.setEnabled(False)
+            self.splade_status.setText(f"Hardware check failed: {message}")
+
+        def _calibration_targets(self) -> list[tuple[str, str, str]]:
+            projects = [(name, name) for name in self._project_names]
+            projects.append(("All projects", self.profile.shared_profile))
+            targets: list[tuple[str, str, str]] = []
+            for label, project in projects:
+                for corpus, suffix in (("Documents", "docs"), ("Memory", "docs"), ("Code", "code")):
+                    targets.append((label, corpus, f"{project}-{suffix}"))
+            return targets
+
+        def _refresh_calibration_table(self) -> None:
+            if self._calibration_running:
+                self.calibration_page_status.setText("A calibration is already running. Wait for it to finish before refreshing.")
+                return
+            targets = self._calibration_targets()
+            self._calibration_targets_by_row = targets
+            self.calibration_table.setRowCount(len(targets))
+            for row, (project, corpus, physical_tenant) in enumerate(targets):
+                for column, value in enumerate((project, corpus, "Checking…", "", "")):
+                    self.calibration_table.setItem(row, column, QTableWidgetItem(value))
+                self._set_calibration_actions(row, physical_tenant, None)
+            if targets:
+                self.calibration_table.selectRow(0)
+            self.calibration_page_status.setText("Reading calibration artifacts and corpus metadata…")
+            self._run(self._fetch_calibrations, self._calibrations_loaded, self._calibration_failed)
+
+        def _fetch_calibrations(self) -> list[tuple[int, str, Any]]:
+            cache: dict[str, Any] = {}
+            results: list[tuple[int, str, Any]] = []
+            for row, (_project, _corpus, physical_tenant) in enumerate(self._calibration_targets_by_row):
+                if physical_tenant not in cache:
+                    cache[physical_tenant] = self.runtime.calibration_status(physical_tenant)
+                results.append((row, physical_tenant, cache[physical_tenant]))
+            return results
+
+        def _calibrations_loaded(self, results: list[tuple[int, str, Any]]) -> None:
+            for row, physical_tenant, snapshot in results:
+                self._calibration_results[physical_tenant] = snapshot
+                self._populate_calibration_row(row, physical_tenant, snapshot)
+            self.calibration_page_status.setText("")
+            self._set_calibration_controls_enabled(True)
+
+        def _calibration_failed(self, message: str) -> None:
+            self._calibration_running = False
+            self._set_calibration_controls_enabled(True)
+            self.calibration_page_status.setText(f"Calibration status unavailable: {message}")
+
+        def _populate_calibration_row(self, row: int, physical_tenant: str, snapshot: Any) -> None:
+            raw = getattr(snapshot, "raw", {}) or {}
+            status = str(getattr(snapshot, "status", "unknown"))
+            if self._needs_calibration(snapshot):
+                status = "RECALIBRATION SUGGESTED"
+            elif status == "certified":
+                status = "CERTIFIED"
+            last = raw.get("published_at") or raw.get("calibrated_at") or raw.get("created_at") or "Not calibrated"
+            fingerprint = raw.get("corpus_fingerprint") or "Not available"
+            self.calibration_table.setItem(row, 2, QTableWidgetItem(status))
+            self.calibration_table.setItem(row, 3, QTableWidgetItem(str(last)))
+            self.calibration_table.setItem(row, 4, QTableWidgetItem(str(fingerprint)))
+            self._set_calibration_actions(row, physical_tenant, snapshot)
+
+        def _needs_calibration(self, snapshot: Any) -> bool:
+            status = str(getattr(snapshot, "status", "unknown")).lower()
+            raw = getattr(snapshot, "raw", {}) or {}
+            if self._calibration_required or self._config_dirty:
+                return True
+            if raw.get("corpus_changed") is True or raw.get("stale") is True:
+                return True
+            active_generation = raw.get("active_generation_id") or raw.get("current_generation_id")
+            if active_generation and getattr(snapshot, "generation_id", None) and active_generation != snapshot.generation_id:
+                return True
+            active_fingerprint = raw.get("active_corpus_fingerprint") or raw.get("current_corpus_fingerprint")
+            if active_fingerprint and raw.get("corpus_fingerprint") and active_fingerprint != raw.get("corpus_fingerprint"):
+                return True
+            return status in {"missing", "stale", "rejected", "superseded"}
+
+        def _set_calibration_actions(self, row: int, physical_tenant: str, snapshot: Any) -> None:
+            cell = QWidget()
+            cell.setObjectName("calibrationActionsCell")
+            actions = QHBoxLayout(cell)
+            actions.setContentsMargins(2, 2, 2, 2)
+            cell.setMinimumWidth(176)
+            run = QPushButton("Run")
+            run.setObjectName("tableActionButton")
+            run.setFixedSize(58, 30)
+            run.clicked.connect(lambda _checked=False, target_row=row: self._run_calibration_row(target_row))
+            actions.addWidget(run)
+            publish = QPushButton("Publish")
+            publish.setObjectName("tableActionButton")
+            publish.setFixedSize(82, 30)
+            publish.setEnabled(bool(getattr(snapshot, "calibration_id", None)))
+            publish.clicked.connect(
+                lambda _checked=False, target_row=row: self._publish_calibration_row(target_row)
+            )
+            actions.addWidget(publish)
+            self.calibration_table.setCellWidget(row, 5, cell)
+            self._sync_calibration_action_surfaces()
+
+        def _sync_calibration_action_surfaces(self) -> None:
+            selected_rows = {
+                index.row() for index in self.calibration_table.selectionModel().selectedRows()
+            }
+            for row in range(self.calibration_table.rowCount()):
+                cell = self.calibration_table.cellWidget(row, 5)
+                if cell is None:
+                    continue
+                background = "#2e2b1d" if row in selected_rows else "#0c0e0d"
+                cell.setStyleSheet(f"background: {background};")
+
+        def _run_calibration_row(self, row: int) -> None:
+            if row >= len(self._calibration_targets_by_row):
+                return
+            if self._calibration_running:
+                self.calibration_page_status.setText("Another calibration is already running. Wait for it to finish.")
+                return
+            project, corpus, physical_tenant = self._calibration_targets_by_row[row]
+            confirmation = QMessageBox.question(
+                self,
+                "Start calibration test?",
+                f"Run a calibration test for {project} / {corpus}?\n\nThis creates a draft artifact and uses runtime resources. It will not activate anything until you review and publish the draft.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirmation != QMessageBox.StandardButton.Yes:
+                self.calibration_page_status.setText("Calibration test cancelled. No artifact was changed.")
+                return
+            self._calibration_running = True
+            self._set_calibration_controls_enabled(False)
+            self.calibration_page_status.setText(f"Running real calibration for {corpus} in {physical_tenant}…")
+            self._run(
+                lambda: self.runtime.run_calibration(physical_tenant),
+                lambda snapshot: self._calibration_row_done(row, physical_tenant, snapshot),
+                self._calibration_failed,
+            )
+
+        def _calibration_row_done(self, row: int, physical_tenant: str, snapshot: Any) -> None:
+            self._calibration_running = False
+            self._calibration_results[physical_tenant] = snapshot
+            self.calibration_snapshot = snapshot
+            self._populate_calibration_row(row, physical_tenant, snapshot)
+            self._set_calibration_controls_enabled(True)
+            self.calibration_page_status.setText(
+                f"Calibration draft created for {physical_tenant}. Publish it after reviewing the result."
+            )
+
+        def _publish_calibration_row(self, row: int) -> None:
+            if row >= len(self._calibration_targets_by_row):
+                return
+            _project, corpus, physical_tenant = self._calibration_targets_by_row[row]
+            snapshot = self._calibration_results.get(physical_tenant)
+            calibration_id = getattr(snapshot, "calibration_id", None)
+            if not calibration_id:
+                self.calibration_page_status.setText(f"Run calibration for {corpus} before publishing.")
+                return
+            if self._calibration_running:
+                self.calibration_page_status.setText("Another calibration is already running. Wait for it to finish.")
+                return
+            confirmation = QMessageBox.question(
+                self,
+                "Publish calibration draft?",
+                f"Publish the calibration draft for {corpus} in {physical_tenant}?\n\nPublishing activates this calibration for retrieval. Confirm only after reviewing the draft results.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirmation != QMessageBox.StandardButton.Yes:
+                self.calibration_page_status.setText("Publish cancelled. The draft remains unchanged.")
+                return
+            self._calibration_running = True
+            self._set_calibration_controls_enabled(False)
+            self._run(
+                lambda: self.runtime.publish_calibration(physical_tenant, calibration_id),
+                lambda result: self._calibration_row_done(row, physical_tenant, result),
+                self._calibration_failed,
+            )
+
+        def _run_selected_calibration(self) -> None:
+            row = self.calibration_table.currentRow()
+            if row < 0:
+                self.calibration_page_status.setText("Select one corpus row before starting calibration.")
+                return
+            self._run_calibration_row(row)
+
+        def _cancel_selected_calibrations(self) -> None:
+            rows = sorted(
+                {index.row() for index in self.calibration_table.selectionModel().selectedRows()}
+            )
+            if not rows:
+                self.calibration_page_status.setText("Select one or more corpus rows before cancelling.")
+                return
+            if self._calibration_running:
+                self.calibration_page_status.setText("A calibration is already running. Wait for it to finish before cancelling.")
+                return
+            count = len(rows)
+            confirmation = QMessageBox.question(
+                self,
+                "Confirm",
+                f"Cancel the selected calibration action{'s' if count != 1 else ''}?\n\nNo corpus data or published calibration artifact will be deleted.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirmation != QMessageBox.StandardButton.Yes:
+                self.calibration_page_status.setText("Cancellation cancelled. The calibration selection is unchanged.")
+                return
+            self.calibration_table.clearSelection()
+            self.calibration_table.setCurrentCell(-1, -1)
+            self.calibration_page_status.setText(
+                f"Cancelled {count} selected calibration action{'s' if count != 1 else ''}. No corpus data was changed."
+            )
+
+        def _set_calibration_controls_enabled(self, enabled: bool) -> None:
+            self.calibration_table.setEnabled(enabled)
+
+        def _current_version(self) -> str:
+            try:
+                return version("recall-rag")
+            except PackageNotFoundError:
+                return self.profile.pinned_version or "0.0.0"
+
+        def _check_update_from_settings(self) -> None:
+            self.check_update_button.setEnabled(False)
+            self.update_result_label.setText("Checking signed release metadata…")
+            self._run(self._check_update_safely, self._settings_update_done, self._settings_update_failed)
+
+        def _settings_update_done(self, release: Any) -> None:
+            self.check_update_button.setEnabled(True)
+            self._update_checked(release)
+            if release is None:
+                self.update_result_label.setText("No update information is available.")
+                return
+            self.update_result_label.setText(
+                f"Latest release: {release.version} ({release.asset_name or 'installer asset'})."
+            )
+
+        def _settings_update_failed(self, message: str) -> None:
+            self.check_update_button.setEnabled(True)
+            self.update_result_label.setText(f"Update check failed: {message}")
+
+        def _apply_update_from_settings(self) -> None:
+            release = self._latest_release
+            if release is None:
+                return
+            self.apply_update_button.setEnabled(False)
+            self.update_result_label.setText(f"Applying RE-call {release.version}…")
+            self._run(
+                lambda: self.runtime.apply_update(release),
+                self._update_applied,
+                self._update_apply_failed,
+            )
+
+        def _update_applied(self, result: Any) -> None:
+            self.update_result_label.setText("Update applied and runtime health checked successfully.")
+            self.status.setText("RE-call update applied successfully.")
+
+        def _update_apply_failed(self, message: str) -> None:
+            self.apply_update_button.setEnabled(True)
+            self.update_result_label.setText(f"Update was not applied: {message}")
+
+        def _scope_data(self) -> dict[str, Any]:
+            data = self.scope.currentData()
+            if isinstance(data, dict):
+                return data
+            return {"tenant": self.profile.default_tenant, "shared": bool(data)}
+
+        def _populate_scopes(self, tenants: list[str]) -> None:
+            names: list[str] = []
+            for raw in tenants:
+                name = _project_name(str(raw))
+                if name and name != self.profile.shared_profile and name not in names:
+                    names.append(name)
+            if self.profile.default_tenant not in names:
+                names.insert(0, self.profile.default_tenant)
+            self._project_names = names
+            if hasattr(self, "github_tenant_combo"):
+                self._populate_github_tenants(names)
+            self.scope.blockSignals(True)
+            self.scope.clear()
+            for name in names:
+                self.scope.addItem(name, {"tenant": name, "shared": False})
+            self.scope.addItem("All projects (shared memory)", {"tenant": self.profile.shared_profile, "shared": True})
+            self.scope.addItem("+ Add project", {"action": "add"})
+            preferred = self.scope.findText(self.profile.default_tenant)
+            self.scope.setCurrentIndex(preferred if preferred >= 0 else 0)
+            self._last_scope_index = self.scope.currentIndex()
+            self.scope.blockSignals(False)
+
+        def _scope_changed(self, index: int) -> None:
+            data = self.scope.itemData(index)
+            if isinstance(data, dict) and data.get("action") == "add":
+                name, accepted = QInputDialog.getText(self, "Add project", "Project name")
+                clean_name = _project_name(name) if accepted else ""
+                if clean_name:
+                    if clean_name not in self._project_names:
+                        self._project_names.append(clean_name)
+                        self._populate_scopes(self._project_names)
+                    selected = self.scope.findText(clean_name)
+                    if selected >= 0:
+                        self.scope.setCurrentIndex(selected)
+                else:
+                    self.scope.blockSignals(True)
+                    self.scope.setCurrentIndex(self._last_scope_index)
+                    self.scope.blockSignals(False)
+                return
+            self._last_scope_index = index
+            self._refresh_table()
+
+        def _populate_github_tenants(self, tenants: list[str]) -> None:
+            if not hasattr(self, "github_tenant_combo"):
+                return
+            current = self.github_tenant_combo.currentData()
+            self.github_tenant_combo.blockSignals(True)
+            self.github_tenant_combo.clear()
+            for name in tenants:
+                self.github_tenant_combo.addItem(name, {"tenant": name, "shared": False})
+            self.github_tenant_combo.addItem(
+                "All projects (shared memory)",
+                {"tenant": self.profile.shared_profile, "shared": True},
+            )
+            preferred = 0
+            if isinstance(current, dict):
+                for index in range(self.github_tenant_combo.count()):
+                    if self.github_tenant_combo.itemData(index) == current:
+                        preferred = index
+                        break
+            self.github_tenant_combo.setCurrentIndex(preferred)
+            self.github_tenant_combo.blockSignals(False)
+
+        def _github_scope_category(self) -> SourceCategory | None:
+            choice = self.github_scope_combo.currentText()
+            if choice == "Code only":
+                return SourceCategory.CODE
+            if choice == "Documents only":
+                return SourceCategory.DOCUMENTS
+            return None
+
+        def _github_scope_data(self) -> dict[str, Any]:
+            data = self.github_tenant_combo.currentData()
+            if isinstance(data, dict):
+                return dict(data)
+            return {"tenant": self.profile.default_tenant, "shared": False}
+
+        def _download_github(self) -> None:
+            url = self.github_url_edit.text().strip()
+            if not url:
+                self.github_status.setText("Enter a GitHub repository URL first.")
+                self.github_url_edit.setFocus()
+                return
+            self.github_download_button.setEnabled(False)
+            self.github_approve_button.setEnabled(False)
+            self.github_status.setText("Downloading repository and filtering supported files…")
+            category = self._github_scope_category()
+            self._run(
+                lambda: download_repository(url, category),
+                self._github_downloaded,
+                self._github_download_failed,
+            )
+
+        def _github_downloaded(self, result: GithubImport) -> None:
+            self.github_download_button.setEnabled(True)
+            self.github_import = result
+            self.github_root = result.root
+            self.github_pending = list(result.files)
+            self._refresh_github_table()
+            self.github_approve_button.setEnabled(bool(self.github_pending))
+            self.github_status.setText(
+                f"Downloaded {len(self.github_pending)} supported file(s) from "
+                f"{result.owner}/{result.repository}. Review the list, then approve it."
+            )
+
+        def _github_download_failed(self, message: str) -> None:
+            self.github_download_button.setEnabled(True)
+            self.github_approve_button.setEnabled(False)
+            self.github_status.setText(message)
+            QMessageBox.warning(self, "GitHub download", message)
+
+        def _refresh_github_table(self) -> None:
+            tenant = self._scope_label(self._github_scope_data())
+            self.github_table.setRowCount(0)
+            for path, category in self.github_pending:
+                row = self.github_table.rowCount()
+                self.github_table.insertRow(row)
+                relative = path.name
+                if self.github_root is not None:
+                    try:
+                        relative = str(path.relative_to(self.github_root))
+                    except ValueError:
+                        relative = path.name
+                self.github_table.setItem(row, 0, QTableWidgetItem(relative))
+                self.github_table.setItem(row, 1, QTableWidgetItem(tenant))
+                self.github_table.setItem(row, 2, QTableWidgetItem(display_type(path, category)))
+
+        def _clear_github(self) -> None:
+            self.github_import = None
+            self.github_root = None
+            self.github_pending.clear()
+            self.github_table.setRowCount(0)
+            self.github_approve_button.setEnabled(False)
+            self.github_status.setText("Enter a repository URL to begin.")
+
+        def _approve_github(self) -> None:
+            if not self.github_pending:
+                self.github_status.setText("Download a repository before approving files.")
+                return
+            scope = self._github_scope_data()
+            count = len(self.github_pending)
+            self.pending_files.extend(self.github_pending)
+            self.pending_scopes.extend(dict(scope) for _ in self.github_pending)
+            self._refresh_table()
+            self.start_button.setEnabled(True)
+            self.status.setText(
+                f"{count} GitHub file(s) approved. Review the Main queue, then start indexing."
+            )
+            self._show_page(0)
+
+        def _accept_drop(self, raw_paths: list[str]) -> None:
+            detected: list[tuple[Path, SourceCategory]] = []
+            for path in collect_files(raw_paths, None):
+                category = classify(path) or SourceCategory.MEMORY
+                detected.append((path, category))
+            if not detected:
+                self.status.setText(
+                    "No supported files were found. Use UTF-8 text or code files (.md, .txt, .py, .js, and similar)."
+                )
+                return
+            default_scope = dict(self._scope_data())
+            self.pending_files.extend(detected)
+            self.pending_scopes.extend(dict(default_scope) for _ in detected)
+            self._refresh_table()
+            self.start_button.setEnabled(True)
+            self.status.setText(f"{len(detected)} file(s) added. Confirm the tenant, then start indexing.")
+
+        def _browse(self) -> None:
+            chosen, _ = QFileDialog.getOpenFileNames(self, "Choose source files")
+            if chosen:
+                self._accept_drop(chosen)
+
+        def _refresh_table(self) -> None:
+            header = self.files.horizontalHeader()
+            sorting = self.files.isSortingEnabled()
+            sort_column = header.sortIndicatorSection()
+            sort_order = header.sortIndicatorOrder()
+            self.files.setSortingEnabled(False)
+            self.files.setRowCount(0)
+            for pending_index, (path, category) in enumerate(self.pending_files):
+                scope = self._pending_scope(pending_index)
+                tenant = self._scope_label(scope)
+                row = self.files.rowCount()
+                self.files.insertRow(row)
+                file_item = QTableWidgetItem(path.name)
+                file_item.setData(Qt.ItemDataRole.UserRole, pending_index)
+                self.files.setItem(row, 0, file_item)
+                self.files.setItem(row, 1, _HiddenSortItem(tenant))
+                self.files.setItem(row, 2, QTableWidgetItem(display_type(path, category)))
+                tenant_combo = QComboBox()
+                tenant_combo.setObjectName("tenantCellCombo")
+                tenant_combo.addItems(self._tenant_options())
+                tenant_combo.blockSignals(True)
+                tenant_combo.setCurrentText(tenant)
+                tenant_combo.blockSignals(False)
+                tenant_combo.setFixedHeight(30)
+                tenant_combo.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                tenant_combo.currentTextChanged.connect(
+                    lambda value, index=pending_index: self._tenant_changed(index, value)
+                )
+                self.files.setCellWidget(row, 1, tenant_combo)
+            self.files.setSortingEnabled(sorting)
+            if sorting and sort_column >= 0:
+                self.files.sortItems(sort_column, sort_order)
+
+        def _update_file_sort_indicator(self, section: int, order: Qt.SortOrder) -> None:
+            header = self.files.horizontalHeader()
+            header.blockSignals(True)
+            header.setSortIndicatorShown(order == Qt.SortOrder.AscendingOrder)
+            if isinstance(header, _FileHeader):
+                header.setDescendingSection(
+                    section if order == Qt.SortOrder.DescendingOrder else -1
+                )
+            for column, label in enumerate(("FILE NAME", "TENANT", "TYPE")):
+                item = self.files.horizontalHeaderItem(column)
+                if item is None:
+                    continue
+                item.setText(label)
+            header.blockSignals(False)
+
+        def _tenant_options(self) -> list[str]:
+            return [*self._project_names, "All projects (shared memory)"]
+
+        def _scope_label(self, scope: dict[str, Any]) -> str:
+            if bool(scope.get("shared")):
+                return "All projects (shared memory)"
+            return str(scope.get("tenant") or self.profile.default_tenant)
+
+        def _scope_from_label(self, label: str) -> dict[str, Any]:
+            shared = label == "All projects (shared memory)"
+            return {
+                "tenant": self.profile.shared_profile if shared else label,
+                "shared": shared,
+            }
+
+        def _pending_scope(self, pending_index: int) -> dict[str, Any]:
+            if pending_index < len(self.pending_scopes):
+                return self.pending_scopes[pending_index]
+            return dict(self._scope_data())
+
+        def _pending_index_for_row(self, row: int) -> int | None:
+            item = self.files.item(row, 0)
+            if item is None:
+                return None
+            value = item.data(Qt.ItemDataRole.UserRole)
+            return value if isinstance(value, int) else None
+
+        def _selected_pending_indices(self) -> list[int]:
+            indices = {
+                pending_index
+                for selected in self.files.selectionModel().selectedRows()
+                if (pending_index := self._pending_index_for_row(selected.row())) is not None
+            }
+            return sorted(indices)
+
+        def _select_pending_indices(self, pending_indices: set[int]) -> None:
+            selection = self.files.selectionModel()
+            selection.clearSelection()
+            for row in range(self.files.rowCount()):
+                pending_index = self._pending_index_for_row(row)
+                if pending_index not in pending_indices:
+                    continue
+                model_index = self.files.model().index(row, 0)
+                selection.select(
+                    model_index,
+                    QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+                )
+
+        def _tenant_changed(self, pending_index: int, label: str) -> None:
+            if not 0 <= pending_index < len(self.pending_files):
+                return
+            selected_indices = set(self._selected_pending_indices())
+            targets = selected_indices if pending_index in selected_indices else {pending_index}
+            scope = self._scope_from_label(label)
+            for target in targets:
+                while len(self.pending_scopes) <= target:
+                    self.pending_scopes.append(dict(self._scope_data()))
+                self.pending_scopes[target] = dict(scope)
+            self._refresh_table()
+            self._select_pending_indices(targets)
+            self.status.setText(
+                f"Tenant changed for {len(targets)} file{'s' if len(targets) != 1 else ''}."
+            )
+
+        def _clear_files(self) -> None:
+            self.pending_files.clear()
+            self.pending_scopes.clear()
+            self.files.setRowCount(0)
+            self.start_button.setEnabled(False)
+            self.progress.setValue(0)
+            self.status.setText("Drop files to create an indexing queue.")
+
+        def _cancel_selected_files(self) -> None:
+            pending_indices = self._selected_pending_indices()
+            if not pending_indices:
+                self.status.setText("Select one or more queued files before cancelling.")
+                return
+            count = len(pending_indices)
+            confirmation = QMessageBox.question(
+                self,
+                "Confirm",
+                f"Cancel and remove {count} selected file{'s' if count != 1 else ''} from the queue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirmation != QMessageBox.StandardButton.Yes:
+                self.status.setText("Cancellation cancelled. The queue is unchanged.")
+                return
+            for pending_index in reversed(pending_indices):
+                if 0 <= pending_index < len(self.pending_files):
+                    del self.pending_files[pending_index]
+                    if pending_index < len(self.pending_scopes):
+                        del self.pending_scopes[pending_index]
+            self._refresh_table()
+            self.start_button.setEnabled(bool(self.pending_files))
+            if not self.pending_files:
+                self.progress.setValue(0)
+            self.status.setText(f"Removed {count} file{'s' if count != 1 else ''} from the queue.")
+
+        def _prepare_runtime(self) -> list[str]:
+            self.runtime.start()
+            return self.runtime.list_tenants()
+
+        def _reconnect(self) -> None:
+            self.reconnect_button.setEnabled(False)
+            self.status.setText("Searching for the RE-call runtime…")
+            self._run(self._prepare_runtime, self._runtime_ready, self._runtime_failed)
+
+        def _start_embedding(self) -> None:
+            groups: dict[tuple[SourceCategory, str, bool], list[Path]] = {}
+            for pending_index, (path, category) in enumerate(self.pending_files):
+                scope = self._pending_scope(pending_index)
+                tenant = str(scope.get("tenant") or self.profile.default_tenant)
+                shared = bool(scope.get("shared"))
+                groups.setdefault((category, tenant, shared), []).append(path)
+            self.start_button.setEnabled(False)
+            self.progress.setValue(10)
+            self.status.setText("Indexing is running…")
+            self._run(
+                lambda: [
+                    self.runtime.start_ingest(SourceSelection(category, tuple(paths), tenant, shared))
+                    for (category, tenant, shared), paths in groups.items()
+                ],
+                self._job_done,
+            )
+
+        def _check_calibration(self) -> None:
+            self._run(lambda: self.runtime.calibration_status(self._selected_tenant()), self._show_calibration)
+
+        def _run_calibration(self) -> None:
+            self.status.setText("Preparing calibration draft…")
+            self._run(lambda: self.runtime.run_calibration(self._selected_tenant()), self._show_calibration)
+
+        def _publish_calibration(self) -> None:
+            snapshot = self.calibration_snapshot
+            if snapshot is None or not snapshot.calibration_id:
+                self.status.setText("Run or check calibration before publishing.")
+                return
+            self._run(
+                lambda: self.runtime.publish_calibration(self._selected_tenant(), snapshot.calibration_id),
+                self._show_calibration,
+            )
+
+        def _selected_tenant(self) -> str:
+            scope = self._scope_data()
+            if bool(scope.get("shared")):
+                return f"{self.profile.shared_profile}-docs"
+            tenant = str(scope.get("tenant") or self.profile.default_tenant)
+            return tenant if tenant.endswith("-docs") else f"{tenant}-docs"
+
+        def _show_calibration(self, result: Any) -> None:
+            self.calibration_snapshot = result
+            raw = getattr(result, "raw", {})
+            generation = raw.get("generation_id") or result.generation_id or "none"
+            corpus = raw.get("corpus_fingerprint") or "none"
+            self.status.setText(
+                f"Calibration: {result.status} | generation {generation} | corpus {corpus} | {result.message}"
+            )
+
+        def _run(self, fn: Any, done: Any, failed: Any | None = None) -> None:
+            worker = _Worker(fn)
+            worker.signals.done.connect(done)
+            worker.signals.failed.connect(failed or (lambda message: self._job_failed(message)))
+            self.pool.start(worker)
+
+        def _runtime_ready(self, result: Any) -> None:
+            tenants = result if isinstance(result, list) else []
+            self._populate_scopes(tenants or [self.profile.default_tenant])
+            if self.pending_files:
+                self._refresh_table()
+            self._set_runtime_state(True)
+            self.reconnect_button.setEnabled(True)
+            self.reconnect_button.setVisible(False)
+            self.runtime_label.setText(f"Runtime: {self.profile.mode.value} ready")
+            self.status.setText("Runtime ready. Drop a source to begin.")
+            self._run(self._check_update_safely, self._update_checked)
+
+        def _runtime_failed(self, message: str) -> None:
+            self._set_runtime_state(False)
+            self.reconnect_button.setEnabled(True)
+            self.reconnect_button.setVisible(True)
+            self.status.setText(f"Runtime unavailable: {message}")
+
+        def _set_runtime_state(self, connected: bool) -> None:
+            color = "#39d98a" if connected else "#ef6262"
+            self.connection_light.setStyleSheet(f"background: {color}; border-radius: 5px;")
+            state = "ready" if connected else "disconnected"
+            self.runtime_label.setText(f"Runtime: {self.profile.mode.value} {state}")
+
+        def _open_config(self) -> None:
+            self._show_page(3)
+
+        def _check_update_safely(self) -> Any:
+            try:
+                return self.runtime.check_update()
+            except Exception:  # noqa: BLE001
+                return None
+
+        def _update_checked(self, release: Any) -> None:
+            self._latest_release = release
+            if hasattr(self, "apply_update_button"):
+                self.apply_update_button.setEnabled(False)
+            if release is None:
+                return
+            from recall.desktop.updates import is_newer
+
+            current = self._current_version()
+            newer = is_newer(current, release.version)
+            if hasattr(self, "apply_update_button"):
+                self.apply_update_button.setEnabled(newer)
+            if newer:
+                self.status.setText(
+                    f"RE-call update available: {release.version}. Apply it from Settings."
+                )
+            elif hasattr(self, "update_result_label"):
+                self.update_result_label.setText(f"RE-call {current} is up to date.")
+
+        def _job_done(self, result: Any) -> None:
+            self.start_button.setEnabled(True)
+            self.progress.setValue(100)
+            if isinstance(result, list):
+                self.status.setText(f"Indexed {len(result)} source group(s).")
+            else:
+                self.status.setText(getattr(result, "message", "Indexing completed."))
+
+        def _job_failed(self, message: str) -> None:
+            self.start_button.setEnabled(True)
+            self.status.setText(message)
+            QMessageBox.warning(self, "RE-call", message)
+
+        def closeEvent(self, event: Any) -> None:
+            try:
+                self.pool.waitForDone()
+                self.runtime.stop()
+            finally:
+                event.accept()
+
+
+def run_app(profile: RuntimeProfile) -> int:
+    if QApplication is None:
+        raise RuntimeErrorBase('The desktop extra is required. Install with: pip install "recall-rag[desktop]"')
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(profile)
+    window.show()
+    return app.exec()

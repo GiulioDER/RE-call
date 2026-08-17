@@ -222,11 +222,10 @@ entry, because they send different instructions and can only get different answe
 
 ⚠️ It does not widen what may be WRITTEN. `recall rewrite` validates the derived block against the
 shipped `STATUS_VOCABULARY` at `route_relation`, and a value the trust layer has no meaning for must
-not reach a user's memo because a research run named it. That closure rests on `route_relation`,
-and the entry points are split so the write path's door has no knob to turn: it calls
-`extract_corpus_claims`, which takes no vocabulary, while `recall extract` calls
-`extract_corpus_claims_for_report`, which does. Both delegate to one loop, so the vocabulary
-reaches the outage path's cache lookup and refusal record as well as the per-file call.
+not reach a user's memo because a research run named it. That closure is structural: the write path
+calls `extract_corpus_claims`, which takes no vocabulary, while `recall extract` and the labelling
+arms call `extract_corpus_claims_for_report`, which does. Both delegate to one loop, so the
+vocabulary reaches the outage path's cache lookup and refusal record as well as the per-file call.
 
 ## MCP surface
 
@@ -279,12 +278,6 @@ reports the mismatch rate. A non-zero rate means the cache, not the sampler, is 
 reproducible, which is worth knowing before a cache eviction silently renumbers every proposal id
 derived from it. Recheck is currently written against `1cfc81`'s cache and must be reimplemented
 onto `ardinghelli`'s, which keys on engine plus prompt.
-
-Pre-existing, not introduced here and not fixed here: `recall extract run`'s own extraction pass
-warms the cache that `--recheck` then reads, so a cold-cache run measures within-run repeatability
-(does the second call agree with the first, made moments ago in the same process) rather than
-determinism ACROSS runs, which is the thing worth knowing before trusting a cached id months
-later. This has applied to `corpus_names` since before `--status-vocabulary` existed.
 
 **Treat a non-empty proposal list as a question, not an answer.** The rule based prior narrowed 60
 prose markers to four candidates and all four were wrong. This is a reviewing aid, not an

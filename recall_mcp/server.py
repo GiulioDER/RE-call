@@ -51,10 +51,15 @@ from recall_mcp.oidc import (
 from recall_mcp.service import (
     evidence_memory,
     forget_memory,
+    generation_ingest,
     index_memory,
+    calibration_status,
+    job_status,
     make_embedder,
     make_profile_embedder,
     memory_stats,
+    publish_calibration,
+    run_calibration,
     reasoning_audit,
     reasoning_projection,
     reasoning_proposals,
@@ -62,6 +67,7 @@ from recall_mcp.service import (
     rewrite_plan,
     search_memory,
     startup_retrieval_profile,
+    tenant_scopes,
 )
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
@@ -70,6 +76,7 @@ from recall_mcp.translation import (
     render_evidence_response,
     render_search_response,
 )
+from recall.desktop.uploads import stage_uploads
 
 #: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
 #: is metered the moment it declares a scope — there is no separate table to remember to update,
@@ -800,7 +807,11 @@ def build_server() -> MCPServer:
             )
         return state
 
-    def _require(scope: str, ctx: Context[dict, object]) -> PgVectorStore:
+    def _require(
+        scope: str,
+        ctx: Context[dict, object],
+        requested_tenant: str | None = None,
+    ) -> PgVectorStore:
         """Authorise this call and return the store for the caller's OWN tenant.
 
         Every tool body goes through here. The store it hands back is the only one that tool can
@@ -832,6 +843,10 @@ def build_server() -> MCPServer:
             principal = (token.claims or {}).get("principal", token.client_id)
             _log.warning("principal %r denied for scope %s", principal, scope)
             raise
+        if requested_tenant is not None and requested_tenant != tenant:
+            raise PermissionError(
+                f"the authenticated token is scoped to tenant {tenant!r}, not {requested_tenant!r}"
+            )
         # After authorisation, so an unauthorised caller cannot burn the tenant's budget by
         # hammering a scope it does not hold.
         limiter = state.get("limiter")
@@ -1204,6 +1219,143 @@ def build_server() -> MCPServer:
                     control_plane=registry.control_plane if registry is not None else None,
                 ).model_dump_json(indent=2)
             )
+
+    @mcp.tool(
+        name="recall_tenants",
+        annotations=ToolAnnotations(
+            title="List available tenant scopes",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_tenants(ctx: Context[dict, object]) -> str:
+        """Return the tenant scopes provisioned for this MCP deployment."""
+        state = _state(ctx)
+        store = _require(SCOPE_READ, ctx)
+        registry: StoreRegistry | None = state.get("stores")
+        tenants = (
+            sorted(getattr(registry, "allowed_tenants", {store.tenant}))
+            if registry is not None
+            else [store.tenant]
+        )
+        return json.dumps(tenant_scopes(store, tenants), indent=2)
+
+    @mcp.tool(
+        name="recall_ingest",
+        annotations=ToolAnnotations(
+            title="Upload and index source files",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_ingest(
+        files: list[dict[str, str]],
+        ctx: Context[dict, object],
+        category: str = "memory",
+        tenant: str | None = None,
+    ) -> str:
+        """Upload bounded source files and index them in the caller's tenant."""
+        state = _state(ctx)
+        store = _require(SCOPE_WRITE, ctx, tenant)
+        if category not in {"documents", "code", "memory"}:
+            raise ValueError("category must be documents, code, or memory")
+        job_id, root = stage_uploads(store.tenant, files)
+        with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
+            result = await _to_thread(
+                lambda: generation_ingest(
+                    store,
+                    state["embedder"],
+                    str(root),
+                    category,
+                )
+            )
+        payload = json.loads(result.model_dump_json())
+        payload.update({"job_id": job_id, "state": "completed", "category": category})
+        state.setdefault("desktop_jobs", {})[job_id] = payload
+        return json.dumps(payload, indent=2)
+
+    @mcp.tool(
+        name="recall_job_status",
+        annotations=ToolAnnotations(
+            title="Read indexing job status",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_job_status(job_id: str, ctx: Context[dict, object]) -> str:
+        """Return the current state of one bounded indexing job."""
+        state = _state(ctx)
+        store = _require(SCOPE_READ, ctx)
+        result = job_status(store, job_id, state.get("desktop_jobs", {}))
+        return json.dumps(result, indent=2)
+
+    @mcp.tool(
+        name="recall_calibration_status",
+        annotations=ToolAnnotations(
+            title="Read corpus calibration status",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_calibration_status(
+        ctx: Context[dict, object], tenant: str | None = None
+    ) -> str:
+        """Return the latest calibration artifact bound to the caller's generation."""
+        store = _require(SCOPE_READ, ctx, tenant)
+        result = await _to_thread(lambda: calibration_status(store))
+        return json.dumps(result, indent=2, default=str)
+
+    @mcp.tool(
+        name="recall_calibration_run",
+        annotations=ToolAnnotations(
+            title="Run corpus calibration",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_calibration_run(
+        ctx: Context[dict, object],
+        generation_id: str | None = None,
+        queries: list[dict[str, object]] | None = None,
+        tenant: str | None = None,
+    ) -> str:
+        """Create a draft calibration artifact for the active generation."""
+        state = _state(ctx)
+        store = _require(SCOPE_WRITE, ctx, tenant)
+        result = await _to_thread(
+            lambda: run_calibration(store, state["embedder"], generation_id, queries)
+        )
+        return json.dumps(result, indent=2, default=str)
+
+    @mcp.tool(
+        name="recall_calibration_publish",
+        annotations=ToolAnnotations(
+            title="Publish corpus calibration",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_calibration_publish(
+        calibration_id: str,
+        ctx: Context[dict, object],
+        tenant: str | None = None,
+    ) -> str:
+        """Publish one certified calibration artifact for the caller's tenant."""
+        store = _require(SCOPE_WRITE, ctx, tenant)
+        result = await _to_thread(lambda: publish_calibration(store, calibration_id))
+        return json.dumps(result, indent=2, default=str)
 
     @mcp.tool(
         name="recall_forget",

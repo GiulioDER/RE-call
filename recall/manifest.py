@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from collections.abc import Callable
@@ -95,6 +95,7 @@ class S3Allowlist:
 class VerifiedObject:
     entry: ManifestObjectV1
     data: bytes
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -337,6 +338,29 @@ class LocalObjectReader:
 
     def verify(self, manifest: IndexManifestV1) -> tuple[VerifiedObject, ...]:
         return tuple(self.fetch(entry) for entry in manifest.objects)
+
+
+class ExtractingLocalObjectReader(LocalObjectReader):
+    """Verify original bytes, then expose a UTF 8 extracted view to generation building."""
+
+    def fetch(self, entry: ManifestObjectV1) -> VerifiedObject:
+        from recall.extraction import DocumentExtractionError, extract_document
+
+        verified = super().fetch(entry)
+        path = self._resolve(entry)
+        try:
+            extracted = extract_document(path, verified.data)
+        except DocumentExtractionError:
+            raise
+        except Exception as exc:
+            raise ManifestVerificationError(
+                f"could not extract {entry.uri}: {type(exc).__name__}"
+            ) from exc
+        return VerifiedObject(
+            entry,
+            extracted.text.encode("utf-8"),
+            extracted.metadata,
+        )
 
 
 def reader_for_manifest(

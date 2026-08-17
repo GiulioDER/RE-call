@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import mimetypes
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -8,9 +10,11 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import psycopg
 from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
+from recall.calibration_v2 import CalibrationRepository
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall.embedding_registry import find_registered_profile, registered_profile_ids
 from recall.embeddings import (
@@ -24,7 +28,10 @@ from recall.embeddings import (
 from recall.guards import staleness
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
-from recall.index import Indexer, ShadowIndexTarget, candidate_files
+from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_code, chunk_text
+from recall.lineage import ChunkerIdentity, EmbedderIdentity, IndexManifestV1, ManifestObjectV1, PipelineIdentity
+from recall.manifest import ExtractingLocalObjectReader
+from recall.generations import GenerationManager, NoActiveGeneration
 from recall.observability import METRICS, get_logger
 from recall.profiles import (
     RetrievalAdmission,
@@ -1700,6 +1707,8 @@ def index_memory(
     shadow_store: PgVectorStore | None = None,
     shadow_embedder: Embedder | None = None,
     control_plane: ControlPlane | None = None,
+    glob: str | None = None,
+    chunker: Chunker = chunk_text,
 ) -> IndexResult:
     """Index a markdown file or folder into memory; return counts + a human message.
 
@@ -1756,7 +1765,7 @@ def index_memory(
     # content hash is unchanged and never sends them to the embedder. So a no-op re-index is
     # charged for bytes it does not spend. That is the conservative direction — it over-counts,
     # never under-counts — but it means the byte quota bounds bytes OFFERED, not bytes embedded.
-    files = candidate_files(target)
+    files = candidate_files(target, glob) if glob is not None else candidate_files(target)
     if len(files) > max_files:
         raise ValueError(
             f"index request for {path!r} exceeds the file-count budget: {len(files)} candidate "
@@ -1793,6 +1802,7 @@ def index_memory(
         stats = Indexer(
             store,
             embedder,
+            chunker=chunker,
             context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
             shadow=shadow_target,
         ).index_path(target, files=files)
@@ -1932,3 +1942,205 @@ def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -
         stale=stale,
         metrics=METRICS.snapshot(),
     )
+
+
+def tenant_scopes(store: PgVectorStore, tenants: Sequence[str]) -> dict[str, object]:
+    """Keep tenant metadata shaping behind the authenticated store boundary."""
+    return {"tenants": sorted({str(store.tenant), *(str(value) for value in tenants)})}
+
+
+def job_status(store: PgVectorStore, job_id: str, jobs: dict[str, object]) -> dict[str, object]:
+    """Return one job record after the caller has been authorized for its tenant."""
+    del store
+    value = jobs.get(job_id)
+    return value if isinstance(value, dict) else {"job_id": job_id, "state": "unknown"}
+
+
+def calibration_status(store: PgVectorStore) -> dict[str, object]:
+    """Return the latest tenant-bound calibration and its lineage metadata."""
+    repository = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp")
+    records = repository.list_records()
+    if not records:
+        return {
+            "tenant": store.tenant,
+            "status": "missing",
+            "message": "No calibration artifact exists for this tenant.",
+        }
+    record = repository.show_record(str(records[0]["calibration_id"]))
+    lifecycle = str(record.get("lifecycle_state", "unknown"))
+    status = {
+        "published": "certified",
+        "draft": "draft",
+        "rejected": "rejected",
+        "superseded": "superseded",
+    }.get(lifecycle, lifecycle)
+    return {
+        "tenant": store.tenant,
+        "status": status,
+        "message": str(record.get("certification_reason", "")),
+        **record,
+    }
+
+
+def generation_ingest(
+    store: PgVectorStore,
+    embedder: Embedder,
+    staged_root: str,
+    category: str,
+) -> IndexResult:
+    """Build, validate, and activate one local generation for a desktop upload."""
+    job_root = Path(staged_root)
+    tenant_root = job_root.parent
+    job_files = sorted(path for path in job_root.rglob("*") if path.is_file())
+    if not job_files:
+        raise ValueError("the staged upload contains no files")
+
+    manager = GenerationManager(store._dsn, store.tenant, actor="recall-desktop")
+    try:
+        active_objects = {entry.uri: entry for entry in manager.active_manifest().objects}
+    except NoActiveGeneration:
+        active_objects = {}
+
+    # Keep the active corpus and add only this job's files. In particular, do not scan sibling
+    # job directories because a failed upload must not poison every later indexing attempt.
+    for path in job_files:
+        data = path.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        media_type = (
+            "text/x-code"
+            if category == "code"
+            else mimetypes.guess_type(path.name)[0] or "text/plain"
+        )
+        entry = ManifestObjectV1(
+            uri=path.resolve().as_uri(),
+            version_id=digest,
+            media_type=media_type,
+            size=len(data),
+            sha256=digest,
+        )
+        active_objects[entry.uri] = entry
+    objects = sorted(active_objects.values(), key=lambda entry: entry.uri)
+    manifest = IndexManifestV1(
+        tenant_id=store.tenant,
+        corpus_version=f"desktop-{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
+        objects=tuple(objects),
+    )
+    chunker = chunk_code if category == "code" else chunk_text
+    pipeline = PipelineIdentity(
+        EmbedderIdentity(
+            provider="fastembed",
+            model=embedder.name,
+            dimension=embedder.dim,
+            unverified_reason="desktop local development build",
+        ),
+        ChunkerIdentity(
+            "recall.chunk_code" if category == "code" else "recall.chunk_text",
+            1,
+            {},
+        ),
+    )
+    generation = manager.create(manifest, pipeline, allow_unverified=True)
+    try:
+        stats = manager.build(
+            generation.generation_id,
+            ExtractingLocalObjectReader((tenant_root,)),
+            embedder,
+            chunker,
+        )
+        manager.validate(generation.generation_id)
+        manager.promote(generation.generation_id, unsafe_development=True)
+    except Exception:
+        raise
+    return IndexResult(
+        files=stats.objects,
+        chunks=stats.chunks,
+        message=(
+            f"Built and activated generation {generation.generation_id} with "
+            f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
+        ),
+    )
+
+
+def _generated_calibration_queries(store: PgVectorStore, generation_id: str) -> list[dict[str, object]]:
+    """Build a deterministic draft query set from the active corpus.
+
+    This is intentionally a prototype helper. The generated labels are useful for checking the
+    complete workflow, but a production deployment should replace them with reviewed labels.
+    """
+    with psycopg.connect(store._dsn, autocommit=True, connect_timeout=10) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (store.tenant,))
+        rows = conn.execute(
+            "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+            "ORDER BY chunk_id LIMIT 20",
+            (store.tenant, generation_id),
+        ).fetchall()
+    answerable: list[str] = []
+    for row in rows:
+        value = str(row[0]).strip()
+        if value and value not in answerable:
+            answerable.append(value[:500])
+    if len(answerable) < 2:
+        raise ValueError("at least two distinct corpus chunks are required to generate calibration labels")
+    return [
+        *({"query": query, "answerable": True} for query in answerable),
+        *(
+            {
+                "query": f"Prototype calibration negative sample {index}: {nonce}",
+                "answerable": False,
+            }
+            for index, nonce in enumerate(
+                (
+                    "the unrecorded weather on Europa",
+                    "the private password for a fictional account",
+                    "the exact weight of an imaginary blue comet",
+                    "the inventory of a library that does not exist",
+                    "the recipe for a machine never described here",
+                    "the birthplace of a person absent from this corpus",
+                    "the result of a future election",
+                    "the serial number of a nonexistent device",
+                    "the internal schedule of an unrelated company",
+                    "the answer to an invented mathematical riddle",
+                    "the color of a silent radio signal",
+                    "the number of doors in an imaginary building",
+                    "the owner of a fictional island",
+                    "the temperature inside an empty thought",
+                    "the name of a removed document",
+                    "the location of a lost moon",
+                    "the version of an unreleased program",
+                    "the price of an unnamed object",
+                    "the title of a nonexistent chapter",
+                    "the identity of an imaginary maintainer",
+                ),
+                start=1,
+            )
+        ),
+    ]
+
+
+def run_calibration(
+    store: PgVectorStore,
+    embedder: Embedder,
+    generation_id: str | None = None,
+    queries: Sequence[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    """Measure a draft artifact, generating prototype labels when none were supplied."""
+    from recall.generation_store import GenerationStore
+
+    generation_store = GenerationStore(store._dsn, embedder.dim, tenant=store.tenant)
+    try:
+        selected_generation = generation_id or generation_store.active_generation_id()
+    finally:
+        generation_store.close()
+    labels = list(queries) if queries is not None else _generated_calibration_queries(store, selected_generation)
+    artifact = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp").calibrate(
+        selected_generation,
+        labels,
+        embedder,
+    )
+    return artifact.to_dict()
+
+
+def publish_calibration(store: PgVectorStore, calibration_id: str) -> dict[str, object]:
+    """Publish a certified artifact after the user explicitly confirms the action."""
+    artifact = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp").publish(calibration_id)
+    return artifact.to_dict()
