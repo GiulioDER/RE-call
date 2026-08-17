@@ -97,6 +97,9 @@ if QApplication is not None:
 
         def dragEnterEvent(self, event: Any) -> None:
             if event.mimeData().hasUrls():
+                self.setProperty("dragActive", True)
+                self.style().unpolish(self)
+                self.style().polish(self)
                 event.acceptProposedAction()
 
         def dragMoveEvent(self, event: Any) -> None:
@@ -107,7 +110,17 @@ if QApplication is not None:
             paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
             if paths:
                 self.dropped.emit(paths)
+            self._clear_drag_state()
             event.acceptProposedAction()
+
+        def dragLeaveEvent(self, event: Any) -> None:
+            self._clear_drag_state()
+            event.accept()
+
+        def _clear_drag_state(self) -> None:
+            self.setProperty("dragActive", False)
+            self.style().unpolish(self)
+            self.style().polish(self)
 
 
     class _FocuslessItemDelegate(QStyledItemDelegate):
@@ -232,73 +245,79 @@ if QApplication is not None:
         def _build_ui(self) -> None:
             self.setStyleSheet(
                 """
-                QMainWindow, QWidget { background: #070808; color: #f3f0e8; font-family: "Segoe UI"; }
-                QLabel { color: #a6a398; }
-                QLabel#brand { color: #f3f0e8; font-family: "Segoe UI"; font-size: 31px; font-weight: 700; letter-spacing: -1px; }
-                QLabel#runtimeLabel { color: #a6a398; font-family: "Segoe UI"; font-size: 11px; }
-                QLabel#status { color: #a6a398; }
-                QFrame#identityRule { background: #e0a629; border: 0; }
-                QFrame#dropZone { background: #0c0e0d; border: 1px dashed #64665d; border-radius: 3px; padding: 16px; }
-                QFrame#dropZone:hover { border-color: #e0a629; background: #11130f; }
+                QMainWindow, QWidget { background: #0e100f; color: #f4f1e8; font-family: "Segoe UI Variable Text", "Segoe UI"; font-size: 13px; }
+                QLabel { color: #b6b7ac; }
+                QLabel#brand { color: #f4f1e8; font-family: "Segoe UI Variable Display", "Segoe UI"; font-size: 32px; font-weight: 700; letter-spacing: -1px; }
+                QLabel#runtimeLabel { color: #b6b7ac; font-family: "Consolas"; font-size: 11px; }
+                QLabel#status { color: #b6b7ac; font-size: 12px; }
+                QFrame#identityRule { background: #d7a52a; border: 0; }
+                QFrame#dropZone { background: #141714; border: 1px dashed #465047; border-radius: 4px; padding: 18px; }
+                QFrame#dropZone:hover, QFrame#dropZone[dragActive="true"] { border-color: #d7a52a; background: #191b15; }
                 QFrame#dropZone QLabel { background: transparent; }
-                QLabel#dropTitle { color: #f3f0e8; font-family: "Segoe UI"; font-size: 23px; font-weight: 700; letter-spacing: 0.6px; }
-                QLabel#dropHint { color: #a6a398; font-size: 10px; line-height: 1.2; }
-                QLabel#dropNote { color: #77776d; font-size: 12px; }
-                QPushButton { background: #101210; color: #f3f0e8; border: 1px solid #55574f; border-radius: 0px; padding: 9px 14px; min-height: 34px; font-family: "Segoe UI"; font-size: 12px; font-weight: 600; }
-                QPushButton:hover { background: #1a1b16; border-color: #e0a629; }
-                QPushButton:pressed { background: #070808; }
-                QPushButton:disabled { background: #0b0c0b; color: #77776d; border-color: #2d302b; }
-                QPushButton:focus, QComboBox:focus, QLineEdit:focus, QCheckBox:focus { outline: none; border: 1px solid #e0a629; }
-                QPushButton#navButton { background: #0c0e0d; color: #f3f0e8; border-color: #64665d; border-radius: 0px; padding: 0px; min-height: 0px; font-family: "Segoe UI"; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
-                QPushButton#navButton:hover, QPushButton#navButton:checked { background: #e0a629; border-color: #e0a629; color: #070808; }
-                QPushButton#startButton { background: #e0a629; color: #070808; border-color: #e0a629; padding: 7px 16px; min-height: 34px; font-weight: 700; }
-                QPushButton#startButton:hover { background: #f0bd3f; border-color: #f0bd3f; }
-                QPushButton#startButton:pressed { background: #070808; }
-                QPushButton#startButton:disabled { background: #171811; color: #77776d; border-color: #3a3b32; }
-                QComboBox { background: #0c0e0d; color: #f3f0e8; border: 1px solid #55574f; border-radius: 2px; padding: 6px 10px; min-width: 120px; }
-                QComboBox:hover, QComboBox:focus { border-color: #e0a629; }
+                QLabel#dropTitle { color: #f4f1e8; font-family: "Segoe UI Variable Display", "Segoe UI"; font-size: 24px; font-weight: 700; letter-spacing: 0.4px; }
+                QLabel#dropHint { color: #b6b7ac; font-size: 11px; line-height: 1.2; }
+                QLabel#dropNote { color: #8d9186; font-size: 12px; }
+                QPushButton { background: #171a17; color: #f4f1e8; border: 1px solid #465047; border-radius: 3px; padding: 0px 16px; min-height: 40px; font-family: "Segoe UI Variable Text", "Segoe UI"; font-size: 13px; font-weight: 600; }
+                QPushButton:hover { background: #20241f; border-color: #d7a52a; }
+                QPushButton:pressed { background: #2a2415; border-color: #f0be4a; }
+                QPushButton:disabled { background: #141614; color: #70766d; border-color: #2c322c; }
+                QPushButton:focus, QComboBox:focus, QLineEdit:focus, QCheckBox:focus { outline: none; border: 1px solid #f0be4a; }
+                QPushButton#navButton { background: #131613; color: #d9d6cc; border-color: #465047; border-radius: 3px; padding: 0px; min-height: 0px; font-family: "Segoe UI Variable Text", "Segoe UI"; font-size: 12px; font-weight: 700; letter-spacing: 0.4px; }
+                QPushButton#navButton:hover { background: #20241f; border-color: #d7a52a; color: #f4f1e8; }
+                QPushButton#navButton:checked { background: #d7a52a; border-color: #d7a52a; color: #11130f; }
+                QPushButton#startButton { background: #d7a52a; color: #11130f; border-color: #d7a52a; padding: 0px 18px; min-height: 40px; font-weight: 700; }
+                QPushButton#startButton:hover { background: #f0be4a; border-color: #f0be4a; }
+                QPushButton#startButton:pressed { background: #b8871d; border-color: #b8871d; }
+                QPushButton#startButton:disabled { background: #2b2618; color: #8b7850; border-color: #5f4d25; }
+                QComboBox { background: #141714; color: #f4f1e8; border: 1px solid #465047; border-radius: 3px; padding: 0px 12px; min-height: 40px; min-width: 120px; }
+                QComboBox:hover, QComboBox:focus { border-color: #d7a52a; }
                 QComboBox#tenantCellCombo { background: transparent; border: 0; border-radius: 0; padding: 2px 6px; min-width: 0; }
-                QComboBox#tenantCellCombo:hover, QComboBox#tenantCellCombo:focus { background: transparent; border: 1px solid #e0a629; }
+                QComboBox#tenantCellCombo:hover, QComboBox#tenantCellCombo:focus { background: transparent; border: 1px solid #d7a52a; }
                 QComboBox#tenantCellCombo::drop-down { background: transparent; border: 0; width: 18px; }
-                QComboBox QAbstractItemView { background: #101210; color: #f3f0e8; selection-background-color: #e0a629; selection-color: #070808; border: 1px solid #55574f; }
-                QTableWidget { background: #0c0e0d; color: #f3f0e8; border: 1px solid #55574f; border-radius: 3px; gridline-color: #252824; selection-background-color: #2e2b1d; selection-color: #f3f0e8; padding: 4px; }
-                QTableWidget::item { color: #f3f0e8; padding: 8px; border-bottom: 1px solid #252824; }
-                QTableWidget::item:selected { background: #2e2b1d; color: #f3f0e8; }
-                QHeaderView::section { background: #161814; color: #c7c1ae; font-family: "Segoe UI"; font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 9px; border: 0; border-bottom: 1px solid #55574f; }
+                QComboBox QAbstractItemView { background: #1a1d1a; color: #f4f1e8; selection-background-color: #d7a52a; selection-color: #11130f; border: 1px solid #465047; }
+                QTableWidget { background: #111411; color: #f4f1e8; border: 1px solid #465047; border-radius: 4px; gridline-color: #2a2f2a; selection-background-color: #3a301b; selection-color: #f4f1e8; padding: 4px; font-size: 13px; }
+                QTableWidget::item { color: #f4f1e8; padding: 9px 10px; border-bottom: 1px solid #2a2f2a; }
+                QTableWidget::item:selected { background: #3a301b; color: #f4f1e8; }
+                QHeaderView::section { background: #1a1d1a; color: #d7d2c4; font-family: "Consolas"; font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 10px; border: 0; border-bottom: 1px solid #596057; }
                 QTableCornerButton::section { background: transparent; border: 0; }
-                QFrame#queueActions { background: #0c0e0d; border: 1px solid #55574f; border-radius: 2px; }
-                QFrame#queueActions QPushButton { padding: 7px 13px; }
-                QWidget#calibrationActionsCell { background: #0c0e0d; }
-                QPushButton#tableActionButton { padding: 2px 6px; min-height: 0px; font-size: 11px; }
-                QPushButton#tableActionButton:focus { outline: none; border: 1px solid #e0a629; background: #1a1b16; }
-                QProgressBar { background: #0c0e0d; color: #f3f0e8; border: 1px solid #55574f; border-radius: 2px; height: 14px; text-align: center; }
-                QProgressBar::chunk { background: #e0a629; border-radius: 1px; }
-                QScrollBar:vertical { background: #0c0e0d; width: 10px; margin: 0; }
-                QScrollBar::handle:vertical { background: #55574f; border-radius: 1px; min-height: 24px; }
-                QFrame#runtimeStatus { background: #0c0e0d; border: 1px solid #55574f; border-radius: 0px; padding: 4px 8px; }
+                QFrame#queueActions { background: #151815; border: 1px solid #465047; border-radius: 3px; }
+                QFrame#queueActions QPushButton { padding: 0px 14px; }
+                QWidget#calibrationActionsCell { background: #111411; }
+                QPushButton#tableActionButton { padding: 0px 10px; min-height: 32px; font-size: 12px; }
+                QPushButton#tableActionButton:focus { outline: none; border: 1px solid #f0be4a; background: #20241f; }
+                QProgressBar { background: #141714; color: #f4f1e8; border: 1px solid #465047; border-radius: 3px; height: 18px; text-align: center; }
+                QProgressBar::chunk { background: #d7a52a; border-radius: 2px; }
+                QScrollBar:vertical { background: #111411; width: 12px; margin: 0; }
+                QScrollBar::handle:vertical { background: #465047; border-radius: 2px; min-height: 28px; }
+                QScrollBar::handle:vertical:hover { background: #697267; }
+                QFrame#runtimeStatus { background: #151815; border: 1px solid #465047; border-radius: 3px; padding: 5px 10px; }
                 QFrame#runtimeStatus QLabel#runtimeLabel { background: transparent; }
-                QPushButton#reconnectButton { color: #f0bd3f; border-color: #a37312; padding: 7px 11px; }
+                QPushButton#reconnectButton { color: #f0be4a; border-color: #8e6c20; padding: 0px 14px; }
                 QLabel#connectionLight { min-width: 10px; max-width: 10px; min-height: 10px; max-height: 10px; border-radius: 5px; }
-                QGroupBox { color: #f3f0e8; border: 1px solid #55574f; border-radius: 3px; margin-top: 12px; padding: 14px; }
-                QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #e0a629; }
-                QLineEdit { background: #0c0e0d; color: #f3f0e8; border: 1px solid #55574f; border-radius: 2px; padding: 7px 10px; }
-                QCheckBox { color: #f3f0e8; spacing: 8px; }
-                QCheckBox::indicator { width: 16px; height: 16px; }
-                QTableWidget#calibrationTable { border-radius: 3px; }
-                QLabel#pageTitle { color: #f3f0e8; font-family: "Segoe UI"; font-size: 23px; font-weight: 700; }
-                QLabel#pageIntro { color: #a6a398; }
-                QLabel#warningLabel { color: #b69b5c; background: #100f0a; border: 1px solid #5f4b18; border-radius: 2px; padding: 10px; }
-                QLabel#successLabel { color: #8ac58a; }
-                QLabel#mutedLabel { color: #77776d; }
+                QGroupBox { color: #f4f1e8; border: 1px solid #465047; border-radius: 4px; margin-top: 14px; padding: 16px; }
+                QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 7px; color: #d7a52a; font-size: 12px; font-weight: 700; }
+                QLineEdit { background: #141714; color: #f4f1e8; border: 1px solid #465047; border-radius: 3px; padding: 0px 12px; min-height: 40px; }
+                QLineEdit::placeholder { color: #8d9186; }
+                QCheckBox { color: #f4f1e8; spacing: 8px; min-height: 32px; }
+                QCheckBox::indicator { width: 17px; height: 17px; }
+                QTableWidget#calibrationTable { border-radius: 4px; }
+                QLabel#pageTitle { color: #f4f1e8; font-family: "Segoe UI Variable Display", "Segoe UI"; font-size: 24px; font-weight: 700; letter-spacing: 0.3px; }
+                QLabel#pageIntro { color: #b6b7ac; font-size: 13px; }
+                QLabel#warningLabel { color: #d9b35a; background: #211b0e; border: 1px solid #80621c; border-radius: 3px; padding: 12px; }
+                QLabel#successLabel { color: #63d39e; }
+                QLabel#mutedLabel { color: #8d9186; }
                 """
             )
             root = QWidget()
             outer = QVBoxLayout(root)
+            outer.setContentsMargins(16, 12, 16, 12)
+            outer.setSpacing(12)
             identity_rule = QFrame()
             identity_rule.setObjectName("identityRule")
             identity_rule.setFixedHeight(3)
             outer.addWidget(identity_rule)
             header = QHBoxLayout()
+            header.setSpacing(8)
             brand = QLabel("RE-call")
             brand.setObjectName("brand")
             header.addWidget(brand)
@@ -318,10 +337,13 @@ if QApplication is not None:
             self.pages = QStackedWidget()
             self.queue_page = QWidget()
             queue_outer = QVBoxLayout(self.queue_page)
+            queue_outer.setContentsMargins(0, 0, 0, 0)
+            queue_outer.setSpacing(10)
             self.pages.addWidget(self.queue_page)
             outer.addWidget(self.pages, 1)
 
             controls = QHBoxLayout()
+            controls.setSpacing(10)
             controls.addWidget(QLabel("Default project"))
             self.scope = QComboBox()
             self.scope.setMinimumWidth(230)
@@ -358,6 +380,10 @@ if QApplication is not None:
             self.files.horizontalHeader().setSortIndicatorShown(True)
             self.files.horizontalHeader().setMinimumHeight(46)
             self.files.horizontalHeader().sortIndicatorChanged.connect(self._update_file_sort_indicator)
+            self._update_file_sort_indicator(
+                self.files.horizontalHeader().sortIndicatorSection(),
+                self.files.horizontalHeader().sortIndicatorOrder(),
+            )
             table_frame = QWidget()
             table_stack = QGridLayout(table_frame)
             table_stack.setContentsMargins(0, 0, 0, 0)
@@ -1271,6 +1297,7 @@ if QApplication is not None:
                 return
             self.github_download_button.setEnabled(False)
             self.github_approve_button.setEnabled(False)
+            self.github_download_button.setText("Downloading…")
             self.github_status.setText("Downloading repository and filtering supported files…")
             category = self._github_scope_category()
             self._run(
@@ -1281,6 +1308,7 @@ if QApplication is not None:
 
         def _github_downloaded(self, result: GithubImport) -> None:
             self.github_download_button.setEnabled(True)
+            self.github_download_button.setText("Download repository")
             self.github_import = result
             self.github_root = result.root
             self.github_pending = list(result.files)
@@ -1293,6 +1321,7 @@ if QApplication is not None:
 
         def _github_download_failed(self, message: str) -> None:
             self.github_download_button.setEnabled(True)
+            self.github_download_button.setText("Download repository")
             self.github_approve_button.setEnabled(False)
             self.github_status.setText(message)
             QMessageBox.warning(self, "GitHub download", message)
@@ -1511,6 +1540,7 @@ if QApplication is not None:
 
         def _reconnect(self) -> None:
             self.reconnect_button.setEnabled(False)
+            self.reconnect_button.setText("Searching…")
             self.status.setText("Searching for the RE-call runtime…")
             self._run(self._prepare_runtime, self._runtime_ready, self._runtime_failed)
 
@@ -1522,6 +1552,7 @@ if QApplication is not None:
                 shared = bool(scope.get("shared"))
                 groups.setdefault((category, tenant, shared), []).append(path)
             self.start_button.setEnabled(False)
+            self.start_button.setText("Indexing…")
             self.progress.setValue(10)
             self.status.setText("Indexing is running…")
             self._run(
@@ -1578,6 +1609,7 @@ if QApplication is not None:
                 self._refresh_table()
             self._set_runtime_state(True)
             self.reconnect_button.setEnabled(True)
+            self.reconnect_button.setText("Reconnect")
             self.reconnect_button.setVisible(False)
             self.runtime_label.setText(f"Runtime: {self.profile.mode.value} ready")
             self.status.setText("Runtime ready. Drop a source to begin.")
@@ -1586,6 +1618,7 @@ if QApplication is not None:
         def _runtime_failed(self, message: str) -> None:
             self._set_runtime_state(False)
             self.reconnect_button.setEnabled(True)
+            self.reconnect_button.setText("Reconnect")
             self.reconnect_button.setVisible(True)
             self.status.setText(f"Runtime unavailable: {message}")
 
@@ -1625,6 +1658,7 @@ if QApplication is not None:
 
         def _job_done(self, result: Any) -> None:
             self.start_button.setEnabled(True)
+            self.start_button.setText("Start indexing")
             self.progress.setValue(100)
             if isinstance(result, list):
                 self.status.setText(f"Indexed {len(result)} source group(s).")
@@ -1633,6 +1667,7 @@ if QApplication is not None:
 
         def _job_failed(self, message: str) -> None:
             self.start_button.setEnabled(True)
+            self.start_button.setText("Start indexing")
             self.status.setText(message)
             QMessageBox.warning(self, "RE-call", message)
 
