@@ -1,37 +1,35 @@
 /* ==========================================================================
    RE-call setup guide, design system.
 
-   Palette is inherited from docs/banner.html so this site reads as the same
-   object as the README header: near-black ground, one ink, one signal, and the
-   cyan/teal/purple rule used exactly once per page as a graphic element rather
-   than as an atmosphere. Three hues total.
+   Palette is shared with the Windows desktop UI and docs/brand-guidelines.md.
+   Gold is the RE-call signal; green and red describe state only.
    ========================================================================== */
 
 :root {
-  /* Ground and elevated surfaces. Not pure black: #04060c holds a gradient. */
-  --ground: #04060c;
-  --surface-1: #080d17;
-  --surface-2: #0b1120;
-  --surface-3: #0f1728;
+  /* Warm near-black surfaces keep the logo and controls legible. */
+  --ground: #0e100f;
+  --surface-1: #141714;
+  --surface-2: #171a17;
+  --surface-3: #1d211d;
 
   /* Ink */
-  --ink: #f4f9ff;
-  --ink-soft: #93aac8;
-  --ink-muted: #5b6f8c;
+  --ink: #f4f1e8;
+  --ink-soft: #d0d0c6;
+  --ink-muted: #b6b7ac;
 
   /* The one signal colour. Actions, current state, warnings. */
-  --signal: #f5a524;
-  --signal-dim: rgba(245, 165, 36, 0.14);
+  --signal: #d7a52a;
+  --signal-dim: rgba(215, 165, 42, 0.18);
 
   /* The identity rule. Used once per page, as a line, never as a wash. */
-  --rule-a: #22d3ee;
-  --rule-b: #5eead4;
-  --rule-c: #8b5cf6;
-  --rule: linear-gradient(90deg, var(--rule-a) 0%, var(--rule-b) 42%, var(--rule-c) 100%);
+  --rule-a: #d7a52a;
+  --rule-b: #f0be4a;
+  --rule-c: #d7a52a;
+  --rule: linear-gradient(90deg, var(--rule-a) 0%, var(--rule-b) 52%, var(--rule-c) 100%);
 
   /* Lines */
-  --line: rgba(147, 170, 200, 0.14);
-  --line-strong: rgba(147, 170, 200, 0.26);
+  --line: rgba(70, 80, 71, 0.62);
+  --line-strong: rgba(70, 80, 71, 0.9);
 
   /* Type */
   --font-display: "Geist", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
@@ -189,8 +187,8 @@ p {
 
 .wordmark {
   display: inline-flex;
-  align-items: baseline;
-  gap: 0.6rem;
+  align-items: center;
+  gap: 0.55rem;
   font-weight: 800;
   font-size: 1.0625rem;
   letter-spacing: -0.035em;
@@ -199,11 +197,25 @@ p {
   white-space: nowrap;
 }
 
+.wordmark-mark {
+  width: 2.1rem;
+  height: 2.1rem;
+  object-fit: contain;
+  flex: 0 0 auto;
+  filter: drop-shadow(0 0 12px rgba(215, 165, 42, 0.16));
+}
+
+.wordmark-name {
+  font-weight: 800;
+  font-size: 1.0625rem;
+  letter-spacing: -0.035em;
+}
+
 .wordmark:hover {
   color: var(--ink);
 }
 
-.wordmark span {
+.wordmark > span:not(.wordmark-name) {
   font-family: var(--font-mono);
   font-size: 0.6875rem;
   font-weight: 400;
@@ -265,6 +277,14 @@ p {
     padding-block: 0.35rem;
   }
 
+  .hero-logo {
+    width: 15rem;
+    height: 15rem;
+    right: -2rem;
+    top: 58%;
+    opacity: 0.18;
+  }
+
   .masthead nav {
     gap: 1.25rem;
     overflow-x: auto;
@@ -299,7 +319,21 @@ p {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(ellipse 55% 45% at 18% 32%, rgba(147, 170, 200, 0.055) 0%, transparent 72%);
+  background: radial-gradient(ellipse 55% 45% at 18% 32%, rgba(215, 165, 42, 0.055) 0%, transparent 72%);
+}
+
+.hero-logo {
+  position: absolute;
+  z-index: 0;
+  width: clamp(13rem, 29vw, 24rem);
+  height: clamp(13rem, 29vw, 24rem);
+  object-fit: contain;
+  right: 3vw;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.27;
+  filter: drop-shadow(0 0 28px rgba(215, 165, 42, 0.2));
+  pointer-events: none;
 }
 
 .hero-inner {
@@ -387,7 +421,7 @@ p {
 .button:hover {
   color: #1a1204;
   transform: translateY(-2px);
-  box-shadow: 0 10px 34px rgba(245, 165, 36, 0.22);
+  box-shadow: 0 10px 34px rgba(215, 165, 42, 0.22);
 }
 
 .button:active {
@@ -554,7 +588,7 @@ p {
 
 .copy-button:hover {
   color: var(--ink);
-  background: rgba(147, 170, 200, 0.06);
+  background: rgba(70, 80, 71, 0.18);
 }
 
 .copy-button[data-state="done"] {
@@ -916,7 +950,7 @@ code {
   font-family: var(--font-mono);
   font-size: 0.875em;
   color: var(--ink);
-  background: rgba(147, 170, 200, 0.09);
+  background: rgba(70, 80, 71, 0.18);
   padding: 0.1em 0.4em;
   border-radius: 4px;
   overflow-wrap: break-word;
@@ -1323,6 +1357,15 @@ td {
   background: var(--surface-1);
 }
 
+.readme-logo {
+  width: clamp(7rem, 13vw, 11rem);
+  height: clamp(7rem, 13vw, 11rem);
+  object-fit: contain;
+  flex: 0 0 auto;
+  opacity: 0.82;
+  filter: drop-shadow(0 0 24px rgba(215, 165, 42, 0.16));
+}
+
 .readme-intro h1 {
   max-width: 18ch;
 }
@@ -1462,6 +1505,11 @@ td {
     align-items: flex-start;
     flex-direction: column;
     padding: 1rem;
+  }
+
+  .readme-logo {
+    width: 6rem;
+    height: 6rem;
   }
 
   .readme-meta {
