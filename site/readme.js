@@ -9,8 +9,9 @@ const BATCH_SIZE = 24;
 const MAX_README_MARKDOWN_CHARS = 400_000;
 const MAX_RENDERED_HTML_CHARS = 5_000_000;
 const MAX_TRANSLATION_RESPONSE_CHARS = 2_000_000;
-const TRANSLATION_TIMEOUT_MS = 10_000;
+const TRANSLATION_TIMEOUT_MS = 5_000;
 const TRANSLATION_ATTEMPTS = 3;
+const TRANSLATION_TOTAL_TIMEOUT_MS = 15_000;
 const STORAGE_KEY = "recall-readme-language";
 
 const content = document.querySelector("#readme-content");
@@ -226,6 +227,10 @@ async function selectLanguage(locale) {
   setStatus("Translating the readable text…", "working");
   const nodes = textNodes();
   const controller = new AbortController();
+  const translationDeadline = window.setTimeout(
+    () => controller.abort(),
+    TRANSLATION_TOTAL_TIMEOUT_MS,
+  );
   state.activeTranslation = controller;
   try {
     let translated = state.translated.get(locale);
@@ -262,6 +267,7 @@ async function selectLanguage(locale) {
     restoreEnglish();
     setStatus("Translation unavailable · showing English source", "error");
   } finally {
+    window.clearTimeout(translationDeadline);
     if (state.activeTranslation === controller) {
       state.activeTranslation = null;
     }
