@@ -13,6 +13,7 @@ is not a missing record: it is a confident and false one.
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,7 +28,7 @@ from recall.generation_build import (
     embedder_identity,
     pipeline_identity,
 )
-from recall.index import DEFAULT_MAX_CHARS, DEFAULT_OVERLAP_CHARS
+from recall.index import DEFAULT_MAX_CHARS, DEFAULT_OVERLAP_CHARS, chunk_text
 from recall.lineage import IndexManifestV1
 from recall.manifest import load_inventory
 
@@ -180,8 +181,10 @@ def test_a_chunk_size_that_cannot_describe_a_real_pipeline_is_refused() -> None:
     `max_chars=0`, and the text path raises only inside `manager.build`, after `manager.create` has
     already written the generation row.
 
-    `overlap >= max_chars` is deliberately absent from this list. It was measured as clamped and
-    harmless, so refusing it would be a bound invented rather than established.
+    A non-int is refused before the range is compared, because the range test alone let a float
+    through: `json.loads('{"max_chars": 800.0}')` passed `< 1`, recorded `{"max_chars": 800.0}`, and
+    raised `TypeError` from a slice inside `manager.build` — after `manager.create` had written the
+    row. `True` is refused for the same reason: it was recorded as `True` while running as 1.
     """
     for max_chars in (0, -5):
         with pytest.raises(ValueError, match="max_chars must be at least 1"):
@@ -190,8 +193,98 @@ def test_a_chunk_size_that_cannot_describe_a_real_pipeline_is_refused() -> None:
     with pytest.raises(ValueError, match="overlap cannot be negative"):
         BuildRequest(overlap=-1)
 
+    for bad in (800.0, "800", True, None):
+        with pytest.raises(ValueError, match="max_chars must be an int"):
+            BuildRequest(max_chars=bad)  # type: ignore[arg-type]
+    for bad in (80.0, "80", False):
+        with pytest.raises(ValueError, match="overlap must be an int"):
+            BuildRequest(overlap=bad)  # type: ignore[arg-type]
+
     assert BuildRequest(max_chars=1, overlap=0).max_chars == 1
-    assert chunker_for(BuildRequest(max_chars=100, overlap=500))[1].configuration["overlap"] == 500
+
+
+def test_the_recorded_overlap_is_the_one_the_chunker_will_actually_use() -> None:
+    """An overlap above the clamp must be recorded clamped, not as asked for.
+
+    This is the finding I got wrong by measuring the wrong observable. I checked that an oversized
+    overlap produces identical CHUNKS, concluded there was no harm, and recorded the requested value
+    — but chunk equality is not the property this module protects. `PipelineIdentity.fingerprint`
+    is defined as covering every input that can change chunks, and a calibration binds to it, so two
+    configurations producing byte-identical chunks and different fingerprints make a calibration
+    measured against one `CALIBRATION_STALE` against the other.
+
+    Default-reachable, not exotic: the clamp is `max_chars // 4`, so `--max-chars 200` with the
+    default overlap of 80 already runs at 50.
+    """
+    recorded = chunker_for(BuildRequest(max_chars=200, overlap=80))[1].configuration
+    assert recorded["overlap"] == 50, "the default overlap at max_chars=200 runs at max_chars // 4"
+
+    # An oversized request records the clamp, not the request.
+    assert chunker_for(BuildRequest(max_chars=100, overlap=500))[1].configuration["overlap"] == 25
+
+    # Below the clamp, the requested value is faithful and must NOT be altered.
+    assert chunker_for(BuildRequest(max_chars=800, overlap=80))[1].configuration["overlap"] == 80
+
+    # And the callable is bound to the same value the record names, so the pair still agree.
+    #
+    # Asserted STRUCTURALLY, on the partial's keywords, not by comparing outputs. Outputs cannot
+    # see this: `chunk_text` applies the same clamp internally, so binding 80 and binding 50 produce
+    # identical chunks and an output comparison holds either way. That left the reason for clamping
+    # the binding at all — that the record's correctness must not depend on another module's
+    # internal clamp continuing to exist — asserted by nothing. If `_split_oversized` ever loses its
+    # clamp, now that `effective_overlap` is a named function and the recording caller applies it,
+    # this is the line that notices.
+    text = ("para. " * 60 + "\n\n") * 12
+    callable_, identity = chunker_for(BuildRequest(max_chars=200, overlap=80))
+    assert callable_.keywords["overlap"] == identity.configuration["overlap"]
+    assert callable_(text) == chunk_text(
+        text, max_chars=200, overlap=identity.configuration["overlap"]
+    )
+
+
+def test_two_requests_that_chunk_identically_record_one_fingerprint() -> None:
+    """The consequence, stated as the property rather than as the mechanism.
+
+    Without the clamp in the record these two fingerprinted differently while producing the same
+    chunks, which is the whole harm: the wizard calibrates one generation and serves another.
+
+    ⚠️ The premise is measured on `chunk_text` DIRECTLY, not through the two partials. Comparing the
+    partials was the obvious way to write it and the fix made it a tautology: both are now bound to
+    the clamped value, so they carry byte-identical keywords and the comparison cannot fail for any
+    input — it passed on `text=""`, which is exactly the fixture inadequacy its own message claims to
+    rule out. Before the fix the two partials carried 80 and 50 and the comparison meant something.
+    A guard whose subject changes under it stops being a guard.
+    """
+    text = ("para. " * 60 + "\n\n") * 12
+    assert chunk_text(text, max_chars=200, overlap=80) == chunk_text(
+        text, max_chars=200, overlap=50
+    ), "the fixture has no oversized block, so it cannot show the fingerprint problem"
+
+    asked = chunker_for(BuildRequest(max_chars=200, overlap=80))
+    clamped = chunker_for(BuildRequest(max_chars=200, overlap=50))
+    assert asked[1] == clamped[1]
+
+
+def test_the_embedder_is_examined_before_the_chunker() -> None:
+    """The evaluation order `pipeline_for` chose deliberately, pinned rather than commented.
+
+    Before the extraction, a request invalid in both its embedder identity and its chunker surfaced
+    the embedder's `LineageError`. An intermediate shape flipped that to the chunker's `ValueError`,
+    which reads as a no-op and is not: it changes which of two problems an operator is told about
+    first. Only a comment recorded the decision, and that comment had already gone stale, quoting a
+    message no longer present anywhere in the tree.
+    """
+    from recall.generation_build import pipeline_for
+    from recall.lineage import LineageError
+
+    # Invalid embedder identity (no revision, no digest, no reason) AND an invalid chunker.
+    smuggled = object.__new__(BuildRequest)
+    for field in dataclasses.fields(BuildRequest):
+        object.__setattr__(smuggled, field.name, getattr(BuildRequest(), field.name))
+    object.__setattr__(smuggled, "chunker", "Code")
+
+    with pytest.raises(LineageError):
+        pipeline_for(_FakeEmbedder(), smuggled)
 
 
 def test_the_chunker_decision_point_also_refuses_a_smuggled_chunk_size() -> None:
@@ -222,6 +315,10 @@ def test_the_chunker_decision_point_refuses_a_request_that_bypassed_the_construc
 
     `object.__new__` here stands in for any such reconstruction. The point is not that anybody
     calls it, but that a value can reach `chunker_for` without passing the constructor.
+
+    The message is the SAME one the constructor gives, and that is deliberate. The two gates
+    previously validated in opposite orders, so a request invalid in both its chunker and its sizes
+    reported a different reason depending on which gate caught it. They share one validator now.
     """
     import dataclasses
 
@@ -230,7 +327,18 @@ def test_the_chunker_decision_point_refuses_a_request_that_bypassed_the_construc
         object.__setattr__(smuggled, field.name, getattr(BuildRequest(), field.name))
     object.__setattr__(smuggled, "chunker", "Code")
 
-    with pytest.raises(ValueError, match="unknown chunker"):
+    with pytest.raises(ValueError, match="chunker must be one of") as from_gate:
+        chunker_for(smuggled)
+
+    with pytest.raises(ValueError, match="chunker must be one of") as from_constructor:
+        BuildRequest(chunker="Code")  # type: ignore[arg-type]
+
+    assert str(from_gate.value) == str(from_constructor.value)
+
+    # And a request invalid in BOTH ways reports the same field first at either gate, rather than
+    # depending on which one happened to catch it.
+    object.__setattr__(smuggled, "max_chars", 0)
+    with pytest.raises(ValueError, match="chunker must be one of"):
         chunker_for(smuggled)
 
 
@@ -251,7 +359,10 @@ def test_the_callable_and_the_record_come_from_one_chunker_for_call(
     """
     import recall.generation_build as module
 
-    request = BuildRequest(chunker="code", max_chars=321, unverified=True)
+    # `commit_root=None` so this does not spawn a real `git rev-parse` in the pytest working
+    # directory. The sibling test file stubs `head_commit` for exactly that reason; the chunker call
+    # count is the subject here and the commit stamp is incidental to it.
+    request = BuildRequest(chunker="code", max_chars=321, unverified=True, commit_root=None)
     calls: list[BuildRequest] = []
     real = module.chunker_for
 

@@ -33,6 +33,7 @@ from recall.index import (
     ChunkerKind,
     chunk_code,
     chunk_text,
+    effective_overlap,
     head_commit,
 )
 from recall.lineage import ChunkerIdentity, EmbedderIdentity, IndexManifestV1, PipelineIdentity
@@ -63,25 +64,38 @@ __all__ = [
 ]
 
 
-def _validate_chunk_sizes(max_chars: int, overlap: int) -> None:
-    """Refuse sizes that produce a record disagreeing with the chunks it describes.
+def _validate_request(chunker: object, max_chars: object, overlap: object) -> None:
+    """Refuse anything that would put a false description into an immutable record.
 
-    `max_chars < 1` is the one that matters, and it fails differently on the two paths, which is
-    why neither path caught it. Measured: `chunk_code(text, max_chars=0)` returns the whole text as
-    a SINGLE chunk, because it reaches `_pack` with `hard_split=False` and so never meets the
-    `max_chars < 1` guard in `recall.index` whose whole purpose is to stop silent embedder
-    truncation. The record then says `{"max_chars": 0}` for a 10,000-character chunk. On the text
-    path it does raise, but only inside `manager.build`, which is after `manager.create` has
-    written the generation row, so `recall generation build --max-chars 0` left an orphan behind.
+    Called from `BuildRequest.__post_init__` AND from `chunker_for`, in this order in both, so a
+    request invalid in more than one way reports the same reason wherever it is caught. Two gates
+    rather than one because a frozen dataclass rebuilt by `copy.deepcopy`, or by any deserialiser
+    that restores `__dict__`, never runs `__post_init__` — and a state file read back on a later run
+    is exactly the wizard's declared path.
 
-    `overlap >= max_chars` is deliberately NOT refused. It looks degenerate and is not: measured at
-    `max_chars=100, overlap=500`, the chunker clamps and returns exactly what `overlap=100` returns,
-    133 chunks with the longest at 99. Inventing a bound I have not measured a harm for is how a
-    constant that merely looks principled gets shipped.
+    **Type before range.** Checking only the range left the identical orphan-generation failure
+    reachable on that same deserialisation path: `json.loads('{"max_chars": 800.0}')` yields a
+    float, which passes a `< 1` test, records `{"max_chars": 800.0}`, and then raises `TypeError`
+    from a slice expression inside `manager.build` — after `manager.create` has written the
+    generation row. `type(...) is not int` rather than `isinstance`, so `True` is refused too:
+    `max_chars=True` was accepted and recorded as `True` while the effective size was 1.
+
+    `max_chars < 1` matters because it fails differently on the two paths, which is why neither
+    caught it. `chunk_code(text, max_chars=0)` returns the whole text as a SINGLE chunk, since it
+    reaches `_pack` with `hard_split=False` and never meets `recall.index`'s own `max_chars < 1`
+    guard, whose purpose is to stop silent embedder truncation.
+
+    An overlap ABOVE the clamp is not refused here, because it is not an error: it is recorded
+    correctly instead. See `effective_overlap`.
     """
-    if max_chars < 1:
+    if chunker not in get_args(ChunkerKind):
+        raise ValueError(f"chunker must be one of {get_args(ChunkerKind)}, not {chunker!r}")
+    for name, value in (("max_chars", max_chars), ("overlap", overlap)):
+        if type(value) is not int:
+            raise ValueError(f"{name} must be an int, not {type(value).__name__}")
+    if max_chars < 1:  # type: ignore[operator]
         raise ValueError(f"max_chars must be at least 1, not {max_chars!r}")
-    if overlap < 0:
+    if overlap < 0:  # type: ignore[operator]
         raise ValueError(f"overlap cannot be negative, not {overlap!r}")
 
 
@@ -111,28 +125,16 @@ class BuildRequest:
     commit_root: str | None = "."
 
     def __post_init__(self) -> None:
-        # The only thing validating this field was argparse's `choices=`, and that did not travel
-        # with the extraction. `ChunkerKind` is a `Literal` and is erased at runtime, so without
-        # this a typo or a case difference selects the TEXT chunker and records it as
-        # `recall.chunk_text`: the callable and the record agree with each other and disagree with
-        # what was asked, which is the one shape nothing downstream can detect.
+        # Nothing validated any of these fields after the extraction: argparse's `choices=` was the
+        # only check on `chunker`, and it did not travel. `ChunkerKind` is a `Literal` and is erased
+        # at runtime, so a typo or a case difference selected the TEXT chunker and recorded it as
+        # `recall.chunk_text` — callable and record agreeing with each other and both disagreeing
+        # with what was asked, which is the one shape nothing downstream can detect.
         #
         # It matters more here than it did behind argparse. This is a serialisable request the
-        # wizard writes into resumable state and hands back on a later run, so the value can
+        # wizard writes into resumable state and hands back on a later run, so every value can
         # arrive from a file somebody edited rather than from a parser.
-        #
-        # The accepted set is read off the type rather than written out again. It was already
-        # spelled three times (the annotation, `chunker_for`'s branches, argparse's `choices`), and
-        # a fourth copy is a fourth thing to forget when a chunker is added. This guard covers the
-        # constructor only; `chunker_for` refuses as well, because a request restored without
-        # `__init__` never reaches this line.
-        if self.chunker not in get_args(ChunkerKind):
-            raise ValueError(
-                f"chunker must be one of {get_args(ChunkerKind)}, not {self.chunker!r}"
-            )
-        # The sizes go into the same immutable record and arrive from the same edited file, so
-        # validating only the chunker covered a third of the request the threat model describes.
-        _validate_chunk_sizes(self.max_chars, self.overlap)
+        _validate_request(self.chunker, self.max_chars, self.overlap)
 
 
 def embedder_identity(embedder: Embedder | Any, request: BuildRequest) -> EmbedderIdentity:
@@ -168,13 +170,19 @@ def chunker_for(request: BuildRequest) -> tuple[Callable[[str], list[str]], Chun
     carries the operator's parameters is a well-formed generation whose provenance is false, and
     nothing downstream can detect it.
 
-    Exhaustive rather than falling through to text, and that is not merely belt-and-braces on top
-    of `BuildRequest.__post_init__`. A frozen dataclass rebuilt by `copy.deepcopy`, or by any
-    deserialiser that restores `__dict__` directly, never runs `__post_init__`, so the constructor
-    guard does not cover the round-trip the wizard's resumable state depends on. This is the
-    decision point, so this is where an unrecognised value has to stop.
+    Validates again rather than trusting the constructor: a frozen dataclass rebuilt by
+    `copy.deepcopy`, or by any deserialiser that restores `__dict__` directly, never runs
+    `__post_init__`, so the constructor guard does not cover the round-trip the wizard's resumable
+    state depends on. This is the decision point, so this is where a bad request has to stop.
+
+    **The recorded overlap is the EFFECTIVE one, not the requested one.** `_split_oversized` clamps
+    to `max_chars // 4`, so recording what was asked for describes a pipeline that did not run: at
+    `--max-chars 200` the default overlap of 80 runs at 50, and two configurations producing
+    byte-identical chunks then fingerprint differently, which makes a calibration bound to one
+    `CALIBRATION_STALE` against the other. The callable is bound to the same clamped value, so the
+    pair still agree by construction and the chunks are unchanged either way.
     """
-    _validate_chunk_sizes(request.max_chars, request.overlap)
+    _validate_request(request.chunker, request.max_chars, request.overlap)
     if request.chunker == "code":
         # `chunk_code` takes no overlap, so recording one would describe a pipeline that never ran.
         return (
@@ -182,15 +190,20 @@ def chunker_for(request: BuildRequest) -> tuple[Callable[[str], list[str]], Chun
             ChunkerIdentity("recall.chunk_code", 1, {"max_chars": request.max_chars}),
         )
     if request.chunker == "text":
+        overlap = effective_overlap(request.max_chars, request.overlap)
         return (
-            functools.partial(chunk_text, max_chars=request.max_chars, overlap=request.overlap),
+            functools.partial(chunk_text, max_chars=request.max_chars, overlap=overlap),
             ChunkerIdentity(
                 "recall.chunk_text",
                 1,
-                {"max_chars": request.max_chars, "overlap": request.overlap},
+                {"max_chars": request.max_chars, "overlap": overlap},
             ),
         )
-    raise ValueError(f"unknown chunker {request.chunker!r}")
+    # Unreachable while `_validate_request` accepts exactly the values branched on above, and kept
+    # deliberately: it is what fires if `ChunkerKind` gains a member and this function does not gain
+    # a branch, which is the original silent-fallthrough defect one edit into the future. No test
+    # drives it, and it is not counted as covered.
+    raise ValueError(f"chunker {request.chunker!r} is in ChunkerKind but has no branch here")
 
 
 def pipeline_for(
@@ -210,8 +223,11 @@ def pipeline_for(
     contradictory identity, because there is no parameter for one.
     """
     # `embedder_identity` FIRST, which is the order the code this replaced failed in. On a request
-    # that is invalid in both ways, evaluating the chunker first surfaces `unknown chunker` where
-    # the extracted code surfaced the embedder's `LineageError`. That reads as a no-op and is not.
+    # invalid in both ways, evaluating the chunker first surfaces "chunker must be one of …" where
+    # the extracted code surfaced the embedder's `LineageError`. That reads as a no-op and is not,
+    # so it is pinned by a test rather than left to this comment — an earlier version of this note
+    # quoted a message that no longer existed anywhere in the tree, which is how a comment ends up
+    # being the only record of a decision.
     embedder_record = embedder_identity(embedder, request)
     chunker, chunker_identity = chunker_for(request)
     return chunker, PipelineIdentity(embedder_record, chunker_identity)
