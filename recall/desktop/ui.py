@@ -296,7 +296,6 @@ if QApplication is not None:
                 QLabel#tableWatermark { background: transparent; }
                 QLabel#runtimeLabel { color: #b6b7ac; font-family: "Consolas"; font-size: 11px; }
                 QLabel#status { color: #b6b7ac; font-size: 12px; }
-                QFrame#identityRule { background: #d7a52a; border: 0; }
                 QFrame#dropZone { background: #141714; border: 1px dashed #465047; border-radius: 4px; padding: 18px; }
                 QFrame#dropZone:hover, QFrame#dropZone[dragActive="true"] { border-color: #d7a52a; background: #191b15; }
                 QFrame#dropZone QLabel { background: transparent; }
@@ -326,7 +325,7 @@ if QApplication is not None:
                 QTableWidget::item:selected { background: #3a301b; color: #f4f1e8; }
                 QTableWidget#filesTable, QTableWidget#githubTable, QTableWidget#calibrationTable { background: transparent; }
                 QTableWidget#filesTable::item, QTableWidget#githubTable::item, QTableWidget#calibrationTable::item { background: transparent; }
-                QHeaderView::section { background: #1a1d1a; color: #d7d2c4; font-family: "Consolas"; font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 10px; border: 0; border-bottom: 1px solid #596057; }
+                QHeaderView::section { background: #1a1d1a; color: #d7d2c4; font-family: "Consolas"; font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 10px; border: 0; }
                 QTableWidget#filesTable QHeaderView, QTableWidget#githubTable QHeaderView { background: transparent; }
                 QTableWidget#filesTable QHeaderView::section, QTableWidget#githubTable QHeaderView::section { background: transparent; }
                 QTableCornerButton::section { background: transparent; border: 0; }
@@ -362,10 +361,6 @@ if QApplication is not None:
             outer = QVBoxLayout(root)
             outer.setContentsMargins(16, 12, 16, 12)
             outer.setSpacing(12)
-            identity_rule = QFrame()
-            identity_rule.setObjectName("identityRule")
-            identity_rule.setFixedHeight(3)
-            outer.addWidget(identity_rule)
             header = QHBoxLayout()
             header.setSpacing(8)
             header.addStretch()
