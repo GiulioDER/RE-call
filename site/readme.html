@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>README · RE-call</title>
+<meta name="description" content="The RE-call README with optional live presentation translation.">
+<meta name="translation-endpoint" content="https://api.translate.zvo.cn/translate.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="readme.js" defer></script>
+</head>
+<body class="readme-page">
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="index.html">RE-call <span>README</span></a>
+    <nav aria-label="Primary">
+      <a href="readme.html" aria-current="page">README</a>
+      <a href="start.html">Install</a>
+      <a href="corpus.html">Your memory</a>
+      <a href="claude-code.html">Claude Code</a>
+      <a href="calibration.html">Calibration</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+    </nav>
+    <div class="language-control">
+      <label for="readme-language">Language</label>
+      <select id="readme-language" aria-describedby="translation-status">
+        <option value="english" data-html-lang="en">English</option>
+        <option value="italian" data-html-lang="it">Italiano</option>
+        <option value="spanish" data-html-lang="es">Español</option>
+        <option value="french" data-html-lang="fr">Français</option>
+        <option value="german" data-html-lang="de">Deutsch</option>
+        <option value="portuguese" data-html-lang="pt">Português</option>
+        <option value="chinese_simplified" data-html-lang="zh-CN">简体中文</option>
+        <option value="japanese" data-html-lang="ja">日本語</option>
+        <option value="korean" data-html-lang="ko">한국어</option>
+        <option value="russian" data-html-lang="ru">Русский</option>
+        <option value="arabic" data-html-lang="ar">العربية</option>
+        <option value="hindi" data-html-lang="hi">हिन्दी</option>
+        <option value="turkish" data-html-lang="tr">Türkçe</option>
+      </select>
+    </div>
+  </div>
+</header>
+<main class="shell readme-shell">
+  <section class="readme-intro">
+    <div>
+      <p class="eyebrow">Repository guide</p>
+      <h1>RE-call, in the language you think in.</h1>
+      <p class="lede">English is the source of truth. Choose a presentation language above when you want the README easier to scan.</p>
+    </div>
+    <div class="readme-meta">
+      <span id="translation-status" class="translation-status" role="status" aria-live="polite">English source</span>
+      <p class="translation-disclosure">Choosing another language sends readable README text to the configured translation endpoint. English keeps the text local.</p>
+      <a class="button" href="https://github.com/GiulioDER/RE-call/blob/master/README.md">Open source README</a>
+    </div>
+  </section>
+  <article id="readme-content" class="readme-content" aria-live="polite">
+    <p class="readme-loading">Loading the repository README…</p>
+  </article>
+</main>
+</body>
+</html>

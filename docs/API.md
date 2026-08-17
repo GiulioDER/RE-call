@@ -52,6 +52,29 @@ The MCP server is `python -m recall_mcp.server`. Its supported tools are:
 | `recall_reasoning_audit` | Report reasoning integration state and diagnostics. |
 | `recall_rewrite_plan` | Report which key a proposal would declare, in which file. Writes nothing. |
 
+`recall_search` and `recall_evidence` also accept an optional `locale` argument for presentation
+localization. When supplied, the response gains an additive `localized` object containing display
+text keyed by `chunk_id`. Canonical hit text, provenance, evidence items, `system_prompt`, and
+`user_message` are never translated in place. Localization is disabled unless
+`RECALL_TRANSLATION_ENABLED=1` configures a validated HTTPS text endpoint. Provider failures are
+fail soft and return canonical values with a fixed warning. Enabling the provider sends selected
+retrieved passage text to that endpoint, so deployments with sensitive corpora should use a
+self-hosted endpoint and should treat localized values as display data only. The explicit
+`RECALL_TRANSLATION_ALLOW_HTTP=1` override permits cleartext HTTP for a deliberately controlled
+endpoint and must not be used across an untrusted network.
+
+The static README viewer uses these provider locale identifiers: `english`, `italian`, `spanish`,
+`french`, `german`, `portuguese`, `chinese_simplified`, `japanese`, `korean`, `russian`, `arabic`,
+`hindi`, and `turkish`. Other provider identifiers may be passed to the MCP or CLI presentation
+surfaces. An unsupported identifier or provider failure leaves canonical text unchanged and marks
+the localized object as a fallback.
+
+The CLI accepts the same additive presentation option, for example:
+
+```console
+recall search "deployment notes" --locale italian
+```
+
 **There is deliberately no `recall_rewrite_apply`.** Nothing reaches corpus metadata without a
 named human, and the MCP client is the model: letting it supply a reviewer id and an audit note
 would make that gate a formality it satisfies by typing a string, so the gate becomes a field
