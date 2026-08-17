@@ -4,13 +4,29 @@ const README_SOURCES = [
 ];
 const MARKDOWN_RENDERER = "https://api.github.com/markdown/raw";
 const TRANSLATION_ENDPOINT = document.querySelector("meta[name='translation-endpoint']")?.content;
+const GOOGLE_TRANSLATION_ENDPOINT = "https://translate.googleapis.com/translate_a/single";
+const GOOGLE_LOCALES = {
+  italian: "it",
+  spanish: "es",
+  french: "fr",
+  german: "de",
+  portuguese: "pt",
+  chinese_simplified: "zh-CN",
+  japanese: "ja",
+  korean: "ko",
+  russian: "ru",
+  arabic: "ar",
+  hindi: "hi",
+  turkish: "tr",
+};
+const TRANSLATION_SEPARATOR = " __RECALL_TRANSLATION_SEPARATOR_9f3a__ ";
 const ENGLISH = "english";
 const BATCH_SIZE = 24;
 const MAX_README_MARKDOWN_CHARS = 400_000;
 const MAX_RENDERED_HTML_CHARS = 5_000_000;
 const MAX_TRANSLATION_RESPONSE_CHARS = 2_000_000;
-const TRANSLATION_TIMEOUT_MS = 5_000;
-const TRANSLATION_ATTEMPTS = 3;
+const TRANSLATION_TIMEOUT_MS = 3_000;
+const TRANSLATION_ATTEMPTS = 2;
 const TRANSLATION_TOTAL_TIMEOUT_MS = 15_000;
 const STORAGE_KEY = "recall-readme-language";
 
@@ -121,6 +137,7 @@ async function translateBatch(texts, locale, signal) {
   if (!TRANSLATION_ENDPOINT) {
     throw new Error("translation endpoint is not configured");
   }
+  let primaryError;
   for (let attempt = 0; attempt < TRANSLATION_ATTEMPTS; attempt += 1) {
     const body = new URLSearchParams({
       to: locale,
@@ -162,8 +179,9 @@ async function translateBatch(texts, locale, signal) {
       }
       return payload.text;
     } catch (error) {
+      primaryError = error;
       if (signal?.aborted || attempt === TRANSLATION_ATTEMPTS - 1) {
-        throw error;
+        break;
       }
     } finally {
       window.clearTimeout(timeout);
@@ -171,7 +189,60 @@ async function translateBatch(texts, locale, signal) {
     }
     await new Promise((resolve) => window.setTimeout(resolve, 300 * (attempt + 1)));
   }
-  throw new Error("translation provider request failed");
+  if (signal?.aborted) {
+    throw primaryError || new Error("translation provider request failed");
+  }
+  return translateWithGoogle(texts, locale, signal);
+}
+
+async function translateWithGoogle(texts, locale, signal) {
+  const target = GOOGLE_LOCALES[locale] || locale;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) {
+    controller.abort();
+  } else {
+    signal?.addEventListener("abort", abort, { once: true });
+  }
+  const timeout = window.setTimeout(() => controller.abort(), TRANSLATION_TIMEOUT_MS);
+  try {
+    const url = new URL(GOOGLE_TRANSLATION_ENDPOINT);
+    url.search = new URLSearchParams({
+      client: "gtx",
+      sl: "auto",
+      tl: target,
+      dt: "t",
+      q: texts.join(TRANSLATION_SEPARATOR),
+    });
+    const response = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error("fallback translation provider unavailable");
+    }
+    const responseText = await response.text();
+    if (responseText.length > MAX_TRANSLATION_RESPONSE_CHARS) {
+      throw new Error("fallback translation response is too large");
+    }
+    const payload = JSON.parse(responseText);
+    const combined = payload?.[0]
+      ?.filter((segment) => Array.isArray(segment) && typeof segment[0] === "string")
+      .map((segment) => segment[0])
+      .join("");
+    const translated = combined?.split(TRANSLATION_SEPARATOR);
+    if (
+      !Array.isArray(translated) ||
+      translated.length !== texts.length ||
+      translated.some((item) => typeof item !== "string")
+    ) {
+      throw new Error("fallback translation returned invalid text");
+    }
+    return translated;
+  } finally {
+    window.clearTimeout(timeout);
+    signal?.removeEventListener("abort", abort);
+  }
 }
 
 async function translateNodes(nodes, locale, signal) {
@@ -185,15 +256,23 @@ async function translateNodes(nodes, locale, signal) {
   if (batchCount > 22) {
     throw new Error("README requires too many translation requests");
   }
+  const batches = [];
   for (let start = 0; start < source.length; start += BATCH_SIZE) {
-    const batch = source.slice(start, start + BATCH_SIZE);
+    batches.push(source.slice(start, start + BATCH_SIZE));
+  }
+  const results = await Promise.all(batches.map(async (batch) => {
     try {
-      translated.push(...await translateBatch(batch, locale, signal));
+      return { values: await translateBatch(batch, locale, signal), failed: false };
     } catch (error) {
       if (signal?.aborted) {
         throw error;
       }
-      translated.push(...batch);
+      return { values: batch, failed: true };
+    }
+  }));
+  for (const result of results) {
+    translated.push(...result.values);
+    if (result.failed) {
       failedBatches += 1;
     }
   }
