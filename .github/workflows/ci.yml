@@ -42,7 +42,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,documents]"
       - name: Exercise migrations, lineage, generations and calibration binding
         run: >-
           pytest -q tests/test_schema_migrations.py tests/test_generations.py
@@ -84,7 +84,7 @@ jobs:
       #   rerank/entail -> sentence-transformers (their real-model tests self-skip here)
       #   voyage -> cloud embedder (its one test skips without VOYAGE_API_KEY)
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,documents]"
 
       - name: Lint (ruff)
         run: ruff check .
@@ -216,7 +216,7 @@ jobs:
       # resolved normally. `lowest` would also pin every transitive to its floor, which tests
       # other projects' constraint hygiene rather than ours.
       - name: Install the declared minimums
-        run: uv pip install --system --resolution lowest-direct -e ".[dev,mcp]"
+        run: uv pip install --system --resolution lowest-direct -e ".[dev,mcp,documents]"
 
       - name: Show what actually resolved
         run: uv pip list --system

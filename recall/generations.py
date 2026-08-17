@@ -561,14 +561,15 @@ class GenerationManager:
                         indexed_sources.append(entry.uri)
                         continue
 
-                metadata: dict[str, Any] = {}
+                metadata: dict[str, Any] = dict(verified.metadata)
                 body = text
                 if entry.media_type in _MARKDOWN_MEDIA_TYPES:
                     # Not optional. `recall index` is refused under RECALL_ENV=production
                     # (`recall/cli.py:1209`), so hooking only the index path would leave the one
                     # build path that runs in production reading derived blocks as evidence.
                     document = parse_document(text)
-                    metadata, body = document.meta, document.human_body
+                    metadata = {**metadata, **document.meta}
+                    body = document.human_body
                     try:
                         validity_bounds(metadata)
                     except ValueError as exc:
@@ -859,6 +860,26 @@ class GenerationManager:
         if not row or not row[0]:
             raise NoActiveGeneration(f"tenant {self.tenant_id!r} has no active generation")
         return str(row[0])
+
+    def active_manifest(self) -> IndexManifestV1:
+        """Return the manifest for the active generation.
+
+        Desktop uploads are staged in immutable, per-job directories. A new build must carry
+        forward only the files that belong to the active corpus, plus the current job. Reading the
+        whole tenant upload tree would also pick up files from failed or abandoned jobs.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT g.manifest "
+                "FROM recall_tenant_state AS t "
+                "JOIN recall_generations AS g "
+                "  ON g.tenant_id = t.tenant_id AND g.generation_id = t.active_generation_id "
+                "WHERE t.tenant_id = %s",
+                (self.tenant_id,),
+            ).fetchone()
+        if not row or not isinstance(row[0], Mapping):
+            raise NoActiveGeneration(f"tenant {self.tenant_id!r} has no active generation")
+        return IndexManifestV1.from_dict(row[0])
 
     def forget(self, source_uri: str, *, legacy_table: str | None = None) -> ErasureResult:
         """Erase a source from every generation, and tombstone it against future builds.

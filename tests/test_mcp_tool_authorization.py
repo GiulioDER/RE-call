@@ -81,7 +81,13 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
     # CLI, so no MCP scope grants the ability to edit a memo.
     "recall_rewrite_plan": (SCOPE_READ, "read", {"proposal_id": "ip_x"}),
     "recall_stats": (SCOPE_READ, "read", {}),
+    "recall_tenants": (SCOPE_READ, "read", {}),
+    "recall_job_status": (SCOPE_READ, "read", {"job_id": "job-1"}),
+    "recall_calibration_status": (SCOPE_READ, "read", {}),
     "recall_index": (SCOPE_WRITE, "write", {"path": "corpus"}),
+    "recall_ingest": (SCOPE_WRITE, "write", {"files": [{"name": "memo.md", "content_b64": "bWVtb3J5"}]}),
+    "recall_calibration_run": (SCOPE_WRITE, "write", {}),
+    "recall_calibration_publish": (SCOPE_WRITE, "write", {"calibration_id": "cal-1"}),
     "recall_forget": (SCOPE_FORGET, "forget", {"sources": ["f.md"]}),
 }
 CASES = [pytest.param(name, id=name) for name in TOOLS]

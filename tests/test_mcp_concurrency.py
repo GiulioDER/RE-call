@@ -44,6 +44,12 @@ ALL_TOOLS = ORIGINAL_TOOLS | {
     # Read only, and deliberately unaccompanied: there is no `recall_rewrite_apply`, because
     # the MCP client is the model and a reviewer id it can type is a field, not a person.
     "recall_rewrite_plan",
+    "recall_tenants",
+    "recall_ingest",
+    "recall_job_status",
+    "recall_calibration_status",
+    "recall_calibration_run",
+    "recall_calibration_publish",
 }
 
 

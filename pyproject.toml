@@ -38,6 +38,16 @@ dependencies = [
 
 [project.optional-dependencies]
 fastembed = ["fastembed>=0.3"]
+# Native extraction for PDF, Office, spreadsheets, presentations, HTML, and tables.
+documents = [
+    "pypdf>=5.0",
+    "pdfplumber>=0.11",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "python-pptx>=1.0",
+    "xlrd>=2.0",
+    "beautifulsoup4>=4.12",
+]
 # Pooling is optional for CLI use and required for server processes.
 pool = ["psycopg-pool>=3.2"]
 # Keep `mcp` and `dev` in step. Version rationale lives in docs/DEPENDENCIES.md.
@@ -73,6 +83,8 @@ dev = [
     "langchain-core>=0.3",
     "llama-index-core>=0.11",
 ]
+# Optional Windows desktop shell. Keeping this separate preserves the small library install.
+desktop = ["PySide6>=6.7", "keyring>=25", "mcp>=2,<3"]
 
 # Declared LAST among the `[project]` sub-tables: every bare key above (`dependencies`,
 # `classifiers`, …) belongs to `[project]`, and opening a sub-table earlier would silently
@@ -89,6 +101,7 @@ Changelog = "https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md"
 recall = "recall.cli:main"
 recall-enterprise = "recall.enterprise_cli:main"
 recall-mcp = "recall_mcp.server:main"
+recall-desktop = "recall.desktop.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["recall", "recall_mcp"]
@@ -198,6 +211,24 @@ module = [
     # than restating it. Same shape as every entry above: the importing module must type-check
     # whether or not the imported one is present, which also keeps the two mergeable in any order.
     "benchmarks.mtrag.multiquery",
+    # Document and desktop adapters are optional at runtime and intentionally absent from the
+    # lean typecheck job. Their imports are guarded in the extraction and desktop modules.
+    "pdfplumber",
+    "pdfplumber.*",
+    "docx",
+    "docx.*",
+    "openpyxl",
+    "openpyxl.*",
+    "xlrd",
+    "xlrd.*",
+    "pptx",
+    "pptx.*",
+    "bs4",
+    "bs4.*",
+    "PySide6",
+    "PySide6.*",
+    "keyring",
+    "keyring.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
