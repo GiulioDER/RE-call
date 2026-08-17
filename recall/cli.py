@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import functools
 import json
 import os
 import sys
@@ -15,7 +14,7 @@ from recall.embeddings import resolve_embedder
 from recall.entailment import EntailmentJudge, resolve_entailment_judge
 from recall.setup import CalibrationResult
 from recall.trust_policy import TrustPolicy
-from recall.embeddings import Embedder, HashingEmbedder
+from recall.embeddings import Embedder
 from recall.index import head_commit, Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
@@ -1547,13 +1546,8 @@ def main(argv: list[str] | None = None) -> None:
             print(f"active generation: {args.generation_id}")
             return
 
-        from recall.lineage import (
-            ChunkerIdentity,
-            EmbedderIdentity,
-            IndexManifestV1,
-            ManifestObjectV1,
-            PipelineIdentity,
-        )
+        from recall.generation_build import BuildRequest, build_generation
+        from recall.lineage import IndexManifestV1, ManifestObjectV1
         from recall.manifest import (
             ObjectReader,
             S3ObjectReader,
@@ -1593,64 +1587,32 @@ def main(argv: list[str] | None = None) -> None:
         if reader is None:
             reader = reader_for_manifest(manifest)
         embedder = _make_embedder(args.embedder)
-        revision = args.embedder_revision
-        provider = args.embedder_provider
-        if isinstance(embedder, HashingEmbedder):
-            provider = provider or "recall"
-            revision = revision or "hashing-md5-bow-v1"
-        else:
-            provider = provider or "fastembed"
-        identity = EmbedderIdentity(
-            provider=provider,
-            model=embedder.name,
-            dimension=embedder.dim,
-            revision=revision,
-            artifact_digest=args.embedder_artifact_digest,
-            unverified_reason=(
-                "explicit development build"
-                if args.unverified_development
-                and not revision
-                and not args.embedder_artifact_digest
-                else None
-            ),
-        )
-        if args.chunker == "code":
-            generation_chunker = functools.partial(chunk_code, max_chars=args.max_chars)
-            chunker_identity = ChunkerIdentity(
-                "recall.chunk_code", 1, {"max_chars": args.max_chars}
-            )
-        else:
-            generation_chunker = functools.partial(
-                chunk_text, max_chars=args.max_chars, overlap=args.overlap
-            )
-            chunker_identity = ChunkerIdentity(
-                "recall.chunk_text",
-                1,
-                {"max_chars": args.max_chars, "overlap": args.overlap},
-            )
-        pipeline = PipelineIdentity(identity, chunker_identity)
-        generation = manager.create(
+        # The assembly itself lives in `recall.generation_build`, because the installation wizard
+        # builds generations too and a second copy of it would mean two provenance vocabularies
+        # drifting apart with nothing failing. The strings it writes are pinned by
+        # `tests/test_generation_build_assembly.py`.
+        generation_stats = build_generation(
+            manager,
             manifest,
-            pipeline,
-            allow_unverified=args.unverified_development,
-        )
-        # Same provenance the index path stamps. Without this a CALIBRATED generation carries no
-        # record of which project produced each chunk, and the generation path is the only one
-        # calibration can use.
-        build_provenance = {
-            k: v
-            for k, v in (
-                ("project", args.project),
-                ("indexed_commit", None if args.no_commit_stamp else head_commit(".")),
-            )
-            if v is not None
-        }
-        generation_stats = manager.build(
-            generation.generation_id,
             reader,
             embedder,
-            generation_chunker,
-            provenance=build_provenance,
+            BuildRequest(
+                chunker=args.chunker,
+                max_chars=args.max_chars,
+                overlap=args.overlap,
+                provider=args.embedder_provider,
+                revision=args.embedder_revision,
+                artifact_digest=args.embedder_artifact_digest,
+                unverified=args.unverified_development,
+                # Same provenance the index path stamps. Without this a CALIBRATED generation
+                # carries no record of which project produced each chunk, and the generation path
+                # is the only one calibration can use.
+                project=args.project,
+                # `"."` rather than the corpus: a manifest names objects, not a working tree, and
+                # an s3:// one has no local root at all. This is the pre-existing behaviour and is
+                # NOT the same root `recall index` uses, which stamps the directory being indexed.
+                commit_root=None if args.no_commit_stamp else ".",
+            ),
         )
         print(
             f"built {generation_stats.generation_id}: {generation_stats.objects} objects, "

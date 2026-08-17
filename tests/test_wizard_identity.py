@@ -405,7 +405,11 @@ def test_a_dangling_symlink_refuses_rather_than_hashing_a_partial_tree(
     blob.unlink()  # the cache is now incomplete
     with caplog.at_level(logging.WARNING):
         assert artifact_identity_for(FastEmbedEmbedder(snap)) is None
-    assert "dangling" in caplog.text
+    # A phrase with a space, not the bare word. pytest names `tmp_path` after the test, truncated
+    # to 30 characters, so both of these tests put "dangling" into the very path the refusal
+    # message embeds — the assertion was satisfied by its own fixture's name and held whatever the
+    # message said, including the OTHER refusal's wording. A basename cannot contain a space.
+    assert "symlink is dangling" in caplog.text
     assert str(snap / "model.onnx") in caplog.text
 
 
@@ -445,7 +449,11 @@ def test_the_dangling_refusal_is_actionable_on_a_platform_without_symlinks(
 
     with caplog.at_level(logging.WARNING):
         assert artifact_identity_for(FastEmbedEmbedder(snap)) is None
-    assert "dangling" in caplog.text
+    # A phrase with a space, not the bare word. pytest names `tmp_path` after the test, truncated
+    # to 30 characters, so both of these tests put "dangling" into the very path the refusal
+    # message embeds — the assertion was satisfied by its own fixture's name and held whatever the
+    # message said, including the OTHER refusal's wording. A basename cannot contain a space.
+    assert "symlink is dangling" in caplog.text
     assert str(snap / "pruned.onnx") in caplog.text
 
 
