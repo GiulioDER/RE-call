@@ -23,7 +23,7 @@ from __future__ import annotations
 import functools
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from recall.embeddings import Embedder, HashingEmbedder
 from recall.generations import BuildStats, GenerationManager
@@ -85,8 +85,16 @@ class BuildRequest:
         # It matters more here than it did behind argparse. This is a serialisable request the
         # wizard writes into resumable state and hands back on a later run, so the value can
         # arrive from a file somebody edited rather than from a parser.
-        if self.chunker not in ("text", "code"):
-            raise ValueError(f"chunker must be 'text' or 'code', not {self.chunker!r}")
+        #
+        # The accepted set is read off the type rather than written out again. It was already
+        # spelled three times (the annotation, `chunker_for`'s branches, argparse's `choices`), and
+        # a fourth copy is a fourth thing to forget when a chunker is added. This guard covers the
+        # constructor only; `chunker_for` refuses as well, because a request restored without
+        # `__init__` never reaches this line.
+        if self.chunker not in get_args(ChunkerKind):
+            raise ValueError(
+                f"chunker must be one of {get_args(ChunkerKind)}, not {self.chunker!r}"
+            )
 
 
 def embedder_identity(embedder: Embedder | Any, request: BuildRequest) -> EmbedderIdentity:
@@ -121,6 +129,12 @@ def chunker_for(request: BuildRequest) -> tuple[Callable[[str], list[str]], Chun
     Returned together because they must agree. A partial bound to the defaults while the record
     carries the operator's parameters is a well-formed generation whose provenance is false, and
     nothing downstream can detect it.
+
+    Exhaustive rather than falling through to text, and that is not merely belt-and-braces on top
+    of `BuildRequest.__post_init__`. A frozen dataclass rebuilt by `copy.deepcopy`, or by any
+    deserialiser that restores `__dict__` directly, never runs `__post_init__`, so the constructor
+    guard does not cover the round-trip the wizard's resumable state depends on. This is the
+    decision point, so this is where an unrecognised value has to stop.
     """
     if request.chunker == "code":
         # `chunk_code` takes no overlap, so recording one would describe a pipeline that never ran.
@@ -128,18 +142,37 @@ def chunker_for(request: BuildRequest) -> tuple[Callable[[str], list[str]], Chun
             functools.partial(chunk_code, max_chars=request.max_chars),
             ChunkerIdentity("recall.chunk_code", 1, {"max_chars": request.max_chars}),
         )
-    return (
-        functools.partial(chunk_text, max_chars=request.max_chars, overlap=request.overlap),
-        ChunkerIdentity(
-            "recall.chunk_text",
-            1,
-            {"max_chars": request.max_chars, "overlap": request.overlap},
-        ),
-    )
+    if request.chunker == "text":
+        return (
+            functools.partial(chunk_text, max_chars=request.max_chars, overlap=request.overlap),
+            ChunkerIdentity(
+                "recall.chunk_text",
+                1,
+                {"max_chars": request.max_chars, "overlap": request.overlap},
+            ),
+        )
+    raise ValueError(f"unknown chunker {request.chunker!r}")
 
 
-def pipeline_identity(embedder: Embedder | Any, request: BuildRequest) -> PipelineIdentity:
-    return PipelineIdentity(embedder_identity(embedder, request), chunker_for(request)[1])
+def pipeline_identity(
+    embedder: Embedder | Any,
+    request: BuildRequest,
+    chunker_identity: ChunkerIdentity | None = None,
+) -> PipelineIdentity:
+    """The record `manager.create` binds a generation to.
+
+    The one construction site for `PipelineIdentity` in this module. `build_generation` briefly
+    built it inline so that `chunker_for` was called once, which left this function dead and the
+    module with two places assembling the record its whole purpose is to assemble in one.
+    `PipelineIdentity` carries two further fields with defaults, so anything added here later
+    would simply not have reached the live path.
+
+    `chunker_identity` lets a caller that already holds the pair hand it over instead of
+    recomputing it, which is what keeps the single-call property.
+    """
+    if chunker_identity is None:
+        chunker_identity = chunker_for(request)[1]
+    return PipelineIdentity(embedder_identity(embedder, request), chunker_identity)
 
 
 def build_provenance(request: BuildRequest) -> dict[str, str]:
@@ -183,7 +216,7 @@ def build_generation(
     chunker, chunker_identity = chunker_for(request)
     generation = manager.create(
         manifest,
-        PipelineIdentity(embedder_identity(embedder, request), chunker_identity),
+        pipeline_identity(embedder, request, chunker_identity),
         allow_unverified=request.unverified,
     )
     return manager.build(

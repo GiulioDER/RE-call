@@ -334,12 +334,25 @@ def test_provenance_carries_the_project_and_the_commit_unless_they_are_withheld(
     that a commit was recorded made this test depend on the checkout having a `.git` — it fails in
     an sdist extract, and in any container where git refuses with "dubious ownership". Stubbing
     also upgrades the assertion from "something was recorded" to "the value flowed through".
+
+    The stub RECORDS its argument rather than discarding it. A `lambda root: "c0ffee1"` made the
+    assertion pass for `commit_root="."`, `""`, `/nowhere` and `str(tmp_path)` alike, so it
+    silently removed the only coverage of what the CLI passes: mutating `cli.py` to send
+    `"/definitely/not/a/repo"` left the whole file green. Stubbing away an environment dependency
+    is right; stubbing away the argument is how the fix for one gap opened another.
     """
-    monkeypatch.setattr("recall.generation_build.head_commit", lambda root: "c0ffee1")
+    roots: list[str | None] = []
+
+    def stub(root: str | None) -> str:
+        roots.append(root)
+        return "c0ffee1"
+
+    monkeypatch.setattr("recall.generation_build.head_commit", stub)
 
     default = _run_build(tmp_path, monkeypatch)["provenance"]
     assert "project" not in default, "an unset --project must not be stamped as None"
     assert default["indexed_commit"] == "c0ffee1"
+    assert roots == ["."], "the CLI reads the commit from its own working directory"
 
     named = _run_build(tmp_path, monkeypatch, "--project", "my-project")["provenance"]
     assert named["project"] == "my-project"

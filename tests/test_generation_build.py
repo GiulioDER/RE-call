@@ -18,10 +18,23 @@ from pathlib import Path
 
 import pytest
 
-from recall.generation_build import BuildRequest, build_provenance, chunker_for, embedder_identity
+from recall.generation_build import (
+    BuildRequest,
+    build_provenance,
+    chunker_for,
+    embedder_identity,
+    pipeline_identity,
+)
 from recall.index import DEFAULT_MAX_CHARS, DEFAULT_OVERLAP_CHARS
 from recall.lineage import IndexManifestV1
 from recall.manifest import load_inventory
+
+
+class _FakeEmbedder:
+    """A resolved non-hashing embedder, shaped only as far as the identity helpers reach."""
+
+    name = "BAAI/bge-small-en-v1.5"
+    dim = 384
 
 
 def _git_repo(root: Path) -> str:
@@ -41,9 +54,13 @@ def _git_repo(root: Path) -> str:
     run("config", "user.email", "test@example.invalid")
     run("config", "user.name", "test")
     run("config", "commit.gpgsign", "false")
-    (root / "a.md").write_text(f"body of {root.name}\n", encoding="utf-8")
+    # The FULL path, not `root.name`. A leaf name is unique for the two call sites that exist
+    # today and collides again the moment a later test builds two repos called the same thing
+    # under different parents, which is the identical flake one level along. `tmp_path` is unique
+    # per test, so the full path cannot collide whatever a later caller does.
+    (root / "a.md").write_text(f"body of {root}\n", encoding="utf-8")
     run("add", "a.md")
-    run("commit", "-q", "-m", f"first commit in {root.name}")
+    run("commit", "-q", "-m", f"first commit in {root}")
     return run("rev-parse", "--short", "HEAD").stdout.strip()
 
 
@@ -90,7 +107,14 @@ def test_a_root_outside_any_repository_stamps_nothing_rather_than_a_placeholder(
     out both, and fails loudly rather than silently, because a missing binary raises here.
     """
     probe = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"], cwd=tmp_path, capture_output=True, text=True
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        # Matching `head_commit`, which bounds its own call for the same reason: a git that blocks
+        # on a credential helper or a stalled filesystem would hang the run rather than fail it,
+        # and a TimeoutExpired here is as loud as the FileNotFoundError this probe relies on.
+        timeout=15,
     )
     assert probe.returncode != 0, (
         f"{tmp_path} is inside a repository, so this test cannot demonstrate an absence"
@@ -144,6 +168,48 @@ def test_an_unknown_chunker_is_refused_rather_than_silently_treated_as_text() ->
     # And the two real values still construct, so the guard is not simply refusing everything.
     assert BuildRequest(chunker="text").chunker == "text"
     assert BuildRequest(chunker="code").chunker == "code"
+
+
+def test_the_chunker_decision_point_refuses_a_request_that_bypassed_the_constructor() -> None:
+    """The constructor guard does not cover the path the wizard's resumable state will use.
+
+    A frozen dataclass rebuilt by `copy.deepcopy`, or by any deserialiser that restores `__dict__`
+    directly, never runs `__post_init__`. So `chunker_for` has to refuse too: otherwise a request
+    that arrived from a file selects the TEXT chunker and records `recall.chunk_text`, the callable
+    and the record agreeing with each other and both disagreeing with what was asked.
+
+    `object.__new__` here stands in for any such reconstruction. The point is not that anybody
+    calls it, but that a value can reach `chunker_for` without passing the constructor.
+    """
+    import dataclasses
+
+    smuggled = object.__new__(BuildRequest)
+    for field in dataclasses.fields(BuildRequest):
+        object.__setattr__(smuggled, field.name, getattr(BuildRequest(), field.name))
+    object.__setattr__(smuggled, "chunker", "Code")
+
+    with pytest.raises(ValueError, match="unknown chunker"):
+        chunker_for(smuggled)
+
+
+def test_a_handed_in_chunker_identity_is_the_one_recorded() -> None:
+    """`build_generation` holds the pair already, so it must not silently get a second one.
+
+    `is` rather than `==`, because a recomputed identity would compare equal today and that is
+    exactly what would hide the single-call property being lost again. The no-argument form is
+    checked alongside, so the convenience path is not left to rot the way it did once already.
+    """
+    # `unverified` because a non-hashing embedder with no revision and no digest cannot form an
+    # identity at all; the flag is incidental here and the chunker half is the subject.
+    request = BuildRequest(chunker="code", max_chars=321, unverified=True)
+    _, identity = chunker_for(request)
+
+    handed_in = pipeline_identity(_FakeEmbedder(), request, identity)
+    assert handed_in.chunker is identity
+
+    computed = pipeline_identity(_FakeEmbedder(), request)
+    assert computed.chunker == identity
+    assert computed.embedder == handed_in.embedder
 
 
 def test_a_directly_constructed_reader_needs_no_allowlist_variable(
