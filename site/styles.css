@@ -58,25 +58,23 @@ html {
 
 body {
   margin: 0;
-  background: var(--ground);
+  background:
+    radial-gradient(ellipse 52% 42% at 78% 14%, rgba(215, 165, 42, 0.07), transparent 72%),
+    var(--ground);
   color: var(--ink);
   font-family: var(--font-display);
   font-size: 1.0625rem;
-  line-height: 1.65;
+  line-height: 1.7;
   font-synthesis-weight: none;
+  text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
-/* Film grain. Fixed, so it never repaints on scroll, and non-interactive.
-   0.035 is the threshold where it is felt but does not touch legibility. */
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  pointer-events: none;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+main,
+.footer {
+  position: relative;
+  z-index: 1;
 }
 
 /* --------------------------------------------------------------------------
@@ -114,7 +112,7 @@ a:hover {
 h1, h2, h3, h4 {
   font-weight: 700;
   letter-spacing: -0.03em;
-  line-height: 1.05;
+  line-height: 1.08;
   text-wrap: balance;
   margin: 0;
 }
@@ -138,9 +136,9 @@ p {
 /* Monospace metadata label, lifted from the banner's chips. */
 .eyebrow {
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 500;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--ink-muted);
   margin: 0 0 1rem;
@@ -228,7 +226,7 @@ p {
   display: flex;
   align-items: center;
   gap: 1.75rem;
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
 }
 
 .masthead nav a {
@@ -257,6 +255,15 @@ p {
   color: var(--ink);
 }
 
+.masthead nav a[href="start.html"] {
+  color: var(--signal);
+  font-weight: 600;
+}
+
+.masthead nav a[href="start.html"]:hover {
+  color: var(--ink);
+}
+
 .masthead nav a[aria-current="page"]::after,
 .masthead nav a:hover::after {
   transform: scaleX(1);
@@ -277,12 +284,12 @@ p {
     padding-block: 0.35rem;
   }
 
-  .hero-logo {
+  .hero .hero-logo {
     width: 15rem;
     height: 15rem;
     right: -2rem;
-    top: 58%;
-    opacity: 0.18;
+    top: 74%;
+    opacity: 0.13;
   }
 
   .masthead nav {
@@ -304,7 +311,7 @@ p {
 
 .hero {
   position: relative;
-  min-height: calc(100dvh - 4.5rem);
+  min-height: calc(100dvh - 7rem);
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -323,16 +330,16 @@ p {
 }
 
 .hero-logo {
-  position: absolute;
+  position: fixed;
   z-index: 0;
-  width: clamp(13rem, 29vw, 24rem);
-  height: clamp(13rem, 29vw, 24rem);
+  width: clamp(16rem, 32vw, 29rem);
+  height: clamp(16rem, 32vw, 29rem);
   object-fit: contain;
-  right: 3vw;
-  top: 50%;
+  right: clamp(-5rem, 2vw, 3rem);
+  top: 56%;
   transform: translateY(-50%);
-  opacity: 0.27;
-  filter: drop-shadow(0 0 28px rgba(215, 165, 42, 0.2));
+  opacity: 0.15;
+  filter: saturate(0.78) contrast(1.1) drop-shadow(0 0 24px rgba(215, 165, 42, 0.08));
   pointer-events: none;
 }
 
@@ -342,11 +349,11 @@ p {
 }
 
 .hero h1 {
-  font-size: clamp(2.75rem, 8.2vw, 7.5rem);
+  font-size: clamp(3rem, 6.6vw, 6rem);
   font-weight: 800;
-  letter-spacing: -0.045em;
-  line-height: 0.92;
-  max-width: 15ch;
+  letter-spacing: -0.04em;
+  line-height: 0.98;
+  max-width: 12ch;
   margin-bottom: 1.75rem;
 }
 
@@ -380,12 +387,12 @@ p {
   position: relative;
   z-index: 1;
   margin-top: auto;
-  padding-top: clamp(2.5rem, 8vh, 5rem);
+  padding-top: clamp(2rem, 6vh, 3.5rem);
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem 2.5rem;
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   letter-spacing: 0.06em;
   color: var(--ink-muted);
 }
@@ -564,7 +571,7 @@ p {
   align-items: center;
   padding: 0 1rem;
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-muted);
@@ -645,9 +652,16 @@ p {
   background: var(--surface-1);
 }
 
+.terminal + .muted {
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+
 .terminal--output pre {
   color: var(--ink-soft);
-  font-size: 0.78125rem;
+  font-size: 0.875rem;
+  line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -986,12 +1000,12 @@ table {
   border-collapse: collapse;
   width: 100%;
   min-width: 34rem;
-  font-size: 0.9375rem;
+  font-size: 1rem;
 }
 
 th, td {
   text-align: left;
-  padding: 0.85rem 1.1rem;
+  padding: 1rem 1.1rem;
   border-bottom: 1px solid var(--line);
   vertical-align: top;
 }
@@ -1072,7 +1086,7 @@ td {
 
 .fact dd small {
   display: block;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 400;
   letter-spacing: 0;
   color: var(--ink-muted);
@@ -1098,7 +1112,7 @@ td {
   gap: 0.35rem 2rem;
   padding: 1.5rem 0;
   text-decoration: none;
-  transition: padding-left 0.4s var(--ease);
+  transition: transform 0.4s var(--ease), color 0.3s var(--ease);
 }
 
 @media (min-width: 760px) {
@@ -1109,7 +1123,7 @@ td {
 }
 
 .routes a:hover {
-  padding-left: 0.75rem;
+  transform: translateX(0.35rem);
   color: var(--ink);
 }
 
@@ -1121,7 +1135,7 @@ td {
 
 .routes span {
   color: var(--ink-soft);
-  font-size: 0.9375rem;
+  font-size: 1rem;
 }
 
 .routes em {
@@ -1161,7 +1175,7 @@ td {
 .footer {
   border-top: 1px solid var(--line);
   padding-block: 2.5rem 3.5rem;
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
 }
 
 .footer-inner {
@@ -1195,22 +1209,17 @@ td {
 }
 
 /* --------------------------------------------------------------------------
-   Motion. Transform and opacity only.
+   Motion. One authored arrival, no repeated scroll choreography.
    -------------------------------------------------------------------------- */
 
 /* The hidden state is applied only once JS has confirmed it can un-apply it.
    Without this gate, a failed script or an observer that never delivers would
    leave the page permanently blank, which on an install guide is a far worse
    outcome than losing an animation. */
-.reveal-ready [data-reveal] {
-  opacity: 0;
-  transform: translateY(18px);
-}
-
+.reveal-ready [data-reveal],
 .reveal-ready [data-reveal][data-shown="true"] {
   opacity: 1;
   transform: none;
-  transition: opacity 0.7s var(--ease), transform 0.7s var(--ease);
 }
 
 /* Hero entry: background settles, then heading, rule, lede, CTA. Under 800ms. */
@@ -1258,12 +1267,11 @@ td {
     scroll-behavior: auto;
   }
 
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+  .hero-inner > *,
+  .hero .rule,
+  .hero-meta {
+    animation: none !important;
+    transition: none !important;
   }
 
   .reveal-ready [data-reveal] {
@@ -1484,7 +1492,7 @@ td {
 .readme-content blockquote {
   margin: 1rem 0;
   padding: 0.2rem 1rem;
-  border-left: 3px solid var(--rule-a);
+  border-left: 1px solid var(--rule-a);
   background: var(--surface-2);
 }
 
