@@ -16,12 +16,24 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from recall.generation_build import BuildRequest, build_provenance, chunker_for, embedder_identity
 from recall.index import DEFAULT_MAX_CHARS, DEFAULT_OVERLAP_CHARS
+from recall.lineage import IndexManifestV1
+from recall.manifest import load_inventory
 
 
 def _git_repo(root: Path) -> str:
-    """A real repository with one commit, so `head_commit` has something to read."""
+    """A real repository with one commit, so `head_commit` has something to read.
+
+    The content is derived from the directory name, and that is not cosmetic. A commit object is
+    a pure function of its tree, author, committer, parents, message and timestamp, so two repos
+    built from identical content in the same second get the SAME sha — the timestamp has one-second
+    resolution and everything else here was constant. The full suite caught it: two repositories
+    that must be distinguishable came out as `fbe4868` twice. Distinct content makes them differ
+    by construction rather than by how fast the machine ran.
+    """
     run = lambda *args: subprocess.run(  # noqa: E731 - a local alias, not an exported helper
         ["git", *args], cwd=root, check=True, capture_output=True, text=True
     )
@@ -29,9 +41,9 @@ def _git_repo(root: Path) -> str:
     run("config", "user.email", "test@example.invalid")
     run("config", "user.name", "test")
     run("config", "commit.gpgsign", "false")
-    (root / "a.md").write_text("body\n", encoding="utf-8")
+    (root / "a.md").write_text(f"body of {root.name}\n", encoding="utf-8")
     run("add", "a.md")
-    run("commit", "-q", "-m", "first")
+    run("commit", "-q", "-m", f"first commit in {root.name}")
     return run("rev-parse", "--short", "HEAD").stdout.strip()
 
 
@@ -69,7 +81,21 @@ def test_no_commit_root_stamps_no_commit(tmp_path: Path) -> None:
 def test_a_root_outside_any_repository_stamps_nothing_rather_than_a_placeholder(
     tmp_path: Path,
 ) -> None:
-    """A stored placeholder is indistinguishable later from a commit that was genuinely read."""
+    """A stored placeholder is indistinguishable later from a commit that was genuinely read.
+
+    The precondition is asserted rather than assumed. This is an absence check with two ways to
+    pass without exercising anything: `git rev-parse` walks UP to find a `.git`, so the result
+    depends on no ancestor of pytest's tmp directory being a repository, and `head_commit` swallows
+    `OSError`, so it would also pass on a runner with no git binary at all. The probe below rules
+    out both, and fails loudly rather than silently, because a missing binary raises here.
+    """
+    probe = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert probe.returncode != 0, (
+        f"{tmp_path} is inside a repository, so this test cannot demonstrate an absence"
+    )
+
     assert "indexed_commit" not in build_provenance(BuildRequest(commit_root=str(tmp_path)))
 
 
@@ -98,6 +124,63 @@ def test_the_request_defaults_are_the_repository_chunking_defaults() -> None:
         "max_chars": DEFAULT_MAX_CHARS,
         "overlap": DEFAULT_OVERLAP_CHARS,
     }
+
+
+def test_an_unknown_chunker_is_refused_rather_than_silently_treated_as_text() -> None:
+    """The validation argparse used to provide, which did not travel with the extraction.
+
+    `ChunkerKind` is a `Literal` and erased at runtime. Without a check, `chunker="Code"` selects
+    the text chunker AND records `recall.chunk_text`, so the callable and the immutable record
+    agree with each other while both disagree with what was asked. Nothing downstream can see
+    that, which is what makes it worth a refusal rather than a default.
+
+    Case is included on purpose: a plausible hand edit of a resumable state file, not a random
+    string, is the input this exists to catch.
+    """
+    for bad in ("Code", "TEXT", "codee", "", "chunk_code"):
+        with pytest.raises(ValueError, match="chunker must be"):
+            BuildRequest(chunker=bad)  # type: ignore[arg-type]
+
+    # And the two real values still construct, so the guard is not simply refusing everything.
+    assert BuildRequest(chunker="text").chunker == "text"
+    assert BuildRequest(chunker="code").chunker == "code"
+
+
+def test_a_directly_constructed_reader_needs_no_allowlist_variable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The precondition the whole no-environment design rests on, measured rather than reasoned.
+
+    Both the design plan and the handoff state that `RECALL_LOCAL_ALLOWLIST` is mandatory for a
+    `file://` manifest. It is mandatory only for `LocalObjectReader.from_environment`, which is
+    what `reader_for_manifest` calls. `manager.build` takes the reader as a parameter, so a caller
+    that already knows its corpus root passes one and the variable never enters the picture.
+
+    That matters beyond tidiness: the wizard drives three corpora in one process, and a
+    process-global allowlist would have to be set and restored around each build, which is the
+    shape that produces a green run for the wrong reason. Both halves are asserted here, because
+    "the direct reader works" is only interesting alongside "the environment one refuses".
+    """
+    import json
+
+    from recall.manifest import LocalObjectReader, reader_for_manifest
+    from recall.wizard.inventory import build_inventory
+
+    monkeypatch.delenv("RECALL_LOCAL_ALLOWLIST", raising=False)
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / "a.md").write_text("# T\n\nbody\n", encoding="utf-8")
+    inventory = tmp_path / "inv.json"
+    inventory.write_text(json.dumps(build_inventory(root, "**/*.md")), encoding="utf-8")
+    manifest = IndexManifestV1("t", "v1", load_inventory(inventory))
+
+    with pytest.raises(ValueError, match="RECALL_LOCAL_ALLOWLIST"):
+        reader_for_manifest(manifest)
+
+    reader = LocalObjectReader([root])
+    assert reader.fetch(manifest.objects[0]).data
+    reader.verify(manifest)  # raises if any object fails its digest
 
 
 def test_the_identity_helpers_do_not_read_the_environment(monkeypatch) -> None:

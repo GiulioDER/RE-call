@@ -327,10 +327,19 @@ def test_provenance_carries_the_project_and_the_commit_unless_they_are_withheld(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The same stamps `recall index` writes. A calibrated generation is the only path the
-    wizard can use, so a generation without them cannot say where a hit came from."""
+    wizard can use, so a generation without them cannot say where a hit came from.
+
+    `head_commit` is stubbed rather than left to read the real repository. The CLI stamps
+    `head_commit(".")`, which is the pytest process's own working directory, so asserting merely
+    that a commit was recorded made this test depend on the checkout having a `.git` — it fails in
+    an sdist extract, and in any container where git refuses with "dubious ownership". Stubbing
+    also upgrades the assertion from "something was recorded" to "the value flowed through".
+    """
+    monkeypatch.setattr("recall.generation_build.head_commit", lambda root: "c0ffee1")
+
     default = _run_build(tmp_path, monkeypatch)["provenance"]
     assert "project" not in default, "an unset --project must not be stamped as None"
-    assert "indexed_commit" in default
+    assert default["indexed_commit"] == "c0ffee1"
 
     named = _run_build(tmp_path, monkeypatch, "--project", "my-project")["provenance"]
     assert named["project"] == "my-project"

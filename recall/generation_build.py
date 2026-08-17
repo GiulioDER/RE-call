@@ -75,6 +75,19 @@ class BuildRequest:
     #: preserved rather than corrected here; a caller that knows its corpus root should pass it.
     commit_root: str | None = "."
 
+    def __post_init__(self) -> None:
+        # The only thing validating this field was argparse's `choices=`, and that did not travel
+        # with the extraction. `ChunkerKind` is a `Literal` and is erased at runtime, so without
+        # this a typo or a case difference selects the TEXT chunker and records it as
+        # `recall.chunk_text`: the callable and the record agree with each other and disagree with
+        # what was asked, which is the one shape nothing downstream can detect.
+        #
+        # It matters more here than it did behind argparse. This is a serialisable request the
+        # wizard writes into resumable state and hands back on a later run, so the value can
+        # arrive from a file somebody edited rather than from a parser.
+        if self.chunker not in ("text", "code"):
+            raise ValueError(f"chunker must be 'text' or 'code', not {self.chunker!r}")
+
 
 def embedder_identity(embedder: Embedder | Any, request: BuildRequest) -> EmbedderIdentity:
     """The identity recorded for `embedder`, with the request's overrides applied."""
@@ -161,15 +174,22 @@ def build_generation(
     their order is load-bearing: promotion gives a generation a fresh corpus fingerprint, so a
     calibration measured before it becomes `CALIBRATION_STALE` after it.
     """
+    # ONE call, and the pair kept together. `chunker_for` returns the callable and the identity
+    # together precisely because they must agree, and calling it twice — once through
+    # `pipeline_identity` for the record, once for the callable — gave that guarantee up while
+    # looking like it kept it. They agree today only because the function happens to be pure over
+    # a frozen request; anything later added to it that is not (a cached tokenizer, a seed, a
+    # registry lookup) would split the two silently.
+    chunker, chunker_identity = chunker_for(request)
     generation = manager.create(
         manifest,
-        pipeline_identity(embedder, request),
+        PipelineIdentity(embedder_identity(embedder, request), chunker_identity),
         allow_unverified=request.unverified,
     )
     return manager.build(
         generation.generation_id,
         reader,
         embedder,
-        chunker_for(request)[0],
+        chunker,
         provenance=build_provenance(request),
     )
