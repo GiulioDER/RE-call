@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from recall.generation_build import (
     BuildRequest,
+    build_generation,
     build_provenance,
     chunker_for,
     embedder_identity,
@@ -170,6 +172,46 @@ def test_an_unknown_chunker_is_refused_rather_than_silently_treated_as_text() ->
     assert BuildRequest(chunker="code").chunker == "code"
 
 
+def test_a_chunk_size_that_cannot_describe_a_real_pipeline_is_refused() -> None:
+    """The sizes go into the same immutable record as the chunker, from the same edited file.
+
+    `max_chars=0` is the one with teeth, and it fails differently on each path, which is why
+    neither caught it: `chunk_code` returns the whole text as ONE chunk while the record claims
+    `max_chars=0`, and the text path raises only inside `manager.build`, after `manager.create` has
+    already written the generation row.
+
+    `overlap >= max_chars` is deliberately absent from this list. It was measured as clamped and
+    harmless, so refusing it would be a bound invented rather than established.
+    """
+    for max_chars in (0, -5):
+        with pytest.raises(ValueError, match="max_chars must be at least 1"):
+            BuildRequest(max_chars=max_chars)
+
+    with pytest.raises(ValueError, match="overlap cannot be negative"):
+        BuildRequest(overlap=-1)
+
+    assert BuildRequest(max_chars=1, overlap=0).max_chars == 1
+    assert chunker_for(BuildRequest(max_chars=100, overlap=500))[1].configuration["overlap"] == 500
+
+
+def test_the_chunker_decision_point_also_refuses_a_smuggled_chunk_size() -> None:
+    """The sizes need the same second gate the chunker got, and for the same reason.
+
+    A request restored without `__init__` never runs `__post_init__`, so validating only in the
+    constructor left the deserialisation path this module's docstring names as the threat model
+    entirely uncovered for two of the three fields.
+    """
+    import dataclasses
+
+    smuggled = object.__new__(BuildRequest)
+    for field in dataclasses.fields(BuildRequest):
+        object.__setattr__(smuggled, field.name, getattr(BuildRequest(), field.name))
+    object.__setattr__(smuggled, "max_chars", 0)
+
+    with pytest.raises(ValueError, match="max_chars must be at least 1"):
+        chunker_for(smuggled)
+
+
 def test_the_chunker_decision_point_refuses_a_request_that_bypassed_the_constructor() -> None:
     """The constructor guard does not cover the path the wizard's resumable state will use.
 
@@ -192,24 +234,91 @@ def test_the_chunker_decision_point_refuses_a_request_that_bypassed_the_construc
         chunker_for(smuggled)
 
 
-def test_a_handed_in_chunker_identity_is_the_one_recorded() -> None:
-    """`build_generation` holds the pair already, so it must not silently get a second one.
+def test_the_callable_and_the_record_come_from_one_chunker_for_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The property `pipeline_for` exists for, pinned by COUNTING rather than by comparing.
 
-    `is` rather than `==`, because a recomputed identity would compare equal today and that is
-    exactly what would hide the single-call property being lost again. The no-argument form is
-    checked alongside, so the convenience path is not left to rot the way it did once already.
+    The previous attempt asserted that a handed-in `ChunkerIdentity` was the object recorded, using
+    `is` on the theory that object identity would catch a silent recompute. It did not: reverting
+    `build_generation` to call `pipeline_identity` without the identity, which restores exactly the
+    double `chunker_for` call the change existed to remove, left all 43 tests green. `is` pins which
+    object was used, not how many times the function ran, and that test never went through
+    `build_generation` at all.
+
+    Counting the calls kills both mutants. The agreement assertion is kept alongside, because a
+    single call is only interesting if what comes out of it is what gets used.
     """
-    # `unverified` because a non-hashing embedder with no revision and no digest cannot form an
-    # identity at all; the flag is incidental here and the chunker half is the subject.
+    import recall.generation_build as module
+
     request = BuildRequest(chunker="code", max_chars=321, unverified=True)
-    _, identity = chunker_for(request)
+    calls: list[BuildRequest] = []
+    real = module.chunker_for
 
-    handed_in = pipeline_identity(_FakeEmbedder(), request, identity)
-    assert handed_in.chunker is identity
+    def counting(req: BuildRequest) -> object:
+        calls.append(req)
+        return real(req)
 
-    computed = pipeline_identity(_FakeEmbedder(), request)
-    assert computed.chunker == identity
-    assert computed.embedder == handed_in.embedder
+    monkeypatch.setattr(module, "chunker_for", counting)
+
+    captured: dict[str, object] = {}
+
+    class _Manager:
+        def create(self, manifest: object, pipeline: object, *, allow_unverified: bool) -> object:
+            captured["pipeline"] = pipeline
+            return SimpleNamespace(generation_id="gen_count")
+
+        def build(
+            self,
+            generation_id: str,
+            reader: object,
+            embedder: object,
+            chunker: object,
+            *,
+            provenance: object = None,
+        ) -> object:
+            captured["chunker"] = chunker
+            return SimpleNamespace(generation_id=generation_id)
+
+    build_generation(_Manager(), object(), object(), _FakeEmbedder(), request)
+
+    assert len(calls) == 1, f"chunker_for ran {len(calls)} times, not once"
+
+    # And the record describes the callable that was handed over.
+    pipeline = captured["pipeline"]
+    source = "def f():\n    return 1\n\n\n" * 60
+    assert pipeline.chunker == real(request)[1]  # type: ignore[attr-defined]
+    assert captured["chunker"](source) == real(request)[0](source)  # type: ignore[operator]
+
+
+def test_the_identity_only_helper_delegates_rather_than_rebuilding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`pipeline_identity` must stay a delegation, and equality cannot show that.
+
+    The first version of this asserted `pipeline_identity(...) == pipeline_for(...)[1]`, and a
+    mutant that rebuilt the record inline survived it: an independently constructed identity
+    compares equal, so the assertion held while the module went back to two construction sites,
+    which is the drift the whole arrangement exists to prevent. Same mistake as the `is`-versus-
+    count one a round earlier, one level along — the property is structural, so it has to be
+    measured structurally.
+    """
+    import recall.generation_build as module
+
+    request = BuildRequest(chunker="code", max_chars=321, unverified=True)
+    calls: list[BuildRequest] = []
+    real = module.pipeline_for
+
+    def counting(embedder: object, req: BuildRequest) -> object:
+        calls.append(req)
+        return real(embedder, req)
+
+    monkeypatch.setattr(module, "pipeline_for", counting)
+
+    identity = pipeline_identity(_FakeEmbedder(), request)
+
+    assert len(calls) == 1, "pipeline_identity rebuilt the record instead of delegating"
+    assert identity == real(_FakeEmbedder(), request)[1]
 
 
 def test_a_directly_constructed_reader_needs_no_allowlist_variable(

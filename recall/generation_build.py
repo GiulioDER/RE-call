@@ -23,13 +23,14 @@ from __future__ import annotations
 import functools
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, get_args
+from typing import Any, get_args
 
 from recall.embeddings import Embedder, HashingEmbedder
 from recall.generations import BuildStats, GenerationManager
 from recall.index import (
     DEFAULT_MAX_CHARS,
     DEFAULT_OVERLAP_CHARS,
+    ChunkerKind,
     chunk_code,
     chunk_text,
     head_commit,
@@ -47,7 +48,41 @@ _DEFAULT_PROVIDER = "fastembed"
 #: string is written into the record, so it is a constant rather than a message.
 _UNVERIFIED_REASON = "explicit development build"
 
-ChunkerKind = Literal["text", "code"]
+#: `ChunkerKind` is re-exported so a caller building a `BuildRequest` need not know which module
+#: owns the vocabulary. It is defined in `recall.index`, beside the two chunkers it names, so that
+#: argparse can read it without making this module's import eager in `recall.cli`.
+__all__ = [
+    "BuildRequest",
+    "ChunkerKind",
+    "build_generation",
+    "build_provenance",
+    "chunker_for",
+    "embedder_identity",
+    "pipeline_for",
+    "pipeline_identity",
+]
+
+
+def _validate_chunk_sizes(max_chars: int, overlap: int) -> None:
+    """Refuse sizes that produce a record disagreeing with the chunks it describes.
+
+    `max_chars < 1` is the one that matters, and it fails differently on the two paths, which is
+    why neither path caught it. Measured: `chunk_code(text, max_chars=0)` returns the whole text as
+    a SINGLE chunk, because it reaches `_pack` with `hard_split=False` and so never meets the
+    `max_chars < 1` guard in `recall.index` whose whole purpose is to stop silent embedder
+    truncation. The record then says `{"max_chars": 0}` for a 10,000-character chunk. On the text
+    path it does raise, but only inside `manager.build`, which is after `manager.create` has
+    written the generation row, so `recall generation build --max-chars 0` left an orphan behind.
+
+    `overlap >= max_chars` is deliberately NOT refused. It looks degenerate and is not: measured at
+    `max_chars=100, overlap=500`, the chunker clamps and returns exactly what `overlap=100` returns,
+    133 chunks with the longest at 99. Inventing a bound I have not measured a harm for is how a
+    constant that merely looks principled gets shipped.
+    """
+    if max_chars < 1:
+        raise ValueError(f"max_chars must be at least 1, not {max_chars!r}")
+    if overlap < 0:
+        raise ValueError(f"overlap cannot be negative, not {overlap!r}")
 
 
 @dataclass(frozen=True)
@@ -95,6 +130,9 @@ class BuildRequest:
             raise ValueError(
                 f"chunker must be one of {get_args(ChunkerKind)}, not {self.chunker!r}"
             )
+        # The sizes go into the same immutable record and arrive from the same edited file, so
+        # validating only the chunker covered a third of the request the threat model describes.
+        _validate_chunk_sizes(self.max_chars, self.overlap)
 
 
 def embedder_identity(embedder: Embedder | Any, request: BuildRequest) -> EmbedderIdentity:
@@ -136,6 +174,7 @@ def chunker_for(request: BuildRequest) -> tuple[Callable[[str], list[str]], Chun
     guard does not cover the round-trip the wizard's resumable state depends on. This is the
     decision point, so this is where an unrecognised value has to stop.
     """
+    _validate_chunk_sizes(request.max_chars, request.overlap)
     if request.chunker == "code":
         # `chunk_code` takes no overlap, so recording one would describe a pipeline that never ran.
         return (
@@ -154,25 +193,33 @@ def chunker_for(request: BuildRequest) -> tuple[Callable[[str], list[str]], Chun
     raise ValueError(f"unknown chunker {request.chunker!r}")
 
 
-def pipeline_identity(
-    embedder: Embedder | Any,
-    request: BuildRequest,
-    chunker_identity: ChunkerIdentity | None = None,
-) -> PipelineIdentity:
-    """The record `manager.create` binds a generation to.
+def pipeline_for(
+    embedder: Embedder | Any, request: BuildRequest
+) -> tuple[Callable[[str], list[str]], PipelineIdentity]:
+    """The chunking callable and the pipeline record that describes it, from one `chunker_for` call.
 
-    The one construction site for `PipelineIdentity` in this module. `build_generation` briefly
-    built it inline so that `chunker_for` was called once, which left this function dead and the
-    module with two places assembling the record its whole purpose is to assemble in one.
-    `PipelineIdentity` carries two further fields with defaults, so anything added here later
-    would simply not have reached the live path.
+    This shape exists because the two previous ones were both wrong, in opposite directions.
+    Building `PipelineIdentity` inline in `build_generation` kept `chunker_for` to one call and
+    left this module with two assembly sites for the record. Passing an optional
+    `chunker_identity` in here kept one assembly site and moved the "callable and record must
+    agree" invariant out of the code and into the caller, where a text request could be recorded
+    as a code pipeline with nothing objecting — the exact failure documented in `chunker_for` as
+    undetectable downstream, reintroduced by the fix for the previous round's finding.
 
-    `chunker_identity` lets a caller that already holds the pair hand it over instead of
-    recomputing it, which is what keeps the single-call property.
+    Returning the pair from one function removes the choice. There is nowhere to pass a
+    contradictory identity, because there is no parameter for one.
     """
-    if chunker_identity is None:
-        chunker_identity = chunker_for(request)[1]
-    return PipelineIdentity(embedder_identity(embedder, request), chunker_identity)
+    # `embedder_identity` FIRST, which is the order the code this replaced failed in. On a request
+    # that is invalid in both ways, evaluating the chunker first surfaces `unknown chunker` where
+    # the extracted code surfaced the embedder's `LineageError`. That reads as a no-op and is not.
+    embedder_record = embedder_identity(embedder, request)
+    chunker, chunker_identity = chunker_for(request)
+    return chunker, PipelineIdentity(embedder_record, chunker_identity)
+
+
+def pipeline_identity(embedder: Embedder | Any, request: BuildRequest) -> PipelineIdentity:
+    """The record alone, for a caller that does not need the callable."""
+    return pipeline_for(embedder, request)[1]
 
 
 def build_provenance(request: BuildRequest) -> dict[str, str]:
@@ -207,18 +254,13 @@ def build_generation(
     their order is load-bearing: promotion gives a generation a fresh corpus fingerprint, so a
     calibration measured before it becomes `CALIBRATION_STALE` after it.
     """
-    # ONE call, and the pair kept together. `chunker_for` returns the callable and the identity
-    # together precisely because they must agree, and calling it twice — once through
-    # `pipeline_identity` for the record, once for the callable — gave that guarantee up while
-    # looking like it kept it. They agree today only because the function happens to be pure over
-    # a frozen request; anything later added to it that is not (a cached tokenizer, a seed, a
-    # registry lookup) would split the two silently.
-    chunker, chunker_identity = chunker_for(request)
-    generation = manager.create(
-        manifest,
-        pipeline_identity(embedder, request, chunker_identity),
-        allow_unverified=request.unverified,
-    )
+    # One `chunker_for` call, and the callable and the record it describes come out of the same
+    # one. Calling it twice — once through `pipeline_identity` for the record, once for the
+    # callable — gave up the guarantee that they agree while looking like it kept it. They would
+    # agree today regardless, because the function is pure over a frozen request; anything later
+    # added to it that is not (a cached tokenizer, a seed, a registry lookup) would split them.
+    chunker, pipeline = pipeline_for(embedder, request)
+    generation = manager.create(manifest, pipeline, allow_unverified=request.unverified)
     return manager.build(
         generation.generation_id,
         reader,

@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from recall.cache import EmbeddingCache, embed_with_cache
@@ -23,6 +24,19 @@ from recall.types import Chunk
 
 DEFAULT_MAX_CHARS = 800  # target chunk size in characters; paragraphs are packed up to this
 DEFAULT_OVERLAP_CHARS = 80  # chars shared between adjacent pieces of a force-split oversized block
+
+#: Which of the two chunkers below a caller wants, named once so nobody writes the pair out again.
+#: It lived as a literal in three places (`recall.generation_build`'s annotation and its branches,
+#: and argparse's `choices`), which meant adding a chunker left them free to disagree: the builder
+#: would accept a value the CLI still rejected with exit 2.
+#:
+#: Here rather than in `recall.generation_build` because this module defines the two functions it
+#: names, and because `recall.cli` already imports this module at the top level while it reaches
+#: the builder lazily — so `argparse` can read the vocabulary without that import becoming eager.
+#: Measured, since an earlier version of this comment claimed the saving was psycopg and that was
+#: simply false: `import recall.cli` already pulls in psycopg and pgvector through `recall.store`.
+#: What stays lazy is `recall.generations`, which `recall.cli` does not import today.
+ChunkerKind = Literal["text", "code"]
 #: Overlap may repeat at most a quarter of a chunk. Beyond that, consecutive pieces are mostly
 #: duplicated context: the index inflates and near-identical chunks crowd the top-k.
 MAX_OVERLAP_DIVISOR = 4

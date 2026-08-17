@@ -352,13 +352,17 @@ def test_provenance_carries_the_project_and_the_commit_unless_they_are_withheld(
     default = _run_build(tmp_path, monkeypatch)["provenance"]
     assert "project" not in default, "an unset --project must not be stamped as None"
     assert default["indexed_commit"] == "c0ffee1"
-    assert roots == ["."], "the CLI reads the commit from its own working directory"
 
     named = _run_build(tmp_path, monkeypatch, "--project", "my-project")["provenance"]
     assert named["project"] == "my-project"
 
     unstamped = _run_build(tmp_path, monkeypatch, "--no-commit-stamp")["provenance"]
     assert "indexed_commit" not in unstamped
+
+    # Read at the END, so all three arms are covered rather than only the first, and so inserting
+    # a fourth arm above cannot leave the assertion silently describing a subset. Two entries, not
+    # three: the `--no-commit-stamp` arm must not call `head_commit` at all.
+    assert roots == [".", "."], "the CLI reads the commit from its own working directory"
 
 
 def test_the_cli_defaults_and_the_request_defaults_describe_the_same_pipeline(

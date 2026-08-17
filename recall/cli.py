@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from typing import get_args
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,7 +16,16 @@ from recall.entailment import EntailmentJudge, resolve_entailment_judge
 from recall.setup import CalibrationResult
 from recall.trust_policy import TrustPolicy
 from recall.embeddings import Embedder
-from recall.index import head_commit, Indexer, PruneGuardTripped, chunk_code, chunk_text
+from recall.index import (
+    ChunkerKind,
+    DEFAULT_MAX_CHARS,
+    DEFAULT_OVERLAP_CHARS,
+    head_commit,
+    Indexer,
+    PruneGuardTripped,
+    chunk_code,
+    chunk_text,
+)
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.store import (
@@ -325,6 +335,22 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from None
     if number < 1:
         raise argparse.ArgumentTypeError(f"must be at least 1, got {number}")
+    return number
+
+
+def _non_negative_int(value: str) -> int:
+    """A count where zero is meaningful but a negative one is not.
+
+    `--overlap` is the case: 0 means "no shared context between adjacent pieces", which is a real
+    choice, while a negative value is written verbatim into an immutable lineage record describing
+    a pipeline nothing can have run.
+    """
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from None
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"cannot be negative, got {number}")
     return number
 
 
@@ -926,9 +952,18 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="do not record the repository HEAD on each chunk.",
     )
-    p_build.add_argument("--chunker", choices=["text", "code"], default="text")
-    p_build.add_argument("--max-chars", type=int, default=800)
-    p_build.add_argument("--overlap", type=int, default=80)
+    # `choices` read off the same `Literal` the builder validates against, rather than repeated
+    # here. This was the last of four hand-written copies of the vocabulary, and it is the one at
+    # the gate users actually reach, so a chunker added to `ChunkerKind` would have been accepted
+    # by `BuildRequest` while this still exited 2.
+    p_build.add_argument(
+        "--chunker", choices=list(get_args(ChunkerKind)), default="text"
+    )
+    # `_positive_int`, not bare `int`. `--max-chars 0` reached `manager.create`, wrote the
+    # generation row, and only then failed inside `build` on the text path — while on the code path
+    # it did not fail at all and recorded `{"max_chars": 0}` for one unsplit chunk.
+    p_build.add_argument("--max-chars", type=_positive_int, default=DEFAULT_MAX_CHARS)
+    p_build.add_argument("--overlap", type=_non_negative_int, default=DEFAULT_OVERLAP_CHARS)
     p_validate = generation_sub.add_parser("validate", help="validate a built generation")
     p_validate.add_argument("generation_id")
     p_promote = generation_sub.add_parser("promote", help="promote a ready generation")
