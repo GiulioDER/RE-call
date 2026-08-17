@@ -397,13 +397,22 @@ def test_a_dangling_symlink_refuses_rather_than_hashing_a_partial_tree(tmp_path:
     assert artifact_identity_for(FastEmbedEmbedder(snap)) is None
 
 
-def test_a_directory_symlink_refuses_rather_than_hiding_its_contents(tmp_path: Path) -> None:
+def test_a_directory_symlink_refuses_rather_than_hiding_its_contents(
+    tmp_path: Path, caplog
+) -> None:
     """The dangling-link fix one level up, and the same silent-omission failure.
 
     A live directory symlink passes the dangling check, fails `is_file()`, and `rglob` does not
     descend into it — so everything underneath is omitted from the digest with no error, and the
     result is recorded as immutable provenance for a tree it does not cover.
+
+    The intact snapshot is asserted to resolve FIRST, and the refusal is read out of the log.
+    `artifact_identity_for` answers `None` to four unrelated conditions, so `is None` on its own
+    says the function declined, not that this guard is what declined — and because the test skips
+    wherever symlinks need privilege, a fixture that had stopped resolving for some other reason
+    would never be noticed on the one platform that runs it.
     """
+    import logging
     import os
 
     repo = tmp_path / "models--org--repo"
@@ -413,12 +422,18 @@ def test_a_directory_symlink_refuses_rather_than_hiding_its_contents(tmp_path: P
     snap = repo / "snapshots" / ("9" * 40)
     snap.mkdir(parents=True)
     (snap / "config.json").write_bytes(b"{}")
+
+    assert artifact_identity_for(FastEmbedEmbedder(snap)) is not None
+
     try:
         os.symlink(outside, snap / "linked", target_is_directory=True)
     except OSError:
         pytest.skip("creating a symlink needs privilege on this machine")
 
-    assert artifact_identity_for(FastEmbedEmbedder(snap)) is None
+    with caplog.at_level(logging.WARNING):
+        assert artifact_identity_for(FastEmbedEmbedder(snap)) is None
+    assert "directory symlink" in caplog.text
+    assert str(snap / "linked") in caplog.text
 
 
 def test_an_actionable_refusal_reaches_the_log(tmp_path: Path, caplog) -> None:
@@ -432,3 +447,33 @@ def test_an_actionable_refusal_reaches_the_log(tmp_path: Path, caplog) -> None:
         assert artifact_identity_for(FastEmbedEmbedder(empty)) is None
     assert "has no files" in caplog.text
     assert str(empty) in caplog.text
+
+
+def test_a_foreign_valueerror_is_logged_by_class_and_not_by_message(caplog) -> None:
+    """Only THIS module's own refusals are known to be safe to log in full.
+
+    The handler that lets an actionable message through used to catch bare `ValueError`, defended
+    by a comment saying those messages are locally produced and carry a path rather than a
+    credential. That is true of the three refusals raised here and not of the `try` block, which
+    reads attributes off a caller-supplied object and would log whatever somebody else's property
+    raised. Giving the refusals their own class makes the comment structural instead of
+    incidental, and this is the arm that fails if it goes back to being incidental.
+    """
+    import logging
+
+    foreign_message = "<placeholder-token-that-must-not-reach-the-log>"
+
+    class FastEmbedEmbedder:  # noqa: N801 - the guard matches on this exact class name
+        name = "BAAI/bge-small-en-v1.5"
+        dim = 384
+
+        @property
+        def _model_dir(self) -> str:
+            # `getattr(obj, attr, None)` swallows AttributeError and nothing else, so this
+            # escapes `_model_directory` exactly as a third-party failure would.
+            raise ValueError(foreign_message)
+
+    with caplog.at_level(logging.WARNING):
+        assert artifact_identity_for(FastEmbedEmbedder()) is None
+    assert foreign_message not in caplog.text
+    assert "ValueError" in caplog.text
