@@ -266,10 +266,6 @@ def resolve_expansion_provider(
         raise ValueError("RECALL_REASONING_EXPANSION_MODEL is required when expansion is enabled")
     if not key:
         raise ValueError("RECALL_REASONING_API_KEY is required when expansion is enabled")
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise ValueError("the openai extra is required for reasoning expansion") from exc
     raw_timeout = source.get("RECALL_REASONING_TIMEOUT", "30").strip()
     timeout = float(raw_timeout)
     if not math.isfinite(timeout) or timeout <= 0:
@@ -278,17 +274,21 @@ def resolve_expansion_provider(
     parsed_url = urlparse(base_url)
     if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
         raise ValueError("RECALL_REASONING_BASE_URL must be an absolute http(s) URL")
+    raw_cost = source.get("RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS")
+    cost = float(raw_cost) if raw_cost else None
+    if cost is not None and (not math.isfinite(cost) or cost < 0):
+        raise ValueError("RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS must be finite and non-negative")
+    reasoning_effort = source.get("RECALL_REASONING_EXPANSION_EFFORT", "minimal").strip().lower()
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise ValueError("the openai extra is required for reasoning expansion") from exc
     client = OpenAI(
         api_key=key,
         base_url=base_url,
         max_retries=0,
         timeout=timeout,
     )
-    raw_cost = source.get("RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS")
-    cost = float(raw_cost) if raw_cost else None
-    if cost is not None and (not math.isfinite(cost) or cost < 0):
-        raise ValueError("RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS must be finite and non-negative")
-    reasoning_effort = source.get("RECALL_REASONING_EXPANSION_EFFORT", "minimal").strip().lower()
     return OpenAIExpansionProvider(
         client,
         model_id=model,
