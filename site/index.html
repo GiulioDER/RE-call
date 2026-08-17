@@ -36,7 +36,7 @@
     <p class="eyebrow">Setup guide</p>
     <h1>Get RE-call running in seven steps.</h1>
     <hr class="rule">
-    <p class="hero-lede">Written for someone who has never installed it. Every command, what should come back, and what to do when something else does.</p>
+    <p class="hero-lede">A local memory layer for agents, with every command, expected result, and recovery path.</p>
     <div class="hero-actions">
       <a class="button" href="start.html">Start the install</a>
     </div>
@@ -55,18 +55,18 @@
     <div>
       <p class="eyebrow">What you are installing</p>
       <h2>A memory that would rather say nothing than guess.</h2>
-      <p>RE-call stores your notes, decisions and project history, and searches them by meaning rather than by keyword. That much is ordinary.</p>
-      <p>The part that is not ordinary: when nothing it holds actually answers your question, it says so. An ordinary vector search always returns its closest match, because closest is all it knows how to compute. Closest is not the same as correct.</p>
+      <p>RE-call stores notes, decisions, and project history, then searches them by meaning.</p>
+      <p>When nothing matches with enough confidence, it abstains instead of handing you the nearest note.</p>
     </div>
     <div>
       <p class="eyebrow eyebrow--signal">Asked something it has no answer to</p>
       <div class="terminal terminal--output">
         <div class="terminal-bar"><span class="terminal-label">Output</span></div>
-        <div class="terminal-body"><pre><span class="warn">[ABSTAIN GAP DEGRADED:INDEX_NOT_READY] query='how do we handle penguins on Mars?'</span>
-<span class="dim">  reason: no hit above the calibrated confidence threshold (probable corpus gap)</span>
-<span class="dim">  low_confidence conf=0.30 cos=0.458  rate-limits.md  'Clients may issue 100 requests...'</span></pre></div>
+        <div class="terminal-body"><pre><span class="warn">[ABSTAIN GAP] query='penguins on Mars?'</span>
+<span class="dim">  reason: no confident match in this corpus</span>
+<span class="dim">  evidence: rate-limits.md · confidence 0.30</span></pre></div>
       </div>
-      <p class="muted" style="font-size: 0.9375rem;">Output from step 7 of this guide, with two diagnostic lines removed to fit. The note it found is still shown, marked low confidence: you are told what was there and why it was not good enough, rather than being handed it as an answer.</p>
+      <p class="muted">A low-confidence match is shown as evidence, not presented as an answer.</p>
     </div>
   </div>
 </section>
@@ -110,18 +110,18 @@
         <tbody>
           <tr>
             <td>A PostgreSQL database</td>
-            <td>Holds your memory: the text of every note, plus a numeric fingerprint of its meaning. The pgvector extension is what makes searching those fingerprints fast.</td>
-            <td>Once, in step 1. It then runs in the background.</td>
+            <td>Stores your notes and their vector embeddings.</td>
+            <td>Once, during setup.</td>
           </tr>
           <tr>
             <td>The RE-call package</td>
-            <td>Reads your markdown files, turns them into those fingerprints, and decides at query time whether anything it found is trustworthy enough to answer from.</td>
-            <td>Steps 2 to 7. This is the part you actually use.</td>
+            <td>Indexes markdown and decides whether a result is safe to use.</td>
+            <td>Every query.</td>
           </tr>
           <tr>
             <td>The MCP server</td>
-            <td>Optional. Exposes your memory to Claude Code as a tool it can call, so it checks what you have already decided before it answers.</td>
-            <td>Step 7, and only if you want it.</td>
+            <td>Lets Claude Code query your local memory.</td>
+            <td>Optional.</td>
           </tr>
         </tbody>
       </table>
@@ -140,28 +140,28 @@
       <li>
         <a href="corpus.html">
           <strong>Your memory</strong>
-          <span>What makes a good memory file, how to organise a corpus that keeps growing, and what not to put in it.</span>
+          <span>Write useful memory files and keep a growing corpus easy to search.</span>
           <em>→</em>
         </a>
       </li>
       <li>
         <a href="claude-code.html">
           <strong>Claude Code</strong>
-          <span>Every tool the server exposes, and how to get Claude checking memory before it acts rather than after.</span>
+          <span>Connect Claude Code to memory before it acts.</span>
           <em>→</em>
         </a>
       </li>
       <li>
         <a href="calibration.html">
           <strong>Calibration</strong>
-          <span>Measure, on your own corpus, how confident a result must be before RE-call answers from it.</span>
+          <span>Set the confidence threshold for your own corpus.</span>
           <em>→</em>
         </a>
       </li>
       <li>
         <a href="troubleshooting.html">
           <strong>Troubleshooting</strong>
-          <span>The errors a first install produces most often, what each one actually means, and the fix.</span>
+          <span>Decode common install errors and fix them quickly.</span>
           <em>→</em>
         </a>
       </li>
@@ -173,7 +173,7 @@
 <section class="closer">
   <div class="shell-narrow" data-reveal>
     <h2>Start at step one.</h2>
-    <p>Two things to install, one command each, and a checkpoint after every step so you always know whether it worked.</p>
+    <p>Install two things, then verify each step as you go.</p>
     <a class="button" href="start.html">Start the install</a>
   </div>
 </section>
