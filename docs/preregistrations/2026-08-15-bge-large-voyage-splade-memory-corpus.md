@@ -125,3 +125,83 @@ store does not (itself a reason both are being indexed):
 ## Result
 
 **Status:** not yet measured. Append below; do not edit anything above.
+
+> ## Amendment, 2026-08-17, written BEFORE the calibration was run
+>
+> Three things recorded here because they were known before measuring and would otherwise read as
+> post-hoc explanation. Nothing above this line is edited.
+>
+> ### 1. The corpus under test is now complete
+>
+> One `memory` tenant in `recall_repos` on VPS2: **8,716 chunks from 1,080 files**, every file on
+> disk indexed, **0 chunks without a `project` stamp**.
+>
+> | project | chunks | files |
+> |---|---:|---:|
+> | sentiment-agent | 8,261 | 987 |
+> | recall | 439 | 86 |
+> | ai-boost-cad / cca-demos / ai-boost-av-safety | 13 | 6 |
+> | steel | 3 | 1 |
+>
+> Larger than the "61 files, 338 chunks" this record predicted against, and the sentiment-agent
+> store it listed as "not yet indexed" is now in. The prediction about noise on a 61-file corpus
+> is therefore scored against a **1,080-file** corpus.
+>
+> ### 2. ⚠️ THE ARTEFACT'S EMBEDDER LABEL WILL BE WRONG, AND IS KNOWN TO BE WRONG
+>
+> The corpus is embedded with `fastembed:BAAI/bge-large-en-v1.5`. Every chunk records
+> `embedding_profile = bge-small-symmetric-v1`, **naming the wrong model**.
+>
+> Not a mis-run. `recall/embeddings.py:794-801` hardcodes that literal as the fallback
+> `profile_id` whenever no `identity` is supplied, independent of `model_name`, and
+> `resolve_embedder` (`embeddings.py:1139`) constructs `FastEmbedEmbedder(model_name=...)` without
+> one. Measured:
+>
+> ```
+> fastembed:BAAI/bge-large-en-v1.5   dim=1024   profile_id=bge-small-symmetric-v1
+> fastembed  (= bge-small)           dim= 384   profile_id=bge-small-symmetric-v1
+> voyage:voyage-4                    dim=1024   profile_id=voyage:voyage-4          (correct)
+> ```
+>
+> **The vectors are the evidence, not the label:** `vector_dims(embedding) = 1024` on all 8,716
+> rows; bge-small is 384. So the corpus really is bge-large.
+>
+> Operator decision, taken deliberately: **calibrate now and record the defect** rather than fix
+> the profile id first. The fix changes `profile_id`, a term in `index_fingerprint`, so it would
+> re-embed all 8,716 chunks — a migration. The cost of recording instead is that this artefact
+> cannot, alone, prove which model it calibrated. A reader must use the dimension.
+>
+> ### 3. Observed while validating the query set, BEFORE calibrating
+>
+> Stated here because it bears on a prediction above and was known first. **The prediction is not
+> edited.**
+>
+> All **28** unanswerable queries have a top-1 hit at cosine **0.565 to 0.716**. Three of the
+> highest were read in full and confirmed non-answers: "GraphQL schema migration" retrieves a
+> Postgres advisory-lock memo, "Kafka migration benchmark" retrieves a Redis latency memo,
+> "penetration test / payments" retrieves a memo about a guard that cannot fire. The labels are
+> sound; the corpus has a **high similarity floor**, which is what a homogeneous body of technical
+> memos under a strong dense embedder produces.
+>
+> Consequence for "the published cosine floor lands in **0.55 to 0.70**": a floor inside that band
+> cannot reject queries the corpus demonstrably cannot answer, since those reach 0.716. I expect
+> this prediction to be **falsified upward**. Recorded now so the falsification counts.
+>
+> ### The query set
+>
+> `docs/preregistrations/2026-08-17-memory-queries.json`, committed with this amendment and before
+> the run. 50 entries: **22 answerable, 28 unanswerable** — the built-in eval set's 20/26 ratio,
+> for the same reason: a threshold calibrated mostly on answerable queries has never been shown a
+> case where it should abstain.
+>
+> Two labelling decisions that move the metric, stated rather than buried:
+>
+> - **`relevant_ids` were resolved from the built index, never typed.** They are `<file>:<ord>`
+>   and the ordinals are a property of how the corpus chunked.
+> - **Every chunk of an answering memo counts as relevant** (mean 6.6 per query), not the single
+>   best-matching one. Choosing one by cosine would let the embedder under test pick its own
+>   labels. This inflates precision for multi-chunk memos.
+>
+> Verified before use: no answerable label spans more than one project — which matters because
+> `relevant_ids` key on the root-relative filename and **three filenames exist in several stores**
+> (`MEMORY.md` in all six, `feedback_index.md` and `reference_index.md` in two).

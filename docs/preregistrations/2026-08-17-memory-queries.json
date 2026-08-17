@@ -1,0 +1,391 @@
+[
+ {
+  "query": "why does the test suite have no default database DSN",
+  "answerable": true,
+  "relevant_ids": [
+   "concurrent-pytest-false-reds.md:0",
+   "concurrent-pytest-false-reds.md:1",
+   "concurrent-pytest-false-reds.md:10",
+   "concurrent-pytest-false-reds.md:11",
+   "concurrent-pytest-false-reds.md:12",
+   "concurrent-pytest-false-reds.md:13",
+   "concurrent-pytest-false-reds.md:14",
+   "concurrent-pytest-false-reds.md:15",
+   "concurrent-pytest-false-reds.md:16",
+   "concurrent-pytest-false-reds.md:17",
+   "concurrent-pytest-false-reds.md:18",
+   "concurrent-pytest-false-reds.md:2",
+   "concurrent-pytest-false-reds.md:3",
+   "concurrent-pytest-false-reds.md:4",
+   "concurrent-pytest-false-reds.md:5",
+   "concurrent-pytest-false-reds.md:6",
+   "concurrent-pytest-false-reds.md:7",
+   "concurrent-pytest-false-reds.md:8",
+   "concurrent-pytest-false-reds.md:9"
+  ]
+ },
+ {
+  "query": "can two pytest sessions run at the same time here",
+  "answerable": true,
+  "relevant_ids": [
+   "pytest-sessions-cannot-run-in-parallel.md:0",
+   "pytest-sessions-cannot-run-in-parallel.md:1",
+   "pytest-sessions-cannot-run-in-parallel.md:2"
+  ]
+ },
+ {
+  "query": "how long does the full test suite take with a database",
+  "answerable": true,
+  "relevant_ids": [
+   "recall-full-suite-takes-12-minutes.md:0",
+   "recall-full-suite-takes-12-minutes.md:1",
+   "recall-full-suite-takes-12-minutes.md:2"
+  ]
+ },
+ {
+  "query": "what happens if I mix two embedding models in one tenant",
+  "answerable": true,
+  "relevant_ids": [
+   "mixing-embedders-in-one-tenant-is-silent.md:0",
+   "mixing-embedders-in-one-tenant-is-silent.md:1"
+  ]
+ },
+ {
+  "query": "will re-indexing repair a chunker bug",
+  "answerable": true,
+  "relevant_ids": [
+   "chunker-is-not-in-the-index-fingerprint.md:0",
+   "chunker-is-not-in-the-index-fingerprint.md:1",
+   "chunker-is-not-in-the-index-fingerprint.md:2"
+  ]
+ },
+ {
+  "query": "which ruff version actually runs on this machine",
+  "answerable": true,
+  "relevant_ids": [
+   "ruff-blocked-locally.md:0",
+   "ruff-blocked-locally.md:1",
+   "ruff-blocked-locally.md:2"
+  ]
+ },
+ {
+  "query": "should I run ruff format on this repository",
+  "answerable": true,
+  "relevant_ids": [
+   "ruff-format-is-not-this-repos-convention.md:0",
+   "ruff-format-is-not-this-repos-convention.md:1"
+  ]
+ },
+ {
+  "query": "what happens to a project's memory when I rename its directory",
+  "answerable": true,
+  "relevant_ids": [
+   "renaming-a-project-forks-its-memory.md:0",
+   "renaming-a-project-forks-its-memory.md:1",
+   "renaming-a-project-forks-its-memory.md:2",
+   "renaming-a-project-forks-its-memory.md:3"
+  ]
+ },
+ {
+  "query": "why can I not git checkout master in this repo",
+  "answerable": true,
+  "relevant_ids": [
+   "master-lives-in-a-separate-worktree.md:0",
+   "master-lives-in-a-separate-worktree.md:1",
+   "master-lives-in-a-separate-worktree.md:2",
+   "master-lives-in-a-separate-worktree.md:3",
+   "master-lives-in-a-separate-worktree.md:4"
+  ]
+ },
+ {
+  "query": "why did my branch look like it had regressed",
+  "answerable": true,
+  "relevant_ids": [
+   "your-branch-may-already-be-upstream.md:0",
+   "your-branch-may-already-be-upstream.md:1",
+   "your-branch-may-already-be-upstream.md:2",
+   "your-branch-may-already-be-upstream.md:3",
+   "your-branch-may-already-be-upstream.md:4",
+   "your-branch-may-already-be-upstream.md:5",
+   "your-branch-may-already-be-upstream.md:6",
+   "your-branch-may-already-be-upstream.md:7"
+  ]
+ },
+ {
+  "query": "does master allow merge commits",
+  "answerable": true,
+  "relevant_ids": [
+   "commit-signing-squash-merge.md:0",
+   "commit-signing-squash-merge.md:1",
+   "commit-signing-squash-merge.md:2",
+   "commit-signing-squash-merge.md:3",
+   "commit-signing-squash-merge.md:4"
+  ]
+ },
+ {
+  "query": "what is wrong with a guard I wrote that always passes",
+  "answerable": true,
+  "relevant_ids": [
+   "guards-that-cannot-fail.md:0",
+   "guards-that-cannot-fail.md:1",
+   "guards-that-cannot-fail.md:10",
+   "guards-that-cannot-fail.md:11",
+   "guards-that-cannot-fail.md:12",
+   "guards-that-cannot-fail.md:13",
+   "guards-that-cannot-fail.md:14",
+   "guards-that-cannot-fail.md:15",
+   "guards-that-cannot-fail.md:16",
+   "guards-that-cannot-fail.md:17",
+   "guards-that-cannot-fail.md:18",
+   "guards-that-cannot-fail.md:19",
+   "guards-that-cannot-fail.md:2",
+   "guards-that-cannot-fail.md:20",
+   "guards-that-cannot-fail.md:21",
+   "guards-that-cannot-fail.md:22",
+   "guards-that-cannot-fail.md:23",
+   "guards-that-cannot-fail.md:24",
+   "guards-that-cannot-fail.md:25",
+   "guards-that-cannot-fail.md:26",
+   "guards-that-cannot-fail.md:27",
+   "guards-that-cannot-fail.md:28",
+   "guards-that-cannot-fail.md:29",
+   "guards-that-cannot-fail.md:3",
+   "guards-that-cannot-fail.md:30",
+   "guards-that-cannot-fail.md:31",
+   "guards-that-cannot-fail.md:32",
+   "guards-that-cannot-fail.md:4",
+   "guards-that-cannot-fail.md:5",
+   "guards-that-cannot-fail.md:6",
+   "guards-that-cannot-fail.md:7",
+   "guards-that-cannot-fail.md:8",
+   "guards-that-cannot-fail.md:9"
+  ]
+ },
+ {
+  "query": "why did writing a file with python change every line ending",
+  "answerable": true,
+  "relevant_ids": [
+   "python-write-text-crlf-churn.md:0",
+   "python-write-text-crlf-churn.md:1"
+  ]
+ },
+ {
+  "query": "do the MCP servers here search the recall codebase",
+  "answerable": true,
+  "relevant_ids": [
+   "recall-mcp-servers-wrong-corpus.md:0",
+   "recall-mcp-servers-wrong-corpus.md:1",
+   "recall-mcp-servers-wrong-corpus.md:2",
+   "recall-mcp-servers-wrong-corpus.md:3",
+   "recall-mcp-servers-wrong-corpus.md:4",
+   "recall-mcp-servers-wrong-corpus.md:5"
+  ]
+ },
+ {
+  "query": "was the Redis store backend swap accepted or rejected",
+  "answerable": true,
+  "relevant_ids": [
+   "project-recall-store-latency-share-redis-nogo-2026-08-04.md:0",
+   "project-recall-store-latency-share-redis-nogo-2026-08-04.md:1",
+   "project-recall-store-latency-share-redis-nogo-2026-08-04.md:10",
+   "project-recall-store-latency-share-redis-nogo-2026-08-04.md:11",
+   "project-recall-store-latency-share-redis-nogo-2026-08-04.md:2",
+   "project-recall-store-latency-share-redis-nogo-2026-08-04.md:3",
+   "project-recall-store-latency-share-redis-nogo-2026-08-04.md:4",
+   "project-recall-store-latency-share-redis-nogo-2026-08-04.md:5",
+   "project-recall-store-latency-share-redis-nogo-2026-08-04.md:6",
+   "project-recall-store-latency-share-redis-nogo-2026-08-04.md:7",
+   "project-recall-store-latency-share-redis-nogo-2026-08-04.md:8",
+   "project-recall-store-latency-share-redis-nogo-2026-08-04.md:9"
+  ]
+ },
+ {
+  "query": "were maker rebates material to the net model",
+  "answerable": true,
+  "relevant_ids": [
+   "closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:0",
+   "closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:1",
+   "closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:2",
+   "closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:3",
+   "closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:4",
+   "closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:5",
+   "closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:6"
+  ]
+ },
+ {
+  "query": "should I propose paid API runs for recall",
+  "answerable": true,
+  "relevant_ids": [
+   "feedback-no-paid-api-work-on-recall-2026-07-29.md:0",
+   "feedback-no-paid-api-work-on-recall-2026-07-29.md:1",
+   "feedback-no-paid-api-work-on-recall-2026-07-29.md:2",
+   "feedback-no-paid-api-work-on-recall-2026-07-29.md:3"
+  ]
+ },
+ {
+  "query": "what must happen to a scheduled deadman check when a gate closes early",
+  "answerable": true,
+  "relevant_ids": [
+   "feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
+   "feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
+   "feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2"
+  ]
+ },
+ {
+  "query": "is it enough for a guard to refuse known-bad values",
+  "answerable": true,
+  "relevant_ids": [
+   "feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
+   "feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:1",
+   "feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+   "feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:3"
+  ]
+ },
+ {
+  "query": "does a clean git status mean I am on the tip of the branch",
+  "answerable": true,
+  "relevant_ids": [
+   "feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:0",
+   "feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:1",
+   "feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:2",
+   "feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:3",
+   "feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:4"
+  ]
+ },
+ {
+  "query": "what should I check before replacing NOPASSWD sudo with an allowlist",
+  "answerable": true,
+  "relevant_ids": [
+   "feedback_check_password_before_sudo_lockdown.md:0",
+   "feedback_check_password_before_sudo_lockdown.md:1",
+   "feedback_check_password_before_sudo_lockdown.md:2",
+   "feedback_check_password_before_sudo_lockdown.md:3",
+   "feedback_check_password_before_sudo_lockdown.md:4"
+  ]
+ },
+ {
+  "query": "why can gate 1774 never turn green",
+  "answerable": true,
+  "relevant_ids": [
+   "project-gate-1774-under-decay-cannot-settle-2026-08-15.md:0",
+   "project-gate-1774-under-decay-cannot-settle-2026-08-15.md:1",
+   "project-gate-1774-under-decay-cannot-settle-2026-08-15.md:2",
+   "project-gate-1774-under-decay-cannot-settle-2026-08-15.md:3",
+   "project-gate-1774-under-decay-cannot-settle-2026-08-15.md:4",
+   "project-gate-1774-under-decay-cannot-settle-2026-08-15.md:5",
+   "project-gate-1774-under-decay-cannot-settle-2026-08-15.md:6"
+  ]
+ },
+ {
+  "query": "what did the Kafka migration benchmark measure",
+  "answerable": false
+ },
+ {
+  "query": "how many nodes does the Kubernetes cluster run",
+  "answerable": false
+ },
+ {
+  "query": "what is the SLA on the customer support queue",
+  "answerable": false
+ },
+ {
+  "query": "which law firm reviewed the terms of service",
+  "answerable": false
+ },
+ {
+  "query": "what were the results of the SOC 2 Type II audit",
+  "answerable": false
+ },
+ {
+  "query": "how much did the AWS bill increase in March",
+  "answerable": false
+ },
+ {
+  "query": "what did the user research interviews conclude about onboarding",
+  "answerable": false
+ },
+ {
+  "query": "which candidate did we hire for the backend role",
+  "answerable": false
+ },
+ {
+  "query": "what is the payout schedule for the affiliate programme",
+  "answerable": false
+ },
+ {
+  "query": "how is the mobile app's crash rate trending",
+  "answerable": false
+ },
+ {
+  "query": "what did the penetration test find in the payments flow",
+  "answerable": false
+ },
+ {
+  "query": "which CDN did we choose and why",
+  "answerable": false
+ },
+ {
+  "query": "what is the retention policy for customer PII in the EU",
+  "answerable": false
+ },
+ {
+  "query": "how did the Series A term sheet negotiation end",
+  "answerable": false
+ },
+ {
+  "query": "what does the on-call rotation look like this quarter",
+  "answerable": false
+ },
+ {
+  "query": "which competitor acquired the smaller analytics vendor",
+  "answerable": false
+ },
+ {
+  "query": "what is the churn rate for annual subscriptions",
+  "answerable": false
+ },
+ {
+  "query": "how did the GraphQL schema migration affect latency",
+  "answerable": false
+ },
+ {
+  "query": "what did the accessibility audit say about colour contrast",
+  "answerable": false
+ },
+ {
+  "query": "which translation vendor handles the Japanese localisation",
+  "answerable": false
+ },
+ {
+  "query": "what is the disaster recovery RTO for the primary database",
+  "answerable": false
+ },
+ {
+  "query": "how many support tickets were opened after the last release",
+  "answerable": false
+ },
+ {
+  "query": "what did the board decide about the hiring freeze",
+  "answerable": false
+ },
+ {
+  "query": "which insurance policy covers the trading account",
+  "answerable": false
+ },
+ {
+  "query": "what is the warehouse schema for the analytics pipeline",
+  "answerable": false
+ },
+ {
+  "query": "how did the A/B test on the pricing page perform",
+  "answerable": false
+ },
+ {
+  "query": "what is the escalation path for a Sev 1 outage",
+  "answerable": false
+ },
+ {
+  "query": "which OAuth provider did we integrate for enterprise SSO",
+  "answerable": false
+ }
+]
