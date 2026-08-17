@@ -191,6 +191,28 @@ if QApplication is not None:
             return left < right
 
 
+    class _TableWatermark(QLabel):
+        """Scale a table watermark to the available cell without cropping it."""
+
+        def __init__(self, source: QPixmap) -> None:
+            super().__init__()
+            self._source = source
+            self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        def resizeEvent(self, event: Any) -> None:
+            available = min(max(0, self.width() - 40), max(0, self.height() - 40), 420)
+            if available > 0:
+                self.setPixmap(
+                    self._source.scaled(
+                        available,
+                        available,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+            super().resizeEvent(event)
+
+
     class _WorkerSignals(QObject):
         done = Signal(object)
         failed = Signal(str)
@@ -258,18 +280,9 @@ if QApplication is not None:
             pixmap = QPixmap(str(watermark_path))
             if pixmap.isNull():
                 return
-            watermark = QLabel()
+            watermark = _TableWatermark(pixmap)
             watermark.setObjectName("tableWatermark")
             watermark.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-            watermark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            watermark.setPixmap(
-                pixmap.scaled(
-                    420,
-                    420,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
             effect = QGraphicsOpacityEffect(watermark)
             effect.setOpacity(0.11)
             watermark.setGraphicsEffect(effect)
@@ -311,8 +324,8 @@ if QApplication is not None:
                 QTableWidget { background: #111411; color: #f4f1e8; border: 1px solid #465047; border-radius: 4px; gridline-color: #2a2f2a; selection-background-color: #3a301b; selection-color: #f4f1e8; padding: 4px; font-size: 13px; }
                 QTableWidget::item { color: #f4f1e8; padding: 9px 10px; border-bottom: 1px solid #2a2f2a; }
                 QTableWidget::item:selected { background: #3a301b; color: #f4f1e8; }
-                QTableWidget#filesTable, QTableWidget#calibrationTable { background: transparent; }
-                QTableWidget#filesTable::item, QTableWidget#calibrationTable::item { background: transparent; }
+                QTableWidget#filesTable, QTableWidget#githubTable, QTableWidget#calibrationTable { background: transparent; }
+                QTableWidget#filesTable::item, QTableWidget#githubTable::item, QTableWidget#calibrationTable::item { background: transparent; }
                 QHeaderView::section { background: #1a1d1a; color: #d7d2c4; font-family: "Consolas"; font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 10px; border: 0; border-bottom: 1px solid #596057; }
                 QTableCornerButton::section { background: transparent; border: 0; }
                 QFrame#queueActions { background: #151815; border: 1px solid #465047; border-radius: 3px; }
@@ -550,6 +563,7 @@ if QApplication is not None:
             layout.addWidget(source_group)
 
             self.github_table = QTableWidget(0, 3)
+            self.github_table.setObjectName("githubTable")
             self.github_table.setHorizontalHeaderLabels(["FILE NAME", "TENANT", "TYPE"])
             self.github_table.setHorizontalHeader(_FileHeader(self.github_table))
             self.github_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
@@ -563,7 +577,13 @@ if QApplication is not None:
             self.github_table.verticalHeader().setDefaultSectionSize(36)
             self.github_table.setShowGrid(False)
             self.github_table.setCornerButtonEnabled(False)
-            layout.addWidget(self.github_table, 1)
+            github_table_frame = QWidget()
+            github_table_stack = QGridLayout(github_table_frame)
+            github_table_stack.setContentsMargins(0, 0, 0, 0)
+            github_table_stack.setSpacing(0)
+            self._add_table_watermark(self.github_table, github_table_stack)
+            github_table_stack.addWidget(self.github_table, 0, 0)
+            layout.addWidget(github_table_frame, 1)
 
             actions = QHBoxLayout()
             self.github_download_button = QPushButton("Download repository")
