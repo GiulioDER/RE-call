@@ -13,7 +13,7 @@ from recall.desktop.github import GithubImport, download_repository
 
 
 try:
-    from PySide6.QtCore import QItemSelectionModel, QObject, QPoint, QRunnable, QThreadPool, QTimer, Qt, Signal
+    from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, QPoint, QRunnable, QThreadPool, QTimer, Qt, Signal
     from PySide6.QtGui import QColor, QPixmap, QPolygon
     from PySide6.QtWidgets import (
         QAbstractItemView,
@@ -213,6 +213,21 @@ if QApplication is not None:
             super().resizeEvent(event)
 
 
+    class _PageWatermark(_TableWatermark):
+        """Keep a centered watermark fitted to a full tab page."""
+
+        def __init__(self, page: QWidget, source: QPixmap) -> None:
+            super().__init__(source)
+            self._page = page
+            page.installEventFilter(self)
+            self.setGeometry(page.rect())
+
+        def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+            if watched is self._page and event.type() == QEvent.Type.Resize:
+                self.setGeometry(self._page.rect())
+            return super().eventFilter(watched, event)
+
+
     class _WorkerSignals(QObject):
         done = Signal(object)
         failed = Signal(str)
@@ -287,6 +302,21 @@ if QApplication is not None:
             effect.setOpacity(0.11)
             watermark.setGraphicsEffect(effect)
             stack.addWidget(watermark, 0, 0)
+
+        def _add_page_watermark(self, page: QWidget) -> None:
+            """Place the same restrained watermark behind a settings-style page."""
+            watermark_path = Path(__file__).with_name("assets") / "re_call_watermark.png"
+            pixmap = QPixmap(str(watermark_path))
+            if pixmap.isNull():
+                return
+            watermark = _PageWatermark(page, pixmap)
+            watermark.setObjectName("tableWatermark")
+            watermark.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            effect = QGraphicsOpacityEffect(watermark)
+            effect.setOpacity(0.08)
+            watermark.setGraphicsEffect(effect)
+            watermark.lower()
+            watermark.show()
 
         def _build_ui(self) -> None:
             self.setStyleSheet(
@@ -714,6 +744,7 @@ if QApplication is not None:
             self.reranker_model_edit.textChanged.connect(self._configuration_changed)
             self._load_config_type(self._active_config_type)
             self._run(self._probe_hardware, self._hardware_probe_done, self._hardware_probe_failed)
+            self._add_page_watermark(page)
             return page
 
         def _disable_config_items(self, combo: QComboBox, labels: set[str]) -> None:
@@ -944,6 +975,7 @@ if QApplication is not None:
             info_layout.addLayout(runtime_info, 1)
             layout.addWidget(info)
             layout.addStretch()
+            self._add_page_watermark(page)
             return page
 
         def _save_api_keys(self) -> None:
