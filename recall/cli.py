@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import functools
 import json
 import os
 import sys
+from typing import get_args
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,8 +15,17 @@ from recall.embeddings import resolve_embedder
 from recall.entailment import EntailmentJudge, resolve_entailment_judge
 from recall.setup import CalibrationResult
 from recall.trust_policy import TrustPolicy
-from recall.embeddings import Embedder, HashingEmbedder
-from recall.index import head_commit, Indexer, PruneGuardTripped, chunk_code, chunk_text
+from recall.embeddings import Embedder
+from recall.index import (
+    ChunkerKind,
+    DEFAULT_MAX_CHARS,
+    DEFAULT_OVERLAP_CHARS,
+    head_commit,
+    Indexer,
+    PruneGuardTripped,
+    chunk_code,
+    chunk_text,
+)
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.store import (
@@ -349,6 +358,22 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from None
     if number < 1:
         raise argparse.ArgumentTypeError(f"must be at least 1, got {number}")
+    return number
+
+
+def _non_negative_int(value: str) -> int:
+    """A count where zero is meaningful but a negative one is not.
+
+    `--overlap` is the case: 0 means "no shared context between adjacent pieces", which is a real
+    choice, while a negative value is written verbatim into an immutable lineage record describing
+    a pipeline nothing can have run.
+    """
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from None
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"cannot be negative, got {number}")
     return number
 
 
@@ -950,9 +975,18 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="do not record the repository HEAD on each chunk.",
     )
-    p_build.add_argument("--chunker", choices=["text", "code"], default="text")
-    p_build.add_argument("--max-chars", type=int, default=800)
-    p_build.add_argument("--overlap", type=int, default=80)
+    # `choices` read off the same `Literal` the builder validates against, rather than repeated
+    # here. This was the last of four hand-written copies of the vocabulary, and it is the one at
+    # the gate users actually reach, so a chunker added to `ChunkerKind` would have been accepted
+    # by `BuildRequest` while this still exited 2.
+    p_build.add_argument(
+        "--chunker", choices=list(get_args(ChunkerKind)), default="text"
+    )
+    # `_positive_int`, not bare `int`. `--max-chars 0` reached `manager.create`, wrote the
+    # generation row, and only then failed inside `build` on the text path — while on the code path
+    # it did not fail at all and recorded `{"max_chars": 0}` for one unsplit chunk.
+    p_build.add_argument("--max-chars", type=_positive_int, default=DEFAULT_MAX_CHARS)
+    p_build.add_argument("--overlap", type=_non_negative_int, default=DEFAULT_OVERLAP_CHARS)
     p_validate = generation_sub.add_parser("validate", help="validate a built generation")
     p_validate.add_argument("generation_id")
     p_promote = generation_sub.add_parser("promote", help="promote a ready generation")
@@ -1575,13 +1609,8 @@ def main(argv: list[str] | None = None) -> None:
             print(f"active generation: {args.generation_id}")
             return
 
-        from recall.lineage import (
-            ChunkerIdentity,
-            EmbedderIdentity,
-            IndexManifestV1,
-            ManifestObjectV1,
-            PipelineIdentity,
-        )
+        from recall.generation_build import BuildRequest, build_generation
+        from recall.lineage import IndexManifestV1, ManifestObjectV1
         from recall.manifest import (
             ObjectReader,
             S3ObjectReader,
@@ -1621,64 +1650,32 @@ def main(argv: list[str] | None = None) -> None:
         if reader is None:
             reader = reader_for_manifest(manifest)
         embedder = _make_embedder(args.embedder)
-        revision = args.embedder_revision
-        provider = args.embedder_provider
-        if isinstance(embedder, HashingEmbedder):
-            provider = provider or "recall"
-            revision = revision or "hashing-md5-bow-v1"
-        else:
-            provider = provider or "fastembed"
-        identity = EmbedderIdentity(
-            provider=provider,
-            model=embedder.name,
-            dimension=embedder.dim,
-            revision=revision,
-            artifact_digest=args.embedder_artifact_digest,
-            unverified_reason=(
-                "explicit development build"
-                if args.unverified_development
-                and not revision
-                and not args.embedder_artifact_digest
-                else None
-            ),
-        )
-        if args.chunker == "code":
-            generation_chunker = functools.partial(chunk_code, max_chars=args.max_chars)
-            chunker_identity = ChunkerIdentity(
-                "recall.chunk_code", 1, {"max_chars": args.max_chars}
-            )
-        else:
-            generation_chunker = functools.partial(
-                chunk_text, max_chars=args.max_chars, overlap=args.overlap
-            )
-            chunker_identity = ChunkerIdentity(
-                "recall.chunk_text",
-                1,
-                {"max_chars": args.max_chars, "overlap": args.overlap},
-            )
-        pipeline = PipelineIdentity(identity, chunker_identity)
-        generation = manager.create(
+        # The assembly itself lives in `recall.generation_build`, because the installation wizard
+        # builds generations too and a second copy of it would mean two provenance vocabularies
+        # drifting apart with nothing failing. The strings it writes are pinned by
+        # `tests/test_generation_build_assembly.py`.
+        generation_stats = build_generation(
+            manager,
             manifest,
-            pipeline,
-            allow_unverified=args.unverified_development,
-        )
-        # Same provenance the index path stamps. Without this a CALIBRATED generation carries no
-        # record of which project produced each chunk, and the generation path is the only one
-        # calibration can use.
-        build_provenance = {
-            k: v
-            for k, v in (
-                ("project", args.project),
-                ("indexed_commit", None if args.no_commit_stamp else head_commit(".")),
-            )
-            if v is not None
-        }
-        generation_stats = manager.build(
-            generation.generation_id,
             reader,
             embedder,
-            generation_chunker,
-            provenance=build_provenance,
+            BuildRequest(
+                chunker=args.chunker,
+                max_chars=args.max_chars,
+                overlap=args.overlap,
+                provider=args.embedder_provider,
+                revision=args.embedder_revision,
+                artifact_digest=args.embedder_artifact_digest,
+                unverified=args.unverified_development,
+                # Same provenance the index path stamps. Without this a CALIBRATED generation
+                # carries no record of which project produced each chunk, and the generation path
+                # is the only one calibration can use.
+                project=args.project,
+                # `"."` rather than the corpus: a manifest names objects, not a working tree, and
+                # an s3:// one has no local root at all. This is the pre-existing behaviour and is
+                # NOT the same root `recall index` uses, which stamps the directory being indexed.
+                commit_root=None if args.no_commit_stamp else ".",
+            ),
         )
         print(
             f"built {generation_stats.generation_id}: {generation_stats.objects} objects, "

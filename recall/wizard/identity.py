@@ -55,6 +55,18 @@ _MODEL_DIR_PATHS: tuple[tuple[str, ...], ...] = (
 )
 
 
+class _ArtifactRefusal(ValueError):
+    """A refusal raised by this module, and therefore one whose message is safe to log in full.
+
+    The distinction is load-bearing rather than decorative. `artifact_identity_for` logs an
+    actionable message ("your cache is incomplete") instead of a bare class name, and it reads
+    attributes off a caller-supplied object to get there, so catching bare `ValueError` would log
+    whatever a third-party property raised on the strength of a comment asserting that it could
+    not. A `ValueError` subclass keeps every existing `except ValueError` caller working while
+    making the claim structural.
+    """
+
+
 @dataclass(frozen=True)
 class ArtifactIdentity:
     """What a locally-provisioned embedder can prove about itself."""
@@ -170,7 +182,7 @@ def _artifact_digest(directory: Path) -> str:
             # from 3.13, implicit before), so nothing underneath is yielded either. The digest
             # would then silently cover less than the tree it names. `huggingface_hub` only ever
             # links files, so this is a layout nobody should produce rather than one to support.
-            raise ValueError(f"model artifact contains a directory symlink: {candidate}")
+            raise _ArtifactRefusal(f"model artifact contains a directory symlink: {candidate}")
         if candidate.is_symlink() and not candidate.exists():
             # Refused, not skipped. `is_file()` follows the link and returns False for a dangling
             # one, so a snapshot whose blobs were cleaned up, or copied without `-a`, would hash
@@ -178,11 +190,11 @@ def _artifact_digest(directory: Path) -> str:
             # bytes that are not there. The function this replaced used `resolve(strict=True)`
             # and raised; keeping that behaviour matters most on Linux, where every file in the
             # snapshot IS a link into `../../blobs`.
-            raise ValueError(f"model artifact symlink is dangling: {candidate}")
+            raise _ArtifactRefusal(f"model artifact symlink is dangling: {candidate}")
         if candidate.is_file():
             files.append(candidate)
     if not files:
-        raise ValueError(f"model artifact has no files: {directory}")
+        raise _ArtifactRefusal(f"model artifact has no files: {directory}")
     digest = hashlib.sha256()
     for file in files:
         digest.update(file.relative_to(directory).as_posix().encode("utf-8"))
@@ -228,11 +240,15 @@ def artifact_identity_for(embedder: Any) -> ArtifactIdentity | None:
             artifact_digest=digest,
             path=directory,
         )
-    except ValueError as exc:
+    except _ArtifactRefusal as exc:
         # The refusals this module raises itself are the ones a reader can act on — a pruned cache
         # can be re-downloaded — and their messages name the offending path. Logging only the class
         # made "your cache is incomplete" indistinguishable from "fastembed moved an attribute".
-        # These messages are locally produced and carry a path, never a credential.
+        #
+        # Caught by the module's OWN class, not by `ValueError`. The `try` block reads attributes
+        # off a caller-supplied object, so a bare `ValueError` arm logged third-party messages in
+        # full while a comment here asserted they were all locally produced. That was true of the
+        # three refusals and not of the block they sit in.
         _log.warning("could not resolve an artifact identity: %s", exc)
         return None
     except Exception as exc:  # noqa: BLE001 - a probe returns, it does not raise
