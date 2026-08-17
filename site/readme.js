@@ -19,7 +19,7 @@ const GOOGLE_LOCALES = {
   hindi: "hi",
   turkish: "tr",
 };
-const TRANSLATION_SEPARATOR = " __RECALL_TRANSLATION_SEPARATOR_9f3a__ ";
+const TRANSLATION_SEPARATOR = "\n---RECALL9F3A---\n";
 const ENGLISH = "english";
 const BATCH_SIZE = 24;
 const MAX_README_MARKDOWN_CHARS = 400_000;
