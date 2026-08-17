@@ -205,3 +205,64 @@ store does not (itself a reason both are being indexed):
 > Verified before use: no answerable label spans more than one project — which matters because
 > `relevant_ids` key on the root-relative filename and **three filenames exist in several stores**
 > (`MEMORY.md` in all six, `feedback_index.md` and `reference_index.md` in two).
+
+## Measured, 2026-08-17
+
+Artefact: `results/calibration-memory-2026-08-17.json`. Measured against the LIVE `memory` tenant
+(8,716 chunks), not a rebuilt copy — `recall calibrate` builds a throwaway `cal_<uuid>` table and
+re-indexes into it, which would have calibrated a different index from the one served. The
+measurement functions are recall's own and unmodified (`measure_top_cosines`, `from_samples`,
+`loo_threshold_rates`); only the store differs.
+
+| | value |
+|---|---|
+| **Calibrated threshold** | **0.7100** (scale 0.0155) |
+| Answerable (n=22) | min 0.668, p25 0.729, median 0.741, max 0.815 |
+| Unanswerable (n=28) | min 0.565, median 0.651, p75 0.667, max 0.716 |
+| **Separation** (min ans − max unans) | **−0.048** |
+| Separability | 0.989, CI [0.957, 1.000] |
+| Leave-one-out false-confident | 0.036 |
+| Leave-one-out false-abstain | 0.045 |
+
+### Scoring the predictions
+
+**"The published cosine floor lands above the untuned 0.50, somewhere in 0.55 to 0.70."**
+**FALSIFIED**, upward, at **0.7100**. Above 0.50 as predicted, but outside the stated band. The
+direction was recorded in the amendment above before the number existed, because validating the
+query set had already shown unanswerable queries reaching 0.716 — a floor inside the predicted
+band could not have rejected them. The band was too low because it was reasoned from a 61-file
+corpus of one store; a 1,080-file corpus of technical memos has a markedly higher similarity
+floor.
+
+**"...and that it differs between the two tenants by more than 0.05."** **NOT TESTABLE as
+designed.** The amendment of 2026-08-15 collapsed the two tenants into one `memory` corpus, so
+there is no second threshold to compare. Marked ineligible rather than scored, for the same reason
+the SPLADE prediction was.
+
+**The R@100 predictions (bge-small → bge-large +0.01 to +0.03; rerank +0.06 to +0.11; combined
++0.06 to +0.12) are NOT MEASURED.** This run produced a calibrated threshold, not a retrieval
+comparison. Scoring them needs the baseline arm — bge-small, no reranker — measured on this same
+corpus and query set. Nothing here should be read as evidence for or against them.
+
+### What the numbers say beyond the predictions
+
+**Separability 0.989 with separation −0.048 is not a contradiction, and the pair matters more
+than either alone.** The distributions are almost perfectly ordered (a randomly drawn answerable
+query out-scores a randomly drawn unanswerable one ~99% of the time), yet they still OVERLAP: the
+worst answerable query (0.668) scores below the best unanswerable one (0.716). So 0.7100 is a
+least-bad compromise, not a clean boundary, and no single cosine threshold can separate these two
+sets. Reading only the separability would hide that.
+
+The leave-one-out rates put numbers on the residual cost: **3.6% false-confident, 4.5%
+false-abstain**. Roughly one query in 22 is answered when it should have abstained, and one in 22
+abstains when it should have answered.
+
+⚠️ **The artefact's corpus label is wrong and this is known.** Rows carry
+`embedding_profile = bge-small-symmetric-v1` while holding 1024-dim bge-large vectors; see the
+amendment above. The JSON records `embedding_profile_label_is_known_wrong: true` so the defect
+travels with the artefact rather than living only here.
+
+⚠️ **Confound not retired:** I authored the labels and predicted the outcome. The pre-registration
+named this and proposed operator review of the labels as the mitigation; that review has not
+happened yet. The labels are committed and readable at
+`docs/preregistrations/2026-08-17-memory-queries.json`.
