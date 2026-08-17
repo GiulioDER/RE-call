@@ -10,6 +10,7 @@ const MAX_README_MARKDOWN_CHARS = 400_000;
 const MAX_RENDERED_HTML_CHARS = 5_000_000;
 const MAX_TRANSLATION_RESPONSE_CHARS = 2_000_000;
 const TRANSLATION_TIMEOUT_MS = 10_000;
+const TRANSLATION_ATTEMPTS = 3;
 const STORAGE_KEY = "recall-readme-language";
 
 const content = document.querySelector("#readme-content");
@@ -119,51 +120,57 @@ async function translateBatch(texts, locale, signal) {
   if (!TRANSLATION_ENDPOINT) {
     throw new Error("translation endpoint is not configured");
   }
-  const body = new URLSearchParams({
-    to: locale,
-    text: JSON.stringify(texts),
-  });
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  if (signal?.aborted) {
-    controller.abort();
-  } else {
-    signal?.addEventListener("abort", abort, { once: true });
-  }
-  const timeout = window.setTimeout(() => controller.abort(), TRANSLATION_TIMEOUT_MS);
-  let response;
-  let responseText;
-  try {
-    response = await fetch(TRANSLATION_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body,
-      signal: controller.signal,
+  for (let attempt = 0; attempt < TRANSLATION_ATTEMPTS; attempt += 1) {
+    const body = new URLSearchParams({
+      to: locale,
+      text: JSON.stringify(texts),
     });
-    if (!response.ok) {
-      throw new Error("translation provider unavailable");
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (signal?.aborted) {
+      controller.abort();
+    } else {
+      signal?.addEventListener("abort", abort, { once: true });
     }
-    responseText = await response.text();
-  } finally {
-    window.clearTimeout(timeout);
-    signal?.removeEventListener("abort", abort);
+    const timeout = window.setTimeout(() => controller.abort(), TRANSLATION_TIMEOUT_MS);
+    try {
+      const response = await fetch(TRANSLATION_ENDPOINT, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error("translation provider unavailable");
+      }
+      const responseText = await response.text();
+      if (responseText.length > MAX_TRANSLATION_RESPONSE_CHARS) {
+        throw new Error("translation provider response is too large");
+      }
+      const payload = JSON.parse(responseText);
+      if (
+        payload?.result !== 1 ||
+        !Array.isArray(payload.text) ||
+        payload.text.length !== texts.length ||
+        payload.text.some((item) => typeof item !== "string")
+      ) {
+        throw new Error("translation provider returned invalid text");
+      }
+      return payload.text;
+    } catch (error) {
+      if (signal?.aborted || attempt === TRANSLATION_ATTEMPTS - 1) {
+        throw error;
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 300 * (attempt + 1)));
   }
-  if (responseText.length > MAX_TRANSLATION_RESPONSE_CHARS) {
-    throw new Error("translation provider response is too large");
-  }
-  const payload = JSON.parse(responseText);
-  if (
-    payload?.result !== 1 ||
-    !Array.isArray(payload.text) ||
-    payload.text.length !== texts.length ||
-    payload.text.some((item) => typeof item !== "string")
-  ) {
-    throw new Error("translation provider returned invalid text");
-  }
-  return payload.text;
+  throw new Error("translation provider request failed");
 }
 
 async function translateNodes(nodes, locale, signal) {
@@ -172,15 +179,24 @@ async function translateNodes(nodes, locale, signal) {
   }
   const source = nodes.map((node) => cleanText(node.nodeValue || ""));
   const translated = [];
+  let failedBatches = 0;
   const batchCount = Math.ceil(source.length / BATCH_SIZE);
   if (batchCount > 22) {
     throw new Error("README requires too many translation requests");
   }
   for (let start = 0; start < source.length; start += BATCH_SIZE) {
     const batch = source.slice(start, start + BATCH_SIZE);
-    translated.push(...await translateBatch(batch, locale, signal));
+    try {
+      translated.push(...await translateBatch(batch, locale, signal));
+    } catch (error) {
+      if (signal?.aborted) {
+        throw error;
+      }
+      translated.push(...batch);
+      failedBatches += 1;
+    }
   }
-  return translated;
+  return { values: translated, failedBatches };
 }
 
 function applyTranslations(nodes, translated) {
@@ -213,9 +229,14 @@ async function selectLanguage(locale) {
   state.activeTranslation = controller;
   try {
     let translated = state.translated.get(locale);
+    let failedBatches = 0;
     if (!translated) {
-      translated = await translateNodes(nodes, locale, controller.signal);
-      state.translated.set(locale, translated);
+      const result = await translateNodes(nodes, locale, controller.signal);
+      translated = result.values;
+      failedBatches = result.failedBatches;
+      if (!failedBatches) {
+        state.translated.set(locale, translated);
+      }
     }
     if (selectionVersion !== state.selectionVersion || language.value !== locale) {
       return;
@@ -223,7 +244,17 @@ async function selectLanguage(locale) {
     applyTranslations(nodes, translated);
     const selected = language.selectedOptions[0];
     document.documentElement.lang = selected.dataset.htmlLang || "en";
-    setStatus(`${selected.textContent} presentation · source remains English`);
+    if (failedBatches === Math.ceil(nodes.length / BATCH_SIZE)) {
+      restoreEnglish();
+      setStatus("Translation unavailable · showing English source", "error");
+    } else if (failedBatches) {
+      setStatus(
+        `${selected.textContent} presentation · ${failedBatches} batch unavailable, English source kept`,
+        "error",
+      );
+    } else {
+      setStatus(`${selected.textContent} presentation · source remains English`);
+    }
   } catch (error) {
     if (selectionVersion !== state.selectionVersion || language.value !== locale) {
       return;
