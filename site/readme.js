@@ -1,6 +1,10 @@
 const README_SOURCES = [
-  new URL("../README.md", window.location.href).href,
-  "https://raw.githubusercontent.com/GiulioDER/RE-call/master/README.md",
+  { url: new URL("../README.md", window.location.href).href },
+  {
+    url: "https://api.github.com/repos/GiulioDER/RE-call/contents/README.md?ref=master",
+    headers: { Accept: "application/vnd.github.raw+json" },
+  },
+  { url: "https://raw.githubusercontent.com/GiulioDER/RE-call/master/README.md" },
 ];
 const MARKDOWN_RENDERER = "https://api.github.com/markdown/raw";
 const TRANSLATION_ENDPOINT = document.querySelector("meta[name='translation-endpoint']")?.content;
@@ -62,7 +66,10 @@ function saveLanguage(locale) {
 }
 
 async function fetchText(url) {
-  const response = await fetch(url, { headers: { Accept: "text/plain" } });
+  const source = typeof url === "object" ? url : { url };
+  const response = await fetch(source.url, {
+    headers: { Accept: "text/plain", ...source.headers },
+  });
   if (!response.ok) {
     throw new Error("README source unavailable");
   }
