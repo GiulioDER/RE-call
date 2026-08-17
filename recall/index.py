@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from recall.cache import EmbeddingCache, embed_with_cache
@@ -23,6 +24,19 @@ from recall.types import Chunk
 
 DEFAULT_MAX_CHARS = 800  # target chunk size in characters; paragraphs are packed up to this
 DEFAULT_OVERLAP_CHARS = 80  # chars shared between adjacent pieces of a force-split oversized block
+
+#: Which of the two chunkers below a caller wants, named once so nobody writes the pair out again.
+#: It lived as a literal in three places (`recall.generation_build`'s annotation and its branches,
+#: and argparse's `choices`), which meant adding a chunker left them free to disagree: the builder
+#: would accept a value the CLI still rejected with exit 2.
+#:
+#: Here rather than in `recall.generation_build` because this module defines the two functions it
+#: names, and because `recall.cli` already imports this module at the top level while it reaches
+#: the builder lazily — so `argparse` can read the vocabulary without that import becoming eager.
+#: Measured, since an earlier version of this comment claimed the saving was psycopg and that was
+#: simply false: `import recall.cli` already pulls in psycopg and pgvector through `recall.store`.
+#: What stays lazy is `recall.generations`, which `recall.cli` does not import today.
+ChunkerKind = Literal["text", "code"]
 #: Overlap may repeat at most a quarter of a chunk. Beyond that, consecutive pieces are mostly
 #: duplicated context: the index inflates and near-identical chunks crowd the top-k.
 MAX_OVERLAP_DIVISOR = 4
@@ -85,6 +99,24 @@ class PruneGuardTripped(RuntimeError):
 Chunker = Callable[[str], list[str]]
 
 
+def effective_overlap(max_chars: int, overlap: int) -> int:
+    """The overlap a split will actually use, after clamping.
+
+    Exported because a caller that RECORDS the chunking configuration has to record this and not
+    what it asked for. `recall.generation_build` writes the chunker configuration into a
+    `PipelineIdentity`, whose fingerprint is defined as covering "every input that can change
+    chunks", and a calibration binds to that fingerprint. So an unclamped value there produces two
+    generations with byte-identical chunks and different fingerprints, and a calibration measured
+    against one is `CALIBRATION_STALE` against the other.
+
+    Not a hypothetical, and not confined to odd inputs: the clamp is `max_chars // 4`, so at
+    `--max-chars 200` the DEFAULT overlap of 80 already runs at 50. Measured: `chunk_text(t, 200,
+    80)` and `chunk_text(t, 200, 50)` return identical chunks while the two recorded
+    configurations fingerprint differently.
+    """
+    return max(0, min(overlap, max_chars // MAX_OVERLAP_DIVISOR))
+
+
 def _split_oversized(block: str, max_chars: int, overlap: int) -> list[str]:
     """Force-split a single block that exceeds max_chars into <=max_chars pieces.
 
@@ -107,7 +139,7 @@ def _split_oversized(block: str, max_chars: int, overlap: int) -> list[str]:
         raise ValueError("max_chars must be >= 1")
     if len(block) <= max_chars:
         return [block]
-    overlap = max(0, min(overlap, max_chars // MAX_OVERLAP_DIVISOR))
+    overlap = effective_overlap(max_chars, overlap)
     min_piece = max_chars // MIN_PIECE_DIVISOR
     pieces: list[str] = []
     start, n = 0, len(block)

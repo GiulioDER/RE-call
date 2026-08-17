@@ -241,6 +241,34 @@ def test_force_split_does_not_inflate_the_corpus():
         assert emitted < 2 * 5000, f"max_chars={mc}: {emitted / 5000:.1f}x inflation"
 
 
+def test_effective_overlap_is_the_clamp_a_recording_caller_must_use() -> None:
+    """Direct coverage for the clamp, now that a caller outside this module RECORDS its result.
+
+    `recall.generation_build` writes this value into an immutable `ChunkerIdentity`, so the region
+    where it diverges most from what was asked for is the region worth pinning. Nothing exercised
+    `max_chars < 4`, where `max_chars // 4` is 0 and the overlap is forced off entirely.
+    """
+    from recall.index import effective_overlap
+
+    for max_chars in (1, 2, 3):
+        assert effective_overlap(max_chars, 80) == 0, "below 4 there is no room for any overlap"
+    assert effective_overlap(4, 80) == 1
+
+    # The boundary a caller reasons about: faithful at or below max_chars // 4, clamped above it.
+    assert effective_overlap(800, 200) == 200
+    assert effective_overlap(800, 201) == 200
+    assert effective_overlap(320, 80) == 80, "the default overlap is faithful from max_chars 320"
+    assert effective_overlap(319, 80) == 79
+
+    # Negative never survives, and applying it twice changes nothing, which is what lets one caller
+    # record the result while another passes the raw value into the same clamp.
+    assert effective_overlap(800, -5) == 0
+    for max_chars in (1, 4, 17, 200, 800):
+        for overlap in (-3, 0, 1, 80, 500):
+            once = effective_overlap(max_chars, overlap)
+            assert effective_overlap(max_chars, once) == once
+
+
 def test_force_split_survives_overlap_larger_than_the_cap():
     chunks = chunk_text("x" * 2000, max_chars=100, overlap=500)
     assert all(len(c) <= 100 for c in chunks)

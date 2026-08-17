@@ -22,8 +22,15 @@ from pathlib import Path
 
 import pytest
 
-from recall.lineage import EmbedderIdentity
-from recall.wizard.identity import ArtifactIdentity, _artifact_digest, artifact_identity_for
+from recall.lineage import EmbedderIdentity, LineageError
+from recall.wizard.identity import (
+    ArtifactIdentity,
+    _artifact_digest,
+    _model_directory,
+    _revision_from,
+    _source_repo_from,
+    artifact_identity_for,
+)
 
 
 class _Onnx:
@@ -369,14 +376,23 @@ def test_a_non_fastembed_embedder_is_not_stamped_with_fastembed_provenance(
     assert artifact_identity_for(SentenceTransformerEmbedder(artifact)) is None
 
 
-def test_a_dangling_symlink_refuses_rather_than_hashing_a_partial_tree(tmp_path: Path) -> None:
+def test_a_dangling_symlink_refuses_rather_than_hashing_a_partial_tree(
+    tmp_path: Path, caplog
+) -> None:
     """`is_file()` follows a link and returns False for a broken one, so it would be dropped.
 
     A snapshot whose blobs were cleaned up, or copied without `-a`, would then hash only the
     surviving files and record that as immutable provenance for bytes that are not there. On
     Linux every file in the snapshot IS a link into ../../blobs, so this is the platform this
     module targets.
+
+    The cause is read out of the log for the same reason as its two siblings: `is None` alone
+    holds whether this refusal carries `_ArtifactRefusal` or a bare `ValueError`, so without the
+    log assertion the one message a reader can act on ("re-download the model") could be
+    downgraded to a bare class name with the whole suite still green. That was measured, not
+    supposed: reverting this refusal's class left 19 passed, 3 skipped unchanged.
     """
+    import logging
     import os
 
     repo = tmp_path / "models--org--repo"
@@ -394,16 +410,76 @@ def test_a_dangling_symlink_refuses_rather_than_hashing_a_partial_tree(tmp_path:
 
     assert artifact_identity_for(FastEmbedEmbedder(snap)) is not None
     blob.unlink()  # the cache is now incomplete
-    assert artifact_identity_for(FastEmbedEmbedder(snap)) is None
+    with caplog.at_level(logging.WARNING):
+        assert artifact_identity_for(FastEmbedEmbedder(snap)) is None
+    # A phrase with a space, not the bare word. pytest names `tmp_path` after the test, truncated
+    # to 30 characters, so both of these tests put "dangling" into the very path the refusal
+    # message embeds — the assertion was satisfied by its own fixture's name and held whatever the
+    # message said, including the OTHER refusal's wording. A basename cannot contain a space.
+    assert "symlink is dangling" in caplog.text
+    assert str(snap / "model.onnx") in caplog.text
 
 
-def test_a_directory_symlink_refuses_rather_than_hiding_its_contents(tmp_path: Path) -> None:
+def test_the_dangling_refusal_is_actionable_on_a_platform_without_symlinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """The same refusal as above, reachable where `os.symlink` needs privilege.
+
+    The symlink tests skip on Windows, which is where this module is developed, so the refusal
+    they pin is unverifiable exactly where it is most often edited. Reporting a dangling link
+    through `Path` rather than creating one keeps the real `_artifact_digest` loop under test:
+    this drives the production code, it does not restate it.
+
+    The unpatched fixture is asserted to resolve first, so a probe that answered `None` for some
+    unrelated reason cannot be read as the guard firing.
+    """
+    import logging
+    from pathlib import Path as _Path
+
+    snap = tmp_path / "models--org--repo" / "snapshots" / ("5" * 40)
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_bytes(b"{}")
+    (snap / "pruned.onnx").write_bytes(b"weights")
+
+    assert artifact_identity_for(FastEmbedEmbedder(snap)) is not None
+
+    real_is_symlink, real_exists = _Path.is_symlink, _Path.exists
+
+    def is_symlink(self: _Path) -> bool:
+        return self.name == "pruned.onnx" or real_is_symlink(self)
+
+    def exists(self: _Path, **kwargs: object) -> bool:
+        return False if self.name == "pruned.onnx" else real_exists(self, **kwargs)
+
+    monkeypatch.setattr(_Path, "is_symlink", is_symlink)
+    monkeypatch.setattr(_Path, "exists", exists)
+
+    with caplog.at_level(logging.WARNING):
+        assert artifact_identity_for(FastEmbedEmbedder(snap)) is None
+    # A phrase with a space, not the bare word. pytest names `tmp_path` after the test, truncated
+    # to 30 characters, so both of these tests put "dangling" into the very path the refusal
+    # message embeds — the assertion was satisfied by its own fixture's name and held whatever the
+    # message said, including the OTHER refusal's wording. A basename cannot contain a space.
+    assert "symlink is dangling" in caplog.text
+    assert str(snap / "pruned.onnx") in caplog.text
+
+
+def test_a_directory_symlink_refuses_rather_than_hiding_its_contents(
+    tmp_path: Path, caplog
+) -> None:
     """The dangling-link fix one level up, and the same silent-omission failure.
 
     A live directory symlink passes the dangling check, fails `is_file()`, and `rglob` does not
     descend into it — so everything underneath is omitted from the digest with no error, and the
     result is recorded as immutable provenance for a tree it does not cover.
+
+    The intact snapshot is asserted to resolve FIRST, and the refusal is read out of the log.
+    `artifact_identity_for` answers `None` to four unrelated conditions, so `is None` on its own
+    says the function declined, not that this guard is what declined — and because the test skips
+    wherever symlinks need privilege, a fixture that had stopped resolving for some other reason
+    would never be noticed on the one platform that runs it.
     """
+    import logging
     import os
 
     repo = tmp_path / "models--org--repo"
@@ -413,12 +489,180 @@ def test_a_directory_symlink_refuses_rather_than_hiding_its_contents(tmp_path: P
     snap = repo / "snapshots" / ("9" * 40)
     snap.mkdir(parents=True)
     (snap / "config.json").write_bytes(b"{}")
+
+    assert artifact_identity_for(FastEmbedEmbedder(snap)) is not None
+
     try:
         os.symlink(outside, snap / "linked", target_is_directory=True)
     except OSError:
         pytest.skip("creating a symlink needs privilege on this machine")
 
-    assert artifact_identity_for(FastEmbedEmbedder(snap)) is None
+    with caplog.at_level(logging.WARNING):
+        assert artifact_identity_for(FastEmbedEmbedder(snap)) is None
+    assert "directory symlink" in caplog.text
+    assert str(snap / "linked") in caplog.text
+
+
+# --------------------------------------------------------------------------------------
+# The four defensive branches that back the "a probe returns, it does not raise" contract
+#
+# Each of these was reported uncovered by the CI coverage table, and defence in depth that no
+# test pins is indistinguishable from dead code: the next reader deletes it and the module keeps
+# its docstring's promise only by luck. Each test drives the real function — the module's own
+# `_model_directory`, `_revision_from`, `_source_repo_from`, `artifact_identity_for` — with an
+# input that trips that one branch and nothing else, and asserts the SPECIFIC consequence, so
+# that removing the branch turns the test red rather than merely changing a log line.
+# --------------------------------------------------------------------------------------
+
+
+def test_a_model_dir_that_will_not_stringify_is_skipped_for_the_next_candidate(
+    tmp_path: Path,
+) -> None:
+    """`_model_directory` must keep probing, not give up, when one attribute holds a non-path.
+
+    The five attribute chains in `_MODEL_DIR_PATHS` reach into fastembed's internals, so any one
+    of them can hold something that is neither a path nor `None` after a release moves a name.
+    The branch under test is `except Exception: continue`, and the word that matters is
+    `continue`: `return None` there would let one unexpected attribute mask a perfectly good
+    artifact directory found by a later chain, and the caller would silently downgrade to
+    `--unverified-development`.
+
+    So the assertion is not "it returned None safely" but "it found the real directory anyway".
+    """
+
+    class _WillNotStringify:
+        """Truthy, so the probe gets past `if not found`, and then fails inside `str()`.
+
+        `__str__` returning a non-string makes the interpreter raise `TypeError` itself, rather
+        than the test hand-throwing one: `Path()` on this machine accepts even an embedded NUL,
+        so a stringification that genuinely fails is the honest way to trip the branch.
+        """
+
+        def __str__(self) -> str:
+            return 42  # type: ignore[return-value]
+
+    real = tmp_path / "models--qdrant--bge-small-en-v1.5-onnx-q" / "snapshots" / ("4" * 40)
+    real.mkdir(parents=True)
+    (real / "model_optimized.onnx").write_bytes(b"weights")
+
+    class _Onnxish:
+        _model_dir = _WillNotStringify()
+
+    class _InnerWithJunk:
+        model = _Onnxish()
+
+    class FastEmbedEmbedder:  # noqa: N801 - must match the guard to reach the probing
+        name = "BAAI/bge-small-en-v1.5"
+        dim = 384
+
+        def __init__(self) -> None:
+            #: The FIRST chain probed, `_model.model._model_dir`, is the poisoned one …
+            self._model = _InnerWithJunk()
+            #: … and the LAST one, a bare `_model_dir`, is the artifact that must still be found.
+            self._model_dir = str(real)
+
+    embedder = FastEmbedEmbedder()
+    assert _model_directory(embedder) == real, (
+        "an unstringifiable candidate must be skipped, not treated as the answer or as a failure"
+    )
+
+    # And the same thing through the public entry point, which is where the cost would land.
+    got = artifact_identity_for(embedder)
+    assert got is not None
+    assert got.path == real
+    assert len(got.artifact_digest) == 64
+
+
+def test_a_path_whose_parent_explodes_reports_no_revision() -> None:
+    """`_revision_from` answers `None` rather than propagating, per the module's probe contract.
+
+    A revision is a nice-to-have: the digest alone already makes the identity immutable, which is
+    exactly why an exception raised while reading the cache layout must cost the revision and not
+    the whole identity. The path object here is well behaved apart from `.parent`, so the `None`
+    can only have come from the `except` under test.
+    """
+
+    class _ParentExplodes:
+        #: A valid 40-hex commit id, so a `None` here cannot be blamed on the format check.
+        name = "5" * 40
+
+        @property
+        def parent(self) -> Path:
+            raise RuntimeError("the cache layout is not readable")
+
+    assert _revision_from(_ParentExplodes()) is None  # type: ignore[arg-type]
+
+
+def test_a_path_whose_grandparent_explodes_reports_no_source_repo() -> None:
+    """`_source_repo_from` answers `None` too, and the failure is confined to the repo field.
+
+    This is the sibling of the revision probe one level up: `.parent.parent` is the
+    `models--<org>--<repo>` cache entry, which is one directory further from the artifact and so
+    one directory more likely to be absent, on a mount that refuses it, or replaced by something
+    that is not a path at all.
+
+    The double raises only at the SECOND `.parent`, and the test asserts that `_revision_from`
+    still succeeds on the very same object. That is what makes this test about lines 137-138
+    rather than about a stub that is broken everywhere.
+    """
+
+    class _GrandparentExplodes:
+        name = "6" * 40
+
+        @property
+        def parent(self) -> Path:
+            class _Snapshots:
+                name = "snapshots"
+
+                @property
+                def parent(self) -> Path:
+                    raise RuntimeError("the cache entry is not readable")
+
+            return _Snapshots()  # type: ignore[return-value]
+
+    path = _GrandparentExplodes()
+    assert _source_repo_from(path) is None  # type: ignore[arg-type]
+    assert _revision_from(path) == "6" * 40, (  # type: ignore[arg-type]
+        "precondition: this double is sound one level up, so the None above is the grandparent"
+    )
+
+
+def test_an_embedder_that_cannot_name_its_model_returns_none(artifact: Path) -> None:
+    """An artifact with no model name is not an identity, and must not be built into one.
+
+    `model` goes verbatim into an `EmbedderIdentity`, whose `__post_init__` refuses an empty
+    model outright. Falling through with `model=""` would therefore not produce a weaker
+    identity, it would produce a `LineageError` at whatever later point the wizard assembles the
+    lineage record — a traceback during install, which is the one outcome this module exists to
+    avoid. `None` here routes the caller to `--unverified-development` plus a message instead.
+    """
+    assert artifact_identity_for(FastEmbedEmbedder(artifact, name="")) is None
+
+    class FastEmbedEmbedder_NoName:  # noqa: N801 - renamed below to match the guard
+        """Missing the attribute entirely, which `getattr(..., "name", "")` also reduces to ""."""
+
+        def __init__(self, model_dir: Path) -> None:
+            self._model = _Inner(model_dir)
+
+        dim = 384
+
+    # Renamed rather than declared as `class FastEmbedEmbedder`, which would make the name local
+    # to this function and silently shadow the module-level double used further down.
+    FastEmbedEmbedder_NoName.__name__ = "FastEmbedEmbedder"
+    nameless = FastEmbedEmbedder_NoName(artifact)
+    assert type(nameless).__name__ == "FastEmbedEmbedder", (
+        "precondition: without the rename above this returns at the class guard and the "
+        "empty-name branch is never reached, so the assertion below would prove nothing"
+    )
+    assert artifact_identity_for(nameless) is None
+
+    # The precondition, so the two Nones above are attributable to the missing name and not to
+    # the artifact: the same directory with a name does yield an identity.
+    assert artifact_identity_for(FastEmbedEmbedder(artifact)) is not None
+
+    # And the consequence the branch prevents, stated rather than assumed.
+    with pytest.raises(LineageError):
+        EmbedderIdentity(provider="fastembed", model="", dimension=384, artifact_digest="a" * 64)
 
 
 def test_an_actionable_refusal_reaches_the_log(tmp_path: Path, caplog) -> None:
@@ -432,3 +676,33 @@ def test_an_actionable_refusal_reaches_the_log(tmp_path: Path, caplog) -> None:
         assert artifact_identity_for(FastEmbedEmbedder(empty)) is None
     assert "has no files" in caplog.text
     assert str(empty) in caplog.text
+
+
+def test_a_foreign_valueerror_is_logged_by_class_and_not_by_message(caplog) -> None:
+    """Only THIS module's own refusals are known to be safe to log in full.
+
+    The handler that lets an actionable message through used to catch bare `ValueError`, defended
+    by a comment saying those messages are locally produced and carry a path rather than a
+    credential. That is true of the three refusals raised here and not of the `try` block, which
+    reads attributes off a caller-supplied object and would log whatever somebody else's property
+    raised. Giving the refusals their own class makes the comment structural instead of
+    incidental, and this is the arm that fails if it goes back to being incidental.
+    """
+    import logging
+
+    foreign_message = "<placeholder-token-that-must-not-reach-the-log>"
+
+    class FastEmbedEmbedder:  # noqa: N801 - the guard matches on this exact class name
+        name = "BAAI/bge-small-en-v1.5"
+        dim = 384
+
+        @property
+        def _model_dir(self) -> str:
+            # `getattr(obj, attr, None)` swallows AttributeError and nothing else, so this
+            # escapes `_model_directory` exactly as a third-party failure would.
+            raise ValueError(foreign_message)
+
+    with caplog.at_level(logging.WARNING):
+        assert artifact_identity_for(FastEmbedEmbedder()) is None
+    assert foreign_message not in caplog.text
+    assert "ValueError" in caplog.text
