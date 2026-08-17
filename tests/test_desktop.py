@@ -7,7 +7,13 @@ import pytest
 
 from recall.desktop.models import RuntimeMode, RuntimeProfile, SourceCategory, SourceSelection
 from recall.desktop.runtime import DockerRuntime, VpsMcpRuntime, create_runtime
-from recall.desktop.sources import classify, collect_files, display_type
+from recall.desktop.sources import (
+    classify,
+    collect_files,
+    default_scan_roots,
+    display_type,
+    scan_files,
+)
 from recall.desktop.updates import is_newer
 
 
@@ -56,6 +62,33 @@ def test_collect_files_filters_by_category(tmp_path: Path) -> None:
 
     assert [path.name for path in collect_files([tmp_path], SourceCategory.CODE)] == ["a.py"]
     assert [path.name for path in collect_files([tmp_path], SourceCategory.DOCUMENTS)] == ["b.md", "c.pdf"]
+
+
+def test_local_scan_prunes_generated_directories_and_limits_claude_files(tmp_path: Path) -> None:
+    documents = tmp_path / "Documents"
+    claude = tmp_path / ".claude"
+    (documents / ".git").mkdir(parents=True)
+    (documents / "node_modules").mkdir()
+    (documents / "notes.md").write_text("notes", encoding="utf-8")
+    (documents / "app.py").write_text("print('ok')", encoding="utf-8")
+    (documents / ".git" / "ignored.py").write_text("ignored", encoding="utf-8")
+    (documents / "node_modules" / "ignored.js").write_text("ignored", encoding="utf-8")
+    (claude / "projects" / "demo" / "memory").mkdir(parents=True)
+    (claude / "MEMORY.md").write_text("memory", encoding="utf-8")
+    (claude / "projects" / "demo" / "memory" / "notes.md").write_text(
+        "memory", encoding="utf-8"
+    )
+    (claude / "settings.json").write_text("{}", encoding="utf-8")
+
+    assert default_scan_roots(tmp_path) == (documents, claude)
+    found = scan_files(default_scan_roots(tmp_path))
+
+    assert [path.relative_to(tmp_path).as_posix() for path in found] == [
+        "Documents/app.py",
+        "Documents/notes.md",
+        ".claude/MEMORY.md",
+        ".claude/projects/demo/memory/notes.md",
+    ]
 
 
 def test_vps_runtime_uses_mcp_contract(tmp_path: Path) -> None:
@@ -108,7 +141,7 @@ def test_updates_never_downgrade() -> None:
 def test_page_watermarks_scope_transparent_group_boxes(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication, QGroupBox
+    from PySide6.QtWidgets import QApplication, QGroupBox, QLabel
 
     from recall.desktop.ui import MainWindow
 
@@ -134,6 +167,24 @@ def test_page_watermarks_scope_transparent_group_boxes(monkeypatch: pytest.Monke
     assert window.settings_page.findChildren(QGroupBox, "watermarkGroup")
     assert window.github_page.findChildren(QGroupBox, "watermarkGroup") == []
     assert "QGroupBox#watermarkGroup" in window.styleSheet()
+    window.resize(980, 760)
+    window.show()
+    app.processEvents()
+    assert window.scan_button.isVisible()
+    assert window.scan_button.text() == "Scan"
+    assert window.scan_button.parentWidget().objectName() == "queueActions"
+    format_hint = window.queue_page.findChild(QLabel, "dropHint")
+    assert format_hint is not None
+    assert format_hint.text().count("\n") == 1
+    assert not format_hint.wordWrap()
+    assert window.github_download_button.text() == "DOWNLOAD"
+    assert window.github_download_button.objectName() == "downloadButton"
+    assert window.github_download_button.size().toTuple() == window.main_button.size().toTuple()
+    assert window.github_clear_button.size().toTuple() == window.github_download_button.size().toTuple()
+    assert "rgba(215, 165, 42, 0.22)" in window.styleSheet()
+    assert "QTableWidget#calibrationTable { selection-background-color: transparent; }" in window.styleSheet()
+    assert "QWidget#calibrationActionsCell { background: transparent; }" in window.styleSheet()
+    assert window.calibration_table.itemDelegate()._hide_selection is True
 
     window.close()
     app.processEvents()
