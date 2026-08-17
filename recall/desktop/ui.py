@@ -13,7 +13,8 @@ from recall.desktop.github import GithubImport, download_repository
 
 
 try:
-    from PySide6.QtCore import QItemSelectionModel, QObject, QRunnable, QRect, QThreadPool, QTimer, Qt, Signal
+    from PySide6.QtCore import QItemSelectionModel, QObject, QPoint, QRunnable, QThreadPool, QTimer, Qt, Signal
+    from PySide6.QtGui import QColor, QPolygon
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -156,18 +157,22 @@ if QApplication is not None:
             option.sortIndicator = QStyleOptionHeader.SortIndicator.SortDown
             mark_size = self.style().pixelMetric(QStyle.PixelMetric.PM_HeaderMarkSize, option, self)
             mark_size = max(6, mark_size)
-            option.rect = QRect(
-                rect.center().x() - mark_size // 2,
-                rect.bottom() - mark_size - 4,
-                mark_size,
-                mark_size,
+            y = rect.bottom() - mark_size - 4
+            center_x = rect.center().x()
+            half = max(3, mark_size // 2)
+            painter.save()
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#d7d2c4"))
+            painter.drawPolygon(
+                QPolygon(
+                    [
+                        QPoint(center_x - half, y),
+                        QPoint(center_x + half, y),
+                        QPoint(center_x, y + half),
+                    ]
+                )
             )
-            self.style().drawPrimitive(
-                QStyle.PrimitiveElement.PE_IndicatorHeaderArrow,
-                option,
-                painter,
-                self,
-            )
+            painter.restore()
 
 
     class _HiddenSortItem(QTableWidgetItem):
@@ -366,8 +371,10 @@ if QApplication is not None:
             self.files.setHorizontalHeaderLabels(["FILE NAME", "TENANT", "TYPE"])
             self.files.setHorizontalHeader(_FileHeader(self.files))
             self.files.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-            self.files.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-            self.files.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            self.files.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+            self.files.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+            self.files.setColumnWidth(1, 210)
+            self.files.setColumnWidth(2, 78)
             self.files.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.files.setSelectionMode(QAbstractItemView.ExtendedSelection)
             self.files.setItemDelegate(_FocuslessItemDelegate(self.files))
@@ -746,7 +753,7 @@ if QApplication is not None:
             self.calibration_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
             self.calibration_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
             self.calibration_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Fixed)
-            self.calibration_table.setColumnWidth(5, 176)
+            self.calibration_table.setColumnWidth(5, 190)
             self.calibration_table.verticalHeader().setVisible(False)
             self.calibration_table.verticalHeader().setDefaultSectionSize(42)
             self.calibration_table.setShowGrid(False)
@@ -816,8 +823,10 @@ if QApplication is not None:
             layout.addWidget(user_settings)
 
             provider_keys = QGroupBox("Provider API keys")
-            provider_layout = QHBoxLayout(provider_keys)
+            provider_layout = QVBoxLayout(provider_keys)
+            provider_layout.setSpacing(10)
             key_form = QFormLayout()
+            key_form.setVerticalSpacing(8)
             self.openrouter_key_edit = QLineEdit()
             self.openrouter_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
             self.openrouter_key_edit.setPlaceholderText("OpenRouter key")
@@ -830,13 +839,13 @@ if QApplication is not None:
             key_form.addRow("OpenRouter", self.openrouter_key_edit)
             key_form.addRow("Voyage", self.voyage_key_edit)
             key_form.addRow("OpenAI", self.openai_key_edit)
+            provider_layout.addLayout(key_form)
             key_actions = QHBoxLayout()
             key_actions.addStretch()
             save_keys = QPushButton("Save API keys")
             save_keys.clicked.connect(self._save_api_keys)
             key_actions.addWidget(save_keys)
-            key_form.addRow("", key_actions)
-            provider_layout.addLayout(key_form, 2)
+            provider_layout.addLayout(key_actions)
             layout.addWidget(provider_keys)
 
             updates = QGroupBox("RE-call updates")
@@ -1029,16 +1038,17 @@ if QApplication is not None:
             cell = QWidget()
             cell.setObjectName("calibrationActionsCell")
             actions = QHBoxLayout(cell)
-            actions.setContentsMargins(2, 2, 2, 2)
-            cell.setMinimumWidth(176)
+            actions.setContentsMargins(6, 5, 6, 5)
+            actions.setSpacing(8)
+            cell.setMinimumWidth(190)
             run = QPushButton("Run")
             run.setObjectName("tableActionButton")
-            run.setFixedSize(58, 30)
+            run.setFixedSize(62, 32)
             run.clicked.connect(lambda _checked=False, target_row=row: self._run_calibration_row(target_row))
             actions.addWidget(run)
             publish = QPushButton("Publish")
             publish.setObjectName("tableActionButton")
-            publish.setFixedSize(82, 30)
+            publish.setFixedSize(86, 32)
             publish.setEnabled(bool(getattr(snapshot, "calibration_id", None)))
             publish.clicked.connect(
                 lambda _checked=False, target_row=row: self._publish_calibration_row(target_row)
@@ -1055,7 +1065,7 @@ if QApplication is not None:
                 cell = self.calibration_table.cellWidget(row, 5)
                 if cell is None:
                     continue
-                background = "#2e2b1d" if row in selected_rows else "#0c0e0d"
+                background = "#3a301b" if row in selected_rows else "#111411"
                 cell.setStyleSheet(f"background: {background};")
 
         def _run_calibration_row(self, row: int) -> None:
