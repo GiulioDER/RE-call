@@ -1,0 +1,261 @@
+const README_SOURCES = [
+  new URL("../README.md", window.location.href).href,
+  "https://raw.githubusercontent.com/GiulioDER/RE-call/master/README.md",
+];
+const MARKDOWN_RENDERER = "https://api.github.com/markdown/raw";
+const TRANSLATION_ENDPOINT = document.querySelector("meta[name='translation-endpoint']")?.content;
+const ENGLISH = "english";
+const BATCH_SIZE = 24;
+const MAX_README_MARKDOWN_CHARS = 400_000;
+const MAX_RENDERED_HTML_CHARS = 5_000_000;
+const MAX_TRANSLATION_RESPONSE_CHARS = 2_000_000;
+const TRANSLATION_TIMEOUT_MS = 10_000;
+const STORAGE_KEY = "recall-readme-language";
+
+const content = document.querySelector("#readme-content");
+const language = document.querySelector("#readme-language");
+const status = document.querySelector("#translation-status");
+const state = {
+  englishHtml: "",
+  translated: new Map(),
+  selectionVersion: 0,
+  activeTranslation: null,
+};
+
+function setStatus(message, tone = "") {
+  status.textContent = message;
+  status.dataset.tone = tone;
+}
+
+function savedLanguage() {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY);
+  } catch (error) {
+    return null;
+  }
+}
+
+function saveLanguage(locale) {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, locale);
+  } catch (error) {
+    // Language selection remains functional when browser storage is unavailable.
+  }
+}
+
+async function fetchText(url) {
+  const response = await fetch(url, { headers: { Accept: "text/plain" } });
+  if (!response.ok) {
+    throw new Error("README source unavailable");
+  }
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_README_MARKDOWN_CHARS) {
+    throw new Error("README source is too large");
+  }
+  const text = await response.text();
+  if (text.length > MAX_README_MARKDOWN_CHARS) {
+    throw new Error("README source is too large");
+  }
+  return text;
+}
+
+async function loadMarkdown() {
+  let markdownError;
+  for (const source of README_SOURCES) {
+    try {
+      return await fetchText(source);
+    } catch (error) {
+      markdownError = error;
+    }
+  }
+  throw markdownError || new Error("README source unavailable");
+}
+
+async function renderMarkdown(markdown) {
+  const response = await fetch(MARKDOWN_RENDERER, {
+    method: "POST",
+    headers: {
+      Accept: "text/html",
+      "Content-Type": "text/plain; charset=utf-8",
+    },
+    body: markdown,
+  });
+  if (!response.ok) {
+    throw new Error("README renderer unavailable");
+  }
+  const text = await response.text();
+  if (text.length > MAX_RENDERED_HTML_CHARS) {
+    throw new Error("Rendered README is too large");
+  }
+  return text;
+}
+
+function textNodes() {
+  const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || !node.nodeValue?.trim()) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      if (parent.closest("pre, code, script, style, .readme-no-translate")) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const nodes = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    nodes.push(node);
+  }
+  return nodes;
+}
+
+function cleanText(value) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+async function translateBatch(texts, locale, signal) {
+  if (!TRANSLATION_ENDPOINT) {
+    throw new Error("translation endpoint is not configured");
+  }
+  const body = new URLSearchParams({
+    to: locale,
+    text: JSON.stringify(texts),
+  });
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) {
+    controller.abort();
+  } else {
+    signal?.addEventListener("abort", abort, { once: true });
+  }
+  const timeout = window.setTimeout(() => controller.abort(), TRANSLATION_TIMEOUT_MS);
+  let response;
+  let responseText;
+  try {
+    response = await fetch(TRANSLATION_ENDPOINT, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error("translation provider unavailable");
+    }
+    responseText = await response.text();
+  } finally {
+    window.clearTimeout(timeout);
+    signal?.removeEventListener("abort", abort);
+  }
+  if (responseText.length > MAX_TRANSLATION_RESPONSE_CHARS) {
+    throw new Error("translation provider response is too large");
+  }
+  const payload = JSON.parse(responseText);
+  if (
+    payload?.result !== 1 ||
+    !Array.isArray(payload.text) ||
+    payload.text.length !== texts.length ||
+    payload.text.some((item) => typeof item !== "string")
+  ) {
+    throw new Error("translation provider returned invalid text");
+  }
+  return payload.text;
+}
+
+async function translateNodes(nodes, locale, signal) {
+  if (nodes.length > 512) {
+    throw new Error("README contains too many translatable text nodes");
+  }
+  const source = nodes.map((node) => cleanText(node.nodeValue || ""));
+  const translated = [];
+  const batchCount = Math.ceil(source.length / BATCH_SIZE);
+  if (batchCount > 22) {
+    throw new Error("README requires too many translation requests");
+  }
+  for (let start = 0; start < source.length; start += BATCH_SIZE) {
+    const batch = source.slice(start, start + BATCH_SIZE);
+    translated.push(...await translateBatch(batch, locale, signal));
+  }
+  return translated;
+}
+
+function applyTranslations(nodes, translated) {
+  nodes.forEach((node, index) => {
+    const raw = node.nodeValue || "";
+    const leading = raw.match(/^\s*/)?.[0] || "";
+    const trailing = raw.match(/\s*$/)?.[0] || "";
+    node.nodeValue = `${leading}${translated[index]}${trailing}`;
+  });
+}
+
+function restoreEnglish() {
+  content.innerHTML = state.englishHtml;
+  document.documentElement.lang = "en";
+  setStatus("English source");
+}
+
+async function selectLanguage(locale) {
+  const selectionVersion = ++state.selectionVersion;
+  state.activeTranslation?.abort();
+  if (locale === ENGLISH) {
+    restoreEnglish();
+    return;
+  }
+
+  restoreEnglish();
+  setStatus("Translating the readable text…", "working");
+  const nodes = textNodes();
+  const controller = new AbortController();
+  state.activeTranslation = controller;
+  try {
+    let translated = state.translated.get(locale);
+    if (!translated) {
+      translated = await translateNodes(nodes, locale, controller.signal);
+      state.translated.set(locale, translated);
+    }
+    if (selectionVersion !== state.selectionVersion || language.value !== locale) {
+      return;
+    }
+    applyTranslations(nodes, translated);
+    const selected = language.selectedOptions[0];
+    document.documentElement.lang = selected.dataset.htmlLang || "en";
+    setStatus(`${selected.textContent} presentation · source remains English`);
+  } catch (error) {
+    if (selectionVersion !== state.selectionVersion || language.value !== locale) {
+      return;
+    }
+    restoreEnglish();
+    setStatus("Translation unavailable · showing English source", "error");
+  } finally {
+    if (state.activeTranslation === controller) {
+      state.activeTranslation = null;
+    }
+  }
+}
+
+async function start() {
+  try {
+    const markdown = await loadMarkdown();
+    const html = await renderMarkdown(markdown);
+    content.innerHTML = html;
+    state.englishHtml = html;
+    const saved = savedLanguage();
+    const initial = [...language.options].some((option) => option.value === saved) ? saved : ENGLISH;
+    language.value = initial;
+    await selectLanguage(initial);
+  } catch (error) {
+    content.innerHTML = "<p class='readme-error'>The README could not be loaded. Use the source link above to open it directly on GitHub.</p>";
+    setStatus("README unavailable", "error");
+  }
+}
+
+language.addEventListener("change", () => {
+  saveLanguage(language.value);
+  void selectLanguage(language.value);
+});
+
+void start();

@@ -94,6 +94,25 @@ OPENROUTER_API_KEY=
 # as "unlimited" — only `off` disables a limit.
 # Read once at startup: changing a budget takes effect on restart.
 
+# --- Optional presentation localization ---
+# Disabled unless explicitly enabled. `recall_search` and `recall_evidence` accept an optional
+# locale argument and then add a `localized` object. The original fields, provenance, evidence
+# items, system prompt, and user message remain canonical and unchanged.
+# RECALL_TRANSLATION_ENABLED=0
+# RECALL_TRANSLATION_ENDPOINT=https://api.translate.zvo.cn/translate.json
+# RECALL_TRANSLATION_TIMEOUT_SECONDS=5
+# RECALL_TRANSLATION_MAX_BATCH=32
+# RECALL_TRANSLATION_MAX_TEXT_CHARS=20000
+# RECALL_TRANSLATION_MAX_RESPONSE_BYTES=2000000
+# RECALL_TRANSLATION_ALLOW_HTTP=0       # only needed for an explicitly permitted HTTP endpoint
+#
+# The integration calls the upstream text JSON endpoint only. It does not load the browser
+# translator, remote scripts, or runtime-evaluated code. Provider failures fall back to canonical
+# values and are reported as a fixed warning without exposing provider errors or corpus text.
+# Enabling it sends selected retrieved passage text to the configured endpoint. Use a self-hosted
+# endpoint when corpus confidentiality requires it, and treat localized values as display data,
+# not as a replacement for the canonical evidence prompt.
+
 # --- Schema DDL ---
 # RECALL_SCHEMA_LOCK_TIMEOUT_MS=5000  # how long ensure_schema() may WAIT FOR A LOCK before
 #                                     # giving up. NOT a bound on the work — an HNSW build is

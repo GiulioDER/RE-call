@@ -28,6 +28,7 @@ from recall.store import (
 )
 from recall.trust import terminal_safe, trusted_search
 from recall.types import TrustedResult
+from recall_mcp.translation import provider_from_env, translate_for_display
 
 if TYPE_CHECKING:
     from recall.reasoning import ReasoningResponse
@@ -199,6 +200,28 @@ def _print_result(result: TrustedResult) -> None:
             f"                 chunk_id={terminal_safe(h.chunk.id)!r} "
             f"ordinal={h.provenance.ord} valid_from={valid_from}"
         )
+
+
+def _print_localized_result(result: TrustedResult, locale: str) -> None:
+    """Print optional display translations without changing the canonical CLI result."""
+
+    from recall_mcp.translation import normalize_locale
+
+    try:
+        normalized = normalize_locale(locale)
+        if normalized is None:
+            return
+        provider = provider_from_env()
+        values, translated, warning = translate_for_display(
+            [hit.chunk.text for hit in result.hits], normalized, provider
+        )
+    except ValueError as exc:
+        raise SystemExit(f"translation: {exc}") from exc
+    print(f"[localized:{normalized} provider={provider.name} translated={translated}]")
+    if warning:
+        print(f"  warning: {warning}")
+    for hit, value in zip(result.hits, values, strict=True):
+        print(f"  chunk_id={terminal_safe(hit.chunk.id)!r}  {terminal_safe(value)!r}")
 
 
 def _print_evidence(result: TrustedResult, max_items: int) -> None:
@@ -1016,6 +1039,11 @@ def main(argv: list[str] | None = None) -> None:
         help="also print the generator-neutral evidence bundle and the exact prompt it renders "
         "to, as JSON. Only verdict-ok hits enter the bundle, in retrieval order; an abstention "
         "produces an empty bundle. Additive: the normal listing is printed either way.",
+    )
+    p_search.add_argument(
+        "--locale",
+        help="optional presentation language for an additive localized display; canonical text "
+        "and evidence remain unchanged",
     )
 
     p_reasoning = sub.add_parser(
@@ -2178,6 +2206,8 @@ def main(argv: list[str] | None = None) -> None:
                 policy=_search_policy,
             )
             _print_result(_search_result)
+            if args.locale:
+                _print_localized_result(_search_result, args.locale)
             if args.evidence:
                 _print_evidence(_search_result, max_items=args.k)
     elif args.cmd == "demo":

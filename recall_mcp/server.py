@@ -10,6 +10,7 @@ from typing import Literal, Protocol, TypeVar
 from urllib.parse import urlsplit
 
 import anyio.to_thread
+from anyio import CapacityLimiter
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
@@ -64,6 +65,11 @@ from recall_mcp.service import (
 )
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
+from recall_mcp.translation import (
+    provider_from_env,
+    render_evidence_response,
+    render_search_response,
+)
 
 #: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
 #: is metered the moment it declares a scope — there is no separate table to remember to update,
@@ -511,6 +517,16 @@ async def _to_thread(fn: Callable[[], _T]) -> _T:
     return await anyio.to_thread.run_sync(fn)
 
 
+# Translation is presentation work and may wait on a remote provider. Keep its bounded blocking
+# calls out of the shared pool used by retrieval, authentication, and mutation tools.
+TRANSLATION_THREAD_LIMITER = CapacityLimiter(4)
+
+
+async def _translation_to_thread(fn: Callable[[], _T]) -> _T:
+    """Run one bounded translation render without consuming a general worker token."""
+    return await anyio.to_thread.run_sync(fn, limiter=TRANSLATION_THREAD_LIMITER)
+
+
 #: Worker threads held back for everything that is not a queued search.
 #:
 #: Every tool body runs through `_to_thread`, and so does the OIDC bearer-token validator. A
@@ -574,6 +590,10 @@ def _make_lifespan(
         # discovered on the first client request. A server that starts clean and then refuses
         # every search is a server whose configuration error reads as an outage.
         retrieval_profile = startup_retrieval_profile()
+        # Validate localization configuration at startup as well. Constructing the provider is
+        # pure configuration work and performs no network request; delaying this until a client
+        # asks for a locale would turn a deployment error into a request-time surprise.
+        translation_provider = provider_from_env()
         # Size the worker pool from the profile, so the admission gate is the binding constraint
         # rather than a coincidence. See `worker_thread_budget`.
         apply_worker_thread_budget(retrieval_profile)
@@ -735,6 +755,7 @@ def _make_lifespan(
                 "stores": registry,
                 "embedder": embedder,
                 "limiter": limiter,
+                "translation_provider": translation_provider,
                 "shadow_embedders": {},
                 "shadow_embedder_lock": threading.Lock(),
             }
@@ -829,7 +850,11 @@ def build_server() -> MCPServer:
         ),
     )
     async def recall_search(
-        query: str, ctx: Context[dict, object], source: str | None = None, k: int = 5
+        query: str,
+        ctx: Context[dict, object],
+        source: str | None = None,
+        k: int = 5,
+        locale: str | None = None,
     ) -> str:
         """Search the agent's OWN memory before acting, and get actionable guidance.
 
@@ -846,6 +871,8 @@ def build_server() -> MCPServer:
             k: max hits to return (default 5). Under a fast or quality process profile this is
                 clamped DOWN to the profile's returned count and is never raised: the cost
                 profile is chosen per process, not per request.
+            locale: optional presentation language. When set, a `localized` additive object is
+                returned while canonical hits, provenance, and advice remain unchanged.
 
         Returns:
             JSON with abstention, calibration status and ID, tenant/generation/pipeline/corpus/
@@ -861,7 +888,7 @@ def build_server() -> MCPServer:
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="search"):
-            return await _to_thread(
+            result = await _to_thread(
                 lambda: search_memory(
                     store,
                     state["embedder"],
@@ -869,7 +896,14 @@ def build_server() -> MCPServer:
                     source=source,
                     k=k,
                     policy=TRUST_POLICY,
-                ).model_dump_json(indent=2)
+                )
+            )
+            if locale is None:
+                return result.model_dump_json(indent=2)
+            return await _translation_to_thread(
+                lambda: render_search_response(
+                    result, locale, state.get("translation_provider") or provider_from_env()
+                )
             )
 
     @mcp.tool(
@@ -888,6 +922,7 @@ def build_server() -> MCPServer:
         source: str | None = None,
         k: int = 5,
         max_items: int | None = None,
+        locale: str | None = None,
     ) -> str:
         """Get memory as CITABLE EVIDENCE plus the exact prompt to answer it with.
 
@@ -910,6 +945,8 @@ def build_server() -> MCPServer:
                 profile is chosen per process, not per request.
             max_items: max passages admitted to the bundle. Defaults to the effective k and is
                 clamped to it, so it can only ever narrow the bundle.
+            locale: optional presentation language. When set, a `localized` additive object is
+                returned while the exact canonical evidence prompts remain unchanged.
 
         Returns:
             JSON with the decision, the reason code when empty, trust and calibration state, the
@@ -926,7 +963,7 @@ def build_server() -> MCPServer:
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="evidence"):
-            return await _to_thread(
+            result = await _to_thread(
                 lambda: evidence_memory(
                     store,
                     state["embedder"],
@@ -935,7 +972,14 @@ def build_server() -> MCPServer:
                     k=k,
                     max_items=max_items,
                     policy=TRUST_POLICY,
-                ).model_dump_json(indent=2)
+                )
+            )
+            if locale is None:
+                return result.model_dump_json(indent=2)
+            return await _translation_to_thread(
+                lambda: render_evidence_response(
+                    result, locale, state.get("translation_provider") or provider_from_env()
+                )
             )
 
     @mcp.tool(
