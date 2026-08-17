@@ -14,7 +14,7 @@ from recall.desktop.github import GithubImport, download_repository
 
 try:
     from PySide6.QtCore import QItemSelectionModel, QObject, QPoint, QRunnable, QThreadPool, QTimer, Qt, Signal
-    from PySide6.QtGui import QColor, QPolygon
+    from PySide6.QtGui import QColor, QPixmap, QPolygon
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -23,6 +23,7 @@ try:
         QFileDialog,
         QFrame,
         QFormLayout,
+        QGraphicsOpacityEffect,
         QHBoxLayout,
         QHeaderView,
         QLabel,
@@ -247,11 +248,39 @@ if QApplication is not None:
             self.resize(980, 760)
             self._build_ui()
 
+        def _add_table_watermark(self, table: QTableWidget, stack: QGridLayout) -> None:
+            """Place a quiet centered RE-call watermark behind a table's content."""
+            table.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            table.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            table.setAutoFillBackground(False)
+            table.viewport().setAutoFillBackground(False)
+            watermark_path = Path(__file__).with_name("assets") / "re_call_watermark.png"
+            pixmap = QPixmap(str(watermark_path))
+            if pixmap.isNull():
+                return
+            watermark = QLabel()
+            watermark.setObjectName("tableWatermark")
+            watermark.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            watermark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            watermark.setPixmap(
+                pixmap.scaled(
+                    420,
+                    420,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+            effect = QGraphicsOpacityEffect(watermark)
+            effect.setOpacity(0.11)
+            watermark.setGraphicsEffect(effect)
+            stack.addWidget(watermark, 0, 0)
+
         def _build_ui(self) -> None:
             self.setStyleSheet(
                 """
                 QMainWindow, QWidget { background: #0e100f; color: #f4f1e8; font-family: "Segoe UI Variable Text", "Segoe UI"; font-size: 13px; }
                 QLabel { color: #b6b7ac; }
+                QLabel#tableWatermark { background: transparent; }
                 QLabel#runtimeLabel { color: #b6b7ac; font-family: "Consolas"; font-size: 11px; }
                 QLabel#status { color: #b6b7ac; font-size: 12px; }
                 QFrame#identityRule { background: #d7a52a; border: 0; }
@@ -282,6 +311,8 @@ if QApplication is not None:
                 QTableWidget { background: #111411; color: #f4f1e8; border: 1px solid #465047; border-radius: 4px; gridline-color: #2a2f2a; selection-background-color: #3a301b; selection-color: #f4f1e8; padding: 4px; font-size: 13px; }
                 QTableWidget::item { color: #f4f1e8; padding: 9px 10px; border-bottom: 1px solid #2a2f2a; }
                 QTableWidget::item:selected { background: #3a301b; color: #f4f1e8; }
+                QTableWidget#filesTable, QTableWidget#calibrationTable { background: transparent; }
+                QTableWidget#filesTable::item, QTableWidget#calibrationTable::item { background: transparent; }
                 QHeaderView::section { background: #1a1d1a; color: #d7d2c4; font-family: "Consolas"; font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 10px; border: 0; border-bottom: 1px solid #596057; }
                 QTableCornerButton::section { background: transparent; border: 0; }
                 QFrame#queueActions { background: #151815; border: 1px solid #465047; border-radius: 3px; }
@@ -364,6 +395,7 @@ if QApplication is not None:
             queue_outer.addWidget(zone)
 
             self.files = QTableWidget(0, 3)
+            self.files.setObjectName("filesTable")
             self.files.setHorizontalHeaderLabels(["FILE NAME", "TENANT", "TYPE"])
             self.files.setHorizontalHeader(_FileHeader(self.files))
             self.files.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
@@ -391,6 +423,7 @@ if QApplication is not None:
             table_stack = QGridLayout(table_frame)
             table_stack.setContentsMargins(0, 0, 0, 0)
             table_stack.setSpacing(0)
+            self._add_table_watermark(self.files, table_stack)
             table_stack.addWidget(self.files, 0, 0)
             actions = QFrame()
             actions.setObjectName("queueActions")
@@ -762,6 +795,7 @@ if QApplication is not None:
             table_stack = QGridLayout(table_frame)
             table_stack.setContentsMargins(0, 0, 0, 0)
             table_stack.setSpacing(0)
+            self._add_table_watermark(self.calibration_table, table_stack)
             table_stack.addWidget(self.calibration_table, 0, 0)
 
             refresh_actions = QFrame()
