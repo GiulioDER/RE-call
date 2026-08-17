@@ -277,7 +277,7 @@ if QApplication is not None:
                 QComboBox { background: #141714; color: #f4f1e8; border: 1px solid #465047; border-radius: 3px; padding: 0px 12px; min-height: 40px; min-width: 120px; }
                 QComboBox:hover, QComboBox:focus { border-color: #d7a52a; }
                 QComboBox#tenantCellCombo { background: transparent; border: 0; border-radius: 0; padding: 2px 6px; min-width: 0; }
-                QComboBox#tenantCellCombo:hover, QComboBox#tenantCellCombo:focus { background: transparent; border: 1px solid #d7a52a; }
+                QComboBox#tenantCellCombo:hover, QComboBox#tenantCellCombo:focus { background: transparent; border: 0; outline: none; }
                 QComboBox#tenantCellCombo::drop-down { background: transparent; border: 0; width: 18px; }
                 QComboBox QAbstractItemView { background: #1a1d1a; color: #f4f1e8; selection-background-color: #d7a52a; selection-color: #11130f; border: 1px solid #465047; }
                 QTableWidget { background: #111411; color: #f4f1e8; border: 1px solid #465047; border-radius: 4px; gridline-color: #2a2f2a; selection-background-color: #3a301b; selection-color: #f4f1e8; padding: 4px; font-size: 13px; }
