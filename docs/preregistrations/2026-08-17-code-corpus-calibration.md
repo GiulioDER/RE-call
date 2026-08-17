@@ -94,3 +94,79 @@ raises the unanswerable ceiling.
 ## Result
 
 **Status:** not yet measured. Append below; do not edit anything above.
+
+## Measured, 2026-08-17: `re-call-code`
+
+Artefacts: `results/calibration-code-recall-2026-08-17.json`, query set at
+`docs/preregistrations/2026-08-17-code-queries.json`.
+
+| | value |
+|---|---|
+| **Calibrated threshold** | **0.6620** (scale 0.0273) |
+| Answerable (n=19) | min 0.661, p25 0.709, median 0.728, max 0.834 |
+| Unanswerable (n=26) | min 0.480, median 0.574, p75 0.605, max 0.668 |
+| Separation (min ans − max unans) | **−0.007** |
+| Separability | 0.996, CI [0.975, 1.000] |
+| Leave-one-out false-confident | 0.077 |
+| Leave-one-out false-abstain | 0.053 |
+| Certified? | **NO** — 19 answerable samples, ≥20 of each required |
+
+### ⛔ A retrieval bug found while measuring, which invalidated the obvious method
+
+`recall.eval.calibrate.measure_top_cosines` calls `query_dense(k=1)` and scores an empty result
+as `0.0`. On this tenant that is catastrophic. Measured:
+
+```
+k=  1 ->   0 hits
+k=  5 ->   0 hits
+k= 20 ->   1 hit,  top=0.5277   <- WRONG, and silently so
+k= 50 ->  50 hits, top=0.5743
+k=100 -> 100 hits, top=0.5743   <- the true nearest neighbour
+```
+
+**10 of the 26 unanswerable queries returned NOTHING at k=1.** Each would have entered the fit as
+0.0, dragging the unanswerable distribution down and the threshold with it.
+
+Cause: the HNSW index is built over the WHOLE table and `tenant_id` is applied as a POST-filter,
+so for a tenant that is a fraction of the table the graph walk returns candidates belonging to
+other tenants which are then filtered away. `_query_dense` widens `ef_search` only when
+`k * multiplier` exceeds pgvector's default, which never fires at k=1. Note the failure is not
+merely "fewer rows": at k=20 the reported top cosine is **0.047 below** the true nearest
+neighbour, so any small-k calibration understates the distribution.
+
+This calibration therefore retrieves at **k=200** and takes `hits[0]` — the same quantity
+`measure_top_cosines` intends. 0 queries came back empty at that depth.
+
+**The memory corpus was checked and is UNAFFECTED**: all 50 queries return hits at k=1 and none
+differs from k=200, so the 0.7100 threshold in the companion record stands unaltered.
+
+### Scoring the predictions
+
+**"Calibrated threshold 0.35 to 0.50."** **FALSIFIED**, at **0.6620** — far above, and much
+closer to the memory corpus's bge-large 0.7100 than to anything predicted.
+
+The reasoning was wrong in a specific and instructive way. I extrapolated from `voyage-4` on
+`re-call-docs`, which returned top hits at 0.269–0.413, and assumed Voyage models share a cosine
+scale. They do not: `voyage-code-3` returns 0.480–0.834 on the same kind of task. **A threshold is
+bound to its embedder, and "Voyage" is not an embedder — `voyage-4` and `voyage-code-3` are as
+different from each other in scale as either is from bge-large.**
+
+**"Unanswerable top-1 cosine ceiling below 0.45."** **FALSIFIED**, at **0.668**. Same root cause.
+
+**"Separability 0.90 to 0.99."** **CONFIRMED** at 0.996, at the top of the band.
+
+**"Threshold difference between tenants < 0.10."** **NOT YET MEASURED** — needs a labelled query
+set for `mem-bench-code`, which does not exist.
+
+### What held across both corpora
+
+**The overlap is not a property of prose.** The memory corpus separated by −0.048 and this one by
+−0.007: in both, the worst answerable query scores below the best unanswerable one, so no single
+cosine threshold cleanly separates them. Two different embedders, two different content types,
+same qualitative result. That is now the second observation of it and it looks like a property of
+dense retrieval on technical corpora rather than of any one corpus.
+
+⚠️ **The fit is not certified and should not be published as-is.** 19 answerable samples against a
+required 20 — caused by a broken label: `recall/wizard/identity.py` was named in the draft but is
+absent from the index, because the code corpus was indexed BEFORE #349 added that file. The
+corpus is stale relative to master, which is itself worth knowing.

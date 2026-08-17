@@ -1,0 +1,340 @@
+{
+ "tenant": "re-call-code",
+ "embedder": "voyage:voyage-code-3",
+ "dimension": 1024,
+ "top_k_used": 200,
+ "why_not_k1": "measure_top_cosines uses k=1; HNSW under-returns on this tenant because the index is table-wide and tenant_id is a post-filter. 10 of 26 unanswerable queries returned 0 hits at k=1, and k=20 reported a top cosine 0.047 BELOW the true nearest neighbour.",
+ "empty_results": 0,
+ "threshold": 0.662,
+ "scale": 0.0273,
+ "separability": 0.9959514170040485,
+ "separability_ci": [
+  0.9753409240141053,
+  1.0
+ ],
+ "n_answerable": 19,
+ "n_unanswerable": 26,
+ "answerable_max_cos": [
+  0.7020581364631653,
+  0.717298035380069,
+  0.7783108949661255,
+  0.8176028728485165,
+  0.7146297267300066,
+  0.7651165443797774,
+  0.7278034253237603,
+  0.7273298068446049,
+  0.7082625838596401,
+  0.7292488813400321,
+  0.7452282905578613,
+  0.7131705455082342,
+  0.7071884449012027,
+  0.8338958024978697,
+  0.7085961103439331,
+  0.7594417559934189,
+  0.7371866766083279,
+  0.6605296730995178,
+  0.7353552799032976
+ ],
+ "unanswerable_max_cos": [
+  0.5742963127582169,
+  0.5871808878887239,
+  0.6587706201169475,
+  0.48016664267579656,
+  0.6647811332214566,
+  0.5581053828063846,
+  0.6676682232019608,
+  0.6245037465696033,
+  0.6438480423734201,
+  0.5602890420046166,
+  0.5892674326896667,
+  0.5040105731490427,
+  0.5301866811402715,
+  0.5611993576168443,
+  0.6047805908191567,
+  0.52518463134766,
+  0.5549767182760456,
+  0.5629174784323587,
+  0.5833550343897929,
+  0.5902982354164124,
+  0.5497113957743126,
+  0.5921381711959881,
+  0.6287383062399544,
+  0.5595198011112105,
+  0.5877179574026569,
+  0.5452103885882871
+ ],
+ "loo_false_confident": 0.07692307692307693,
+ "loo_false_abstain": 0.05263157894736842,
+ "per_query": [
+  {
+   "query": "how does indexing decide to refuse pruning most of the corpus",
+   "answerable": true,
+   "top": 0.7020581364631653,
+   "top_file": "tests/test_prune_guard.py"
+  },
+  {
+   "query": "which chunker is chosen for a python source file",
+   "answerable": true,
+   "top": 0.717298035380069,
+   "top_file": "recall/index.py"
+  },
+  {
+   "query": "how are NUL bytes handled before text is written to postgres",
+   "answerable": true,
+   "top": 0.7783108949661255,
+   "top_file": "recall/index.py"
+  },
+  {
+   "query": "how is the embedding profile identifier derived from an embedder",
+   "answerable": true,
+   "top": 0.8176028728485165,
+   "top_file": "recall/embeddings.py"
+  },
+  {
+   "query": "how is a voyage reranker selected by name",
+   "answerable": true,
+   "top": 0.7146297267300066,
+   "top_file": "recall/rerank.py"
+  },
+  {
+   "query": "what happens when the primary reranker fails at query time",
+   "answerable": true,
+   "top": 0.7651165443797774,
+   "top_file": "recall/rerank.py"
+  },
+  {
+   "query": "how are concurrent schema migrations prevented from colliding",
+   "answerable": true,
+   "top": 0.7278034253237603,
+   "top_file": "tests/test_enterprise_integration.py"
+  },
+  {
+   "query": "how is the abstention threshold fitted from labelled samples",
+   "answerable": true,
+   "top": 0.7273298068446049,
+   "top_file": "recall/eval/calibrate.py"
+  },
+  {
+   "query": "how does a query get filtered to one source document",
+   "answerable": true,
+   "top": 0.7082625838596401,
+   "top_file": "tests/test_sparse_disjunction.py"
+  },
+  {
+   "query": "how is a filename made safe to write into frontmatter",
+   "answerable": true,
+   "top": 0.7292488813400321,
+   "top_file": "tests/test_eval_beir.py"
+  },
+  {
+   "query": "how are dense and sparse results fused before reranking",
+   "answerable": true,
+   "top": 0.7452282905578613,
+   "top_file": "tests/test_search_fused.py"
+  },
+  {
+   "query": "how does a generation reuse chunks from an earlier build",
+   "answerable": true,
+   "top": 0.7131705455082342,
+   "top_file": "tests/test_generations.py"
+  },
+  {
+   "query": "how are learned sparse vectors stored beside the dense ones",
+   "answerable": true,
+   "top": 0.7071884449012027,
+   "top_file": "tests/test_sparse_indexing.py"
+  },
+  {
+   "query": "how is nDCG computed over retrieved results",
+   "answerable": true,
+   "top": 0.8338958024978697,
+   "top_file": "benchmarks/mtrag/run.py"
+  },
+  {
+   "query": "what identifies an embedder for a certified calibration binding",
+   "answerable": true,
+   "top": 0.7085961103439331,
+   "top_file": "benchmarks/_trust.py"
+  },
+  {
+   "query": "how does the eval harness measure top cosines per query",
+   "answerable": true,
+   "top": 0.7594417559934189,
+   "top_file": "recall/eval/calibrate.py"
+  },
+  {
+   "query": "how is contextual passage text built around a chunk",
+   "answerable": true,
+   "top": 0.7371866766083279,
+   "top_file": "recall/context.py"
+  },
+  {
+   "query": "how does the trust layer decide to abstain",
+   "answerable": true,
+   "top": 0.6605296730995178,
+   "top_file": "recall/entailment.py"
+  },
+  {
+   "query": "how is a corpus manifest verified against immutable objects",
+   "answerable": true,
+   "top": 0.7353552799032976,
+   "top_file": "tests/test_ladder_invariants.py"
+  },
+  {
+   "query": "how does the GraphQL resolver batch nested queries",
+   "answerable": false,
+   "top": 0.5742963127582169,
+   "top_file": "tests/test_embeddings_batch.py"
+  },
+  {
+   "query": "which message broker does the ingest queue publish to",
+   "answerable": false,
+   "top": 0.5871808878887239,
+   "top_file": "tests/test_ladder_run_v2_scope.py"
+  },
+  {
+   "query": "how is the Kubernetes readiness probe configured",
+   "answerable": false,
+   "top": 0.6587706201169475,
+   "top_file": "tests/test_tenant_readiness.py"
+  },
+  {
+   "query": "how does the React component memoize expensive renders",
+   "answerable": false,
+   "top": 0.48016664267579656,
+   "top_file": "tests/test_consistency_report.py"
+  },
+  {
+   "query": "what is the retry policy for the Stripe webhook handler",
+   "answerable": false,
+   "top": 0.6647811332214566,
+   "top_file": "tests/provider_stub_helpers.py"
+  },
+  {
+   "query": "how does the mobile SDK reconcile offline writes",
+   "answerable": false,
+   "top": 0.5581053828063846,
+   "top_file": "tests/test_supersession_edge_dating.py"
+  },
+  {
+   "query": "which OAuth scopes does the admin console request",
+   "answerable": false,
+   "top": 0.6676682232019608,
+   "top_file": "tests/test_oidc.py"
+  },
+  {
+   "query": "how are feature flags evaluated at runtime",
+   "answerable": false,
+   "top": 0.6245037465696033,
+   "top_file": "tests/test_eval_perq_scoring_split.py"
+  },
+  {
+   "query": "how does the recommendation model rank products",
+   "answerable": false,
+   "top": 0.6438480423734201,
+   "top_file": "tests/test_hybrid_fusion_contract.py"
+  },
+  {
+   "query": "what does the image thumbnail pipeline do on upload",
+   "answerable": false,
+   "top": 0.5602890420046166,
+   "top_file": "tests/test_lineage.py"
+  },
+  {
+   "query": "how is the WebSocket connection kept alive behind the proxy",
+   "answerable": false,
+   "top": 0.5892674326896667,
+   "top_file": "tests/test_provider_stub_teardown.py"
+  },
+  {
+   "query": "how does the billing service prorate a mid-cycle upgrade",
+   "answerable": false,
+   "top": 0.5040105731490427,
+   "top_file": "tests/test_retrieval_profiles.py"
+  },
+  {
+   "query": "where is the CSS theme for dark mode defined",
+   "answerable": false,
+   "top": 0.5301866811402715,
+   "top_file": "site/app.js"
+  },
+  {
+   "query": "how does the crawler respect robots.txt",
+   "answerable": false,
+   "top": 0.5611993576168443,
+   "top_file": "tests/test_mtrag_figure_guards.py"
+  },
+  {
+   "query": "what is the sharding key for the user table",
+   "answerable": false,
+   "top": 0.6047805908191567,
+   "top_file": "recall/eval/resume.py"
+  },
+  {
+   "query": "how does the email template renderer handle localisation",
+   "answerable": false,
+   "top": 0.52518463134766,
+   "top_file": "tests/test_consistency_report.py"
+  },
+  {
+   "query": "how are push notifications batched per device",
+   "answerable": false,
+   "top": 0.5549767182760456,
+   "top_file": "tests/test_embeddings_batch.py"
+  },
+  {
+   "query": "how does the video transcoder pick a bitrate ladder",
+   "answerable": false,
+   "top": 0.5629174784323587,
+   "top_file": "benchmarks/ladder/report.py"
+  },
+  {
+   "query": "which CDN cache headers are set on static assets",
+   "answerable": false,
+   "top": 0.5833550343897929,
+   "top_file": "tests/test_mtrag_figure_guards.py"
+  },
+  {
+   "query": "how does the fraud model score a transaction",
+   "answerable": false,
+   "top": 0.5902982354164124,
+   "top_file": "recall/eval/locomo_entailment_sweep.py"
+  },
+  {
+   "query": "how is the shopping cart persisted between sessions",
+   "answerable": false,
+   "top": 0.5497113957743126,
+   "top_file": "tests/test_truth_extraction_sqlite_cache_contract.py"
+  },
+  {
+   "query": "how does the map view cluster nearby markers",
+   "answerable": false,
+   "top": 0.5921381711959881,
+   "top_file": "benchmarks/ladder/rings.py"
+  },
+  {
+   "query": "what does the SAML assertion consumer endpoint validate",
+   "answerable": false,
+   "top": 0.6287383062399544,
+   "top_file": "tests/test_oidc_subject_binding.py"
+  },
+  {
+   "query": "how are audit logs shipped to the SIEM",
+   "answerable": false,
+   "top": 0.5595198011112105,
+   "top_file": "tests/test_enterprise_integration.py"
+  },
+  {
+   "query": "how does the chat client handle typing indicators",
+   "answerable": false,
+   "top": 0.5877179574026569,
+   "top_file": "recall/truth_extraction/_openai_engine.py"
+  },
+  {
+   "query": "how is the PDF invoice generated and signed",
+   "answerable": false,
+   "top": 0.5452103885882871,
+   "top_file": "tests/test_generations.py"
+  }
+ ]
+}
