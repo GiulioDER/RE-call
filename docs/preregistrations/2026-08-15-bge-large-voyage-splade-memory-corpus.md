@@ -313,3 +313,56 @@ and the served metric is the one that matters operationally.
 query**, R@5 cannot exceed 5/6.6 = 0.76 for any system. The choice to mark every chunk of an
 answering memo relevant was recorded above as inflating precision; it deflates recall at small k,
 and that applies equally to both arms so the DELTA is unaffected.
+
+## Measured, 2026-08-17: the embedder arm and the combined configuration
+
+Artefact: `results/embedder-arms-memory-2026-08-17.json`. The same 1,080 files indexed a second
+time under bge-small into `chunks_bge_small` — a **separate table**, because `chunks.embedding` is
+`vector(1024)` and bge-small is 384-dim, so a tenant alone cannot hold both. Same tenant name,
+same query set, same pool of 300: the arms differ in the embedder and nothing else. Both arms
+produced **8,716 chunks from 1,080 files**, confirming the chunking is embedder-independent and
+the comparison is properly paired.
+
+| metric | bge-small | bge-large | bge-large + rerank |
+|---|---:|---:|---:|
+| R@5 | 0.3433 | 0.4337 | 0.4649 |
+| R@10 | 0.3825 | 0.4827 | 0.5518 |
+| **R@100** | 0.6609 | 0.6979 | 0.7689 |
+| nDCG@10 | 0.4145 | 0.5180 | 0.5478 |
+| MRR | 0.6297 | **0.8016** | 0.7845 |
+
+Deltas on R@100 with a **paired bootstrap 95% CI**, 10,000 resamples, seed 20260817:
+
+| comparison | delta | 95% CI | predicted | verdict |
+|---|---:|---|---|---|
+| bge-small → bge-large | +0.0370 | **[−0.0325, +0.1154]** | +0.01 to +0.03 | **INDISTINGUISHABLE FROM ZERO** |
+| bge-small → bge-large + rerank | +0.1080 | [+0.0421, +0.1799] | +0.06 to +0.12 | **CONFIRMED** |
+
+### Scoring the predictions
+
+**"bge-small → bge-large: +0.01 to +0.03 R@100, confidence low."** **INDISTINGUISHABLE FROM
+ZERO.** The point estimate is +0.0370 — above the band — but the interval spans zero, so this run
+cannot say the effect is real, let alone that it falls outside the prediction. Reporting
+"falsified above" from the point estimate alone would have been wrong, and that is exactly the
+error the CI exists to prevent. The record itself anticipated this: it rated the prediction low
+confidence and said it "may not clear noise", which at **n=22 answerable queries** is what
+happened.
+
+**"All three together (now: bge-large + Voyage rerank, FTS sparse): +0.06 to +0.12."**
+**CONFIRMED** at **+0.1080**, inside the band with a CI excluding zero.
+
+**"I predict the reranker dominates by a wide margin."** **CONFIRMED**, and this is now scorable.
+The reranker alone is +0.0710 with the CI of the combined arm excluding zero, while the embedder
+alone cannot be distinguished from no effect. Nearly all of the combined +0.1080 is the reranker.
+
+### What R@100 could not see
+
+**The embedder's real effect is on ranking, not recall.** bge-small → bge-large moves **MRR from
+0.6297 to 0.8016 (+0.17)** and **nDCG@10 from 0.4145 to 0.5180 (+0.10)**, while its R@100 delta is
+noise. A bigger embedder is placing the right chunk near the top far more often; it is not finding
+many chunks the smaller one missed within 100. The pre-registration chose R@100, so that is what
+is scored — but a reader concluding "bge-large did nothing" from the scored line would be wrong.
+These two figures are descriptive: no CI was computed for them, and they were not registered.
+
+**Rerank trades top-1 for breadth, in both arms.** MRR falls from 0.8016 to 0.7845 when the
+reranker is added, the same direction as the standalone rerank arm.
