@@ -373,7 +373,8 @@ if QApplication is not None:
                 QFrame#runtimeStatus QLabel#runtimeLabel { background: transparent; }
                 QPushButton#reconnectButton { color: #f0be4a; border-color: #8e6c20; padding: 0px 14px; }
                 QLabel#connectionLight { min-width: 10px; max-width: 10px; min-height: 10px; max-height: 10px; border-radius: 5px; }
-                QGroupBox { background: transparent; color: #f4f1e8; border: 1px solid #465047; border-radius: 4px; margin-top: 14px; padding: 16px; }
+                QGroupBox { color: #f4f1e8; border: 1px solid #465047; border-radius: 4px; margin-top: 14px; padding: 16px; }
+                QGroupBox#watermarkGroup { background: transparent; }
                 QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 7px; color: #d7a52a; font-size: 12px; font-weight: 700; }
                 QLineEdit { background: #141714; color: #f4f1e8; border: 1px solid #465047; border-radius: 3px; padding: 0px 12px; min-height: 40px; }
                 QLineEdit::placeholder { color: #8d9186; }
@@ -657,6 +658,7 @@ if QApplication is not None:
             layout.addLayout(type_row)
 
             pipeline = QGroupBox("Retrieval stack")
+            pipeline.setObjectName("watermarkGroup")
             form = QFormLayout(pipeline)
             self.embedder_combo = QComboBox()
             self.embedder_combo.addItems(
@@ -891,6 +893,7 @@ if QApplication is not None:
             title.setObjectName("pageTitle")
             layout.addWidget(title)
             user_settings = QGroupBox("User settings")
+            user_settings.setObjectName("watermarkGroup")
             user_form = QFormLayout(user_settings)
             self.language_combo = QComboBox()
             self.language_combo.addItems(["English", "Italiano", "Deutsch", "Español"])
@@ -901,6 +904,7 @@ if QApplication is not None:
             layout.addWidget(user_settings)
 
             provider_keys = QGroupBox("Provider API keys")
+            provider_keys.setObjectName("watermarkGroup")
             provider_layout = QVBoxLayout(provider_keys)
             provider_layout.setSpacing(10)
             key_form = QFormLayout()
@@ -927,6 +931,7 @@ if QApplication is not None:
             layout.addWidget(provider_keys)
 
             updates = QGroupBox("RE-call updates")
+            updates.setObjectName("watermarkGroup")
             update_layout = QHBoxLayout(updates)
             update_main = QVBoxLayout()
             self.update_result_label = QLabel("No release check has been run from this page.")
@@ -953,6 +958,7 @@ if QApplication is not None:
             layout.addWidget(updates)
 
             info = QGroupBox("Runtime information")
+            info.setObjectName("watermarkGroup")
             info_layout = QHBoxLayout(info)
             info_form = QFormLayout()
             info_form.addRow("Endpoint / compose", QLabel(self.profile.endpoint or self.profile.compose_file or "Not configured"))

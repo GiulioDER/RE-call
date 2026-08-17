@@ -103,3 +103,37 @@ def test_docker_runtime_exposes_managed_project_scopes() -> None:
 def test_updates_never_downgrade() -> None:
     assert is_newer("0.9.4", "0.9.5")
     assert not is_newer("0.9.5", "0.9.4")
+
+
+def test_page_watermarks_scope_transparent_group_boxes(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication, QGroupBox
+
+    from recall.desktop.ui import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+
+    class UiRuntime:
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ready"}
+
+        def list_tenants(self) -> list[str]:
+            return ["default"]
+
+        def stop(self) -> None:
+            return None
+
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    window = MainWindow(profile, runtime=UiRuntime())
+
+    assert window.config_page.findChild(QGroupBox, "watermarkGroup") is not None
+    assert window.settings_page.findChildren(QGroupBox, "watermarkGroup")
+    assert window.github_page.findChildren(QGroupBox, "watermarkGroup") == []
+    assert "QGroupBox#watermarkGroup" in window.styleSheet()
+
+    window.close()
+    app.processEvents()
