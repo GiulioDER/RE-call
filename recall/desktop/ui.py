@@ -8,7 +8,16 @@ from typing import Any
 
 from recall.desktop.models import RuntimeProfile, SourceCategory, SourceSelection
 from recall.desktop.runtime import RuntimeManager, RuntimeErrorBase, create_runtime
-from recall.desktop.sources import CODE_EXTENSIONS, DOCUMENT_EXTENSIONS, collect_files, classify, display_type
+from recall.desktop.sources import (
+    CLAUDE_MEMORY_FILENAMES,
+    CODE_EXTENSIONS,
+    DOCUMENT_EXTENSIONS,
+    collect_files,
+    default_scan_roots,
+    scan_files,
+    classify,
+    display_type,
+)
 from recall.desktop.github import GithubImport, download_repository
 
 
@@ -35,6 +44,7 @@ try:
         QPushButton,
         QGroupBox,
         QLineEdit,
+        QSizePolicy,
         QStyle,
         QStyleOptionHeader,
         QStyledItemDelegate,
@@ -77,7 +87,6 @@ if QApplication is not None:
             self.setAcceptDrops(True)
             self.setObjectName("dropZone")
             layout = QVBoxLayout(self)
-            layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.setSpacing(4)
             label = QLabel("DROP FILES HERE")
             label.setObjectName("dropTitle")
@@ -88,6 +97,8 @@ if QApplication is not None:
             hint.setObjectName("dropHint")
             hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
             hint.setWordWrap(False)
+            hint.setMinimumWidth(0)
+            hint.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             layout.addWidget(hint)
             note = QLabel("Unsupported files will be skipped")
@@ -128,8 +139,14 @@ if QApplication is not None:
     class _FocuslessItemDelegate(QStyledItemDelegate):
         """Keep selected table rows highlighted without drawing Qt focus boxes."""
 
+        def __init__(self, parent: QWidget | None = None, *, hide_selection: bool = False) -> None:
+            super().__init__(parent)
+            self._hide_selection = hide_selection
+
         def paint(self, painter: Any, option: Any, index: Any) -> None:
             option.state &= ~QStyle.StateFlag.State_HasFocus
+            if self._hide_selection:
+                option.state &= ~QStyle.StateFlag.State_Selected
             super().paint(painter, option, index)
 
 
@@ -330,7 +347,7 @@ if QApplication is not None:
                 QFrame#dropZone:hover, QFrame#dropZone[dragActive="true"] { border-color: #d7a52a; background: #191b15; }
                 QFrame#dropZone QLabel { background: transparent; }
                 QLabel#dropTitle { color: #f4f1e8; font-family: "Segoe UI Variable Display", "Segoe UI"; font-size: 24px; font-weight: 700; letter-spacing: 0.4px; }
-                QLabel#dropHint { color: #b6b7ac; font-size: 11px; line-height: 1.2; }
+                QLabel#dropHint { color: #b6b7ac; font-size: 10px; line-height: 1.2; }
                 QLabel#dropNote { color: #8d9186; font-size: 12px; }
                 QPushButton { background: #171a17; color: #f4f1e8; border: 1px solid #465047; border-radius: 3px; padding: 0px 16px; min-height: 40px; font-family: "Segoe UI Variable Text", "Segoe UI"; font-size: 13px; font-weight: 600; }
                 QPushButton:hover { background: #20241f; border-color: #d7a52a; }
@@ -338,8 +355,12 @@ if QApplication is not None:
                 QPushButton:disabled { background: #141614; color: #70766d; border-color: #2c322c; }
                 QPushButton:focus, QComboBox:focus, QLineEdit:focus, QCheckBox:focus { outline: none; border: 1px solid #f0be4a; }
                 QPushButton#navButton { background: #131613; color: #d9d6cc; border-color: #465047; border-radius: 3px; padding: 0px; min-height: 34px; max-height: 34px; font-family: "Segoe UI Variable Text", "Segoe UI"; font-size: 12px; font-weight: 700; letter-spacing: 0.4px; }
-                QPushButton#navButton:hover { background: #20241f; border-color: #d7a52a; color: #f4f1e8; }
-                QPushButton#navButton:checked { background: #d7a52a; border-color: #d7a52a; color: #11130f; }
+                QPushButton#navButton:hover { background: rgba(215, 165, 42, 0.10); border-color: #d7a52a; color: #f4f1e8; }
+                QPushButton#navButton:checked, QPushButton#downloadButton { background: rgba(215, 165, 42, 0.22); border-color: #d7a52a; color: #f4f1e8; min-height: 34px; max-height: 34px; padding: 0px; }
+                QPushButton#navButton:checked:hover, QPushButton#downloadButton:hover { background: rgba(215, 165, 42, 0.32); border-color: #f0be4a; color: #ffffff; }
+                QPushButton#downloadButton:pressed { background: rgba(215, 165, 42, 0.42); border-color: #f0be4a; color: #ffffff; }
+                QPushButton#downloadButton:disabled { background: rgba(215, 165, 42, 0.08); border-color: #5f4d25; color: #8b7850; }
+                QPushButton#githubSecondaryButton { min-height: 34px; max-height: 34px; padding: 0px; }
                 QPushButton#startButton { background: #d7a52a; color: #11130f; border-color: #d7a52a; padding: 0px 18px; min-height: 40px; font-weight: 700; }
                 QPushButton#startButton:hover { background: #f0be4a; border-color: #f0be4a; }
                 QPushButton#startButton:pressed { background: #b8871d; border-color: #b8871d; }
@@ -353,6 +374,8 @@ if QApplication is not None:
                 QTableWidget { background: #111411; color: #f4f1e8; border: 1px solid #465047; border-radius: 4px; gridline-color: #2a2f2a; selection-background-color: #3a301b; selection-color: #f4f1e8; padding: 4px; font-size: 13px; }
                 QTableWidget::item { color: #f4f1e8; padding: 9px 10px; border: 0; }
                 QTableWidget::item:selected { background: #3a301b; color: #f4f1e8; }
+                QTableWidget#calibrationTable { selection-background-color: transparent; }
+                QTableWidget#calibrationTable::item:selected, QTableWidget#calibrationTable::item:focus { background: transparent; border: 0; outline: none; }
                 QTableWidget#filesTable, QTableWidget#githubTable, QTableWidget#calibrationTable { background: transparent; }
                 QTableWidget#filesTable::item, QTableWidget#githubTable::item, QTableWidget#calibrationTable::item { background: transparent; }
                 QHeaderView::section { background: #1a1d1a; color: #d7d2c4; font-family: "Consolas"; font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 10px; border: 0; }
@@ -361,7 +384,7 @@ if QApplication is not None:
                 QTableCornerButton::section { background: transparent; border: 0; }
                 QFrame#queueActions { background: #151815; border: 1px solid #465047; border-radius: 3px; }
                 QFrame#queueActions QPushButton { padding: 0px 14px; }
-                QWidget#calibrationActionsCell { background: #111411; }
+                QWidget#calibrationActionsCell { background: transparent; }
                 QPushButton#tableActionButton { padding: 0px 10px; min-height: 32px; font-size: 12px; }
                 QPushButton#tableActionButton:focus { outline: none; border: 1px solid #f0be4a; background: #20241f; }
                 QProgressBar { background: #141714; color: #f4f1e8; border: 1px solid #465047; border-radius: 3px; height: 18px; text-align: center; }
@@ -408,6 +431,7 @@ if QApplication is not None:
             outer.addLayout(header)
 
             self.pages = QStackedWidget()
+            self.pages.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
             self.queue_page = QWidget()
             queue_outer = QVBoxLayout(self.queue_page)
             queue_outer.setContentsMargins(0, 0, 0, 0)
@@ -490,6 +514,12 @@ if QApplication is not None:
             start_holder.setObjectName("queueActions")
             start_layout = QHBoxLayout(start_holder)
             start_layout.setContentsMargins(6, 5, 6, 5)
+            self.scan_button = QPushButton("Scan")
+            self.scan_button.setToolTip(
+                "Scan Documents, Desktop, Downloads, and Claude memory folders for new sources"
+            )
+            self.scan_button.clicked.connect(self._scan_requested)
+            start_layout.addWidget(self.scan_button)
             start_layout.addWidget(self.start_button)
             table_stack.addWidget(
                 start_holder,
@@ -614,10 +644,13 @@ if QApplication is not None:
             layout.addWidget(github_table_frame, 1)
 
             actions = QHBoxLayout()
-            self.github_download_button = QPushButton("Download repository")
-            self.github_download_button.setObjectName("startButton")
+            self.github_download_button = QPushButton("DOWNLOAD")
+            self.github_download_button.setObjectName("downloadButton")
+            self.github_download_button.setFixedSize(112, 34)
             self.github_download_button.clicked.connect(self._download_github)
             self.github_clear_button = QPushButton("Clear")
+            self.github_clear_button.setObjectName("githubSecondaryButton")
+            self.github_clear_button.setFixedSize(112, 34)
             self.github_clear_button.clicked.connect(self._clear_github)
             self.github_approve_button = QPushButton("Approve files and open queue")
             self.github_approve_button.setEnabled(False)
@@ -836,7 +869,9 @@ if QApplication is not None:
             self.calibration_table.verticalHeader().setVisible(False)
             self.calibration_table.verticalHeader().setDefaultSectionSize(64)
             self.calibration_table.setShowGrid(False)
-            self.calibration_table.setItemDelegate(_FocuslessItemDelegate(self.calibration_table))
+            self.calibration_table.setItemDelegate(
+                _FocuslessItemDelegate(self.calibration_table, hide_selection=True)
+            )
             self.calibration_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
             self.calibration_table.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.calibration_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -1143,15 +1178,11 @@ if QApplication is not None:
             self._sync_calibration_action_surfaces()
 
         def _sync_calibration_action_surfaces(self) -> None:
-            selected_rows = {
-                index.row() for index in self.calibration_table.selectionModel().selectedRows()
-            }
             for row in range(self.calibration_table.rowCount()):
                 cell = self.calibration_table.cellWidget(row, 5)
                 if cell is None:
                     continue
-                background = "#3a301b" if row in selected_rows else "#111411"
-                cell.setStyleSheet(f"background: {background};")
+                cell.setStyleSheet("background: transparent;")
 
         def _run_calibration_row(self, row: int) -> None:
             if row >= len(self._calibration_targets_by_row):
@@ -1403,7 +1434,7 @@ if QApplication is not None:
 
         def _github_downloaded(self, result: GithubImport) -> None:
             self.github_download_button.setEnabled(True)
-            self.github_download_button.setText("Download repository")
+            self.github_download_button.setText("DOWNLOAD")
             self.github_import = result
             self.github_root = result.root
             self.github_pending = list(result.files)
@@ -1416,7 +1447,7 @@ if QApplication is not None:
 
         def _github_download_failed(self, message: str) -> None:
             self.github_download_button.setEnabled(True)
-            self.github_download_button.setText("Download repository")
+            self.github_download_button.setText("DOWNLOAD")
             self.github_approve_button.setEnabled(False)
             self.github_status.setText(message)
             QMessageBox.warning(self, "GitHub download", message)
@@ -1481,6 +1512,68 @@ if QApplication is not None:
             chosen, _ = QFileDialog.getOpenFileNames(self, "Choose source files")
             if chosen:
                 self._accept_drop(chosen)
+
+        def _scan_requested(self) -> None:
+            confirmation = QMessageBox.question(
+                self,
+                "Scan local sources",
+                "Search Documents, Desktop, Downloads, and Claude memory folders for supported files?\n\n"
+                "Files are added to the queue for review. Nothing is indexed until you press Start indexing.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirmation != QMessageBox.StandardButton.Yes:
+                self.status.setText("Local scan cancelled. The queue is unchanged.")
+                return
+            self.scan_button.setEnabled(False)
+            self.scan_button.setText("Scanning…")
+            self.status.setText("Scanning the selected local folders…")
+            self._run(self._scan_local_sources, self._scan_completed, self._scan_failed)
+
+        def _scan_local_sources(self) -> list[tuple[Path, SourceCategory]]:
+            queued = {
+                str(path.expanduser().resolve()).casefold()
+                for path, _category in self.pending_files
+            }
+            detected: list[tuple[Path, SourceCategory]] = []
+            for path in scan_files(default_scan_roots()):
+                key = str(path.expanduser().resolve()).casefold()
+                if key in queued:
+                    continue
+                filename = path.name.casefold()
+                category = (
+                    SourceCategory.MEMORY
+                    if filename in CLAUDE_MEMORY_FILENAMES
+                    or any(part.casefold() in {"memory", "memories"} for part in path.parts[:-1])
+                    else classify(path)
+                )
+                if category is not None:
+                    detected.append((path, category))
+                    queued.add(key)
+            return detected
+
+        def _scan_completed(self, detected: list[tuple[Path, SourceCategory]]) -> None:
+            self.scan_button.setEnabled(True)
+            self.scan_button.setText("Scan")
+            if not detected:
+                self.status.setText(
+                    "No new supported files found in the selected local folders."
+                )
+                return
+            default_scope = dict(self._scope_data())
+            self.pending_files.extend(detected)
+            self.pending_scopes.extend(dict(default_scope) for _ in detected)
+            self._refresh_table()
+            self.start_button.setEnabled(True)
+            self.status.setText(
+                f"Scan added {len(detected)} new file(s) to the queue. "
+                "Review the project, then start indexing. RE-call checks source fingerprints during indexing."
+            )
+
+        def _scan_failed(self, message: str) -> None:
+            self.scan_button.setEnabled(True)
+            self.scan_button.setText("Scan")
+            self._job_failed(message)
 
         def _refresh_table(self) -> None:
             header = self.files.horizontalHeader()
