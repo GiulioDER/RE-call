@@ -45,7 +45,7 @@ def read_token(profile: RuntimeProfile) -> str | None:
     except ImportError:
         return None
     try:
-        return keyring.get_password("recall", profile.token_key)
+        value = keyring.get_password("recall", profile.token_key)
+        return str(value) if value is not None else None
     except Exception:
         return None
-

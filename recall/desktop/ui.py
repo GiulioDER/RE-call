@@ -45,7 +45,7 @@ try:
         QWidget,
     )
 except ImportError:  # pragma: no cover, exercised on environments without the desktop extra
-    QApplication = None  # type: ignore[assignment]
+    QApplication = None
 
 
 if QApplication is not None:
@@ -225,7 +225,7 @@ if QApplication is not None:
         def eventFilter(self, watched: QObject, event: QEvent) -> bool:
             if watched is self._page and event.type() == QEvent.Type.Resize:
                 self.setGeometry(self._page.rect())
-            return super().eventFilter(watched, event)
+            return bool(super().eventFilter(watched, event))
 
 
     class _WorkerSignals(QObject):
@@ -971,7 +971,7 @@ if QApplication is not None:
             runtime_value = QLabel(self.profile.mode.value)
             runtime_value.setObjectName("successLabel")
             runtime_info.addWidget(runtime_value)
-            self.settings_status = QLabel("Settings are stored locally for this prototype.")
+            self.settings_status: QLabel = QLabel("Settings are stored locally for this prototype.")
             self.settings_status.setObjectName("mutedLabel")
             self.settings_status.setWordWrap(True)
             self.settings_status.setMaximumWidth(250)
@@ -1462,7 +1462,7 @@ if QApplication is not None:
 
         def _accept_drop(self, raw_paths: list[str]) -> None:
             detected: list[tuple[Path, SourceCategory]] = []
-            for path in collect_files(raw_paths, None):
+            for path in collect_files([Path(raw_path) for raw_path in raw_paths], None):
                 category = classify(path) or SourceCategory.MEMORY
                 detected.append((path, category))
             if not detected:
@@ -1780,4 +1780,4 @@ def run_app(profile: RuntimeProfile) -> int:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(profile)
     window.show()
-    return app.exec()
+    return int(app.exec())

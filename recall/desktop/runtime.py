@@ -64,8 +64,9 @@ class SdkMcpGateway:
             http_client = httpx2.AsyncClient(headers=headers)
         except ImportError:
             http_client = None
-        kwargs = {"http_client": http_client} if http_client is not None else {}
-        async with streamable_http_client(self.profile.endpoint or "", **kwargs) as streams:
+        async with streamable_http_client(
+            self.profile.endpoint or "", http_client=http_client
+        ) as streams:
             async with ClientSession(*streams) as session:
                 await session.initialize()
                 result = await session.call_tool(name, arguments)
@@ -305,13 +306,15 @@ def _encoded_file(path: Path) -> dict[str, str]:
 
 def _job_from_result(result: Any, fallback: str) -> JobStatus:
     value = result if isinstance(result, dict) else {"message": str(result)}
+    raw_progress = value.get("progress")
+    progress = float(raw_progress) if isinstance(raw_progress, (int, float)) else None
     return JobStatus(
         job_id=str(value.get("job_id", fallback)),
         state=str(value.get("state", "completed")),
         message=str(value.get("message", "")),
         files=int(value.get("files", 0)),
         chunks=int(value.get("chunks", 0)),
-        progress=value.get("progress"),
+        progress=progress,
         error=value.get("error"),
     )
 

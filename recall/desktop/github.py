@@ -97,6 +97,8 @@ def _read_bytes(url: str, headers: dict[str, str]) -> bytes:
         data = response.read(100 * 1024 * 1024 + 1)
     if len(data) > 100 * 1024 * 1024:
         raise GithubImportError("The repository archive is larger than the 100 MB desktop limit.")
+    if not isinstance(data, bytes):
+        raise GithubImportError("GitHub returned an invalid archive body.")
     return data
 
 

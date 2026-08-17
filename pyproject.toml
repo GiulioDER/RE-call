@@ -211,6 +211,24 @@ module = [
     # than restating it. Same shape as every entry above: the importing module must type-check
     # whether or not the imported one is present, which also keeps the two mergeable in any order.
     "benchmarks.mtrag.multiquery",
+    # Document and desktop adapters are optional at runtime and intentionally absent from the
+    # lean typecheck job. Their imports are guarded in the extraction and desktop modules.
+    "pdfplumber",
+    "pdfplumber.*",
+    "docx",
+    "docx.*",
+    "openpyxl",
+    "openpyxl.*",
+    "xlrd",
+    "xlrd.*",
+    "pptx",
+    "pptx.*",
+    "bs4",
+    "bs4.*",
+    "PySide6",
+    "PySide6.*",
+    "keyring",
+    "keyring.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

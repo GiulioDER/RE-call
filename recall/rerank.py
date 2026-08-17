@@ -103,6 +103,99 @@ class CrossEncoderReranker:
         return [hits[i] for i in order]
 
 
+#: Voyage's cross-encoder. Named here rather than inlined so the wizard, the docs and
+#: `reranker_from_name` cannot drift apart on which model "voyage" means.
+DEFAULT_VOYAGE_RERANK_MODEL = "rerank-2.5"
+
+
+class VoyageReranker:
+    """Reorder hits by Voyage cross-encoder relevance. Reorders, never rescores."""
+
+    def __init__(
+        self,
+        model: str = DEFAULT_VOYAGE_RERANK_MODEL,
+        api_key: str | None = None,
+        top_k: int | None = None,
+        max_document_chars: int | None = None,
+        client: Any | None = None,
+    ) -> None:
+        import os
+        import threading
+
+        self.model = model
+        self.top_k = top_k
+        if max_document_chars is not None and max_document_chars < 1:
+            raise ValueError("max_document_chars must be positive when set")
+        self.max_document_chars = max_document_chars
+        self._client = client
+        self._client_lock = threading.Lock()
+        self._api_key = api_key or os.environ.get("VOYAGE_API_KEY")
+        if self._client is None and not self._api_key:
+            raise RuntimeError("VoyageReranker needs VOYAGE_API_KEY (env) or an explicit api_key")
+
+    def _voyage_client(self) -> Any:
+        with self._client_lock:
+            if self._client is None:
+                import voyageai
+
+                self._client = voyageai.Client(api_key=self._api_key)
+            return self._client
+
+    def rerank(self, query: str, hits: list[ScoredChunk]) -> list[ScoredChunk]:
+        if not hits:
+            return hits
+        limit = self.top_k if self.top_k is not None else len(hits)
+        documents = [
+            h.chunk.text[: self.max_document_chars] if self.max_document_chars else h.chunk.text
+            for h in hits
+        ]
+        result = self._voyage_client().rerank(query, documents, model=self.model, top_k=limit)
+        return [hits[item.index] for item in result.results]
+
+
+class FallbackReranker:
+    """Run the primary reranker and report every fallback to the local reranker."""
+
+    def __init__(self, primary: Reranker, fallback: Reranker) -> None:
+        self.primary = primary
+        self.fallback = fallback
+        self.fallback_count = 0
+        self.served_by: str | None = None
+
+    def rerank(self, query: str, hits: list[ScoredChunk]) -> list[ScoredChunk]:
+        try:
+            out = self.primary.rerank(query, hits)
+            self.served_by = "primary"
+            return out
+        except Exception as exc:
+            from recall.observability import get_logger
+
+            self.fallback_count += 1
+            self.served_by = "fallback"
+            get_logger("rerank").warning(
+                "primary reranker failed, falling back (%d so far this process): %s",
+                self.fallback_count,
+                exc,
+            )
+            return self.fallback.rerank(query, hits)
+
+
+def reranker_kind(name: str) -> tuple[str, str]:
+    """Route a reranker name without constructing a model."""
+    if name == "voyage" or name.startswith("voyage:"):
+        model = name[len("voyage:") :] if name.startswith("voyage:") else DEFAULT_VOYAGE_RERANK_MODEL
+        return ("voyage", model)
+    return ("cross-encoder", name)
+
+
+def reranker_from_name(name: str, *, api_key: str | None = None) -> Reranker:
+    """Build the reranker named by ``RECALL_RERANK_MODEL``."""
+    kind, model = reranker_kind(name)
+    if kind == "voyage":
+        return VoyageReranker(model=model, api_key=api_key)
+    return CrossEncoderReranker(model=model)
+
+
 class QwenYesNoReranker:
     """Reorder hits with a Qwen-style yes/no causal-LM reranker.
 

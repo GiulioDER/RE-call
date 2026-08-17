@@ -261,8 +261,8 @@ def _extract_spreadsheet(suffix: str, data: bytes) -> ExtractedDocument:
         sections = []
         tables = 0
         for sheet in workbook.sheets():
-            rows = (sheet.row_values(row) for row in range(min(sheet.nrows, MAX_TABLE_ROWS)))
-            markdown = _rows_to_markdown(rows)
+            sheet_rows = (sheet.row_values(row) for row in range(min(sheet.nrows, MAX_TABLE_ROWS)))
+            markdown = _rows_to_markdown(sheet_rows)
             if markdown:
                 tables += 1
                 sections.append(f"## Sheet: {sheet.name}\n\n{markdown}")
