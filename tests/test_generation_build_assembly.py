@@ -368,13 +368,14 @@ def test_provenance_carries_the_project_and_the_commit_unless_they_are_withheld(
 def test_the_cli_defaults_and_the_request_defaults_describe_the_same_pipeline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Two independent sources of the same defaults, cross-checked against each other.
+    """The CLI's default and the wizard's default must describe one pipeline.
 
-    `argparse` carries the literals 800 and 80; `BuildRequest` carries `recall.index`'s constants.
-    The CLI always passes explicit values, so a drift between the two would never surface there —
-    it would surface as the wizard, which builds from a bare `BuildRequest()`, silently producing
-    a different pipeline fingerprint than the documented default, and therefore a generation no
-    existing calibration binds to.
+    ⚠️ The equality below stopped being a cross-check when argparse's defaults were changed from
+    the literals 800 and 80 to the same `recall.index` constants `BuildRequest` reads. Both sides
+    then came from one source, and mutating that source moved them together: the test passed with
+    the constants at 777 and 7. It is only falsifiable again because of the literal assertion
+    underneath, which is a DELIBERATE duplication and the second source. Do not "tidy" it into the
+    constants; that is what made it unfalsifiable in the first place.
     """
     from recall.generation_build import BuildRequest, chunker_for
 
@@ -382,6 +383,56 @@ def test_the_cli_defaults_and_the_request_defaults_describe_the_same_pipeline(
     from_request = chunker_for(BuildRequest())[1]
 
     assert from_cli == from_request
+    assert dict(from_cli.configuration) == {"max_chars": 800, "overlap": 80}
+    assert from_cli.algorithm == "recall.chunk_text"
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        (("--max-chars", "0"), "must be at least 1"),
+        (("--max-chars", "-5"), "must be at least 1"),
+        (("--max-chars", "1e3"), "not an integer"),
+        (("--overlap", "-1"), "cannot be negative"),
+        (("--overlap", "abc"), "not an integer"),
+        (("--chunker", "Code"), "invalid choice"),
+        (("--chunker", "markdown"), "invalid choice"),
+    ],
+)
+def test_the_cli_refuses_a_bad_chunking_flag_at_parse_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: tuple[str, ...],
+    expected: str,
+) -> None:
+    """Exit 2 from argparse, not a traceback, and BEFORE anything reaches `manager.create`.
+
+    None of these three gates was exercised by anything. Measured: removing all of them at once —
+    `choices=` dropped and both `type=` reverted to bare `int` — left the whole file green, and an
+    operator then got an uncaught `ValueError` and a stack trace where the refusal is supposed to be
+    a one-line message. `--max-chars 0` in particular used to reach `manager.create`, write the
+    generation row, and only then fail, leaving an orphan.
+    """
+    with pytest.raises(SystemExit) as exit_info:
+        _run_build(tmp_path, monkeypatch, *flags)
+
+    assert exit_info.value.code == 2, "a bad flag must be an argparse refusal, not a traceback"
+    assert expected in capsys.readouterr().err
+
+
+def test_the_cli_accepts_the_smallest_valid_chunking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The allow path, so the gate above cannot be satisfied by refusing everything.
+
+    A guard that blocks real work gets deleted, which loses the coverage entirely.
+    """
+    chunker = _run_build(
+        tmp_path, monkeypatch, "--max-chars", "1", "--overlap", "0"
+    )["pipeline"].chunker
+
+    assert dict(chunker.configuration) == {"max_chars": 1, "overlap": 0}
 
 
 def test_a_local_manifest_builds_under_development_and_reads_through_the_local_reader(

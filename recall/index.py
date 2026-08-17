@@ -99,6 +99,24 @@ class PruneGuardTripped(RuntimeError):
 Chunker = Callable[[str], list[str]]
 
 
+def effective_overlap(max_chars: int, overlap: int) -> int:
+    """The overlap a split will actually use, after clamping.
+
+    Exported because a caller that RECORDS the chunking configuration has to record this and not
+    what it asked for. `recall.generation_build` writes the chunker configuration into a
+    `PipelineIdentity`, whose fingerprint is defined as covering "every input that can change
+    chunks", and a calibration binds to that fingerprint. So an unclamped value there produces two
+    generations with byte-identical chunks and different fingerprints, and a calibration measured
+    against one is `CALIBRATION_STALE` against the other.
+
+    Not a hypothetical, and not confined to odd inputs: the clamp is `max_chars // 4`, so at
+    `--max-chars 200` the DEFAULT overlap of 80 already runs at 50. Measured: `chunk_text(t, 200,
+    80)` and `chunk_text(t, 200, 50)` return identical chunks while the two recorded
+    configurations fingerprint differently.
+    """
+    return max(0, min(overlap, max_chars // MAX_OVERLAP_DIVISOR))
+
+
 def _split_oversized(block: str, max_chars: int, overlap: int) -> list[str]:
     """Force-split a single block that exceeds max_chars into <=max_chars pieces.
 
@@ -121,7 +139,7 @@ def _split_oversized(block: str, max_chars: int, overlap: int) -> list[str]:
         raise ValueError("max_chars must be >= 1")
     if len(block) <= max_chars:
         return [block]
-    overlap = max(0, min(overlap, max_chars // MAX_OVERLAP_DIVISOR))
+    overlap = effective_overlap(max_chars, overlap)
     min_piece = max_chars // MIN_PIECE_DIVISOR
     pieces: list[str] = []
     start, n = 0, len(block)
