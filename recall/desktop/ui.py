@@ -307,7 +307,7 @@ if QApplication is not None:
                 QPushButton:pressed { background: #2a2415; border-color: #f0be4a; }
                 QPushButton:disabled { background: #141614; color: #70766d; border-color: #2c322c; }
                 QPushButton:focus, QComboBox:focus, QLineEdit:focus, QCheckBox:focus { outline: none; border: 1px solid #f0be4a; }
-                QPushButton#navButton { background: #131613; color: #d9d6cc; border-color: #465047; border-radius: 3px; padding: 0px; min-height: 0px; font-family: "Segoe UI Variable Text", "Segoe UI"; font-size: 12px; font-weight: 700; letter-spacing: 0.4px; }
+                QPushButton#navButton { background: #131613; color: #d9d6cc; border-color: #465047; border-radius: 3px; padding: 0px; min-height: 34px; max-height: 34px; font-family: "Segoe UI Variable Text", "Segoe UI"; font-size: 12px; font-weight: 700; letter-spacing: 0.4px; }
                 QPushButton#navButton:hover { background: #20241f; border-color: #d7a52a; color: #f4f1e8; }
                 QPushButton#navButton:checked { background: #d7a52a; border-color: #d7a52a; color: #11130f; }
                 QPushButton#startButton { background: #d7a52a; color: #11130f; border-color: #d7a52a; padding: 0px 18px; min-height: 40px; font-weight: 700; }
@@ -321,7 +321,7 @@ if QApplication is not None:
                 QComboBox#tenantCellCombo::drop-down { background: transparent; border: 0; width: 18px; }
                 QComboBox QAbstractItemView { background: #1a1d1a; color: #f4f1e8; selection-background-color: #d7a52a; selection-color: #11130f; border: 1px solid #465047; }
                 QTableWidget { background: #111411; color: #f4f1e8; border: 1px solid #465047; border-radius: 4px; gridline-color: #2a2f2a; selection-background-color: #3a301b; selection-color: #f4f1e8; padding: 4px; font-size: 13px; }
-                QTableWidget::item { color: #f4f1e8; padding: 9px 10px; border-bottom: 1px solid #2a2f2a; }
+                QTableWidget::item { color: #f4f1e8; padding: 9px 10px; border: 0; }
                 QTableWidget::item:selected { background: #3a301b; color: #f4f1e8; }
                 QTableWidget#filesTable, QTableWidget#githubTable, QTableWidget#calibrationTable { background: transparent; }
                 QTableWidget#filesTable::item, QTableWidget#githubTable::item, QTableWidget#calibrationTable::item { background: transparent; }
