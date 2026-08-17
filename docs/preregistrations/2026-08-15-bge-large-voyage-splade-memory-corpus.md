@@ -266,3 +266,50 @@ travels with the artefact rather than living only here.
 named this and proposed operator review of the labels as the mitigation; that review has not
 happened yet. The labels are committed and readable at
 `docs/preregistrations/2026-08-17-memory-queries.json`.
+
+## Measured, 2026-08-17: the rerank arm
+
+Artefact: `results/rerank-arm-memory-2026-08-17.json`. Dense pool of 300 retrieved ONCE per query
+and scored twice — fusion order versus Voyage `rerank-2.5` order — so the arms are paired by
+construction. Retrieving separately per arm would have let Voyage's non-deterministic query
+embeddings put the two arms on different pools.
+
+**Voyage served 22 of 22 queries; 0 fell back to the local cross-encoder.** The pre-registration
+names a mid-run fallback as a confound that would silently measure a blend; it did not occur.
+
+| metric | baseline | + Voyage rerank | delta |
+|---|---:|---:|---:|
+| R@5 | 0.4337 | 0.4649 | **+0.0311** |
+| R@10 | 0.4827 | 0.5518 | +0.0691 |
+| **R@100** | 0.6979 | 0.7689 | **+0.0710** |
+| nDCG@10 | 0.5180 | 0.5478 | +0.0299 |
+| MRR | 0.8016 | 0.7845 | **−0.0170** |
+
+### Scoring the prediction
+
+**"no rerank → Voyage rerank-2.5: +0.06 to +0.11 R@100."** **CONFIRMED** at **+0.0710**, inside
+the band and near its middle. This is the one prediction in the record that has now been measured
+as written, on the metric it was written in.
+
+**"I predict the reranker dominates by a wide margin."** **NOT YET SCORED.** Dominance is a
+comparison against the embedder arm, which is unmeasured — scoring it needs a bge-small index of
+this same corpus.
+
+### Two things the registered number hides
+
+**MRR fell, −0.0170.** The reranker improves BREADTH and degrades the TOP. It pulls additional
+relevant chunks into the retrieved set while demoting some first-relevant hits that dense
+retrieval had already ranked first. A record that quoted only R@100 would report an unambiguous
+win where the measurement shows a trade.
+
+**The served shape gains less than half of the registered metric.** R@5 is +0.0311 against
+R@100's +0.0710. The shipped profiles are `candidate_k=20, returned_k=5` (`profiles.py:105-114`,
+both `fast` and `quality`), so **no served configuration returns 100 hits**. R@100 scores the
+prediction as written; R@5 is what a user experiences. Both are reported rather than one being
+substituted for the other, because the registered metric is the one the prediction was made in
+and the served metric is the one that matters operationally.
+
+⚠️ Also note the label design caps small-k recall: with a mean of **6.6 relevant chunks per
+query**, R@5 cannot exceed 5/6.6 = 0.76 for any system. The choice to mark every chunk of an
+answering memo relevant was recorded above as inflating precision; it deflates recall at small k,
+and that applies equally to both arms so the DELTA is unaffected.
