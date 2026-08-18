@@ -1,61 +1,82 @@
-"""Drive one corpus from a directory to a promoted, calibrated generation.
+"""Drive one corpus from a directory to a calibrated, promoted generation.
 
-The sequence is build, validate, calibrate, publish, promote, and its order is the reason this is a
-module rather than a script. **Promotion gives a generation a fresh corpus fingerprint**, so a
-calibration measured after it binds to a fingerprint that no longer matches and the tenant answers
-`CALIBRATION_STALE`. An inverted run reaches the same end state and is broken, which is why the
-tests assert the sequence rather than the result.
+The sequence is build, validate, calibrate, publish, promote.
 
-**The certification floor is checked BEFORE the build**, which is a departure from the design's
-ordering and the one change here worth arguing for. The design generates the query set after
-`generation validate`. It does not have to: `chunks_from_directory` reads the corpus off disk rather
-than out of the database, so the set can be generated and counted first. That matters because a
-corpus too small to certify is the only failure in this sequence that cannot be recovered from
-afterwards — it builds, validates and promotes without complaint, and then refuses every query
-forever with nothing naming the size as the cause. Measured previously at about seven minutes for a
-1793-chunk build, which is what checking first saves on a corpus that was never going to work.
+**Promote is last because it is the irreversible step**, and because it retires whatever the tenant
+was serving. Between promotion and a published calibration the tenant is live with no calibration
+bound to it, which resolves `CalibrationStatus.MISSING` and refuses under strict trust. 🔁 An
+earlier version of this docstring justified the order by claiming promotion gives the generation a
+fresh corpus fingerprint, so a calibration measured afterwards would be `CALIBRATION_STALE`. That is
+false: `corpus_fingerprint` is written only by `GenerationManager.create` and by `forget`, and
+`promote` touches neither, so `CalibrationRepository` explicitly accepts an already-active
+generation. The order is right, the reason was not, and the same false sentence is still at
+`recall/generation_build.py` awaiting the same correction.
 
-**Certification failing is a measurement, not a crash.** The rejected artifact is kept as evidence,
-the corpus is marked degraded with its measured separability, and the install continues. A wizard
-that dies on the third of three corpora leaves the user with less than one that says which corpus is
-degraded and why.
+**An uncertified generation is NOT promoted.** This is the correction that most changed the module.
+Promoting anyway looked like the friendly choice, and it is destructive: a calibrated `CorpusSpec` is
+forced to `TrustMode.STRICT`, a strict tenant whose calibration resolves uncertified refuses every
+query before retrieval, and `promote` has by then retired the generation that was working. So on a
+re-run over a healthy tenant the wizard would replace something that answers with something that
+answers nothing. Degrade therefore means *leave it unpromoted and say so*, naming the generation so
+an operator can promote deliberately.
 
-Every collaborator is injected. Nothing here reads the environment or constructs a connection, for
-the same reason `generation_build` does not: the wizard drives three corpora in one process, and
-`RECALL_ENV` and `RECALL_LOCAL_ALLOWLIST` are process-global. The reader in particular is
-constructed from the corpus root rather than from `RECALL_LOCAL_ALLOWLIST`, which is what makes the
-variable unnecessary.
+**The certification floor is checked before the build.** `chunks_from_directory` reads the corpus off
+disk rather than out of the database, so the query set can be generated and counted first, and a
+corpus that cannot certify is refused in seconds rather than after a build measured in minutes. The
+floor is the generator's own, not a second copy: asking for `DEFAULT_PER_CLASS` and falling back to
+`MIN_PER_CLASS` before refusing, so a corpus that can certify is never turned away for lacking the
+headroom.
+
+**The query set is chunked with the SAME callable the build uses.** Not a detail: `code_corpus`
+builds with `chunk_code` while `chunks_from_directory` defaults to `chunk_text`, and measured on this
+module the two share no chunk, so the calibration would have been measured against text that is not
+in the index.
+
+Every collaborator is injected and nothing here reads the environment. The reader is constructed from
+the corpus root rather than from `RECALL_LOCAL_ALLOWLIST`, which is what makes that process-global
+variable unnecessary for a wizard driving three corpora in one process.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Protocol
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+from typing import Any
 
+from recall.calibration_v2 import CalibrationUncertified
+from recall.embeddings import Embedder
+from recall.generation_build import BuildRequest, build_generation, chunker_for
+from recall.generations import GenerationManager
+from recall.lineage import MANIFEST_SCHEMA_VERSION, IndexManifestV1
+from recall.manifest import LocalObjectReader, ObjectReader
 from recall.wizard.corpora import CorpusSpec
+from recall.wizard.identity import artifact_identity_for
+from recall.wizard.inventory import build_inventory
 from recall.wizard.queryset import (
+    DEFAULT_PER_CLASS,
     MIN_PER_CLASS,
     QuerySetError,
     canonicalize,
     chunks_from_directory,
     generate_offline,
+    require_balance,
 )
 
 __all__ = ["CorpusOutcome", "PipelineRefusal", "run_corpus"]
 
-#: Generated per class before canonicalisation. Above the floor of 20 on purpose: canonicalisation
-#: drops duplicates and the vocabulary filter drops off-topic questions that reuse corpus words, so
-#: generating exactly the floor lands under it. Measured previously: the off-topic subject pool caps
-#: a generated set at 65 questions on this repository's own docs.
-DEFAULT_PER_CLASS = 40
+#: Environments a `file://` manifest may be built under. `production` is excluded because
+#: `GenerationManager.create` refuses a non-S3 manifest there; `test` is included because the suite
+#: uses it and the underlying guards key on production specifically.
+_BUILD_ENVIRONMENTS = ("development", "test")
 
 
-class PipelineRefusal(RuntimeError):
+class PipelineRefusal(ValueError):
     """A refusal raised BEFORE anything expensive or irreversible has happened.
 
-    Distinct from a failure during the run: everything raised as a `PipelineRefusal` is checked
-    while the corpus is still just a directory, so the caller knows nothing was built, nothing was
-    promoted and there is no artifact to clean up.
+    Nothing was built, nothing was promoted, and there is no artifact to clean up. A `ValueError`
+    so one `except ValueError` catches every refusal in `recall.wizard`; `QuerySetError` and the
+    `CorpusSpec` guards are already value errors, and a `RuntimeError` here made this the one
+    outlier a caller had to know about by name.
     """
 
 
@@ -67,90 +88,89 @@ class CorpusOutcome:
     generation_id: str
     calibration_id: str | None = None
     certified: bool = False
+    #: Whether the generation was actually promoted. False for an uncertified corpus, which is left
+    #: READY on purpose so the previously serving generation keeps serving.
+    promoted: bool = False
     #: Populated when the corpus completed but is not fully trustworthy. `None` means it certified.
     degraded_reason: str | None = None
+    #: True when no verifiable embedder identity could be resolved, so the generation records
+    #: `verified: false`. Surfaced rather than swallowed: the wizard should say it, not discover it.
+    unverified_embedder: bool = False
     answerable: int = 0
     unanswerable: int = 0
     steps: tuple[str, ...] = field(default_factory=tuple)
 
-
-class _Manager(Protocol):
-    """The slice of `GenerationManager` this module uses."""
-
-    environment: str
-
-    def create(self, manifest: Any, pipeline: Any, *, allow_unverified: bool = ...) -> Any: ...
-    def build(
-        self, generation_id: str, reader: Any, embedder: Any, chunker: Any, *, provenance: Any = ...
-    ) -> Any: ...
-    def validate(self, generation_id: str) -> Any: ...
-    def promote(self, generation_id: str, *, unsafe_development: bool = ...) -> None: ...
+    def __post_init__(self) -> None:
+        # Coerced for the same reason `CorpusPlan.corpora` is: this is written into resumable state
+        # and read back, and a JSON round trip returns a list, which compares unequal to the tuple
+        # that produced it and makes the frozen record unhashable.
+        object.__setattr__(self, "steps", tuple(self.steps))
 
 
-class _Calibrations(Protocol):
-    """The slice of `CalibrationRepository` this module uses."""
-
-    def calibrate(self, generation_id: str, queries: Any, embedder: Any) -> Any: ...
-    def publish(self, calibration_id: str) -> Any: ...
-
-
-def _labelled_set(spec: CorpusSpec, *, per_class: int, seed: int) -> list[dict[str, Any]]:
+def _labelled_set(
+    spec: CorpusSpec, chunker: Callable[[str], list[str]], *, per_class: int, seed: int
+) -> tuple[list[dict[str, Any]], int]:
     """Generate and canonicalise the query set, off disk, before anything is built.
 
-    `canonicalize` rather than `prepare_for_calibration`, because the balance check is applied here
-    with a message naming both counts and the floor. `prepare_for_calibration` raises a
-    `QuerySetError` whose text is about a query set; at this point the user needs to be told about
-    their CORPUS, which is the thing they can change.
+    Returns the entries and the per-class size actually used. Asking for `per_class` and retrying at
+    `MIN_PER_CLASS` matters: `generate_offline` refuses outright when the corpus has fewer distinct
+    chunks than requested, so requesting the headroom value made every corpus between the floor and
+    the headroom "too small to certify" while the message quoted the floor. Measured before the fix:
+    39 chunks refused, 40 accepted, against a floor of 20.
+
+    The whole read is inside the try. `chunks_from_directory` raises `QuerySetError` for a missing
+    root, a glob matching nothing and unreadable files, and those were escaping uncaught, which
+    defeated the contract `PipelineRefusal`'s docstring states.
     """
-    chunks = chunks_from_directory(spec.root, spec.glob)
+    attempts = [per_class] if per_class <= MIN_PER_CLASS else [per_class, MIN_PER_CLASS]
+    last: QuerySetError | None = None
+    for attempt in attempts:
+        try:
+            chunks = chunks_from_directory(spec.root, spec.glob, chunker)
+            return canonicalize(generate_offline(chunks, per_class=attempt, seed=seed)), attempt
+        except QuerySetError as exc:
+            last = exc
+    # Neutral prefix. "too small to certify" was applied to every refusal, including the one whose
+    # own text says the corpus OVERLAPS the off-topic pool, whose fix is a disjoint subject list
+    # rather than more content.
+    raise PipelineRefusal(
+        f"corpus {spec.tenant!r} at {spec.root} cannot produce a certifiable query set: {last}"
+    ) from last
+
+
+def _counts(spec: CorpusSpec, entries: list[dict[str, Any]]) -> tuple[int, int]:
+    """Both class counts, refusing through the generator's own predicate rather than a copy of it.
+
+    `require_balance` is delegated to rather than reimplemented: an identical comparison lived here
+    and would have drifted silently from the one the query set is actually judged by. Only the
+    message is this module's, because the user needs to be told about their CORPUS.
+    """
+    answerable = sum(1 for entry in entries if entry.get("answerable"))
+    unanswerable = len(entries) - answerable
     try:
-        entries = canonicalize(generate_offline(chunks, per_class=per_class, seed=seed))
+        require_balance(entries)
     except QuerySetError as exc:
         raise PipelineRefusal(
-            f"corpus {spec.tenant!r} at {spec.root} is too small to certify: {exc}"
-        ) from exc
-    return entries
-
-
-def _refuse_if_below_the_floor(spec: CorpusSpec, entries: list[dict[str, Any]]) -> tuple[int, int]:
-    answerable = sum(1 for e in entries if e.get("answerable"))
-    unanswerable = len(entries) - answerable
-    if answerable < MIN_PER_CLASS or unanswerable < MIN_PER_CLASS:
-        # Both counts and the floor, because which side is thin decides what the user changes: a
-        # thin answerable side means the corpus is too small, a thin unanswerable side means the
-        # off-topic pool ran out. "Calibration failed" tells them neither.
-        raise PipelineRefusal(
-            f"corpus {spec.tenant!r} at {spec.root} is too small to certify: it yields "
-            f"{answerable} answerable and {unanswerable} unanswerable queries, and certification "
-            f"needs at least {MIN_PER_CLASS} of each. Building it would take minutes and then "
-            f"refuse every query. Add more content under {spec.root}, or serve this corpus "
+            f"corpus {spec.tenant!r} at {spec.root} yields {answerable} answerable and "
+            f"{unanswerable} unanswerable queries, and certification needs at least "
+            f"{MIN_PER_CLASS} of each. Add more content under {spec.root}, or serve this corpus "
             "uncalibrated under development trust."
-        )
+        ) from exc
     return answerable, unanswerable
 
 
-def _identified_request(spec: CorpusSpec, embedder: Any, project: str | None) -> Any:
+def _identified_request(spec: CorpusSpec, embedder: Any, project: str | None) -> BuildRequest:
     """Attach the strongest embedder identity available, or say plainly that there is none.
 
-    This is where `wizard.identity` finally gets wired up. It was written to give a locally
-    downloaded embedder a verifiable identity, and until now nothing called it: a generation built
-    without one is refused outright by `EmbedderIdentity`, which insists on a revision, a digest, or
-    an explicit statement that this is a development build.
+    `lineage_revision`, not `revision`: fastembed serves `BAAI/bge-small-en-v1.5` out of
+    `qdrant/bge-small-en-v1.5-onnx-q`, so the snapshot SHA is a commit in the qdrant repository and
+    does not exist in the one it would be recorded against. `lineage_revision` hands it out only
+    when the two agree.
 
-    `lineage_revision`, not `revision`, and the difference is not cosmetic. fastembed serves
-    `BAAI/bge-small-en-v1.5` out of `qdrant/bge-small-en-v1.5-onnx-q`, so the snapshot SHA is a
-    commit in the qdrant repository and does not exist in the BAAI one. `lineage_revision` hands out
-    the revision only when the two agree, which is the difference between immutable provenance and a
-    revision nobody can resolve.
-
-    `None` is an ordinary answer, not a failure: `hashing` has no weights, and the cloud embedders
-    keep theirs on somebody else's machine. Measured previously, and worth not re-deriving:
-    `verified: false` costs nothing at serving time, because the serving path never consults it.
+    `None` is an ordinary answer: `hashing` has no weights and the cloud embedders keep theirs
+    elsewhere. The caller is told, via `CorpusOutcome.unverified_embedder`, rather than the
+    downgrade happening silently.
     """
-    from dataclasses import replace
-
-    from recall.wizard.identity import artifact_identity_for
-
     request = spec.build_request(project=project)
     identity = artifact_identity_for(embedder)
     if identity is None:
@@ -166,96 +186,132 @@ def _identified_request(spec: CorpusSpec, embedder: Any, project: str | None) ->
 def run_corpus(
     spec: CorpusSpec,
     *,
-    manager: _Manager,
-    calibrations: _Calibrations,
-    embedder: Any,
+    manager: GenerationManager,
+    calibrations: Any,
+    embedder: Embedder | Any,
     corpus_version: str,
-    reader: Any | None = None,
+    reader: ObjectReader | None = None,
     project: str | None = None,
     per_class: int = DEFAULT_PER_CLASS,
     seed: int = 0,
+    progress: Callable[[str], None] | None = None,
 ) -> CorpusOutcome:
-    """Take one calibrated corpus from a directory to a promoted, calibrated generation."""
+    """Take one calibrated corpus from a directory to a calibrated generation.
+
+    `progress` is called with each step name as it starts. Without it the wizard is silent through a
+    build measured in minutes, three times over, and a user cannot tell a running install from a
+    hung one.
+    """
+    announce = progress or (lambda _step: None)
+
     if not spec.calibrated:
         raise PipelineRefusal(
             f"corpus {spec.tenant!r} is not calibrated, so it has no generation to build: it is "
             "indexed into the legacy chunks table. Driving it through here would produce a "
             "promoted generation nothing can calibrate."
         )
-    if manager.environment != "development":
-        # A `file://` manifest is refused in production, and `docs` is SERVED in production, so the
-        # two environments genuinely coexist on one machine. Getting this wrong fails inside the
-        # build with "production generation builds require a versioned S3 manifest", which names
-        # neither the wizard nor the corpus.
+    if manager.environment not in _BUILD_ENVIRONMENTS:
         raise PipelineRefusal(
-            f"the build must run against a development manager, not {manager.environment!r}: a "
-            "file:// manifest is refused in production. Serving this corpus under production is "
-            "correct and separate; only the BUILD is a development operation."
+            f"the build must run under one of {_BUILD_ENVIRONMENTS}, not "
+            f"{manager.environment!r}: a file:// manifest is refused in production. Serving this "
+            "corpus under production is correct and separate; only the BUILD is not."
         )
+    if manager.tenant_id != spec.tenant:
+        # Refused here rather than inside `create`, which would already have cost the walk, the
+        # query generation and the inventory.
+        raise PipelineRefusal(
+            f"manager is bound to tenant {manager.tenant_id!r}, not {spec.tenant!r}"
+        )
+    if not corpus_version.strip():
+        raise PipelineRefusal("corpus_version must be non-empty; the convention is an ISO date")
 
-    # Everything above this line is free. Everything below costs minutes, so the floor is checked
-    # here rather than after `validate` where the design sequences it.
-    entries = _labelled_set(spec, per_class=per_class, seed=seed)
-    answerable, unanswerable = _refuse_if_below_the_floor(spec, entries)
+    request = _identified_request(spec, embedder, project)
+    # The SAME callable the build will bind, so the queries describe chunks that exist in the index.
+    chunker = chunker_for(request)[0]
 
-    from recall.generation_build import build_generation
-    from recall.lineage import IndexManifestV1
-    from recall.manifest import LocalObjectReader
-    from recall.wizard.inventory import build_inventory
+    announce("queries")
+    entries, _used = _labelled_set(spec, chunker, per_class=per_class, seed=seed)
+    answerable, unanswerable = _counts(spec, entries)
 
-    # Through `from_dict`, not the positional constructor: `build_inventory` returns plain dicts and
-    # `IndexManifestV1.__post_init__` sorts by `item.uri`, so passing them straight in dies with
-    # `AttributeError: 'dict' object has no attribute 'uri'`. This is the same conversion
-    # `manifest.load_inventory` performs, done without a temporary file.
+    announce("manifest")
     manifest = IndexManifestV1.from_dict(
         {
-            "schema_version": 1,
+            "schema_version": MANIFEST_SCHEMA_VERSION,
             "tenant_id": spec.tenant,
             "corpus_version": corpus_version,
             "objects": build_inventory(spec.root, spec.glob),
         }
     )
-    # Constructed from the corpus root, NOT from `RECALL_LOCAL_ALLOWLIST`. Passing the reader is
-    # what makes that process-global variable unnecessary, which a wizard driving three corpora in
-    # one process cannot do without.
+    # Constructed from the corpus root, NOT from `RECALL_LOCAL_ALLOWLIST`.
     reader = reader if reader is not None else LocalObjectReader([spec.root])
 
     steps: list[str] = []
-    stats = build_generation(
-        manager, manifest, reader, embedder, _identified_request(spec, embedder, project)
-    )
+    announce("build")
+    stats = build_generation(manager, manifest, reader, embedder, request)
     steps.append("build")
-    manager.validate(stats.generation_id)
-    steps.append("validate")
+    generation_id = stats.generation_id
 
-    artifact = calibrations.calibrate(stats.generation_id, entries, embedder)
-    steps.append("calibrate")
-    published = calibrations.publish(artifact.calibration_id)
-    steps.append("publish")
+    def _fail(step: str, exc: BaseException) -> None:
+        """Mark the generation failed so `gc` can reclaim it, then re-raise.
 
-    # LAST. Promotion gives the generation a fresh corpus fingerprint, so a calibration measured
-    # after this point binds to a fingerprint that no longer matches.
-    manager.promote(stats.generation_id, unsafe_development=True)
-    steps.append("promote")
+        Without this an abort after `validate` leaves the generation READY, and `gc` collects only
+        `retired` and `failed`, so every failed attempt leaks a full copy of the corpus's chunk rows
+        that nothing will ever reclaim.
+        """
+        try:
+            manager.fail(generation_id, f"wizard pipeline failed at {step}: {exc}")
+        except Exception:  # noqa: BLE001 - the original failure is what matters
+            pass
 
-    certified = bool(getattr(published, "certified", False))
+    try:
+        announce("validate")
+        manager.validate(generation_id)
+        steps.append("validate")
+
+        announce("calibrate")
+        artifact = calibrations.calibrate(generation_id, entries, embedder)
+        steps.append("calibrate")
+    except BaseException as exc:
+        _fail("validate/calibrate", exc)
+        raise
+
+    announce("publish")
+    try:
+        calibrations.publish(artifact.calibration_id)
+        certified = True
+        steps.append("publish")
+    except CalibrationUncertified:
+        # NOT an error. The artifact is kept as evidence and the generation is left unpromoted.
+        # `publish` raises rather than returning an uncertified artifact, which is why the earlier
+        # version of this module never reached its own degraded branch against the real repository.
+        certified = False
+
+    if certified:
+        announce("promote")
+        try:
+            manager.promote(generation_id, unsafe_development=True)
+        except BaseException as exc:
+            _fail("promote", exc)
+            raise
+        steps.append("promote")
+
     return CorpusOutcome(
         tenant=spec.tenant,
-        generation_id=stats.generation_id,
+        generation_id=generation_id,
         calibration_id=artifact.calibration_id,
         certified=certified,
-        # The rejected artifact is kept rather than discarded: it is the evidence for why this
-        # corpus is degraded, and the measured number is what tells the user whether more content
-        # would fix it.
+        promoted=certified,
         degraded_reason=(
             None
             if certified
             else (
-                f"certification failed: separability {getattr(artifact, 'separability', 'unknown')}"
-                f" ({getattr(artifact, 'certification_reason', '')}). The generation is promoted "
-                f"and serving; this tenant runs with development trust until it certifies."
+                f"certification failed ({artifact.certification_reason}). The generation "
+                f"{generation_id} is built and validated but NOT promoted, so whatever this tenant "
+                "was serving still serves. Promote it deliberately once a certified calibration is "
+                "published, or add content and re-run."
             )
         ),
+        unverified_embedder=request.unverified,
         answerable=answerable,
         unanswerable=unanswerable,
         steps=tuple(steps),

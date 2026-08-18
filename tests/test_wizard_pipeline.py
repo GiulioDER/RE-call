@@ -2,24 +2,31 @@
 
 Three properties are worth more than the rest and are what this file mostly pins.
 
-**Order is load-bearing and is not a comment.** Promotion gives a generation a fresh corpus
-fingerprint, so a calibration measured before it binds to the predecessor and comes back
-`CALIBRATION_STALE` after it. Correct order is build, validate, calibrate, publish, promote. A test
-that only checks the end state cannot see an inversion, so these assert the SEQUENCE.
+**Order is load-bearing and is not a comment.** Correct order is build, validate, calibrate,
+publish, promote, and promotion is last because it is irreversible and RETIRES whatever the tenant
+was serving. A test that only checks the end state cannot see an inversion, so these assert the
+SEQUENCE.
 
-**The certification floor is checked before the build, not after.** The design puts query generation
-after `generation validate`, and it does not have to be there: `chunks_from_directory` reads the
-corpus off disk rather than out of the database, so the query set can be generated and counted first.
-That matters because a corpus too small to certify is the one failure that cannot be recovered from
-later: it builds and promotes happily and then refuses every query forever. Measured previously at
-roughly seven minutes for a 1793-chunk build, which is what checking first saves on a doomed corpus.
+🔁 This docstring used to justify the order by claiming promotion gives a generation a fresh corpus
+fingerprint, making an earlier calibration `CALIBRATION_STALE`. That is false: `corpus_fingerprint`
+is written only by `create` and by `forget`. The order is right, the reason was not.
 
-**A corpus that fails certification degrades, it does not abort the install.** The other corpora are
-independent, and a wizard that dies on the third of three leaves the user worse off than one that
-reports which corpus is degraded and why.
+**The certification floor is checked before the build, not after.** `chunks_from_directory` reads
+the corpus off disk rather than out of the database, so the query set can be generated and counted
+first, and a corpus that cannot certify is refused in seconds rather than after a build measured in
+minutes (roughly seven for 1793 chunks, per the 2026-08-16 pre-registration).
+
+**A corpus that fails certification is NOT promoted.** It is built, validated, reported degraded and
+left unpromoted, so whatever the tenant was serving keeps serving. Promoting anyway was this
+module's original behaviour and it is destructive: a calibrated corpus is served strictly, and a
+strict tenant with an uncertified calibration refuses every query, having just retired the
+generation that worked.
 
 No database here. Every collaborator is injected, so the ordering and refusal logic is testable
-without a container; the DB-backed end-to-end lives in the `requires_db` test at the bottom.
+without a container. ⚠️ There is NO DB-backed end-to-end yet — an earlier version of this line
+claimed one lived "at the bottom" of this file and none existed, so nothing has ever exercised
+`run_corpus` against a real `GenerationManager` or `CalibrationRepository`. That gap is exactly how
+the fake below came to model a `publish` contract the real class does not have.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ from typing import Any
 import pytest
 
 from recall.wizard.corpora import docs_corpus, memory_corpus
+from recall.wizard.queryset import MIN_PER_CLASS
 
 
 class _Recorder:
@@ -45,10 +53,22 @@ class _Recorder:
 class _FakeManager:
     """Stands in for `GenerationManager`, recording the generation lifecycle calls."""
 
-    def __init__(self, recorder: _Recorder, *, environment: str = "development") -> None:
+    def __init__(
+        self,
+        recorder: _Recorder,
+        *,
+        environment: str = "development",
+        tenant_id: str = "docs",
+    ) -> None:
         self._recorder = recorder
         self.environment = environment
+        self.tenant_id = tenant_id
         self.built = False
+        self.failed: list[str] = []
+
+    def fail(self, generation_id: str, reason: str) -> None:
+        self._recorder.note("fail")
+        self.failed.append(reason)
 
     def create(self, manifest: Any, pipeline: Any, *, allow_unverified: bool = False) -> Any:
         self._recorder.note("create")
@@ -95,10 +115,21 @@ class _FakeCalibrations:
         )
 
     def publish(self, calibration_id: str) -> Any:
+        """RAISES for an uncertified artifact, exactly as `CalibrationRepository.publish` does.
+
+        The first version of this fake RETURNED an uncertified namespace, a value the real class
+        can never produce because it raises first. That single divergence is what made the module's
+        headline behaviour reachable in tests and unreachable in production, and four auditors found
+        it independently. The fake was the thing that was wrong.
+        """
         self._recorder.note("publish")
+        if not self._certified:
+            from recall.calibration_v2 import CalibrationUncertified
+
+            raise CalibrationUncertified("separability below the bar")
         from types import SimpleNamespace
 
-        return SimpleNamespace(calibration_id=calibration_id, certified=self._certified)
+        return SimpleNamespace(calibration_id=calibration_id, certified=True)
 
 
 class _FakeEmbedder:
@@ -228,7 +259,7 @@ def test_a_corpus_too_small_to_certify_is_refused_before_anything_is_built(
     manager = _FakeManager(recorder)
     spec = docs_corpus(_corpus(tmp_path, files=3))
 
-    with pytest.raises(PipelineRefusal, match="too small to certify"):
+    with pytest.raises(PipelineRefusal, match="cannot produce a certifiable query set"):
         run_corpus(
             spec,
             manager=manager,
@@ -262,8 +293,15 @@ def test_a_corpus_that_cannot_even_generate_a_set_says_how_far_short_it_is(
         )
 
     message = str(refusal.value)
-    assert "too small to certify" in message
-    assert "20" in message, "the floor itself must appear, so the gap is legible"
+    # A NEUTRAL prefix. "too small to certify" was applied to every generator refusal, including
+    # the one whose own text says the corpus OVERLAPS the off-topic pool — whose fix is a disjoint
+    # subject list, not more content. The inner message carries the actual cause.
+    assert "cannot produce a certifiable query set" in message
+    assert "distinct chunks" in message, "pin the branch this docstring names, not any refusal"
+    # NOT `"20" in message`. The message interpolates `str(tmp_path)`, and pytest's basetemp
+    # carries an incrementing counter (pytest-11485), so a run numbered ...20xx satisfies a bare
+    # "20" with the floor deleted from the text. Asserted against the path-stripped remainder.
+    assert f"floor is {MIN_PER_CLASS}" in message.replace(str(tmp_path), "")
     assert str(tmp_path) in message, "the corpus that is short must be named"
 
 
@@ -307,7 +345,7 @@ def test_an_unbalanced_set_names_BOTH_counts_and_the_floor(
     message = str(refusal.value)
     assert "30 answerable" in message
     assert "4 unanswerable" in message
-    assert "20" in message
+    assert f"at least {MIN_PER_CLASS} of each" in message.replace(str(tmp_path), "")
 
 
 # ----------------------------------------------------------------------------------------------
@@ -315,14 +353,16 @@ def test_an_unbalanced_set_names_BOTH_counts_and_the_floor(
 # ----------------------------------------------------------------------------------------------
 
 
-def test_a_corpus_that_fails_certification_is_reported_degraded_and_still_promoted(
-    tmp_path: Path,
-) -> None:
-    """Certification failing is a measurement, not a crash.
+def test_a_corpus_that_fails_certification_is_NOT_promoted(tmp_path: Path) -> None:
+    """The correction the audit forced, and the reverse of what this test used to assert.
 
-    The artifact is kept as evidence, the corpus is marked degraded with the measured separability,
-    and the install continues. A wizard that aborts on the third of three corpora leaves the user
-    with less than one that says which corpus is degraded and why.
+    Promoting anyway looked like the friendly choice. It is destructive: a calibrated `CorpusSpec`
+    is forced to `TrustMode.STRICT`, a strict tenant whose calibration is uncertified refuses every
+    query before retrieval, and `promote` has by then RETIRED the generation that was working. So a
+    re-run over a healthy tenant would replace something that answers with something that answers
+    nothing, while the outcome text promised a development-trust fallback that `CorpusSpec` forbids.
+
+    Degrade therefore means leave it unpromoted and name it, so whatever was serving keeps serving.
     """
     from recall.wizard.pipeline import run_corpus
 
@@ -338,10 +378,11 @@ def test_a_corpus_that_fails_certification_is_reported_degraded_and_still_promot
     )
 
     assert outcome.certified is False
-    assert outcome.degraded_reason
-    assert "separability" in outcome.degraded_reason
+    assert outcome.promoted is False
+    assert "promote" not in recorder.calls, "an uncertified generation must not go live"
     assert outcome.calibration_id == "cal_test", "the rejected artifact is kept as evidence"
-    assert "promote" in recorder.calls
+    assert outcome.degraded_reason and "NOT promoted" in outcome.degraded_reason
+    assert outcome.generation_id in outcome.degraded_reason, "name it so it can be promoted by hand"
 
 
 def test_a_certified_corpus_reports_no_degradation(tmp_path: Path) -> None:
@@ -416,3 +457,108 @@ def test_the_build_runs_under_development_whatever_the_serving_environment(
         )
 
     assert recorder.calls == []
+
+
+# ----------------------------------------------------------------------------------------------
+# The refusal contract, and the fakes that stand in for real collaborators
+# ----------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "which",
+    ["missing-root", "empty-directory", "glob-matches-nothing"],
+)
+def test_the_commonest_first_run_mistakes_are_refusals_not_leaks(
+    tmp_path: Path, which: str
+) -> None:
+    """A missing root, an empty directory and a wrong glob all reach a caller as `PipelineRefusal`.
+
+    They used to escape as a bare `QuerySetError`, because the corpus read sat one line ABOVE the
+    `try` that converts it. These are the three commonest first-run mistakes, and a caller doing
+    `except PipelineRefusal` to learn "nothing was built" caught none of them.
+    """
+    from recall.wizard.pipeline import PipelineRefusal, run_corpus
+
+    if which == "missing-root":
+        root = tmp_path / "absent"
+    elif which == "empty-directory":
+        root = tmp_path / "empty"
+        root.mkdir()
+    else:
+        root = tmp_path / "wrongext"
+        root.mkdir()
+        (root / "notes.txt").write_text("not markdown", encoding="utf-8")
+
+    recorder = _Recorder()
+    with pytest.raises(PipelineRefusal, match="cannot produce a certifiable query set"):
+        run_corpus(
+            docs_corpus(root),
+            manager=_FakeManager(recorder),
+            calibrations=_FakeCalibrations(recorder),
+            embedder=_FakeEmbedder(),
+            corpus_version="2026-01-01",
+        )
+    assert recorder.calls == [], "a pre-build refusal must not have touched the generation store"
+
+
+def test_a_tenant_mismatch_is_refused_before_the_build(tmp_path: Path) -> None:
+    """A mis-paired manager must not cost the walk, the query generation and the build.
+
+    `create` refuses a manifest whose tenant differs, but only after all of that has been spent.
+    """
+    from recall.wizard.pipeline import PipelineRefusal, run_corpus
+
+    recorder = _Recorder()
+    with pytest.raises(PipelineRefusal, match="bound to tenant"):
+        run_corpus(
+            docs_corpus(_corpus(tmp_path, files=45)),
+            manager=_FakeManager(recorder, tenant_id="somewhere-else"),
+            calibrations=_FakeCalibrations(recorder),
+            embedder=_FakeEmbedder(),
+            corpus_version="2026-01-01",
+        )
+    assert recorder.calls == []
+
+
+def test_a_blank_corpus_version_is_refused_before_the_build(tmp_path: Path) -> None:
+    """It reached `IndexManifestV1` as a raw `LineageError`, after the corpus had been chunked."""
+    from recall.wizard.pipeline import PipelineRefusal, run_corpus
+
+    recorder = _Recorder()
+    with pytest.raises(PipelineRefusal, match="corpus_version must be non-empty"):
+        run_corpus(
+            docs_corpus(_corpus(tmp_path, files=45)),
+            manager=_FakeManager(recorder),
+            calibrations=_FakeCalibrations(recorder),
+            embedder=_FakeEmbedder(),
+            corpus_version="   ",
+        )
+    assert recorder.calls == []
+
+
+def test_the_fakes_match_the_signatures_of_the_classes_they_stand_for() -> None:
+    """The check that would have caught this module's worst defect.
+
+    `_FakeCalibrations.publish` modelled a contract `CalibrationRepository.publish` does not have,
+    returning an uncertified artifact where the real class raises, and that single divergence made
+    the module's headline behaviour pass in tests while being unreachable in production. Nothing
+    compared the two, so nothing noticed.
+
+    A signature is not the whole contract (the raise is not in it), but a rename or a reordered
+    parameter is the commonest way a fake stops standing for anything, and this is the cheapest
+    guard against that.
+    """
+    import inspect
+
+    from recall.calibration_v2 import CalibrationRepository
+    from recall.generations import GenerationManager
+
+    for fake, real, methods in (
+        (_FakeManager, GenerationManager, ("create", "build", "validate", "promote", "fail")),
+        (_FakeCalibrations, CalibrationRepository, ("calibrate", "publish")),
+    ):
+        for name in methods:
+            fake_params = list(inspect.signature(getattr(fake, name)).parameters)
+            real_params = list(inspect.signature(getattr(real, name)).parameters)
+            missing = [p for p in real_params if p not in fake_params and p != "generation_id"]
+            assert not missing, f"{fake.__name__}.{name} is missing {missing} from {real.__name__}"
