@@ -26,6 +26,58 @@ DEFAULT_DSN = "postgresql://recall:recall@localhost:5432/recall"
 K_VALUES = (1, 5, 10, 25, 50, 100)
 
 
+class NativeSentenceTransformerEmbedder:
+    """Minimal mean pooled transformer adapter for the official MiniLM model.
+
+    The installed sentence transformers wrapper cannot import on this Windows runtime because
+    its optional SciPy dependency is blocked by application policy. This adapter uses the same
+    Hugging Face model and the model card pooling contract without importing SciPy.
+    """
+
+    name = "st:sentence-transformers/all-MiniLM-L6-v2"
+    dim = 384
+
+    def __init__(self, model_name: str, batch_size: int = 32) -> None:
+        try:
+            import torch
+            from transformers import AutoModel, AutoTokenizer
+        except ImportError as exc:
+            raise ImportError("the native ATM MiniLM adapter requires torch and transformers") from exc
+        self._torch = torch
+        self._tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self._model = AutoModel.from_pretrained(model_name)
+        self._model.eval()
+        self._batch_size = batch_size
+
+    def _encode(self, texts: list[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        with self._torch.no_grad():
+            for start in range(0, len(texts), self._batch_size):
+                batch = texts[start : start + self._batch_size]
+                encoded = self._tokenizer(
+                    batch,
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                    return_tensors="pt",
+                )
+                output = self._model(**encoded).last_hidden_state
+                mask = encoded["attention_mask"].unsqueeze(-1).expand(output.size()).float()
+                pooled = (output * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
+                normalized = self._torch.nn.functional.normalize(pooled, p=2, dim=1)
+                vectors.extend(normalized.cpu().tolist())
+        return [[float(value) for value in vector] for vector in vectors]
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._encode(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._encode([text])[0]
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        return self._encode(texts)
+
+
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -174,7 +226,12 @@ def summarize(details: list[dict[str, Any]], key: str) -> dict[str, float]:
 def run(args: argparse.Namespace) -> dict[str, Any]:
     questions = load_questions(args.qa_file)
     memory = build_memory_items(args.image_file, args.video_file, args.email_file)
-    embedder = resolve_embedder(args.embedder)
+    if args.embedder == "st:sentence-transformers/all-MiniLM-L6-v2":
+        embedder: Any = NativeSentenceTransformerEmbedder(
+            "sentence-transformers/all-MiniLM-L6-v2"
+        )
+    else:
+        embedder = resolve_embedder(args.embedder)
     chunks = [
         Chunk(
             id=evidence_id,
