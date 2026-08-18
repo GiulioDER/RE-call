@@ -82,14 +82,14 @@ records which extractor ran. What Q1 and Q2 decide is whether an extraction atte
   third party libraries, so a `pdfplumber` upgrade changes extracted text without changing any
   recorded version.
 - Chunk metadata on this path does carry `source_format`, `extraction` and `media_type`, via
-  `{**extracted.metadata, "media_type": ...}` (`recall/index.py:762`), but **no library versions and
+  `{**extracted.metadata, "media_type": ...}` (`recall/index.py:782`), but **no library versions and
   no LibreOffice version**.
 - The precedent for recording them exists and is deliberate: `EmbeddingProfile.dependencies`
   (`recall/embeddings.py:414`) carries the inference library version as key material, and its
   docstring states that a `fastembed` upgrade costs a re embed on purpose, "because ONNX runtime
   changes are free to move the last bits of a vector and a cache cannot tell". The identical
   argument applies to an extractor.
-- `text_start` and `text_end` are stored as `None` on this path (`recall/index.py:816`), so the
+- `text_start` and `text_end` are stored as `None` on this path (`recall/index.py:836`), so the
   offset cross check available for markdown does not exist here.
 
 ## Confounds I can name now
@@ -121,10 +121,17 @@ The registered sections are left exactly as written, because a prediction is a h
 Two of their citations no longer resolve to what they described, both because `recall/index.py`
 grew after registration:
 
+The left column is written WITHOUT backticks, deliberately. It records the number the registered
+section cited at the time, so it is evidence rather than a pointer into the current tree, and
+`scripts/check_doc_citations.py` only resolves a `path:line` inside backticks. Formatting it as a
+live citation is what made the checker demand that this column be rewritten to match HEAD, which
+would have turned a record of drift into a claim that the drift never happened. The number itself
+is unchanged.
+
 | Cited | Was | Is now |
 |---|---|---|
-| `recall/index.py:762` | the `{**extracted.metadata, "media_type": ...}` dict | `recall/index.py:789` |
-| `recall/index.py:816` | `text_start` / `text_end` stored as `None` | `recall/index.py:841` |
+| recall/index.py:762 (as registered) | the `{**extracted.metadata, "media_type": ...}` dict | `recall/index.py:809` |
+| recall/index.py:816 (as registered) | `text_start` / `text_end` stored as `None` | `recall/index.py:861` |
 
 Neither claim changed; only the line numbers did. This is the fifth such drift in this document's
 short life, which is why the design now states requirements as behaviour rather than as the presence

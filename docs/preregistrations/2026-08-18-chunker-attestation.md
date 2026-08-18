@@ -13,7 +13,7 @@ verify the chunker that produced that text. This asks whether a chunker attestat
 all, and if so what shape it must take.
 
 The legacy `chunks` table records **no chunker identity**: not the algorithm, not `max_chars`, not
-`overlap`. `_index_fingerprint` has no chunker term either (`recall/index.py:467-478`). So an
+`overlap`. `_index_fingerprint` has no chunker term either (`recall/index.py:472-483`). So an
 adopted generation's `ChunkerIdentity` is an assertion with nothing behind it, and the calibration
 binds to a `pipeline_fingerprint` that includes it.
 
@@ -38,7 +38,7 @@ derivation moved, not sources whose packing differs.
 
 **Q2. The identification will NOT be unique, and `overlap` is the parameter I expect to be
 unidentifiable.** `overlap` only affects a paragraph longer than `max_chars`, which is force split
-(`recall/index.py:228-230`). Memo prose is mostly short paragraphs, so I predict **fewer than 10
+(`recall/index.py:233-235`). Memo prose is mostly short paragraphs, so I predict **fewer than 10
 percent of sources contain any force split**, and on the rest `overlap=80` and `overlap=0` produce
 identical output. `max_chars` I expect to be identifiable on most sources, because packing to a
 limit leaves a visible signature wherever two paragraphs did not fit together.
@@ -75,7 +75,7 @@ Corpus: the same remote `memory` tenant used in
 1. Pull `(source, metadata->>'file', metadata->>'ord', text, metadata->>'content_hash')` for the
    tenant, read only.
 2. **Validate the local copy first.** For every source, sha256 the local file exactly as
-   `recall/index.py:697` and `:716` do for markdown and compare to the stored `content_hash`. A
+   `recall/index.py:717` and `:716` do for markdown and compare to the stored `content_hash`. A
    source whose local copy does not match is excluded and counted, because re chunking a different
    file would measure nothing. This is the apparatus check, and it runs before any comparison.
 3. Derive the body with `parse_frontmatter` (`recall/frontmatter.py:186`), which is what the
@@ -90,7 +90,7 @@ Corpus: the same remote `memory` tenant used in
 ## What I already know
 
 - `chunk_text(text, max_chars=800, overlap=80)` and `chunk_code(text, max_chars=800)`
-  (`recall/index.py:223`, `:233`). `ChunkerKind` is `Literal["text", "code"]` (`recall/index.py:59`).
+  (`recall/index.py:228`, `:233`). `ChunkerKind` is `Literal["text", "code"]` (`recall/index.py:64`).
 - `ChunkerIdentity` carries `algorithm`, `schema_version` and a frozen `configuration`
   (`recall/lineage.py:132`), so a chunker is fully specified by a small tuple.
 - `text_start` / `text_end` in chunk metadata are **not independent evidence**: `structure_chunks`
@@ -104,7 +104,7 @@ Corpus: the same remote `memory` tenant used in
 
 Every source here is markdown, so nothing measures the `content_blocks` extraction path that
 `bd582316` added for other media types, where `text_start` and `text_end` are recorded as `None`
-(`recall/index.py:826`). A corpus of PDFs would additionally depend on the extractor being
+(`recall/index.py:846`). A corpus of PDFs would additionally depend on the extractor being
 deterministic across versions, which is not tested here and is a strictly harder problem.
 
 The corpus is my own memo prose, which is unusually uniform in paragraph length, and paragraph
@@ -195,7 +195,7 @@ the embedder check can only be a sample.
 
 - **One corpus, all markdown.** Nothing here measures the `content_blocks` extraction path
   `bd582316` added for other media types, where `text_start` and `text_end` are stored as `None`
-  (`recall/index.py:826`). A PDF corpus would additionally require the extractor to be
+  (`recall/index.py:846`). A PDF corpus would additionally require the extractor to be
   deterministic across versions, which is a strictly harder problem and is untested.
 - **Reproduction shows an observationally equivalent chunker, not the identical one.** A different
   implementation producing identical output on these 1,058 sources is indistinguishable here. That
@@ -222,14 +222,14 @@ nobody, and unlike a claim it carries no result. Anyone auditing the original di
 in the history of this file, and `docs/preregistrations/2026-08-18-uncalibrated-first-run.md` shows
 the stricter alternative, freezing its citations and tracking their drift in a separate note.
 
-**What changed.** `79a0d6ed` (#381) widened `_index_fingerprint` (`recall/index.py:420`) to hash
+**What changed.** `79a0d6ed` (#381) widened `_index_fingerprint` (`recall/index.py:425`) to hash
 `EmbeddingProfile.fingerprint()` instead of `embedding_profile_id(embedder)`. That fingerprint
 covers `chunker_version` (`recall/embeddings.py:412`), so the sentence "`_index_fingerprint` has no
 chunker term either" is now imprecise: a field of that NAME is in the hash.
 
 **What did not change, which is every conclusion drawn from it.** `chunker_version` is a field of
 the EMBEDDING profile, defaulted to `chunk-text-v1` at both of its definitions and set by nothing
-else in the tree. The `Indexer`'s actual chunker (`recall/index.py:535`) never reaches it, and
+else in the tree. The `Indexer`'s actual chunker (`recall/index.py:540`) never reaches it, and
 neither `max_chars` nor `overlap` appears in an `EmbeddingProfile` at all. So the term is inert with
 respect to the thing it is named after. Measured against `79a0d6ed`, holding the embedder and the
 file fixed and varying only the chunker:

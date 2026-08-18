@@ -122,8 +122,8 @@ and its suggested destination is exact only where the citation was accurate to b
 this repository is not always true.
 
 ⚠️ Citations **above** this rule are left exactly as registered, because a prediction is a
-historical record and must not be edited. One of them has since moved: `recall/index.py:707`, cited
-in "What I already know" for the metadata stamp, is `recall/index.py:836` at the time of writing.
+historical record and must not be edited. One of them has since moved: `recall/index.py:727`, cited
+in "What I already know" for the metadata stamp, is `recall/index.py:856` at the time of writing.
 
 ## Reproducing any of this
 
@@ -146,12 +146,12 @@ throughout, which is *why* embedding was kept local, not evidence that it was.
 
 ### Verification census
 
-Every source read exactly as `recall/index.py:697` reads a markdown source
+Every source read exactly as `recall/index.py:717` reads a markdown source
 (`read_text(encoding="utf-8-sig")`, universal newlines, then `_strip_nul`, then
-`sha256(text.encode("utf-8"))` at `recall/index.py:716`). A `sha256sum` over raw bytes would have
+`sha256(text.encode("utf-8"))` at `recall/index.py:736`). A `sha256sum` over raw bytes would have
 been wrong for any file with CRLF or a BOM. **Every source in this corpus is markdown**, which
 matters because `bd582316` made the derivation media type dependent: a non markdown source is
-hashed as raw bytes instead (`recall/index.py:718`).
+hashed as raw bytes instead (`recall/index.py:738`).
 
 | Bucket | Sources | Chunks |
 |---|---:|---:|
@@ -230,12 +230,12 @@ the pipeline check. At the measured tree, the fallback returned the **literal st
 track the model at all:
 
 - the corpus stores 1024 dimensional vectors labelled `bge-small-symmetric-v1`, while the registered
-  profile of that name is 384 dimensional (`recall/embedding_registry.py:228-230`);
+  profile of that name is 384 dimensional (`recall/embedding_registry.py:386-388`);
 - a locally constructed `fastembed:BAAI/bge-large-en-v1.5` embedder reports
   `name='BAAI/bge-large-en-v1.5' dim=1024 profile_id='bge-small-symmetric-v1'`.
 
 `index_fingerprint` inherits the defect, because `_index_fingerprint` hashes
-`embedding_profile_id(embedder)` (`recall/index.py:472`). So **neither stored field can identify the
+`embedding_profile_id(embedder)` (`recall/index.py:477`). So **neither stored field can identify the
 model**, and two different unregistered models of equal width would compare equal.
 
 The consequence for the design is a promotion, not a retreat: the **pipeline attestation sample is
@@ -244,8 +244,8 @@ supplementary evidence the design called it. Its cost was not measured; what was
 20 chunk sample runs in seconds.
 
 🔁 **Fixed upstream the same day by #370**, which this measurement prompted: `_fallback_profile_id`
-(`recall/embeddings.py:699`) now derives `unregistered__{model}__{dimension}__{kind}`
-(`recall/embeddings.py:750`). The measurement above stands as a dated record of the tree it ran
+(`recall/embeddings.py:752`) now derives `unregistered__{model}__{dimension}__{kind}`
+(`recall/embeddings.py:803`). The measurement above stands as a dated record of the tree it ran
 against, and **the conclusion is unchanged**: every corpus indexed before #370 still carries the old
 literal, and those are precisely the rows an adoption path reads. Fixing a writer does not repair
 rows already written.
@@ -253,7 +253,7 @@ rows already written.
 🔁 **The second half was fixed the same day by #381**, and the sentence above about
 `_index_fingerprint` is now a record of the measured tree rather than of the code. It no longer
 hashes `embedding_profile_id(embedder)`: `79a0d6ed` widened it to
-`embedding_profile(embedder).fingerprint()` (`recall/index.py:472`), which covers `model_name` and
+`embedding_profile(embedder).fingerprint()` (`recall/index.py:477`), which covers `model_name` and
 `dimension`, so two different unregistered models of equal width no longer compare equal. The
 citation is kept pointing at that call site because it is the same position in the tuple, but the
 expression it names has changed, which is why this note exists rather than a silent renumber.
