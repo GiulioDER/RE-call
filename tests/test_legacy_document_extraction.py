@@ -117,6 +117,40 @@ def test_libreoffice_dispatch_excludes_msg() -> None:
     assert LIBREOFFICE_EXTENSIONS == {".doc", ".odt", ".ods", ".odp", ".ppt"}
 
 
+# The repository-wide limit is `timeout = 120` (`pyproject.toml`), and this test sat under four
+# seconds of it: measured 2026-08-18 on Windows 11 with LibreOffice 25.8, it passes in 116.17s run
+# alone. It failed twice in one session for no reason except that other `soffice.exe` processes
+# held the CPU, and a `timeout_method = "thread"` expiry prints a faulthandler dump with no
+# pass/fail summary line, which reads as a hang rather than as a failure.
+#
+# 600 restores roughly a 5x margin. It is the escape hatch `pyproject.toml` names for a test with a
+# legitimate reason to run long, and the reason here is that the body starts LibreOffice **ten**
+# times, not five: five conversions below, plus one inside each `extract_document` call, since
+# `_extract_with_libreoffice` shells out again for every legacy format. Measured split, same run,
+# fixture conversion against extraction: 21.52/17.06, 10.70/12.84, 4.18/9.70, 7.57/8.62,
+# 4.21/7.78 seconds, totalling 48.18s and 56.00s.
+#
+# The two cheaper-looking fixes were measured and rejected rather than skipped:
+#   * Profile reuse is already here. All five conversions below share one `-env:UserInstallation`,
+#     and the numbers show it paying: the first launch carries the 21.5s profile bootstrap and the
+#     rest fall to 4-10s. What stays cold is the extraction half, because `_extract_with_libreoffice`
+#     builds a fresh profile in a fresh `TemporaryDirectory` per call. That is production code and
+#     a shared profile there needs an answer for concurrent extractions locking it, so it is not a
+#     change to make from a flaky test.
+#   * Passing several sources to one `--convert-to` cannot help, because grouped by target format
+#     every input is a singleton: doc<-docx, odt<-docx, ods<-xlsx, ppt<-pptx, odp<-pptx.
+#
+# The per-conversion `subprocess.run(timeout=120)` below is deliberately left alone, so a single
+# genuinely stuck LibreOffice still fails fast instead of idling toward the new ceiling.
+#
+# What the margin is really for: this test's duration is set by machine load, not by the test.
+# Samples taken the same day on the same machine span 53.86, 53.93, 57.26 (three consecutive runs
+# on an idle box), 75.64 (single test, `-k`), and 116.17 seconds (the run that motivated this),
+# a 2.15x spread against a ceiling that used to sit 3.83s above the worst of them. Three quick
+# green runs do not sample the failure mode, because the failure mode is a busy machine.
+#
+# Re-measure: `python -m pytest tests/test_legacy_document_extraction.py -k libreoffice --durations=0`
+@pytest.mark.timeout(600)
 @pytest.mark.skipif(_libreoffice_executable() is None, reason="LibreOffice is not installed")
 def test_libreoffice_converts_legacy_office_sources(tmp_path: Path) -> None:
     docx = pytest.importorskip("docx")
