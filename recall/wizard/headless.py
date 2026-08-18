@@ -807,7 +807,27 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
 #: than in the package, because it is theirs: they chose the location, and `docker compose -f` on
 #: it is how they inspect or stop their own install.
 COMPOSE_NAME = "docker-compose.recall.yml"
-COMPOSE_PROJECT = "recall-desktop"
+
+
+def compose_project_for(data_root: Path, project: str) -> str:
+    """A Compose project name unique to THIS install.
+
+    ⚠️ A fixed name does not work, and the first real end-to-end run proved it. Compose namespaces
+    containers by project, so a constant `recall-desktop` collides with anything else using that
+    name: the run failed with `Found orphan containers (recall-desktop-recall-docs-1, ...)` against
+    services left by the SHIPPED `docker-compose.desktop.yml`, and it would collide the same way
+    with a second install on the same machine. Two installs would then fight over one namespace and
+    each would see the other's containers as orphans to remove.
+
+    Keyed on the LOCATION as well as the project, because "myproject" installed in two places is two
+    installs, and the location is what the user actually chose.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(data_root.as_posix().encode("utf-8")).hexdigest()[:8]
+    # Compose restricts project names to lowercase alphanumerics, hyphen and underscore.
+    scope = "".join(char for char in project.lower() if char.isalnum() or char in "-_") or "recall"
+    return f"recall-{scope}-{digest}"
 
 
 def _provisional_env(tenants: tuple[str, ...], *, dsn: str, embedder: str) -> dict[str, dict[str, str]]:
@@ -847,6 +867,7 @@ def _provision(
         return config
 
     compose_path = config.data_root / COMPOSE_NAME
+    compose_project = compose_project_for(config.data_root, config.project)
     port = existing_port(compose_path) or choose_port()
     dsn = host_dsn(port)
     tenants = tuple(spec.tenant for spec in plan.corpora)
@@ -861,16 +882,27 @@ def _provision(
                 port=port,
                 tenants=tenants,
                 env=_provisional_env(tenants, dsn=dsn, embedder=config.embedder),
-                project_name=COMPOSE_PROJECT,
+                project_name=compose_project,
             )
         ),
     )
     # `db` only. The recall image is built later and the store must not wait for it.
-    bring_up(compose_path, project_name=COMPOSE_PROJECT, services=("db",))
+    try:
+        bring_up(compose_path, project_name=compose_project, services=("db",))
+    except RuntimeError as exc:
+        raise ConfigRefusal(
+            f"could not start the database for {config.data_root}: {exc}. Check that Docker "
+            "Desktop is running.",
+            ("data_root",),
+        ) from exc
     # ⚠️ `--wait` is NOT enough: the healthcheck is `pg_isready` inside the container, which the
     # temporary server the postgres entrypoint runs during initdb also answers. Poll the address
     # the caller will actually use.
-    wait_for_database(dsn)
+    try:
+        wait_for_database(dsn)
+    except RuntimeError as exc:
+        raise ConfigRefusal(f"the database started but never accepted a connection: {exc}",
+                            ("data_root",)) from exc
     if progress:
         progress("database: ready")
 
@@ -898,6 +930,7 @@ def run_headless(
     progress: Callable[[str], None] | None = None,
     state_path: Path | None = None,
     fresh: bool = False,
+    profile_path: Path | None = None,
 ) -> HeadlessReport:
     """Apply the schema, then drive every calibrated corpus, reporting rather than aborting.
 
@@ -1054,6 +1087,7 @@ def run_headless(
     # cannot end up on different rules for one corpus.
     if config.data_root is not None and blocks:
         compose_path = config.data_root / COMPOSE_NAME
+        compose_project = compose_project_for(config.data_root, config.project)
         try:
             port = existing_port(compose_path) or choose_port()
             write_compose(
@@ -1064,14 +1098,15 @@ def run_headless(
                         port=port,
                         tenants=tuple(block.tenant for block in blocks),
                         env={block.tenant: dict(block.env) for block in blocks},
-                        project_name=COMPOSE_PROJECT,
+                        project_name=compose_project,
                     )
                 ),
             )
             profile_written = write_runtime_profile(
                 compose_path=compose_path,
                 project=config.project,
-                compose_project=COMPOSE_PROJECT,
+                compose_project=compose_project,
+                path=profile_path,
             )
             files = (*files, compose_path, profile_written)
             if progress:

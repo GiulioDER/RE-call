@@ -230,7 +230,8 @@ def test_run_headless_provisions_from_data_root_and_reuses_the_port(
 
     spy = _Recording()
     spy.schema_dsns = []
-    report = H.run_headless(config, services=spy)
+    profile = tmp_path / "runtime.json"
+    report = H.run_headless(config, services=spy, profile_path=profile)
 
     compose = location / H.COMPOSE_NAME
     assert compose.exists(), "the stack must be written under the user's own location"
@@ -238,12 +239,20 @@ def test_run_headless_provisions_from_data_root_and_reuses_the_port(
     assert waited, "the published port must be polled; --wait does not prove it is usable"
     assert waited[0] == spy.schema_dsns[0], "everything downstream uses the provisioned address"
     assert report.ok is True
+    assert profile.exists(), "the desktop profile is written where the CALLER said"
+
+    from recall.desktop.profiles import profile_path as default_profile_path
+
+    assert not default_profile_path().exists(), (
+        "a test must never write the real user profile; this one did, pointing it at a "
+        "pytest temp directory"
+    )
 
     first_port = existing_port(compose)
     assert first_port is not None and f":{first_port}" in waited[0]
 
     # A re-install must NOT repoint the database: runtime.json names this compose file.
-    H.run_headless(config, services=_CountingSpy())
+    H.run_headless(config, services=_CountingSpy(), profile_path=profile)
     assert existing_port(compose) == first_port, "a re-run must reuse the port it already published"
 
 
