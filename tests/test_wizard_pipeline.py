@@ -169,7 +169,7 @@ def _corpus(tmp_path: Path, *, files: int) -> Path:
     is also the number of distinct subjects available to the generator.
     """
     root = tmp_path / "corpus"
-    root.mkdir(exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
     for n in range(files):
         word = _subject_word(n)
         body = f"{word} " * 10 + f"{word}craft " * 5 + _FILLER
@@ -562,3 +562,189 @@ def test_the_fakes_match_the_signatures_of_the_classes_they_stand_for() -> None:
             real_params = list(inspect.signature(getattr(real, name)).parameters)
             missing = [p for p in real_params if p not in fake_params and p != "generation_id"]
             assert not missing, f"{fake.__name__}.{name} is missing {missing} from {real.__name__}"
+
+
+# ----------------------------------------------------------------------------------------------
+# The audit fixes themselves. Every test below exists because a mutation of the fix it names
+# survived: eight findings were fixed and barely half were pinned, which is the failure mode
+# mutation testing exists to expose.
+# ----------------------------------------------------------------------------------------------
+
+
+def test_a_corpus_between_the_floor_and_the_headroom_still_certifies(tmp_path: Path) -> None:
+    """The off-by-a-factor-of-two fix, pinned.
+
+    `generate_offline` refuses outright when the corpus has fewer distinct chunks than requested,
+    so asking for `DEFAULT_PER_CLASS` made every corpus between the floor (20) and the headroom
+    (40) "too small to certify" while the message quoted the floor. Measured before the fix: 39
+    chunks refused, 40 accepted, against a floor of 20.
+
+    25 files sits squarely in the band that used to be refused and can certify.
+    """
+    from recall.wizard.pipeline import run_corpus
+
+    recorder = _Recorder()
+    outcome = run_corpus(
+        docs_corpus(_corpus(tmp_path, files=25)),
+        manager=_FakeManager(recorder),
+        calibrations=_FakeCalibrations(recorder),
+        embedder=_FakeEmbedder(),
+        corpus_version="2026-01-01",
+    )
+
+    assert outcome.certified is True
+    assert outcome.answerable >= MIN_PER_CLASS
+    assert outcome.unanswerable >= MIN_PER_CLASS
+    # And the headroom is still preferred when the corpus can supply it, rather than every corpus
+    # silently dropping to the floor.
+    roomy = run_corpus(
+        docs_corpus(_corpus(tmp_path / "big", files=45)),
+        manager=_FakeManager(_Recorder()),
+        calibrations=_FakeCalibrations(_Recorder()),
+        embedder=_FakeEmbedder(),
+        corpus_version="2026-01-01",
+    )
+    assert roomy.answerable > outcome.answerable, "the headroom must be tried before the floor"
+
+
+def test_the_query_set_is_chunked_with_the_callable_the_build_binds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The code-corpus fix, pinned by capturing what the generator was actually handed.
+
+    `chunks_from_directory` defaults to `chunk_text` while `code_corpus` builds with `chunk_code`.
+    Measured on `pipeline.py` itself, the two produce 20 chunks against 8 with no exact string in
+    common, so every answerable query would describe text that is not in the index it is about to
+    be measured against. Asserting on the CALLABLE rather than on downstream output, because the
+    downstream difference is invisible to a fake manager.
+    """
+    import recall.wizard.pipeline as module
+    from recall.generation_build import BuildRequest, chunker_for
+    from recall.wizard.corpora import code_corpus
+    from recall.wizard.pipeline import PipelineRefusal, run_corpus
+
+    seen: list[object] = []
+    real = module.chunks_from_directory
+
+    def capturing(root, glob=None, chunker=None):  # type: ignore[no-untyped-def]
+        seen.append(chunker)
+        return real(root, glob, chunker)
+
+    monkeypatch.setattr(module, "chunks_from_directory", capturing)
+
+    root = _corpus(tmp_path, files=45)
+    try:
+        run_corpus(
+            code_corpus(root),
+            manager=_FakeManager(_Recorder(), tenant_id="code"),
+            calibrations=_FakeCalibrations(_Recorder()),
+            embedder=_FakeEmbedder(),
+            corpus_version="2026-01-01",
+        )
+    except PipelineRefusal:
+        # A markdown fixture under a `**/*.py` glob cannot generate a set, and that is fine: the
+        # chunker was already captured on the way in, which is the property under test.
+        pass
+
+    assert seen, "chunks_from_directory was never called"
+    expected = chunker_for(BuildRequest(chunker="code"))[0]
+    sample = "def f():\n    return 1\n\n\n" * 40
+    assert seen[0] is not None, "the build's chunker must be passed, not left to default"
+    assert seen[0](sample) == expected(sample), "queries must be chunked as the index will be"
+
+
+def test_only_a_resolvable_revision_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lineage_revision`, not `revision`, and the difference is a revision nobody can resolve.
+
+    fastembed serves `BAAI/bge-small-en-v1.5` out of `qdrant/bge-small-en-v1.5-onnx-q`, so the
+    snapshot SHA is a commit in the qdrant repository and does not exist in the one it would be
+    recorded against. `lineage_revision` hands it out only when the two agree.
+    """
+    import recall.wizard.pipeline as module
+    from recall.wizard.identity import ArtifactIdentity
+
+    mismatched = ArtifactIdentity(
+        provider="fastembed",
+        model="BAAI/bge-small-en-v1.5",
+        source_repo="qdrant/bge-small-en-v1.5-onnx-q",
+        revision="a" * 40,
+        artifact_digest="b" * 64,
+        path=tmp_path,
+    )
+    assert mismatched.lineage_revision is None, "the fixture must actually differ"
+    monkeypatch.setattr(module, "artifact_identity_for", lambda _e: mismatched)
+
+    request = module._identified_request(docs_corpus(_corpus(tmp_path, files=1)), object(), None)
+
+    assert request.revision is None, "a revision that names another repository must not be recorded"
+    assert request.artifact_digest == "b" * 64, "the digest is what makes it immutable"
+
+
+def test_a_failure_after_validate_marks_the_generation_failed(tmp_path: Path) -> None:
+    """Otherwise the orphan is unreclaimable: `gc` collects only `retired` and `failed`.
+
+    A generation left READY by an aborted run keeps a full copy of the corpus's chunk rows, once
+    per failed attempt, and nothing will ever collect it.
+    """
+    from recall.wizard.pipeline import run_corpus
+
+    class _Exploding(_FakeCalibrations):
+        def calibrate(self, generation_id: str, queries: Any, embedder: Any) -> Any:
+            raise RuntimeError("calibration blew up")
+
+    recorder = _Recorder()
+    manager = _FakeManager(recorder)
+
+    with pytest.raises(RuntimeError, match="calibration blew up"):
+        run_corpus(
+            docs_corpus(_corpus(tmp_path, files=45)),
+            manager=manager,
+            calibrations=_Exploding(recorder),
+            embedder=_FakeEmbedder(),
+            corpus_version="2026-01-01",
+        )
+
+    assert manager.failed, "the generation must be marked failed so gc can reclaim it"
+    assert "gen_test" not in [c for c in recorder.calls if c == "promote"]
+    assert "promote" not in recorder.calls
+
+
+def test_the_outcome_survives_the_json_round_trip_it_is_written_for(tmp_path: Path) -> None:
+    """`steps` returns from JSON as a list, which compares unequal and is unhashable.
+
+    `CorpusPlan` already documents and fixes exactly this; `CorpusOutcome` is written into the same
+    resumable state and had no coercion at all.
+    """
+    import dataclasses
+    import json
+
+    from recall.wizard.pipeline import CorpusOutcome
+
+    built = CorpusOutcome(tenant="docs", generation_id="gen_x", steps=["build", "validate"])
+    assert isinstance(built.steps, tuple)
+
+    restored = CorpusOutcome(**json.loads(json.dumps(dataclasses.asdict(built))))
+    assert restored == built, "a state file read back must compare equal to the run that wrote it"
+    assert hash(restored), "a frozen outcome must stay hashable across the round trip"
+
+
+def test_an_unverifiable_embedder_is_reported_rather_than_swallowed(tmp_path: Path) -> None:
+    """The wizard should SAY the generation carries no verifiable embedder provenance.
+
+    `artifact_identity_for` returns None for anything that is not a resolvable FastEmbedEmbedder,
+    and the request is then marked unverified, which satisfies `allow_unverified` silently. The
+    outcome carries it so the caller can tell the user rather than the user discovering it.
+    """
+    from recall.wizard.pipeline import run_corpus
+
+    outcome = run_corpus(
+        docs_corpus(_corpus(tmp_path, files=45)),
+        manager=_FakeManager(_Recorder()),
+        calibrations=_FakeCalibrations(_Recorder()),
+        embedder=_FakeEmbedder(),
+        corpus_version="2026-01-01",
+    )
+
+    assert outcome.unverified_embedder is True
