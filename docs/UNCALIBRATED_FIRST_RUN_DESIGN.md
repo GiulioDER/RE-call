@@ -633,7 +633,7 @@ half the corpus, aborts** and reports that the candidate set does not describe t
   scope when this section was written; the measurement is
   `docs/preregistrations/2026-08-18-extraction-attestation.md`.
 - **The body rule can move under it.** `parse_frontmatter` changed once, and the fix carries a
-  version marker (`recall/generations.py:109`) precisely because the same bytes then yielded a
+  version marker (`_BODY_RULE_VERSION`, `recall/generations.py:109`) precisely because the same bytes then yielded a
   different body. A corpus indexed before such a change reports a chunker mismatch when the real
   difference is upstream of the chunker. The attestation should therefore report the body rule
   version alongside its verdict, so the two causes are distinguishable.
