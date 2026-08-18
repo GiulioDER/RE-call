@@ -183,11 +183,27 @@ def check() -> tuple[list[Finding], list[str]]:
 
     for doc in docs:
         rel = doc.relative_to(REPO).as_posix()
-        if rel.startswith(FROZEN_PREFIXES):
-            continue
         if any(fnmatch.fnmatch(rel, rule["path"]) for rule in exempt):
             continue
+
+        # An explicit `[[frozen_above]]` zone BEATS the blanket prefix skip, and the ORDER of these
+        # two statements is the whole reason they are written out rather than folded together.
+        #
+        # The prefix says "this whole document is a record". A zone says something stronger and more
+        # specific: the head is a record, and the tail below the marker is live and must keep failing
+        # the build. Skipping on the prefix first therefore discards the tail's coverage, and discards
+        # it SILENTLY. The citations simply stop being read;
+        # `test_the_policy_declares_the_frozen_zone_and_its_marker_still_exists` keeps passing because
+        # it calls `frozen_line` directly; and the policy file goes on describing a live zone that
+        # nothing checks.
+        #
+        # Measured on the tree before this change, in a throwaway repository: a stale citation in a
+        # zone the policy declared LIVE produced **zero** findings. Both `[[frozen_above]]` entries
+        # live under `docs/preregistrations/`, so the entire mechanism was unreachable.
+        # `test_a_declared_live_zone_is_still_checked_under_a_frozen_prefix` pins it.
         boundary = frozen_line(doc, rel, zones)
+        if boundary is None and rel.startswith(FROZEN_PREFIXES):
+            continue
 
         # ⚠️ A document with uncommitted edits cannot be checked, and this is not a shortcut.
         # The baseline is the last commit that TOUCHED the document, so citations sitting in the
