@@ -1,6 +1,12 @@
 # Pre-registration: calibrating the code corpus, and whether one threshold transfers
 
-**Date:** 2026-08-17   **Status:** predicted, not yet measured
+**Date:** 2026-08-17   **Status:** measured 2026-08-17, results appended below
+
+> 🔁 **Status header corrected 2026-08-18.** It read "predicted, not yet measured"
+> for a day after the results were appended, which is the failure this format exists to
+> prevent: a record that has been scored and one that never was looked identical. **No
+> prediction, confound or falsification criterion was touched**, only this line and the
+> matching one in the Result section.
 
 Written and committed **before** the code query set is labelled or any threshold is fitted. The
 gap between these predictions and the measurement is the output; the pass rate is not.
@@ -93,7 +99,8 @@ raises the unanswerable ceiling.
 
 ## Result
 
-**Status:** not yet measured. Append below; do not edit anything above.
+**Status:** measured 2026-08-17, in the two sections below. Nothing above this line has
+been edited, and nothing above it may be.
 
 ## Measured, 2026-08-17: `re-call-code`
 
