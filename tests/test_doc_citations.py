@@ -14,12 +14,28 @@ The failure this exists to prevent is real and recurring: one commit (`79a0d6ed`
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
+
+# ⚠️ `scripts/` must be importable before the module below is executed, because it does
+# `from check_citation_anchors import FROZEN_PREFIXES`. Running the checker as CI runs it
+# (`python scripts/check_doc_citations.py`) puts `scripts/` on `sys.path[0]` for free; pytest does
+# not, and importing by file location does not either.
+#
+# Without this line the module still imported, for a reason that is pure accident:
+# `tests/test_citation_anchors.py` sorts before this file, and it registers
+# `sys.modules["check_citation_anchors"]` as a side effect of its own setup. So a full-suite run
+# passed while `pytest tests/test_doc_citations.py` on its own failed at COLLECTION, which is the
+# worst shape for this: CI stayed green, and anyone running one file, renaming either file, or
+# randomising order got an error that says nothing about what is wrong. Measured on master before
+# this line was added: alone, 1 collection error; preceded by the anchors file, 59 passed.
+sys.path.insert(0, str(REPO / "scripts"))
+
 _spec = importlib.util.spec_from_file_location(
     "check_doc_citations", REPO / "scripts" / "check_doc_citations.py"
 )
@@ -128,3 +144,88 @@ def test_every_citation_in_the_docs_still_resolves() -> None:
     """
     findings, _skipped = citations.check()
     assert not findings, "\n" + "\n".join(f.render() for f in findings)
+
+
+# --- a frozen PREFIX must not swallow a zone the policy declares live ----------------------------
+
+def _init_repo(repo: Path) -> None:
+    for args in (
+        ("init", "--quiet"),
+        ("config", "user.email", "t@example.com"),
+        ("config", "user.name", "t"),
+        ("config", "commit.gpgsign", "false"),
+    ):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def _commit(repo: Path, message: str, *paths: str) -> None:
+    subprocess.run(["git", "-C", str(repo), "add", *(paths or ("-A",))],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "--quiet", "-m", message],
+                   check=True, capture_output=True)
+
+
+def test_a_declared_live_zone_is_still_checked_under_a_frozen_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`[[frozen_above]]` must survive `FROZEN_PREFIXES`, or it is dead config that reads as live.
+
+    ⚠️ This is a regression test for a defect that was ON MASTER, found by building this repository
+    and looking rather than by reading the loop. `FROZEN_PREFIXES` was checked BEFORE `frozen_line`,
+    so a document under `docs/preregistrations/` was skipped whole and its declared live tail was
+    never read. Both `[[frozen_above]]` entries live under that prefix, so the entire mechanism was
+    unreachable, and **zero** findings came back for a stale citation in a zone the policy called
+    live.
+
+    Nothing reported the loss: the existing marker test calls `frozen_line` directly, so it kept
+    passing, and the policy file kept describing a live zone that nothing checked. That combination,
+    a silent coverage loss behind a still-green guard, is why this asserts on the FINDING and not on
+    the classification.
+    """
+    repo = tmp_path / "repo"
+    (repo / "recall").mkdir(parents=True)
+    (repo / "docs" / "preregistrations").mkdir(parents=True)
+
+    (repo / "recall" / "thing.py").write_text(
+        "import os\n\nTARGET = 1\n", encoding="utf-8", newline="\n"
+    )
+    # The citation sits BELOW the marker: the zone the policy declares live.
+    (repo / "docs" / "preregistrations" / "p.md").write_text(
+        "# P\n\nthe prediction, citing `recall/thing.py:3`\n\n## Result\n\n"
+        "the measurement, citing `recall/thing.py:3`\n",
+        encoding="utf-8", newline="\n",
+    )
+    (repo / "docs" / "citation-policy.toml").write_text(
+        '[[frozen_above]]\n'
+        'path = "docs/preregistrations/p.md"\n'
+        'marker = "## Result"\n'
+        'reason = "test"\n',
+        encoding="utf-8", newline="\n",
+    )
+
+    _init_repo(repo)
+    _commit(repo, "base")
+    # Move the cited line in a commit that does NOT touch the document, so the drift is real and the
+    # document's baseline still predates it.
+    (repo / "recall" / "thing.py").write_text(
+        "import os\nimport sys\nimport json\n\nTARGET = 1\n", encoding="utf-8", newline="\n"
+    )
+    _commit(repo, "shift the cited line by two", "recall/thing.py")
+
+    monkeypatch.setattr(citations, "REPO", repo)
+    monkeypatch.setattr(citations, "POLICY", repo / "docs" / "citation-policy.toml")
+
+    findings, skipped = citations.check()
+
+    assert not skipped, skipped
+    assert len(findings) == 1, (
+        "expected exactly one finding, from the LIVE tail below the marker. Zero means the frozen "
+        f"prefix swallowed the declared zone; two means the frozen head was checked too. got: "
+        f"{[(f.doc_line, f.detail) for f in findings]}"
+    )
+    # Line 7 is the citation below `## Result`; line 3 is the one above it, which must stay silent.
+    assert findings[0].doc_line == 7, (
+        f"the finding came from line {findings[0].doc_line}, not the live tail's line 7. A finding "
+        "from line 3 would mean the frozen PREDICTION was checked, which is the opposite failure."
+    )
+    assert "moved +2" in findings[0].detail, findings[0].detail
