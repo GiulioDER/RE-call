@@ -159,7 +159,7 @@ been edited, and nothing above it may be.
 > The corpus is embedded with `fastembed:BAAI/bge-large-en-v1.5`. Every chunk records
 > `embedding_profile = bge-small-symmetric-v1`, **naming the wrong model**.
 >
-> Not a mis-run. `recall/embeddings.py:847-854` hardcodes that literal as the fallback
+> Not a mis-run. `recall/embeddings.py:794-801` hardcodes that literal as the fallback
 > `profile_id` whenever no `identity` is supplied, independent of `model_name`, and
 > `resolve_embedder` (`embeddings.py:1139`) constructs `FastEmbedEmbedder(model_name=...)` without
 > one. Measured:

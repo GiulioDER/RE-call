@@ -52,7 +52,31 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+# Same directory (`scripts/`), so this resolves when run as CI runs it:
+# `python scripts/check_doc_citations.py` puts `scripts/` on `sys.path[0]`. Importing rather than
+# restating the list is deliberate; the reasoning is at FROZEN_PREFIXES' use below.
+from check_citation_anchors import FROZEN_PREFIXES
+
 REPO = Path(__file__).resolve().parent.parent
+#: Directories whose citations are never asked to be current, shared with the anchor checker.
+#:
+#: Imported rather than restated. `scripts/check_citation_anchors.py` defines this and says why the
+#: list must be single-sourced: "which documents are exempt from being asked at all is one fact
+#: about a document, not two. Two lists would drift, and the drift would be silent in the direction
+#: that matters." That warning described a hazard; until now the two checkers ACTUALLY disagreed
+#: about `docs/preregistrations/`, and this closes it.
+#:
+#: The consequence of the gap was concrete, and #396 documented it while working around it: #395
+#: had to repoint five citations inside a pre-registration, four of them above `## Result` and one
+#: inside "What I predict", purely to keep THIS checker green. The anchor checker never asked for
+#: those edits, because its own comments hold that "a gate must never be able to force an edit to
+#: an immutable record". #396 named teaching this checker the same prefix as the better fix and
+#: left it undone because it is a change to a checker rather than to a list. This is that change.
+#:
+#: A pre-registration's `path:line` is evidence of what was true when it was written, so a line
+#: that has moved makes the citation HISTORICAL, not wrong. `frozen_above` entries in the policy
+#: stay meaningful for documents that want a live zone below a marker; this prefix decides whether
+#: the document is asked at all.
 POLICY = REPO / "docs" / "citation-policy.toml"
 
 #: A citation is a repo relative path (it must carry a directory, so a bare `cli.py:487` shorthand
@@ -159,6 +183,8 @@ def check() -> tuple[list[Finding], list[str]]:
 
     for doc in docs:
         rel = doc.relative_to(REPO).as_posix()
+        if rel.startswith(FROZEN_PREFIXES):
+            continue
         if any(fnmatch.fnmatch(rel, rule["path"]) for rule in exempt):
             continue
         boundary = frozen_line(doc, rel, zones)

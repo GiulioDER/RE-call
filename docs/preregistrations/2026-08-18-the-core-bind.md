@@ -82,7 +82,7 @@ would be the expected result rather than a falsification.
   done in the environment that step 3 needs for the second probe. That asymmetry is the bind.
 - The gate overrides to `INDEX_NOT_READY` whenever the binding carries no `generation_id`, which is
   what makes the development probe's code independent of calibration state.
-- `recall/readiness.py:116` is a **different** entry point and is not on the search path, so it must
+- `recall/readiness.py:110` is a **different** entry point and is not on the search path, so it must
   not be used as the probe.
 
 ## Confounds I can name now
@@ -111,7 +111,7 @@ landed between writing and pushing and moved two of the three:
 | `recall/cli.py:2082` | the `generation_mode = ...` store selection | `recall/cli.py:2199` |
 | `recall/generations.py:796` | the `UnsafePromotion` message | `recall/generations.py:849` |
 
-`recall/readiness.py:116` is unmoved. No claim changed; only line numbers did.
+`recall/readiness.py:110` is unmoved. No claim changed; only line numbers did.
 
 🔑 **This is the sixth such drift in one working session**, and the interval this time was under an
 hour, from writing a prediction to opening its pull request. It is the reason the design states
