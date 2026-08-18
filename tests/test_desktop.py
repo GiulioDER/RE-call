@@ -226,3 +226,58 @@ def test_page_watermarks_scope_transparent_group_boxes(monkeypatch: pytest.Monke
 
     window.close()
     app.processEvents()
+
+
+def test_saving_the_pipeline_configuration_actually_persists_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The button said "Configuration saved" and saved nothing.
+
+    Demonstrated before fixing, by driving the real window: set the embedder model, press Save,
+    close it, reopen, and the field read `hashing-64` again. The status line asserted a state
+    nothing had created, which is the defect class the wizard spent a day removing from its own
+    report, sitting in the UI the whole time.
+
+    `profile_path` is redirected so this writes a temp directory. An earlier test in this project
+    wrote the user's REAL desktop profile and every suite stayed green, because pollution looks
+    exactly like success, so this one also asserts the real location was left alone.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    import recall.desktop.profiles as profiles
+    from recall.desktop.ui import MainWindow
+
+    real = profiles.profile_path()
+    monkeypatch.setattr(profiles, "profile_path", lambda: tmp_path / "runtime.json")
+
+    class UiRuntime:
+        def start(self) -> None: ...
+        def stop(self) -> None: ...
+        def health(self) -> dict[str, str]:
+            return {"status": "ready"}
+        def list_tenants(self) -> list[str]:
+            return ["default"]
+
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    app = QApplication.instance() or QApplication([])
+
+    first = MainWindow(profile, runtime=UiRuntime())
+    first.model_edit.setText("a-model-the-user-chose")
+    first._save_configuration()
+    assert "saved" in first.status.text().lower()
+    first.close()
+    app.processEvents()
+
+    second = MainWindow(profile, runtime=UiRuntime())
+    try:
+        assert second.model_edit.text() == "a-model-the-user-chose", (
+            "the choice must survive reopening; the status line already claimed it had"
+        )
+    finally:
+        second.close()
+        app.processEvents()
+
+    assert (tmp_path / "pipeline.json").exists()
+    assert not real.exists(), "a test must never write the user's real desktop configuration"
