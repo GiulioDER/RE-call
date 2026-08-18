@@ -532,10 +532,92 @@ Two things, and neither blocks implementation:
   `cutover()` is a real behaviour change for an existing operator, and that is a product call rather
   than an engineering one. The engineering answer is that the gate belongs there; whether to ship it
   default-on for existing tenants is not mine to make.
-- **The chunker is still unverified.** Decision 9 sizes the *embedder* check. Nothing here verifies
-  that the recorded chunker produced the stored chunk text, because the attestation re-embeds that
-  text rather than re-deriving it. A re-chunk attestation (re-chunk N verified sources, compare
-  texts and ordinals) is the missing counterpart and is not designed here.
+- 🔁 **The chunker gap is now designed and measured. See section 6c.** It was open when this
+  section was written; the measurement is
+  `docs/preregistrations/2026-08-18-chunker-attestation.md`.
+
+## 6c. The chunker attestation
+
+Decision 9 sizes the *embedder* check. This is its counterpart, and it is a different shape than
+expected, because the measurement said so.
+
+### It is an IDENTIFICATION, not a verification
+
+**The legacy table records no chunker at all**: not the algorithm, not `max_chars`, not `overlap`.
+`_index_fingerprint` has no chunker term either (`recall/index.py:442`), which is why re indexing a
+corpus does not repair a chunker change: the skip guard reports it unchanged.
+
+So there is no stated value to check. The attestation **re derives the body with `parse_frontmatter`
+(`recall/frontmatter.py:186`), re chunks it with each of a fixed candidate set, and compares the
+result against the stored chunks ordered by `ord` as an exact string list equality.** What it
+produces is the chunker's identity, or a refusal.
+
+⛔ **The candidate set is fixed before the run and is never widened to make something fit.** A
+search that keeps broadening until a configuration reproduces the corpus will always succeed, and
+what it finds is a configuration that never ran. That is curve fitting wearing a verification's
+clothes. When no candidate reproduces a source, the answer is "not identifiable", and the source is
+re embedded rather than adopted.
+
+### It is EXHAUSTIVE, not sampled, and that is the asymmetry worth naming
+
+Measured: **0.16 s to re chunk all 1,058 usable sources** with one candidate, against 1.82 s merely
+to hash the same corpus. All four candidates ran in under a second.
+
+**So the chunker check covers every source, and needs no sample size rule.** The embedder
+attestation needs one (decision 9) only because inference is expensive. Chunking is pure string
+work, so where the embedder check can give a statistical bound, the chunker check gives a complete
+answer. Two checks, two costs, two different guarantees, and the design should not force them into
+one shape.
+
+### Outcomes
+
+| Candidates reproducing ALL usable sources | Meaning | Action |
+|---|---|---|
+| exactly one | Identified | Record it as the `ChunkerIdentity`, **verified rather than asserted** |
+| more than one | Observationally equivalent on this corpus | Record the set, adopt under the canonical member, and say the identity is under determined |
+| none | Not identifiable | Refuse adoption; re embed |
+
+Measured on the memory corpus: exactly one, `chunk_text(max_chars=800, overlap=80)`, reproducing
+**1,058 of 1,058**. The other three reproduced 50.57, 4.06 and 2.93 percent, so the comparison
+discriminates rather than accepting everything.
+
+### Per source, because a corpus can hold more than one chunker
+
+⚠️ **This is the consequence the measurement forced, and it is not obvious.** Since
+`_index_fingerprint` has no chunker term, `recall index` **skips** a file whose content and embedder
+are unchanged even when the chunker has changed underneath it. An incrementally built corpus can
+therefore legitimately contain chunks from several chunker eras, and that is the expected result of
+any chunker change rather than an exotic case.
+
+So the attestation runs **per source** and the outcomes above are evaluated over the whole corpus:
+
+- all sources identify the **same** chunker: adopt the generation with that identity;
+- sources identify **different** chunkers: the corpus cannot become one generation with an honest
+  `PipelineIdentity`, which carries exactly one chunker. Adopt the majority set and **re embed the
+  remainder**, which is the same disposition step 3 already applies to a source whose bytes changed.
+
+### Failure disposition differs from the embedder check, deliberately
+
+A single embedder attestation failure **aborts the whole adoption** (decision 9), because nothing in
+the legacy metadata says which other sources shared the failing one's provenance. A chunker mismatch
+is **local and diagnosable**: the source is named, its bytes are already verified, and re embedding
+it is cheap. So a chunker mismatch rejects a source, not the run. **A systematic mismatch, more than
+half the corpus, aborts** and reports that the candidate set does not describe this corpus.
+
+### What it does not prove
+
+- **Observational equivalence, not identity.** A different implementation producing identical output
+  on these sources is indistinguishable here. Same standard as cosine 1.0 for the embedder, and it
+  should be claimed no more strongly.
+- **Markdown only.** The `content_blocks` path `bd582316` added for other media types stores
+  `text_start` and `text_end` as `None` (`recall/index.py:800`), and re deriving those chunks means
+  re running extraction, whose determinism across library versions is untested. **A non markdown
+  corpus is out of scope for this attestation** until that is measured.
+- **The body rule can move under it.** `parse_frontmatter` changed once, and the fix carries a
+  version marker (`recall/generations.py:109`) precisely because the same bytes then yielded a
+  different body. A corpus indexed before such a change reports a chunker mismatch when the real
+  difference is upstream of the chunker. The attestation should therefore report the body rule
+  version alongside its verdict, so the two causes are distinguishable.
 
 1. **The enterprise control plane is a second activation surface.** `ControlPlane.set_route()` and
    `cutover()` (`recall/control_plane.py:802`) write `recall_tenant_routes.active_generation`, and
