@@ -137,8 +137,19 @@ cost was not exposed by the runtime telemetry. The answer manifests are
 `results/enterprise_rag/non_reasoning/completeness_confirmation_none_openrouter.answers.jsonl.manifest.json`
 and
 `results/enterprise_rag/non_reasoning/completeness_confirmation_reranker_openrouter.answers.jsonl.manifest.json`.
-This is promising but not promotable: it has one capture, only one category, no 500-question
-evaluation, and no stable repeated-capture evidence.
+The initial answer experiment was promising but not promotable because it covered only one category
+and had no stable repeated-capture evidence or 500-question evaluation.
+
+I then repeated both completeness confirmation arms three times per question with extractive
+output. Both arms had capture stability `1.0`, and the paired retrieval result remained the same:
+the no-reranker arm had 21.00% recall and the reranker arm had 37.58%, with unchanged 10% exact
+coverage, one fewer invalid extra per question, six gains, and one loss. The repeated comparison
+is `results/enterprise_rag/non_reasoning/paired_completeness_confirmation_repeat3.json`.
+The no-reranker arm averaged 30,314.7 ms retrieval latency with p95 44,903.5 ms. The reranker
+arm averaged 31,242.1 ms with p95 72,509.7 ms. Each arm recorded 30 embedding calls and 30
+lexical calls; the reranker arm recorded 30 additional reranker calls. Retrieval cost was not
+available. The mean latency increase was modest, but the p95 increase is material, so this result
+supports continued investigation rather than promotion.
 
 The answer side remains a separate experiment. Candidate variables are answer model, context
 length, document order, structured answer format, source labels, abstention wording, and the
@@ -214,6 +225,23 @@ failure, preserving the preregistered retrieval-first gate.
 The next candidates should explain the dev to confirmation reversal through deterministic score
 calibration, adaptive reranking, source or parent-document coverage, or chunk selection. Each
 candidate needs a new preregistration and a held out confirmation before answer generation.
+
+## Rank blend and adaptive depth follow-ups
+
+The preregistered reciprocal rank blend kept the original hybrid ordering in the candidate score
+and added Voyage rank with weight `0.50`. On the 17-question project development split, recall
+rose from `53.77%` to `55.57%`, exact coverage stayed at `23.53%`, and invalid extras fell by
+`0.06` per question. On the 23-question confirmation, recall moved from `61.71%` to `61.59%`,
+exact coverage stayed at `13.04%`, and invalid extras rose by `0.043`. The blend is rejected for
+promotion because its confirmation recall was lower than baseline.
+
+The preregistered deterministic depth test changed only `k` from 8 to 12 on the same project
+confirmation. It raised recall from `61.71%` to `66.55%` and exact coverage from `13.04%` to
+`17.39%`, with six gains and one loss. Invalid extras increased by `3.61` per question, above
+the `2.0` guardrail, so raw `k=12` is rejected as a global setting. The strongest next retrieval
+hypothesis is selective depth, using a runtime confidence or source coverage signal to ask for
+more documents only when the baseline is uncertain, while preserving the smaller submitted set
+when it is confident.
 
 ## Promotion decision
 
