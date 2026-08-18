@@ -107,3 +107,118 @@ and needs only that somebody read the log and record the result here.
 To settle it deliberately instead, re-authenticate the CLI (`claude login`) and run the method as
 written above. Until one or the other happens, this question is open, and the hook's message
 deliberately states both outcomes rather than asserting the predicted one.
+
+## Treatment run 1 (2026-08-18): a genuine treatment run, and NO usable data point
+
+**Status: still predicted, not yet measured.** The prediction above is unchanged and stays that way.
+
+The deferred method fired exactly as designed. Session `4ea95a6b` started in a fresh worktree and
+the hook logged:
+
+```json
+{"at": "2026-08-18T14:04:28Z", "session": "4ea95a6b", "source": "startup",
+ "cwd": "...\\.claude\\worktrees\\silly-curran-42df24", "outcome": "claimed",
+ "is_main": false, "mcp_json_existed_before_hook": false, "mcp_action": "generated"}
+```
+
+`mcp_json_existed_before_hook: false` with `mcp_action: "generated"` is the treatment condition
+stated above, and the second apparatus check passes: the file was written, so a null cannot be
+blamed on a hook that never fired.
+
+**Outcome on the metric: `recall` did NOT appear in that session's own tool inventory.** The session
+had `Claude_Browser`, `visualize` and `ccd_session` and no `mcp__recall__*` tool of any kind.
+
+### Why that is not 1/1 toward the predicted 0/3
+
+**Confound 1 (approval, not ordering) is not merely possible here, it is confirmed.** Read directly
+from `~/.claude.json` at the time of writing:
+
+```
+projects["...\\worktrees\\silly-curran-42df24"].enabledMcpjsonServers == []
+```
+
+The worktree had **no approval recorded at all**, so a project-scoped server from `.mcp.json` could
+not have loaded no matter when the file was written. The absence of tools is fully explained before
+the ordering question is even reached, and the run therefore says nothing about it.
+
+The mitigation this document specifies for confound 1 is a control run in a checkout that already
+has `.mcp.json` **and shares the approval state**. That mitigation was unavailable, because the
+treatment worktree's approval state was "none", which no control can share while still being a
+control.
+
+So: **1 treatment run executed, 0 usable observations. The metric denominator does not advance.**
+
+This is the same failure the 2026-08-16 apparatus note describes, one layer in. A 401 is not a
+measurement; neither is an unapproved project. Both produce "no `recall` tools" for a reason that
+has nothing to do with file ordering, and both look identical to a confirmed prediction.
+
+### What DID change, and it unblocks the control
+
+🔁 **The store's "zero approvals" claim is now false, and that is the useful part of this run.**
+Memory entry `mcp-servers-blocked-by-pending-approval` records **306 tracked projects, zero with any
+approved server**, which is why no control was thought possible. Re-measured 2026-08-18:
+
+| | measured 2026-08-17 | measured 2026-08-18 |
+|---|---|---|
+| tracked projects | 306 | **309** |
+| projects with any `enabledMcpjsonServers` | 0 | **2** |
+
+The two are `.claude/worktrees/session-startup-audit-518fcd` and
+`.claude/worktrees/musing-dewdney-f0b28b`, both approved for `['recall', 'recall-memory']`. **Both
+still exist on disk and both already have `.mcp.json`.** Re-check with:
+
+```bash
+python -c "import json,os;d=json.load(open(os.path.expanduser('~/.claude.json')));print({k:v.get('enabledMcpjsonServers') for k,v in d['projects'].items() if v.get('enabledMcpjsonServers')})"
+```
+
+That is exactly the control condition this document asks for and could not previously construct: an
+approved checkout with the file already present. **A session opened in either of those two
+worktrees is the control run**, and its tool inventory is the number that decides whether the probe
+can see the tools at all.
+
+⚠️ **But those two approvals were written by a SCRIPT, not by the interactive prompt, and that
+matters for what a control there would prove.** `scripts/session_mcp_approve.py` exists only in
+commit `49ac9c5f` ("Approve the MCP servers this repo generates, instead of writing the file
+earlier"), which is **not merged**: `git merge-base --is-ancestor 49ac9c5f origin/master` fails, the
+path does not resolve in `origin/master`, and the only copy on disk is inside
+`musing-dewdney-f0b28b` itself. That is almost certainly why exactly those two worktrees are the
+approved ones, and it is a second reason this repository's own `scripts/session-mcp.sh` has no
+approval code: on master, nothing records approvals at all.
+
+Whether a script-written approval actually yields `mcp__recall__*` tools in a live session is listed
+as **still unverified** in the machine-level notes, on the grounds that `claude -p` returns 401 here
+and the two config entries are byte-identical to an interactively-approved one. So a control run in
+`musing-dewdney-f0b28b` settles **two** open questions at once, and they are not separable: a
+negative there means either the probe cannot see the tools *or* script-written approval does not
+work, and distinguishing those needs a third checkout approved through the interactive prompt.
+
+### The instrument's remaining gap, stated so it is not rediscovered
+
+The log records the treatment condition and nothing records the **outcome**. `mcp_action` is written
+by the hook, which cannot observe the tool list the client assembled; only the session itself can
+report that, in prose, to whoever reads the log later. So each data point still costs a human
+reading a transcript, and 13 of the 741 logged sessions to date carry `mcp_action: "generated"`
+without any of them having their outcome recorded here.
+
+Two of those 13 treatment runs occurred in worktrees that are approved *today*
+(`session-startup-audit-518fcd`, `musing-dewdney-f0b28b`), but approval is timestamped nowhere, so
+it cannot be established whether they were approved *at the time*. **Those rows are not
+retrospectively usable**, and reading them as data would repeat this run's mistake.
+
+**Next step, in order:**
+
+1. Open a session in `musing-dewdney-f0b28b` (approved, `.mcp.json` present) and record whether
+   `recall` appears. This is the control, and per the caveat above it is also the first live test of
+   a script-written approval.
+2. If the control shows the tools, a treatment run becomes interpretable **only in a worktree that
+   is approved before the session starts**, which today needs `scripts/session_mcp_approve.py` from
+   the unmerged `49ac9c5f`. Landing that commit is a prerequisite for the experiment, not a side
+   quest: on master there is no way to approve a fresh worktree at all, so every future fresh
+   worktree reproduces this run's confound exactly.
+3. If the control does **not** show the tools, the probe cannot detect them and every treatment
+   result to date, including this one, stays meaningless. Escalate to a checkout approved through
+   the interactive prompt before concluding anything about ordering.
+
+⛔ **Do not record a further treatment run until step 1 returns a number.** This run is the second
+time the question has been approached and the second time an untested apparatus produced an
+uninterpretable null; a third would establish a habit rather than a result.
