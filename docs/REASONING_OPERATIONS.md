@@ -52,9 +52,25 @@ Human review queues:
 Provider outages:
 
 * Optional provider failures are represented as `ProviderFailure` records.
-* A provider outage cannot produce an answer.
+* Proposal provider failures return `needs_review` and do not invoke the answer provider.
+* Retrieval expansion failures preserve the initial trusted evidence and may continue with the
+  baseline answer path.
 * The reasoning response carries provider id, model id, provider revision, failure kind, and
   sanitized message.
+
+Retrieval expansion configuration:
+
+* `RECALL_REASONING_EXPANSION=1` is required to enable the provider. It is off by default.
+* `RECALL_REASONING_EXPANSION_MODEL` and `RECALL_REASONING_API_KEY` are required when enabled.
+* `RECALL_REASONING_BASE_URL` defaults to OpenRouter and must be an absolute HTTP or HTTPS URL.
+* `RECALL_REASONING_TIMEOUT` defaults to 30 seconds and must be finite and positive.
+* `RECALL_REASONING_EXPANSION_EFFORT` defaults to `minimal`.
+* `RECALL_REASONING_EXPANSION_REVISION` defaults to `unpinned` and should be pinned in run records.
+* `RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS` is optional nonnegative cost metadata.
+* The live MCP tool must also receive `expand_retrieval=true`. Ordinary search and evidence tools
+  remain unchanged.
+* Depth expansion runs first. The model is called only when depth still reports an evidence gap,
+  with one bounded model call and at most three generated retrieval queries.
 
 Generation retirement:
 
@@ -117,6 +133,8 @@ Histograms:
 Cost:
 
 * The core library records model call budget usage in `ReasoningBudgetUsage.model_calls`.
-* No managed model provider is required by the default reasoning tools.
+* No managed model provider is required by the default reasoning tools, which remain deterministic.
+  Retrieval expansion is separately configured through the variables above and is never the answer
+  judge.
 * Provider specific monetary cost should be added by provider adapters as library authored numeric
   fields or metrics, never as corpus controlled text.

@@ -46,11 +46,41 @@ The MCP server is `python -m recall_mcp.server`. Its supported tools are:
 | `recall_index` | Index allowed files beneath `RECALL_INDEX_ROOT`. |
 | `recall_forget` | Erase indexed source material. |
 | `recall_stats` | Report counters and operational state. |
-| `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. |
+| `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `expand_retrieval=true` only when the cheap expansion provider is configured. |
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
 | `recall_reasoning_audit` | Report reasoning integration state and diagnostics. |
 | `recall_rewrite_plan` | Report which key a proposal would declare, in which file. Writes nothing. |
+
+`recall_search` and `recall_evidence` also accept an optional `locale` argument for presentation
+localization. When supplied, the response gains an additive `localized` object containing display
+text keyed by `chunk_id`. Canonical hit text, provenance, evidence items, `system_prompt`, and
+`user_message` are never translated in place. Localization is disabled unless
+`RECALL_TRANSLATION_ENABLED=1` configures a validated HTTPS text endpoint. Provider failures are
+fail soft and return canonical values with a fixed warning. Enabling the provider sends selected
+retrieved passage text to that endpoint, so deployments with sensitive corpora should use a
+self-hosted endpoint and should treat localized values as display data only. The explicit
+`RECALL_TRANSLATION_ALLOW_HTTP=1` override permits cleartext HTTP for a deliberately controlled
+endpoint and must not be used across an untrusted network.
+
+The static README viewer uses these provider locale identifiers: `english`, `italian`, `spanish`,
+`french`, `german`, `portuguese`, `chinese_simplified`, `japanese`, `korean`, `russian`, `arabic`,
+`hindi`, and `turkish`. Other provider identifiers may be passed to the MCP or CLI presentation
+surfaces. An unsupported identifier or provider failure leaves canonical text unchanged and marks
+the localized object as a fallback.
+
+The `recall_reasoning_query` MCP tool accepts `expand_retrieval`, defaulting to `false`. Enabling it
+requires `RECALL_REASONING_EXPANSION=1`, `RECALL_REASONING_EXPANSION_MODEL`, and
+`RECALL_REASONING_API_KEY`. The provider uses the configured OpenRouter compatible base URL,
+minimal reasoning effort by default, one model call, and at most three generated retrieval queries.
+The provider receives bounded retrieval data as untrusted input. It cannot create citations or
+trusted evidence directly.
+
+The CLI accepts the same additive presentation option, for example:
+
+```console
+recall search "deployment notes" --locale italian
+```
 
 **There is deliberately no `recall_rewrite_apply`.** Nothing reaches corpus metadata without a
 named human, and the MCP client is the model: letting it supply a reviewer id and an audit note

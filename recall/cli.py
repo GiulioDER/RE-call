@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import functools
 import json
 import os
 import sys
+from typing import get_args
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,8 +15,18 @@ from recall.embeddings import resolve_embedder
 from recall.entailment import EntailmentJudge, resolve_entailment_judge
 from recall.setup import CalibrationResult
 from recall.trust_policy import TrustPolicy
-from recall.embeddings import Embedder, HashingEmbedder
-from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
+from recall.embeddings import Embedder
+from recall.index import (
+    ChunkerKind,
+    DEFAULT_INDEX_GLOB,
+    DEFAULT_MAX_CHARS,
+    DEFAULT_OVERLAP_CHARS,
+    head_commit,
+    Indexer,
+    PruneGuardTripped,
+    chunk_code,
+    chunk_text,
+)
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.store import (
@@ -28,6 +38,7 @@ from recall.store import (
 )
 from recall.trust import terminal_safe, trusted_search
 from recall.types import TrustedResult
+from recall_mcp.translation import provider_from_env, translate_for_display
 
 if TYPE_CHECKING:
     from recall.reasoning import ReasoningResponse
@@ -201,6 +212,28 @@ def _print_result(result: TrustedResult) -> None:
         )
 
 
+def _print_localized_result(result: TrustedResult, locale: str) -> None:
+    """Print optional display translations without changing the canonical CLI result."""
+
+    from recall_mcp.translation import normalize_locale
+
+    try:
+        normalized = normalize_locale(locale)
+        if normalized is None:
+            return
+        provider = provider_from_env()
+        values, translated, warning = translate_for_display(
+            [hit.chunk.text for hit in result.hits], normalized, provider
+        )
+    except ValueError as exc:
+        raise SystemExit(f"translation: {exc}") from exc
+    print(f"[localized:{normalized} provider={provider.name} translated={translated}]")
+    if warning:
+        print(f"  warning: {warning}")
+    for hit, value in zip(result.hits, values, strict=True):
+        print(f"  chunk_id={terminal_safe(hit.chunk.id)!r}  {terminal_safe(value)!r}")
+
+
 def _print_evidence(result: TrustedResult, max_items: int) -> None:
     """Print the generator-neutral evidence bundle and the exact prompt it renders to.
 
@@ -327,6 +360,44 @@ def _positive_int(value: str) -> int:
     if number < 1:
         raise argparse.ArgumentTypeError(f"must be at least 1, got {number}")
     return number
+
+
+def _non_negative_int(value: str) -> int:
+    """A count where zero is meaningful but a negative one is not.
+
+    `--overlap` is the case: 0 means "no shared context between adjacent pieces", which is a real
+    choice, while a negative value is written verbatim into an immutable lineage record describing
+    a pipeline nothing can have run.
+    """
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from None
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"cannot be negative, got {number}")
+    return number
+
+
+def _parse_status_vocabulary(raw: str | None) -> tuple[str, ...] | None:
+    """Parse `--status-vocabulary`. `None` means the shipped memo set.
+
+    The split is the flag's SHAPE; every judgement about the result belongs to
+    `coerce_status_vocabulary`, which already refuses an empty list, a bare string, blank and
+    non-str entries and casefold collisions, and which strips. Deliberately NOT the labelling
+    runner's `tuple(v.strip() for v in raw.split(",") if v.strip())`: that comprehension swallows
+    exactly the blanks the coercion exists to refuse, so `Final,,Rejected` would pass quietly and
+    `,` would collapse to an empty vocabulary — which refuses every status claim at a BATCH rung,
+    the original defect re-entered through the flag added to remove it.
+    """
+    if raw is None:
+        return None
+    from recall.truth_extraction.types import coerce_status_vocabulary
+
+    try:
+        return coerce_status_vocabulary(raw.split(","))
+    except ValueError as exc:
+        print(f"recall extract: --status-vocabulary: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 def _rejected_claims(ledger_path: Path) -> frozenset[str]:
@@ -577,7 +648,7 @@ def _run_extract(args: argparse.Namespace) -> None:
     """
     from recall.frontmatter import encodable_name
     from recall.truth_extraction import resolve_extraction_engine
-    from recall.truth_extraction.extract import extract_corpus_claims
+    from recall.truth_extraction.extract import extract_corpus_claims_for_report
 
     try:
         engine = resolve_extraction_engine()
@@ -591,6 +662,12 @@ def _run_extract(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         raise SystemExit(2)
+
+    # Parsed BEFORE the path check and before the glob, because it depends on nothing about the
+    # corpus. The sibling `--recheck` check below carries the same reasoning from the other
+    # direction: a flag error knowable at parse time must not arrive after a corpus of model
+    # calls has been paid for, under a complete-looking report.
+    status_vocabulary = _parse_status_vocabulary(args.status_vocabulary)
 
     root = Path(args.path if args.extract_cmd == "run" else args.file)
     if not root.exists():
@@ -685,8 +762,12 @@ def _run_extract(args: argparse.Namespace) -> None:
             raise SystemExit(2) from exc
 
     try:
-        extractions = extract_corpus_claims(
-            documents, engine=engine, corpus_names=corpus_names, cache=cache
+        extractions = extract_corpus_claims_for_report(
+            documents,
+            engine=engine,
+            corpus_names=corpus_names,
+            cache=cache,
+            status_vocabulary=status_vocabulary,
         )
         for name, reason in unreadable:
             print(f"  UNREADABLE {name}: {reason}")
@@ -703,6 +784,17 @@ def _run_extract(args: argparse.Namespace) -> None:
                 )
         total = sum(len(item.claims) for item in extractions)
         print(f"\n{len(documents)} file(s) read, {total} claim(s) for review")
+        if status_vocabulary is not None:
+            # Named only when it is not the default: two runs whose outputs differ have nothing
+            # on screen saying why otherwise. The parenthetical is why: this report is the ONLY
+            # place a custom vocabulary is honoured. `recall rewrite` extracts under the shipped
+            # set regardless, so a status claim printed above can vanish from `rewrite plan`
+            # with nothing else on screen to explain it, right after this command's own closing
+            # line says "review with `recall rewrite plan`".
+            print(
+                f"status vocabulary: {', '.join(status_vocabulary)} "
+                "(measurement only; recall rewrite still writes the shipped set)"
+            )
 
         if cache is not None and getattr(args, "recheck", False):
             from recall.truth_extraction._cache import recheck_cached_extractions
@@ -711,7 +803,15 @@ def _run_extract(args: argparse.Namespace) -> None:
             # so passing the document keys instead produced a different key for every file, every
             # lookup missed, and the report read "0 checked, rate not measured" without saying why.
             report = recheck_cached_extractions(
-                documents, engine=engine, corpus_names=corpus_names, cache=cache
+                documents,
+                engine=engine,
+                corpus_names=corpus_names,
+                cache=cache,
+                # The SAME vocabulary the extraction ran with, for the same reason as
+                # `corpus_names`: it is in the cache key AND the prompt. Omitted, every lookup
+                # misses and the report reads `checked=0` — a determinism measurement that
+                # silently became a non-measurement.
+                status_vocabulary=status_vocabulary,
             )
             rate = "not measured" if report.mismatch_rate is None else f"{report.mismatch_rate:.3f}"
             print(
@@ -833,6 +933,19 @@ def main(argv: list[str] | None = None) -> None:
     p_manifest_create.add_argument("--corpus-version", required=True)
     p_manifest_create.add_argument("--objects", required=True, help="JSON array of object entries")
     p_manifest_create.add_argument("--output", required=True)
+    # The producer for `create --objects`. Without it, `file://` manifests were reachable only by
+    # hand-writing a JSON array with a correct sha256 per file, which is why a corpus in a
+    # directory could not realistically become a generation, and therefore could not be calibrated.
+    p_manifest_inventory = manifest_sub.add_parser(
+        "inventory", help="build a file:// object inventory from a local directory"
+    )
+    p_manifest_inventory.add_argument("path")
+    p_manifest_inventory.add_argument(
+        "--glob",
+        default=DEFAULT_GLOB,
+        help="file glob to inventory — e.g. '**/*.py' for code. Default: markdown.",
+    )
+    p_manifest_inventory.add_argument("--output", required=True)
     p_manifest_verify = manifest_sub.add_parser("verify", help="verify every immutable S3 object")
     p_manifest_verify.add_argument("manifest")
     p_manifest_verify.add_argument("--version-id")
@@ -852,9 +965,29 @@ def main(argv: list[str] | None = None) -> None:
     p_build.add_argument("--embedder-revision", default=None)
     p_build.add_argument("--embedder-artifact-digest", default=None)
     p_build.add_argument("--unverified-development", action="store_true")
-    p_build.add_argument("--chunker", choices=["text", "code"], default="text")
-    p_build.add_argument("--max-chars", type=int, default=800)
-    p_build.add_argument("--overlap", type=int, default=80)
+    p_build.add_argument(
+        "--project",
+        default=None,
+        help="stamp every chunk with the project that produced it, as `recall index --project` "
+             "does. A calibrated generation without it cannot say where a hit came from.",
+    )
+    p_build.add_argument(
+        "--no-commit-stamp",
+        action="store_true",
+        help="do not record the repository HEAD on each chunk.",
+    )
+    # `choices` read off the same `Literal` the builder validates against, rather than repeated
+    # here. This was the last of four hand-written copies of the vocabulary, and it is the one at
+    # the gate users actually reach, so a chunker added to `ChunkerKind` would have been accepted
+    # by `BuildRequest` while this still exited 2.
+    p_build.add_argument(
+        "--chunker", choices=list(get_args(ChunkerKind)), default="text"
+    )
+    # `_positive_int`, not bare `int`. `--max-chars 0` reached `manager.create`, wrote the
+    # generation row, and only then failed inside `build` on the text path — while on the code path
+    # it did not fail at all and recorded `{"max_chars": 0}` for one unsplit chunk.
+    p_build.add_argument("--max-chars", type=_positive_int, default=DEFAULT_MAX_CHARS)
+    p_build.add_argument("--overlap", type=_non_negative_int, default=DEFAULT_OVERLAP_CHARS)
     p_validate = generation_sub.add_parser("validate", help="validate a built generation")
     p_validate.add_argument("generation_id")
     p_promote = generation_sub.add_parser("promote", help="promote a ready generation")
@@ -866,14 +999,27 @@ def main(argv: list[str] | None = None) -> None:
     p_gc.add_argument("--retention-days", type=int, default=7)
     p_gc.add_argument("--retain-previous", type=int, default=2)
 
-    p_index = sub.add_parser("index", help="index a folder of markdown or code")
+    p_index = sub.add_parser("index", help="index a folder of supported documents or code")
 
     p_index.set_defaults(_opens_db=True)
     p_index.add_argument("path")
     p_index.add_argument(
         "--glob",
-        default=DEFAULT_GLOB,
-        help="file glob to index — e.g. '**/*.py' for code (auto-uses code chunking). Default: markdown.",
+        default=DEFAULT_INDEX_GLOB,
+        help="file glob to index, for example '**/*.py' for code. Default: supported documents and code.",
+    )
+    p_index.add_argument(
+        "--project",
+        default=None,
+        help="stamp every chunk with the project that produced it. Not inferred from the path: a "
+             "directory name is not a project, and a guessed value reads as authoritative while "
+             "being wrong in every worktree.",
+    )
+    p_index.add_argument(
+        "--no-commit-stamp",
+        action="store_true",
+        help="do not record the repository's HEAD on each chunk. The commit is what makes a stale "
+             "chunk DETECTABLE rather than merely suspected, and it cannot be reconstructed later.",
     )
     p_index.add_argument(
         "--allow-prune",
@@ -928,6 +1074,11 @@ def main(argv: list[str] | None = None) -> None:
         help="also print the generator-neutral evidence bundle and the exact prompt it renders "
         "to, as JSON. Only verdict-ok hits enter the bundle, in retrieval order; an abstention "
         "produces an empty bundle. Additive: the normal listing is printed either way.",
+    )
+    p_search.add_argument(
+        "--locale",
+        help="optional presentation language for an additive localized display; canonical text "
+        "and evidence remain unchanged",
     )
 
     p_reasoning = sub.add_parser(
@@ -1026,6 +1177,14 @@ def main(argv: list[str] | None = None) -> None:
         help="persist extraction results at PATH, so re-ingesting an unchanged memo does not "
         "re-pay for it. Also what makes --recheck possible.",
     )
+    _status_vocabulary_help = (
+        "comma-separated lifecycle words this corpus uses, e.g. Final,Rejected,Deferred. "
+        "Defaults to the memo set. Matching is case-insensitive and the spelling given here "
+        "is what is stored. This does NOT widen what `recall rewrite` may write."
+    )
+    p_extract_run.add_argument(
+        "--status-vocabulary", default=None, metavar="W,X,Y", help=_status_vocabulary_help
+    )
     _extract_show_blurb = (
         "Show the claims and refusals for a single file. Targets are resolved against the "
         "file's own directory, not against the file alone. This writes nothing."
@@ -1035,6 +1194,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_extract_show.add_argument("file")
     p_extract_show.add_argument("--glob", default=DEFAULT_GLOB)
+    p_extract_show.add_argument(
+        "--status-vocabulary", default=None, metavar="W,X,Y", help=_status_vocabulary_help
+    )
 
     # No `_opens_db` here either: review and declaration are filesystem work.
     p_rewrite = sub.add_parser(
@@ -1263,8 +1425,11 @@ def main(argv: list[str] | None = None) -> None:
             except PermissionError as exc:
                 raise SystemExit(
                     f"{exc}\n\n"
-                    "This is `recall setup`, which cannot prompt its way out of this: pass a "
-                    "DSN explicitly with `recall --dsn <dsn> setup`, or set "
+                    "This is `recall setup`, which cannot prompt its way out of this: it uses "
+                    "the DSN it was given and never asks for another. Passing that same value "
+                    "again with `--dsn` or `--serving-dsn` does not help, because the refusal "
+                    "is about the credentials inside the DSN, not about how it reached the "
+                    "command. Re-run with a DSN carrying a real password, or set "
                     "RECALL_ALLOW_INSECURE_DSN=1 to accept the risk deliberately."
                 ) from exc
         else:
@@ -1335,7 +1500,42 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "manifest":
         from recall.lineage import IndexManifestV1, ManifestObjectV1
-        from recall.manifest import S3ObjectReader, load_inventory, load_manifest
+        from recall.manifest import (
+            ExtractingS3ObjectReader,
+            ObjectReader,
+            S3ObjectReader,
+            load_inventory,
+            load_manifest,
+            reader_for_manifest,
+        )
+
+        if args.manifest_cmd == "inventory":
+            # Handled before anything tenant- or reader-shaped is built. An inventory describes a
+            # directory and belongs to no tenant yet; `create` is where a tenant is attached.
+            from recall.wizard.inventory import write_inventory
+
+            try:
+                report = write_inventory(args.path, args.output, args.glob)
+            except (ValueError, OSError, NotImplementedError, MemoryError) as exc:
+                # `candidate_files` and `build_inventory_report` both refuse loudly and their
+                # messages name the way forward (the glob, the path). Re-raising as SystemExit
+                # keeps that message and drops a traceback nobody running an install wizard can
+                # act on. `NotImplementedError` is in the set because `Path.glob` raises it for a
+                # non-relative pattern, and `MemoryError` because a wide glob can meet a file
+                # larger than RAM; neither is a ValueError or an OSError, so both used to escape.
+                # `str(MemoryError())` is the empty string, so re-raising the message alone would
+                # exit 1 printing a blank line: the one member of this tuple for which "keeps that
+                # message" was false. The class name is the diagnosis when there is no message.
+                raise SystemExit(
+                    str(exc)
+                    or f"{type(exc).__name__} while building the inventory from {args.path!r}. "
+                    "Narrow --glob, or free memory."
+                ) from exc
+            skipped = (
+                f", {report.vanished} skipped (disappeared while reading)" if report.vanished else ""
+            )
+            print(f"wrote {args.output} objects={report.written}{skipped}")
+            return
 
         if args.manifest_cmd == "create":
             manifest = IndexManifestV1(
@@ -1346,7 +1546,9 @@ def main(argv: list[str] | None = None) -> None:
             Path(args.output).write_text(manifest.to_json(), encoding="utf-8")
             print(f"wrote {args.output} sha256={manifest.digest} objects={len(manifest.objects)}")
             return
-        reader = S3ObjectReader.from_environment()
+        # Chosen from the manifest's own objects rather than assumed. `manifest verify` on a
+        # file:// manifest previously failed with an S3 allowlist error before reading anything.
+        reader: ObjectReader | None = None
         if args.manifest.startswith("s3://"):
             if args.version_id is None or args.sha256 is None or args.size is None:
                 raise SystemExit("an S3 manifest requires --version-id, --sha256 and --size")
@@ -1357,13 +1559,17 @@ def main(argv: list[str] | None = None) -> None:
                 args.size,
                 args.sha256,
             )
-            manifest = IndexManifestV1.from_json(reader.fetch(reference).data)
+            base_reader = S3ObjectReader.from_environment()
+            manifest = IndexManifestV1.from_json(base_reader.fetch(reference).data)
+            reader = ExtractingS3ObjectReader(base_reader)
         else:
             manifest = load_manifest(args.manifest)
         if manifest.tenant_id != args.tenant:
             raise SystemExit(
                 f"manifest tenant {manifest.tenant_id!r} does not match --tenant {args.tenant!r}"
             )
+        if reader is None:
+            reader = reader_for_manifest(manifest)
         reader.verify(manifest)
         print(f"verified sha256={manifest.digest} objects={len(manifest.objects)}")
         return
@@ -1406,17 +1612,21 @@ def main(argv: list[str] | None = None) -> None:
             print(f"active generation: {args.generation_id}")
             return
 
-        from recall.lineage import (
-            ChunkerIdentity,
-            EmbedderIdentity,
-            IndexManifestV1,
-            ManifestObjectV1,
-            PipelineIdentity,
+        from recall.generation_build import BuildRequest, build_generation
+        from recall.lineage import IndexManifestV1, ManifestObjectV1
+        from recall.manifest import (
+            ExtractingS3ObjectReader,
+            ObjectReader,
+            S3ObjectReader,
+            load_manifest,
+            reader_for_manifest,
         )
-        from recall.manifest import S3ObjectReader, load_manifest
 
         environment = manager.environment
-        reader = S3ObjectReader.from_environment()
+        # The reader is chosen AFTER the manifest is known, not before. Building the S3 reader
+        # up front needs boto3 and RECALL_S3_ALLOWLIST, so a local-only user hit an S3
+        # configuration error while doing nothing that involved S3.
+        reader = None
         if args.manifest.startswith("s3://"):
             if (
                 args.manifest_version_id is None
@@ -1434,58 +1644,43 @@ def main(argv: list[str] | None = None) -> None:
                 args.manifest_size,
                 args.manifest_sha256,
             )
-            manifest = IndexManifestV1.from_json(reader.fetch(reference).data)
+            # An s3:// manifest needs the S3 reader to fetch the manifest itself.
+            base_reader = S3ObjectReader.from_environment()
+            manifest = IndexManifestV1.from_json(base_reader.fetch(reference).data)
+            reader = ExtractingS3ObjectReader(base_reader)
         else:
             if environment == "production":
                 raise SystemExit("production generation builds require a versioned S3 manifest")
             manifest = load_manifest(args.manifest)
+        if reader is None:
+            reader = reader_for_manifest(manifest)
         embedder = _make_embedder(args.embedder)
-        revision = args.embedder_revision
-        provider = args.embedder_provider
-        if isinstance(embedder, HashingEmbedder):
-            provider = provider or "recall"
-            revision = revision or "hashing-md5-bow-v1"
-        else:
-            provider = provider or "fastembed"
-        identity = EmbedderIdentity(
-            provider=provider,
-            model=embedder.name,
-            dimension=embedder.dim,
-            revision=revision,
-            artifact_digest=args.embedder_artifact_digest,
-            unverified_reason=(
-                "explicit development build"
-                if args.unverified_development
-                and not revision
-                and not args.embedder_artifact_digest
-                else None
-            ),
-        )
-        if args.chunker == "code":
-            generation_chunker = functools.partial(chunk_code, max_chars=args.max_chars)
-            chunker_identity = ChunkerIdentity(
-                "recall.chunk_code", 1, {"max_chars": args.max_chars}
-            )
-        else:
-            generation_chunker = functools.partial(
-                chunk_text, max_chars=args.max_chars, overlap=args.overlap
-            )
-            chunker_identity = ChunkerIdentity(
-                "recall.chunk_text",
-                1,
-                {"max_chars": args.max_chars, "overlap": args.overlap},
-            )
-        pipeline = PipelineIdentity(identity, chunker_identity)
-        generation = manager.create(
+        # The assembly itself lives in `recall.generation_build`, because the installation wizard
+        # builds generations too and a second copy of it would mean two provenance vocabularies
+        # drifting apart with nothing failing. The strings it writes are pinned by
+        # `tests/test_generation_build_assembly.py`.
+        generation_stats = build_generation(
+            manager,
             manifest,
-            pipeline,
-            allow_unverified=args.unverified_development,
-        )
-        generation_stats = manager.build(
-            generation.generation_id,
             reader,
             embedder,
-            generation_chunker,
+            BuildRequest(
+                chunker=args.chunker,
+                max_chars=args.max_chars,
+                overlap=args.overlap,
+                provider=args.embedder_provider,
+                revision=args.embedder_revision,
+                artifact_digest=args.embedder_artifact_digest,
+                unverified=args.unverified_development,
+                # Same provenance the index path stamps. Without this a CALIBRATED generation
+                # carries no record of which project produced each chunk, and the generation path
+                # is the only one calibration can use.
+                project=args.project,
+                # `"."` rather than the corpus: a manifest names objects, not a working tree, and
+                # an s3:// one has no local root at all. This is the pre-existing behaviour and is
+                # NOT the same root `recall index` uses, which stamps the directory being indexed.
+                commit_root=None if args.no_commit_stamp else ".",
+            ),
         )
         print(
             f"built {generation_stats.generation_id}: {generation_stats.objects} objects, "
@@ -1853,7 +2048,18 @@ def main(argv: list[str] | None = None) -> None:
             args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
         ) as store:
             store.check_schema()
-            indexer = Indexer(store, embedder, chunker=chunker, allow_prune=args.allow_prune)
+            # Stamped by default, opt OUT rather than opt in. A corpus indexed without a commit
+            # cannot have one added afterwards, and the run that skips it is always the run nobody
+            # was watching.
+            commit = None if args.no_commit_stamp else head_commit(args.path)
+            indexer = Indexer(
+                store,
+                embedder,
+                chunker=chunker,
+                allow_prune=args.allow_prune,
+                project=args.project,
+                indexed_commit=commit,
+            )
             try:
                 stats = indexer.index_path(args.path, glob=args.glob)
             except PruneGuardTripped as exc:
@@ -2002,6 +2208,8 @@ def main(argv: list[str] | None = None) -> None:
                 policy=_search_policy,
             )
             _print_result(_search_result)
+            if args.locale:
+                _print_localized_result(_search_result, args.locale)
             if args.evidence:
                 _print_evidence(_search_result, max_items=args.k)
     elif args.cmd == "demo":

@@ -27,7 +27,6 @@ from recall.document import parse_document
 from recall.frontmatter import VALIDITY_KEYS, supersedes_key
 from recall.truth_extraction.types import (
     MAX_CLAIMS_PER_FILE,
-    STATUS_VOCABULARY,
     VALIDITY_CLAIM_KEYS,
     ClaimRejection,
     ExtractedClaim,
@@ -36,6 +35,7 @@ from recall.truth_extraction.types import (
     StatusClaim,
     SupersessionClaim,
     ValidityClaim,
+    coerce_status_vocabulary,
 )
 
 #: A frontmatter key line. `parse_frontmatter` strips a block only when it opens on line 0 and
@@ -73,13 +73,21 @@ def normalize_extraction(
     file: str,
     human_body: str,
     corpus_names: Sequence[str],
+    status_vocabulary: Sequence[str] | None = None,
 ) -> tuple[tuple[ExtractedClaim, ...], tuple[ClaimRejection, ...]]:
     """Apply the ladder to one file's raw engine output.
 
     Returns `(survivors, rejections)`. Raises `ExtractionBatchRejected` when a batch level
     rung refuses the whole output.
+
+    `status_vocabulary=None` means the shipped default, matching `extract_file_claims`. Both are
+    public, and they used to disagree: None was "use the default" in one and `TypeError` out of
+    the other, escaping the ladder as a crash rather than a refusal and discarding every
+    extraction a corpus run had already built. `()` disagreed the same way one step later, and
+    is now refused here as it is at render time.
     """
-    payloads = _batch_rungs(raw)
+    vocabulary = coerce_status_vocabulary(status_vocabulary)
+    payloads = _batch_rungs(raw, vocabulary)
     by_key = _corpus_index(corpus_names)
     survivors: list[ExtractedClaim] = []
     rejections: list[ClaimRejection] = []
@@ -94,10 +102,72 @@ def normalize_extraction(
     return tuple(survivors), tuple(rejections)
 
 
-def _batch_rungs(raw: str) -> tuple[Mapping[str, Any], ...]:
+_FENCE_MARK = "```"
+
+#: An opening fence's info string: `json`, `JSON`, `Json`, or nothing. Applied to one short line
+#: with `fullmatch`, and it has no ambiguous quantifier, so it cannot backtrack.
+_INFO_STRING = re.compile(r"[A-Za-z0-9_+-]*")
+
+
+def _unfence(raw: str) -> str:
+    """Unwrap output that is exactly one markdown code fence, and nothing looser.
+
+    Chat models wrap JSON in ```json fences by habit, and the system prompt saying "Return JSON
+    and nothing else" does not stop them: the default extraction model does it on a request as
+    small as `Return exactly {"claims": []}`. Unstripped, `json.loads` fails at character 0 and
+    the whole file is refused at the `json` rung, so a correct answer is discarded and the run
+    reports ZERO claims. Measured: 30 of 30 documents, every claim kind, on the shipped default
+    engine — a feature that looked like a careful model refusing and was a parser rejecting.
+
+    ⚠️ **Deliberately not a regular expression.** Two successive regex versions each turned a
+    degenerate reply into a denial of service on the INGEST path, where `extract_file_claims`'s
+    broad guard does not reach (it wraps `engine.run` alone) and the HTTP timeout is long since
+    satisfied. The first was ambiguous between two whitespace classes and the newline between
+    them: `` ```json `` plus 20k newlines consumed **3,389 seconds of CPU without returning**.
+    The second removed that and left the lazy body ambiguous with the closing fence's indent,
+    which is cleanly quadratic on spaces and tabs: 11.1s at 64k spaces, extrapolating to roughly
+    45 minutes at 1MB. Both were "fixed" and both shipped a new degenerate character. The
+    scanning below is linear in the length of `raw` by construction, so there is no third
+    character class to find.
+
+    Deliberately narrow, unchanged. This accepts a fence around the WHOLE payload and nothing
+    else: prose before or after it, or a second fence, still fails the rung, since the unwrapped
+    text has to parse as JSON and a second fence does not. Being lenient about a near-universal
+    wrapper is not the same as accepting arbitrary text, and only the first is safe here.
+
+    ⚠️ **The type guard below is load-bearing.** `raw` is `str` by the engine port's contract,
+    but a third-party engine that returns `None`, an `int` or a list is exactly the kind of
+    contract violation this rung exists to absorb, and every operation here is a string method.
+    Without the guard, `raw.strip()` raised `AttributeError` OUT of the ladder: `extract.py`
+    guards `engine.run` alone, and the two `except` clauses downstream catch only
+    `ExtractionBatchRejected`, so one such reply aborted `extract_corpus_claims` and discarded
+    every extraction already built. Refusing at the `json` rung records it per file instead, and
+    that is what the code did before the fence work: the regression came in with this function.
+    """
+    if not isinstance(raw, str):
+        # Straight through to `json.loads`, which parses `bytes` and refuses everything else at
+        # the `json` rung. Not unwrapped: a fence around bytes is not a shape any engine sends,
+        # and inventing a decode here would be guessing at an encoding.
+        return raw
+    text = raw.strip()
+    if len(text) < 2 * len(_FENCE_MARK) or not text.startswith(_FENCE_MARK):
+        return raw
+    if not text.endswith(_FENCE_MARK):
+        return raw
+    opening_end = text.find("\n")
+    if opening_end == -1:
+        # A single line that opens and closes a fence carries no payload line to unwrap.
+        return raw
+    if not _INFO_STRING.fullmatch(text[len(_FENCE_MARK) : opening_end].strip()):
+        return raw
+    body = text[opening_end + 1 : -len(_FENCE_MARK)].rstrip("\r\n \t")
+    return body or raw
+
+
+def _batch_rungs(raw: str, status_vocabulary: Sequence[str]) -> tuple[Mapping[str, Any], ...]:
     """Rungs 1 to 4. Any failure refuses the file's whole output."""
     try:
-        decoded = json.loads(raw)
+        decoded = json.loads(_unfence(raw))
     except (ValueError, TypeError, RecursionError) as exc:
         # RecursionError is not a ValueError. Output nested past the interpreter's limit is
         # still just malformed output, and it must refuse like any other malformed output
@@ -112,10 +182,10 @@ def _batch_rungs(raw: str) -> tuple[Mapping[str, Any], ...]:
         raise ExtractionBatchRejected(
             "max_claims", f"{len(claims)} claims exceeds the maximum of {MAX_CLAIMS_PER_FILE}"
         )
-    return tuple(_shape(index, claim) for index, claim in enumerate(claims))
+    return tuple(_shape(index, claim, status_vocabulary) for index, claim in enumerate(claims))
 
 
-def _shape(index: int, claim: Any) -> Mapping[str, Any]:
+def _shape(index: int, claim: Any, status_vocabulary: Sequence[str]) -> Mapping[str, Any]:
     """Rung 4. One malformed claim refuses the batch it arrived in."""
     if not isinstance(claim, Mapping):
         raise ExtractionBatchRejected("claim_shape", f"claim {index} is not an object")
@@ -141,11 +211,23 @@ def _shape(index: int, claim: Any) -> Mapping[str, Any]:
             )
     if kind == "validity":
         _shaped_validity(index, claim)
-    if kind == "status" and claim["value"] not in STATUS_VOCABULARY:
-        raise ExtractionBatchRejected(
-            "claim_shape",
-            f"claim {index} status {claim['value']!r} is outside {list(STATUS_VOCABULARY)}",
-        )
+    if kind == "status":
+        # Case-insensitive, and the claim is rewritten to the VOCABULARY's spelling. The bug this
+        # rung produced was a casing mismatch, not a vocabulary mismatch: PEP bodies write
+        # `Status: Final` and the model answered `final`, and an exact-membership test against a
+        # caller-supplied `Final,Rejected,...` refuses that at a BATCH rung, taking the file's
+        # supersession claims down with a status the reader would have accepted. Passing the
+        # vocabulary in its own casing is the natural thing for a caller to do, so a comparison
+        # that only works in one casing moves the defect rather than fixing it. Canonicalising
+        # means one spelling reaches the store however the model wrote it.
+        canonical = {str(word).casefold(): str(word) for word in status_vocabulary}
+        folded = str(claim["value"]).strip().casefold()
+        if folded not in canonical:
+            raise ExtractionBatchRejected(
+                "claim_shape",
+                f"claim {index} status {claim['value']!r} is outside {list(status_vocabulary)}",
+            )
+        return {**claim, "value": canonical[folded]}
     return claim
 
 
@@ -215,6 +297,78 @@ def _claim_rungs(
     )
 
 
+def _base_name(name: str) -> str:
+    """`supersedes_key` with one further dotted segment removed, by pure string operations.
+
+    `Path(...).stem` was used here and is wrong twice over: it splits on `\\` and on a drive
+    prefix on Windows and not on POSIX, which made the ladder's verdict OS-dependent inside a
+    module whose first line promises no filesystem; and it disagrees with `supersedes_key`,
+    which splits on `/` alone. One rule, spelled out.
+    """
+    tail = supersedes_key(name)
+    stem, dot, _suffix = tail.rpartition(".")
+    return stem if dot else tail
+
+
+def _own_entries(file: str, by_key: Mapping[str, tuple[str, ...]]) -> tuple[str, ...]:
+    """The corpus entries `file` itself denotes.
+
+    Self-supersession is "the target resolved to THIS document", so the document is resolved the
+    same way the target was. Four rules have been wrong here, each fixing one name shape and
+    breaking another, so the shapes are enumerated rather than argued about:
+
+    - `supersedes_key(resolved) == supersedes_key(file)` was inert outside markdown, because
+      `supersedes_key` strips `.md` and nothing else, so `pep-0262.rst` never equalled the corpus
+      key `pep-0262`. A real run had `pep-0262` declare itself its own predecessor.
+    - Stemming the `file` side alone fixed that and broke every corpus whose names carry the
+      extension, which is most of them: `corpus_names` is usually just the list of file names.
+    - Stemming BOTH sides fixed those and refused genuine edges between DIFFERENT documents
+      sharing a base name: `guide.rst` superseding `guide.txt` was refused as "names itself".
+    - Falling back to the file's stem alone fixed THAT and refused `v1.2` superseding `v1`, and
+      it still could not see a stem-shaped `file` against an extensioned corpus, which is the
+      mirror of the asymmetry it was written for.
+
+    - Trying the two fallbacks IN ORDER let one shadow the other. A single `guide.rst.orig`
+      beside `guide` made the first fallback answer with the backup file, so the second never
+      ran and `guide.rst` was free to declare `guide` its predecessor: an ACCEPTED self-edge,
+      which is the worst outcome this guard exists to prevent, produced by adding one unrelated
+      name to a corpus.
+
+    The exact match runs first and alone, so a corpus holding `guide.rst` AND `guide.txt` never
+    reaches a base-name comparison. Below it the two fallbacks are UNIONED rather than ordered,
+    because neither is more specific than the other and whichever runs second can be shadowed.
+
+    ⚠️ **A trade this cannot avoid, stated rather than hidden.** Two corpora are structurally
+    identical and want opposite answers:
+
+    - `file="guide.rst"`, corpus `("guide", "guide.rst.orig")`, target `guide` — the same
+      document, must be REFUSED.
+    - `file="v1.2"`, corpus `("v1.2.rst", "v1")`, target `v1` — a different document, would
+      ideally be accepted.
+
+    In both, the corpus holds one name that is the file's key plus a suffix and one that is its
+    base. Nothing in the names separates them; only knowing that `.rst` is an extension and `.2`
+    is not would, and that is a guess about the corpus rather than a fact in it. So the union
+    refuses both, and the asymmetry of the stakes is the reason: a wrongly ACCEPTED self-edge
+    marks a live document stale beneath itself, which is the exact failure the trust layer
+    exists to prevent, while a wrongly refused edge costs one proposal a reviewer never sees.
+    `_supersession` says which of the two happened rather than asserting "names itself" for both.
+    """
+    key = supersedes_key(file)
+    exact = by_key.get(key)
+    if exact:
+        return exact
+    # The corpus carries a suffix the file does not: `file="pep-0262"`, corpus `pep-0262.rst`.
+    # Read out of `by_key`'s values rather than taking `corpus_names` as a second argument, so
+    # there is one corpus here and no way for the two to be passed out of step.
+    carried = tuple(
+        name for entries in by_key.values() for name in entries if _base_name(name) == key
+    )
+    # The file carries a suffix the corpus does not: `file="pep-0262.rst"`, corpus `pep-0262`.
+    # This is how the PEPs arm is configured.
+    return carried + by_key.get(_base_name(file), ())
+
+
 def _supersession(
     payload: Mapping[str, Any],
     *,
@@ -235,12 +389,23 @@ def _supersession(
         return ClaimRejection(index=index, kind="supersession", rung="target_not_in_corpus",
                               reason=reason)
     resolved = candidates[0]
-    if supersedes_key(resolved) == supersedes_key(file):
+    if resolved in _own_entries(file, by_key):
+        # Two different findings, and the message says which. The exact case is a fact: the
+        # target and the file are one corpus entry. The other is an INFERENCE from how this
+        # corpus names its files, and `_own_entries` documents why it refuses rather than
+        # guessing. Reporting both as "names itself" would state as fact something the code
+        # concluded from a suffix.
+        itself = resolved in by_key.get(supersedes_key(file), ())
         return ClaimRejection(
             index=index,
             kind="supersession",
             rung="target_not_in_corpus",
-            reason=f"names itself ({target!r}); a document cannot supersede itself",
+            reason=(
+                f"names itself ({target!r}); a document cannot supersede itself"
+                if itself
+                else f"names {target!r}, which this corpus's naming resolves to {file!r} itself; "
+                f"a document cannot supersede itself"
+            ),
         )
     return SupersessionClaim(superseded=resolved, quote=quote)
 

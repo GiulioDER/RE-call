@@ -18,6 +18,7 @@ from psycopg.types.json import Jsonb
 
 from recall.document import parse_document
 from recall.embeddings import Embedder, embed_passages
+from recall.extraction import ExtractedDocument, chunk_extracted_document
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
 from recall.lineage import (
     GenerationState,
@@ -26,7 +27,7 @@ from recall.lineage import (
     canonical_json,
     canonical_sha256,
 )
-from recall.manifest import S3ObjectReader
+from recall.manifest import ObjectReader
 from recall.types import Chunk
 
 Chunker = Callable[[str], list[str]]
@@ -34,6 +35,8 @@ Chunker = Callable[[str], list[str]]
 DEFAULT_RETENTION_DAYS = 7
 DEFAULT_RETAIN_PREVIOUS = 2
 TEMPORARY_STORAGE_MULTIPLIER = 2.2
+DEFAULT_TABLE_MAX_CHARS = 800
+DEFAULT_TABLE_OVERLAP = 80
 
 
 class GenerationError(RuntimeError):
@@ -178,6 +181,21 @@ _GENERATION_COLUMNS = (
     "manifest_digest, corpus_version, parent_generation_id, failure_reason, created_at, "
     "activated_at, retired_at"
 )
+
+
+def with_provenance(metadata: dict, provenance: dict) -> dict:
+    """Frontmatter first, provenance LAST, and never mutating the input.
+
+    Provenance overrides because a document must not be able to relabel its own origin: if
+    frontmatter won, any indexed file could claim to come from another project and provenance would
+    be an assertion made by the data rather than a record made by the builder.
+
+    A copy, not an update in place: the caller reuses one `metadata` dict across every chunk of a
+    document, so mutating it would accumulate across chunks and leak between documents.
+    """
+    if not provenance:
+        return metadata
+    return {**metadata, **provenance}
 
 
 class GenerationManager:
@@ -485,9 +503,10 @@ class GenerationManager:
     def build(
         self,
         generation_id: str,
-        reader: S3ObjectReader,
+        reader: ObjectReader,
         embedder: Embedder,
         chunker: Chunker,
+        provenance: dict | None = None,
     ) -> BuildStats:
         chunks_written = reused_objects = reused_chunks = tombstoned = empty = 0
         indexed_sources: list[str] = []
@@ -545,19 +564,50 @@ class GenerationManager:
                         indexed_sources.append(entry.uri)
                         continue
 
-                metadata: dict[str, Any] = {}
+                metadata: dict[str, Any] = dict(verified.metadata)
                 body = text
                 if entry.media_type in _MARKDOWN_MEDIA_TYPES:
                     # Not optional. `recall index` is refused under RECALL_ENV=production
                     # (`recall/cli.py:1209`), so hooking only the index path would leave the one
                     # build path that runs in production reading derived blocks as evidence.
                     document = parse_document(text)
-                    metadata, body = document.meta, document.human_body
+                    metadata = {**metadata, **document.meta}
+                    body = document.human_body
                     try:
                         validity_bounds(metadata)
                     except ValueError as exc:
                         raise GenerationError(f"{entry.uri}: {exc}") from exc
-                pieces = chunker(body)
+                # Stamped here, after frontmatter has been read and before any chunk is built,
+                # so every chunk of every document carries it and no document can override it.
+                metadata = with_provenance(metadata, provenance or {})
+                piece_metadata: list[dict[str, Any]] = []
+                has_structured_tables = (
+                    entry.media_type not in _MARKDOWN_MEDIA_TYPES
+                    and bool(verified.blocks)
+                    and any(block.kind == "table" for block in verified.blocks)
+                )
+                if has_structured_tables:
+                    configuration = pipeline.chunker.configuration
+                    max_chars = configuration.get("max_chars", DEFAULT_TABLE_MAX_CHARS)
+                    overlap = configuration.get("overlap", DEFAULT_TABLE_OVERLAP)
+                    if type(max_chars) is not int or type(overlap) is not int:
+                        raise GenerationError("chunker configuration has non integer table bounds")
+                    extracted_document = ExtractedDocument(
+                        text,
+                        str(metadata.get("media_type", entry.media_type)),
+                        metadata,
+                        verified.blocks,
+                    )
+                    typed_chunks = chunk_extracted_document(
+                        extracted_document,
+                        max_chars=max_chars,
+                        overlap=overlap,
+                    )
+                    pieces = [piece for piece, _ in typed_chunks]
+                    piece_metadata = [chunk_meta for _, chunk_meta in typed_chunks]
+                else:
+                    pieces = chunker(body)
+                    piece_metadata = [{} for _ in pieces]
                 if not pieces:
                     empty += 1
                     continue
@@ -581,6 +631,7 @@ class GenerationManager:
                             text=piece,
                             metadata={
                                 **metadata,
+                                **piece_metadata[ordinal],
                                 **(
                                     {_BODY_RULE_VERSION_KEY: _BODY_RULE_VERSION}
                                     if body_rule_changed
@@ -840,6 +891,26 @@ class GenerationManager:
         if not row or not row[0]:
             raise NoActiveGeneration(f"tenant {self.tenant_id!r} has no active generation")
         return str(row[0])
+
+    def active_manifest(self) -> IndexManifestV1:
+        """Return the manifest for the active generation.
+
+        Desktop uploads are staged in immutable, per-job directories. A new build must carry
+        forward only the files that belong to the active corpus, plus the current job. Reading the
+        whole tenant upload tree would also pick up files from failed or abandoned jobs.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT g.manifest "
+                "FROM recall_tenant_state AS t "
+                "JOIN recall_generations AS g "
+                "  ON g.tenant_id = t.tenant_id AND g.generation_id = t.active_generation_id "
+                "WHERE t.tenant_id = %s",
+                (self.tenant_id,),
+            ).fetchone()
+        if not row or not isinstance(row[0], Mapping):
+            raise NoActiveGeneration(f"tenant {self.tenant_id!r} has no active generation")
+        return IndexManifestV1.from_dict(row[0])
 
     def forget(self, source_uri: str, *, legacy_table: str | None = None) -> ErasureResult:
         """Erase a source from every generation, and tombstone it against future builds.

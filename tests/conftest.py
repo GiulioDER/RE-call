@@ -23,12 +23,20 @@ _AUTH_ENV_PREFIXES = ("RECALL_AUTH_", "RECALL_OIDC_")
 #: `RECALL_PORT=99999`, `RECALL_POOL_SIZE=0` or `RECALL_STATEMENT_TIMEOUT_MS=abc` each raise
 #: `ValueError` during collection and take the same five modules to zero tests run. The transport was
 #: simply the first one anyone tripped over; the failure CLASS is "read at import", not "auth".
+#: `RECALL_TRUST_MODE` is the odd one out and the most important to clear. Every other key here
+#: announces itself by raising during collection. This one does not: exported as `development` it
+#: makes `recall_mcp.server.TRUST_POLICY` relaxed at import, and the suite then runs green against a
+#: server whose trust gate is open. README.md, CLAUDE.md and docs/USING_WITH_CLAUDE.md all tell
+#: developers to export exactly this variable for local work, so the shell that is most likely to
+#: run the suite is the one most likely to have it set. A suite whose behaviour depends on what the
+#: operator happened to export is not a suite whose green means anything.
 _IMPORT_TIME_ENV_EXACT = (
     "RECALL_TRANSPORT",
     "RECALL_ENV",
     "RECALL_PORT",
     "RECALL_POOL_SIZE",
     "RECALL_STATEMENT_TIMEOUT_MS",
+    "RECALL_TRUST_MODE",
 )
 
 
@@ -95,17 +103,40 @@ if TYPE_CHECKING:
     from recall.trust import TrustedResult
     from recall_mcp.service import SearchResult
 
-#: The local dev database from docker-compose.yml — the same one the README quickstart uses.
-_LOCAL_DEV_DSN = "postgresql://recall:recall@localhost:5432/recall"
-
-#: The test database. Deliberately NOT read from `RECALL_DSN`.
+#: Where an unconfigured run points instead of at a real database.
 #:
-#: These tests DROP TABLES. `RECALL_DSN` is the variable the README tells users to point at their
-#: real database, so resolving the test DSN from it meant that exporting it and running `pytest`
-#: destroyed production data — no flag, no prompt, no way back. The suite now reads a dedicated
-#: `RECALL_TEST_DSN` and otherwise falls back to the local dev container, so a `RECALL_DSN`
-#: pointing at anything real is simply never consulted.
-TEST_DSN = os.environ.get("RECALL_TEST_DSN", _LOCAL_DEV_DSN)
+#: Port 1 is reserved and nothing listens on it, so a connection there is refused without reaching
+#: any database. That property is the whole point. `TEST_DSN` is imported directly by test modules
+#: and used in `psycopg.connect` and `apply_migrations` calls all over the suite, so a default that
+#: merely *usually* gets skipped is not good enough: any path that slips past a `requires_db` mark
+#: has to fail rather than quietly connect to somebody else's database. The worst outcome here is a
+#: connection error. It is never a dropped table.
+#:
+#: `connect_timeout` is part of the constant rather than left to each call site, and that is not
+#: decoration. "Refused" is not the same as "refused promptly": measured on the Windows host this
+#: is developed on, a refusal on 127.0.0.1 takes ~2.0 s, and libpq's default is to wait
+#: indefinitely, which turned a `psycopg.connect` with no timeout into a **130 second** stall. The
+#: suite has ~110 `psycopg.connect(TEST_DSN...)` sites that pass no timeout of their own; carrying
+#: the bound in the DSN is what stops one forgotten `requires_db` mark from becoming a hang that
+#: reads like a deadlock in the code under test.
+_UNCONFIGURED_DSN = "postgresql://recall:recall@127.0.0.1:1/recall?connect_timeout=2"
+
+#: The test database. Deliberately NOT read from `RECALL_DSN`, and deliberately NOT defaulted to
+#: the shared dev container on port 5432.
+#:
+#: These tests DROP TABLES. Two separate ways that has destroyed data that was not ours:
+#:
+#: 1. `RECALL_DSN` is the variable the README tells users to point at their real database, so
+#:    resolving the test DSN from it meant exporting it and running `pytest` destroyed production
+#:    data — no flag, no prompt, no way back. The suite reads a dedicated `RECALL_TEST_DSN`, so a
+#:    `RECALL_DSN` pointing at anything real is simply never consulted.
+#:
+#: 2. Defaulting to `localhost:5432` pointed every concurrent checkout at the *same* container.
+#:    Two sessions running the suite dropped each other's tables mid-run, and the resulting
+#:    failures described the other session's timing rather than anything about the code. There is
+#:    no default any more: start a container scoped to this checkout with `scripts/session-db.sh
+#:    up`, which prints the `RECALL_TEST_DSN` to export.
+TEST_DSN = os.environ.get("RECALL_TEST_DSN") or _UNCONFIGURED_DSN
 
 
 def _reject_unsafe_test_dsn() -> None:
@@ -148,7 +179,20 @@ def _db_available() -> bool:
 
 #: One wording, used by the collection-time mark and by every fixture that refuses at setup, so a
 #: DB-less run reports the same reason however the test was skipped.
-DB_UNREACHABLE = "pgvector DB not reachable (run `docker compose up -d`)"
+#:
+#: Deliberately a single constant rather than one message per cause. Branching it on
+#: `RECALL_TEST_DSN` reads better in isolation and breaks the guard in
+#: `test_requires_db_coverage.py` that compares this process's constant against a subprocess run
+#: with an explicit DSN: the two processes would compute different text and the comparison would
+#: fail for a reason that has nothing to do with what it is checking. One wording, both causes
+#: named, no environment read at import time.
+DB_UNREACHABLE = (
+    "pgvector DB not reachable: RECALL_TEST_DSN is unset or nothing is listening on it. "
+    'Start one scoped to this checkout with `eval "$(scripts/session-db.sh up)"`. '
+    "The suite DROPs tables, so it has no default DSN. It used to fall back to the shared "
+    "`docker compose up -d` container on port 5432, and concurrent checkouts dropped each "
+    "other's tables."
+)
 
 requires_db = pytest.mark.skipif(not _db_available(), reason=DB_UNREACHABLE)
 

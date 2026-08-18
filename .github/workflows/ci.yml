@@ -42,7 +42,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,documents]"
       - name: Exercise migrations, lineage, generations and calibration binding
         run: >-
           pytest -q tests/test_schema_migrations.py tests/test_generations.py
@@ -84,7 +84,7 @@ jobs:
       #   rerank/entail -> sentence-transformers (their real-model tests self-skip here)
       #   voyage -> cloud embedder (its one test skips without VOYAGE_API_KEY)
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,documents]"
 
       - name: Lint (ruff)
         run: ruff check .
@@ -108,6 +108,48 @@ jobs:
   # `recall.embeddings` import theirs lazily behind a guard, and pyproject's mypy overrides pin
   # those modules to `follow_imports = skip` so this job's result does not depend on whether a
   # 2 GB torch wheel happens to be present.
+  # The session hooks, on the platform they actually run on.
+  #
+  # These guard the workspace: they decide whether a session may claim a checkout,
+  # and they run `docker rm -f`. Three consecutive audits found P0 defects in them
+  # while every CI run was green, because `testpaths = ["tests"]` in pyproject.toml
+  # and these suites live in `scripts/` as `*_tests.py`, so pytest collected NONE of
+  # them and no job invoked them. ~66 tests, zero of them executed by CI.
+  #
+  # **windows-latest, and not a skip on ubuntu.** The hooks are Windows-targeted by
+  # construction: liveness via `tasklist` because Git Bash's `kill -0` cannot see a
+  # Windows pid, process-tree kills via `taskkill /T /F`, and a `find_bash` that
+  # exists because System32's WSL launcher shadows Git Bash on PATH. Running these
+  # on ubuntu would take the POSIX branch of every one of those and report green
+  # for code paths that never execute in practice, which is the failure mode the
+  # suites themselves are written against. The repository is public, so Windows
+  # runner minutes are free.
+  session-hooks:
+    name: Session hooks (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+
+      # No `pip install -e .` on purpose: these hooks import nothing from `recall`,
+      # and they must keep working in a checkout where the package is not installed,
+      # because that is how ~/.claude/hooks/ runs them.
+      - name: SessionStart hook
+        run: python scripts/session_start_hook_tests.py
+
+      - name: SessionEnd hook
+        run: python scripts/session_end_hook_tests.py
+
+      # Git Bash, which windows-latest ships. This suite covers session-space.sh,
+      # the shell half of the same guard, including the claim-lock atomicity that
+      # `set -C` silently failed to provide.
+      - name: session-space.sh
+        shell: bash
+        run: bash scripts/session_space_tests.sh
+
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -174,7 +216,7 @@ jobs:
       # resolved normally. `lowest` would also pin every transitive to its floor, which tests
       # other projects' constraint hygiene rather than ours.
       - name: Install the declared minimums
-        run: uv pip install --system --resolution lowest-direct -e ".[dev,mcp]"
+        run: uv pip install --system --resolution lowest-direct -e ".[dev,mcp,documents]"
 
       - name: Show what actually resolved
         run: uv pip list --system

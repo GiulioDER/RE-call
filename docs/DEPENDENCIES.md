@@ -46,6 +46,12 @@ snake_case tool annotation fields:
 
 Keep the `mcp` extra and the `dev` extra in step so CI exercises the same API surface users install.
 
+## Cloud Embedding Extras
+
+`voyage` installs the Voyage SDK for `VoyageEmbedder`. `openai` installs the OpenAI SDK used by
+`OpenAICompatEmbedder`, including OpenRouter-backed embedding models such as
+`gemini-embedding-2`. Both are opt-in because they send corpus text to third-party embedding APIs.
+
 ## Sparse, Rerank, Entailment, and Fine-tuning
 
 Learned sparse retrieval uses `transformers` directly rather than `sentence-transformers`. That

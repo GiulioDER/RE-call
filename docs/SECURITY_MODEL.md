@@ -97,31 +97,35 @@ caller's boundary to hold, not one this library can hold for you.
 ## Cloud embeddings are a real egress boundary
 
 `recall.embeddings.VoyageEmbedder` sends the **text of every chunk** to Voyage's API
-(`VOYAGE_API_KEY`, the `voyageai` package). Embedding a private memory corpus with this backend
-means that corpus's content leaves the host and is processed by a third-party service — that is not
-a hypothetical, it is what "embed with a cloud model" means.
+(`VOYAGE_API_KEY`, the `voyageai` package). `OpenAICompatEmbedder` does the same for OpenAI-compatible
+embedding endpoints, including OpenRouter models selected with `RECALL_EMBEDDER=gemini-embedding-2`
+or `RECALL_EMBEDDER=openrouter:<provider/model>` (`OPENROUTER_API_KEY` or `OPENAI_API_KEY`, the
+`openai` package). Embedding a private memory corpus with one of these backends means that corpus's
+content leaves the host and is processed by a third-party service — that is not a hypothetical, it is
+what "embed with a cloud model" means.
 
 For a sensitive corpus, use `recall.embeddings.FastEmbedEmbedder` instead: it runs the embedding
 model locally (`pip install "recall-rag[fastembed]"`) and never makes a network call with
-chunk text. This
-is the default — and, as shipped, the *only* backend `recall_mcp/server.py` and
-`examples/self_recall_agent.py` can select via `RECALL_EMBEDDER` (`make_embedder` in
-`recall_mcp/service.py` accepts `"fastembed"` or `"hashing"` only; `VoyageEmbedder` is reached by
-constructing it directly in your own code, not through that env var). Both `make eval` and
-`python -m recall.eval` run the local embedder unconditionally and only add the Voyage row when
-`VOYAGE_API_KEY` is present in the environment — the key-free path is the one that never leaves the
-host.
+chunk text. This is the default. `recall_mcp/server.py` now accepts the same
+`recall.embeddings.resolve_embedder` spellings as the CLI, so cloud egress through `RECALL_EMBEDDER`
+is possible only when the operator names a cloud backend and installs the matching optional package
+such as `recall-rag[voyage]` or `recall-rag[openai]`. Both `make eval` and `python -m recall.eval`
+run the local embedder unconditionally and only add the Voyage row when `VOYAGE_API_KEY` is present in
+the environment — the key-free path is the one that never leaves the host.
 
-**Choosing to embed with Voyage is documented, intended behaviour** when you opt into that backend,
-not a vulnerability to report. What we do want reported: any place `VoyageEmbedder` or a similar
-cloud path is reached *without* the caller having asked for it (an implicit fallback, a default that
-silently prefers the cloud embedder over the local one, etc.).
+**Choosing to embed with a cloud backend is documented, intended behaviour** when you opt into that
+backend, not a vulnerability to report. What we do want reported: any place a cloud path is reached
+*without* the caller having asked for it (an implicit fallback, a default that silently prefers the
+cloud embedder over the local one, etc.).
 
 ## Credentials
 
 - **`VOYAGE_API_KEY`** is read from the environment (`recall/embeddings.py`) or a gitignored `.env`
   loaded by `recall/_env.py`. Never commit it. It is visible to anything that can read the process
   environment of a running `recall` process — treat it with the same care as any API key.
+- **`OPENROUTER_API_KEY` and `OPENAI_API_KEY`** are read by `OpenAICompatEmbedder` for OpenRouter or
+  other OpenAI-compatible embedding endpoints. They carry the same process-environment exposure as
+  `VOYAGE_API_KEY`.
 - **The Postgres DSNs (`RECALL_SERVING_DSN` and `RECALL_MIGRATION_DSN`)** carry passwords in their
   connection strings. The serving credential must not own schema objects or have DDL privileges;
   the migration credential must not be present in the MCP process. `RECALL_DSN` is a deprecated

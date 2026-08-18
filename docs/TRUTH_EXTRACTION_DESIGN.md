@@ -188,8 +188,8 @@ the exact failure the trust layer exists to prevent, caused by the tool meant to
 Verb subparsers under a group noun, matching `cli.py:487`.
 
 ```
-recall extract run <path> [--glob] [--limit N] [--recheck] [--cache PATH]
-recall extract show <file>
+recall extract run <path> [--glob] [--limit N] [--recheck] [--cache PATH] [--status-vocabulary W,X,Y]
+recall extract show <file> [--glob] [--status-vocabulary W,X,Y]
 
 recall rewrite plan <path> [--glob]
 recall rewrite apply <path> --proposal <id> --reviewer <id> --note "..." [--apply]
@@ -206,6 +206,26 @@ non-empty content.
 
 `recall extract run` refuses with an actionable message when the extra is absent, mirroring
 `entailment.py:62`. Help text states the dry run default.
+
+### The status vocabulary is configurable for measurement and closed for writing
+
+The shipped set is memo-shaped: `active, draft, deprecated, superseded, withdrawn`. A corpus using
+other words states statuses the ladder cannot admit, and `claim_shape` is a BATCH rung, so one such
+claim refuses the whole document. Measured on `python/peps`, the model read `Status: Final` and
+emitted `final`: 12 of 30 documents were refused outright and lost their supersession claims along
+with the status one. Refusing was correct behaviour against the wrong list.
+
+`--status-vocabulary` supplies the corpus's own words. Matching is case-insensitive, and the
+spelling given on the flag is the one stored, so `Final` in the corpus and `final` from the model
+agree. The list is part of the cache key as well as the prompt: two vocabularies never share an
+entry, because they send different instructions and can only get different answers.
+
+⚠️ It does not widen what may be WRITTEN. `recall rewrite` validates the derived block against the
+shipped `STATUS_VOCABULARY` at `route_relation`, and a value the trust layer has no meaning for must
+not reach a user's memo because a research run named it. That closure is structural: the write path
+calls `extract_corpus_claims`, which takes no vocabulary, while `recall extract` and the labelling
+arms call `extract_corpus_claims_for_report`, which does. Both delegate to one loop, so the
+vocabulary reaches the outage path's cache lookup and refusal record as well as the per-file call.
 
 ## MCP surface
 

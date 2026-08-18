@@ -1,0 +1,89 @@
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: recall
+      POSTGRES_PASSWORD: recall
+      POSTGRES_DB: recall
+    volumes:
+      - recall_desktop_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recall"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  recall-docs:
+    image: recall-desktop-recall:local
+    build:
+      context: .
+      dockerfile: docker/desktop/Dockerfile
+    command: ["sleep", "infinity"]
+    volumes:
+      - recall_desktop_uploads:/opt/recall/uploads
+    environment:
+      RECALL_ENV: development
+      RECALL_DSN: postgresql://recall:recall@db:5432/recall
+      RECALL_MIGRATION_DSN: postgresql://recall:recall@db:5432/recall
+      RECALL_EMBEDDER: fastembed
+      RECALL_TRUST_MODE: development
+      RECALL_ALLOW_INSECURE_DSN: "1"
+      RECALL_TENANT: default-docs
+    depends_on:
+      db:
+        condition: service_healthy
+
+  recall-code:
+    image: recall-desktop-recall:local
+    command: ["sleep", "infinity"]
+    volumes:
+      - recall_desktop_uploads:/opt/recall/uploads
+    environment:
+      RECALL_ENV: development
+      RECALL_DSN: postgresql://recall:recall@db:5432/recall
+      RECALL_MIGRATION_DSN: postgresql://recall:recall@db:5432/recall
+      RECALL_EMBEDDER: fastembed
+      RECALL_TRUST_MODE: development
+      RECALL_ALLOW_INSECURE_DSN: "1"
+      RECALL_TENANT: default-code
+    depends_on:
+      db:
+        condition: service_healthy
+
+  recall-user-docs:
+    image: recall-desktop-recall:local
+    command: ["sleep", "infinity"]
+    volumes:
+      - recall_desktop_uploads:/opt/recall/uploads
+    environment:
+      RECALL_ENV: development
+      RECALL_DSN: postgresql://recall:recall@db:5432/recall
+      RECALL_MIGRATION_DSN: postgresql://recall:recall@db:5432/recall
+      RECALL_EMBEDDER: fastembed
+      RECALL_TRUST_MODE: development
+      RECALL_ALLOW_INSECURE_DSN: "1"
+      RECALL_TENANT: user-docs
+    depends_on:
+      db:
+        condition: service_healthy
+
+  recall-user-code:
+    image: recall-desktop-recall:local
+    command: ["sleep", "infinity"]
+    volumes:
+      - recall_desktop_uploads:/opt/recall/uploads
+    environment:
+      RECALL_ENV: development
+      RECALL_DSN: postgresql://recall:recall@db:5432/recall
+      RECALL_MIGRATION_DSN: postgresql://recall:recall@db:5432/recall
+      RECALL_EMBEDDER: fastembed
+      RECALL_TRUST_MODE: development
+      RECALL_ALLOW_INSECURE_DSN: "1"
+      RECALL_TENANT: user-code
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  recall_desktop_pgdata:
+  recall_desktop_uploads:

@@ -10,6 +10,7 @@ from typing import Literal, Protocol, TypeVar
 from urllib.parse import urlsplit
 
 import anyio.to_thread
+from anyio import CapacityLimiter
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
@@ -25,6 +26,7 @@ from recall.embeddings import embedding_profile_id
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
 from recall.store import DEFAULT_TENANT, PgVectorStore, redacted_dsn
+from recall.trust_policy import TrustPolicy
 from recall_mcp.auth import (
     SCOPE_FORGET,
     SCOPE_READ,
@@ -49,10 +51,15 @@ from recall_mcp.oidc import (
 from recall_mcp.service import (
     evidence_memory,
     forget_memory,
+    generation_ingest,
     index_memory,
+    calibration_status,
+    job_status,
     make_embedder,
     make_profile_embedder,
     memory_stats,
+    publish_calibration,
+    run_calibration,
     reasoning_audit,
     reasoning_projection,
     reasoning_proposals,
@@ -60,9 +67,16 @@ from recall_mcp.service import (
     rewrite_plan,
     search_memory,
     startup_retrieval_profile,
+    tenant_scopes,
 )
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
+from recall_mcp.translation import (
+    provider_from_env,
+    render_evidence_response,
+    render_search_response,
+)
+from recall.desktop.uploads import stage_uploads
 
 #: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
 #: is metered the moment it declares a scope — there is no separate table to remember to update,
@@ -133,6 +147,20 @@ POOL_SIZE = _read_int_env("RECALL_POOL_SIZE", 8, min_value=1)
 #: multi-tenant deployment runs a server (or a store) per tenant rather than switching
 #: tenants on a shared connection — see PgVectorStore._prepare.
 TENANT = os.environ.get("RECALL_TENANT", DEFAULT_TENANT)
+#: Trust policy for this server instance, resolved from `RECALL_TRUST_MODE`.
+#:
+#: Strict unless the variable reads `development` after `strip().lower()`, which is
+#: `TrustPolicy.from_env`'s rule. A misspelling such as `developmnet` therefore stays strict, which
+#: is the property that matters: degrading on a near-miss would be the worse failure, because the
+#: operator believes the gate is on and it is not.
+#:
+#: This exists because it was documented before it was implemented. `docs/USING_WITH_CLAUDE.md`
+#: names `RECALL_TRUST_MODE` three times and tells users to set it for local work against an
+#: uncalibrated corpus, while the variable appeared nowhere in this package and `search_memory` was
+#: called without `policy=`, so the service applied its strict default and the documented first-run
+#: path returned INDEX_NOT_READY. The CLI honoured the same variable throughout, which is precisely
+#: what let the gap survive unnoticed: one entry point obeyed it and the other silently did not.
+TRUST_POLICY = TrustPolicy.from_env()
 #: Server-side cap on any single statement. A runaway query otherwise holds its connection until
 #: the process dies, and a few of those exhaust the pool while the server still looks healthy.
 # min_value=1: 0 is a valid Postgres statement_timeout meaning "no limit", but here it would
@@ -142,6 +170,19 @@ STATEMENT_TIMEOUT_MS = _read_int_env("RECALL_STATEMENT_TIMEOUT_MS", 15000, min_v
 _T = TypeVar("_T")
 
 _log = get_logger("mcp")
+
+if not TRUST_POLICY.strict:
+    # At module scope, not inside `main()`. The server object is built here too, so a host that
+    # imports `recall_mcp.server:mcp` and runs it itself never calls `main()` and would get a
+    # relaxed gate with no warning at all. Logged at ERROR so a raised log level cannot silence it:
+    # a quiet relaxed gate is indistinguishable from a strict one until something is served that
+    # should have been refused, and by then the answer has already been used. Goes to stderr, so it
+    # cannot corrupt the stdio JSON-RPC stream.
+    _log.error(
+        "RECALL_TRUST_MODE=development: the trust gate is RELAXED for this server. Uncalibrated "
+        "and unbound corpora will be served instead of refused. Local work only; unset it for "
+        "anything anyone relies on."
+    )
 
 
 class TenantProvisioning(Protocol):
@@ -483,6 +524,16 @@ async def _to_thread(fn: Callable[[], _T]) -> _T:
     return await anyio.to_thread.run_sync(fn)
 
 
+# Translation is presentation work and may wait on a remote provider. Keep its bounded blocking
+# calls out of the shared pool used by retrieval, authentication, and mutation tools.
+TRANSLATION_THREAD_LIMITER = CapacityLimiter(4)
+
+
+async def _translation_to_thread(fn: Callable[[], _T]) -> _T:
+    """Run one bounded translation render without consuming a general worker token."""
+    return await anyio.to_thread.run_sync(fn, limiter=TRANSLATION_THREAD_LIMITER)
+
+
 #: Worker threads held back for everything that is not a queued search.
 #:
 #: Every tool body runs through `_to_thread`, and so does the OIDC bearer-token validator. A
@@ -546,6 +597,10 @@ def _make_lifespan(
         # discovered on the first client request. A server that starts clean and then refuses
         # every search is a server whose configuration error reads as an outage.
         retrieval_profile = startup_retrieval_profile()
+        # Validate localization configuration at startup as well. Constructing the provider is
+        # pure configuration work and performs no network request; delaying this until a client
+        # asks for a locale would turn a deployment error into a request-time surprise.
+        translation_provider = provider_from_env()
         # Size the worker pool from the profile, so the admission gate is the binding constraint
         # rather than a coincidence. See `worker_thread_budget`.
         apply_worker_thread_budget(retrieval_profile)
@@ -707,6 +762,7 @@ def _make_lifespan(
                 "stores": registry,
                 "embedder": embedder,
                 "limiter": limiter,
+                "translation_provider": translation_provider,
                 "shadow_embedders": {},
                 "shadow_embedder_lock": threading.Lock(),
             }
@@ -751,7 +807,11 @@ def build_server() -> MCPServer:
             )
         return state
 
-    def _require(scope: str, ctx: Context[dict, object]) -> PgVectorStore:
+    def _require(
+        scope: str,
+        ctx: Context[dict, object],
+        requested_tenant: str | None = None,
+    ) -> PgVectorStore:
         """Authorise this call and return the store for the caller's OWN tenant.
 
         Every tool body goes through here. The store it hands back is the only one that tool can
@@ -783,6 +843,10 @@ def build_server() -> MCPServer:
             principal = (token.claims or {}).get("principal", token.client_id)
             _log.warning("principal %r denied for scope %s", principal, scope)
             raise
+        if requested_tenant is not None and requested_tenant != tenant:
+            raise PermissionError(
+                f"the authenticated token is scoped to tenant {tenant!r}, not {requested_tenant!r}"
+            )
         # After authorisation, so an unauthorised caller cannot burn the tenant's budget by
         # hammering a scope it does not hold.
         limiter = state.get("limiter")
@@ -801,7 +865,11 @@ def build_server() -> MCPServer:
         ),
     )
     async def recall_search(
-        query: str, ctx: Context[dict, object], source: str | None = None, k: int = 5
+        query: str,
+        ctx: Context[dict, object],
+        source: str | None = None,
+        k: int = 5,
+        locale: str | None = None,
     ) -> str:
         """Search the agent's OWN memory before acting, and get actionable guidance.
 
@@ -818,6 +886,8 @@ def build_server() -> MCPServer:
             k: max hits to return (default 5). Under a fast or quality process profile this is
                 clamped DOWN to the profile's returned count and is never raised: the cost
                 profile is chosen per process, not per request.
+            locale: optional presentation language. When set, a `localized` additive object is
+                returned while canonical hits, provenance, and advice remain unchanged.
 
         Returns:
             JSON with abstention, calibration status and ID, tenant/generation/pipeline/corpus/
@@ -833,14 +903,22 @@ def build_server() -> MCPServer:
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="search"):
-            return await _to_thread(
+            result = await _to_thread(
                 lambda: search_memory(
                     store,
                     state["embedder"],
                     query,
                     source=source,
                     k=k,
-                ).model_dump_json(indent=2)
+                    policy=TRUST_POLICY,
+                )
+            )
+            if locale is None:
+                return result.model_dump_json(indent=2)
+            return await _translation_to_thread(
+                lambda: render_search_response(
+                    result, locale, state.get("translation_provider") or provider_from_env()
+                )
             )
 
     @mcp.tool(
@@ -859,6 +937,7 @@ def build_server() -> MCPServer:
         source: str | None = None,
         k: int = 5,
         max_items: int | None = None,
+        locale: str | None = None,
     ) -> str:
         """Get memory as CITABLE EVIDENCE plus the exact prompt to answer it with.
 
@@ -881,6 +960,8 @@ def build_server() -> MCPServer:
                 profile is chosen per process, not per request.
             max_items: max passages admitted to the bundle. Defaults to the effective k and is
                 clamped to it, so it can only ever narrow the bundle.
+            locale: optional presentation language. When set, a `localized` additive object is
+                returned while the exact canonical evidence prompts remain unchanged.
 
         Returns:
             JSON with the decision, the reason code when empty, trust and calibration state, the
@@ -897,7 +978,7 @@ def build_server() -> MCPServer:
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="evidence"):
-            return await _to_thread(
+            result = await _to_thread(
                 lambda: evidence_memory(
                     store,
                     state["embedder"],
@@ -905,7 +986,15 @@ def build_server() -> MCPServer:
                     source=source,
                     k=k,
                     max_items=max_items,
-                ).model_dump_json(indent=2)
+                    policy=TRUST_POLICY,
+                )
+            )
+            if locale is None:
+                return result.model_dump_json(indent=2)
+            return await _translation_to_thread(
+                lambda: render_evidence_response(
+                    result, locale, state.get("translation_provider") or provider_from_env()
+                )
             )
 
     @mcp.tool(
@@ -927,6 +1016,7 @@ def build_server() -> MCPServer:
         max_steps: int = 12,
         max_graph_nodes: int = 32,
         max_evidence_tokens: int = 2048,
+        expand_retrieval: bool = False,
     ) -> str:
         """Run explicit opt-in reasoning over trusted retrieval and a derived graph.
 
@@ -934,6 +1024,8 @@ def build_server() -> MCPServer:
         This tool is additive and returns a full reasoning response: trust state, generation
         identity, proposals, trace, refusal reason, and diagnostics. It does not call a generator,
         so an answer is returned only if a future server explicitly wires an answer provider.
+        Set ``expand_retrieval`` only when the explicitly configured cheap expansion model should
+        be allowed to request one bounded second retrieval round.
         """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
@@ -950,6 +1042,8 @@ def build_server() -> MCPServer:
                         max_steps=max_steps,
                         max_graph_nodes=max_graph_nodes,
                         max_evidence_tokens=max_evidence_tokens,
+                        expand_retrieval=expand_retrieval,
+                        policy=TRUST_POLICY,
                     ).to_dict(),
                     indent=2,
                     default=str,
@@ -1048,7 +1142,9 @@ def build_server() -> MCPServer:
         store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_audit"):
             return await _to_thread(
-                lambda: reasoning_audit(store, state["embedder"], query=query).model_dump_json(
+                lambda: reasoning_audit(
+                    store, state["embedder"], query=query, policy=TRUST_POLICY
+                ).model_dump_json(
                     indent=2
                 )
             )
@@ -1127,6 +1223,143 @@ def build_server() -> MCPServer:
                     control_plane=registry.control_plane if registry is not None else None,
                 ).model_dump_json(indent=2)
             )
+
+    @mcp.tool(
+        name="recall_tenants",
+        annotations=ToolAnnotations(
+            title="List available tenant scopes",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_tenants(ctx: Context[dict, object]) -> str:
+        """Return the tenant scopes provisioned for this MCP deployment."""
+        state = _state(ctx)
+        store = _require(SCOPE_READ, ctx)
+        registry: StoreRegistry | None = state.get("stores")
+        tenants = (
+            sorted(getattr(registry, "allowed_tenants", {store.tenant}))
+            if registry is not None
+            else [store.tenant]
+        )
+        return json.dumps(tenant_scopes(store, tenants), indent=2)
+
+    @mcp.tool(
+        name="recall_ingest",
+        annotations=ToolAnnotations(
+            title="Upload and index source files",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_ingest(
+        files: list[dict[str, str]],
+        ctx: Context[dict, object],
+        category: str = "memory",
+        tenant: str | None = None,
+    ) -> str:
+        """Upload bounded source files and index them in the caller's tenant."""
+        state = _state(ctx)
+        store = _require(SCOPE_WRITE, ctx, tenant)
+        if category not in {"documents", "code", "memory"}:
+            raise ValueError("category must be documents, code, or memory")
+        job_id, root = stage_uploads(store.tenant, files)
+        with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
+            result = await _to_thread(
+                lambda: generation_ingest(
+                    store,
+                    state["embedder"],
+                    str(root),
+                    category,
+                )
+            )
+        payload = json.loads(result.model_dump_json())
+        payload.update({"job_id": job_id, "state": "completed", "category": category})
+        state.setdefault("desktop_jobs", {})[job_id] = payload
+        return json.dumps(payload, indent=2)
+
+    @mcp.tool(
+        name="recall_job_status",
+        annotations=ToolAnnotations(
+            title="Read indexing job status",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_job_status(job_id: str, ctx: Context[dict, object]) -> str:
+        """Return the current state of one bounded indexing job."""
+        state = _state(ctx)
+        store = _require(SCOPE_READ, ctx)
+        result = job_status(store, job_id, state.get("desktop_jobs", {}))
+        return json.dumps(result, indent=2)
+
+    @mcp.tool(
+        name="recall_calibration_status",
+        annotations=ToolAnnotations(
+            title="Read corpus calibration status",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_calibration_status(
+        ctx: Context[dict, object], tenant: str | None = None
+    ) -> str:
+        """Return the latest calibration artifact bound to the caller's generation."""
+        store = _require(SCOPE_READ, ctx, tenant)
+        result = await _to_thread(lambda: calibration_status(store))
+        return json.dumps(result, indent=2, default=str)
+
+    @mcp.tool(
+        name="recall_calibration_run",
+        annotations=ToolAnnotations(
+            title="Run corpus calibration",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_calibration_run(
+        ctx: Context[dict, object],
+        generation_id: str | None = None,
+        queries: list[dict[str, object]] | None = None,
+        tenant: str | None = None,
+    ) -> str:
+        """Create a draft calibration artifact for the active generation."""
+        state = _state(ctx)
+        store = _require(SCOPE_WRITE, ctx, tenant)
+        result = await _to_thread(
+            lambda: run_calibration(store, state["embedder"], generation_id, queries)
+        )
+        return json.dumps(result, indent=2, default=str)
+
+    @mcp.tool(
+        name="recall_calibration_publish",
+        annotations=ToolAnnotations(
+            title="Publish corpus calibration",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_calibration_publish(
+        calibration_id: str,
+        ctx: Context[dict, object],
+        tenant: str | None = None,
+    ) -> str:
+        """Publish one certified calibration artifact for the caller's tenant."""
+        store = _require(SCOPE_WRITE, ctx, tenant)
+        result = await _to_thread(lambda: publish_calibration(store, calibration_id))
+        return json.dumps(result, indent=2, default=str)
 
     @mcp.tool(
         name="recall_forget",

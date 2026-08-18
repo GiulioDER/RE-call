@@ -171,8 +171,15 @@ class TrustPolicy:
     def from_env(cls, env: dict[str, str] | None = None, /) -> TrustPolicy:
         """Resolve from `RECALL_TRUST_MODE`, defaulting to strict.
 
-        Anything other than the exact string `development` is strict, including a typo. A
-        misspelled mode must not be the thing that opens the gate.
+        The value is matched after `strip().lower()`, so `development`, `Development` and
+        `  DEVELOPMENT  ` all relax the gate. Anything else is strict, and that specifically
+        includes a **misspelling**: `developmnet` stays strict. A typo must not be the thing that
+        opens the gate, while a capital letter is not a typo and refusing it only produces a
+        confusing strict server that the operator believes is relaxed.
+
+        This docstring previously said "the exact string", which the code has never done. The
+        distinction is worth stating precisely rather than strictly, because someone will read this
+        to decide whether their configuration is safe.
         """
         import os
 

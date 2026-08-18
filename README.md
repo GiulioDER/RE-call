@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/banner.png" alt="RE-call: Retrieval-Augmented Self-Recall" width="900">
+  <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/banner.png" alt="RE-call: memory that knows when not to guess" width="900">
 </p>
 
 <!-- mcp-name: io.github.GiulioDER/re-call -->
@@ -33,6 +33,8 @@
 </p>
 
 <p align="center">
+  <a href="https://giulioder.github.io/RE-call/readme.html">README with language menu</a>
+  &nbsp;·&nbsp;
   <a href="https://giulioder.github.io/RE-call/">Setup guide: install, configure and run RE-call</a>
 </p>
 
@@ -326,6 +328,9 @@ Local uncalibrated MCP work needs the explicit development setting because it ha
 production calibration.
 
 Tools: `recall_search`, `recall_evidence`, `recall_index`, `recall_forget`, and `recall_stats`.
+For non-English presentation, pass `locale` to `recall_search` or `recall_evidence` after enabling
+the optional translation endpoint. Localized text is additive and never replaces canonical
+evidence. The configuration is documented in [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).
 
 Full guide: [docs/USING_WITH_CLAUDE.md](https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md).
 Authentication and tenancy: [docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md).

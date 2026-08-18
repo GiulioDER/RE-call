@@ -10,9 +10,9 @@ targets against — a corpus that gained a file can resolve a target that previo
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from recall.lineage import canonical_sha256
 from recall.truth_extraction._prompt import ExtractionPrompt
@@ -70,6 +70,36 @@ def _hashable(text: str) -> str:
     return _SURROGATE_MARK + text.encode("utf-8", "surrogatepass").hex()
 
 
+#: Which `ExtractionPrompt` fields the key hashes. ITERATED below rather than merely documented:
+#: a constant the hash does not read is a comment, and a field present here and absent from the
+#: hash would have passed the contract test that pins this against the dataclass. `system` and
+#: `user` are excluded because they are RENDERED from the others.
+#:
+#: `status_vocabulary` was added to the prompt and to the key in the same commit only because a
+#: human noticed, and a field added to the dataclass alone gives one key to two prompts, which
+#: is the single failure this function exists to prevent.
+#:
+#: The stronger design, considered and not taken: hash `prompt.system` and `prompt.user`
+#: directly. It would cover the fields below automatically and also `MAX_CLAIMS_PER_FILE` and
+#: `VALIDITY_CLAIM_KEYS`, which are rendered in from `types.py` while `PROMPT_REVISION`'s "bump
+#: on ANY wording change" only governs `_prompt.py`. It is not taken here because it silently
+#: reverses a documented decision: `corpus_names` is SORTED for the key and rendered in the order
+#: GIVEN, so hashing the text would make a reordered corpus list a full cache miss on every file.
+#: That is a cost worth choosing deliberately, not as a side effect of tightening a guard.
+_KEY_PROMPT_FIELDS = ("revision", "file", "human_body", "corpus_names", "status_vocabulary")
+
+#: How each prompt field is folded in. `corpus_names` is SORTED and the others are not: the
+#: sorting is a deliberate decision documented in `recheck_cached_extractions`, and the default
+#: applies `_hashable` element-wise to a sequence or whole to a string.
+_KEY_FIELD_FORM: Mapping[str, Callable[[Any], Any]] = {
+    "corpus_names": lambda value: tuple(sorted(_hashable(n) for n in value)),
+    "revision": _hashable,
+    "file": _hashable,
+    "human_body": _hashable,
+    "status_vocabulary": lambda value: tuple(_hashable(v) for v in value),
+}
+
+
 def extraction_cache_key(*, engine: _EngineIdentity, prompt: ExtractionPrompt) -> str:
     """Content hash of every input that can change the answer."""
     # EVERY string, not the three that happened to be filenames. The identity fields come from
@@ -79,17 +109,20 @@ def extraction_cache_key(*, engine: _EngineIdentity, prompt: ExtractionPrompt) -
     # fields is the asymmetry this module criticises elsewhere, and here it is worse: an engine
     # identity is fixed for the run, so it would raise on file 1 of 792 rather than on the one
     # awkward memo. The property is "this never raises", not "these fields are safe".
-    return "tx_" + canonical_sha256(
-        {
-            "engine_id": _hashable(engine.engine_id),
-            "model_id": _hashable(engine.model_id),
-            "engine_revision": _hashable(engine.revision),
-            "prompt_revision": _hashable(prompt.revision),
-            "file": _hashable(prompt.file),
-            "human_body": _hashable(prompt.human_body),
-            "corpus_names": tuple(sorted(_hashable(n) for n in prompt.corpus_names)),
-        }
-    )[:32]
+    #
+    # The prompt half is ITERATED from `_KEY_PROMPT_FIELDS`, so a field added to
+    # `ExtractionPrompt` and to that tuple is hashed without anyone remembering to edit a
+    # literal here. `revision` is written out as `prompt_revision` to keep the hashed name
+    # distinct from the engine's own.
+    hashed: dict[str, Any] = {
+        "engine_id": _hashable(engine.engine_id),
+        "model_id": _hashable(engine.model_id),
+        "engine_revision": _hashable(engine.revision),
+    }
+    for field in _KEY_PROMPT_FIELDS:
+        name = "prompt_revision" if field == "revision" else field
+        hashed[name] = _KEY_FIELD_FORM[field](getattr(prompt, field))
+    return "tx_" + canonical_sha256(hashed)[:32]
 
 
 class ExtractionCache(Protocol):
@@ -161,6 +194,7 @@ def recheck_cached_extractions(
     engine: ExtractionEngine,
     corpus_names: Sequence[str],
     cache: ExtractionCache,
+    status_vocabulary: Sequence[str] | None = None,
 ) -> RecheckReport:
     """Re-run the engine on already cached keys and report disagreement.
 
@@ -175,6 +209,13 @@ def recheck_cached_extractions(
 
     Only cached files are checked. Counting a cache miss as agreement would inflate the
     determinism being reported, which is the one number this function exists to produce.
+
+    `status_vocabulary` must match the warm run's, for the same reason `corpus_names` is
+    sorted above: it is part of the cache key AND of the rendered prompt. Omitted, a cache
+    warmed under a corpus's own status words computes a different key, every file misses,
+    and the report reads `checked=0` — a determinism measurement that silently became a
+    non-measurement. It is also passed to the ladder, so a vocabulary difference is not
+    reported as engine drift.
 
     **Comparison is on claims AND the batch rung**, not on claims alone. Comparing claims alone
     looks right and is nearly useless: on this repo's own docs corpus 34 of 36 cached entries
@@ -205,7 +246,16 @@ def recheck_cached_extractions(
     consecutive_failures = 0
     for file, text in sorted(documents.items()):
         body = human_body_of(text)
-        prompt = build_extraction_prompt(file=file, human_body=body, corpus_names=names)
+        prompt = (
+            build_extraction_prompt(file=file, human_body=body, corpus_names=names)
+            if status_vocabulary is None
+            else build_extraction_prompt(
+                file=file,
+                human_body=body,
+                corpus_names=names,
+                status_vocabulary=status_vocabulary,
+            )
+        )
         cached = cache.get(extraction_cache_key(engine=engine, prompt=prompt))
         if cached is None:
             continue
@@ -225,7 +275,11 @@ def recheck_cached_extractions(
         consecutive_failures = 0
         try:
             claims, _ = normalize_extraction(
-                answer, file=file, human_body=body, corpus_names=names
+                answer,
+                file=file,
+                human_body=body,
+                corpus_names=names,
+                status_vocabulary=prompt.status_vocabulary,
             )
             rung: str | None = None
         except ExtractionBatchRejected as refused:

@@ -52,7 +52,7 @@ CONFTEST = TESTS_DIR / "conftest.py"
 #: Names in conftest that hold a connection string. A fixture mentioning one reaches the database.
 #: Matched as `ast.Name` nodes, not as a substring of the source: a substring test also fires on a
 #: docstring that merely discusses the DSN, and on `RECALL_TEST_DSN`, which contains `TEST_DSN`.
-DSN_NAMES = frozenset({"TEST_DSN", "_LOCAL_DEV_DSN"})
+DSN_NAMES = frozenset({"TEST_DSN", "_UNCONFIGURED_DSN"})
 
 AnyFunc = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -456,3 +456,30 @@ def test_every_db_fixture_skips_when_asked_for_without_a_database(
             f"{name!r} was not reported as skipped, so its refusal is unproven"
         )
     assert DB_UNREACHABLE in proc.stdout, "the skip did not cite the actionable reason"
+
+
+def test_every_dsn_name_still_exists_in_conftest() -> None:
+    """`DSN_NAMES` must name constants that are really there.
+
+    The detector above matches `ast.Name` nodes against this set, so a name that no longer exists
+    in conftest contributes nothing and takes no test with it: the set silently shrinks and the
+    fixtures it was meant to catch stop being classified as reaching the database. That is the
+    failure mode where a guard keeps passing while covering less, which is worse than a red one.
+
+    It has already happened once. `_LOCAL_DEV_DSN` was removed when the suite stopped defaulting to
+    the shared container on port 5432, and this set still named it for one commit. Nothing failed,
+    because no fixture referenced the new `_UNCONFIGURED_DSN` yet; the next fixture that did would
+    have been classified as DB-free and escaped the refusal check entirely.
+    """
+    assigned = {
+        target.id
+        for node in ast.walk(_conftest_tree())
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    missing = DSN_NAMES - assigned
+    assert not missing, (
+        f"DSN_NAMES names {sorted(missing)}, which conftest.py no longer assigns. Update the set "
+        "to the current constant, or the detector silently stops covering those fixtures."
+    )

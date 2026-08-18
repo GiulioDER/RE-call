@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import mimetypes
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -8,21 +10,28 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import psycopg
 from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
+from recall.calibration_v2 import CalibrationRepository
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall.embedding_registry import find_registered_profile, registered_profile_ids
 from recall.embeddings import (
     Embedder,
     FastEmbedEmbedder,
     HashingEmbedder,
+    REMOTE_MODEL_CODE_OPT_IN,
     embedding_profile_id,
+    resolve_embedder,
 )
 from recall.guards import staleness
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
-from recall.index import Indexer, ShadowIndexTarget, candidate_files
+from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_code, chunk_text
+from recall.lineage import ChunkerIdentity, EmbedderIdentity, IndexManifestV1, ManifestObjectV1, PipelineIdentity
+from recall.manifest import ExtractingLocalObjectReader
+from recall.generations import GenerationManager, NoActiveGeneration
 from recall.observability import METRICS, get_logger
 from recall.profiles import (
     RetrievalAdmission,
@@ -49,6 +58,12 @@ from recall.reasoning import (
     ReasoningRetriever,
     reason,
 )
+from recall.reasoning_expansion import (
+    ExpansionProposal,
+    ReasoningRequestLike,
+    ReasoningExpansionRetriever,
+    resolve_expansion_provider,
+)
 from recall.reasoning_graph import (
     ReasoningGraphProjection,
     build_reasoning_graph,
@@ -60,7 +75,14 @@ from recall.reasoning_proposals import (
     ProposalProtocolReport,
     deterministic_inference_proposals,
 )
-from recall.rerank import DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION, Reranker
+from recall.rerank import (
+    COREB_CODE_RERANKER_MODEL,
+    DEFAULT_RERANKER_MODEL,
+    DEFAULT_RERANKER_REVISION,
+    KNOWN_RERANKER_REVISIONS,
+    RERANKER_MODEL_ALIASES,
+    Reranker,
+)
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import trusted_search
@@ -138,13 +160,12 @@ DEFAULT_MAX_INDEX_BYTES = 20_000_000  # 20 MB
 
 
 def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
-    """Return the embedder backend by name ('fastembed' local default, or offline 'hashing').
+    """Return the embedder backend by name.
 
-    Environment parsing only. The profile vocabulary, every identity field and the construction
-    itself belong to `recall.embedding_registry`; this function used to carry a second copy of
-    the vocabulary as a profile-ID -> context-version dict literal, which is how a profile could
-    exist here and be missing from `context_policy_for_profile`'s map: no error, wrong context
-    mode, vectors that silently disagree with the ones already stored.
+    Registered local profiles still belong to `recall.embedding_registry`; this boundary resolves
+    those first so profile identity stays single-sourced. Without `RECALL_EMBED_PROFILE`, the MCP
+    server accepts the shared `recall.embeddings.resolve_embedder` spellings, including explicit
+    cloud and research-model aliases.
     """
     values = dict(os.environ) if env is None else env
     profile = values.get("RECALL_EMBED_PROFILE", "").strip()
@@ -181,7 +202,15 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
                 ", ".join(f"{k}={v}" for k, v in record.measurements),
             )
         return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest)
-    raise ValueError(f"unknown embedder: {name!r} (use 'fastembed' or 'hashing')")
+    try:
+        return resolve_embedder(name, env=values)
+    except ValueError as exc:
+        if "unknown embedder" not in str(exc):
+            raise
+        raise ValueError(
+            f"unknown embedder: {name!r} (use 'fastembed', 'hashing', or any "
+            "recall.embeddings resolver spelling)"
+        ) from exc
 
 
 def make_profile_embedder(
@@ -518,8 +547,12 @@ _RERANK_TRUE = frozenset({"1", "true", "yes", "on"})
 _RERANK_FALSE = frozenset({"", "0", "false", "no", "off"})
 
 
-def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str] | None:
+def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str | None] | None:
     """`(model, revision)` for the configured reranker, or None when it is off.
+
+    `revision` is None for a cloud model, which has no Hub reference to pin. That is a real
+    difference in guarantee, not a missing value, and the type says so rather than hiding it
+    behind an empty string.
 
     Returns a spec rather than an instance so the decision can be tested without importing torch.
 
@@ -548,14 +581,62 @@ def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str] | Non
     model = source.get("RECALL_RERANK_MODEL")
     if not model:
         return (DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION)
+    model = RERANKER_MODEL_ALIASES.get(model, model)
     revision = source.get("RECALL_RERANK_REVISION")
+
+    # A cloud model has no Hub reference, so it has no revision to pin. The requirement below is a
+    # Hub property, and applying it here would make the Voyage reranker unselectable while looking
+    # like a safety check.
+    #
+    # ⚠️ The guarantee genuinely differs and is not being papered over. `rerank-2.5` is a name
+    # resolved on Voyage's side: its weights can change under us in a way a pinned Hub revision
+    # cannot. That is a real, smaller guarantee, recorded here so a reader comparing the two
+    # rerankers can see it. It is a reason to know what you are choosing, not a reason to refuse.
+    if model == "voyage" or model.startswith("voyage:"):
+        if revision:
+            raise ValueError(
+                f"RECALL_RERANK_MODEL={model!r} has no Hub revision to pin, so "
+                f"RECALL_RERANK_REVISION={revision!r} cannot be honoured. Accepting it would put a "
+                "pin in every trace that pins nothing, which asserts a guarantee that does not "
+                "exist. Unset RECALL_RERANK_REVISION for a cloud reranker."
+            )
+        return (model, None)
+
     if not revision:
-        raise ValueError(
-            "RECALL_RERANK_MODEL requires RECALL_RERANK_REVISION. An unpinned Hub reference is "
-            "mutable, and the shipped revision pin belongs to the shipped weights only — reusing "
-            "it would name the wrong artifact in every trace."
-        )
+        revision = KNOWN_RERANKER_REVISIONS.get(model)
+        if not revision:
+            raise ValueError(
+                "RECALL_RERANK_MODEL requires RECALL_RERANK_REVISION unless it names a built-in "
+                "pinned reranker. An unpinned Hub reference is mutable, and the shipped revision "
+                "pin belongs to the shipped weights only — reusing it would name the wrong "
+                "artifact in every trace."
+            )
     return (model, revision)
+
+
+def _positive_env(values: dict[str, str], name: str, default: int) -> int:
+    raw = values.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if parsed < 1:
+        raise ValueError(f"{name} must be positive")
+    return parsed
+
+
+def _remote_model_code_enabled(values: dict[str, str]) -> bool:
+    return values.get(REMOTE_MODEL_CODE_OPT_IN, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_remote_model_code_enabled(values: dict[str, str], model: str) -> None:
+    if not _remote_model_code_enabled(values):
+        raise ValueError(
+            f"{model} requires {REMOTE_MODEL_CODE_OPT_IN}=1 because its Transformers loader "
+            "executes model repository code"
+        )
 
 
 def _validate_quality_reranker_config(values: dict[str, str]) -> tuple[str, str]:
@@ -603,12 +684,53 @@ def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pr
             artifact_sha256=digest,
             inference_threads=profile.inference_threads,
         )
+    if profile.name == "code":
+        rerank_values = dict(values)
+        rerank_values.setdefault("RECALL_RERANK", "1")
+        rerank_values.setdefault("RECALL_RERANK_MODEL", "coreb-code")
+        spec = resolve_reranker(rerank_values)
+        assert spec is not None
+        model, revision = spec
+        if model != COREB_CODE_RERANKER_MODEL:
+            raise ValueError("the code retrieval profile requires RECALL_RERANK_MODEL=coreb-code")
+        _require_remote_model_code_enabled(values, "coreb-code")
+        from recall.rerank import QwenYesNoReranker
+
+        return QwenYesNoReranker(
+            model=model,
+            revision=revision,
+            inference_threads=profile.inference_threads,
+            batch_size=_positive_env(values, "RECALL_RERANK_BATCH_SIZE", 4),
+            trust_remote_code=True,
+        )
     spec = resolve_reranker(values)
     if spec is None:
         return None
+    model, revision = spec
+    if model == COREB_CODE_RERANKER_MODEL:
+        raise ValueError("coreb-code requires RECALL_RETRIEVAL_PROFILE=code")
     from recall.rerank import CrossEncoderReranker
 
     model, revision = spec
+
+    # Voyage primary, local cross-encoder fallback. The fallback is not politeness: a Voyage outage
+    # would otherwise take retrieval down entirely, and reranking is the largest single measured
+    # retrieval gain. `FallbackReranker` counts and logs every fallback, so a run cannot silently
+    # measure a blend of two rerankers — the confound named in this branch's pre-registration.
+    #
+    # The fallback is built EAGERLY, alongside the primary, rather than on first failure. Building a
+    # cross-encoder downloads and loads weights; doing that at the moment Voyage is already failing
+    # turns one outage into a cold start under load, which is when the process can least afford it.
+    if model == "voyage" or model.startswith("voyage:"):
+        from recall.rerank import FallbackReranker, reranker_from_name
+
+        return FallbackReranker(
+            primary=reranker_from_name(model),
+            fallback=CrossEncoderReranker(
+                model=DEFAULT_RERANKER_MODEL, revision=DEFAULT_RERANKER_REVISION
+            ),
+        )
+
     return CrossEncoderReranker(model=model, revision=revision)
 
 
@@ -716,8 +838,18 @@ def startup_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
     """
     values = dict(os.environ) if env is None else env
     profile = resolve_retrieval_profile(values)
-    if profile.reranker:
+    if profile.name == "quality":
         _validate_quality_reranker_config(values)
+    elif profile.name == "code":
+        rerank_values = dict(values)
+        rerank_values.setdefault("RECALL_RERANK", "1")
+        rerank_values.setdefault("RECALL_RERANK_MODEL", "coreb-code")
+        spec = resolve_reranker(rerank_values)
+        assert spec is not None
+        if spec[0] != COREB_CODE_RERANKER_MODEL:
+            raise ValueError("the code retrieval profile requires RECALL_RERANK_MODEL=coreb-code")
+        _require_remote_model_code_enabled(values, "coreb-code")
+        _positive_env(values, "RECALL_RERANK_BATCH_SIZE", 4)
     return profile
 
 
@@ -1436,15 +1568,19 @@ def reasoning_query(
     max_steps: int = 12,
     max_graph_nodes: int = 32,
     max_evidence_tokens: int = 2048,
+    expand_retrieval: bool = False,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
 ) -> ReasoningResponse:
     budget = ReasoningBudget(
         max_steps=max_steps,
         max_graph_nodes=max_graph_nodes,
+        max_model_calls=1 if expand_retrieval else 0,
         max_evidence_tokens=max_evidence_tokens,
     )
     reasoning_policy = _reasoning_policy(mode)
+    if expand_retrieval:
+        reasoning_policy = replace(reasoning_policy, allow_retrieval_expansion=True)
     if policy is not None and not policy.strict:
         reasoning_policy = replace(reasoning_policy, require_certified_evidence=False)
 
@@ -1486,9 +1622,35 @@ def reasoning_query(
                 graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
             )
 
+        expansion_provider = resolve_expansion_provider() if expand_retrieval else None
+
+        def expansion_retriever(
+            request: ReasoningRequestLike,
+            proposal: ExpansionProposal,
+            initial: TrustedResult,
+        ) -> TrustedResult:
+            del request, initial
+            expanded_query = query if proposal.mode == "depth" else proposal.query
+            expanded_k = min(MAX_SEARCH_K, max(k + 1, k * 2))
+            result = _retrieve_trusted(
+                store, embedder, expanded_query, source, expanded_k, calibration, policy
+            ).result
+            generation_id = result.generation_id or str(
+                getattr(store, "generation_id", "legacy")
+            )
+            return replace(
+                result,
+                query=expanded_query,
+                tenant_id=result.tenant_id or store.tenant,
+                generation_id=generation_id,
+            )
+
         retriever_port: ReasoningRetriever = retrieve
         graph_port: ReasoningGraphProvider = graph_provider
         proposal_port: ReasoningProposalProvider = proposal_provider
+        expansion_retriever_port: ReasoningExpansionRetriever | None = (
+            expansion_retriever if expand_retrieval else None
+        )
 
         request = ReasoningRequest(
             query=query,
@@ -1498,6 +1660,8 @@ def reasoning_query(
                 retriever=retriever_port,
                 graph_provider=graph_port,
                 proposal_provider=proposal_port,
+                expansion_provider=expansion_provider,
+                expansion_retriever=expansion_retriever_port,
             ),
             policy=reasoning_policy,
             budget=budget,
@@ -1561,7 +1725,14 @@ def reasoning_audit(
             "generation_identity_present": bool(response.generation_id),
             "trust_metadata_present": bool(response.trust_state and response.calibration_status),
             "trace_metadata_present": response.reasoning_trace is not None,
-            "development_mode_explicit": policy is not None or response.trust_state == "trusted",
+            # `policy is not None` was a proxy for "a relaxed policy was supplied", and it held only
+            # while callers passed a policy exclusively to relax the gate. Once the server resolves
+            # one from the environment and always passes it, that proxy is constant-True and the
+            # field stops meaning anything. Ask the policy what it is instead of inferring it from
+            # whether it exists.
+            "development_mode_explicit": (
+                (policy is not None and not policy.strict) or response.trust_state == "trusted"
+            ),
         },
     )
 
@@ -1574,6 +1745,8 @@ def index_memory(
     shadow_store: PgVectorStore | None = None,
     shadow_embedder: Embedder | None = None,
     control_plane: ControlPlane | None = None,
+    glob: str | None = None,
+    chunker: Chunker = chunk_text,
 ) -> IndexResult:
     """Index a markdown file or folder into memory; return counts + a human message.
 
@@ -1630,7 +1803,7 @@ def index_memory(
     # content hash is unchanged and never sends them to the embedder. So a no-op re-index is
     # charged for bytes it does not spend. That is the conservative direction — it over-counts,
     # never under-counts — but it means the byte quota bounds bytes OFFERED, not bytes embedded.
-    files = candidate_files(target)
+    files = candidate_files(target, glob) if glob is not None else candidate_files(target)
     if len(files) > max_files:
         raise ValueError(
             f"index request for {path!r} exceeds the file-count budget: {len(files)} candidate "
@@ -1667,6 +1840,7 @@ def index_memory(
         stats = Indexer(
             store,
             embedder,
+            chunker=chunker,
             context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
             shadow=shadow_target,
         ).index_path(target, files=files)
@@ -1806,3 +1980,205 @@ def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -
         stale=stale,
         metrics=METRICS.snapshot(),
     )
+
+
+def tenant_scopes(store: PgVectorStore, tenants: Sequence[str]) -> dict[str, object]:
+    """Keep tenant metadata shaping behind the authenticated store boundary."""
+    return {"tenants": sorted({str(store.tenant), *(str(value) for value in tenants)})}
+
+
+def job_status(store: PgVectorStore, job_id: str, jobs: dict[str, object]) -> dict[str, object]:
+    """Return one job record after the caller has been authorized for its tenant."""
+    del store
+    value = jobs.get(job_id)
+    return value if isinstance(value, dict) else {"job_id": job_id, "state": "unknown"}
+
+
+def calibration_status(store: PgVectorStore) -> dict[str, object]:
+    """Return the latest tenant-bound calibration and its lineage metadata."""
+    repository = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp")
+    records = repository.list_records()
+    if not records:
+        return {
+            "tenant": store.tenant,
+            "status": "missing",
+            "message": "No calibration artifact exists for this tenant.",
+        }
+    record = repository.show_record(str(records[0]["calibration_id"]))
+    lifecycle = str(record.get("lifecycle_state", "unknown"))
+    status = {
+        "published": "certified",
+        "draft": "draft",
+        "rejected": "rejected",
+        "superseded": "superseded",
+    }.get(lifecycle, lifecycle)
+    return {
+        "tenant": store.tenant,
+        "status": status,
+        "message": str(record.get("certification_reason", "")),
+        **record,
+    }
+
+
+def generation_ingest(
+    store: PgVectorStore,
+    embedder: Embedder,
+    staged_root: str,
+    category: str,
+) -> IndexResult:
+    """Build, validate, and activate one local generation for a desktop upload."""
+    job_root = Path(staged_root)
+    tenant_root = job_root.parent
+    job_files = sorted(path for path in job_root.rglob("*") if path.is_file())
+    if not job_files:
+        raise ValueError("the staged upload contains no files")
+
+    manager = GenerationManager(store._dsn, store.tenant, actor="recall-desktop")
+    try:
+        active_objects = {entry.uri: entry for entry in manager.active_manifest().objects}
+    except NoActiveGeneration:
+        active_objects = {}
+
+    # Keep the active corpus and add only this job's files. In particular, do not scan sibling
+    # job directories because a failed upload must not poison every later indexing attempt.
+    for path in job_files:
+        data = path.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        media_type = (
+            "text/x-code"
+            if category == "code"
+            else mimetypes.guess_type(path.name)[0] or "text/plain"
+        )
+        entry = ManifestObjectV1(
+            uri=path.resolve().as_uri(),
+            version_id=digest,
+            media_type=media_type,
+            size=len(data),
+            sha256=digest,
+        )
+        active_objects[entry.uri] = entry
+    objects = sorted(active_objects.values(), key=lambda entry: entry.uri)
+    manifest = IndexManifestV1(
+        tenant_id=store.tenant,
+        corpus_version=f"desktop-{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
+        objects=tuple(objects),
+    )
+    chunker = chunk_code if category == "code" else chunk_text
+    pipeline = PipelineIdentity(
+        EmbedderIdentity(
+            provider="fastembed",
+            model=embedder.name,
+            dimension=embedder.dim,
+            unverified_reason="desktop local development build",
+        ),
+        ChunkerIdentity(
+            "recall.chunk_code" if category == "code" else "recall.chunk_text",
+            1,
+            {},
+        ),
+    )
+    generation = manager.create(manifest, pipeline, allow_unverified=True)
+    try:
+        stats = manager.build(
+            generation.generation_id,
+            ExtractingLocalObjectReader((tenant_root,)),
+            embedder,
+            chunker,
+        )
+        manager.validate(generation.generation_id)
+        manager.promote(generation.generation_id, unsafe_development=True)
+    except Exception:
+        raise
+    return IndexResult(
+        files=stats.objects,
+        chunks=stats.chunks,
+        message=(
+            f"Built and activated generation {generation.generation_id} with "
+            f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
+        ),
+    )
+
+
+def _generated_calibration_queries(store: PgVectorStore, generation_id: str) -> list[dict[str, object]]:
+    """Build a deterministic draft query set from the active corpus.
+
+    This is intentionally a prototype helper. The generated labels are useful for checking the
+    complete workflow, but a production deployment should replace them with reviewed labels.
+    """
+    with psycopg.connect(store._dsn, autocommit=True, connect_timeout=10) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (store.tenant,))
+        rows = conn.execute(
+            "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+            "ORDER BY chunk_id LIMIT 20",
+            (store.tenant, generation_id),
+        ).fetchall()
+    answerable: list[str] = []
+    for row in rows:
+        value = str(row[0]).strip()
+        if value and value not in answerable:
+            answerable.append(value[:500])
+    if len(answerable) < 2:
+        raise ValueError("at least two distinct corpus chunks are required to generate calibration labels")
+    return [
+        *({"query": query, "answerable": True} for query in answerable),
+        *(
+            {
+                "query": f"Prototype calibration negative sample {index}: {nonce}",
+                "answerable": False,
+            }
+            for index, nonce in enumerate(
+                (
+                    "the unrecorded weather on Europa",
+                    "the private password for a fictional account",
+                    "the exact weight of an imaginary blue comet",
+                    "the inventory of a library that does not exist",
+                    "the recipe for a machine never described here",
+                    "the birthplace of a person absent from this corpus",
+                    "the result of a future election",
+                    "the serial number of a nonexistent device",
+                    "the internal schedule of an unrelated company",
+                    "the answer to an invented mathematical riddle",
+                    "the color of a silent radio signal",
+                    "the number of doors in an imaginary building",
+                    "the owner of a fictional island",
+                    "the temperature inside an empty thought",
+                    "the name of a removed document",
+                    "the location of a lost moon",
+                    "the version of an unreleased program",
+                    "the price of an unnamed object",
+                    "the title of a nonexistent chapter",
+                    "the identity of an imaginary maintainer",
+                ),
+                start=1,
+            )
+        ),
+    ]
+
+
+def run_calibration(
+    store: PgVectorStore,
+    embedder: Embedder,
+    generation_id: str | None = None,
+    queries: Sequence[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    """Measure a draft artifact, generating prototype labels when none were supplied."""
+    from recall.generation_store import GenerationStore
+
+    generation_store = GenerationStore(store._dsn, embedder.dim, tenant=store.tenant)
+    try:
+        selected_generation = generation_id or generation_store.active_generation_id()
+    finally:
+        generation_store.close()
+    labels = list(queries) if queries is not None else _generated_calibration_queries(store, selected_generation)
+    artifact = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp").calibrate(
+        selected_generation,
+        labels,
+        embedder,
+    )
+    return artifact.to_dict()
+
+
+def publish_calibration(store: PgVectorStore, calibration_id: str) -> dict[str, object]:
+    """Publish a certified artifact after the user explicitly confirms the action."""
+    artifact = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp").publish(calibration_id)
+    return artifact.to_dict()

@@ -288,10 +288,13 @@ def test_an_empty_reading_is_tolerated_by_the_extraction_client() -> None:
     """Pins the DELIBERATE divergence, so nobody 'reconciles' it away: returning `""` is safe
     there precisely because something downstream refuses it."""
     from recall.truth_extraction._normalize import _batch_rungs
+    from recall.truth_extraction.types import STATUS_VOCABULARY
 
     assert _text_of(_reply([])) == ""
     with pytest.raises(Exception) as caught:
-        _batch_rungs("")
+        # Passed explicitly: `_batch_rungs` no longer defaults its vocabulary, because a default
+        # there is a call site silently reverting to the memo-shaped words.
+        _batch_rungs("", STATUS_VOCABULARY)
     assert "json" in str(caught.value)
 
 

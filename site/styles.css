@@ -1,37 +1,35 @@
 /* ==========================================================================
    RE-call setup guide, design system.
 
-   Palette is inherited from docs/banner.html so this site reads as the same
-   object as the README header: near-black ground, one ink, one signal, and the
-   cyan/teal/purple rule used exactly once per page as a graphic element rather
-   than as an atmosphere. Three hues total.
+   Palette is shared with the Windows desktop UI and docs/brand-guidelines.md.
+   Gold is the RE-call signal; green and red describe state only.
    ========================================================================== */
 
 :root {
-  /* Ground and elevated surfaces. Not pure black: #04060c holds a gradient. */
-  --ground: #04060c;
-  --surface-1: #080d17;
-  --surface-2: #0b1120;
-  --surface-3: #0f1728;
+  /* Warm near-black surfaces keep the logo and controls legible. */
+  --ground: #0e100f;
+  --surface-1: #141714;
+  --surface-2: #171a17;
+  --surface-3: #1d211d;
 
   /* Ink */
-  --ink: #f4f9ff;
-  --ink-soft: #93aac8;
-  --ink-muted: #5b6f8c;
+  --ink: #f4f1e8;
+  --ink-soft: #d0d0c6;
+  --ink-muted: #b6b7ac;
 
   /* The one signal colour. Actions, current state, warnings. */
-  --signal: #f5a524;
-  --signal-dim: rgba(245, 165, 36, 0.14);
+  --signal: #d7a52a;
+  --signal-dim: rgba(215, 165, 42, 0.18);
 
   /* The identity rule. Used once per page, as a line, never as a wash. */
-  --rule-a: #22d3ee;
-  --rule-b: #5eead4;
-  --rule-c: #8b5cf6;
-  --rule: linear-gradient(90deg, var(--rule-a) 0%, var(--rule-b) 42%, var(--rule-c) 100%);
+  --rule-a: #d7a52a;
+  --rule-b: #f0be4a;
+  --rule-c: #d7a52a;
+  --rule: linear-gradient(90deg, var(--rule-a) 0%, var(--rule-b) 52%, var(--rule-c) 100%);
 
   /* Lines */
-  --line: rgba(147, 170, 200, 0.14);
-  --line-strong: rgba(147, 170, 200, 0.26);
+  --line: rgba(70, 80, 71, 0.62);
+  --line-strong: rgba(70, 80, 71, 0.9);
 
   /* Type */
   --font-display: "Geist", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
@@ -60,25 +58,23 @@ html {
 
 body {
   margin: 0;
-  background: var(--ground);
+  background:
+    radial-gradient(ellipse 52% 42% at 78% 14%, rgba(215, 165, 42, 0.07), transparent 72%),
+    var(--ground);
   color: var(--ink);
   font-family: var(--font-display);
   font-size: 1.0625rem;
-  line-height: 1.65;
+  line-height: 1.7;
   font-synthesis-weight: none;
+  text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
-/* Film grain. Fixed, so it never repaints on scroll, and non-interactive.
-   0.035 is the threshold where it is felt but does not touch legibility. */
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  pointer-events: none;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+main,
+.footer {
+  position: relative;
+  z-index: 1;
 }
 
 /* --------------------------------------------------------------------------
@@ -116,7 +112,7 @@ a:hover {
 h1, h2, h3, h4 {
   font-weight: 700;
   letter-spacing: -0.03em;
-  line-height: 1.05;
+  line-height: 1.08;
   text-wrap: balance;
   margin: 0;
 }
@@ -140,9 +136,9 @@ p {
 /* Monospace metadata label, lifted from the banner's chips. */
 .eyebrow {
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 500;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--ink-muted);
   margin: 0 0 1rem;
@@ -189,8 +185,8 @@ p {
 
 .wordmark {
   display: inline-flex;
-  align-items: baseline;
-  gap: 0.6rem;
+  align-items: center;
+  gap: 0.55rem;
   font-weight: 800;
   font-size: 1.0625rem;
   letter-spacing: -0.035em;
@@ -199,11 +195,25 @@ p {
   white-space: nowrap;
 }
 
+.wordmark-mark {
+  width: 2.1rem;
+  height: 2.1rem;
+  object-fit: contain;
+  flex: 0 0 auto;
+  filter: drop-shadow(0 0 12px rgba(215, 165, 42, 0.16));
+}
+
+.wordmark-name {
+  font-weight: 800;
+  font-size: 1.0625rem;
+  letter-spacing: -0.035em;
+}
+
 .wordmark:hover {
   color: var(--ink);
 }
 
-.wordmark span {
+.wordmark > span:not(.wordmark-name) {
   font-family: var(--font-mono);
   font-size: 0.6875rem;
   font-weight: 400;
@@ -216,7 +226,7 @@ p {
   display: flex;
   align-items: center;
   gap: 1.75rem;
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
 }
 
 .masthead nav a {
@@ -245,6 +255,15 @@ p {
   color: var(--ink);
 }
 
+.masthead nav a[href="start.html"] {
+  color: var(--signal);
+  font-weight: 600;
+}
+
+.masthead nav a[href="start.html"]:hover {
+  color: var(--ink);
+}
+
 .masthead nav a[aria-current="page"]::after,
 .masthead nav a:hover::after {
   transform: scaleX(1);
@@ -263,6 +282,14 @@ p {
 
   .wordmark {
     padding-block: 0.35rem;
+  }
+
+  .hero .hero-logo {
+    width: 15rem;
+    height: 15rem;
+    right: -2rem;
+    top: 74%;
+    opacity: 0.13;
   }
 
   .masthead nav {
@@ -284,7 +311,7 @@ p {
 
 .hero {
   position: relative;
-  min-height: calc(100dvh - 4.5rem);
+  min-height: calc(100dvh - 7rem);
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -299,7 +326,21 @@ p {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(ellipse 55% 45% at 18% 32%, rgba(147, 170, 200, 0.055) 0%, transparent 72%);
+  background: radial-gradient(ellipse 55% 45% at 18% 32%, rgba(215, 165, 42, 0.055) 0%, transparent 72%);
+}
+
+.hero-logo {
+  position: fixed;
+  z-index: 0;
+  width: clamp(16rem, 32vw, 29rem);
+  height: clamp(16rem, 32vw, 29rem);
+  object-fit: contain;
+  right: clamp(-5rem, 2vw, 3rem);
+  top: 56%;
+  transform: translateY(-50%);
+  opacity: 0.15;
+  filter: saturate(0.78) contrast(1.1) drop-shadow(0 0 24px rgba(215, 165, 42, 0.08));
+  pointer-events: none;
 }
 
 .hero-inner {
@@ -308,11 +349,11 @@ p {
 }
 
 .hero h1 {
-  font-size: clamp(2.75rem, 8.2vw, 7.5rem);
+  font-size: clamp(3rem, 6.6vw, 6rem);
   font-weight: 800;
-  letter-spacing: -0.045em;
-  line-height: 0.92;
-  max-width: 15ch;
+  letter-spacing: -0.04em;
+  line-height: 0.98;
+  max-width: 12ch;
   margin-bottom: 1.75rem;
 }
 
@@ -346,12 +387,12 @@ p {
   position: relative;
   z-index: 1;
   margin-top: auto;
-  padding-top: clamp(2.5rem, 8vh, 5rem);
+  padding-top: clamp(2rem, 6vh, 3.5rem);
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem 2.5rem;
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   letter-spacing: 0.06em;
   color: var(--ink-muted);
 }
@@ -387,7 +428,7 @@ p {
 .button:hover {
   color: #1a1204;
   transform: translateY(-2px);
-  box-shadow: 0 10px 34px rgba(245, 165, 36, 0.22);
+  box-shadow: 0 10px 34px rgba(215, 165, 42, 0.22);
 }
 
 .button:active {
@@ -530,7 +571,7 @@ p {
   align-items: center;
   padding: 0 1rem;
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-muted);
@@ -554,7 +595,7 @@ p {
 
 .copy-button:hover {
   color: var(--ink);
-  background: rgba(147, 170, 200, 0.06);
+  background: rgba(70, 80, 71, 0.18);
 }
 
 .copy-button[data-state="done"] {
@@ -611,9 +652,16 @@ p {
   background: var(--surface-1);
 }
 
+.terminal + .muted {
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+
 .terminal--output pre {
   color: var(--ink-soft);
-  font-size: 0.78125rem;
+  font-size: 0.875rem;
+  line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -916,7 +964,7 @@ code {
   font-family: var(--font-mono);
   font-size: 0.875em;
   color: var(--ink);
-  background: rgba(147, 170, 200, 0.09);
+  background: rgba(70, 80, 71, 0.18);
   padding: 0.1em 0.4em;
   border-radius: 4px;
   overflow-wrap: break-word;
@@ -952,12 +1000,12 @@ table {
   border-collapse: collapse;
   width: 100%;
   min-width: 34rem;
-  font-size: 0.9375rem;
+  font-size: 1rem;
 }
 
 th, td {
   text-align: left;
-  padding: 0.85rem 1.1rem;
+  padding: 1rem 1.1rem;
   border-bottom: 1px solid var(--line);
   vertical-align: top;
 }
@@ -1038,7 +1086,7 @@ td {
 
 .fact dd small {
   display: block;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 400;
   letter-spacing: 0;
   color: var(--ink-muted);
@@ -1064,7 +1112,7 @@ td {
   gap: 0.35rem 2rem;
   padding: 1.5rem 0;
   text-decoration: none;
-  transition: padding-left 0.4s var(--ease);
+  transition: transform 0.4s var(--ease), color 0.3s var(--ease);
 }
 
 @media (min-width: 760px) {
@@ -1075,7 +1123,7 @@ td {
 }
 
 .routes a:hover {
-  padding-left: 0.75rem;
+  transform: translateX(0.35rem);
   color: var(--ink);
 }
 
@@ -1087,7 +1135,7 @@ td {
 
 .routes span {
   color: var(--ink-soft);
-  font-size: 0.9375rem;
+  font-size: 1rem;
 }
 
 .routes em {
@@ -1127,7 +1175,7 @@ td {
 .footer {
   border-top: 1px solid var(--line);
   padding-block: 2.5rem 3.5rem;
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
 }
 
 .footer-inner {
@@ -1161,22 +1209,17 @@ td {
 }
 
 /* --------------------------------------------------------------------------
-   Motion. Transform and opacity only.
+   Motion. One authored arrival, no repeated scroll choreography.
    -------------------------------------------------------------------------- */
 
 /* The hidden state is applied only once JS has confirmed it can un-apply it.
    Without this gate, a failed script or an observer that never delivers would
    leave the page permanently blank, which on an install guide is a far worse
    outcome than losing an animation. */
-.reveal-ready [data-reveal] {
-  opacity: 0;
-  transform: translateY(18px);
-}
-
+.reveal-ready [data-reveal],
 .reveal-ready [data-reveal][data-shown="true"] {
   opacity: 1;
   transform: none;
-  transition: opacity 0.7s var(--ease), transform 0.7s var(--ease);
 }
 
 /* Hero entry: background settles, then heading, rule, lede, CTA. Under 800ms. */
@@ -1224,12 +1267,11 @@ td {
     scroll-behavior: auto;
   }
 
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+  .hero-inner > *,
+  .hero .rule,
+  .hero-meta {
+    animation: none !important;
+    transition: none !important;
   }
 
   .reveal-ready [data-reveal] {
@@ -1274,5 +1316,215 @@ td {
   [data-reveal] {
     opacity: 1;
     transform: none;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Localized README presentation.
+   -------------------------------------------------------------------------- */
+
+.language-control {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  white-space: nowrap;
+}
+
+.language-control label {
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.language-control select {
+  min-width: 8.7rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 0.48rem 2rem 0.48rem 0.8rem;
+  color: var(--ink);
+  background: var(--surface-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.readme-shell {
+  padding-block: 2rem 4rem;
+}
+
+.readme-intro {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 2rem;
+  margin-bottom: 1.2rem;
+  padding: 1.7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+}
+
+.readme-logo {
+  width: clamp(7rem, 13vw, 11rem);
+  height: clamp(7rem, 13vw, 11rem);
+  object-fit: contain;
+  flex: 0 0 auto;
+  opacity: 0.82;
+  filter: drop-shadow(0 0 24px rgba(215, 165, 42, 0.16));
+}
+
+.readme-intro h1 {
+  max-width: 18ch;
+}
+
+.readme-meta {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.7rem;
+}
+
+.translation-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink-soft);
+  background: var(--surface-2);
+  font-size: 0.82rem;
+}
+
+.translation-status[data-tone="working"] {
+  color: var(--signal);
+}
+
+.translation-status[data-tone="error"] {
+  color: #fca5a5;
+  border-color: rgba(252, 165, 165, 0.35);
+}
+
+.translation-disclosure {
+  flex-basis: 100%;
+  max-width: 34rem;
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.readme-content {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: clamp(1.2rem, 3vw, 3rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  overflow-wrap: anywhere;
+}
+
+.readme-content > :first-child {
+  margin-top: 0;
+}
+
+.readme-content h1,
+.readme-content h2,
+.readme-content h3,
+.readme-content h4 {
+  margin-top: 1.7em;
+}
+
+.readme-content h1 {
+  max-width: none;
+  font-size: clamp(2rem, 4vw, 3.5rem);
+}
+
+.readme-content h2 {
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.readme-content p,
+.readme-content li,
+.readme-content blockquote {
+  color: var(--ink-soft);
+}
+
+.readme-content img {
+  display: block;
+  height: auto;
+  max-width: 100%;
+  margin: 1rem 0;
+}
+
+.readme-content pre {
+  margin: 1rem 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 1rem;
+  background: var(--ground);
+  overflow-x: auto;
+}
+
+.readme-content code {
+  padding: 0.12rem 0.3rem;
+  border-radius: 0.35rem;
+  background: var(--surface-3);
+  color: var(--rule-b);
+}
+
+.readme-content pre code {
+  padding: 0;
+  background: transparent;
+  color: var(--ink);
+}
+
+.readme-content table {
+  display: block;
+  overflow-x: auto;
+  white-space: normal;
+}
+
+.readme-content blockquote {
+  margin: 1rem 0;
+  padding: 0.2rem 1rem;
+  border-left: 1px solid var(--rule-a);
+  background: var(--surface-2);
+}
+
+.readme-loading,
+.readme-error {
+  padding: 2rem;
+  color: var(--ink-soft);
+  text-align: center;
+}
+
+@media (max-width: 960px) {
+  .language-control {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .readme-intro {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 1rem;
+  }
+
+  .readme-logo {
+    width: 6rem;
+    height: 6rem;
+  }
+
+  .readme-meta {
+    justify-content: flex-start;
+  }
+
+  .translation-disclosure {
+    text-align: left;
   }
 }

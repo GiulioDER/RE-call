@@ -18,6 +18,7 @@ same applies to any model added later — see the last section.
 | learned sparse | `prithivida/Splade_PP_en_v1` | Apache-2.0 | `recall.sparse.DEFAULT_MODEL` |
 | reranker (pinned default) | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Apache-2.0 | `recall.rerank.DEFAULT_RERANKER_MODEL` |
 | reranker (stronger) | `BAAI/bge-reranker-v2-m3` | Apache-2.0 | +0.010 to +0.017 nDCG@5 over MiniLM, ~25x compute |
+| reranker (code, opt-in) | `hq-bench/coreb-code-reranker` | Apache-2.0 | Qwen yes/no causal-LM reranker, pinned at `24d2ad50...` |
 
 **Nothing in this table restricts commercial use.** Every **shipped** RE-call result on MTRAG comes
 from this stack, and it is the only stack a reader should judge the product by.
@@ -33,6 +34,7 @@ an NC checkpoint is permitted, and it is not a number anyone can build a product
 |---|---|---|
 | `naver/splade-v3` | **cc-by-nc-sa-4.0** | the checkpoint MTRAGEval rank 3 used. ⚠️ also a GATED repo: needs an approved HuggingFace account |
 | `naver/splade-cocondenser-ensembledistil` | **cc-by-nc-sa-4.0** | ungated substitute for the above; MRR@10 38.3 vs the default's 37.22 |
+| `Salesforce/SFR-Embedding-Code-2B_R` | **research/Gemma terms** | local code embedder alias `sfr-code`; pinned at `c73d863...`; requires `RECALL_ACCEPT_RESEARCH_MODEL_LICENSE=1` and `RECALL_ACCEPT_REMOTE_MODEL_CODE=1` |
 
 🔑 **`CC-BY-NC-SA-4.0` bundles three separate things, and only one is an attribution problem:**
 
@@ -72,6 +74,16 @@ one.
   forgotten here is an undischarged attribution obligation that nothing else would catch: the code
   keeps working perfectly.
 
+The code-embedding and code-reranking aliases are enforced in their owning loaders rather than in
+`recall.sparse.KNOWN_MODELS`:
+
+- `recall.embeddings` pins `Salesforce/SFR-Embedding-Code-2B_R` to a Hub revision and refuses the
+  `sfr-code` alias unless both the research/Gemma-terms opt-in and the remote-code execution opt-in
+  are present.
+- `recall.rerank` pins `hq-bench/coreb-code-reranker` to a Hub revision. The MCP service only runs it
+  through the bounded `code` retrieval profile, requires the remote-code execution opt-in, and
+  refuses the unbudgeted legacy reranker switch.
+
 ## Research artifacts
 
 The 2026-08-06 benchmark archive
@@ -108,11 +120,11 @@ The three things that keep it inside the licence:
 1. Look up the licence on the model card. Do not guess it, and do not infer it from a sibling
    model in the same organisation — `naver/splade-v3` and `Splade_PP_en_v1` are both SPLADE and
    have different licences.
-2. Add it to `KNOWN_MODELS` as a `ModelLicense` with **all five** fields: `creator`,
-   `license_id`, `license_url`, `source_url`, `changes`. Not a bare licence string — the value is
-   a dataclass, and a string there raises `AttributeError` on first use instead of producing the
-   guard's intended error. `changes` is the field most easily skipped: "loaded unchanged, used for
-   inference only" still has to be written down rather than assumed.
+2. Add it to the enforcement point for its backend. Sparse models go in `KNOWN_MODELS` as a
+   `ModelLicense` with **all five** fields: `creator`, `license_id`, `license_url`, `source_url`,
+   `changes`. Not a bare licence string — the value is a dataclass, and a string there raises
+   `AttributeError` on first use instead of producing the guard's intended error. Embedder and
+   reranker aliases need an equivalent pinned identity and opt-in guard in their owning module.
 3. Add it to a table in this file. A test fails if a registered model is undocumented here, so
    this step is enforced rather than remembered. If it is not `apache-2.0` (or another permissive
    licence), say so and expect callers to pass the opt-in flag.

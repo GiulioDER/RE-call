@@ -69,24 +69,19 @@ def build_rows(
     return rows, key
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--peps-dir", type=Path, required=True)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--limit", type=int, default=None,
-                        help="cap items; applied AFTER the shuffle so the subset stays uniform")
-    parser.add_argument(
-        "--out", type=Path,
-        default=Path("benchmarks/labelling/truth_extraction/adjudication"),
-    )
-    args = parser.parse_args()
+def write_pack(
+    rows: list[dict[str, str]], key: dict[str, dict[str, str]], out: Path
+) -> tuple[Path, Path]:
+    """Write the blind CSV and its key. The ONLY place the pack is serialised.
 
-    rows, key = build_rows(args.peps_dir, seed=args.seed, limit=args.limit)
-    if not rows:
-        raise SystemExit("no candidates selected")
-
-    csv_path = args.out.with_suffix(".csv")
-    key_path = args.out.parent / (args.out.name + "_key.json")
+    Extracted from `main` so a test can assert on the bytes an operator actually gets. It was
+    inline, and the test written to cover the injection defence reimplemented this block in its
+    own body: removing `_csv_safe` from the line below then left the whole suite green, because
+    the assertion sat downstream of the test's copy rather than of this code. A guard that
+    reimplements what it guards is testing itself.
+    """
+    csv_path = out.with_suffix(".csv")
+    key_path = out.parent / (out.name + "_key.json")
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     # newline="" is required by the csv module (it does its own line-ending handling), and
     # lineterminator="\n" then stops it emitting CRLF on Windows. `.gitattributes` normalises to
@@ -103,6 +98,26 @@ def main() -> None:
         writer.writerows([{k: _csv_safe(v) for k, v in row.items()} for row in rows])
     with key_path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(key, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
+    return csv_path, key_path
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--peps-dir", type=Path, required=True)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--limit", type=int, default=None,
+                        help="cap items; applied AFTER the shuffle so the subset stays uniform")
+    parser.add_argument(
+        "--out", type=Path,
+        default=Path("benchmarks/labelling/truth_extraction/adjudication"),
+    )
+    args = parser.parse_args()
+
+    rows, key = build_rows(args.peps_dir, seed=args.seed, limit=args.limit)
+    if not rows:
+        raise SystemExit("no candidates selected")
+
+    csv_path, key_path = write_pack(rows, key, args.out)
 
     print(f"{len(rows)} items\n  {csv_path}\n  {key_path}   <- do NOT open until labelling is done")
 

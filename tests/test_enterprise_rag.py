@@ -6,19 +6,29 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from benchmarks import enterprise_rag
 from benchmarks.enterprise_rag import (
     EnterpriseDoc,
+    EnterpriseQuestion,
+    QueryCachedEmbedder,
     apply_top_config,
     build_parser,
     doc_chunks,
+    expand_retrieval_hits,
     generated_answer,
     index_documents,
     load_documents,
     load_questions,
+    reasoning_promotion_gate,
+    retrieval_capture_summary,
+    reasoning_summary,
     read_answer_rows,
     write_answers_stream,
     write_answers,
 )
+from recall.cache import EmbeddingCache
 from recall.types import ScoredChunk
 from recall.types import Chunk
 
@@ -315,3 +325,208 @@ def test_parser_exposes_resume_and_sparse_device() -> None:
 
     assert args.resume is True
     assert args.sparse_device == "cuda"
+
+
+def test_parser_exposes_reasoning_arm_and_cache() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--questions",
+            "questions.jsonl",
+            "--documents",
+            "docs.zip",
+            "--out",
+            "answers.jsonl",
+            "--reasoning-arm",
+            "closed_loop",
+            "--reasoning-cache",
+            "expansions.json",
+            "--embedding-cache",
+            "vectors.sqlite",
+            "--retrieval-captures",
+            "3",
+        ]
+    )
+
+    assert args.reasoning_arm == "closed_loop"
+    assert args.reasoning_cache == Path("expansions.json")
+    assert args.embedding_cache == Path("vectors.sqlite")
+    assert args.retrieval_captures == 3
+
+
+def test_reasoning_summary_records_expansion_and_fallback_rates() -> None:
+    summary = reasoning_summary(
+        [
+            {"_diagnostics": {"reasoning": {"expanded": True, "passes": 2, "queries": ["q"]}}},
+            {
+                "_diagnostics": {
+                    "reasoning": {
+                        "expanded": False,
+                        "passes": 1,
+                        "queries": [],
+                        "fallback_reason": "provider_failure",
+                    }
+                }
+            },
+        ]
+    )
+
+    assert summary == {
+        "rows": 2,
+        "expanded_rows": 1,
+        "expanded_rate": 0.5,
+        "fallback_rows": 1,
+        "fallback_rate": 0.5,
+        "passes_total": 3,
+        "queries_total": 1,
+        "capture_stability_rate": None,
+        "model": None,
+    }
+
+
+def test_closed_loop_skips_cheap_provider_after_depth_resolves_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    question = EnterpriseQuestion(
+        question_id="qst_1",
+        question="Who owns the project?",
+        raw={"expected_doc_ids": ["dsid_2"]},
+    )
+    initial = ScoredChunk(
+        chunk=doc_chunks(
+            EnterpriseDoc("dsid_1", "github", "project", "The project is incomplete.")
+        )[0],
+        score=0.5,
+        indexed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    depth = ScoredChunk(
+        chunk=doc_chunks(
+            EnterpriseDoc("dsid_2", "github", "owner", "Ada owns the project.")
+        )[0],
+        score=0.9,
+        indexed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    class _Store:
+        pass
+
+    class _Embedder:
+        pass
+
+    calls: list[str] = []
+
+    def fake_retrieve(*_args: Any, **kwargs: Any) -> tuple[list[str], list[ScoredChunk], bool]:
+        del kwargs
+        calls.append(_args[2])
+        return ["dsid_2"], [depth], False
+
+    monkeypatch.setattr(enterprise_rag, "retrieve_docs", fake_retrieve)
+    ids, _, diagnostics = expand_retrieval_hits(
+        question,
+        _Store(),
+        _Embedder(),
+        initial_hits=[initial],
+        initial_gap_warning=True,
+        k=8,
+        candidate_k=80,
+        sparse_backend="lexical",
+        sparse_encoder=None,
+        reranker=None,
+        gap_threshold=0.5,
+        arm="closed_loop",
+        provider=None,
+        expansion_cache=None,
+    )
+
+    assert ids == ["dsid_1", "dsid_2"]
+    assert calls == ["Who owns the project?"]
+    assert diagnostics["provider_skipped_reason"] == "depth_resolved"
+
+
+def test_query_cached_embedder_reuses_query_vectors(tmp_path: Path) -> None:
+    class FakeEmbedder:
+        dim = 2
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            self.calls += 1
+            return [[float(len(text)), 1.0] for text in texts]
+
+    inner = FakeEmbedder()
+    with EmbeddingCache(tmp_path / "vectors.sqlite") as cache:
+        embedder = QueryCachedEmbedder(inner, cache)
+        assert embedder.embed_query("same") == embedder.embed_query("same")
+    assert inner.calls == 1
+
+
+def test_reasoning_promotion_gate_stays_pending_without_independent_metrics() -> None:
+    gate = reasoning_promotion_gate(None)
+    assert gate["status"] == "pending"
+    assert gate["expensive_model_allowed"] is False
+
+
+def test_reasoning_promotion_gate_requires_all_safety_signals() -> None:
+    metrics = {
+        "baseline_correctness": 0.50,
+        "candidate_correctness": 0.54,
+        "useful_expansion_precision": True,
+        "stable_repeated_captures": True,
+        "validation_failure_rate": 0.01,
+        "no_material_false_abstention": True,
+        "info_not_found_correctness": 0.95,
+    }
+    assert reasoning_promotion_gate(metrics)["expensive_model_allowed"] is True
+
+    metrics["candidate_correctness"] = 0.52
+    gate = reasoning_promotion_gate(metrics)
+    assert gate["status"] == "blocked"
+    assert "correctness_delta_at_least_3_points" in gate["failed"]
+
+
+def test_retrieval_capture_summary_reports_variance() -> None:
+    summary = retrieval_capture_summary(
+        [
+            {"document_ids": ["a", "b"]},
+            {"document_ids": ["a", "b"]},
+            {"document_ids": ["a", "c"]},
+        ]
+    )
+    assert summary["count"] == 3
+    assert summary["stable"] is False
+    assert summary["mean_document_jaccard"] == (1.0 + 1 / 3 + 1 / 3) / 3
+
+
+def test_retrieval_capture_summary_does_not_materialize_pair_scores() -> None:
+    captures = [{"document_ids": [str(index)]} for index in range(10)]
+    summary = retrieval_capture_summary(captures)
+
+    assert summary["count"] == 10
+    assert summary["mean_document_jaccard"] == 0.0
+
+
+def test_retrieval_capture_limit_is_bounded() -> None:
+    with pytest.raises(ValueError, match="between 1 and 10"):
+        list(
+            enterprise_rag._answers(
+                [],
+                object(),
+                object(),
+                k=1,
+                candidate_k=1,
+                mode="extractive",
+                model="model",
+                api_key=None,
+                max_chars=100,
+                sparse_backend="none",
+                sparse_encoder=None,
+                reranker=None,
+                gap_threshold=0.1,
+                reasoning_arm="none",
+                expansion_provider=None,
+                expansion_cache=None,
+                retrieval_captures=11,
+            )
+        )

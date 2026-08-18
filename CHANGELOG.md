@@ -8,6 +8,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Fixed
+
+* **`recall generation build` recorded an overlap the chunker never used, and correcting it moves
+  the pipeline fingerprint.** The chunker clamps overlap to `max_chars // 4`; the generation's
+  `ChunkerIdentity` recorded what was asked for. So the record described a pipeline that did not
+  run, and it was reachable with default arguments: `--max-chars 200` with the default overlap of
+  80 chunked at 50 and recorded 80. Two configurations producing byte-identical chunks therefore
+  fingerprinted differently, and a calibration binds to that fingerprint.
+
+  ⚠️ **This is a deliberate break on rebuild, in exactly one region.** The recorded value changes
+  only when `overlap > max_chars // 4`, which at the default overlap means any `--max-chars` below
+  320. The default 800/80 is unchanged. Generations already in a database are immutable and
+  unaffected, but rebuilding such a corpus with identical flags now yields a different
+  `pipeline_fingerprint`, which costs the cross-generation chunk reuse keyed on that column and
+  the binding of any calibration measured against the old generation. Re-run
+  `recall calibration calibrate --publish` against the new generation. The pre-upgrade record was
+  false, so there is no version of this that is both correct and non-breaking. `recall index` is
+  unaffected: it takes neither flag and builds no pipeline identity.
+
+* **The MCP server now honours `RECALL_TRUST_MODE`.** `docs/USING_WITH_CLAUDE.md` has told users to
+  set it since the document was written, and it did nothing: the variable appeared nowhere in
+  `recall_mcp`, and `search_memory` and `evidence_memory` were both called without `policy=`, so the
+  service applied its strict default. Following the documented first-run path therefore produced
+  `INDEX_NOT_READY` on every `recall_search` against a freshly indexed corpus, with the one
+  documented remedy inert. The CLI honoured the same variable throughout, which is what let the gap
+  survive: the same setting worked in one entry point and was silently ignored in the other.
+  Strict remains the default, a misspelling such as `developmnet` still stays strict, and a relaxed
+  server now logs a warning at every start rather than degrading quietly.
+
+### Added
+
+* `recall extract run|show --status-vocabulary W,X,Y` lets a corpus that states status in its
+  own words, not the shipped memo set, be measured without every such claim being refused at a
+  batch rung. It does not widen what `recall rewrite` may write: the write path still extracts
+  under the shipped vocabulary and `route_relation` still refuses anything outside it.
+
+## [0.9.5] (2026-08-15)
+
 ### Added
 
 * Added model backed truth extraction: `recall/truth_extraction/`, turning memo prose into
@@ -61,6 +99,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   system had produced it. It now raises `CompletionTruncated`, unretried because the same ceiling
   cuts every further attempt, and the existing per-task quarantine keeps the task out of the
   submission and in the failures log.
+
+### Added
+
+* `recall setup` gains an optional reasoning arm step, asked after the entailment judge question
+  and before the CLAUDE.md scaffold question. Answering yes writes four new environment
+  variables: `RECALL_REASONING`, `RECALL_REASONING_MODEL`, `RECALL_REASONING_BASE_URL`, and
+  `RECALL_REASONING_API_KEY`. Answering no writes `RECALL_REASONING=0` and nothing else, so
+  "switched off" and "never configured" stay distinguishable in `.env`. The shipped reasoning
+  tools do not read these variables yet; this writes the settings for a port the reasoning arm
+  will use once it is built. See
+  [docs/REASONING_MODEL_SELECTION_DESIGN.md](docs/REASONING_MODEL_SELECTION_DESIGN.md).
+
+### Fixed
+
+* Corrected `recall setup`'s refusal message for an embedder whose vector width conflicts with a
+  table that already holds data. It previously pointed at a remedy that failed identically to the
+  original problem. It now stops and tells you to choose an embedder matching the existing
+  schema, or point setup at a fresh table name or database.
 
 ## [0.9.4] (2026-08-12)
 

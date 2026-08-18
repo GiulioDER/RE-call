@@ -245,10 +245,36 @@ class ManifestObjectV1:
 
     def __post_init__(self) -> None:
         parsed = urlsplit(self.uri)
-        if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.lstrip("/"):
-            raise LineageError("manifest object URI must be s3://bucket/key")
         if parsed.query or parsed.fragment:
             raise LineageError("manifest object URI cannot contain a query or fragment")
+
+        # `file://` is accepted alongside `s3://` so a corpus that lives in a directory can become
+        # a generation. Without it, calibration was unreachable for anyone who had not stood up
+        # object storage, because calibration requires a generation and a generation required S3.
+        #
+        # ⚠️ The two are NOT equivalent guarantees, and the difference is enforced below rather
+        # than left to a reader's goodwill. S3 `version_id` names one specific set of bytes
+        # forever, so an entry and its object cannot drift apart. A local file has no version and
+        # can be rewritten in place after the manifest is written. The only honest version a local
+        # file has is what is inside it, so `version_id` is REQUIRED to equal the content digest.
+        # An arbitrary string there would look like an S3 version id while promising something it
+        # cannot deliver. What the local path buys is DETECTION of divergence, never prevention.
+        if parsed.scheme == "file":
+            if not parsed.path.lstrip("/"):
+                raise LineageError("manifest object URI must be file:///absolute/path")
+            # Compared case-insensitively because `sha256` is normalised to lowercase at the END of
+            # this method, after this point. Comparing the raw values would reject a correct entry
+            # written with an uppercase digest, which is a validator failing on presentation rather
+            # than on substance.
+            if self.version_id.lower() != self.sha256.lower():
+                raise LineageError(
+                    "a file:// manifest object's version_id must be its content digest. A local "
+                    "file has no version other than its contents, and any other value would name "
+                    "an immutability guarantee the filesystem does not provide."
+                )
+        elif parsed.scheme != "s3" or not parsed.netloc or not parsed.path.lstrip("/"):
+            raise LineageError("manifest object URI must be s3://bucket/key or file:///path")
+
         if not self.version_id or self.version_id.lower() == "null":
             raise LineageError("manifest object version_id must name an immutable object version")
         if not self.media_type:
