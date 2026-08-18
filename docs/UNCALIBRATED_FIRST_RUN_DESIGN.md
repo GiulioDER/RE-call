@@ -544,8 +544,20 @@ expected, because the measurement said so.
 ### It is an IDENTIFICATION, not a verification
 
 **The legacy table records no chunker at all**: not the algorithm, not `max_chars`, not `overlap`.
-`_index_fingerprint` has no chunker term either (`recall/index.py:442`), which is why re indexing a
-corpus does not repair a chunker change: the skip guard reports it unchanged.
+`_index_fingerprint` carries no chunker CONFIGURATION either (`recall/index.py:420`), which is why
+re indexing a corpus does not repair a chunker change: the skip guard reports it unchanged.
+
+🔁 **Corrected 2026-08-18 after `79a0d6ed`, which is the commit that made the previous wording
+wrong.** This used to read "`_index_fingerprint` has no chunker term either". #381 widened that
+fingerprint to hash the whole `EmbeddingProfile`, which covers `chunker_version`
+(`recall/embeddings.py:412`), so a field of that name is now in the hash. It is inert: it belongs to
+the EMBEDDING profile, is defaulted to `chunk-text-v1` at both definitions and set by nothing else,
+and the `Indexer`'s actual chunker (`recall/index.py:535`) never reaches it. Measured against
+`79a0d6ed`, one file and one embedder, varying only the chunker: `chunk_text(800, 80)` gives one
+chunk, `chunk_text(60, 10)` gives four, `chunk_code` gives one, and **all three produce the
+identical index fingerprint**. So the conclusion below is untouched and only the sentence needed
+narrowing. ⚠️ Forward hazard: `chunker_version` is now key material, so anything that starts setting
+it per chunker turns a chunker change into a forced re embed.
 
 So there is no stated value to check. The attestation **re derives the body with `parse_frontmatter`
 (`recall/frontmatter.py:186`), re chunks it with each of a fixed candidate set, and compares the
@@ -584,8 +596,9 @@ discriminates rather than accepting everything.
 ### Per source, because a corpus can hold more than one chunker
 
 ⚠️ **This is the consequence the measurement forced, and it is not obvious.** Since
-`_index_fingerprint` has no chunker term, `recall index` **skips** a file whose content and embedder
-are unchanged even when the chunker has changed underneath it. An incrementally built corpus can
+`_index_fingerprint` carries no chunker configuration (see the correction above: as of `79a0d6ed`
+it carries a `chunker_version` string that no chunker change moves), `recall index` **skips** a file
+whose content and embedder are unchanged even when the chunker has changed underneath it. An incrementally built corpus can
 therefore legitimately contain chunks from several chunker eras, and that is the expected result of
 any chunker change rather than an exotic case.
 
