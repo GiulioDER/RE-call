@@ -325,16 +325,22 @@ class HeadlessReport:
                 f"({entry.chunks} chunks from {entry.files} files, legacy chunks table)"
             )
             if not entry.chunks:
-                # Says what is true of the DATABASE, and stops there. An earlier version added that
-                # this tenant's server "carries RECALL_TRUST_MODE=development", which the wizard
-                # does not do: writing `.mcp.json` is Phase 4 and does not exist yet. The corpus
-                # spec requires that setting; nothing here has applied it.
+                # Says what is true of the CORPUS, and stops there.
+                #
+                # 🔁 Corrected twice, in opposite directions, which is why it now says less. The
+                # first version claimed this tenant's server "carries RECALL_TRUST_MODE=development"
+                # when the wizard wrote no `.mcp.json` at all. The replacement said the wizard "does
+                # not write that configuration" — true when written, and false by the time Phase 4
+                # landed: the first real install printed that sentence three lines above a server
+                # block showing exactly that setting, so the report contradicted itself.
+                #
+                # The server lines below report themselves, and they report what actually happened
+                # rather than what this line predicts. A sentence about a neighbouring section is a
+                # sentence that goes stale when the neighbour changes.
                 lines.append(
                     detail(
                         "the directory was empty, which is normal on a first install: this tenant "
-                        "is writable and fills up as you use it. It is not calibrated, so it needs "
-                        "a server configured for development trust; this command does not write "
-                        "that configuration."
+                        "is writable and fills up as you use it, and it is never calibrated."
                     )
                 )
 
