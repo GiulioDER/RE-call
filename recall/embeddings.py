@@ -725,6 +725,11 @@ def _fallback_profile_id(model_name: str, dimension: int, asymmetric: bool) -> s
     # a `FastEmbedEmbedder` inside `RegisteredProfile.build`, never while it is being imported.
     from recall.embedding_registry import find_registered_profile
 
+    # `bool(...)` because the expression this replaced was a conditional on TRUTHINESS, and a dict
+    # lookup is not. A library caller passing `asymmetric=2` (or a string out of a config file)
+    # used to get the asymmetric branch and would now get a KeyError from a public constructor.
+    # Narrowing a public signature is not part of this fix.
+    asymmetric = bool(asymmetric)
     legacy = _LEGACY_FALLBACK_PROFILE_IDS[asymmetric]
     entry = find_registered_profile(legacy)
     if entry is not None and entry.model_name == model_name and entry.dimension == dimension:

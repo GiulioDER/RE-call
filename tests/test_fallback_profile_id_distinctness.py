@@ -163,6 +163,24 @@ def test_the_legacy_identifier_is_refused_for_another_model_at_the_same_width() 
     assert "other-384" in resolved
 
 
+@pytest.mark.parametrize("truthy", [True, 1, 2, "yes", [0]])
+def test_asymmetric_is_still_read_as_truthiness(truthy: object) -> None:
+    """The expression this replaced was a conditional, and a dict lookup is not.
+
+    `FastEmbedEmbedder` is public API and `asymmetric` used to reach a `... if asymmetric else ...`,
+    so any truthy value selected the asymmetric branch. Keying a dict on it directly would raise
+    `KeyError` for anything that is not exactly `True`/`False`/`0`/`1`, turning a working call into
+    a crash in a constructor. Fixing a wrong id is not a licence to narrow the signature.
+    """
+    assert _fallback_profile_id(BGE_SMALL, 384, truthy) == "bge-small-asymmetric-v1"  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("falsy", [False, 0, "", None, []])
+def test_falsy_asymmetric_still_selects_the_symmetric_identifier(falsy: object) -> None:
+    """The other half: `None` and `""` used to mean symmetric and must keep meaning it."""
+    assert _fallback_profile_id(BGE_SMALL, 384, falsy) == "bge-small-symmetric-v1"  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     "model_name", [BGE_LARGE, "vendor/model-a", "org/sub/deep-name", "no-slash-model"]
 )
