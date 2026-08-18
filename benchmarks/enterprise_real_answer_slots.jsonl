@@ -1,0 +1,50 @@
+{"question_id":"qst_0301","answer_slots":[{"name":"eviction_threshold","terms":["eviction_rate","0.5%"],"min_matches":2},{"name":"latency_threshold","terms":["99.9th","2x"],"min_matches":2},{"name":"breach_duration","terms":["45 minutes"]}]}
+{"question_id":"qst_0302","answer_slots":[{"name":"customer_input","terms":["Splunk HEC endpoint","HEC token"],"min_matches":2},{"name":"solutions_owner","terms":["Sam","Solutions"],"min_matches":2},{"name":"sales_owner","terms":["Kevin","Sales-Eng"],"min_matches":2}]}
+{"question_id":"qst_0303","answer_slots":[{"name":"signoff","terms":["Solutions","Capacity Ops","Security"],"min_matches":3},{"name":"dependencies","terms":["ENG-23145","PM-904321"],"min_matches":2}]}
+{"question_id":"qst_0304","answer_slots":[{"name":"initial_window","terms":["24-hour"]},{"name":"final_window","terms":["48-hour","high-severity"],"min_matches":2}]}
+{"question_id":"qst_0305","answer_slots":[{"name":"wrapped_shape","terms":["singleton-wrapped","scores"],"min_matches":2},{"name":"normalizer","terms":["ensure_rerank_groups"]}]}
+{"question_id":"qst_0306","answer_slots":[{"name":"alert","terms":["TLS handshake","60%"],"min_matches":2},{"name":"predeploy","terms":["pre-deploy validation"]},{"name":"canary","terms":["canary rollout","DNS resolver"],"min_matches":2}]}
+{"question_id":"qst_0307","answer_slots":[{"name":"model","terms":["rdx-13b"]},{"name":"metrics","terms":["perf-per-watt","throughput"],"min_matches":2},{"name":"artifacts","terms":["telemetry","SI CSVs","BIOS snapshots"],"min_matches":3}]}
+{"question_id":"qst_0308","answer_slots":[{"name":"privatelink","terms":["AWS PrivateLink"]},{"name":"vpc","terms":["peered ingress VPC"]},{"name":"vpn","terms":["site to site VPN"]},{"name":"meeting","terms":["10:00am","PST"],"min_matches":2}]}
+{"question_id":"qst_0309","answer_slots":[{"name":"status","terms":["success","linkcheck warnings"],"min_matches":2},{"name":"fragments","terms":["no broken fragments"]}]}
+{"question_id":"qst_0310","answer_slots":[{"name":"attendees","terms":["Samir Patel","Lila Novak"],"min_matches":2},{"name":"checkpoints","terms":["2026-10-06","2026-10-08"],"min_matches":2}]}
+{"question_id":"qst_0311","answer_slots":[{"name":"meeting","terms":["2027-04-21","10:00","11:00"],"min_matches":3},{"name":"commitment","terms":["redacted audit-log sample","Evidence Matrix"],"min_matches":2}]}
+{"question_id":"qst_0312","answer_slots":[{"name":"due","terms":["2026-08-16"]},{"name":"path","terms":["internal/runbooks/oncall"]}]}
+{"question_id":"qst_0313","answer_slots":[{"name":"rename","terms":["emit_latency_ms","token_emit_latency_ms"],"min_matches":2},{"name":"sampling","terms":["0.5%","full emission"],"min_matches":2}]}
+{"question_id":"qst_0314","answer_slots":[{"name":"go_live","terms":["2028-07-22"]},{"name":"start","terms":["2028-07-15"]}]}
+{"question_id":"qst_0315","answer_slots":[{"name":"indicator","terms":["Escalation badge"]},{"name":"grace","terms":["10-second"]}]}
+{"question_id":"qst_0316","answer_slots":[{"name":"retention","terms":["90 days"]},{"name":"turnaround","terms":["4 business hours"]},{"name":"billing","terms":["billed separately","customer"],"min_matches":2}]}
+{"question_id":"qst_0317","answer_slots":[{"name":"dependency","terms":["ENG-904500","admission API"],"min_matches":2},{"name":"fallback","terms":["passive fallback mode"]}]}
+{"question_id":"qst_0318","answer_slots":[{"name":"start_time","terms":["2026-03-09T02:18:22Z"]},{"name":"rollout","terms":["2026-03-17"]}]}
+{"question_id":"qst_0319","answer_slots":[{"name":"allocator","terms":["bucket_merge_threshold_bytes","delayed_free_ms"],"min_matches":2},{"name":"kv","terms":["kv.evict_on_ingest_pct","kv.evict_batch_size"],"min_matches":2},{"name":"fallback_allocs","terms":["18","2 per minute"],"min_matches":2}]}
+{"question_id":"qst_0320","answer_slots":[{"name":"discount","terms":["20%","24-month"],"min_matches":2},{"name":"credit","terms":["5%","Q1 invoice"],"min_matches":2}]}
+{"question_id":"qst_0321","answer_slots":[{"name":"sampling","terms":["1% deterministic","tenant hash"],"min_matches":2},{"name":"owner","terms":["Liam O'Connor"]}]}
+{"question_id":"qst_0322","answer_slots":[{"name":"flag","terms":["runtime.bandwidth_fanout.enabled"]},{"name":"components","terms":["KV-shard coalescing","stream mapping"],"min_matches":2}]}
+{"question_id":"qst_0323","answer_slots":[{"name":"issue","terms":["SAML assertion ordering","session stitching"],"min_matches":2},{"name":"environments","terms":["hosted","dedicated"],"min_matches":2}]}
+{"question_id":"qst_0324","answer_slots":[{"name":"uptime","terms":["99.98%","99.99%"],"min_matches":2},{"name":"ticket","terms":["SUP-3421"]}]}
+{"question_id":"qst_0325","answer_slots":[{"name":"v1","terms":["full-tenant SSO","cross-tenant dedupe"],"min_matches":2},{"name":"mvp","terms":["embedding cache","quantization"],"min_matches":2}]}
+{"question_id":"qst_0326","answer_slots":[{"name":"regions","terms":["REGION-A","REGION-B"],"min_matches":2},{"name":"blocker","terms":["IAM permissions tweak","private-modules PR"],"min_matches":2}]}
+{"question_id":"qst_0327","answer_slots":[{"name":"units","terms":["token-generation-unit","embedding-unit"],"min_matches":2},{"name":"path","terms":["token-bundle-flex-enterprise-metering"]}]}
+{"question_id":"qst_0328","answer_slots":[{"name":"score","terms":["80%"]},{"name":"due","terms":["2026-06-05"]}]}
+{"question_id":"qst_0329","answer_slots":[{"name":"interactive","terms":["80 ms median"]},{"name":"streaming","terms":["50 ms"]}]}
+{"question_id":"qst_0330","answer_slots":[{"name":"job","terms":["prefetch-triage-174600"]},{"name":"path","terms":["/tmp/traces/prefetch-triage-174600"]}]}
+{"question_id":"qst_0331","answer_slots":[{"name":"model","terms":["redwood-open-gpt-3.5-v1"]},{"name":"contract","terms":["Dedicated contract"]}]}
+{"question_id":"qst_0332","answer_slots":[{"name":"corr_id","terms":["corr-id copy","screen-reader-only"],"min_matches":2},{"name":"consent","terms":["opt-in checkbox","logged consent event"],"min_matches":2},{"name":"merge","terms":["updated mocks","accessibility checklist"],"min_matches":2}]}
+{"question_id":"qst_0333","answer_slots":[{"name":"latency","terms":["150 ms"]},{"name":"upload","terms":["sample requests","Friday"],"min_matches":2}]}
+{"question_id":"qst_0334","answer_slots":[{"name":"cause","terms":["60s idle timeout","comment-only heartbeats"],"min_matches":2},{"name":"mitigation","terms":["data: ping","25 seconds"],"min_matches":2}]}
+{"question_id":"qst_0335","answer_slots":[{"name":"sponsor","terms":["Tanya Bennett","CPO"],"min_matches":2},{"name":"meeting","terms":["Jul 7, 2026","3:00","3:45"],"min_matches":3}]}
+{"question_id":"qst_0336","answer_slots":[{"name":"meeting","terms":["7/31","10:00 AM PT"],"min_matches":2},{"name":"rate","terms":["120 requests per second"]}]}
+{"question_id":"qst_0337","answer_slots":[{"name":"success","terms":["98%","24 hours"],"min_matches":2},{"name":"rollback","terms":["95%","4 hours"],"min_matches":2}]}
+{"question_id":"qst_0338","answer_slots":[{"name":"owner","terms":["infra-scheduling@redwood.com","eng-infra"],"min_matches":2},{"name":"channel","terms":["#infra-scheduling"]}]}
+{"question_id":"qst_0339","answer_slots":[{"name":"warn","terms":["0.5%","2 hours"],"min_matches":2},{"name":"page","terms":["1.0%","1 hour"],"min_matches":2},{"name":"label","terms":["workspace_id","warn-level"],"min_matches":2}]}
+{"question_id":"qst_0340","answer_slots":[{"name":"ticket","terms":["SUP-4219"]},{"name":"request","terms":["req-2026-11-07-9a12b3c4"]}]}
+{"question_id":"qst_0481","answer_slots":[{"name":"allowlist_accounts","terms":["hot-route","allowlist"],"min_matches":2},{"name":"budget_values","terms":["RPS","estimated TPS","concurrency"],"min_matches":3}]}
+{"question_id":"qst_0482","answer_slots":[{"name":"queue_guardrail","terms":["queue-depth","FP8 attention","decode"],"min_matches":3},{"name":"ratio_cutoffs","terms":["prefill","decode","interleaving"],"min_matches":3}]}
+{"question_id":"qst_0483","answer_slots":[{"name":"network","terms":["public blockchain","Merkle-root"],"min_matches":2},{"name":"verification","terms":["smart contract address","auditor"],"min_matches":2}]}
+{"question_id":"qst_0484","answer_slots":[{"name":"mapping","terms":["billing_tag","Finance GL code","cost center"],"min_matches":3},{"name":"source_of_truth","terms":["source-of-truth","Eval Budget Ledger"],"min_matches":2}]}
+{"question_id":"qst_0485","answer_slots":[{"name":"token_format","terms":["queue token","encoding","required fields"],"min_matches":3},{"name":"replay_protection","terms":["cross-tenant","cross-region replay","signing"],"min_matches":3}]}
+{"question_id":"qst_0486","answer_slots":[{"name":"carbon","terms":["CO2e","carbon intensity","cache-hit"],"min_matches":3},{"name":"api_schema","terms":["Usage API","export schema"],"min_matches":2}]}
+{"question_id":"qst_0487","answer_slots":[{"name":"error_schema","terms":["HTTP 409","resume_details","JSON schema"],"min_matches":3},{"name":"crc","terms":["kv_crc","resume tokens","computed"],"min_matches":3}]}
+{"question_id":"qst_0488","answer_slots":[{"name":"safe_mode","terms":["safe mode boot","Secure Boot","Resizable BAR"],"min_matches":3},{"name":"defaults","terms":["A100","H100","default values"],"min_matches":3}]}
+{"question_id":"qst_0489","answer_slots":[{"name":"ownership","terms":["Hosted API - Streaming","Slack channel","ownership contact"],"min_matches":3}]}
+{"question_id":"qst_0490","answer_slots":[{"name":"bgp","terms":["BGP community","redwood-shield","MED"],"min_matches":3},{"name":"failover","terms":["Direct Connect","VPN","local-preference"],"min_matches":3}]}
