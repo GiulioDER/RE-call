@@ -1,6 +1,7 @@
 # Pre-registration: anchor-based verification of `path:line` citations in `docs/`
 
-**Date:** 2026-08-18   **Status:** predicted, not yet measured
+**Date:** 2026-08-18   **Status:** measured 2026-08-18, see the result at the bottom.
+The predictions below are unchanged from the committed version and must stay that way.
 
 ## The question
 
