@@ -382,6 +382,49 @@ requires_openai = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(scope="session")
+def _suite_index_root(tmp_path_factory):
+    """One disposable directory that `RECALL_INDEX_ROOT` points at for the whole session.
+
+    Deliberately NOT under each test's own `tmp_path`, which was the first version of this and cost
+    two failures to learn: `tests/test_fix.py::test_apply_proposal_preserves_the_memo_when_the_write_fails`
+    and `tests/test_bench_systems.py::test_conversation_to_messages_mirrors_recall_turn_walk` both
+    ENUMERATE `tmp_path` and assert on everything in it, so a fixture that creates one directory
+    there fails them without either test having anything to do with uploads. `tmp_path` belongs to
+    the test; a fixture that writes into it is changing the subject.
+
+    Session scope is safe because nothing collides inside it: `stage_uploads` keys every staging
+    directory by a fresh uuid, and any test that cares about the value sets its own.
+    """
+    return tmp_path_factory.mktemp("recall-index-root")
+
+
+@pytest.fixture(autouse=True)
+def _confine_index_root(_suite_index_root, monkeypatch) -> Iterator[None]:
+    """Point `RECALL_INDEX_ROOT` somewhere disposable for EVERY test.
+
+    `RECALL_INDEX_ROOT` defaults to `.`, the server's working directory, and that default is
+    documented, deliberate and correct for the desktop app (docs/SECURITY_MODEL.md,
+    docs/USING_WITH_CLAUDE.md), so it is not the thing to change. It is wrong for a test session
+    only because the working directory of a test session is the checkout: `recall.desktop.uploads`
+    resolves its staging root from the same variable, so any test that reaches `stage_uploads`
+    without setting it decodes its upload into `uploads/<tenant>/<job_id>/` at the repository root.
+
+    Three such directories were left behind by `tests/test_mcp_tool_authorization.py` alone, which
+    calls `recall_ingest` for its authorised cases and stops at the service boundary, which is AFTER
+    the staging write. They are untracked, they survive the run, and `git add` by pathspec is the
+    only thing standing between them and a commit.
+
+    Autouse rather than a per-test `monkeypatch.setenv` because the defect is a default reached by
+    OMISSION: a new test that touches an upload or index path inherits the confinement without
+    knowing this variable exists, which is the only version of this that cannot regress. Tests that
+    care about the value still set their own, and win: `monkeypatch.setenv` in the test body runs
+    after this fixture.
+    """
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(_suite_index_root))
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _isolate_recall_logger() -> Iterator[None]:
     """Restore the `recall` logger around every test.

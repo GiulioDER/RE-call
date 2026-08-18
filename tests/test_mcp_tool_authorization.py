@@ -268,6 +268,29 @@ def _stop_at_the_service_boundary(monkeypatch) -> None:
         monkeypatch.setattr(server_module, name, _capture)
 
 
+@pytest.fixture(autouse=True)
+def _stage_uploads_into_tmp_path(tmp_path, monkeypatch) -> None:
+    """Keep `recall_ingest`'s staging write out of the checkout.
+
+    Three of the parametrised cases below authorise successfully and stop at the SERVICE boundary,
+    which is one step past `stage_uploads`: by the time `generation_ingest` is intercepted, the
+    upload has already been decoded to disk. `recall.desktop.uploads` resolves its staging root from
+    `RECALL_INDEX_ROOT`, whose documented default is the working directory, so an unset variable put
+    `uploads/acme/<job_id>/memo.md` in the repository root once per run and left it there:
+    untracked, and one `git add` away from being committed.
+
+    `tests/conftest.py` now confines this for the whole suite, and this fixture is deliberately kept
+    alongside it: the dependency belongs where the write happens, so a reader of this file can see
+    why these tests do not litter, and moving the file does not quietly reintroduce it.
+
+    A SUBDIRECTORY of `tmp_path`, never `tmp_path` itself. No test in this file enumerates its
+    `tmp_path`, but two elsewhere in the suite do and assert on everything they find, so a fixture
+    that drops a directory into a test's own scratch space fails tests that have nothing to do with
+    uploads. `tests/conftest.py::_suite_index_root` records which two.
+    """
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(tmp_path / "index-root"))
+
+
 def _invoke(
     name: str,
     state: dict,
