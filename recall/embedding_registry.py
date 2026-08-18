@@ -207,7 +207,7 @@ class RegisteredProfile:
                     f"profile {self.profile_id!r} is hosted and cannot accept an artifact "
                     "digest; there is no artifact tree to have hashed"
                 )
-            digest = HOSTED_UNVERIFIED_DIGEST
+            digest: str | None = HOSTED_UNVERIFIED_DIGEST
         else:
             digest = artifact_digest or self.artifact_digest
         if not digest:
@@ -314,6 +314,9 @@ class RegisteredProfile:
                 identity=identity,
             )
         if self.backend == "qwen3":
+            # `build` refuses a local profile with no artifact path before reaching here; the
+            # assert states that for the type checker rather than widening the constructor.
+            assert artifact_path is not None
             return Qwen3EmbeddingEmbedder(
                 artifact_path, identity.artifact_digest, identity=identity
             )

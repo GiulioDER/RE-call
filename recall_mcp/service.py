@@ -16,7 +16,11 @@ from pydantic import BaseModel, Field
 from recall.calibration import Calibration
 from recall.calibration_v2 import CalibrationRepository
 from recall.trust_policy import TrustPolicy, TrustRefusal
-from recall.embedding_registry import find_registered_profile, registered_profile_ids
+from recall.embedding_registry import (
+    RegisteredProfile,
+    find_registered_profile,
+    registered_profile_ids,
+)
 from recall.embeddings import (
     Embedder,
     FastEmbedEmbedder,
@@ -174,7 +178,7 @@ _PROFILE_EMBEDDER_SPELLINGS: dict[str, frozenset[str]] = {
 }
 
 
-def _warn_if_rejected(entry) -> None:
+def _warn_if_rejected(entry: RegisteredProfile) -> None:
     """Log the measured verdict when a profile that was rejected is being loaded anyway."""
     if not entry.rejected:
         return
