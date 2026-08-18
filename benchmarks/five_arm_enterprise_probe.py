@@ -157,7 +157,7 @@ def _run_case(
         max_items=args.k,
         bundle_mode="document" if arm != "current_retrieval" else "retrieval",
         max_documents=2,
-        answer_slots=slots,
+        answer_slots=slots if arm in {"answer_slots", "bundle_beam"} else (),
         selection_mode="beam" if arm == "bundle_beam" else "prefix",
         beam_width=8,
     )
