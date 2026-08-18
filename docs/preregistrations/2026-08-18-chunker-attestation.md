@@ -1,6 +1,9 @@
 # Pre registration: can a chunker be identified from stored chunks alone?
 
-**Date:** 2026-08-18   **Status:** predicted, not yet measured
+**Date:** 2026-08-18   **Status:** measured 2026-08-18. Q1 and Q3 confirmed, Q2 falsified: the
+chunker turned out to be **fully identified**, which is the better outcome and the one registered
+as a falsifier so it could not be claimed after the fact. Predictions and falsifiers below are
+unedited; the result is appended below the horizontal rule.
 
 ## The question
 
@@ -112,3 +115,94 @@ An exact string list comparison is deliberately stricter than retrieval cares ab
 differing by one trailing newline would retrieve near identically and be reported as a mismatch
 here. That strictness is the point for an attestation, but it means the reproduction rate is a
 lower bound on practical equivalence.
+
+---
+
+## Result
+
+Measured 2026-08-18 against the remote `memory` tenant, 1,080 sources and 8,716 stored chunks.
+**Q1 and Q3 confirmed, Q2 falsified**, and the falsification is the one that changes the design.
+
+### Apparatus check, before any comparison
+
+| | sources |
+|---|---:|
+| in the tenant | 1,080 |
+| local copy absent | 18 |
+| local copy present but hash differs from what was indexed | 4 |
+| **usable** | **1,058** |
+
+The 22 exclusions are local snapshot divergence, not corpus damage: the same corpus verified
+**1,080 of 1,080** against the bytes on its own host in the earlier run. This is the apparatus check
+doing exactly what it exists for, and every figure below is over the 1,058, not the 1,080.
+
+### Q1 and Q2: which candidates reproduce the stored chunks exactly
+
+| Candidate | Reproduced | % | Seconds |
+|---|---:|---:|---:|
+| **`chunk_text(800, overlap=80)`** | **1,058 / 1,058** | **100.00** | 0.16 |
+| `chunk_text(800, overlap=0)` | 535 | 50.57 | 0.20 |
+| `chunk_code(800)` | 31 | 2.93 | 0.24 |
+| `chunk_text(1200, overlap=80)` | 43 | 4.06 | 0.13 |
+
+**Q1 confirmed, above its bar:** 100.00 percent against a registered 98 percent.
+
+⛔ **Q2 falsified: the identification IS unique.** Exactly one candidate reproduces every source,
+so the chunker is fully determined on this corpus rather than under determined as predicted.
+
+**Why the prediction was wrong, which is the useful part.** I argued `overlap` would be
+unidentifiable because it only bites on a paragraph longer than `max_chars`, and predicted **fewer
+than 10 percent** of sources would contain one. Measured: **523 of 1,058, or 49.43 percent.** Memo
+prose is not the short paragraph prose I assumed. My model of the corpus was wrong, not my model of
+the chunker.
+
+🔑 **An exact internal cross check fell out of it.** `overlap=0` reproduced **535** sources and
+523 sources contain a force split, and 535 + 523 = 1,058 exactly. The two numbers were computed by
+independent code paths, one comparing chunk lists and the other measuring paragraph lengths, and
+they partition the corpus with no remainder. So `overlap` is identifiable on precisely the sources
+where it can act, and on no others, which is what the parameter means.
+
+### Q3: cost
+
+**0.16 seconds for a full pass over 1,058 sources**, against a registered bar of 30 and against
+1.82 s for merely hashing the same corpus. All four candidates together run in under a second.
+
+**Exhaustive coverage is therefore free, and the chunker attestation needs no sampling rule at
+all.** This is a real asymmetry with the embedder attestation, which needs one only because
+inference is expensive: chunking is pure string work, so the chunker check can be complete where
+the embedder check can only be a sample.
+
+### Controls
+
+1. **Discrimination is not assumed.** Three of the four candidates fail, at 50.57, 2.93 and 4.06
+   percent. A comparison stuck on "equal" would have returned 100 percent four times.
+2. **Planted corruption, because the above is not a mutation test.** Two mutations injected into
+   the stored data: a **one character append** to a single chunk, and an **ordinal swap** between
+   two adjacent chunks of a different source. The detector moved 1,058 to **1,056** and named both
+   sources. It sees a content change and an ordering change, which are the two failure modes an
+   attestation exists to catch.
+
+### Verdict against the prediction
+
+| Registered prediction | Measured | Verdict |
+|---|---|---|
+| default reproduces ≥98 percent of sources | 100.00 percent | **confirmed** |
+| identification NOT unique, `overlap` unidentifiable | unique; `overlap` identifiable on 49.43 percent | ⛔ **falsified** |
+| fewer than 10 percent of sources force split | 49.43 percent | ⛔ **falsified** |
+| exhaustive pass under 30 seconds | 0.16 s | **confirmed** |
+
+### Scope, so this is not over read
+
+- **One corpus, all markdown.** Nothing here measures the `content_blocks` extraction path
+  `bd582316` added for other media types, where `text_start` and `text_end` are stored as `None`
+  (`recall/index.py:800`). A PDF corpus would additionally require the extractor to be
+  deterministic across versions, which is a strictly harder problem and is untested.
+- **Reproduction shows an observationally equivalent chunker, not the identical one.** A different
+  implementation producing identical output on these 1,058 sources is indistinguishable here. That
+  is the same standard the embedder attestation meets with cosine 1.0, and it should be claimed no
+  more strongly.
+- **The candidate set was four and was fixed before measuring.** It was not widened, and the
+  100 percent is a result about those four, not a search over all possible chunkers.
+- The comparison is exact string list equality, which is stricter than retrieval cares about. Two
+  chunkings differing by a trailing newline would retrieve near identically and be counted as a
+  mismatch, so the reproduction rate is a lower bound on practical equivalence.
