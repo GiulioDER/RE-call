@@ -279,13 +279,25 @@ def test_operator_can_accept_the_unpinned_artifact_explicitly(stub_providers):
 # P4: the index fingerprint separates two widths of one hosted model
 # --------------------------------------------------------------------------------------------
 def test_index_fingerprint_separates_two_widths_of_one_hosted_model(stub_providers):
-    """Measured on master 2026-08-18: identical, which is #370's defect left live on this path.
+    """Two widths of one hosted model must never share an index fingerprint.
 
-    Both widths of `voyage-code-3` minted ``profile_id='voyage:voyage-code-3'`` through
-    `legacy_embedding_profile`, and `_index_fingerprint` hashes that id with no dimension term. So
-    the incremental skip guard treated a width swap as a no-op. `voyage-code-3` really does serve
-    256/512/1024/2048, so this was reachable rather than theoretical.
+    🔁 **Superseded upstream while this was being written, and kept for the narrower claim it
+    still makes.** Measured on 42bbe818 (2026-08-18): identical. Both widths of `voyage-code-3`
+    minted ``profile_id='voyage:voyage-code-3'`` through `legacy_embedding_profile`, and
+    `_index_fingerprint` hashed that id with no dimension term, so the incremental skip guard
+    treated a width swap as a no-op. `voyage-code-3` really does serve 256/512/1024/2048, so it
+    was reachable rather than theoretical.
 
+    #381 then landed independently and re-keyed `_index_fingerprint` on the whole
+    `EmbeddingProfile.fingerprint()`, which includes `dimension`. That fixes the collision at the
+    root, for legacy hosted embedders as well as registered ones, and it is a better fix than
+    giving hosted profiles distinct ids would have been. So this test no longer demonstrates a
+    defect that the registry change repairs.
+
+    It is kept because it still pins something neither change guarantees on its own: that two
+    REGISTERED hosted profiles differing only in width stay distinguishable to the skip guard. A
+    future fingerprint that dropped the dimension term, or a registry that let two widths share an
+    id, would each reintroduce the original failure, and this is the assertion that would catch it.
     The two profiles differ ONLY in dimension, or the test would prove nothing about the width.
     """
     from recall.context import ContextPolicy

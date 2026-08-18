@@ -134,3 +134,27 @@ test confirmed RED.
 on provider documentation. The construction-time width check converts a wrong declaration into a
 loud startup failure instead of a corpus of mislabelled vectors, which bounds the damage without
 verifying the claim.
+
+## Supersession note (2026-08-18, after rebase)
+
+**P4 was overtaken by #381 between the measurement and the merge, and the prediction above is left
+exactly as written.** The result section records what was true of `42bbe818`, the commit this
+branch was cut from. It is no longer true of master, and saying so here is cheaper than letting a
+future reader trust a stale justification.
+
+#381 ("Key the incremental skip guard on the whole embedding identity") re-keyed
+`_index_fingerprint` on `EmbeddingProfile.fingerprint()` rather than `embedding_profile_id()`.
+That fingerprint already covers `dimension`, so two widths of one hosted model now separate even
+with NO registry identity at all. It is a better fix than this branch's, because it repairs the
+legacy hosted path too, and it makes P4 pass for a reason unrelated to anything predicted here.
+
+What that changes about the claim: P4 held as measured, and no longer demonstrates a defect this
+branch repairs. The test is kept, with its docstring rewritten to state the narrower thing it
+still pins (two registered hosted profiles differing only in width stay distinguishable), and it
+would catch a regression in either #381's fingerprint or this registry.
+
+The general lesson is the one already in memory as `your-branch-may-already-be-upstream`: a branch
+measured against a base that then moves reports a defect the reader cannot distinguish from a live
+one. Re-measuring the CURRENT-STATE half of a prediction at rebase time, not just re-running the
+tests, is what caught this. Re-running alone would not have: the test passed both before and after,
+for two different reasons.
