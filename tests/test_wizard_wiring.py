@@ -223,6 +223,70 @@ def test_the_server_command_launches_the_real_module_from_the_project_root(tmp_p
 # ----------------------------------------------------------------------------------------------
 
 
+def test_the_profile_the_wizard_writes_is_the_one_the_real_ui_reads(tmp_path: Path) -> None:
+    """The handoff, checked against the ACTUAL desktop window rather than against its source.
+
+    `save_profile` had zero callers, and `main.py` fell back to a RELATIVE `compose_file` resolved
+    against the process working directory, so Docker mode worked only when the app happened to be
+    launched from the repository root.
+
+    This constructs the real `MainWindow` offscreen from the written profile, because the UI is
+    where an assumption about the shape would bite: verified by running it, the window makes NO
+    runtime calls on startup and builds its scope selector from the PROFILE, so what is written
+    here is exactly what the user sees. It also appends the corpus kind ITSELF, which is why
+    `default_tenant` must be the project scope and not a complete tenant.
+    """
+    pytest.importorskip("PySide6")
+    import os
+
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.profiles import load_profile
+    from recall.desktop.ui import MainWindow
+    from recall.wizard.wiring import write_runtime_profile
+
+    compose = tmp_path / "store" / "docker-compose.recall.yml"
+    written = write_runtime_profile(
+        compose_path=compose,
+        project="myapp",
+        compose_project="recall-desktop",
+        path=tmp_path / "runtime.json",
+    )
+    profile = load_profile(written)
+    assert profile is not None
+
+    assert Path(profile.compose_file or "").is_absolute(), (
+        "a relative compose path resolves against the process working directory"
+    )
+    assert profile.default_tenant == "myapp", "the SCOPE, not a tenant: the UI appends the kind"
+
+    class _Runtime:
+        def start(self) -> None: ...
+        def stop(self) -> None: ...
+        def health(self) -> dict[str, str]:
+            return {"status": "ready"}
+        def list_tenants(self) -> list[str]:
+            return ["myapp"]
+
+    QApplication.instance() or QApplication([])
+    window = MainWindow(profile, runtime=_Runtime())
+    try:
+        offered = [window.scope.itemText(i) for i in range(window.scope.count())]
+        assert "myapp" in offered, f"the UI must offer the wizard's project, got {offered}"
+
+        # And the tenant the UI would build from that scope is the wizard's, not `myapp-docs-docs`.
+        from recall.desktop.models import SourceCategory, SourceSelection
+        from recall.wizard.corpora import tenant_for
+
+        selection = SourceSelection(
+            category=SourceCategory.DOCUMENTS, paths=(tmp_path,), tenant="myapp"
+        )
+        assert selection.physical_tenant == tenant_for("myapp", "docs")
+    finally:
+        window.close()
+
+
 def test_no_project_root_writes_nothing_and_says_so(tmp_path: Path) -> None:
     """Guessing a location for an MCP configuration is a side effect nobody can predict."""
     from recall.wizard.headless import run_headless

@@ -53,6 +53,7 @@ __all__ = [
     "server_blocks",
     "write_mcp_config",
     "write_project_files",
+    "write_runtime_profile",
 ]
 
 
@@ -263,6 +264,47 @@ def write_project_files(
         written.append(memory_dir / "MEMORY.md")
 
     return tuple(written)
+
+
+def write_runtime_profile(
+    *,
+    compose_path: Path,
+    project: str,
+    compose_project: str,
+    shared_profile: str = "user",
+    path: Path | None = None,
+) -> Path:
+    """Write `runtime.json`, the handoff from the wizard to the desktop UI.
+
+    **`recall.desktop.profiles.save_profile` existed with ZERO callers.** `main.py` reads the file
+    and, finding none, falls back to `RuntimeProfile(mode=DOCKER, compose_file=
+    "docker-compose.desktop.yml")` — a RELATIVE path resolved against the process working directory,
+    so Docker mode worked only when the app happened to be launched from the repository root. The
+    wizard is the missing writer, and it writes an ABSOLUTE path.
+
+    This is also what decides which projects the UI offers. Verified by constructing the real
+    window offscreen: it makes no runtime calls at all on startup, and its scope selector is built
+    from the PROFILE rather than from `list_tenants`. So what is written here is what the user sees.
+
+    `default_tenant` is the project SCOPE (`myapp`), not a full tenant (`myapp-docs`). The UI
+    appends the corpus kind itself in `SourceSelection.physical_tenant`, and handing it a complete
+    tenant would produce `myapp-docs-docs`.
+
+    Imported lazily, and reachable without PySide6: the desktop extra may not be installed at the
+    moment the wizard runs, and refusing to record the configuration because the GUI is absent
+    would make the install order matter for no reason.
+    """
+    from recall.desktop.models import RuntimeMode, RuntimeProfile
+    from recall.desktop.profiles import save_profile
+
+    profile = RuntimeProfile(
+        mode=RuntimeMode.DOCKER,
+        compose_file=str(compose_path),
+        compose_project=compose_project,
+        default_tenant=project,
+        shared_profile=shared_profile,
+    )
+    return save_profile(profile, path)
 
 
 def write_mcp_config(path: Path, config: dict[str, object]) -> None:

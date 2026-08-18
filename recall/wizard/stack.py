@@ -41,6 +41,7 @@ __all__ = [
     "compose_document",
     "choose_port",
     "container_dsn",
+    "existing_port",
     "host_dsn",
     "wait_for_database",
     "write_compose",
@@ -139,6 +140,31 @@ def choose_port(preferred: int = DEFAULT_PORT, *, attempts: int = 64) -> int:
     raise RuntimeError(
         f"no free port in {preferred}..{min(preferred + attempts - 1, 65535)}; pass one explicitly"
     )
+
+
+def existing_port(compose_path: Path) -> int | None:
+    """The published port a previous run already chose, or None if there is no stack yet.
+
+    **The port must be STABLE across runs.** `runtime.json` names a compose file, and the desktop
+    UI connects through whatever that file publishes; the `.mcp.json` the agent uses carries the
+    host address directly. Re-choosing a free port on every install would silently repoint the
+    database out from under both, and the symptom is a UI that shows an empty corpus rather than an
+    error. So a re-run reads the port back rather than picking again.
+
+    Returns None for anything unreadable, because an unparseable compose file is not a reason to
+    refuse an install: the caller chooses a fresh port and writes a correct one over it.
+    """
+    try:
+        document = json.loads(compose_path.read_text(encoding="utf-8"))
+        published = document["services"]["db"]["ports"][0]
+    except (OSError, json.JSONDecodeError, KeyError, IndexError, TypeError):
+        return None
+    # "5487:5432" — the published half is what a host process connects to.
+    host_half = str(published).split(":")[0]
+    try:
+        return int(host_half)
+    except ValueError:
+        return None
 
 
 def compose_document(spec: StackSpec) -> dict[str, object]:

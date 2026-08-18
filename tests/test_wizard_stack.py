@@ -170,6 +170,32 @@ def test_the_chosen_port_is_free_and_not_the_usual_postgres_one() -> None:
         probe.bind(("127.0.0.1", port))  # free right now, which is what was claimed
 
 
+def test_the_port_is_read_back_rather_than_rechosen(tmp_path: Path) -> None:
+    """A re-install must not repoint the database out from under the UI and the agent.
+
+    `runtime.json` names a compose file and the desktop UI connects through whatever that file
+    publishes; `.mcp.json` carries the host address directly. Re-choosing a free port on every run
+    would silently break both, and the symptom is a UI showing an empty corpus rather than an error.
+    """
+    from recall.wizard.stack import existing_port
+
+    path = tmp_path / "docker-compose.recall.yml"
+    write_compose(path, compose_document(_spec(tmp_path, port=5501)))
+
+    assert existing_port(path) == 5501
+
+
+def test_an_absent_or_unreadable_compose_yields_no_port(tmp_path: Path) -> None:
+    """Not an error: the caller chooses a fresh port and writes a correct file over it."""
+    from recall.wizard.stack import existing_port
+
+    assert existing_port(tmp_path / "nothing-here.yml") is None
+
+    broken = tmp_path / "broken.yml"
+    broken.write_text("{ not json", encoding="utf-8")
+    assert existing_port(broken) is None
+
+
 def test_choose_port_steps_past_a_busy_one() -> None:
     """The allow path for the search, so it cannot be satisfied by always returning the preferred."""
     import socket
