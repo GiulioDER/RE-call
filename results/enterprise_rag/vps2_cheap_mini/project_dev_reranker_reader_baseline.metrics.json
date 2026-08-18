@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 0.0,
+    "average_completeness_pct": 38.21,
+    "combined_correctness_completeness_score": 0.0,
+    "average_recall_pct": 66.67,
+    "average_invalid_extra_docs": 6.6
+  },
+  "question_type_stats": {
+    "project_related": {
+      "count": 5,
+      "average_correctness_pct": 0.0,
+      "average_completeness_pct": 38.21,
+      "combined_correctness_completeness_score": 0.0,
+      "average_recall_pct": 66.67,
+      "average_invalid_extra_docs": 6.6
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0341",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the candidate matches the overload_protection_admission cause and partial verification checks but directly contradicts the gold about the temporary policy exception (gold states a region-scoped 14-day PROXIMA-ENT-014 burst/budget override was applied; the candidate says no exception was applied).",
+      "completeness_pct": 50.0,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0345",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the candidate correctly states the US-region processing stance and export-based 7-year retention but omits key evidence items (SOC 2 Type II, data residency/retention statements, architecture/encryption artifacts) and the detailed secure/NDA-backed sharing process specified in the gold answer.",
+      "completeness_pct": 62.5,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0346",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned \u2014 the candidate omits the approved \u201cobserved in production\u201d phrasing and the specific measurement context (p95 at Redwood gateway, 7\u2011day window excluding spike) and it contradicts the gold on private sharing by not stating that Sales may share the approved case-study URL and 1\u2011page PDF 1:1 without new legal approval.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 33.33,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0347",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate correctly lists the required CRDs and that missing CRDs produce explicit errors/hints, but it conflicts with the gold answer by saying the restore fails during the apply stage instead of the installer stopping in a preflight before applying and omits the other preflight checks/reports the installer performs.",
+      "completeness_pct": 50.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0353",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "No \u2014 the candidate conflicts with the gold on all three required parts: baseline key (omits runtime_build_id and kernel_set_id and adds region/tier), min-sample gating (changes thresholds/windows and omits tokens/sec token-count requirement), and incident-bot dedupe key (omits model_version/runtime_build_id/kernel_set_id and excludes severity).",
+      "completeness_pct": 28.57,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    }
+  ]
+}

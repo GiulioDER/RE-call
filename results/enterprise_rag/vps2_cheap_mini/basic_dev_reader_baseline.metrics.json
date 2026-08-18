@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 60.0,
+    "average_completeness_pct": 53.33,
+    "combined_correctness_completeness_score": 53.33,
+    "average_recall_pct": 100.0,
+    "average_invalid_extra_docs": 6.8
+  },
+  "question_type_stats": {
+    "basic": {
+      "count": 5,
+      "average_correctness_pct": 60.0,
+      "average_completeness_pct": 53.33,
+      "combined_correctness_completeness_score": 53.33,
+      "average_recall_pct": 100.0,
+      "average_invalid_extra_docs": 6.8
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0001",
+      "corrected": false,
+      "question_type": "basic",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the candidate gives a 25 MB per-file fallback and says no total-request default, contradicting the gold answer's 10 MiB per-file and 50 MiB total request limits.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0003",
+      "corrected": false,
+      "question_type": "basic",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate matches all six acceptance criteria from the gold answer with equivalent specifics (token spec, implementation PR and feature flag, accessibility ratios, visual regression, Figma updates, and staged rollout including canary and fallback).",
+      "completeness_pct": 100.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0004",
+      "corrected": false,
+      "question_type": "basic",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate captures the core recommendation to make the onboarding flow resilient to entitlement propagation delays and to surface appropriate pending/error UX states (adding testing and follow-up details), which aligns with the gold answer.",
+      "completeness_pct": 66.67,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0005",
+      "corrected": false,
+      "question_type": "basic",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the candidate incorrectly claims no information exists, whereas the gold specifies EU primary \u2192 EU warm standby \u2192 US emergency failover with RPO 15 minutes, RTO 30 minutes, and US failover limited to pre-approved emergency windows capped at 4 hours.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0008",
+      "corrected": false,
+      "question_type": "basic",
+      "answer_correct": true,
+      "correctness_reasoning": "Aligned: both require recovery within 10 minutes; the candidate specifies recovery as p95 latency returning to within +5% of baseline, which does not conflict with the gold statement.",
+      "completeness_pct": 100.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    }
+  ]
+}

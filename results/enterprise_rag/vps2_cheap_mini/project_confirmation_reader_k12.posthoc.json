@@ -1,0 +1,208 @@
+{
+  "phase": "official_evaluator_posthoc",
+  "questions": "C:\\Users\\gde00\\Documents\\recall\\.benchdata\\enterprise-rag-v1.0.0\\questions.jsonl",
+  "answers": "C:\\Users\\gde00\\Documents\\recall\\.claude\\worktrees\\reasoning-366-next\\results\\enterprise_rag\\vps2_cheap_mini\\project_confirmation_reader_k12.answers.jsonl",
+  "question_count": 23,
+  "overall": {
+    "questions": 23,
+    "answerable_questions": 23,
+    "document_recall": 0.6654589371980676,
+    "exact_doc_set_coverage": 0.17391304347826086,
+    "mean_invalid_extra_documents": 9.130434782608695
+  },
+  "by_category": {
+    "project_related": {
+      "questions": 23,
+      "answerable_questions": 23,
+      "document_recall": 0.6654589371980676,
+      "exact_doc_set_coverage": 0.17391304347826086,
+      "mean_invalid_extra_documents": 9.130434782608695
+    }
+  },
+  "pairs": [
+    {
+      "question_id": "qst_0342",
+      "question_type": "project_related",
+      "document_recall": 0.75,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 9,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0343",
+      "question_type": "project_related",
+      "document_recall": 0.6666666666666666,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 10,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0344",
+      "question_type": "project_related",
+      "document_recall": 0.5,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 10,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0348",
+      "question_type": "project_related",
+      "document_recall": 0.5,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 10,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0349",
+      "question_type": "project_related",
+      "document_recall": 0.6666666666666666,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 10,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0350",
+      "question_type": "project_related",
+      "document_recall": 0.3333333333333333,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 11,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0351",
+      "question_type": "project_related",
+      "document_recall": 0.75,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 8,
+      "returned_documents": 11
+    },
+    {
+      "question_id": "qst_0352",
+      "question_type": "project_related",
+      "document_recall": 1.0,
+      "exact_doc_set_coverage": true,
+      "invalid_extra_documents": 8,
+      "returned_documents": 10
+    },
+    {
+      "question_id": "qst_0355",
+      "question_type": "project_related",
+      "document_recall": 0.6666666666666666,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 10,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0356",
+      "question_type": "project_related",
+      "document_recall": 0.5,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 10,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0357",
+      "question_type": "project_related",
+      "document_recall": 0.6666666666666666,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 10,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0358",
+      "question_type": "project_related",
+      "document_recall": 0.25,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 11,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0359",
+      "question_type": "project_related",
+      "document_recall": 0.8333333333333334,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 7,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0360",
+      "question_type": "project_related",
+      "document_recall": 1.0,
+      "exact_doc_set_coverage": true,
+      "invalid_extra_documents": 10,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0361",
+      "question_type": "project_related",
+      "document_recall": 1.0,
+      "exact_doc_set_coverage": true,
+      "invalid_extra_documents": 9,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0366",
+      "question_type": "project_related",
+      "document_recall": 0.5555555555555556,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 7,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0367",
+      "question_type": "project_related",
+      "document_recall": 0.6666666666666666,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 5,
+      "returned_documents": 11
+    },
+    {
+      "question_id": "qst_0371",
+      "question_type": "project_related",
+      "document_recall": 0.6666666666666666,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 9,
+      "returned_documents": 11
+    },
+    {
+      "question_id": "qst_0372",
+      "question_type": "project_related",
+      "document_recall": 1.0,
+      "exact_doc_set_coverage": true,
+      "invalid_extra_documents": 8,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0373",
+      "question_type": "project_related",
+      "document_recall": 0.6666666666666666,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 10,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0374",
+      "question_type": "project_related",
+      "document_recall": 0.6666666666666666,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 10,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0375",
+      "question_type": "project_related",
+      "document_recall": 0.5,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 10,
+      "returned_documents": 12
+    },
+    {
+      "question_id": "qst_0379",
+      "question_type": "project_related",
+      "document_recall": 0.5,
+      "exact_doc_set_coverage": false,
+      "invalid_extra_documents": 8,
+      "returned_documents": 12
+    }
+  ]
+}

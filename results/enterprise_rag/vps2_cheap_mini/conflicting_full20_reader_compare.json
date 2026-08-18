@@ -1,0 +1,436 @@
+{
+  "source_files": {
+    "baseline": [
+      "conflicting_dev_reader_baseline.metrics.json",
+      "conflicting_confirmation_reader_baseline.metrics.json",
+      "conflicting_remaining_reader_baseline.metrics.json"
+    ],
+    "category_aware": [
+      "conflicting_dev_reader_category_aware.metrics.json",
+      "conflicting_confirmation_reader_category_aware.metrics.json",
+      "conflicting_remaining_reader_category_aware.metrics.json"
+    ]
+  },
+  "overall": {
+    "baseline": {
+      "count": 20,
+      "average_correctness_pct": 40.0,
+      "average_completeness_pct": 60.529999999999994,
+      "combined_score": 34.4105,
+      "average_recall_pct": 77.5,
+      "average_invalid_extra_docs": 6.35,
+      "questions": [
+        {
+          "question_id": "qst_0411",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned \u2014 the gold states to reserve 30% (updated from 20%) for priority=high on dp-132-usw, while the candidate incorrectly claims no percentage is provided.",
+          "completeness_pct": 60.0,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0412",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned \u2014 the candidate incorrectly states no reported values, while the gold states ~96% correctness at temp=0.0 with strict JSON+canonicalization compared to an earlier ~89%.",
+          "completeness_pct": 40.0,
+          "document_recall_pct": 50.0,
+          "invalid_extra_docs": 7
+        },
+        {
+          "question_id": "qst_0413",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned \u2014 while both state cost-ops (Priya Desai) approves termination after the grace window, the candidate contradicts the gold by claiming an infra manager (Nina Hwang) changed the 72h window to 5 business days, whereas the gold says no infra-manager approval is recorded.",
+          "completeness_pct": 50.0,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 7
+        },
+        {
+          "question_id": "qst_0414",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "The candidate claims no information is available about INC-9821, which contradicts the gold answer stating the issue was intermittent driver/kernel launch stalls (not a sustained GPU OOM).",
+          "completeness_pct": 40.0,
+          "document_recall_pct": 50.0,
+          "invalid_extra_docs": 7
+        },
+        {
+          "question_id": "qst_0415",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned \u2014 the candidate omits the required explicit decoding parameter values (do_sample=false, temperature=0.0, top_k=1, top_p=1.0, and num_beams=1) though it mentions an explicit per-example torch.Generator and stable ordering.",
+          "completeness_pct": 40.0,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0416",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "Matches the gold's latest projections exactly (60/140/260 QPS) and the ~150 peak concurrent sessions; the extra note about KV cache is acceptable.",
+          "completeness_pct": 83.33,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0417",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "Candidate matches gold: recommends Sigstore/cosign (offline key mode) for v1.8+ and notes older deployments may use GPG with both supported during migration.",
+          "completeness_pct": 100.0,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 5
+        },
+        {
+          "question_id": "qst_0418",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Candidate denies availability of numeric ranges while the gold answer explicitly lists v2 thresholds (\u226585: Tier1; 70\u201384: Tier2; 35\u201369: Tier3; <35: Tier4) and previous thresholds (\u226580: Tier1; 60\u201379: Tier2; 30\u201359: Tier3; <30: Tier4), so it conflicts with the gold answer.",
+          "completeness_pct": 20.0,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 5
+        },
+        {
+          "question_id": "qst_0419",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "The candidate incorrectly states no endpoint is available, while the gold specifies POST /v1/capacity/migrations/start (with legacy alias POST /v1/migration/start).",
+          "completeness_pct": 66.67,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0420",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned: the candidate fails to provide the required egress measurement basis (GiB-based) and the catalog rate (+$0.085 per GiB) and incorrectly claims the documents lack the answer.",
+          "completeness_pct": 28.57,
+          "document_recall_pct": 50.0,
+          "invalid_extra_docs": 7
+        },
+        {
+          "question_id": "qst_0421",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "The candidate correctly states the current default TTL as 120 seconds, matching the gold answer (omitting the historical 180-second note which is not required),",
+          "completeness_pct": 66.67,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0422",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "Candidate matches the gold: it states exports can't retrieve records past retention cutoff, notes the super-admin override is deprecated, requires a legal_hold_id for tenants with Legal Hold enabled, and logs uses to the immutable audit stream with a ticket reference.",
+          "completeness_pct": 85.71,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0423",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned: the gold answer specifies exporting the last 12 months (superseding an earlier 18-month note), but the candidate says documents don't state how many months and fails to instruct exporting 12 months despite mentioning retention and a 12-month requirement.",
+          "completeness_pct": 40.0,
+          "document_recall_pct": 50.0,
+          "invalid_extra_docs": 7
+        },
+        {
+          "question_id": "qst_0424",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "Matches the gold answer's current token-based cutoffs exactly (short <128, medium 128\u20131024, long >1024).",
+          "completeness_pct": 90.0,
+          "document_recall_pct": 50.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0425",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "The candidate matches the gold: v1 uses an optional integrity field (none, sha256-only, sigstore-oidc) with an integrity_ref URI for external signature/envelope material and removes the earlier embedded signature blob.",
+          "completeness_pct": 87.5,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0426",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "No \u2014 the candidate lists the earlier draft thresholds (safety 0.5% vs updated 0.3% sustained 5 min, composite quality uses 50% traffic revert rather than cohort-level divert to previous variant, and business KPI 5%/5 min vs updated 4%/10 min), so it does not match the updated PRD.",
+          "completeness_pct": 14.29,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0427",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "Candidate matches the gold: it specifies the po_fingerprint as the lowercase SHA-256 hex of the exact 'PO_NUMBER|PO_LINE_UUID' (no whitespace) and the weekly invoices are delivered Tuesdays by 07:00 PT; extra details (don't send raw, avoid SHA-1, SFTP) are consistent and omission of the superseded earlier-email note is non-critical.",
+          "completeness_pct": 100.0,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0428",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned \u2014 the gold answer specifies breakpoints of 250k, 2M, and 10M monthly tokens (with older 100k/1M/5M outdated), whereas the candidate incorrectly states no breakpoints are provided.",
+          "completeness_pct": 80.0,
+          "document_recall_pct": 0.0,
+          "invalid_extra_docs": 8
+        },
+        {
+          "question_id": "qst_0429",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "The candidate conveys the same core points: tool-signal is auto-enabled when tool calls are present, there's no per-request enable_tool_signal flag on the public surface, and private deployments can disable it via openai_compat.tool_signal_enabled=false, so it aligns with the gold answer.",
+          "completeness_pct": 75.0,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0430",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "The candidate states Hosted does not support BYOK at all, but the gold answer says Hosted typically uses provider-managed keys yet offers customer-managed BYOK for enterprise tenants in select regions as an add-on, so the candidate conflicts with the gold answer.",
+          "completeness_pct": 42.86,
+          "document_recall_pct": 0.0,
+          "invalid_extra_docs": 8
+        }
+      ]
+    },
+    "category_aware": {
+      "count": 20,
+      "average_correctness_pct": 40.0,
+      "average_completeness_pct": 64.035,
+      "combined_score": 36.4875,
+      "average_recall_pct": 77.5,
+      "average_invalid_extra_docs": 6.35,
+      "questions": [
+        {
+          "question_id": "qst_0411",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned: the candidate claims no specified percentage while the gold answer states to reserve 30% (updated from 20%) of interactive burst credits for priority=high on dp-132-usw.",
+          "completeness_pct": 60.0,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0412",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "The candidate contradicts the gold answer by claiming the data isn\u2019t present, whereas the gold reports ~96% at temp=0.0 with strict JSON + canonicalization compared to ~89% earlier, so it is misaligned.",
+          "completeness_pct": 40.0,
+          "document_recall_pct": 50.0,
+          "invalid_extra_docs": 7
+        },
+        {
+          "question_id": "qst_0413",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned \u2014 the candidate adds an infra-manager change to a 5-business-day window (Nina Hwang) which contradicts the gold answer stating cost-ops approval after the 72h window and no infra-manager approval recorded.",
+          "completeness_pct": 50.0,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 7
+        },
+        {
+          "question_id": "qst_0414",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned \u2014 the candidate states there is no information on INC-9821 and discusses a different incident, failing to confirm the gold answer that INC-9821 was primarily intermittent driver/kernel launch stalls (not a sustained OOM).",
+          "completeness_pct": 20.0,
+          "document_recall_pct": 50.0,
+          "invalid_extra_docs": 7
+        },
+        {
+          "question_id": "qst_0415",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "No \u2014 the candidate omits and contradicts the gold by not specifying the exact enforced decoding settings (do_sample=false, temperature=0.0, top_k=1, top_p=1.0, num_beams=1) and does not explicitly require stable batching/example order, instead claiming the document doesn\u2019t list those values.",
+          "completeness_pct": 40.0,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0416",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "Candidate matches the gold's latest projection numbers exactly (60 baseline, 140 6\u2011month growth, 260 peak, ~150 concurrent) and adds a non-conflicting note about KV cache; omissions (earlier assumptions) are non-critical.",
+          "completeness_pct": 83.33,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0417",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "The candidate conveys the same information: recommend Sigstore/cosign (offline key mode) as of v1.8+ and that older deployments may use GPG with both supported during migration.",
+          "completeness_pct": 100.0,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 5
+        },
+        {
+          "question_id": "qst_0418",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "The candidate contradicts the gold answer by claiming no numeric thresholds exist while the gold answer provides explicit score ranges for v2 (\u226585, 70\u201384, 35\u201369, <35) and previous thresholds (\u226580, 60\u201379, 30\u201359, <30).",
+          "completeness_pct": 20.0,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 5
+        },
+        {
+          "question_id": "qst_0419",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned: the candidate says the endpoint is not available in the documents, but the gold answer specifies POST /v1/capacity/migrations/start (with legacy alias POST /v1/migration/start).",
+          "completeness_pct": 66.67,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0420",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned \u2014 the gold answer specifies GiB-based billing and a catalog rate of $0.085 per GiB, but the candidate claims no catalog rate for EXP-002 and only cites a ~$0.09/GB example, which contradicts the gold answer.",
+          "completeness_pct": 28.57,
+          "document_recall_pct": 50.0,
+          "invalid_extra_docs": 7
+        },
+        {
+          "question_id": "qst_0421",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "Matches the gold answer: states the default TTL is 120 seconds, notes it was 180 seconds previously, and contains no conflicting information.",
+          "completeness_pct": 100.0,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0422",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "Candidate restates all core points from the gold answer: exports cannot pull records past retention cutoff, super-admin override deprecated, retrieval requires explicit Legal Hold with a legal_hold_id (for tenants with Legal Hold enabled) and its use is logged to the immutable audit stream with a ticket reference.",
+          "completeness_pct": 85.71,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0423",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "The candidate fails to give the required answer\u2014gold specifies exporting the last 12 months (superseding a prior 18-month note)\u2014but the candidate claims no answer exists in the documents, which contradicts the gold answer.",
+          "completeness_pct": 60.0,
+          "document_recall_pct": 50.0,
+          "invalid_extra_docs": 7
+        },
+        {
+          "question_id": "qst_0424",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "The candidate exactly matches the current token-based bucket cutoffs from the gold answer (short <128, medium 128\u20131024, long >1024).",
+          "completeness_pct": 100.0,
+          "document_recall_pct": 50.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0425",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "The candidate matches the gold: v1 omits an embedded `signature` and uses optional `integrity` (none|sha256-only|sigstore-oidc) plus an `integrity_ref` URI pointing to external signature/envelope, noting it replaces earlier embedded `signature` drafts.",
+          "completeness_pct": 87.5,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0426",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned \u2014 the candidate lists the earlier-draft thresholds (safety >0.5%, 50% traffic revert for composite, KPI >5% for 5min) while the gold specifies updated PRD thresholds (safety >0.3% sustained 5min, cohort-level divert on >3% sustained 10min, and KPI >4% sustained 10min), so the numbers/actions/time windows do not match.",
+          "completeness_pct": 28.57,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0427",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "Candidate matches the gold requirements exactly\u2014lowercase SHA-256 hex of the exact \"PO_NUMBER|PO_LINE_UUID\" with no whitespace per line and weekly consolidated invoices delivered Tuesdays by 07:00 PT\u2014while adding non-conflicting implementation details, so it is aligned.",
+          "completeness_pct": 85.71,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0428",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned \u2014 the candidate states no breakpoints are present, but the gold specifies updated Hosted breakpoints of 250k, 2M, and 10M monthly tokens (older 100k/1M/5M are outdated).",
+          "completeness_pct": 80.0,
+          "document_recall_pct": 0.0,
+          "invalid_extra_docs": 8
+        },
+        {
+          "question_id": "qst_0429",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": true,
+          "correctness_reasoning": "The candidate restates the same facts as the gold answer: no per-request enable_tool_signal (tool-signal is auto-enabled when tool calls are present), private disabling via openai_compat.tool_signal_enabled=false, and the older PR flag is outdated.",
+          "completeness_pct": 87.5,
+          "document_recall_pct": 100.0,
+          "invalid_extra_docs": 6
+        },
+        {
+          "question_id": "qst_0430",
+          "corrected": false,
+          "question_type": "conflicting_info",
+          "answer_correct": false,
+          "correctness_reasoning": "Misaligned \u2014 the gold answer says Hosted can support customer-managed KMS (BYOK) for enterprise tenants in select regions as an add-on, while the candidate categorically states Hosted does not support BYOK.",
+          "completeness_pct": 57.14,
+          "document_recall_pct": 0.0,
+          "invalid_extra_docs": 8
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 0.0,
+    "average_completeness_pct": 24.86,
+    "combined_correctness_completeness_score": 0.0,
+    "average_recall_pct": 46.67,
+    "average_invalid_extra_docs": 7.0
+  },
+  "question_type_stats": {
+    "project_related": {
+      "count": 5,
+      "average_correctness_pct": 0.0,
+      "average_completeness_pct": 24.86,
+      "combined_correctness_completeness_score": 0.0,
+      "average_recall_pct": 46.67,
+      "average_invalid_extra_docs": 7.0
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0341",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the candidate correctly describes overload_protection as the cause and partially matches verification, but it explicitly denies any temporary policy exception while the gold states a region-scoped, time-boxed (14-day) burst/budget override for PROXIMA-ENT-014 was applied.",
+      "completeness_pct": 60.0,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0345",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned \u2014 the candidate claims no information is available, but the gold answer specifies the approved US-residency and 7-year audit-log stance plus detailed evidence-pack artifacts and sharing process.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 0.0,
+      "invalid_extra_docs": 8
+    },
+    {
+      "question_id": "qst_0346",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate contradicts the gold by saying no approved public wording or private-sharing rules exist and proposes different general guidance/range (~30\u201340%) instead of the specific approved range, wording, measurement context, and exact private-sharing permissions described in the gold.",
+      "completeness_pct": 14.29,
+      "document_recall_pct": 33.33,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0347",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate correctly lists the required CRDs but conflicts with the gold answer about behavior when prerequisites are missing\u2014gold says the installer\u2019s preflight stops before applying and reports missing CRDs/GVKs and other preflight checks, while the candidate describes failures during the apply stage with kubectl errors instead of the preflight stop\u2014so it is misaligned.",
+      "completeness_pct": 50.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0353",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned \u2014 the candidate omits the required immutable baseline key, uses different min-sample thresholds and gating rules (e.g. 400/120 vs required \u2265200 and the tokens/sec \u226550,000 tokens condition), and the incident-bot dedupe key is incomplete/incorrect (missing kernel_set_id, model_version, metric_type/alert_type and severity).",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 7
+    }
+  ]
+}

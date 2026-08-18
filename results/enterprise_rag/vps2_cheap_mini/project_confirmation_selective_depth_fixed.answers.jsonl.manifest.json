@@ -1,0 +1,110 @@
+{
+  "benchmark": "EnterpriseRAG-Bench",
+  "started_at": "2026-08-18T16:26:43.025233+00:00",
+  "finished_at": "2026-08-18T16:59:22.317535+00:00",
+  "elapsed_s": 1959.292,
+  "recall_revision": null,
+  "recall_version": "0.9.5",
+  "questions": {
+    "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+    "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905",
+    "selected_count": 23,
+    "question_types": [
+      "project_related"
+    ],
+    "question_ids_file": "results/enterprise_rag/project_slices/confirmation.ids",
+    "question_ids_file_sha256": "51f19c411d09c653f37dad1fb2068e1a32d38d65dd53e394beefd660acb6e667"
+  },
+  "documents": [
+    {
+      "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+      "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905"
+    }
+  ],
+  "index": {
+    "table": "ber_voy_lex_12k_full",
+    "tenant": "enterprise-rag-voyage-lexical-chunk12k-full",
+    "pool_size": 1,
+    "reset": false,
+    "skipped": true,
+    "documents": 0,
+    "chunks": 0
+  },
+  "retrieval": {
+    "embedder": "voyage:voyage-4-large",
+    "embedding_profile": "voyage:voyage-4-large",
+    "embedding_cache": "results/enterprise_rag/project_confirmation_vectors.sqlite",
+    "k": 8,
+    "candidate_k": 200,
+    "gap_threshold": 0.5,
+    "sparse_backend": "lexical",
+    "splade_model": null,
+    "splade_backfill": null,
+    "reranker": "none",
+    "reranker_rank_weight": 1.0,
+    "adaptive_depth_feature": "max_dense_score",
+    "adaptive_depth_threshold": 0.75,
+    "adaptive_depth_k": 12,
+    "retrieval_captures": 3,
+    "gold_fields_used_at_runtime": false,
+    "posthoc_metrics": "scripts/enterprise_rag_posthoc_metrics.py"
+  },
+  "answering": {
+    "mode": "extractive",
+    "model": null,
+    "max_context_chars": 3500,
+    "answer_policy": "baseline"
+  },
+  "reasoning": {
+    "arm": "none",
+    "provider": null,
+    "summary": {
+      "rows": 23,
+      "expanded_rows": 0,
+      "expanded_rate": 0.0,
+      "fallback_rows": 0,
+      "fallback_rate": 0.0,
+      "passes_total": 23,
+      "queries_total": 0,
+      "capture_stability_rate": 1.0,
+      "model": null
+    },
+    "cache": null,
+    "promotion": {
+      "status": "pending",
+      "expensive_model_allowed": false,
+      "missing": [
+        "baseline_correctness",
+        "candidate_correctness",
+        "useful_expansion_precision",
+        "stable_repeated_captures",
+        "validation_failure_rate",
+        "no_material_false_abstention",
+        "info_not_found_correctness"
+      ],
+      "failed": []
+    }
+  },
+  "outputs": {
+    "answers": "results/enterprise_rag/vps2_cheap_mini/project_confirmation_selective_depth_fixed.answers.jsonl",
+    "rows": 23,
+    "new_rows": 23,
+    "resumed_rows": 0
+  },
+  "retrieval_metrics": null,
+  "runtime_telemetry": {
+    "questions_with_telemetry": 23,
+    "mean_question_retrieval_latency_ms": 27470.16555072464,
+    "p95_question_retrieval_latency_ms": 43281.84133333334,
+    "calls": {
+      "embedding": 84,
+      "lexical": 84,
+      "splade": 0,
+      "reranker": 0,
+      "answer_model": 0
+    },
+    "cost_usd": null,
+    "cost_status": "not_available_for_retrieval_providers"
+  },
+  "calibration": null
+}

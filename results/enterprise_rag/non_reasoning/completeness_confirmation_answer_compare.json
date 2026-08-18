@@ -1,0 +1,74 @@
+{
+  "phase": "official_evaluator_posthoc",
+  "slice": "completeness confirmation",
+  "question_count": 10,
+  "runtime_policy": {
+    "no_correction": true,
+    "skip_citation_stripping": true,
+    "parallelism": 1,
+    "gold_fields_used_at_runtime": false
+  },
+  "fixed_answer_configuration": {
+    "model": "openai/gpt-4o",
+    "answer_policy": "baseline",
+    "max_context_chars": 3500,
+    "answer_mode": "openrouter"
+  },
+  "retrieval": {
+    "embedder": "voyage:voyage-4-large",
+    "sparse_backend": "lexical",
+    "k": 8,
+    "candidate_k": 200,
+    "baseline_reranker": "none",
+    "candidate_reranker": "voyage:rerank-2.5",
+    "baseline_document_recall_pct": 21.0,
+    "candidate_document_recall_pct": 37.58333333333333,
+    "baseline_exact_coverage_pct": 10.0,
+    "candidate_exact_coverage_pct": 10.0,
+    "mean_extra_delta": -1.0,
+    "gains": 6,
+    "losses": 1
+  },
+  "answer_metrics": {
+    "baseline": {
+      "correctness_pct": 10.0,
+      "completeness_pct": 4.17,
+      "combined_score": 4.17,
+      "recall_pct": 21.0,
+      "invalid_extra_docs": 7.0
+    },
+    "candidate": {
+      "correctness_pct": 50.0,
+      "completeness_pct": 21.67,
+      "combined_score": 21.67,
+      "recall_pct": 37.58,
+      "invalid_extra_docs": 6.0
+    }
+  },
+  "telemetry": {
+    "baseline_mean_retrieval_latency_ms": 20568.9102,
+    "candidate_mean_retrieval_latency_ms": 21565.9797,
+    "baseline_p95_retrieval_latency_ms": 27391.022,
+    "candidate_p95_retrieval_latency_ms": 27734.21,
+    "baseline_calls": {
+      "embedding": 10,
+      "lexical": 10,
+      "reranker": 0,
+      "answer_model": 10
+    },
+    "candidate_calls": {
+      "embedding": 10,
+      "lexical": 10,
+      "reranker": 10,
+      "answer_model": 10
+    },
+    "retrieval_cost_usd": null,
+    "retrieval_cost_status": "not_available_for_retrieval_providers"
+  },
+  "artifacts": {
+    "baseline_metrics": "results/enterprise_rag/non_reasoning/completeness_confirmation_none_openrouter.metrics.json",
+    "candidate_metrics": "results/enterprise_rag/non_reasoning/completeness_confirmation_reranker_openrouter.metrics.json",
+    "retrieval_pair": "results/enterprise_rag/non_reasoning/paired_completeness_confirmation.json"
+  },
+  "promotion": "continue_to_stable_repeated_captures"
+}

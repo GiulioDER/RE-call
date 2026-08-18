@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 20.0,
+    "average_completeness_pct": 13.33,
+    "combined_correctness_completeness_score": 13.33,
+    "average_recall_pct": 60.0,
+    "average_invalid_extra_docs": 7.4
+  },
+  "question_type_stats": {
+    "semantic": {
+      "count": 5,
+      "average_correctness_pct": 20.0,
+      "average_completeness_pct": 13.33,
+      "combined_correctness_completeness_score": 13.33,
+      "average_recall_pct": 60.0,
+      "average_invalid_extra_docs": 7.4
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0177",
+      "corrected": false,
+      "question_type": "semantic",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the candidate reports different (proposed) terms\u2014a one\u2011time 35% first\u2011year discount and a 70/30 (30%) partner rev\u2011share for 12 months then 15% thereafter\u2014whereas the gold states a final approved 30% first\u2011year discount and 15% for the first two quarters then 8% thereafter.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0178",
+      "corrected": false,
+      "question_type": "semantic",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned \u2014 the candidate states a 99.99% pass rate (mismatch <0.01% over 30 minutes), which conflicts with the gold answer\u2019s default threshold of 0.92 (92%).",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 0.0,
+      "invalid_extra_docs": 8
+    },
+    {
+      "question_id": "qst_0180",
+      "corrected": false,
+      "question_type": "semantic",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate names the same mechanism as the gold answer\u2014TrafficEscrow / traffic_escrow service\u2014so it aligns with the gold answer.",
+      "completeness_pct": 66.67,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0181",
+      "corrected": false,
+      "question_type": "semantic",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate answer fails to provide the recommended change (staggering credential refreshes with ~30\u2013120s randomized jitter) and instead incorrectly claims the documents lack that recommendation.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0182",
+      "corrected": false,
+      "question_type": "semantic",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned \u2014 the candidate fails to provide the correct information (45 seconds token-grace window) and incorrectly states the documents lack the answer.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 0.0,
+      "invalid_extra_docs": 8
+    }
+  ]
+}

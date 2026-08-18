@@ -1,0 +1,287 @@
+{
+  "questions": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+  "baseline": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/project_confirmation_none.answers.jsonl",
+  "candidate": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/project_confirmation_blend_0.50.answers.jsonl",
+  "common_questions": 23,
+  "overall": {
+    "count": 23,
+    "answerable_count": 23,
+    "baseline_document_recall": 0.6171497584541062,
+    "candidate_document_recall": 0.6159420289855072,
+    "mean_recall_delta": -0.0012077294685990294,
+    "baseline_exact_coverage": 0.13043478260869565,
+    "candidate_exact_coverage": 0.13043478260869565,
+    "mean_extra_delta": 0.043478260869565216,
+    "questions_with_recall_gain": 5,
+    "questions_with_recall_loss": 3
+  },
+  "by_category": {
+    "project_related": {
+      "count": 23,
+      "answerable_count": 23,
+      "baseline_document_recall": 0.6171497584541062,
+      "candidate_document_recall": 0.6159420289855072,
+      "mean_recall_delta": -0.0012077294685990294,
+      "baseline_exact_coverage": 0.13043478260869565,
+      "candidate_exact_coverage": 0.13043478260869565,
+      "mean_extra_delta": 0.043478260869565216,
+      "questions_with_recall_gain": 5,
+      "questions_with_recall_loss": 3
+    }
+  },
+  "pairs": [
+    {
+      "question_id": "qst_0342",
+      "question_type": "project_related",
+      "baseline_recall": 0.75,
+      "candidate_recall": 0.5,
+      "recall_delta": -0.25,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 5,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0343",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.6666666666666666,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0344",
+      "question_type": "project_related",
+      "baseline_recall": 0.5,
+      "candidate_recall": 0.5,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0348",
+      "question_type": "project_related",
+      "baseline_recall": 0.5,
+      "candidate_recall": 0.5,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0349",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.6666666666666666,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0350",
+      "question_type": "project_related",
+      "baseline_recall": 0.3333333333333333,
+      "candidate_recall": 0.3333333333333333,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 7,
+      "candidate_extra": 7
+    },
+    {
+      "question_id": "qst_0351",
+      "question_type": "project_related",
+      "baseline_recall": 0.75,
+      "candidate_recall": 0.75,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 4,
+      "candidate_extra": 4
+    },
+    {
+      "question_id": "qst_0352",
+      "question_type": "project_related",
+      "baseline_recall": 1.0,
+      "candidate_recall": 1.0,
+      "recall_delta": 0.0,
+      "baseline_exact": true,
+      "candidate_exact": true,
+      "baseline_extra": 4,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0355",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.6666666666666666,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0356",
+      "question_type": "project_related",
+      "baseline_recall": 0.5,
+      "candidate_recall": 0.5,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0357",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.3333333333333333,
+      "recall_delta": -0.3333333333333333,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 7
+    },
+    {
+      "question_id": "qst_0358",
+      "question_type": "project_related",
+      "baseline_recall": 0.25,
+      "candidate_recall": 0.25,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 7,
+      "candidate_extra": 7
+    },
+    {
+      "question_id": "qst_0359",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.8333333333333334,
+      "recall_delta": 0.16666666666666674,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 4,
+      "candidate_extra": 3
+    },
+    {
+      "question_id": "qst_0360",
+      "question_type": "project_related",
+      "baseline_recall": 1.0,
+      "candidate_recall": 1.0,
+      "recall_delta": 0.0,
+      "baseline_exact": true,
+      "candidate_exact": true,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0361",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.6666666666666666,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0366",
+      "question_type": "project_related",
+      "baseline_recall": 0.3333333333333333,
+      "candidate_recall": 0.4444444444444444,
+      "recall_delta": 0.1111111111111111,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 5,
+      "candidate_extra": 4
+    },
+    {
+      "question_id": "qst_0367",
+      "question_type": "project_related",
+      "baseline_recall": 0.4444444444444444,
+      "candidate_recall": 0.5555555555555556,
+      "recall_delta": 0.11111111111111116,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 3,
+      "candidate_extra": 3
+    },
+    {
+      "question_id": "qst_0371",
+      "question_type": "project_related",
+      "baseline_recall": 1.0,
+      "candidate_recall": 0.6666666666666666,
+      "recall_delta": -0.33333333333333337,
+      "baseline_exact": true,
+      "candidate_exact": false,
+      "baseline_extra": 5,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0372",
+      "question_type": "project_related",
+      "baseline_recall": 0.75,
+      "candidate_recall": 1.0,
+      "recall_delta": 0.25,
+      "baseline_exact": false,
+      "candidate_exact": true,
+      "baseline_extra": 5,
+      "candidate_extra": 4
+    },
+    {
+      "question_id": "qst_0373",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.6666666666666666,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0374",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.6666666666666666,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0375",
+      "question_type": "project_related",
+      "baseline_recall": 0.5,
+      "candidate_recall": 0.75,
+      "recall_delta": 0.25,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 5
+    },
+    {
+      "question_id": "qst_0379",
+      "question_type": "project_related",
+      "baseline_recall": 0.25,
+      "candidate_recall": 0.25,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    }
+  ]
+}

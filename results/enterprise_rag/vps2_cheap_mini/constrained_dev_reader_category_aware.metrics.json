@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 20.0,
+    "average_completeness_pct": 54.26,
+    "combined_correctness_completeness_score": 14.67,
+    "average_recall_pct": 100.0,
+    "average_invalid_extra_docs": 6.4
+  },
+  "question_type_stats": {
+    "constrained": {
+      "count": 5,
+      "average_correctness_pct": 20.0,
+      "average_completeness_pct": 54.26,
+      "combined_correctness_completeness_score": 14.67,
+      "average_recall_pct": 100.0,
+      "average_invalid_extra_docs": 6.4
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0381",
+      "corrected": false,
+      "question_type": "constrained",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate correctly matches the cause (noisy/false-positive reachability signals including premature recovery and weak anti-flap/rollback guardrails) but fails to provide the follow-up ticket (ENG-2422) and target ship date (2026-02-07), claiming they are unavailable, so it is misaligned.",
+      "completeness_pct": 70.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0382",
+      "corrected": false,
+      "question_type": "constrained",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate gives no substantive information and fails to state the root cause (deduplication bug), mitigations (pause, fix, backfill), or follow-ups (reconciliation job, stable trace id, contract test), so it is misaligned.",
+      "completeness_pct": 7.14,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0383",
+      "corrected": false,
+      "question_type": "constrained",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate correctly identifies the UTF-8 BOM (EF BB BF) prefix and the TrimSpace/split parsing issue causing the first group to not match, but it fails to state the actual server-side fix (normalize/sanitize/strip BOM/invisible chars before trimming and splitting) and only notes a patch was created without describing it, so it does not match the gold answer's described fix.",
+      "completeness_pct": 87.5,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0384",
+      "corrected": false,
+      "question_type": "constrained",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate fails to name the exact two knobs (it suggests a different second knob), omits the recommended 25\u201350% reductions, and does not provide the specific kill-switch key (kv.kill_switch) or the exact counters (runtime_kv_compaction_steps_total and runtime_kv_evictions_total) from the gold answer, so it is misaligned.",
+      "completeness_pct": 33.33,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0385",
+      "corrected": false,
+      "question_type": "constrained",
+      "answer_correct": true,
+      "correctness_reasoning": "Candidate matches the gold: it identifies the baseline lookup-key mismatch and high-cardinality label fragmentation causing fallback thresholds and repeated pages, and it lists the immediate mitigations that stopped the storm (disable paging, increase dampening, roll back canary).",
+      "completeness_pct": 73.33,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    }
+  ]
+}

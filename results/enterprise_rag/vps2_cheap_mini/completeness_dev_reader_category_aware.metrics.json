@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 20.0,
+    "average_completeness_pct": 23.91,
+    "combined_correctness_completeness_score": 13.33,
+    "average_recall_pct": 25.83,
+    "average_invalid_extra_docs": 6.2
+  },
+  "question_type_stats": {
+    "completeness": {
+      "count": 5,
+      "average_correctness_pct": 20.0,
+      "average_completeness_pct": 23.91,
+      "combined_correctness_completeness_score": 13.33,
+      "average_recall_pct": 25.83,
+      "average_invalid_extra_docs": 6.2
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0433",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "No \u2014 the candidate covers high-level patterns but omits or fails to match critical procedural specifics and numeric requirements from the gold answer (e.g., using the Credential Dependencies inventory to identify all consumers, the Vault-version dual-valid sequence and exact overlap/monitor windows of \u226530\u2009min/\u226560\u2009min and default 7-day removal, the cutover sequence, and the emergency incident/break-glass workflow including the 60\u2011minute time-limited access, Tier 0\u2192Tier 1 prioritization, timestamping and immediate revocation/documentation), so it does not align with the gold answer.",
+      "completeness_pct": 8.33,
+      "document_recall_pct": 0.0,
+      "invalid_extra_docs": 8
+    },
+    {
+      "question_id": "qst_0434",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the candidate reports only 1 published Fintech story (LumenMoney) while the gold states Fintech appeared in 3 published stories (2 case studies and 1 one-page success story).",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 33.33,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0438",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": true,
+      "correctness_reasoning": "Candidate matches the gold exactly: Eng Infra with two incidents (INC-2025-0112 and INC-2025-0522) as the most in H1 2025.",
+      "completeness_pct": 66.67,
+      "document_recall_pct": 33.33,
+      "invalid_extra_docs": 5
+    },
+    {
+      "question_id": "qst_0440",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate matches high\u2011level security controls and approval requirements but omits critical SOP elements from the gold answer\u2014such as intake/Jira fields and priorities, per\u2011deployment enablement commands and Terraform/Helm steps, gate C/legal/cross\u2011region requirements, detailed validation metrics/timing and deduplication guidance, required evidence attachments, operational ownership/paging thresholds, and rollback procedures\u2014so it is not aligned.",
+      "completeness_pct": 25.0,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 5
+    },
+    {
+      "question_id": "qst_0442",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate covers the high-level categories (definition, approvals, change record, canary, rollback) but omits many critical Gold specifics\u2014SRE/security gating, exact approval conditions, canary size/hold/pass criteria, scheduling window, communication timelines, and post-change monitoring/rollback triggers\u2014so it is not fully aligned.",
+      "completeness_pct": 19.57,
+      "document_recall_pct": 12.5,
+      "invalid_extra_docs": 7
+    }
+  ]
+}
