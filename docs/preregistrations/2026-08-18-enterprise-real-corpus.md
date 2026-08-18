@@ -122,6 +122,17 @@ The runner now verifies that every expected source is present whenever `--gold-d
 The corrected measurement will rebuild the table with `--reset-index`, verify all 722 expected
 source ids are present, and then rerun the fixed and candidate pool sensitivity measurements.
 
+## Labeled arm wiring correction
+
+Discovered after the corrected index run and before accepting its labeled arm comparison. The
+runner passed answer slots into every arm when a labels file was supplied. That caused the current
+retrieval, document grouping, and structural expansion rows in the corrected labeled output to
+apply answer slot selection even though those arms were not supposed to use it. Those labeled arm
+figures are retained as an audit trail but are invalid for comparison.
+
+The runner now passes answer slots only to `answer_slots` and `bundle_beam`. The corrected labeled
+fixed and candidate pool runs will be rerun before any conclusion is drawn.
+
 ## Candidate pool sensitivity addendum
 
 Added before the next measurement on 2026-08-18. The same indexed corpus, hashing embedder,
