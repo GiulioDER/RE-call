@@ -31,3 +31,25 @@ reason = "archived records; their citations are the history, not pointers into t
 path = "docs/preregistrations/2026-08-18-uncalibrated-first-run.md"
 marker = "## A note on line numbers in every result below"
 reason = "citations above this rule are registered predictions and are never updated"
+
+# The sibling of the entry above, and the same two zones.
+#
+# WHY THIS IS ONE ENTRY AND NOT A PREFIX RULE. `scripts/check_citation_anchors.py` already freezes
+# this document, and every other one here, through `FROZEN_PREFIXES = ("docs/archive/",
+# "docs/preregistrations/")`. `scripts/check_doc_citations.py` freezes only what this file names, so
+# the two checkers disagree about a whole directory. That gap is not theoretical: it is why #395 had
+# to repoint five citations in this document, four of them above "## Result" and one inside "What I
+# predict", to keep the line checker green. The anchor checker never asked for that edit and its own
+# comments explain why no gate should be able to: "a gate must never be able to force an edit to an
+# immutable record."
+#
+# This entry closes the gap for the one document that has actually been bitten. Teaching
+# `check_doc_citations.py` the same directory prefix would close it for all of them and is the
+# better fix; it is a change to that checker rather than to this list, so it is not made here.
+#
+# It reverts nothing. The numbers #395 wrote are correct for the current tree and are what this
+# freezes. The point is that the NEXT shift must not edit a prediction to stay green.
+[[frozen_above]]
+path = "docs/preregistrations/2026-08-18-extraction-attestation.md"
+marker = "## Result"
+reason = "citations above the result are registered predictions and are never updated"
