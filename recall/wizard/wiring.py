@@ -1,0 +1,264 @@
+"""Turn a finished install into the three MCP servers that serve it, and refuse to lie about them.
+
+`.mcp.json` is the artifact that decides whether any of the preceding work is reachable. Every
+variable below is set in the server's OWN `env` block rather than left to the operator's shell,
+because a stdio server launched with an explicit `env` inherits nothing: a corpus that searches
+correctly from the terminal answered `INDEX_NOT_READY` through the client for exactly that reason.
+That per-block isolation is also what lets one machine serve `docs` in production mode and `memory`
+in development mode at the same time.
+
+**The rule this module exists to enforce: a server block is only written for a tenant that can
+actually answer.** Three cases, and they are not interchangeable:
+
+* **Certified and promoted** → `RECALL_ENV=production` with strict trust. `RECALL_ENV` is what
+  selects `GenerationStore` (`recall_mcp/server.py:627`), so a calibrated generation is only reached
+  through it, and the published calibration is what makes strict trust answerable.
+
+* **Degraded with a predecessor still serving** → production, but development trust, and the block
+  carries a note saying the generation just built is NOT the one serving. Relaxing trust here is a
+  judgement about a calibration that no longer matches the corpus on disk, not about the older
+  generation being broken.
+
+* **Degraded with nothing serving** → **no block at all.** This is the case worth stating, because
+  it is the one a wizard gets wrong. The generation was deliberately not promoted, so under
+  `RECALL_ENV=production` the tenant has no active generation and `GenerationStore.snapshot` raises
+  `NoActiveGeneration` from OUTSIDE `trusted_search`'s try block: the caller gets a raw exception
+  with no failure code and no advice. Writing `RECALL_TRUST_MODE=development` does not fix it, and
+  it is tempting to think it would, because the failure is upstream of the trust gate entirely.
+  A configured server that raises on every query is worse than an absent one, which at least says
+  what is missing.
+
+An uncalibrated corpus (`memory`) gets development trust and NO `RECALL_ENV`, because its rows live
+in the legacy `chunks` table that only `PgVectorStore` reads, and production mode routes past it.
+
+⚠️ **Docker autostart is deliberately not done here.** Making a container start on login is a change
+to the machine, not to the project: on Windows it is a Docker Desktop setting, and a driver that
+silently edits it would be modifying system configuration the operator did not ask about. The report
+names the container instead.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+from recall.wizard.corpora import CorpusPlan, CorpusSpec
+
+__all__ = [
+    "ServerBlock",
+    "UnservableTenant",
+    "mcp_config",
+    "server_blocks",
+    "write_mcp_config",
+    "write_project_files",
+]
+
+
+@dataclass(frozen=True)
+class ServerBlock:
+    """One MCP server, its tenant, and the reason it is configured the way it is."""
+
+    name: str
+    tenant: str
+    env: dict[str, str]
+    #: Why this block looks like this, carried so the report can say it and a reader of the JSON is
+    #: not left guessing why one tenant is strict and another is not.
+    rationale: str
+
+
+@dataclass(frozen=True)
+class UnservableTenant:
+    """A tenant deliberately given no server, and why. Reported, never silently omitted."""
+
+    tenant: str
+    reason: str
+
+
+def server_blocks(
+    plan: CorpusPlan,
+    *,
+    dsn: str,
+    promoted: frozenset[str],
+    serving: frozenset[str],
+) -> tuple[tuple[ServerBlock, ...], tuple[UnservableTenant, ...]]:
+    """The blocks to write, and the tenants deliberately left out.
+
+    `promoted` is the tenants whose freshly built generation went live. `serving` is the tenants that
+    have SOME active generation, which includes a predecessor left in place by a degraded run. The
+    two are different questions and collapsing them is what produces a server that raises.
+    """
+    blocks: list[ServerBlock] = []
+    unservable: list[UnservableTenant] = []
+
+    for spec in plan.corpora:
+        if not spec.calibrated:
+            blocks.append(_legacy_block(spec, dsn=dsn, embedder=plan.embedder))
+            continue
+        if spec.tenant in promoted:
+            blocks.append(
+                _generation_block(
+                    spec,
+                    dsn=dsn,
+                    embedder=plan.embedder,
+                    trust="strict",
+                    rationale=(
+                        "certified and promoted, so the published calibration backs strict trust"
+                    ),
+                )
+            )
+            continue
+        if spec.tenant in serving:
+            blocks.append(
+                _generation_block(
+                    spec,
+                    dsn=dsn,
+                    embedder=plan.embedder,
+                    trust="development",
+                    rationale=(
+                        "certification fell short, so an EARLIER generation is what serves this "
+                        "tenant. Trust is relaxed for this server only, because the calibration "
+                        "that is published no longer describes the corpus on disk. Re-run once the "
+                        "corpus can certify, then tighten this back to strict."
+                    ),
+                )
+            )
+            continue
+        unservable.append(
+            UnservableTenant(
+                tenant=spec.tenant,
+                reason=(
+                    "certification fell short and this tenant has no earlier generation, so nothing "
+                    "is promoted and nothing can answer. A production server would raise "
+                    "NoActiveGeneration from outside the trust gate, with no failure code and no "
+                    "advice, so no server is configured for it. Add content and re-run, or promote "
+                    "the built generation deliberately to serve it uncertified."
+                ),
+            )
+        )
+
+    return tuple(blocks), tuple(unservable)
+
+
+def _base_env(spec: CorpusSpec, *, dsn: str, embedder: str) -> dict[str, str]:
+    return {"RECALL_DSN": dsn, "RECALL_EMBEDDER": embedder, "RECALL_TENANT": spec.tenant}
+
+
+def _generation_block(
+    spec: CorpusSpec,
+    *,
+    dsn: str,
+    embedder: str,
+    trust: str,
+    rationale: str,
+) -> ServerBlock:
+    env = _base_env(spec, dsn=dsn, embedder=embedder)
+    # `RECALL_ENV=production` is what selects `GenerationStore`, so a calibrated corpus is only
+    # reachable through it. Without this the server would read the legacy `chunks` table, which a
+    # generation build never wrote to, and answer nothing while looking configured.
+    env["RECALL_ENV"] = "production"
+    env["RECALL_TRUST_MODE"] = trust
+    return ServerBlock(
+        name=spec.tenant, tenant=spec.tenant, env=env, rationale=rationale
+    )
+
+
+def _legacy_block(spec: CorpusSpec, *, dsn: str, embedder: str) -> ServerBlock:
+    env = _base_env(spec, dsn=dsn, embedder=embedder)
+    # No RECALL_ENV. This corpus lives in the legacy `chunks` table, which only `PgVectorStore`
+    # reads; production mode would route past it and find nothing.
+    env["RECALL_TRUST_MODE"] = "development"
+    return ServerBlock(
+        name=spec.tenant,
+        tenant=spec.tenant,
+        env=env,
+        rationale=(
+            "writable and never calibrated, so it has no generation and no calibration to be "
+            "strict about. A fresh memory directory cannot meet the certification floor, and this "
+            "is the one corpus that must accept writes after install, which production mode refuses."
+        ),
+    )
+
+
+def mcp_config(blocks: tuple[ServerBlock, ...], *, project_root: Path) -> dict[str, object]:
+    """The `.mcp.json` document, in the shape a working configuration already uses."""
+    return {
+        "mcpServers": {
+            block.name: {
+                "type": "stdio",
+                "command": "python",
+                "args": ["-m", "recall_mcp.server"],
+                "cwd": str(project_root),
+                "env": dict(block.env),
+            }
+            for block in blocks
+        }
+    }
+
+
+def write_project_files(
+    *,
+    project_root: Path,
+    dsn: str,
+    embedder: str,
+    memory_dir: Path,
+) -> tuple[Path, ...]:
+    """Write `.env`, the `CLAUDE.md` block and `memory/MEMORY.md`, returning what was touched.
+
+    Every one of these reuses `recall.setup`'s writers rather than reimplementing them, and that
+    matters for a specific reason: all three are BLOCK-scoped, delimited by begin/end markers, so
+    they update an operator's existing file instead of replacing it. A wizard that overwrote a
+    project's `CLAUDE.md` would destroy work no installer has any business touching.
+
+    `.env` carries the serving DSN and embedder for the CLI, not for the MCP servers. The servers get
+    their variables in their own `env` blocks, because a stdio server launched with an explicit `env`
+    inherits nothing, so `.env` alone would leave them on defaults.
+    """
+    from recall.setup import _update_env_block, scaffold_claude_md, scaffold_memory_index
+
+    written: list[Path] = []
+
+    env_path = project_root / ".env"
+    _update_env_block(env_path, {"RECALL_DSN": dsn, "RECALL_EMBEDDER": embedder})
+    written.append(env_path)
+
+    claude_md = project_root / "CLAUDE.md"
+    scaffold_claude_md(claude_md)
+    written.append(claude_md)
+
+    if scaffold_memory_index(memory_dir):
+        written.append(memory_dir / "MEMORY.md")
+
+    return tuple(written)
+
+
+def write_mcp_config(path: Path, config: dict[str, object]) -> None:
+    """Write `.mcp.json`, merging into any existing `mcpServers` rather than replacing the file.
+
+    An operator's `.mcp.json` is very likely to hold servers this wizard knows nothing about, and
+    replacing the file would silently delete them. Only the keys this install owns are overwritten.
+
+    `newline="\\n"` because Python would otherwise write CRLF on Windows, and a JSON file that
+    changes every line on every platform is a diff nobody can read.
+    """
+    existing: dict[str, object] = {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            existing = loaded
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+
+    servers = existing.get("mcpServers")
+    merged = dict(servers) if isinstance(servers, dict) else {}
+    incoming = config.get("mcpServers")
+    if isinstance(incoming, dict):
+        merged.update(incoming)
+    existing["mcpServers"] = merged
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(
+        json.dumps(existing, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+    temporary.replace(path)

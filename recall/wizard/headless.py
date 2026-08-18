@@ -53,6 +53,14 @@ from recall.store import redacted_dsn
 from recall.wizard.corpora import RELATIVE_ROOT, CorpusSpec, default_plan
 from recall.wizard.pipeline import CorpusOutcome, PipelineRefusal, run_corpus
 from recall.wizard.state import WizardState, config_digest, load_state, save_state
+from recall.wizard.wiring import (
+    ServerBlock,
+    UnservableTenant,
+    mcp_config,
+    server_blocks,
+    write_mcp_config,
+    write_project_files,
+)
 
 __all__ = [
     "ConfigRefusal",
@@ -90,6 +98,12 @@ class HeadlessConfig:
     #: No migration emits a GRANT, because the role name is a deployment decision the packaged SQL
     #: cannot know, so a two-role install has to be told the name or it will not work.
     serving_role: str | None = None
+    #: Optional: where `.mcp.json` is written, and the `cwd` each server is launched from.
+    #: Optional rather than derived from the config's own directory, because writing an MCP
+    #: configuration into a guessed location is a side effect an operator cannot predict, and a
+    #: config may well live somewhere temporary. When absent the report says the wiring was skipped
+    #: and names the key, which is better than putting files where nobody will look for them.
+    project_root: Path | None = None
 
 
 #: Every key the config must carry, DERIVED from the fields that have no default rather than
@@ -164,6 +178,15 @@ class HeadlessReport:
     #: "this took four seconds" and "this took eleven minutes" should not look identical, and an
     #: operator who expected a rebuild needs to see that they did not get one.
     reused: tuple[str, ...] = ()
+    #: MCP servers written to `.mcp.json`, and the tenants deliberately left without one.
+    servers: tuple[ServerBlock, ...] = ()
+    unservable: tuple[UnservableTenant, ...] = ()
+    #: Where `.mcp.json` was written, or None when `project_root` was absent from the config.
+    mcp_path: Path | None = None
+    #: Every file the wiring step created or edited. Named because these are edits to files the
+    #: operator owns, made block-scoped so they merge rather than replace, and a block-scoped edit
+    #: is invisible in a directory listing.
+    files_written: tuple[Path, ...] = ()
 
     @property
     def unserved(self) -> tuple[str, ...]:
@@ -250,6 +273,27 @@ class HeadlessReport:
                         "that configuration."
                     )
                 )
+
+        for block in self.servers:
+            # RECALL_DSN is omitted deliberately: it carries the password, and this report is what
+            # a CI job prints into a log. The variables that are shown are the ones an operator
+            # needs to sanity-check, and the DSN is the one they already know.
+            shown = ", ".join(f"{k}={v}" for k, v in block.env.items() if k != "RECALL_DSN")
+            lines.append(f"{' ' * _GUTTER}{block.name:<{width}} server   ({shown})")
+            lines.append(detail(block.rationale))
+        for missing in self.unservable:
+            lines.append(f"{' ' * _GUTTER}{missing.tenant:<{width}} NO SERVER")
+            lines.append(detail(missing.reason))
+        for written in self.files_written:
+            lines.append(f"{' ' * _GUTTER}wrote {written}")
+        if self.mcp_path is None and (self.outcomes or self.indexed):
+            lines.append(
+                detail(
+                    "no MCP configuration was written: the config has no `project_root`, so nothing "
+                    "serves these corpora yet. This command will not guess a location to put one "
+                    "in. Set `project_root` and re-run; the corpora are recorded and will be reused."
+                )
+            )
 
         if self.ok:
             head = "install complete"
@@ -452,6 +496,17 @@ def load_config(path: str | Path) -> HeadlessConfig:
                 f"{key} must be a string or absent, not {type(raw[key]).__name__}", (key,)
             )
 
+    # Checked with the same rule as the required roots, and for the same reason: a relative
+    # `project_root` resolves against the wizard's own working directory, so `.mcp.json` would be
+    # written somewhere that depends on where the command happened to be run from.
+    if raw.get("project_root") and not Path(raw["project_root"]).is_absolute():
+        raise ConfigRefusal(
+            f"project_root must be an absolute path on this platform, not "
+            f"{raw['project_root']!r}: a relative root resolves against the wizard's own working "
+            "directory, so the MCP configuration would land somewhere unpredictable.",
+            ("project_root",),
+        )
+
     return HeadlessConfig(
         dsn=raw["dsn"],
         migration_dsn=raw["migration_dsn"],
@@ -462,6 +517,7 @@ def load_config(path: str | Path) -> HeadlessConfig:
         memory_root=Path(raw["memory_root"]),
         project=raw.get("project") or None,
         serving_role=raw.get("serving_role") or None,
+        project_root=Path(raw["project_root"]) if raw.get("project_root") else None,
     )
 
 
@@ -689,10 +745,58 @@ def run_headless(
                 )
             )
 
+    # The wiring. Written from what ACTUALLY happened, not from the plan: a tenant with nothing
+    # promoted and nothing serving gets no server, because a production server over it would raise
+    # `NoActiveGeneration` on every query rather than refuse with a failure code.
+    promoted = frozenset(o.tenant for o in outcomes if o.promoted)
+    serving = promoted | frozenset(
+        o.tenant for o in outcomes if o.previously_serving
+    ) | frozenset(i.tenant for i in indexed)
+    blocks, unservable = server_blocks(
+        plan, dsn=config.dsn, promoted=promoted, serving=serving
+    )
+    mcp_path: Path | None = None
+    files: tuple[Path, ...] = ()
+    if config.project_root is not None:
+        if progress:
+            progress("wiring: .mcp.json")
+        mcp_path = config.project_root / ".mcp.json"
+        try:
+            write_mcp_config(mcp_path, mcp_config(blocks, project_root=config.project_root))
+            wrote = write_project_files(
+                project_root=config.project_root,
+                dsn=config.dsn,
+                embedder=config.embedder,
+                memory_dir=config.memory_root,
+            )
+            files = (mcp_path, *wrote)
+        except OSError as exc:
+            # Reported, not raised. Every corpus is already built and promoted by now; throwing that
+            # away because a directory is read-only would be the expensive half of the trade.
+            #
+            # The FAILING FILE is named from the exception rather than assumed. This block covers
+            # `.mcp.json`, `.env`, `CLAUDE.md` and `MEMORY.md`, and an earlier version of this
+            # message blamed `.mcp.json` for all four, which would have sent an operator to check a
+            # file that was written correctly.
+            mcp_path = None
+            blamed = exc.filename or "the project files"
+            failures.append(
+                Failure(
+                    tenant="wiring",
+                    error=f"could not write {blamed}: {exc.strerror or exc}",
+                )
+            )
+    else:
+        blocks = ()
+
     return HeadlessReport(
         outcomes=tuple(outcomes),
         refused=tuple(refused),
         failures=tuple(failures),
         indexed=tuple(indexed),
         reused=tuple(reused),
+        servers=blocks,
+        unservable=unservable,
+        mcp_path=mcp_path,
+        files_written=files,
     )

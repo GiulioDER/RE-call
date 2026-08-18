@@ -60,8 +60,10 @@ DIGEST_FIELDS = (
     "memory_root",
 )
 
-#: Fields deliberately excluded: they decide who connects, not what is built.
-IGNORED_FIELDS = ("migration_dsn", "serving_role")
+#: Fields deliberately excluded: they decide who connects or where configuration is written, not
+#: what is built. `project_root` is safe to exclude because the wiring is rewritten on every run
+#: regardless of what was reused, so a changed root still produces a corrected `.mcp.json`.
+IGNORED_FIELDS = ("migration_dsn", "serving_role", "project_root")
 
 
 def config_digest(config: HeadlessConfig) -> str:

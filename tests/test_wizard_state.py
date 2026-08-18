@@ -96,9 +96,21 @@ def test_changing_a_digested_field_changes_the_digest(tmp_path: Path, field_name
 
 @pytest.mark.parametrize("field_name", IGNORED_FIELDS)
 def test_changing_an_ignored_field_leaves_the_digest_alone(tmp_path: Path, field_name: str) -> None:
-    """These decide who connects, not what is built, so they must not throw away finished work."""
+    """These decide who connects or where config is written, not what is built.
+
+    So they must not throw away finished work. The value is chosen per field rather than shared,
+    because `project_root` is validated as an absolute path and a single placeholder would fail
+    validation rather than test the digest.
+    """
+    replacements = {
+        "migration_dsn": "postgresql://recall_migrator:pw@127.0.0.1:1/recall",
+        "serving_role": "recall_server",
+        "project_root": str(tmp_path / "elsewhere"),
+    }
+    assert field_name in replacements, f"no replacement value chosen for {field_name}"
+
     base = _config(tmp_path)
-    changed = _config(tmp_path, **{field_name: "recall_server"})
+    changed = _config(tmp_path, **{field_name: replacements[field_name]})
     assert config_digest(base) == config_digest(changed), f"{field_name} must not invalidate"
 
 
