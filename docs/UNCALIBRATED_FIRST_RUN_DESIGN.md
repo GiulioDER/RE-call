@@ -685,9 +685,9 @@ reaches a **weaker** conclusion on purpose.
 
 Markdown body derivation is pure Python inside this repository, so a chunker mismatch is
 diagnosable: the code that would differ is versioned by the repo. Extraction is not.
-`extract_document` (`recall/extraction.py:164`) dispatches to **six third party libraries** and, for
+`extract_document` (`recall/extraction.py:168`) dispatches to **six third party libraries** and, for
 five suffixes, to an **external LibreOffice binary** (`_extract_with_libreoffice`,
-`recall/extraction.py:573`). Those libraries
+`recall/extraction.py:721`). Those libraries
 are declared with open lower bounds in an optional extra (`pdfplumber>=0.11` and friends), and
 LibreOffice is not a Python dependency at all.
 
@@ -712,7 +712,7 @@ The precedent is already in the tree and is deliberate. `EmbeddingProfile.depend
 docstring says a `fastembed` upgrade costs a re embed on purpose, "because ONNX runtime changes are
 free to move the last bits of a vector and a cache cannot tell". **The identical argument applies to
 `pdfplumber` and to LibreOffice**, and extraction has no equivalent:
-`STRUCTURED_DOCUMENT_VERSION` (`recall/extraction.py:138`) versions recall's own block shape and
+`STRUCTURED_DOCUMENT_VERSION` (`recall/extraction.py:142`) versions recall's own block shape and
 says nothing about the libraries.
 
 So record, per extracted source:

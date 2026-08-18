@@ -1,6 +1,10 @@
 # Pre registration: does reusing one LibreOffice user profile across extractions pay, and is it safe?
 
-**Date:** 2026-08-18   **Status:** predicted, not yet measured
+**Date:** 2026-08-18   **Status:** measured 2026-08-18. Q1 confirmed inside its band, Q4 clean,
+Q2 confirmed in substance and wrong in shape, **Q3 falsified outright**. The design changed as a
+result, from the single lock this record pre-committed to a small pool, which is what the Q3
+falsifier said to do. Predictions and falsifiers below are unedited; the result is appended below
+the horizontal rule.
 
 ## The question
 
@@ -154,3 +158,143 @@ Pre committed now so the result cannot be fitted to whatever the numbers turn ou
   all platform specific. Nothing here transfers to Linux CI without re measurement.
 - **Q3 four way concurrency is synthetic.** No caller in this repository extracts concurrently, so
   a Q3 win or loss is about a future caller, not a current one.
+
+---
+
+## Result (2026-08-18)
+
+**Status:** measured
+
+Windows 11, LibreOffice **26.2.5.2** (the version question in the confounds is settled below), Python
+3.13, 12 logical cores, idle machine with no other `soffice.exe` running at the start. Harness:
+`scripts/bench_libreoffice_profile.py`. Fixtures built once up front, so no timed section includes a
+fixture conversion.
+
+### Q1: confirmed, inside the predicted band
+
+Five serial extractions, three repetitions per arm, arms alternated, each repetition a fresh process.
+Medians of the three `total_extraction_seconds`:
+
+| Arm | repetitions | median | share of baseline |
+|---|---|---|---|
+| per call profile (today) | 30.21, 29.33, 29.90 | **29.90s** | 1.00 |
+| pooled profile (landed) | 17.40, 17.52, 17.17 | **17.40s** | **0.582** |
+
+Predicted: 55 to 70 percent of baseline, 1.3x to 1.9x. Measured: **58.2 percent, 1.72x.** Inside the
+band, nearer its good end. The earlier single lock build measured on the same day gave 17.94s against
+a 29.76s baseline, 60.3 percent, so the pool is if anything marginally better than the lock it
+replaced, not a compromise against it.
+
+**Gap: none worth reporting on the ratio. The gap that matters is on the absolute numbers, and it is
+large.** I predicted "if the baseline lands near 56s". It did not. It landed at **29.90s**, about
+53 percent of the 56.00s quoted in `96e5aadb`. The confound note predicted this figure would be
+unusable and it was right about that; it guessed the standalone baseline would come out **higher**
+than 56.00s for lack of warming, and the truth was the opposite. The 56.00s was inflated by the
+contention of the interleaved fixture conversions around it, not deflated by their warmth.
+
+### The mechanism, which is the part worth keeping
+
+`per_call_seconds`, representative repetition:
+
+```
+per call profile   5.45  6.98  5.04  5.87  6.56     <- flat
+pooled profile     5.42  3.31  2.33  2.55  3.56     <- first call pays, the rest do not
+```
+
+**The baseline series is flat.** That is the direct confirmation of the reasoning the prediction was
+built on. `96e5aadb` recorded a no-sharing extraction series declining 17.06 to 7.78 and this record
+argued that decline could not be profile reuse, because there was no profile reuse in it. On an idle
+machine the same no-sharing arm does not decline at all, so that earlier decline was machine warm up
+and load. Profile bootstrap is worth about **2.9s per warm call** (about 6.0s down to about 3.1s),
+which is close to the "call it 3s per call" written before the run.
+
+### Q2: confirmed in substance, wrong in shape
+
+Two `soffice --convert-to` processes started at the same moment against one shared profile.
+
+| Profile | process A | process B | both succeeded |
+|---|---|---|---|
+| cold | **rc=1**, no output, **stderr empty** | rc=0, output written | no |
+| warm (6.75s bootstrap first) | rc=0, output written | **rc=1**, no output, **stderr empty** | no |
+
+Predicted "does not cleanly both succeed" at about 85 percent confidence: **correct.** Predicted the
+loser would **exit 0** having converted nothing, at about 60 percent: **wrong, it exits 1.** Which
+way that error runs matters, and it runs the safe way. `subprocess.run(check=True)` turns a non-zero
+exit into `CalledProcessError`, so the collision surfaces as `DocumentExtractionError`, never as a
+silently empty document. Had the exit code been 0 as predicted, the code would have fallen through to
+the "produced no text" branch instead, which is still an error but a less direct one.
+
+The empty stderr is the genuinely nasty part and was not predicted at all: there is **no diagnostic
+whatsoever**, so a deployment meeting this would see an extraction fail with nothing to explain it.
+
+### Q3: falsified
+
+Four concurrent `extract_document` calls, wall clock.
+
+| Arm | repetitions | median |
+|---|---|---|
+| per call profile (today, 4 truly parallel) | 9.25, 7.10 | **8.18s** |
+| one shared profile behind a lock | 12.61, 13.16 | **12.89s** |
+
+Predicted: the lock wins, about 28s against about 45s. Measured: **the lock loses by about 1.6x**,
+and both arms are three to five times faster in absolute terms than I guessed. Zero errors in either
+arm.
+
+**Why the prediction was wrong.** I reasoned that four cold bootstraps would contend for the same
+cores and cost more than serialising. On a 12 core machine they do not contend meaningfully: four
+`soffice` processes genuinely run in parallel, so the cold arm pays about one bootstrap of wall clock
+while the locked arm pays four conversions end to end. The bootstrap I was trying to save is roughly
+3s; the serialisation I would have bought costs roughly 3 conversions, about 9s. I compared the cost
+of the fix against the wrong thing.
+
+The falsifier said this "sends the design to a pool of K profiles rather than a single lock", so it
+did. Re-measured after the pool landed:
+
+| Arm | repetitions | median |
+|---|---|---|
+| per call profile | 8.68, 19.56, 10.92 | **10.92s** |
+| pool of 4 | 8.70, 9.29, 8.68 | **8.70s** |
+
+The pool is no worse concurrently and much steadier (the 19.56s baseline outlier is four cold
+bootstraps landing badly), while keeping the 1.72x serial win. Both wins, which the lock could not do.
+
+⚠️ **What this concurrency measurement does not show.** Each of the four workers takes a pool slot for
+the first time, so all four pay a bootstrap and the pool's actual advantage, reuse, is never
+exercised. It establishes that the pool does not *lose* concurrently, not that it wins there. A
+repeated concurrent workload would be the test for that and was not run.
+
+### Q4: confirmed
+
+**30 of 30** format and run pairs identical, five formats across all six serial repetitions in both
+arms. The profile decides where LibreOffice keeps its configuration and nothing about its filters.
+
+### Version, settled
+
+`(Get-Item 'C:\Program Files\LibreOffice\program\soffice.exe').VersionInfo.ProductVersion` reports
+**26.2.5.2**, agreeing with `2026-08-18-extraction-attestation.md:113` and disagreeing with both the
+task brief and `96e5aadb`, which say 25.8. Neither of those has been edited. The likeliest reading is
+that "25.8" was carried over from an older note rather than measured, but that is a guess and is
+labelled as one.
+
+### Scoreboard
+
+| Question | Predicted | Measured | Verdict |
+|---|---|---|---|
+| Q1 serial cost | 55 to 70 percent of baseline | 58.2 percent, 1.72x | **confirmed** |
+| Q1 absolute baseline | near 56s, possibly higher | 29.90s | **wrong, and in the direction not guessed** |
+| Q2 collision | does not both succeed (85 percent) | does not both succeed | **confirmed** |
+| Q2 failure shape | loser exits 0 (60 percent) | loser exits 1, stderr empty | **wrong, and safer than predicted** |
+| Q3 lock throughput | lock wins, 28s against 45s | lock loses, 12.89s against 8.18s | **falsified, design changed** |
+| Q4 text identity | 5 of 5 identical | 30 of 30 pairs identical | **confirmed** |
+
+### What I would tell the next person
+
+**The interesting result is Q3, and it is the one I would have skipped.** Q1 was the question the
+task asked and the prediction was fine; the pre-registration earned its keep on the question that
+was only in it because a falsifier had to be written for it. Had I measured Q1 alone, the single
+lock would have landed on a 1.72x serial win and quietly made concurrent extraction 1.6x slower for
+any future caller, with a measurement in the commit message proving the change was good.
+
+Second: **a declining series is not evidence of the thing you are about to fix.** Both series in
+`96e5aadb` declined, one of them shared a profile, and it was tempting to attribute both declines to
+that. The flat baseline here shows the attribution was available for the cost of one idle machine.
