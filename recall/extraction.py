@@ -120,6 +120,14 @@ DOCUMENT_EXTENSIONS = frozenset(
     }
 )
 
+# The formats handed to the LibreOffice CLI because no Python reader covers them. MSG is
+# deliberately absent: LibreOffice ships no MAPI import filter, so a .msg reaches it only to fail.
+# Measured 2026-08-18 against LibreOffice 25.8, exit 1 and "source file could not be loaded" on a
+# genuine .msg; re-measure with scripts/check_libreoffice_msg.py. MSG is read by python oxmsg from
+# the documents extra, and a deployment without it is told to install that extra rather than being
+# routed here and told to install LibreOffice.
+LIBREOFFICE_EXTENSIONS = frozenset({".doc", ".odt", ".ods", ".odp", ".ppt"})
+
 MAX_TABLE_ROWS = 10_000
 MAX_TABLE_COLUMNS = 200
 MAX_TABLE_CELLS = 500_000
@@ -180,7 +188,7 @@ def extract_document(path: Path, data: bytes) -> ExtractedDocument:
         return _extract_epub(data)
     if suffix in {".html", ".htm"}:
         return _extract_html(data)
-    if suffix in {".doc", ".msg", ".odt", ".ods", ".odp", ".ppt"}:
+    if suffix in LIBREOFFICE_EXTENSIONS:
         return _extract_with_libreoffice(path, data)
     if suffix in {".csv", ".tsv"}:
         return _extract_delimited(suffix, data)

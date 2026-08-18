@@ -2,16 +2,24 @@ from __future__ import annotations
 
 import io
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from recall.extraction import (
+    DOCUMENT_EXTENSIONS,
+    LIBREOFFICE_EXTENSIONS,
     DocumentExtractionError,
     _libreoffice_executable,
     extract_document,
 )
+
+
+# The compound file magic that opens every real .msg, so the fixture below is rejected for
+# the reason under test rather than for being obviously not a document.
+CFBF_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 
 def _epub_bytes() -> bytes:
@@ -70,6 +78,43 @@ def test_malformed_msg_fails_with_typed_error(tmp_path: Path) -> None:
 
     with pytest.raises(DocumentExtractionError, match="MSG"):
         extract_document(path, path.read_bytes())
+
+
+def test_msg_without_oxmsg_names_the_documents_extra(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deployment missing the optional extra must be told which extra to install.
+
+    MSG has no LibreOffice fallback, because LibreOffice ships no MAPI import filter. Measured
+    2026-08-18 against LibreOffice 25.8 on a genuine ``.msg``: ``--convert-to txt:Text`` exits 1
+    with "source file could not be loaded" and writes no output file. Routing MSG through
+    ``_extract_with_libreoffice`` therefore cannot succeed, and would only replace the actionable
+    message asserted below with one blaming LibreOffice. Re-measure with
+    ``scripts/check_libreoffice_msg.py``.
+    """
+    path = tmp_path / "note.msg"
+    path.write_bytes(CFBF_MAGIC + bytes(64))
+    monkeypatch.setitem(sys.modules, "oxmsg", None)
+
+    with pytest.raises(DocumentExtractionError) as exc_info:
+        extract_document(path, path.read_bytes())
+
+    message = str(exc_info.value)
+    assert "recall-rag[documents]" in message, message  # the extra to install
+    assert "pip install" in message, message  # the command that installs it
+    assert "libreoffice" not in message.lower(), message  # never blame the wrong dependency
+
+
+def test_libreoffice_dispatch_excludes_msg() -> None:
+    """The dispatch table must not advertise a fallback that can never be reached.
+
+    ``.msg`` is matched earlier by the oxmsg branch, so listing it here was dead code that told a
+    reader a fallback existed. The test above covers the behaviour; this one pins the table a
+    reader actually consults.
+    """
+    assert ".msg" in DOCUMENT_EXTENSIONS  # MSG is still a supported format...
+    assert ".msg" not in LIBREOFFICE_EXTENSIONS  # ...just not one LibreOffice can read
+    assert LIBREOFFICE_EXTENSIONS == {".doc", ".odt", ".ods", ".odp", ".ppt"}
 
 
 @pytest.mark.skipif(_libreoffice_executable() is None, reason="LibreOffice is not installed")
