@@ -46,11 +46,20 @@ and `file`, all written **at embed time**, so checking them is verification rath
 reconstruction.
 
 🔁 **Corrected 2026-08-18 by measurement.** An earlier version of this paragraph said
-`embedding_profile` "is the identity of the embedder that produced the vector". **It is not.**
-`recall/embeddings.py:799` falls back to the literal string `bge-small-symmetric-v1` for any model
-without a registered profile, so a 1024 dimensional corpus carries a 384 dimensional profile's id.
-Only `content_hash` is load bearing here, and the accessor that returns it is
-`PgVectorStore.source_raw_hashes` (`recall/store.py:2093`) — **not** `source_content_hashes`
+`embedding_profile` "is the identity of the embedder that produced the vector". **It was not**, at
+the tree this was measured against: the fallback returned the literal string
+`bge-small-symmetric-v1` for any model without a registered profile, so a 1024 dimensional corpus
+carried a 384 dimensional profile's id.
+
+🔁 **Fixed upstream, 2026-08-18, by #370**, which this measurement prompted. `_fallback_profile_id`
+(`recall/embeddings.py:699`) now derives `unregistered__{model}__{dimension}__{kind}`
+(`recall/embeddings.py:750`) instead of claiming a registry id it does not have.
+
+⚠️ **That does NOT restore `embedding_profile` as an adoption check, and the design still must not
+use it.** Every corpus indexed *before* #370 carries the old literal, which is exactly the
+population an adoption path exists to read. A fix to the writer does not retroactively repair rows
+already written. Only `content_hash` is load bearing here, and the accessor that returns it is
+`PgVectorStore.source_raw_hashes` (`recall/store.py:2093`), **not** `source_content_hashes`
 (`:2075`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
 
 ⚠️ **`content_hash` is media type dependent since `bd582316`.** A markdown source is hashed as
