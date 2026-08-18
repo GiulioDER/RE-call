@@ -33,10 +33,13 @@ from types import MappingProxyType
 from typing import Literal, Mapping
 
 from recall.embeddings import (
+    HOSTED_UNVERIFIED_DIGEST,
     Embedder,
     EmbeddingProfile,
     FastEmbedEmbedder,
+    OpenAICompatEmbedder,
     Qwen3EmbeddingEmbedder,
+    VoyageEmbedder,
     _package_version,
 )
 
@@ -52,7 +55,18 @@ CONTEXT_POLICY_VERSION = "v1"
 
 #: Backends a registered profile can be built on. The registry decides which class constructs a
 #: profile so that adding one is a data change rather than another branch in `make_embedder`.
-Backend = Literal["fastembed", "qwen3"]
+Backend = Literal["fastembed", "qwen3", "voyage", "openai-compat"]
+
+#: Backends served by a provider's API rather than by weights the operator provisions. They differ
+#: from local backends in exactly two ways, and both are consequences of the same fact: nobody
+#: can hash what they did not receive:
+#:
+#: 1. There is no artifact to verify, so `identity()` completes with `HOSTED_UNVERIFIED_DIGEST`
+#:    instead of demanding an operator-supplied SHA, and `recall.readiness` refuses to certify a
+#:    process serving one. A hosted profile is servable; it is not ATTESTABLE.
+#: 2. The declared dimension is the only check available, so it is enforced at construction
+#:    (`_check_declared_width`) against the width the endpoint actually returns.
+HOSTED_BACKENDS: frozenset[str] = frozenset({"voyage", "openai-compat"})
 
 
 def context_version_for(mode: ContextMode, policy_version: str = CONTEXT_POLICY_VERSION) -> str:
@@ -107,12 +121,56 @@ class RegisteredProfile:
     rejection: RejectionRecord | None = None
     #: Environment variable naming the provisioned artifact tree for this backend.
     artifact_path_env: str = "RECALL_MODEL_CACHE"
+    #: Hosted only. The endpoint the model is served from. Part of the profile because the same
+    #: model name resolves to different weights at different providers, and because `build()`
+    #: could not otherwise reach anything but its class default.
+    base_url: str | None = None
+    #: Hosted only. Namespace for the embedder's legacy `name`, kept so a hosted embedder built
+    #: WITHOUT an identity still spells itself the way `resolve_embedder` always has.
+    name_prefix: str = "openai"
+    #: Hosted only. Explicit output width sent as the API's `dimensions` field. `None` asks for
+    #: the model's native width. Declared next to `dimension` so the request and the claim cannot
+    #: drift apart; `_check_declared_width` holds the provider to the pair.
+    output_dimensions: int | None = None
+    #: Environment variable naming this profile's API credential.
+    api_key_env: str = "OPENROUTER_API_KEY"
 
     def __post_init__(self) -> None:
         if self.dimension < 1:
             raise ValueError("a registered profile needs a positive dimension")
         if self.artifact_digest is not None and len(self.artifact_digest) != 64:
             raise ValueError("a pinned artifact digest must be a SHA256")
+        if self.hosted and self.artifact_digest is not None:
+            raise ValueError(
+                f"profile {self.profile_id!r} is hosted and cannot pin an artifact digest: "
+                "the provider serves weights it may replace behind this model name, so a pinned "
+                "digest would be a claim nothing can check"
+            )
+        if not self.hosted and self.base_url is not None:
+            raise ValueError(
+                f"profile {self.profile_id!r} is local and has no endpoint to declare"
+            )
+        if self.output_dimensions is not None:
+            if not self.hosted:
+                raise ValueError(
+                    f"profile {self.profile_id!r} is local; its width comes from the artifact"
+                )
+            if self.output_dimensions != self.dimension:
+                raise ValueError(
+                    f"profile {self.profile_id!r} asks the provider for "
+                    f"{self.output_dimensions} dimensions but declares {self.dimension}"
+                )
+            if self.backend == "voyage":
+                # `VoyageEmbedder` has no `dimensions` parameter, so this field would be accepted
+                # here, dropped on the way to the provider, and the profile would quietly get the
+                # model's default width instead of the one it asked for. Refusing beats a request
+                # parameter that silently does nothing. `_check_declared_width` would catch the
+                # resulting mismatch, but only for a value that differs from the default, and a
+                # declaration that is ignored should not depend on a downstream check to notice.
+                raise ValueError(
+                    f"profile {self.profile_id!r} sets output_dimensions, which the Voyage "
+                    "client does not send; register the model's default width instead"
+                )
 
     @property
     def context_version(self) -> str:
@@ -122,18 +180,36 @@ class RegisteredProfile:
     def rejected(self) -> bool:
         return self.rejection is not None
 
+    @property
+    def hosted(self) -> bool:
+        """Whether a provider's API serves this profile rather than a local artifact tree."""
+        return self.backend in HOSTED_BACKENDS
+
     def identity(
         self,
         *,
         artifact_digest: str | None = None,
         dependencies: tuple[tuple[str, str], ...] = (),
     ) -> EmbeddingProfile:
-        """Build the runtime identity, refusing anything but this profile's own artifact.
+        """Build the runtime identity for this profile.
 
         The only constructor of an `EmbeddingProfile` for a registered profile. A second one
         would be a second identity, which is the defect the registry removes.
+
+        For a LOCAL profile it refuses anything but this profile's own artifact. For a HOSTED one
+        it refuses an artifact digest ENTIRELY and completes with `HOSTED_UNVERIFIED_DIGEST`,
+        because a provider serving weights it can replace behind a stable model name leaves
+        nothing to hash; accepting a digest there would record a verification that never happened.
         """
-        digest = artifact_digest or self.artifact_digest
+        if self.hosted:
+            if artifact_digest:
+                raise ValueError(
+                    f"profile {self.profile_id!r} is hosted and cannot accept an artifact "
+                    "digest; there is no artifact tree to have hashed"
+                )
+            digest: str | None = HOSTED_UNVERIFIED_DIGEST
+        else:
+            digest = artifact_digest or self.artifact_digest
         if not digest:
             raise ValueError(
                 f"profile {self.profile_id!r} needs an operator-supplied artifact digest: its "
@@ -160,21 +236,76 @@ class RegisteredProfile:
             dependencies=dependencies,
         )
 
-    def build(self, *, artifact_path: str | Path, artifact_digest: str) -> Embedder:
-        """Construct this profile's embedder from a provisioned local artifact.
+    def build(
+        self,
+        *,
+        artifact_path: str | Path | None = None,
+        artifact_digest: str | None = None,
+        api_key: str | None = None,
+    ) -> Embedder:
+        """Construct this profile's embedder, local or hosted.
 
         The single construction site for a registered profile. It exists so that the identity
         the runtime carries and the identity the registry declares are the same object rather
         than two builds of the same fields: `make_embedder` parses environment variables and
         delegates here, and nothing else assembles an `EmbeddingProfile` for a registered ID.
 
-        Offline is not optional on this path. The digest is verified against the artifact tree
-        before any model loads, and the backend is told to refuse a network fetch.
+        For a LOCAL backend, offline is not optional: the digest is verified against the artifact
+        tree before any model loads, and the backend is told to refuse a network fetch.
+
+        For a HOSTED backend there is no artifact and no offline mode, so the guarantee is a
+        narrower one and worth naming exactly. What this path still gives is that the identity the
+        runtime carries is the identity the registry declared (the profile id, the width, the
+        context version and the encoder modes), so a generation and a calibration registered under
+        that id can be matched against the running process. What it cannot give is any evidence
+        about WHICH weights answered, which is why `recall.readiness` refuses to certify one.
+
+        The returned embedder always carries the identity. An earlier attempt at this feature
+        built the identity here, validated it, and then dropped it on the floor because the hosted
+        classes took no ``identity`` parameter; every consumer silently fell back to
+        `legacy_embedding_profile`, the profile id reverted to ``voyage:voyage-code-3``, and the
+        readiness check comparing it against the active generation could never match. The
+        assertion below is what makes that failure loud instead of decorative.
         """
+        if self.hosted:
+            if artifact_path is not None or artifact_digest is not None:
+                raise ValueError(
+                    f"profile {self.profile_id!r} is hosted; it takes an api_key, not an "
+                    "artifact path or digest"
+                )
+        elif not artifact_path or not artifact_digest:
+            raise ValueError(
+                f"profile {self.profile_id!r} is local and needs both an artifact path and an "
+                "artifact digest"
+            )
         identity = self.identity(
             artifact_digest=artifact_digest,
             dependencies=((self._dependency, _package_version(self._dependency)),),
         )
+        embedder = self._construct(identity, artifact_path, api_key)
+        # Not defensive programming: this is the single defect that made the previous attempt
+        # decorative, and a class that silently drops the identity fails here rather than three
+        # subsystems away when a generation refuses to match.
+        #
+        # Compared by `profile_id`, NOT by object identity. `FastEmbedEmbedder` legitimately
+        # replaces the identity with an enriched copy (`_with_provider_dependency` folds the
+        # resolved ONNX providers into `dependencies`), so an `is` check would refuse the one
+        # backend that has always done this correctly. The id is what the defect destroyed and
+        # what every downstream consumer matches on.
+        built = getattr(embedder, "profile", None)
+        if not isinstance(built, EmbeddingProfile) or built.profile_id != self.profile_id:
+            raise AssertionError(
+                f"{type(embedder).__name__} did not carry the identity {self.profile_id!r} "
+                "built for it; every downstream consumer would fall back to a legacy profile"
+            )
+        return embedder
+
+    def _construct(
+        self,
+        identity: EmbeddingProfile,
+        artifact_path: str | Path | None,
+        api_key: str | None,
+    ) -> Embedder:
         if self.backend == "fastembed":
             return FastEmbedEmbedder(
                 cache_dir=artifact_path,
@@ -182,13 +313,40 @@ class RegisteredProfile:
                 require_local=True,
                 identity=identity,
             )
-        return Qwen3EmbeddingEmbedder(
-            artifact_path, identity.artifact_digest, identity=identity
+        if self.backend == "qwen3":
+            # `build` refuses a local profile with no artifact path before reaching here; the
+            # assert states that for the type checker rather than widening the constructor.
+            assert artifact_path is not None
+            return Qwen3EmbeddingEmbedder(
+                artifact_path, identity.artifact_digest, identity=identity
+            )
+        if self.backend == "voyage":
+            return VoyageEmbedder(api_key=api_key, identity=identity)
+        assert self.base_url is not None  # enforced for every hosted profile in __post_init__
+        return OpenAICompatEmbedder(
+            api_key=api_key,
+            base_url=self.base_url,
+            dimensions=self.output_dimensions,
+            name_prefix=self.name_prefix,
+            identity=identity,
         )
 
     @property
     def _dependency(self) -> str:
-        return "fastembed" if self.backend == "fastembed" else "sentence-transformers"
+        """The package whose version is key material for this profile's vectors.
+
+        Folded into the identity's `dependencies`, so an upgrade re-partitions the embedding
+        cache. For a hosted backend this names the CLIENT library, which is weaker than it looks:
+        the client does not determine the vector, the provider does, and the provider is free to
+        change it without changing anything recorded here. Stated rather than papered over,
+        because it is the same gap `HOSTED_UNVERIFIED_DIGEST` exists to declare.
+        """
+        return {
+            "fastembed": "fastembed",
+            "qwen3": "sentence-transformers",
+            "voyage": "voyageai",
+            "openai-compat": "openai",
+        }[self.backend]
 
 
 _BGE_SMALL = "BAAI/bge-small-en-v1.5"
@@ -356,8 +514,114 @@ _PROFILES: tuple[RegisteredProfile, ...] = (
     ),
 )
 
+
+#: Endpoint for every OpenAI-compatible profile below. OpenRouter rather than api.openai.com so
+#: one key serves the generator, the judge and the embedder; `base_url` is per-profile precisely
+#: so a deployment that wants api.openai.com can register its own entry instead of patching a
+#: class default.
+_OPENROUTER = "https://openrouter.ai/api/v1"
+
+#: ⚠️ WIDTHS BELOW ARE MEASURED, EXCEPT VOYAGE'S. Measured 2026-08-18 against OpenRouter, one
+#: request per model, reporting the returned vector length and its L2 norm:
+#:
+#:   openai/text-embedding-3-small   1536   norm 1.000430
+#:   openai/text-embedding-3-large   3072   norm 1.000066
+#:   google/gemini-embedding-001     3072   norm 1.000000
+#:
+#: Re-measure every hosted profile, including its normalization claim, and exit non-zero on
+#: any disagreement (needs the provider keys; one embedding call per profile):
+#:
+#:   python scripts/measure_hosted_embedding_widths.py
+#:
+#: Two findings from that measurement are load-bearing here and would not survive being guessed:
+#:
+#: * **`normalization='l2'` is only true at gemini's NATIVE width.** `gemini-embedding-001`
+#:   returns a unit vector at 3072 but NOT at its Matryoshka widths: measured norm 0.694 at 1536
+#:   and 0.582 at 768. Truncated widths are therefore deliberately not registered, because the
+#:   profile would be declaring a normalization the provider does not apply, and cosine scores
+#:   against an abstention threshold calibrated on unit vectors would be quietly wrong.
+#: * **OpenRouter's `/v1/models` lists no embedding model at all** (412 models, zero matching
+#:   "embed" on 2026-08-18) while `/v1/embeddings` serves them regardless. So the catalogue
+#:   endpoint cannot be used to validate these ids, and an id absent from it is not evidence of
+#:   anything.
+_HOSTED_PROFILES: tuple[RegisteredProfile, ...] = (
+    # --- Voyage -------------------------------------------------------------------------------
+    # ⚠️ These two widths are the provider's DOCUMENTED defaults and are NOT measured here: this
+    # machine has no VOYAGE_API_KEY. That is a real gap, and it is guarded rather than hidden:
+    # `_check_declared_width` refuses at construction if the endpoint disagrees, so a wrong
+    # declaration costs a loud startup failure and never a corpus of mislabelled vectors.
+    # Re-measure with the snippet above against https://api.voyageai.com/v1/embeddings.
+    #
+    # `voyage-code-3` is the profile the 21 existing code corpora (37,160 chunks) were built
+    # under, which is the reason this feature exists. It also serves 2048/512/256 on request, so
+    # the 1024 default is load-bearing rather than incidental: a corpus built at another width is
+    # a DIFFERENT profile and needs its own entry, not a reused id.
+    RegisteredProfile(
+        profile_id="voyage-code-3-v1",
+        model_name="voyage-code-3",
+        dimension=1024,
+        query_mode="embed",
+        passage_mode="embed",
+        context_mode="none",
+        backend="voyage",
+        api_key_env="VOYAGE_API_KEY",
+    ),
+    RegisteredProfile(
+        profile_id="voyage-3-v1",
+        model_name="voyage-3",
+        dimension=1024,
+        query_mode="embed",
+        passage_mode="embed",
+        context_mode="none",
+        backend="voyage",
+        api_key_env="VOYAGE_API_KEY",
+    ),
+    # --- OpenAI, via OpenRouter ---------------------------------------------------------------
+    # The id carries its provider prefix. Measured 2026-08-18, the BARE `text-embedding-3-small`
+    # also answers on OpenRouter at the same 1536 width, so the prefix is not required by the
+    # endpoint; it is required by this registry, because an unprefixed name does not say which
+    # provider's weights produced a stored vector and that is the one thing a profile id exists
+    # to say.
+    RegisteredProfile(
+        profile_id="openai-text-embedding-3-small-v1",
+        model_name="openai/text-embedding-3-small",
+        dimension=1536,
+        query_mode="embed",
+        passage_mode="embed",
+        context_mode="none",
+        backend="openai-compat",
+        base_url=_OPENROUTER,
+        name_prefix="openai",
+    ),
+    RegisteredProfile(
+        profile_id="openai-text-embedding-3-large-v1",
+        model_name="openai/text-embedding-3-large",
+        dimension=3072,
+        query_mode="embed",
+        passage_mode="embed",
+        context_mode="none",
+        backend="openai-compat",
+        base_url=_OPENROUTER,
+        name_prefix="openai",
+    ),
+    # --- Google, via OpenRouter ---------------------------------------------------------------
+    # Registered at 3072 ONLY; see the normalization finding above for why the narrower
+    # Matryoshka widths are absent rather than merely unlisted.
+    RegisteredProfile(
+        profile_id="gemini-embedding-001-v1",
+        model_name="google/gemini-embedding-001",
+        dimension=3072,
+        query_mode="embed",
+        passage_mode="embed",
+        context_mode="none",
+        backend="openai-compat",
+        base_url=_OPENROUTER,
+        name_prefix="openrouter",
+    ),
+)
+
 REGISTERED_PROFILES: Mapping[str, RegisteredProfile] = MappingProxyType(
-    {entry.profile_id: entry for entry in _PROFILES}
+    {entry.profile_id: entry for entry in _PROFILES + _HOSTED_PROFILES}
 )
 
 

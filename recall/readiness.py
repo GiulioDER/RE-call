@@ -25,7 +25,13 @@ import psycopg
 
 from recall.calibration import Calibration
 from recall.control_plane import SERVABLE_ACTIVE_STATES, ControlPlane
-from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
+from recall.embeddings import (
+    HOSTED_UNVERIFIED_DIGEST,
+    Embedder,
+    artifact_is_pinned,
+    embedding_profile,
+    embedding_profile_id,
+)
 from recall.store import PgVectorStore
 from recall.trust_policy import TrustFailureCode, TrustState, code_for_status
 
@@ -183,8 +189,28 @@ def check_enterprise_readiness(
     profile = embedding_profile(embedder)
     if profile.dimension != embedder.dim:
         failures.append("embedding profile dimension does not match the runtime embedder")
-    if profile.artifact_digest == "legacy-unverified" and not allow_legacy_profile:
-        failures.append("model artifact is not pinned by an immutable digest")
+    if not artifact_is_pinned(profile) and not allow_legacy_profile:
+        # Semantic rather than a comparison against one literal, because there are now two ways to
+        # have no pinned artifact and only one of them was enumerated here. A HOSTED profile is
+        # the second: the provider serves weights it can replace behind a stable model name, so
+        # nothing this process can reach says which weights wrote the vectors it is about to
+        # search. That is the same question the legacy branch asks and deserves the same answer.
+        #
+        # The message splits them because the REMEDY differs and an operator reading a failure
+        # needs to know which one they have: a legacy profile can be pinned by provisioning the
+        # artifact and supplying its digest, and a hosted one cannot be pinned at all, and accepting
+        # it is a standing decision about attestation, not a configuration step.
+        #
+        # `allow_legacy_profile` is the single escape for both. It is named for the older case but
+        # has always meant "serve anyway despite an unpinned artifact", and splitting it into two
+        # flags would let a deployment opt into the weaker guarantee while believing it had opted
+        # into the stronger one.
+        if profile.artifact_digest == HOSTED_UNVERIFIED_DIGEST:
+            failures.append(
+                "model is served by a hosted API and its weights cannot be attested"
+            )
+        else:
+            failures.append("model artifact is not pinned by an immutable digest")
     if control_plane is not None:
         try:
             route = control_plane.route(store.tenant)

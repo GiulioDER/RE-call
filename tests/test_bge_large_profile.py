@@ -113,7 +113,16 @@ def test_every_registered_profile_has_a_distinct_fingerprint() -> None:
     seen: dict[str, str] = {}
     for pid in registered_profile_ids():
         entry = registered_profile(pid)
-        fp = entry.identity(artifact_digest=entry.artifact_digest or digest).fingerprint()
+        # A HOSTED profile refuses an operator digest outright (there is no artifact tree to have
+        # hashed), so it completes its identity without one. It is included rather than skipped:
+        # a hosted profile's fingerprint keys a calibration exactly as a local one's does, and
+        # every hosted profile shares the same digest marker, so if anything were going to
+        # collide here it would be these.
+        fp = (
+            entry.identity()
+            if entry.hosted
+            else entry.identity(artifact_digest=entry.artifact_digest or digest)
+        ).fingerprint()
         assert fp not in seen, f"{pid} collides with {seen.get(fp)}"
         seen[fp] = pid
     assert len(seen) == len(registered_profile_ids())

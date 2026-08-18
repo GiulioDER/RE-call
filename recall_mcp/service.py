@@ -16,7 +16,11 @@ from pydantic import BaseModel, Field
 from recall.calibration import Calibration
 from recall.calibration_v2 import CalibrationRepository
 from recall.trust_policy import TrustPolicy, TrustRefusal
-from recall.embedding_registry import find_registered_profile, registered_profile_ids
+from recall.embedding_registry import (
+    RegisteredProfile,
+    find_registered_profile,
+    registered_profile_ids,
+)
 from recall.embeddings import (
     Embedder,
     FastEmbedEmbedder,
@@ -159,48 +163,102 @@ DEFAULT_MAX_INDEX_FILES = 2000
 DEFAULT_MAX_INDEX_BYTES = 20_000_000  # 20 MB
 
 
+#: Which `RECALL_EMBEDDER` spellings may be paired with a registered profile of each backend.
+#:
+#: Local profiles keep accepting ONLY `fastembed`, including the qwen3 entry, because that is the
+#: pairing every existing deployment already has written down and narrowing or widening it would
+#: be an unannounced config break. Hosted profiles take the spellings `resolve_embedder` already
+#: understands for the same providers, so an operator moving from an unregistered hosted embedder
+#: to a registered one changes one variable and not two.
+_PROFILE_EMBEDDER_SPELLINGS: dict[str, frozenset[str]] = {
+    "fastembed": frozenset({"fastembed"}),
+    "qwen3": frozenset({"fastembed"}),
+    "voyage": frozenset({"voyage"}),
+    "openai-compat": frozenset({"openai", "openrouter"}),
+}
+
+
+def _warn_if_rejected(entry: RegisteredProfile) -> None:
+    """Log the measured verdict when a profile that was rejected is being loaded anyway."""
+    if not entry.rejected:
+        return
+    record = entry.rejection
+    assert record is not None  # `rejected` is exactly `rejection is not None`
+    _log.warning(
+        "embedding profile %s was REJECTED on %s (%s) and is being loaded anyway; "
+        "the measured reason was %s",
+        entry.profile_id,
+        record.decided_on,
+        record.reason,
+        ", ".join(f"{k}={v}" for k, v in record.measurements),
+    )
+
+
 def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     """Return the embedder backend by name.
 
-    Registered local profiles still belong to `recall.embedding_registry`; this boundary resolves
-    those first so profile identity stays single-sourced. Without `RECALL_EMBED_PROFILE`, the MCP
-    server accepts the shared `recall.embeddings.resolve_embedder` spellings, including explicit
-    cloud and research-model aliases.
+    Registered profiles belong to `recall.embedding_registry`; this boundary resolves those first
+    so profile identity stays single-sourced. Without `RECALL_EMBED_PROFILE`, the MCP server
+    accepts the shared `recall.embeddings.resolve_embedder` spellings, including explicit cloud
+    and research-model aliases.
+
+    `RECALL_EMBED_PROFILE` now names a LOCAL or a HOSTED profile, and the two need different
+    inputs, which is why the branch is on the entry rather than on the variable:
+
+    ===============  ==========================  ======================================
+    profile kind     RECALL_EMBEDDER             also required
+    ===============  ==========================  ======================================
+    fastembed/qwen3  ``fastembed``               artifact path env + RECALL_MODEL_SHA256
+    voyage           ``voyage``                  VOYAGE_API_KEY
+    openai-compat    ``openai`` / ``openrouter`` OPENROUTER_API_KEY
+    ===============  ==========================  ======================================
+
+    A hosted profile is deliberately NOT asked for `RECALL_MODEL_CACHE` or `RECALL_MODEL_SHA256`.
+    Requiring them was what made an earlier attempt at this feature unreachable in production:
+    there is no artifact tree to point at and no bytes to hash, so the only values an operator
+    could have supplied would have been invented ones.
     """
     values = dict(os.environ) if env is None else env
     profile = values.get("RECALL_EMBED_PROFILE", "").strip()
-    if profile and name != "fastembed":
-        raise ValueError("RECALL_EMBED_PROFILE can only be combined with RECALL_EMBEDDER=fastembed")
+    entry = find_registered_profile(profile) if profile else None
+    if profile and entry is None:
+        # Kept as an env-facing message: the operator set a variable, and naming the
+        # variable is more useful than naming the registry they have never heard of.
+        raise ValueError(
+            f"unknown RECALL_EMBED_PROFILE: {profile!r} "
+            f"(registered: {', '.join(registered_profile_ids())})"
+        )
+    if entry is not None and name not in _PROFILE_EMBEDDER_SPELLINGS[entry.backend]:
+        # Spelled as `RECALL_EMBEDDER=<value>` per accepted value rather than as a list, because
+        # that is the form an operator pastes and the form the existing test for the local case
+        # pins. A backend with two spellings reads "... =openai or RECALL_EMBEDDER=openrouter".
+        accepted = " or ".join(
+            f"RECALL_EMBEDDER={spelling}"
+            for spelling in sorted(_PROFILE_EMBEDDER_SPELLINGS[entry.backend])
+        )
+        raise ValueError(
+            f"RECALL_EMBED_PROFILE={profile!r} is a {entry.backend} profile and needs {accepted}"
+        )
     if name == "hashing":
         return HashingEmbedder(dim=HASHING_DIM)
+    if entry is not None and entry.hosted:
+        _warn_if_rejected(entry)
+        # The key is read HERE rather than left to the embedder class's own env lookup, because
+        # `make_embedder` accepts an explicit `env` mapping and the class would consult the real
+        # process environment instead, so a caller passing a key in `env` would get a confusing
+        # "needs an API key" from a call it had just supplied one to.
+        return entry.build(api_key=values.get(entry.api_key_env) or None)
     if name == "fastembed":
         if not profile:
             return FastEmbedEmbedder()
-        entry = find_registered_profile(profile)
-        if entry is None:
-            # Kept as an env-facing message: the operator set a variable, and naming the
-            # variable is more useful than naming the registry they have never heard of.
-            raise ValueError(
-                f"unknown RECALL_EMBED_PROFILE: {profile!r} "
-                f"(registered: {', '.join(registered_profile_ids())})"
-            )
+        assert entry is not None  # `profile` non-empty and unknown ids already raised above
         artifact_digest = values.get("RECALL_MODEL_SHA256", "")
         artifact_path = values.get(entry.artifact_path_env, "")
         if not artifact_path or not artifact_digest:
             raise ValueError(
                 f"profile {profile!r} requires {entry.artifact_path_env} and RECALL_MODEL_SHA256"
             )
-        if entry.rejected:
-            record = entry.rejection
-            assert record is not None  # `rejected` is exactly `rejection is not None`
-            _log.warning(
-                "embedding profile %s was REJECTED on %s (%s) and is being loaded anyway; "
-                "the measured reason was %s",
-                entry.profile_id,
-                record.decided_on,
-                record.reason,
-                ", ".join(f"{k}={v}" for k, v in record.measurements),
-            )
+        _warn_if_rejected(entry)
         return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest)
     try:
         return resolve_embedder(name, env=values)
@@ -219,6 +277,15 @@ def make_profile_embedder(
     """Construct one registered profile, with optional shadow-specific artifact settings."""
     values = dict(os.environ if env is None else env)
     values["RECALL_EMBED_PROFILE"] = profile_id
+    # The spelling is DERIVED from the profile, not fixed at "fastembed". `recall.enterprise_cli`
+    # calls this with `route.active.embedding_profile`, which is whatever profile the active
+    # generation was built under, so hard-coding one backend meant a tenant on a hosted generation
+    # could never be served through this path. `sorted(...)[0]` only to make the choice
+    # deterministic where a backend accepts more than one spelling; both reach the same builder.
+    entry = find_registered_profile(profile_id)
+    spelling = "fastembed"
+    if entry is not None and entry.hosted:
+        spelling = sorted(_PROFILE_EMBEDDER_SPELLINGS[entry.backend])[0]
     if shadow:
         mappings = {
             "RECALL_SHADOW_MODEL_CACHE": "RECALL_MODEL_CACHE",
@@ -228,7 +295,7 @@ def make_profile_embedder(
         for source, target in mappings.items():
             if source in values:
                 values[target] = values[source]
-    return make_embedder("fastembed", values)
+    return make_embedder(spelling, values)
 
 
 class SearchHit(BaseModel):
