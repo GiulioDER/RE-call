@@ -1,6 +1,6 @@
 # Pre-registration: does a SessionStart hook that writes `.mcp.json` reach the same session?
 
-**Date:** 2026-08-16   **Status:** predicted, not yet measured
+**Date:** 2026-08-16   **Status:** MEASURED 2026-08-18, prediction confirmed (see the final section; the prediction text itself is unedited)
 
 ## The question
 
@@ -222,3 +222,86 @@ retrospectively usable**, and reading them as data would repeat this run's mista
 ⛔ **Do not record a further treatment run until step 1 returns a number.** This run is the second
 time the question has been approached and the second time an untested apparatus produced an
 uninterpretable null; a third would establish a habit rather than a result.
+
+## MEASURED (2026-08-18): the prediction is CONFIRMED, and approval is separable after all
+
+**Status: measured. The prediction above stands and is not edited.**
+
+The control was never run by hand, because it had already run itself. The evidence is the hook log
+plus the harness's own `deferred_tools_delta` records, which are structural entries written by the
+client listing tools entering a session's inventory. They are **not** model prose, which matters:
+a bare grep for `mcp__recall` across these transcripts matches conversation text too, and four of
+the six transcripts here contain the string while carrying zero tools.
+
+### The decisive session is both arms at once
+
+Session `e0aa68bb` ran in `.claude/worktrees/session-startup-audit-518fcd`, a project whose
+`enabledMcpjsonServers` holds `['recall', 'recall-memory']`. The hook logged it **twice**:
+
+| hook row | condition | recall tools in inventory |
+|---|---|---|
+| `2026-08-18T09:21:43Z` session start | `mcp_action: generated`, `mcp_json_existed_before_hook: false` | **0** (delta at 09:21:43.677Z) |
+| `2026-08-18T12:08:56Z` second SessionStart | `mcp_action: already-present`, `existed_before: true` | **32**, in a delta at 12:08:58.640Z |
+
+The first row is the treatment condition exactly as specified: no `.mcp.json` on disk, the hook
+generates it, and **that session did not get the tools**. The second row is the same checkout two
+hours later with the file already on disk, and the tools appear **two seconds** after the hook
+fires.
+
+So on the stated metric, with the denominator counting treatment runs that are interpretable:
+**0 of 1 fresh sessions saw `recall` in their own inventory**, and the prediction's mechanism, that
+the client resolves its server list before user `SessionStart` hooks run, is what the pairing shows.
+
+### Why this one is interpretable where the earlier run was not
+
+This is the comparison the document asked for and could not construct: the treatment and the
+control **share an approval state**, because they are the same project two hours apart. Confound 1
+therefore cannot explain the 09:21 absence. The run recorded above under "Treatment run 1" failed
+precisely here, in an unapproved worktree, and remains uninterpretable.
+
+### The two causes separate cleanly across all six transcripts
+
+Both conditions turn out to be necessary, and each alone yields nothing:
+
+| condition | transcripts | recall tools |
+|---|---|---|
+| `.mcp.json` written by the session's own hook | `d8bded1a`, `30a93f4d`, `9b366ea4`, `e0aa68bb` (first start) | 0 |
+| `.mcp.json` already present, project not yet approved | `b03972ae`, `2b8b37ba` | 0 |
+| `.mcp.json` already present **and** project approved | `e0aa68bb` (second start) | **32** |
+
+This retires the reading that approval alone explains everything: two sessions started with the file
+already present and still got nothing, because approval had not yet been recorded for those
+checkouts at that time. It equally retires the reading that ordering alone explains everything.
+**File-present and approved are jointly necessary**, and the tool inventory cannot distinguish
+which one is missing, which is why every earlier single-arm observation was unreadable.
+
+### What is still not established
+
+1. **Approval is timestamped nowhere.** `~/.claude.json` records which servers are approved, not
+   when. That the 09:21 arm was already approved is inferred from the same project being approved at
+   12:08 with no approval action in between in that transcript, not from a timestamp. If approval
+   was in fact granted between the two starts, the pairing collapses back into confound 1 and this
+   result reverts to uninterpretable. **This is the one check that would falsify the reading above**,
+   and it cannot be run retrospectively; a future run should snapshot `enabledMcpjsonServers`
+   immediately before the session starts.
+2. **What the 12:08 SessionStart actually was.** A second hook row under the same session id is a
+   resume, a compaction or a re-entry; the transcript shows no MCP command before it, and the
+   preceding turn is ordinary work. So "a later SessionStart in the same checkout" is demonstrated;
+   "a wholly new process" is not.
+3. **`deferred_tools_delta` reports visibility, not connection.** The tools became *available to the
+   model* at those moments. Whether the stdio servers connected then, or connected earlier and were
+   surfaced lazily, is not visible in the transcript. The prediction is about availability to the
+   session, which is what is measured, but the underlying mechanism is inferred.
+4. **`claude -p` is still 401.** Re-checked 2026-08-18: `Failed to authenticate. API Error: 401
+   OAuth access token has been revoked`, and note it **exits 0**, so a harness reading exit codes
+   scores that as success. The method as originally written remains unrunnable; this result comes
+   from the deferred method instead.
+
+### Consequence for the repository
+
+The practical rule is unchanged and now has a measurement behind it: **a fresh worktree gets no
+recall tools in the session that creates it, and gets them on the next session provided the project
+is also approved.** Since `scripts/session_mcp_approve.py` is absent from `origin/master`
+(`git merge-base --is-ancestor 49ac9c5f origin/master` fails), a fresh worktree on master satisfies
+neither condition on its first session and only the ordering condition on its second. Landing that
+commit is what makes the second session work.
