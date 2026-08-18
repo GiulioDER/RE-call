@@ -2895,6 +2895,15 @@ wheels = [
 ]
 
 [[package]]
+name = "olefile"
+version = "0.47"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/1b/077b508e3e500e1629d366249c3ccb32f95e50258b231705c09e3c7a4366/olefile-0.47.zip", hash = "sha256:599383381a0bf3dfbd932ca0ca6515acd174ed48870cbf7fee123d698c192c1c", size = 112240, upload-time = "2023-12-01T16:22:53.025Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/17/d3/b64c356a907242d719fc668b71befd73324e47ab46c8ebbbede252c154b2/olefile-0.47-py2.py3-none-any.whl", hash = "sha256:543c7da2a7adadf21214938bb79c83ea12b473a4b6ee4ad4bf854e7715e13d1f", size = 114565, upload-time = "2023-12-01T16:22:51.518Z" },
+]
+
+[[package]]
 name = "onnxruntime"
 version = "1.27.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3939,6 +3948,20 @@ wheels = [
 ]
 
 [[package]]
+name = "python-oxmsg"
+version = "0.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "olefile" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a2/4e/869f34faedbc968796d2c7e9837dede079c9cb9750917356b1f1eda926e9/python_oxmsg-0.0.2.tar.gz", hash = "sha256:a6aff4deb1b5975d44d49dab1d9384089ffeec819e19c6940bc7ffbc84775fad", size = 34713, upload-time = "2025-02-03T17:13:47.415Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/67/f56c69a98c7eb244025845506387d0f961681657c9fcd8b2d2edd148f9d2/python_oxmsg-0.0.2-py3-none-any.whl", hash = "sha256:22be29b14c46016bcd05e34abddfd8e05ee82082f53b82753d115da3fc7d0355", size = 31455, upload-time = "2025-02-03T17:13:46.061Z" },
+]
+
+[[package]]
 name = "python-pptx"
 version = "1.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -4107,6 +4130,7 @@ documents = [
     { name = "pdfplumber" },
     { name = "pypdf" },
     { name = "python-docx" },
+    { name = "python-oxmsg" },
     { name = "python-pptx" },
     { name = "xlrd" },
 ]
@@ -4202,6 +4226,7 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
     { name = "python-docx", marker = "extra == 'documents'", specifier = ">=1.1" },
     { name = "python-dotenv", marker = "extra == 'dev'", specifier = ">=1.0" },
+    { name = "python-oxmsg", marker = "extra == 'documents'", specifier = ">=0.0.2" },
     { name = "python-pptx", marker = "extra == 'documents'", specifier = ">=1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16,<0.17" },
     { name = "sentence-transformers", marker = "extra == 'entail'", specifier = ">=3.0" },

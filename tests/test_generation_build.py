@@ -28,6 +28,7 @@ from recall.generation_build import (
     embedder_identity,
     pipeline_identity,
 )
+from recall.extraction import STRUCTURED_DOCUMENT_VERSION
 from recall.index import DEFAULT_MAX_CHARS, DEFAULT_OVERLAP_CHARS, chunk_text
 from recall.lineage import IndexManifestV1
 from recall.manifest import load_inventory
@@ -150,6 +151,7 @@ def test_the_request_defaults_are_the_repository_chunking_defaults() -> None:
     assert dict(identity.configuration) == {
         "max_chars": DEFAULT_MAX_CHARS,
         "overlap": DEFAULT_OVERLAP_CHARS,
+        "document_blocks": STRUCTURED_DOCUMENT_VERSION,
     }
 
 

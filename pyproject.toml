@@ -47,6 +47,7 @@ documents = [
     "python-pptx>=1.0",
     "xlrd>=2.0",
     "beautifulsoup4>=4.12",
+    "python-oxmsg>=0.0.2",
 ]
 # Pooling is optional for CLI use and required for server processes.
 pool = ["psycopg-pool>=3.2"]

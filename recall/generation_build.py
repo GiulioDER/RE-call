@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any, get_args
 
 from recall.embeddings import Embedder, HashingEmbedder
+from recall.extraction import STRUCTURED_DOCUMENT_VERSION
 from recall.generations import BuildStats, GenerationManager
 from recall.index import (
     DEFAULT_MAX_CHARS,
@@ -196,7 +197,11 @@ def chunker_for(request: BuildRequest) -> tuple[Callable[[str], list[str]], Chun
             ChunkerIdentity(
                 "recall.chunk_text",
                 1,
-                {"max_chars": request.max_chars, "overlap": overlap},
+                {
+                    "max_chars": request.max_chars,
+                    "overlap": overlap,
+                    "document_blocks": STRUCTURED_DOCUMENT_VERSION,
+                },
             ),
         )
     # Unreachable while `_validate_request` accepts exactly the values branched on above, and kept

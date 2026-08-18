@@ -93,6 +93,22 @@ def test_index_path_ingests_markdown(tmp_path, make_store):
 
 
 @requires_db
+def test_index_path_ingests_csv_as_typed_table_chunks(tmp_path, make_store):
+    (tmp_path / "metrics.csv").write_text(
+        "Year,Revenue\n2023,42\n2024,51\n", encoding="utf-8"
+    )
+    store = make_store(64)
+    stats = Indexer(store, HashingEmbedder(dim=64)).index_path(tmp_path)
+
+    assert stats.files == 1
+    hits = store.query_sparse("revenue 2024", k=5)
+    assert hits
+    assert hits[0].chunk.metadata["content_kind"] == "table"
+    assert hits[0].chunk.metadata["table_headers"] == ["Year", "Revenue"]
+    assert "2024" in hits[0].chunk.metadata["numeric_values"]
+
+
+@requires_db
 def test_index_path_stores_validity_frontmatter_in_metadata(tmp_path, make_store):
     (tmp_path / "policy_v2.md").write_text(
         "---\nvalid_until: 2099-12-31\nsupersedes: policy_v1.md\n---\nnew policy body",

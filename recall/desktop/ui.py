@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
@@ -21,12 +22,13 @@ from recall.desktop.sources import (
 from recall.desktop.github import GithubImport, download_repository
 
 
+_qt_widgets: Any = None
 try:
+    _qt_widgets = importlib.import_module("PySide6.QtWidgets")
     from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, QPoint, QRunnable, QThreadPool, QTimer, Qt, Signal
     from PySide6.QtGui import QColor, QPixmap, QPolygon
     from PySide6.QtWidgets import (
         QAbstractItemView,
-        QApplication,
         QComboBox,
         QCheckBox,
         QFileDialog,
@@ -55,7 +57,9 @@ try:
         QWidget,
     )
 except ImportError:  # pragma: no cover, exercised on environments without the desktop extra
-    QApplication = None
+    pass
+
+QApplication: Any = getattr(_qt_widgets, "QApplication", None)
 
 
 if QApplication is not None:

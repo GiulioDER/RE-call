@@ -18,6 +18,7 @@ from recall.trust_policy import TrustPolicy
 from recall.embeddings import Embedder
 from recall.index import (
     ChunkerKind,
+    DEFAULT_INDEX_GLOB,
     DEFAULT_MAX_CHARS,
     DEFAULT_OVERLAP_CHARS,
     head_commit,
@@ -998,14 +999,14 @@ def main(argv: list[str] | None = None) -> None:
     p_gc.add_argument("--retention-days", type=int, default=7)
     p_gc.add_argument("--retain-previous", type=int, default=2)
 
-    p_index = sub.add_parser("index", help="index a folder of markdown or code")
+    p_index = sub.add_parser("index", help="index a folder of supported documents or code")
 
     p_index.set_defaults(_opens_db=True)
     p_index.add_argument("path")
     p_index.add_argument(
         "--glob",
-        default=DEFAULT_GLOB,
-        help="file glob to index — e.g. '**/*.py' for code (auto-uses code chunking). Default: markdown.",
+        default=DEFAULT_INDEX_GLOB,
+        help="file glob to index, for example '**/*.py' for code. Default: supported documents and code.",
     )
     p_index.add_argument(
         "--project",
@@ -1500,6 +1501,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "manifest":
         from recall.lineage import IndexManifestV1, ManifestObjectV1
         from recall.manifest import (
+            ExtractingS3ObjectReader,
             ObjectReader,
             S3ObjectReader,
             load_inventory,
@@ -1557,8 +1559,9 @@ def main(argv: list[str] | None = None) -> None:
                 args.size,
                 args.sha256,
             )
-            reader = S3ObjectReader.from_environment()
-            manifest = IndexManifestV1.from_json(reader.fetch(reference).data)
+            base_reader = S3ObjectReader.from_environment()
+            manifest = IndexManifestV1.from_json(base_reader.fetch(reference).data)
+            reader = ExtractingS3ObjectReader(base_reader)
         else:
             manifest = load_manifest(args.manifest)
         if manifest.tenant_id != args.tenant:
@@ -1612,6 +1615,7 @@ def main(argv: list[str] | None = None) -> None:
         from recall.generation_build import BuildRequest, build_generation
         from recall.lineage import IndexManifestV1, ManifestObjectV1
         from recall.manifest import (
+            ExtractingS3ObjectReader,
             ObjectReader,
             S3ObjectReader,
             load_manifest,
@@ -1641,8 +1645,9 @@ def main(argv: list[str] | None = None) -> None:
                 args.manifest_sha256,
             )
             # An s3:// manifest needs the S3 reader to fetch the manifest itself.
-            reader = S3ObjectReader.from_environment()
-            manifest = IndexManifestV1.from_json(reader.fetch(reference).data)
+            base_reader = S3ObjectReader.from_environment()
+            manifest = IndexManifestV1.from_json(base_reader.fetch(reference).data)
+            reader = ExtractingS3ObjectReader(base_reader)
         else:
             if environment == "production":
                 raise SystemExit("production generation builds require a versioned S3 manifest")

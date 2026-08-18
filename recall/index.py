@@ -15,8 +15,13 @@ from recall.embedding_registry import context_version_for
 from recall.control_plane import ControlPlane
 from recall.document import parse_document
 from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
+from recall.extraction import (
+    DOCUMENT_EXTENSIONS,
+    STRUCTURED_DOCUMENT_VERSION,
+    chunk_extracted_document,
+    extract_document,
+)
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
-from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
 from recall.sparse import SparseEncoderProtocol, store_sparse_vectors
 from recall.store import PgVectorStore
@@ -24,6 +29,21 @@ from recall.types import Chunk
 
 DEFAULT_MAX_CHARS = 800  # target chunk size in characters; paragraphs are packed up to this
 DEFAULT_OVERLAP_CHARS = 80  # chars shared between adjacent pieces of a force-split oversized block
+DEFAULT_INDEX_GLOB = "**/*"
+_DEFAULT_INDEX_EXCLUDED_DIRS = frozenset(
+    {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "site-packages", "__pycache__"}
+)
+_DEFAULT_INDEX_EXCLUDED_NAMES = frozenset(
+    {
+        ".env",
+        ".env.local",
+        "tokens.json",
+        "credentials.json",
+        "secrets.json",
+        "queries.json",
+    }
+)
+_DEFAULT_INDEX_EXCLUDED_SUFFIXES = frozenset({".json", ".toml", ".yaml", ".yml"})
 
 #: Which of the two chunkers below a caller wants, named once so nobody writes the pair out again.
 #: It lived as a literal in three places (`recall.generation_build`'s annotation and its branches,
@@ -285,6 +305,17 @@ def _confined_to(root: Path, paths: Iterable[Path]) -> list[Path]:
     return kept
 
 
+def _default_walk(root: Path) -> Iterable[Path]:
+    """Walk the safe default corpus while pruning hidden and tool directories early."""
+    for directory, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name not in _DEFAULT_INDEX_EXCLUDED_DIRS and not name.startswith(".")
+        ]
+        yield from (Path(directory) / name for name in filenames)
+
+
 def _matches_glob(file: Path, glob: str) -> bool:
     """Whether a directory walk under `glob` would have yielded `file`.
 
@@ -298,8 +329,21 @@ def _matches_glob(file: Path, glob: str) -> bool:
     return fnmatch(file.name, glob.rsplit("/", 1)[-1])
 
 
-def candidate_files(path: str | Path, glob: str = DEFAULT_GLOB) -> list[Path]:
-    """Return the confined, sorted file list that `index_path(path, glob)` would index.
+def _safe_default_file(root: Path, path: Path, glob: str) -> bool:
+    if glob != DEFAULT_INDEX_GLOB:
+        return True
+    relative = path.relative_to(root)
+    if any(part in _DEFAULT_INDEX_EXCLUDED_DIRS or part.startswith(".") for part in relative.parts[:-1]):
+        return False
+    return (
+        not path.name.startswith(".")
+        and path.name.casefold() not in _DEFAULT_INDEX_EXCLUDED_NAMES
+        and path.suffix.lower() not in _DEFAULT_INDEX_EXCLUDED_SUFFIXES
+    )
+
+
+def candidate_files(path: str | Path, glob: str = DEFAULT_INDEX_GLOB) -> list[Path]:
+    """Return the confined, sorted supported file list that `index_path(path, glob)` indexes.
 
     A pure filesystem walk: it only `stat`s and `resolve`s paths — no file is opened, no chunker
     runs, no embedding is requested. This is what lets a caller MEASURE a tree (file count, total
@@ -321,13 +365,30 @@ def candidate_files(path: str | Path, glob: str = DEFAULT_GLOB) -> list[Path]:
     """
     root = Path(path).resolve()
     if root.is_dir():
-        return sorted(_confined_to(root, root.glob(glob)))
+        paths = _default_walk(root) if glob == DEFAULT_INDEX_GLOB else root.glob(glob)
+        return sorted(
+            p for p in _confined_to(root, paths)
+            if (glob != DEFAULT_INDEX_GLOB or p.suffix.lower() in DOCUMENT_EXTENSIONS)
+            and _safe_default_file(root, p, glob)
+        )
     if not _matches_glob(root, glob):
         raise ValueError(
             f"{str(root)!r} does not match the glob {glob!r}, so it is not part of this corpus. "
             f"Indexing a file reads it into memory that `recall_search` can return verbatim, so "
             f"a path is admitted only when the corpus pattern claims it. Pass an explicit glob "
             f"(CLI: --glob) if this file type really is your corpus."
+        )
+    if not _safe_default_file(root.parent, root, glob):
+        raise ValueError(
+            f"{str(root)!r} is excluded from the safe default document scan "
+            f"(glob {glob!r}); "
+            "pass an explicit --glob if it is intentionally part of the corpus"
+        )
+    if glob == DEFAULT_INDEX_GLOB and root.suffix.lower() not in DOCUMENT_EXTENSIONS:
+        raise ValueError(
+            f"{str(root)!r} has unsupported suffix {root.suffix or '<none>'!r}; "
+            "the indexer accepts text, code, PDF, Office, spreadsheet, presentation, email, "
+            "HTML, CSV, and TSV sources"
         )
     return [root]
 
@@ -382,6 +443,7 @@ def _index_fingerprint(
         "\x00".join(
             (
                 content_hash,
+                STRUCTURED_DOCUMENT_VERSION,
                 embedding_profile_id(embedder),
                 context_policy.mode,
                 context_policy.version,
@@ -506,7 +568,7 @@ class Indexer:
     def index_path(
         self, path: str | Path, glob: str | None = None, files: list[Path] | None = None
     ) -> IndexStats:
-        """Index a markdown file, or a directory of them, into the vector store.
+        """Index one supported source, or a directory of supported sources, into the vector store.
 
         Re-indexing REPLACES each file's rows completely (delete then insert), so a file that
         shrinks — or withdraws a frontmatter claim like ``supersedes`` — leaves no stale
@@ -529,16 +591,15 @@ class Indexer:
 
         `glob` and `files` are mutually exclusive: passing both is a caller bug, because the set
         that gets indexed would silently be the one the glob did not describe. `glob` defaults to
-        None rather than to `DEFAULT_GLOB` so that check tests whether the argument was PASSED,
-        not whether its value happens to differ from the default — otherwise the guard would go
-        quiet the day someone changes `DEFAULT_GLOB` to match.
+        None rather than to `DEFAULT_INDEX_GLOB` so that this check tests whether the argument was
+        passed, not whether its value happens to differ from the default.
         """
         if files is not None and glob is not None:
             raise ValueError(
                 "pass either `glob` or `files`, not both: `files` is used verbatim, so the "
                 f"glob {glob!r} would be silently ignored"
             )
-        glob = DEFAULT_GLOB if glob is None else glob
+        glob = DEFAULT_INDEX_GLOB if glob is None else glob
         # resolve() FIRST: `source` is the row key `replace_sources` deletes by, so a corpus
         # indexed once as `corpus/` and once as `/abs/corpus/` would write two row sets for the
         # same file instead of replacing them. (Root-relative `file` keys are unaffected —
@@ -602,8 +663,15 @@ class Indexer:
         indexed = skipped = written = vanished_before_read = 0
 
         for f in files:
+            raw: str | None = None
+            extracted = None
+            is_markdown = f.suffix.lower() in {".md", ".markdown", ".mdx"}
             try:
-                raw = f.read_text(encoding="utf-8-sig")  # BOM must not disable frontmatter parsing
+                if is_markdown:
+                    raw = _strip_nul(f.read_text(encoding="utf-8-sig"), f)
+                    source_bytes = raw.encode("utf-8")
+                else:
+                    source_bytes = f.read_bytes()
             except (FileNotFoundError, NotADirectoryError) as exc:
                 # A file that DISAPPEARED between the walk and this read must not take the rest
                 # of the run down with it: the caller may already have debited a byte budget for
@@ -617,12 +685,18 @@ class Indexer:
                 _log.warning("skipping %s: it vanished before it could be read (%s)", f, exc)
                 vanished_before_read += 1
                 continue
-            raw = _strip_nul(raw, f)
-            content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+            if is_markdown:
+                assert raw is not None
+                content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+            else:
+                content_hash = hashlib.sha256(source_bytes).hexdigest()
             # What the FINGERPRINT is derived from, which is not always what is stored: a file
             # whose leading `---` stopped being read as a fence has the same bytes and a bigger
             # body. See `_body_derivation_hash`.
-            derived_hash = _body_derivation_hash(raw, content_hash)
+            derived_hash = (
+                _body_derivation_hash(raw, content_hash) if is_markdown and raw is not None
+                else content_hash
+            )
             index_fingerprint = _index_fingerprint(
                 derived_hash, self._embedder, self._context_policy
             )
@@ -672,32 +746,61 @@ class Indexer:
             ):
                 skipped += 1
                 continue
-            # `body` here is the HUMAN body: the derived block is stripped, so an extraction pass
-            # can never read its own prior output back as evidence. `raw` stays unstripped for
-            # `contextual_passages` below, which only uses it for `document_title` — frontmatter
-            # and the first H1, both above the block.
-            document = parse_document(raw)
-            meta, body = document.meta, document.human_body
-            try:
-                validity_bounds(meta)  # fail fast on malformed dates, before anything is embedded
-            except ValueError as exc:
-                raise ValueError(f"{f}: {exc}") from exc
+            if raw is None:
+                extracted = extract_document(f, source_bytes)
+                raw = _strip_nul(extracted.text, f)
+            if is_markdown:
+                # `body` is the human authored body. Derived blocks are never evidence.
+                document = parse_document(raw)
+                meta, body = document.meta, document.human_body
+                try:
+                    validity_bounds(meta)
+                except ValueError as exc:
+                    raise ValueError(f"{f}: {exc}") from exc
+                content_blocks = None
+            else:
+                meta = (
+                    {**extracted.metadata, "media_type": extracted.media_type}
+                    if extracted is not None
+                    else {}
+                )
+                body = raw
+                content_blocks = (
+                    chunk_extracted_document(
+                        extracted,
+                        max_chars=DEFAULT_MAX_CHARS,
+                        overlap=DEFAULT_OVERLAP_CHARS,
+                    )
+                    if extracted is not None
+                    else []
+                )
             pending_sources.append(str(f))
             indexed += 1
-            raw_chunks = self._chunker(body)
-            structured, embedding_texts = contextual_passages(
-                raw, body, raw_chunks, rel[f], self._context_policy
-            )
+            if content_blocks is None:
+                raw_chunks = self._chunker(body)
+                structured, embedding_texts = contextual_passages(
+                    raw, body, raw_chunks, rel[f], self._context_policy
+                )
+                chunk_metadata: list[dict[str, object]] = [{} for _ in raw_chunks]
+            else:
+                raw_chunks = [piece for piece, _ in content_blocks]
+                structured = []
+                embedding_texts = raw_chunks
+                chunk_metadata = [metadata for _, metadata in content_blocks]
             shadow_structured: list[StructuredChunk] = []
             shadow_embedding_texts: list[str] = []
             if self._shadow is not None:
-                shadow_structured, shadow_embedding_texts = contextual_passages(
-                    raw, body, raw_chunks, rel[f], self._shadow.context_policy
-                )
-            for i, (ct, structured_chunk, embedding_text) in enumerate(
-                zip(raw_chunks, structured, embedding_texts)
-            ):
+                if content_blocks is None:
+                    shadow_structured, shadow_embedding_texts = contextual_passages(
+                        raw, body, raw_chunks, rel[f], self._shadow.context_policy
+                    )
+                else:
+                    shadow_embedding_texts = raw_chunks
+            for i, ct in enumerate(raw_chunks):
+                structured_chunk = structured[i] if content_blocks is None else None
+                embedding_text = embedding_texts[i]
                 cid = hashlib.md5(f"{f}:{i}".encode("utf-8")).hexdigest()
+                extra_metadata = chunk_metadata[i]
                 pending_chunks.append(
                     Chunk(
                         id=cid,
@@ -709,16 +812,23 @@ class Indexer:
                             "embedding_profile": embedding_profile_id(self._embedder),
                             "context_mode": self._context_policy.mode,
                             "context_version": self._context_policy.version,
-                            "text_start": structured_chunk.start,
-                            "text_end": structured_chunk.end,
-                            "heading_hierarchy": list(structured_chunk.headings),
+                            "text_start": (
+                                structured_chunk.start if structured_chunk is not None else None
+                            ),
+                            "text_end": (
+                                structured_chunk.end if structured_chunk is not None else None
+                            ),
+                            "heading_hierarchy": (
+                                list(structured_chunk.headings) if structured_chunk is not None else []
+                            ),
+                            **extra_metadata,
                             **self.apply_provenance(meta),
                         },
                     )
                 )
                 pending_embedding_texts.append(embedding_text)
                 if self._shadow is not None:
-                    shadow_piece = shadow_structured[i]
+                    shadow_piece = shadow_structured[i] if content_blocks is None else None
                     pending_shadow_chunks.append(
                         Chunk(
                             id=cid,
@@ -732,9 +842,16 @@ class Indexer:
                                 "embedding_profile": embedding_profile_id(self._shadow.embedder),
                                 "context_mode": self._shadow.context_policy.mode,
                                 "context_version": self._shadow.context_policy.version,
-                                "text_start": shadow_piece.start,
-                                "text_end": shadow_piece.end,
-                                "heading_hierarchy": list(shadow_piece.headings),
+                                "text_start": (
+                                    shadow_piece.start if shadow_piece is not None else None
+                                ),
+                                "text_end": (
+                                    shadow_piece.end if shadow_piece is not None else None
+                                ),
+                                "heading_hierarchy": (
+                                    list(shadow_piece.headings) if shadow_piece is not None else []
+                                ),
+                                **extra_metadata,
                                 **self.apply_provenance(meta),
                             },
                         )

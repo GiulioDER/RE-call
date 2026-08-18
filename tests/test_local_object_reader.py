@@ -23,7 +23,7 @@ import pathlib
 
 import pytest
 
-from recall.lineage import LineageError, ManifestObjectV1
+from recall.lineage import IndexManifestV1, LineageError, ManifestObjectV1
 
 
 def _write(tmp_path: pathlib.Path, name: str, body: bytes) -> tuple[str, str, int]:
@@ -95,6 +95,35 @@ class TestLocalObjectReader:
         )
         got = LocalObjectReader(roots=(tmp_path,)).fetch(entry)
         assert got.data == b"contents"
+
+    def test_extracting_reader_verifies_raw_bytes_without_parsing(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from recall.manifest import ExtractingLocalObjectReader
+
+        uri, digest, size = _write(tmp_path, "memo.md", b"not a real document")
+        entry = ManifestObjectV1(uri, digest, "text/markdown", size, digest)
+        manifest = IndexManifestV1("tenant", "version", (entry,))
+        monkeypatch.setattr(
+            "recall.manifest.extract_document",
+            lambda *args, **kwargs: pytest.fail("manifest verification must not parse documents"),
+        )
+
+        verified = ExtractingLocalObjectReader((tmp_path,)).verify(manifest)
+
+        assert verified[0].data == b"not a real document"
+
+    def test_extracting_reader_uses_media_type_for_extensionless_objects(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        from recall.manifest import ExtractingLocalObjectReader
+
+        uri, digest, size = _write(tmp_path, "memo", b"# heading\n\nbody")
+        entry = ManifestObjectV1(uri, digest, "text/markdown", size, digest)
+
+        verified = ExtractingLocalObjectReader((tmp_path,)).fetch(entry)
+
+        assert b"body" in verified.data
 
     def test_it_detects_a_file_rewritten_after_the_manifest(self, tmp_path: pathlib.Path) -> None:
         """The property that replaces S3 immutability: detection, not prevention.

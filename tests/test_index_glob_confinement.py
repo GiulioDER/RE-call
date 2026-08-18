@@ -20,8 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from recall.index import candidate_files
-from recall.lint import DEFAULT_GLOB
+from recall.index import DEFAULT_INDEX_GLOB, candidate_files
 from recall_mcp.service import index_memory
 
 
@@ -34,7 +33,7 @@ def test_single_file_outside_the_glob_is_refused(tmp_path):
         candidate_files(secret)
 
     message = str(exc.value)
-    assert DEFAULT_GLOB in message, "the refusal must name the glob that excluded the file"
+    assert DEFAULT_INDEX_GLOB in message, "the refusal must name the glob that excluded the file"
     assert "sk-live-EXAMPLE" not in message, "an error must never echo the file's contents"
 
 

@@ -18,6 +18,7 @@ from psycopg.types.json import Jsonb
 
 from recall.document import parse_document
 from recall.embeddings import Embedder, embed_passages
+from recall.extraction import ExtractedDocument, chunk_extracted_document
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
 from recall.lineage import (
     GenerationState,
@@ -34,6 +35,8 @@ Chunker = Callable[[str], list[str]]
 DEFAULT_RETENTION_DAYS = 7
 DEFAULT_RETAIN_PREVIOUS = 2
 TEMPORARY_STORAGE_MULTIPLIER = 2.2
+DEFAULT_TABLE_MAX_CHARS = 800
+DEFAULT_TABLE_OVERLAP = 80
 
 
 class GenerationError(RuntimeError):
@@ -577,7 +580,34 @@ class GenerationManager:
                 # Stamped here, after frontmatter has been read and before any chunk is built,
                 # so every chunk of every document carries it and no document can override it.
                 metadata = with_provenance(metadata, provenance or {})
-                pieces = chunker(body)
+                piece_metadata: list[dict[str, Any]] = []
+                has_structured_tables = (
+                    entry.media_type not in _MARKDOWN_MEDIA_TYPES
+                    and bool(verified.blocks)
+                    and any(block.kind == "table" for block in verified.blocks)
+                )
+                if has_structured_tables:
+                    configuration = pipeline.chunker.configuration
+                    max_chars = configuration.get("max_chars", DEFAULT_TABLE_MAX_CHARS)
+                    overlap = configuration.get("overlap", DEFAULT_TABLE_OVERLAP)
+                    if type(max_chars) is not int or type(overlap) is not int:
+                        raise GenerationError("chunker configuration has non integer table bounds")
+                    extracted_document = ExtractedDocument(
+                        text,
+                        str(metadata.get("media_type", entry.media_type)),
+                        metadata,
+                        verified.blocks,
+                    )
+                    typed_chunks = chunk_extracted_document(
+                        extracted_document,
+                        max_chars=max_chars,
+                        overlap=overlap,
+                    )
+                    pieces = [piece for piece, _ in typed_chunks]
+                    piece_metadata = [chunk_meta for _, chunk_meta in typed_chunks]
+                else:
+                    pieces = chunker(body)
+                    piece_metadata = [{} for _ in pieces]
                 if not pieces:
                     empty += 1
                     continue
@@ -601,6 +631,7 @@ class GenerationManager:
                             text=piece,
                             metadata={
                                 **metadata,
+                                **piece_metadata[ordinal],
                                 **(
                                     {_BODY_RULE_VERSION_KEY: _BODY_RULE_VERSION}
                                     if body_rule_changed

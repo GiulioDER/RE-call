@@ -17,6 +17,8 @@ intercepted and the assembly observed without anything connecting.
 
 from __future__ import annotations
 
+import hashlib
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -275,7 +277,11 @@ def test_the_text_chunker_records_its_name_version_and_both_parameters(
 
     assert chunker.algorithm == "recall.chunk_text"
     assert chunker.schema_version == 1
-    assert dict(chunker.configuration) == {"max_chars": 200, "overlap": 20}
+    assert dict(chunker.configuration) == {
+        "max_chars": 200,
+        "overlap": 20,
+        "document_blocks": "table-row-groups-v1",
+    }
 
 
 def test_the_code_chunker_records_no_overlap(
@@ -392,7 +398,11 @@ def test_the_cli_defaults_and_the_request_defaults_describe_the_same_pipeline(
     from_request = chunker_for(BuildRequest())[1]
 
     assert from_cli == from_request
-    assert dict(from_cli.configuration) == {"max_chars": 800, "overlap": 80}
+    assert dict(from_cli.configuration) == {
+        "max_chars": 800,
+        "overlap": 80,
+        "document_blocks": "table-row-groups-v1",
+    }
     assert from_cli.algorithm == "recall.chunk_text"
 
 
@@ -449,7 +459,11 @@ def test_the_cli_accepts_the_smallest_valid_chunking(
         tmp_path, monkeypatch, "--max-chars", "1", "--overlap", "0"
     )["pipeline"].chunker
 
-    assert dict(chunker.configuration) == {"max_chars": 1, "overlap": 0}
+    assert dict(chunker.configuration) == {
+        "max_chars": 1,
+        "overlap": 0,
+        "document_blocks": "table-row-groups-v1",
+    }
 
 
 def test_a_local_manifest_builds_under_development_and_reads_through_the_local_reader(
@@ -463,3 +477,63 @@ def test_a_local_manifest_builds_under_development_and_reads_through_the_local_r
 
     assert captured["environment"] == "development"
     assert isinstance(captured["reader"], LocalObjectReader)
+
+
+def test_s3_manifest_generation_uses_the_extracting_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public CLI path must preserve document extraction for remote generation builds."""
+    from recall.lineage import ManifestObjectV1
+    from recall.manifest import ExtractingS3ObjectReader, S3Allowlist, S3ObjectReader
+
+    object_data = b"Year,Value\n2024,42\n"
+    object_entry = ManifestObjectV1(
+        "s3://approved/corpora/assembly-tenant/data.csv",
+        "object-v1",
+        "text/csv",
+        len(object_data),
+        hashlib.sha256(object_data).hexdigest(),
+    )
+    manifest = IndexManifestV1(TENANT, "2026-01-01", (object_entry,))
+    manifest_data = manifest.to_json().encode("utf-8")
+
+    class Client:
+        def get_object(self, **kwargs: object) -> dict[str, object]:
+            if kwargs["Key"] == "manifests/current.json":
+                data, version = manifest_data, "manifest-v1"
+            else:
+                data, version = object_data, "object-v1"
+            return {"Body": BytesIO(data), "ContentLength": len(data), "VersionId": version}
+
+    base_reader = S3ObjectReader(Client(), S3Allowlist.parse("s3://approved/"))
+    captured: dict[str, object] = {}
+
+    def fake_build(manager: object, loaded: object, reader: object, embedder: object, request: object) -> BuildStats:
+        captured["manifest"] = loaded
+        captured["reader"] = reader
+        return BuildStats("gen_assembly", 1, 1, 0, 0, 0, 0)
+
+    monkeypatch.setattr(S3ObjectReader, "from_environment", classmethod(lambda cls: base_reader))
+    monkeypatch.setattr("recall.generation_build.build_generation", fake_build)
+
+    cli_main(
+        [
+            "--serving-dsn",
+            DSN,
+            "--tenant",
+            TENANT,
+            "--embedder",
+            "hashing",
+            "generation",
+            "build",
+            "s3://approved/manifests/current.json",
+            "--manifest-version-id",
+            "manifest-v1",
+            "--manifest-sha256",
+            hashlib.sha256(manifest_data).hexdigest(),
+            "--manifest-size",
+            str(len(manifest_data)),
+        ]
+    )
+
+    assert isinstance(captured["reader"], ExtractingS3ObjectReader)
