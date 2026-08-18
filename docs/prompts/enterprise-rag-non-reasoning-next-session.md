@@ -137,6 +137,26 @@ confirmation, recall fell from 61.71% to 60.75%, exact coverage fell from 13.04%
 invalid extras rose by 0.96 per question. Mean retrieval latency was 31.6 seconds per question
 over three captures. This candidate is rejected and no answer test was run.
 
+### Raw k12 reader diagnostic
+
+After raw k12 failed the invalid-extra guardrail, a preregistered answer-side diagnostic compared
+k8 and raw k12 on the same 23 project confirmation questions. Both arms used the official
+`ber_voy_lex_12k_full` table and tenant, Voyage 4 Large embeddings, lexical retrieval,
+`candidate_k=200`, the baseline answer policy, `max_context_chars=12000`, and `openai/gpt-5-mini`.
+The only retrieval change was submitted depth.
+
+| arm | document recall | exact coverage | mean invalid extras |
+|---|---:|---:|---:|
+| k8 | 59.18% | 8.70% | 5.61 |
+| raw k12 | 66.55% | 17.39% | 9.13 |
+
+Raw k12 gains 7.37 recall points and 8.70 exact-coverage points, but adds 3.52 invalid documents
+per question. It is rejected globally. Reader outputs and manifests are under
+`results/enterprise_rag/vps2_cheap_mini/`. The official judge fields are unusable because
+remaining OpenRouter credit caused judge calls to fail into the evaluator's zero fallback. Do not
+use those zeros as answer-quality evidence. The next experiment should select or pack a low-noise
+subset of the k12 candidates.
+
 ### Answer-side reader tests
 
 These are context for interpreting future retrieval work. They are not the focus of this session.

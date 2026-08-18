@@ -271,3 +271,23 @@ hypothesis. Recall fell from 61.71% to 60.27%, exact coverage fell from 13.04% t
 invalid extras rose by 0.83 per question. The candidate had one gain and two losses, capture
 stability 1.0, 84 embedding and lexical calls, 27.47 seconds mean latency, and 43.28 seconds p95
 latency. No answer-quality comparison is authorized.
+
+## Raw k12 reader diagnostic
+
+After raw `k=12` failed the invalid-extra retrieval guardrail, I ran the preregistered answer-side
+diagnostic on the same 23-question project confirmation. Both arms used the official
+`ber_voy_lex_12k_full` table and tenant, Voyage 4 Large embeddings, lexical retrieval,
+`candidate_k=200`, the baseline answer policy, `max_context_chars=12000`, and `openai/gpt-5-mini`.
+The only retrieval change was submitted depth, from `k=8` to raw `k=12`.
+
+| arm | document recall | exact coverage | mean invalid extras |
+|---|---:|---:|---:|
+| k8 | 59.18% | 8.70% | 5.61 |
+| raw k12 | 66.55% | 17.39% | 9.13 |
+
+Raw k12 adds 7.37 recall points and 8.70 exact-coverage points, but also adds 3.52 invalid
+documents per question. It remains rejected as a global setting. The reader outputs and manifests
+are saved under `results/enterprise_rag/vps2_cheap_mini/`. The official judge fields are not usable
+for this diagnostic because remaining OpenRouter credit caused judge calls to fail into the
+evaluator's zero fallback. Those zeros must not be interpreted as answer-quality findings. The
+next non-reasoning experiment should select or pack a lower-noise subset of the k12 candidates.
