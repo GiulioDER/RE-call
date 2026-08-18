@@ -14,7 +14,12 @@ from recall.context import ContextPolicy, StructuredChunk, contextual_passages
 from recall.embedding_registry import context_version_for
 from recall.control_plane import ControlPlane
 from recall.document import parse_document
-from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
+from recall.embeddings import (
+    LEGACY_UNVERIFIED_DIGEST,
+    Embedder,
+    embedding_profile,
+    embedding_profile_id,
+)
 from recall.extraction import (
     DOCUMENT_EXTENSIONS,
     STRUCTURED_DOCUMENT_VERSION,
@@ -569,7 +574,22 @@ class Indexer:
         # test would have noticed.
         expected_context = context_version_for(context_policy.mode, context_policy.version)
         profile = embedding_profile(embedder)
-        if profile.artifact_digest != "legacy-unverified" and profile.context_version != expected_context:
+        # ⚠️ The comparison is against the LEGACY literal alone, and deliberately NOT against
+        # `recall.embeddings.artifact_is_pinned` or any other "this profile is unverified"
+        # predicate, even though a hosted profile is also unverified. The two questions are
+        # different:
+        #
+        #   readiness asks  "is the artifact immutably pinned?"   -> legacy no, hosted no
+        #   this site asks  "does this profile CLAIM a context?"  -> legacy no, hosted YES
+        #
+        # A legacy profile is exempt because its `context_version` is a constructor default that
+        # nobody chose, so enforcing it would refuse every legacy embedder under any non-raw
+        # policy. A REGISTERED hosted profile derives its context version from a `context_mode` it
+        # declares, so the claim is real and must be checked exactly as a local profile's is.
+        # Widening this to a shared unverified-ness predicate is what sank an earlier attempt at
+        # hosted support: it exempted hosted profiles from this check, and a hosted identity
+        # declaring `raw-v1` was then accepted under a `section` policy where a local one raises.
+        if profile.artifact_digest != LEGACY_UNVERIFIED_DIGEST and profile.context_version != expected_context:
             raise ValueError(
                 f"embedding profile context {profile.context_version!r} does not match "
                 f"index context {expected_context!r}"

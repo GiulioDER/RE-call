@@ -120,8 +120,10 @@ OPENROUTER_API_KEY=
 #                                     # transaction. `0` waits forever. The DDL is idempotent and
 #                                     # retried on the next store open, so failing fast here
 #                                     # loses nothing and is diagnosable where a stall is not.
-# Immutable process profiles. Explicit embedding profiles require provisioned local artifacts.
-# Registered identifiers live in recall/embedding_registry.py and nowhere else:
+# Immutable process profiles. Registered identifiers live in recall/embedding_registry.py and
+# nowhere else. They come in two kinds, and the kind decides which variables below apply.
+#
+# LOCAL profiles, from a provisioned artifact tree (set RECALL_EMBEDDER=fastembed):
 #   bge-small-symmetric-v1, bge-small-asymmetric-v1, bge-small-context-document-v1,
 #   bge-small-context-section-v1, bge-small-context-neighbor-v1,
 # and qwen3-embedding-0.6b-384-v1, which is registered and REJECTED on CPU serving latency
@@ -129,6 +131,25 @@ OPENROUTER_API_KEY=
 # RECALL_MODEL_SHA256 is the SHA256 of the whole provisioned artifact tree. It is verified before
 # anything loads, and a mismatch or a missing tree refuses startup. The BGE profiles read their
 # tree from RECALL_MODEL_CACHE, the Qwen profile from RECALL_QWEN_MODEL_PATH.
+#
+# HOSTED profiles, served by a provider's API. They take an API key and NOTHING else: there is no
+# artifact tree to point at and no bytes to hash, so RECALL_MODEL_CACHE and RECALL_MODEL_SHA256
+# are not merely optional here, they are refused.
+#   voyage-code-3-v1, voyage-3-v1                      RECALL_EMBEDDER=voyage,     VOYAGE_API_KEY
+#   openai-text-embedding-3-small-v1                   RECALL_EMBEDDER=openai      OPENROUTER_API_KEY
+#   openai-text-embedding-3-large-v1                     or =openrouter
+#   gemini-embedding-001-v1
+#
+# ⚠️ A hosted profile is SERVABLE but not ATTESTABLE, and the difference is deliberate. The
+# provider can replace the weights behind a stable model name, so nothing this process can reach
+# proves which weights wrote the vectors it searches. check_enterprise_readiness() therefore
+# REFUSES a hosted profile unless the operator passes allow_legacy_profile=True, which is the
+# same explicit escape a legacy unpinned profile uses. Retrieval and calibration work normally;
+# what you do not get is an attestation. The declared vector width IS checked, at construction,
+# against what the endpoint actually returns, so a provider changing the width behind a model
+# name fails startup instead of quietly filling a store built at the other width.
+# Re-check the declared widths at any time with:
+#   python scripts/measure_hosted_embedding_widths.py
 RECALL_EMBED_PROFILE=
 RECALL_MODEL_CACHE=
 RECALL_MODEL_SHA256=

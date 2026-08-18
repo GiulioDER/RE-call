@@ -469,6 +469,59 @@ def _package_version(package: str) -> str:
         return "not-installed"
 
 
+#: The digest value a profile carries when its weights are provisioned by the operator and
+#: nothing verified them. Pre-dates the registry; every legacy embedder mints it.
+LEGACY_UNVERIFIED_DIGEST = "legacy-unverified"
+
+#: The digest value a REGISTERED HOSTED profile carries. A hosted provider serves weights it can
+#: replace behind a stable model name, so there is no artifact to hash and no revision to pin: the
+#: honest value is a marker saying so, not a digest that would be invented.
+#:
+#: Deliberately DISTINCT from `LEGACY_UNVERIFIED_DIGEST`, and the distinction is load-bearing in
+#: two places that ask different questions of it:
+#:
+#: * `recall.readiness` asks "is the artifact immutably pinned?". Both answer no, so that site
+#:   compares against `UNVERIFIED_ARTIFACT_DIGESTS` rather than either literal.
+#: * `recall.index` asks "does this profile make a real claim about its context?". A legacy
+#:   profile does not (its `context_version` is a default nobody chose) and is exempt; a
+#:   registered hosted profile DOES, so it must stay subject to the check. That site therefore
+#:   compares against the LEGACY literal alone, on purpose. A shared "is unverified" predicate
+#:   there would exempt hosted profiles from a check they should pass, which is the defect that
+#:   sank an earlier attempt at this feature.
+HOSTED_UNVERIFIED_DIGEST = "hosted-unverifiable"
+
+#: Every digest value that is a marker rather than a pinned artifact. One named set so that adding
+#: a third kind cannot silently pass a gate that enumerates the other two.
+UNVERIFIED_ARTIFACT_DIGESTS = frozenset({LEGACY_UNVERIFIED_DIGEST, HOSTED_UNVERIFIED_DIGEST})
+
+
+def artifact_is_pinned(profile: EmbeddingProfile) -> bool:
+    """Whether this profile names an artifact whose bytes something actually verified."""
+    return profile.artifact_digest not in UNVERIFIED_ARTIFACT_DIGESTS
+
+
+def _check_declared_width(identity: EmbeddingProfile | None, actual_dim: int, what: str) -> None:
+    """Refuse an identity whose declared width the live encoder does not produce.
+
+    The declared dimension is a CLAIM, and until this existed nothing checked it on the hosted
+    path. `check_enterprise_readiness` looks like it would, since it compares
+    `profile.dimension != embedder.dim`, but on an embedder with no identity that profile comes
+    from `legacy_embedding_profile`, which sets `dimension` FROM `embedder.dim`, so the comparison
+    is vacuously true. Measured 2026-08-18 before this guard: a stub returning 512-wide vectors
+    under a profile declaring 1024 built cleanly and passed the readiness gate.
+
+    Raising here rather than at the gate is deliberate. A provider that changes the width behind a
+    model name has changed the model, and the cheapest moment to say so is before a single vector
+    is written into a store built at the other width. `FastEmbedEmbedder` already refuses this for
+    local artifacts; this is the same refusal for a hosted one.
+    """
+    if identity is not None and actual_dim != identity.dimension:
+        raise ValueError(
+            f"profile {identity.profile_id!r} declares dimension {identity.dimension} but "
+            f"{what} embeds at {actual_dim}; this endpoint is not that profile"
+        )
+
+
 def legacy_embedding_profile(embedder: Embedder) -> EmbeddingProfile:
     """Describe a legacy embedder without changing its public protocol."""
     name = getattr(embedder, "name", type(embedder).__name__)
@@ -476,7 +529,7 @@ def legacy_embedding_profile(embedder: Embedder) -> EmbeddingProfile:
     return EmbeddingProfile(
         profile_id=str(name),
         model_name=str(name),
-        artifact_digest="legacy-unverified",
+        artifact_digest=LEGACY_UNVERIFIED_DIGEST,
         dimension=dim,
         query_mode="legacy",
         passage_mode="legacy",
@@ -865,7 +918,7 @@ class FastEmbedEmbedder:
                     model_name, self._dim, asymmetric
                 ),
                 model_name=model_name,
-                artifact_digest=artifact_sha256 or "legacy-unverified",
+                artifact_digest=artifact_sha256 or LEGACY_UNVERIFIED_DIGEST,
                 dimension=self._dim,
                 query_mode=self._query_mode,
                 passage_mode=self._passage_mode,
@@ -1112,7 +1165,18 @@ class VoyageEmbedder:
         api_key: str | None = None,
         batch_size: int = 128,
         max_retries: int = 3,
+        identity: EmbeddingProfile | None = None,
     ) -> None:
+        """Build a Voyage client, optionally under a registered profile's immutable identity.
+
+        ``identity`` is how a registered hosted profile is built: `RegisteredProfile.build` passes
+        the identity it declared, and this class then carries THAT object rather than minting a
+        second one. Without it every consumer falls back to `legacy_embedding_profile`, so the
+        profile id a generation and a calibration were registered under could never match the
+        runtime and the corpus could not be served. When it is supplied, the identity's model name
+        is what gets sent to the provider, so the registry decides the request rather than
+        describing it.
+        """
         key = api_key or os.environ.get("VOYAGE_API_KEY")
         if not key:
             raise RuntimeError("VoyageEmbedder needs VOYAGE_API_KEY (env) or an explicit api_key")
@@ -1125,11 +1189,13 @@ class VoyageEmbedder:
         # needs explicitly, so that an SDK release which starts retrying cannot quietly
         # reintroduce the multiplication with `retry_with_backoff` in `embed` below.
         self._client = voyageai.Client(api_key=key, max_retries=0)
-        self._model = model
-        self._name = f"voyage:{model}"
+        self._model = identity.model_name if identity is not None else model
+        self._name = f"voyage:{self._model}"
         self._batch_size = batch_size
         self._max_retries = max_retries
-        self._dim = len(self._client.embed(["probe"], model=model).embeddings[0])
+        self._dim = len(self._client.embed(["probe"], model=self._model).embeddings[0])
+        _check_declared_width(identity, self._dim, "the Voyage endpoint")
+        self._profile = identity
 
     @property
     def dim(self) -> int:
@@ -1138,6 +1204,15 @@ class VoyageEmbedder:
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def profile(self) -> EmbeddingProfile | None:
+        """The registered identity, or None for a legacy construction.
+
+        `embedding_profile` reads this attribute and falls back to `legacy_embedding_profile`
+        when it is not an `EmbeddingProfile`, so returning None preserves every existing caller.
+        """
+        return self._profile
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed in provider-safe batches with exponential-backoff retry per batch.
@@ -1178,7 +1253,16 @@ class OpenAICompatEmbedder:
         max_retries: int = 3,
         dimensions: int | None = None,
         name_prefix: str = "openai",
+        identity: EmbeddingProfile | None = None,
     ) -> None:
+        """Build an OpenAI-compatible client, optionally under a registered profile's identity.
+
+        See `VoyageEmbedder.__init__` for why ``identity`` matters; the reasoning is identical.
+        Note that ``base_url`` and ``dimensions`` are NOT derivable from the identity and must be
+        passed alongside it: the same model name answers at different widths depending on the
+        ``dimensions`` field, so a registered profile has to supply both and `_check_declared_width`
+        then holds them to it.
+        """
         key = api_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
         if not key:
             raise RuntimeError(
@@ -1201,8 +1285,8 @@ class OpenAICompatEmbedder:
         # corpus indexing path, so the multiplication lands batch after batch on a provider that
         # has just said it is overloaded.
         self._client = OpenAI(api_key=key, base_url=base_url, max_retries=0)
-        self._model = model
-        self._name = f"{name_prefix}:{model}"
+        self._model = identity.model_name if identity is not None else model
+        self._name = f"{name_prefix}:{self._model}"
         self._batch_size = batch_size
         self._max_retries = max_retries
         if dimensions is not None and dimensions < 1:
@@ -1211,6 +1295,8 @@ class OpenAICompatEmbedder:
         # Probe the width once, the same way the other cloud embedder does, so a store can be built
         # at the matching ``dim`` before the first real batch is embedded.
         self._dim = len(self._embed_one_batch(["probe"])[0])
+        _check_declared_width(identity, self._dim, f"{base_url} model {self._model!r}")
+        self._profile = identity
 
     @property
     def dim(self) -> int:
@@ -1219,6 +1305,11 @@ class OpenAICompatEmbedder:
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def profile(self) -> EmbeddingProfile | None:
+        """The registered identity, or None for a legacy construction."""
+        return self._profile
 
     def _embed_one_batch(self, batch: list[str]) -> list[list[float]]:
         request: dict[str, object] = {

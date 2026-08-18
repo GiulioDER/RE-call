@@ -38,7 +38,30 @@ EXPECTED_IDS = (
     "minilm-multilingual-symmetric-v1",
     "arctic-embed-xs-symmetric-v1",
     "qwen3-embedding-0.6b-384-v1",
+    # Hosted (API) profiles. Listed in the same tuple rather than a second one, so that the
+    # "registered exactly once" assertion covers them too and a hosted id colliding with a local
+    # one is caught here rather than at whichever gate happens to look first.
+    "voyage-code-3-v1",
+    "voyage-3-v1",
+    "openai-text-embedding-3-small-v1",
+    "openai-text-embedding-3-large-v1",
+    "gemini-embedding-001-v1",
 )
+
+#: The subset served by a provider's API. Spelled out for the same reason as `EXPECTED_IDS`: a
+#: local profile silently acquiring a hosted backend would change which gates apply to it, and
+#: deriving this from `entry.hosted` would make that change invisible.
+EXPECTED_HOSTED_IDS = frozenset({
+    "voyage-code-3-v1",
+    "voyage-3-v1",
+    "openai-text-embedding-3-small-v1",
+    "openai-text-embedding-3-large-v1",
+    "gemini-embedding-001-v1",
+})
+
+
+def test_exactly_the_expected_profiles_are_hosted() -> None:
+    assert {e.profile_id for e in REGISTERED_PROFILES.values() if e.hosted} == EXPECTED_HOSTED_IDS
 
 
 def test_every_deployed_profile_is_registered_exactly_once() -> None:
@@ -286,11 +309,16 @@ def test_the_index_path_agrees_with_the_registry_for_every_profile() -> None:
             return [[0.0] * self.dim for _ in texts]
 
     for entry in REGISTERED_PROFILES.values():
-        # Three cases, not two. A pinned profile accepts only its own digest; a provisioned one
-        # takes an operator-supplied digest; a HOSTED one refuses a digest outright, because
-        # supplying one would assert a verification nobody performed.
-        # A pinned profile accepts only its own digest; every other one is operator supplied.
-        identity = entry.identity(artifact_digest=entry.artifact_digest or "a" * 64)
+        # Three cases, and the loop must cover all of them or it stops covering the registry:
+        # a pinned profile accepts only its own digest, a local one takes an operator-supplied
+        # digest, and a HOSTED one refuses a digest outright because there is no artifact tree
+        # behind it. Hosted profiles are deliberately included here rather than skipped: their
+        # `context_version` is a real claim, so `Indexer` checks it exactly as it checks a local
+        # profile's, and that agreement is what this test exists to assert.
+        if entry.hosted:
+            identity = entry.identity()
+        else:
+            identity = entry.identity(artifact_digest=entry.artifact_digest or "a" * 64)
         Indexer(
             object(),  # type: ignore[arg-type]  # the context check runs before any store use
             _Embedder(identity),  # type: ignore[arg-type]
