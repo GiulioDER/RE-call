@@ -82,3 +82,129 @@ k=1 probe actually lossy on this corpus?**
 3. **Voyage query embeddings are non-deterministic**, so a re-run of this very measurement moves by
    a small amount. Measured elsewhere in this repo at about ±0.01 on an AUC; here it should mostly
    affect borderline rows near 0.50.
+
+---
+
+## Result (2026-08-18)
+
+**Status: measured.** New artifact `dense_floor_strat100.retrieval.json`, 100 questions, seed
+20260818, 10 per stratum, corpus probe at k=200, both sides sharing one query vector through the
+embedding cache. **No prediction above is edited.**
+
+### Scorecard: three right, four wrong
+
+| # | predicted | measured | verdict |
+|---|---|---|---|
+| D1 | 22, [14, 35] | **9** | ⛔ **FALSIFIED**, far below |
+| D2 | 16, [10, 26] | **9** | ⛔ **FALSIFIED**, just below |
+| D3 | exactly 0 | **0** | **CORRECT** |
+| D4 | 8, [0, 40] | **25** | **CORRECT** (inside; the point estimate was 3x low) |
+| D5 | 8.0%, [4%, 16%] | **5.7%** | **CORRECT** |
+| O1 | D1 > D2 | 9 = 9 | ⛔ **FALSIFIED** |
+| O2 | D1 > 16 | 9 < 16 | ⛔ **FALSIFIED** |
+
+### 🔑 D4: the audit's blocking finding is real, and it is bigger than I predicted
+
+**The k=1 probe disagrees with k=200 on 25 of 100 questions, and it always under-reports.** Mean
+signed delta **-0.0598**, largest **-0.2234**. **Three of 100 rows have their floor verdict flipped
+by the probe width alone.**
+
+⚠️ **This corrects what I told the reviewer earlier in the session.** I checked that
+`ber_voy_lex_12k_full` is single-tenant, concluded the tenant post-filter could not bite, and said
+the pathology did not reach this measurement. The tenant filter is only one of the two mechanisms.
+The other is that k=1 never trips the `ef_search` widening, and it bites on a single-tenant table
+just as hard. Measured, not argued.
+
+### ⛔ O1 and D1: I had the direction of the instrument change backwards
+
+I predicted the exact measure would catch **more** demotions than the corpus top-1, because
+`max(dense over returned k) <= corpus top-1` and the gap would be material. The gap is real but
+tiny: **the returned top-8 contains the corpus nearest neighbour on 91 of 100 questions**, and the
+mean gap is **+0.0027**. So the two measures return the **same count**, 9 and 9.
+
+**The old artifact's "lower bound" framing was therefore nearly tight on the quantity it named,
+and wrong for a different reason than I argued.** Its error was not the bound; it was the narrow
+probe feeding the bound, which inflated the count.
+
+### The headline moved, and the sampling explains more of it than the instrument
+
+| | old artifact | this one |
+|---|---:|---:|
+| sample below the floor | 16 of 100 | **9 of 100** |
+| population estimate | 5.6% | **5.7%** |
+
+The population figures agree almost exactly while the sample counts do not, because the old sample
+concentrated its demotions in small-population strata that carry little weight.
+
+⚠️ **A narrative claim of PR #334 does not survive the new draw.** It reported `miscellaneous` at
+**60% below the floor** and used that to argue the loss is concentrated. On a seeded sample it is
+**1 of 10**. That claim was an artifact of taking the head of each category block.
+
+✅ **And one result reproduces exactly, which is the pipeline's own check.** `high_level` is a
+census, the same ten questions under either design, and it returns **5 of 10 below the floor** in
+both. A measurement that changed there would have meant the instrument, not the sample, moved.
+
+### 🔑 The real fragility, which neither the PR nor the audit named
+
+**One sampled question carries 17.5 of the 28.5 estimated counts.** `basic` has 1 of 10 below the
+floor against a population of 175, so a single row is worth **3.5 percentage points** of a 5.7%
+headline. Drop it and the estimate is 2.2%; add one more and it is 9.2%.
+
+**No wording fixes that, and this re-measurement does not either.** A figure whose dominant term is
+one Bernoulli draw needs a bigger `basic` sample, not a better sentence. That is the honest next
+step, and it is cheap: the strata are not equally informative, so sampling proportional to
+population would spend the same 100 questions far better.
+
+---
+
+## Correction, 2026-08-18: D3 was a guard that could not fail, and I scored it as a success
+
+Found by bug review, not by me. **D3 is withdrawn as a result.**
+
+I registered "rows violating `max_returned <= corpus_top_1`: exactly 0" and reported it CORRECT.
+It could not have been anything else, for two independent reasons:
+
+1. **Both enforcement points abort before a file exists.** `retrieval_calibration` raises on the
+   first violation and `write_dense_floor_artifact` refuses through `_score`, so a run with a
+   violation leaves no artifact to score. The only artifacts that can be examined are the ones that
+   passed.
+2. **The inequality is arithmetically forced.** `best_dense_score` issues
+   `query_dense(qvec, k=200)` and the retriever's dense leg issues `query_dense(qvec, k=candidate_k)`
+   with `candidate_k=200`, on the same cached vector over the same deterministic index. The two
+   candidate lists are therefore identical, and a sparse-only chunk outside that list cannot
+   out-score its 200th member. Nothing was compared; an identity was restated.
+
+⚠️ **This is my recorded recurring failure mode**, and registering it as a prediction did not
+protect me from it: a prediction whose outcome is determined by construction is not a prediction.
+The check is still worth keeping as a **guard**, because it would catch two legs running on
+different query vectors, but it is not evidence and it is not scored.
+
+**The related claim is also weaker than I wrote it.** "The returned top-8 contains the corpus
+nearest neighbour on 91 of 100 questions" should read: the returned top-8 contains **the argmax of
+the 200-candidate dense pool** on 91 of 100. That pool is itself an approximate walk, so the corpus
+nearest neighbour is not established by it.
+
+**To make D3 measure something**, the corpus probe would have to run strictly wider than
+`candidate_k`, so that it is a different measurement rather than the same query twice.
+
+## Correction, 2026-08-18: the narrow probe is unstable, not merely biased
+
+The paired probe was re-run to produce a committed artifact
+(`dense_floor_probe_width.json`), because the first run printed its numbers and wrote no file, and
+those unbacked numbers had already reached a draft public comment.
+
+The second run does not reproduce the first:
+
+| | first run | committed artifact |
+|---|---:|---:|
+| rows where k=1 differs from k=200 | 25 | **31** |
+| floor verdicts flipped | 3 | **4** |
+| worst under-report | 0.2234 | 0.2234 |
+
+Same query vectors, same index, same wide side. Part of the reported mean difference was my own
+denominator change (the first averaged over differing rows only, the artifact averages over all
+100), but the **counts** moved, which the denominator cannot explain.
+
+🔑 **So `query_dense(k=1)` on this index is not a stable measurement**, not just a biased one. That
+is a stronger argument for widening the probe than the bias alone, and it is the reason the
+committed artifact is cited rather than either individual run.

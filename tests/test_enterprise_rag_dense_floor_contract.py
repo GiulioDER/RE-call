@@ -26,6 +26,8 @@ from pathlib import Path
 import pytest
 
 from benchmarks.enterprise_rag_contract import (
+    require_provenance,
+    SCORE_FIELD,
     POPULATION,
     summarize,
     validate_dense_floor_artifact,
@@ -85,7 +87,9 @@ def test_the_committed_medians_are_the_median_not_the_median_high() -> None:
     payload = _payload()
     by_type: dict[str, list[float]] = {}
     for row in payload["rows"]:
-        by_type.setdefault(row["question_type"], []).append(row["best_dense_score"])
+        # The field the summary derives from. Reading `best_dense_score` here compared the
+        # summary's medians against a DIFFERENT column and went red on a correct artifact.
+        by_type.setdefault(row["question_type"], []).append(row[SCORE_FIELD])
 
     distinguishing = 0
     for cat, vals in by_type.items():
@@ -118,8 +122,8 @@ def test_a_wrong_count_is_refused() -> None:
 
 def test_a_wrong_population_weighting_is_refused() -> None:
     payload = _payload()
-    payload["dense_floor_summary"]["population_weighted_lower_bound_below_0_50"] = 1.0
-    with pytest.raises(ValueError, match="population_weighted_lower_bound_below_0_50"):
+    payload["dense_floor_summary"]["population_weighted_estimate_below_0_50"] = 1.0
+    with pytest.raises(ValueError, match="population_weighted_estimate_below_0_50"):
         validate_dense_floor_artifact(payload)
 
 
@@ -161,24 +165,29 @@ def test_an_unusable_score_is_refused(bad: object) -> None:
     only ever understate demotion — the direction this artifact argues for.
     """
     payload = _payload()
-    payload["rows"] = [{**payload["rows"][0], "best_dense_score": bad}, *payload["rows"][1:]]
-    with pytest.raises(ValueError, match="best_dense_score"):
+    payload["rows"] = [
+        {**payload["rows"][0], "max_returned_dense_score": bad}, *payload["rows"][1:]
+    ]
+    with pytest.raises(ValueError, match="max_returned_dense_score"):
         validate_dense_floor_artifact(payload)
 
 
-def test_a_null_score_is_named_as_an_empty_index_not_a_hard_question() -> None:
+def test_a_null_score_names_the_probe_not_an_empty_tenant() -> None:
     """Pinned on the MESSAGE, not just on the raise, because the raise is over-determined.
 
-    Deleting the null branch still raises via the type check below it, so a test matching only
-    "best_dense_score" cannot tell the two apart — mutation confirmed it survives. What the branch
-    buys is the diagnosis. `query_dense(k=1)` filters on tenant alone with no per-question
-    predicate, so an empty result is a property of the table: a null never means "hard question",
-    it means the tenant is empty or misnamed and the run measured no index at all. An operator told
-    "null score" goes looking at the question; one told "the tenant held no rows" checks `--table`.
+    Deleting the null branch still raises via the type check below it, so a test matching only the
+    field name cannot tell the two apart. What the branch buys is the diagnosis, and the previous
+    diagnosis was WRONG: it told the operator a null means the tenant held no rows. `query_dense`
+    applies the tenant as a POST-filter over an HNSW index built across the whole table, so on a
+    multi-tenant table the walk can come back empty for one query and not another. This repo
+    measured 10 of 26 queries empty on one tenant while the rest returned hits. An operator sent to
+    check `--table` when the fix is `hnsw.ef_search` loses the afternoon.
     """
     payload = _payload()
-    payload["rows"] = [{**payload["rows"][0], "best_dense_score": None}, *payload["rows"][1:]]
-    with pytest.raises(ValueError, match="tenant held no rows"):
+    payload["rows"] = [
+        {**payload["rows"][0], "max_returned_dense_score": None}, *payload["rows"][1:]
+    ]
+    with pytest.raises(ValueError, match="probe depth"):
         validate_dense_floor_artifact(payload)
 
 
@@ -198,7 +207,7 @@ def test_the_runner_refuses_a_null_on_the_first_question_not_at_the_write() -> N
         if isinstance(node, ast.FunctionDef) and node.name == "retrieval_calibration"
     )
     raises = [n for n in ast.walk(fn) if isinstance(n, ast.Raise)]
-    assert raises, "retrieval_calibration must refuse a null best_dense_score where it is produced"
+    assert raises, "retrieval_calibration must refuse a null score where it is produced"
     assert "no dense hit for" in src
 
 
@@ -252,18 +261,45 @@ def test_the_population_weights_match_the_benchmarks_own_counts() -> None:
     assert sum(POPULATION.values()) == 500
 
 
-def test_the_summary_reports_a_lower_bound_not_an_estimate() -> None:
-    """`best_dense_score` is the corpus-wide dense top-1, not the best among the returned hits.
+def test_the_population_figure_is_named_an_estimate_and_the_census_is_separated() -> None:
+    """⛔ This test replaces one that asserted the OPPOSITE and could not have caught being wrong.
 
-    The trust floor is applied per RETURNED hit over the post-fusion, post-rerank top-k, and
-    max(dense over the returned k) <= the corpus top-1. So a question counted safe here can still
-    have no returned hit above the floor: the real demotion rate is at least this one. The key
-    names say so, because a reader quoting "5.6%" as the expected rate would understate the risk.
+    The old version asserted that two keys containing "lower_bound" existed and that the literal
+    string "LOWER BOUND" appeared in the provenance note. It would have passed against a summary
+    computing the opposite direction, because it never touched a number.
+
+    The per-question measure IS exact now: the floor is applied per returned hit, and the summary
+    scores the maximum over the returned hits. What is NOT a bound is the population figure, and
+    the reason is sampling, not the instrument. Nine of the ten strata are ten-question samples of
+    populations from 20 to 175, so the reweighted rate carries error in both directions. Only a
+    stratum sampled to its full size is a census, and those are named separately so a reader has
+    at least one figure with no sampling error in it.
     """
     summary = summarize(_payload()["rows"])
-    assert "population_weighted_lower_bound_below_0_50" in summary
-    assert "population_rate_lower_bound_below_0_50" in summary
-    assert "LOWER BOUND" in _payload()["_provenance"]["note"]
+
+    assert "population_weighted_estimate_below_0_50" in summary
+    assert "population_rate_estimate_below_0_50" in summary
+    assert "lower_bound" not in json.dumps(summary), (
+        "a stratified estimate must not be named a bound anywhere in the summary"
+    )
+    census = summary["census_strata"]
+    assert all(
+        summary["by_question_type"][name]["sampled"] == POPULATION[name] for name in census
+    ), "a stratum is a census only when it was sampled to its full population"
+
+
+def test_a_stratum_missing_from_the_sample_is_refused() -> None:
+    """🔑 The numerator sums over strata PRESENT while the denominator is the whole population, so
+    a truncated run publishes a silently deflated rate. Dropping two strata from the committed
+    artifact took its headline from 0.056 to 0.022 with every other check still green, and
+    `--limit-questions 10` produces exactly that shape.
+    """
+    payload = _payload()
+    dropped = {"miscellaneous", "high_level"}
+    payload["rows"] = [r for r in payload["rows"] if r["question_type"] not in dropped]
+
+    with pytest.raises(ValueError, match="strata"):
+        summarize(payload["rows"])
 
 
 def test_a_failing_payload_leaves_no_file_behind(tmp_path: Path) -> None:
@@ -274,3 +310,85 @@ def test_a_failing_payload_leaves_no_file_behind(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         write_dense_floor_artifact(target, payload)
     assert not target.exists()
+
+
+class TestGuardsTheAuditFoundUnpinned:
+    """🔑 Mutation-driven. Two guards added with this change were untested: deleting the invariant
+    check, and deleting `require_provenance` from the write site, both left the suite green. A
+    guard nothing pins is a guard that can be removed by accident, which is this project's
+    recorded recurring failure.
+    """
+
+    def test_a_returned_hit_above_the_corpus_top_1_is_refused(self) -> None:
+        """The two are dense cosines of one query over one table, so this cannot happen unless the
+        legs used different query vectors or different hnsw.ef_search. Either way nothing derived
+        from the run can be interpreted."""
+        payload = _payload()
+        row = dict(payload["rows"][0])
+        row["max_returned_dense_score"] = row["best_dense_score"] + 0.01
+        payload["rows"] = [row, *payload["rows"][1:]]
+
+        with pytest.raises(ValueError, match="exceeds"):
+            validate_dense_floor_artifact(payload)
+
+    def test_the_row_tolerance_is_pinned_from_both_sides(self) -> None:
+        """Rows are full precision, so the identity needs float noise and nothing more. Reusing
+        the summary's 5e-5 rounding tolerance let a genuine 4e-5 violation through the contract
+        while the runner, which compares exactly, would have refused the same run."""
+        payload = _payload()
+        base = payload["rows"][0]["best_dense_score"]
+
+        ok = dict(payload["rows"][0], max_returned_dense_score=base + 1e-12)
+        validate_dense_floor_artifact({**payload, "rows": [ok, *payload["rows"][1:]]})
+
+        bad = dict(payload["rows"][0], max_returned_dense_score=base + 4e-5)
+        with pytest.raises(ValueError, match="exceeds"):
+            validate_dense_floor_artifact({**payload, "rows": [bad, *payload["rows"][1:]]})
+
+    def test_the_write_site_refuses_a_payload_with_no_provenance(self, tmp_path: Path) -> None:
+        payload = _payload()
+        del payload["_provenance"]
+
+        with pytest.raises(ValueError, match="_provenance"):
+            write_dense_floor_artifact(tmp_path / "out.json", payload)
+        assert not (tmp_path / "out.json").exists(), "a refused payload must leave no file"
+
+    @pytest.mark.parametrize(
+        ("field", "value", "match"),
+        [
+            ("generation", "post-81/84", "generation"),
+            ("status", "live", "status"),
+            ("note", "   ", "note"),
+        ],
+    )
+    def test_a_provenance_value_the_repo_suite_rejects_is_refused_at_the_write(
+        self, tmp_path: Path, field: str, value: str, match: str
+    ) -> None:
+        """Truthiness was not enough. `tests/test_results_artifact_provenance.py` requires
+        MEMBERSHIP for two of these, so a free-form `--calibrate-generation` typo wrote a file that
+        passed this guard and failed CI on the commit, which is the failure it exists to prevent
+        rather than relocate."""
+        payload = _payload()
+        payload["_provenance"] = {**payload["_provenance"], field: value}
+
+        with pytest.raises(ValueError, match=match):
+            write_dense_floor_artifact(tmp_path / "out.json", payload)
+        assert not (tmp_path / "out.json").exists()
+
+    def test_a_live_artifact_naming_a_successor_is_refused(self) -> None:
+        payload = _payload()
+        payload["_provenance"] = {**payload["_provenance"], "superseded_by": "something.json"}
+
+        with pytest.raises(ValueError, match="successor"):
+            require_provenance(payload)
+
+    def test_the_summary_must_name_the_depth_and_arm_it_was_scored_under(self) -> None:
+        """The scored quantity is the max over the RETURNED hits, so it depends on how many came
+        back and under which arm. Neither is recoverable from the scores, so a summary without
+        them cannot be compared against any other run."""
+        payload = _payload()
+        summary = dict(payload["dense_floor_summary"])
+        del summary["scored_arm"]
+
+        with pytest.raises(ValueError, match="scored_arm"):
+            validate_dense_floor_artifact({**payload, "dense_floor_summary": summary})

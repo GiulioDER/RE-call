@@ -30,10 +30,13 @@ from pathlib import Path
 from typing import Any, cast
 
 from benchmarks.enterprise_rag_contract import (
+    POPULATION,
     summarize,
     write_dense_floor_artifact,
 )
+from benchmarks.enterprise_rag_sample import sampling_provenance, strata_of, stratify
 from recall._env import load_dotenv
+from recall.eval.provenance import model_stack
 from recall.cache import EmbeddingCache, embed_query_with_cache
 from recall.embeddings import Embedder, embed_query, embedding_profile_id, resolve_embedder
 from recall.guards import DEFAULT_GAP_THRESHOLD
@@ -1019,10 +1022,28 @@ def _question_type(question: EnterpriseQuestion) -> str:
     return _text(question.raw.get("question_type")).lower()
 
 
+#: Probe depth for the corpus-wide dense top-1.
+#:
+#: ⚠️ NOT 1, and the reason is not politeness about recall. `PgVectorStore._query_dense` widens
+#: `hnsw.ef_search` only when `k * multiplier` exceeds pgvector's default of 40, so a `k=1` probe
+#: runs the graph walk at ef_search=40 while the retrieval leg it is compared against runs at
+#: k=200 and therefore ef_search=800. `recall/store.py` records ef_search=40 at 0.385 recall
+#: against 0.942 at 200. An approximate walk can only UNDER-report the top score, and under-
+#: reporting moves questions below a floor they do not really fall below, which is the direction
+#: that silently breaks a claim phrased as "at least". Measured at k=1 this repo has seen a top
+#: cosine 0.047 below the true one, with no error and a plausible value.
+CORPUS_TOP1_PROBE_K = 200
+
+
 def best_dense_score(store: PgVectorStore, embedder: Embedder, question: str) -> float | None:
+    """The corpus-wide best dense cosine for `question`, or None if the tenant returned nothing.
+
+    `max` over the returned hits rather than `hits[0].score`: the ordering is the store's, and
+    taking the maximum states the quantity being asked for instead of trusting a sort.
+    """
     qvec = embed_query(embedder, question)
-    hits = store.query_dense(qvec, k=1)
-    return hits[0].score if hits else None
+    hits = store.query_dense(qvec, k=CORPUS_TOP1_PROBE_K)
+    return max((hit.score for hit in hits), default=None)
 
 
 def retrieval_calibration(
@@ -1051,30 +1072,49 @@ def retrieval_calibration(
             reranker=reranker,
             gap_threshold=DEFAULT_GAP_THRESHOLD,
         )
+        # 🔑 The quantity the trust floor actually decides on. The floor is applied per RETURNED
+        # hit, so a question loses all of its evidence exactly when every returned hit is below
+        # it, i.e. when this maximum is. It is an equality, not a bound, and it costs nothing:
+        # these hits are already in hand.
+        max_returned = max((hit.score for hit in hits), default=None)
         best = best_dense_score(store, embedder, question.question)
         if best is None:
-            # `best_dense_score` returns None only when `query_dense(k=1)` comes back empty, and
-            # that query filters on tenant alone — no per-question predicate. So an empty result
-            # is a property of the TABLE, not of the question: if one question has no dense hit,
-            # none of them do. A null therefore never means "hard question", it means the tenant
-            # is empty or misnamed and the index this run is measuring is not there.
-            #
-            # Raised on the FIRST one rather than recorded, because every later number would be
-            # meaningless and the run would spend an embedding call per remaining question before
-            # `write_dense_floor_artifact` refused the payload at the very end. Fail on question 1,
-            # not after the bill.
+            # ⚠️ This is NOT evidence that the tenant is empty, and an earlier version of this
+            # message said it was. `query_dense` filters on tenant as a POST-filter over an HNSW
+            # index built across the whole table, so on a multi-tenant table the walk can return
+            # only other tenants' rows for one query and not another: emptiness is per-QUERY.
+            # This repo has measured 10 of 26 queries coming back empty on one tenant while the
+            # rest returned hits. Raising early is still right, because every later number would
+            # be meaningless, but the operator must be sent to the right knob.
             raise RuntimeError(
-                f"no dense hit for {question.question_id!r} in tenant {store.tenant!r}: "
-                f"query_dense filters on tenant only, so an empty result means the table or "
-                f"tenant holds no rows, not that this question is hard. Check --table and "
-                f"--tenant against the index you meant to measure."
+                f"no dense hit for {question.question_id!r} at k={CORPUS_TOP1_PROBE_K} in tenant "
+                f"{store.tenant!r}. The tenant filter is applied AFTER the HNSW walk, so this can "
+                f"be a per-query miss on a multi-tenant table rather than an empty tenant. Check "
+                f"hnsw.ef_search and the tenant's share of {store.table!r} before concluding the "
+                f"index is absent."
+            )
+        if max_returned is not None and max_returned > best:
+            # The corpus top-1 must dominate every returned hit, since the returned hits are drawn
+            # from the same table. A violation means the two are not on one basis: a different
+            # query vector (this benchmark embeds twice unless a query cache is wired, and Voyage
+            # query embeddings are not deterministic), or a probe still too narrow to find the
+            # true nearest neighbour. Either way no number below can be interpreted.
+            raise RuntimeError(
+                f"{question.question_id!r}: a returned hit scores {max_returned!r}, above the "
+                f"corpus top-1 probe {best!r}. These cannot both be dense cosines of one query "
+                f"against one table. Wire --embedding-cache so both sides share a query vector, "
+                f"and check CORPUS_TOP1_PROBE_K is wide enough for this index."
             )
         rows.append(
             {
                 "question_id": question.question_id,
                 "question_type": _question_type(question),
                 "expected_docs": sorted(_expected_docs(question)),
+                # The corpus-wide top-1. Kept because it is what the previous artifact measured,
+                # so the two instruments can be compared rather than argued about.
                 "best_dense_score": best,
+                # What the floor is actually applied to. This is the one the summary reads.
+                "max_returned_dense_score": max_returned,
                 "doc_ids_by_k": {str(k): _doc_ids_from_hits(hits, k=k) for k in k_values},
             }
         )
@@ -1148,7 +1188,20 @@ def retrieval_calibration(
         # the same fact twice, and the first one that was drifted silently: every median was
         # `median_high`. `summarize` is the single definition and the write below refuses a
         # mismatch, so this cannot be stale relative to `rows`.
-        "dense_floor_summary": summarize(rows),
+        # ⚠️ The scored quantity is arm-dependent, unlike the corpus top-1 it replaced. It is the
+        # max dense cosine over the RETURNED hits, so which hits come back decides it: a reranker
+        # reorders without rescoring and can push the highest-cosine chunk out of the returned k,
+        # which can only move a question BELOW the floor. A wider k can only move it above. So the
+        # arm and the k travel with the number rather than living in a paragraph someone may not
+        # read, and a reader comparing two runs can see immediately whether they are comparable.
+        "dense_floor_summary": {
+            **summarize(rows),
+            "scored_over_top_k": max_k,
+            "scored_arm": {
+                "sparse_backend": sparse_backend,
+                "reranker": type(reranker).__name__ if reranker is not None else None,
+            },
+        },
         "rows": rows,
     }
 
@@ -1437,6 +1490,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=os.environ.get("ENTERPRISE_RAG_MODEL", DEFAULT_MODEL))
     parser.add_argument("--max-context-chars", type=int, default=DEFAULT_MAX_CHARS)
     parser.add_argument("--calibrate-retrieval-out", type=Path)
+    parser.add_argument(
+        "--calibrate-sample-per-stratum", type=int, default=0,
+        help="draw this many questions per question_type with --calibrate-sample-seed; 0 uses "
+             "every question passed in. The published artifact took the first ten ids of each "
+             "category block, which is head bias and was reproducible by nothing in the tree.",
+    )
+    parser.add_argument("--calibrate-sample-seed", type=int, default=0)
+    parser.add_argument(
+        "--calibrate-note", default="",
+        help="the _provenance note. Required, because an artifact nobody can explain is not "
+             "evidence, and the repo's artifact suite refuses a file without one.",
+    )
+    parser.add_argument(
+        "--calibrate-backs", action="append", default=None,
+        help="a claim this artifact supports; repeatable. Required for the same reason.",
+    )
+    parser.add_argument("--calibrate-generation", default="post-#81/#84")
     parser.add_argument("--calibrate-k-values", default="3,5,8,10,12,15")
     parser.add_argument("--calibrate-thresholds", default="0.35,0.4,0.45,0.5,0.55,0.6")
     parser.add_argument(
@@ -1552,8 +1622,55 @@ def main(argv: Iterable[str] | None = None) -> int:
                 accept_noncommercial_license=args.accept_noncommercial_splade_license,
                 device=args.sparse_device,
             )
+            # ⚠️ Both sides of the corpus-top-1 invariant must come from ONE query vector.
+            # Without a query cache this benchmark embeds each question twice, and this project
+            # has measured 42.5% of repeat Voyage query embeddings as different, so the two
+            # sides would be cosines of two slightly different queries and the invariant would
+            # fail for a reason that has nothing to do with the index.
+            # Checked BEFORE the run, not after it. This file's own comment says "Fail on
+            # question 1, not after the bill", and the first version of this check sat below
+            # `retrieval_calibration`, so a forgotten flag cost a full 100-question run.
+            if not args.calibrate_note or not args.calibrate_backs:
+                raise SystemExit(
+                    "--calibrate-retrieval-out needs --calibrate-note and at least one "
+                    "--calibrate-backs: the repository refuses a committed artifact that explains "
+                    "neither what it measured nor what cites it."
+                )
+            if not isinstance(retrieval_embedder, QueryCachedEmbedder):
+                raise SystemExit(
+                    "--calibrate-retrieval-out needs --embedding-cache: the corpus probe and the "
+                    "retrieval leg embed the same question separately, and this embedder is not "
+                    "deterministic, so without a shared vector the two are not comparable."
+                )
+            # ⛔ The population weights are hard-coded, so a questions file whose per-type counts
+            # differ from the benchmark this module was written against produces a silently wrong
+            # estimate. Checked before a single embedding is spent, which is the only reason
+            # `strata_of` exists.
+            observed = strata_of(questions, type_of=_question_type)
+            if observed != POPULATION:
+                raise SystemExit(
+                    f"the questions file's strata {sorted(observed.items())} do not match the "
+                    f"population weights {sorted(POPULATION.items())} that summarize() applies. "
+                    f"Every population figure from this run would be a rate over the wrong base."
+                )
+            calibrate_questions = questions
+            sampling: dict[str, Any] | None = None
+            if args.calibrate_sample_per_stratum:
+                calibrate_questions = stratify(
+                    questions,
+                    per_stratum=args.calibrate_sample_per_stratum,
+                    seed=args.calibrate_sample_seed,
+                    type_of=_question_type,
+                    expect=POPULATION,
+                )
+                sampling = sampling_provenance(
+                    questions,
+                    calibrate_questions,
+                    per_stratum=args.calibrate_sample_per_stratum,
+                    seed=args.calibrate_sample_seed,
+                )
             calibration = retrieval_calibration(
-                questions,
+                calibrate_questions,
                 store,
                 retrieval_embedder,
                 k_values=_parse_int_list(args.calibrate_k_values),
@@ -1563,6 +1680,34 @@ def main(argv: Iterable[str] | None = None) -> int:
                 sparse_encoder=sparse_encoder,
                 reranker=reranker,
             )
+            # Emitted by the RUNNER, not assembled by hand afterwards. The previous artifact's
+            # block credited a revision predating the module that supposedly wrote it, and a
+            # re-run produced a file with no block at all.
+            calibration["_provenance"] = {
+                "generation": args.calibrate_generation,
+                "status": "current",
+                "superseded_by": None,
+                "note": args.calibrate_note,
+                "backs": list(args.calibrate_backs or []),
+                "generated_at": datetime.now(UTC).isoformat(),
+                "recall_revision": git_revision(Path(__file__).resolve().parents[1]),
+                "recall_version": package_version("recall-rag"),
+                "embedder": args.embedder,
+                "embedding_profile": embedding_profile_id(embedder),
+                "index": {"table": args.table, "tenant": args.tenant},
+                "questions": {
+                    "path": str(args.questions),
+                    "sha256": sha256_file(args.questions),
+                },
+                "sampling": sampling,
+                # Every number here passes through an embedder, so the versions that produced
+                # it are part of the result. The repo's artifact suite refuses a file without it.
+                "stack": model_stack(),
+                "corpus_top1_probe_k": CORPUS_TOP1_PROBE_K,
+                "candidate_k": args.candidate_k,
+                "sparse_backend": args.sparse_backend,
+                "reranker": args.reranker,
+            }
             # Validate, then write: a payload whose summary disagrees with its rows leaves no
             # file behind. `write_text` here was the hole that let a hand-written summary drift.
             write_dense_floor_artifact(args.calibrate_retrieval_out, calibration)

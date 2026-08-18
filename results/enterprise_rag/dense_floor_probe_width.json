@@ -1,0 +1,638 @@
+{
+  "_provenance": {
+    "generation": "post-#81/#84",
+    "status": "current",
+    "superseded_by": null,
+    "note": "Paired dense probe: the same query vector scored at k=1 and at k=200 for each of the 100 questions of dense_floor_strat100.retrieval.json. k=1 never trips the hnsw.ef_search widening in recall/store.py, so it walks at ef_search=40 while a k=200 probe walks at 800. This file is the evidence that the narrow probe under-reports.",
+    "backs": [
+      "Superseding dense_floor_strat100.retrieval.json's k=1 probe with a k=200 one"
+    ],
+    "generated_at": "2026-08-18T13:26:39.466092+00:00",
+    "stack": {
+      "transformers": "5.15.0",
+      "torch": "2.13.0+cpu"
+    },
+    "index": {
+      "table": "ber_voy_lex_12k_full",
+      "tenant": "enterprise-rag-voyage-lexical-chunk12k-full"
+    },
+    "embedder": "voyage:voyage-4-large",
+    "scored_questions_from": "dense_floor_strat100.retrieval.json"
+  },
+  "summary": {
+    "compared": 100,
+    "narrow_probe_empty": 0,
+    "differing": 31,
+    "mean_signed_delta_narrow_minus_wide": -0.011084,
+    "worst_under_report": -0.223419,
+    "floor_verdict_flips": 4,
+    "flipped_question_ids": [
+      "qst_0174",
+      "qst_0434",
+      "qst_0453",
+      "qst_0461"
+    ]
+  },
+  "rows": [
+    {
+      "question_id": "qst_0014",
+      "question_type": "basic",
+      "narrow_probe_k1": 0.7302013200401486,
+      "wide_probe_k200": 0.7302013200401486
+    },
+    {
+      "question_id": "qst_0038",
+      "question_type": "basic",
+      "narrow_probe_k1": 0.5427130733303394,
+      "wide_probe_k200": 0.549367997012616
+    },
+    {
+      "question_id": "qst_0043",
+      "question_type": "basic",
+      "narrow_probe_k1": 0.7347418982098224,
+      "wide_probe_k200": 0.7347418982098224
+    },
+    {
+      "question_id": "qst_0056",
+      "question_type": "basic",
+      "narrow_probe_k1": 0.7105555918647201,
+      "wide_probe_k200": 0.7105555918647201
+    },
+    {
+      "question_id": "qst_0087",
+      "question_type": "basic",
+      "narrow_probe_k1": 0.7109204318845298,
+      "wide_probe_k200": 0.7109204318845298
+    },
+    {
+      "question_id": "qst_0103",
+      "question_type": "basic",
+      "narrow_probe_k1": 0.6777655896195185,
+      "wide_probe_k200": 0.6777655896195185
+    },
+    {
+      "question_id": "qst_0118",
+      "question_type": "basic",
+      "narrow_probe_k1": 0.8330262899398804,
+      "wide_probe_k200": 0.8330262899398804
+    },
+    {
+      "question_id": "qst_0129",
+      "question_type": "basic",
+      "narrow_probe_k1": 0.7960561276657716,
+      "wide_probe_k200": 0.7960561276657716
+    },
+    {
+      "question_id": "qst_0144",
+      "question_type": "basic",
+      "narrow_probe_k1": 0.6483910260666651,
+      "wide_probe_k200": 0.6483910260666651
+    },
+    {
+      "question_id": "qst_0174",
+      "question_type": "basic",
+      "narrow_probe_k1": 0.5742857627357834,
+      "wide_probe_k200": 0.4192872422296341
+    },
+    {
+      "question_id": "qst_0199",
+      "question_type": "semantic",
+      "narrow_probe_k1": 0.6240786500000554,
+      "wide_probe_k200": 0.6240786500000554
+    },
+    {
+      "question_id": "qst_0218",
+      "question_type": "semantic",
+      "narrow_probe_k1": 0.6688933571843316,
+      "wide_probe_k200": 0.6688933571843316
+    },
+    {
+      "question_id": "qst_0226",
+      "question_type": "semantic",
+      "narrow_probe_k1": 0.6815775456395096,
+      "wide_probe_k200": 0.6815775456395096
+    },
+    {
+      "question_id": "qst_0241",
+      "question_type": "semantic",
+      "narrow_probe_k1": 0.7776863309963199,
+      "wide_probe_k200": 0.7776863309963199
+    },
+    {
+      "question_id": "qst_0242",
+      "question_type": "semantic",
+      "narrow_probe_k1": 0.5805824995040894,
+      "wide_probe_k200": 0.5805824995040894
+    },
+    {
+      "question_id": "qst_0249",
+      "question_type": "semantic",
+      "narrow_probe_k1": 0.756559990541935,
+      "wide_probe_k200": 0.756559990541935
+    },
+    {
+      "question_id": "qst_0255",
+      "question_type": "semantic",
+      "narrow_probe_k1": 0.6194806283557605,
+      "wide_probe_k200": 0.6402723980031135
+    },
+    {
+      "question_id": "qst_0273",
+      "question_type": "semantic",
+      "narrow_probe_k1": 0.5386696732837166,
+      "wide_probe_k200": 0.5818809444272864
+    },
+    {
+      "question_id": "qst_0288",
+      "question_type": "semantic",
+      "narrow_probe_k1": 0.6597523296026999,
+      "wide_probe_k200": 0.6597523296026999
+    },
+    {
+      "question_id": "qst_0289",
+      "question_type": "semantic",
+      "narrow_probe_k1": 0.6969283819198608,
+      "wide_probe_k200": 0.6969283819198608
+    },
+    {
+      "question_id": "qst_0316",
+      "question_type": "intra_document_reasoning",
+      "narrow_probe_k1": 0.7027619513358458,
+      "wide_probe_k200": 0.7027619513358458
+    },
+    {
+      "question_id": "qst_0321",
+      "question_type": "intra_document_reasoning",
+      "narrow_probe_k1": 0.561291089173357,
+      "wide_probe_k200": 0.561291089173357
+    },
+    {
+      "question_id": "qst_0322",
+      "question_type": "intra_document_reasoning",
+      "narrow_probe_k1": 0.6717895269393921,
+      "wide_probe_k200": 0.7557978775621739
+    },
+    {
+      "question_id": "qst_0324",
+      "question_type": "intra_document_reasoning",
+      "narrow_probe_k1": 0.5199452352491171,
+      "wide_probe_k200": 0.5892293032774124
+    },
+    {
+      "question_id": "qst_0325",
+      "question_type": "intra_document_reasoning",
+      "narrow_probe_k1": 0.7232964850454479,
+      "wide_probe_k200": 0.7232964850454479
+    },
+    {
+      "question_id": "qst_0329",
+      "question_type": "intra_document_reasoning",
+      "narrow_probe_k1": 0.6695349019488633,
+      "wide_probe_k200": 0.6695349019488633
+    },
+    {
+      "question_id": "qst_0332",
+      "question_type": "intra_document_reasoning",
+      "narrow_probe_k1": 0.768999434441348,
+      "wide_probe_k200": 0.768999434441348
+    },
+    {
+      "question_id": "qst_0333",
+      "question_type": "intra_document_reasoning",
+      "narrow_probe_k1": 0.5900521942926537,
+      "wide_probe_k200": 0.5996349871267406
+    },
+    {
+      "question_id": "qst_0334",
+      "question_type": "intra_document_reasoning",
+      "narrow_probe_k1": 0.7924851179122981,
+      "wide_probe_k200": 0.7924851179122981
+    },
+    {
+      "question_id": "qst_0335",
+      "question_type": "intra_document_reasoning",
+      "narrow_probe_k1": 0.6513283072318664,
+      "wide_probe_k200": 0.6513283072318664
+    },
+    {
+      "question_id": "qst_0341",
+      "question_type": "project_related",
+      "narrow_probe_k1": 0.8000438690080955,
+      "wide_probe_k200": 0.8000438690080955
+    },
+    {
+      "question_id": "qst_0349",
+      "question_type": "project_related",
+      "narrow_probe_k1": 0.5665576378634408,
+      "wide_probe_k200": 0.5665576378634408
+    },
+    {
+      "question_id": "qst_0363",
+      "question_type": "project_related",
+      "narrow_probe_k1": 0.748695433139801,
+      "wide_probe_k200": 0.748695433139801
+    },
+    {
+      "question_id": "qst_0368",
+      "question_type": "project_related",
+      "narrow_probe_k1": 0.8326663970947266,
+      "wide_probe_k200": 0.8326663970947266
+    },
+    {
+      "question_id": "qst_0369",
+      "question_type": "project_related",
+      "narrow_probe_k1": 0.8088902462851765,
+      "wide_probe_k200": 0.8088902462851765
+    },
+    {
+      "question_id": "qst_0370",
+      "question_type": "project_related",
+      "narrow_probe_k1": 0.8375574350357056,
+      "wide_probe_k200": 0.8375574350357056
+    },
+    {
+      "question_id": "qst_0372",
+      "question_type": "project_related",
+      "narrow_probe_k1": 0.7942555783467171,
+      "wide_probe_k200": 0.7942555783467171
+    },
+    {
+      "question_id": "qst_0374",
+      "question_type": "project_related",
+      "narrow_probe_k1": 0.781584094308385,
+      "wide_probe_k200": 0.781584094308385
+    },
+    {
+      "question_id": "qst_0376",
+      "question_type": "project_related",
+      "narrow_probe_k1": 0.8307642936706543,
+      "wide_probe_k200": 0.8307642936706543
+    },
+    {
+      "question_id": "qst_0380",
+      "question_type": "project_related",
+      "narrow_probe_k1": 0.6859585642814636,
+      "wide_probe_k200": 0.6859585642814636
+    },
+    {
+      "question_id": "qst_0385",
+      "question_type": "constrained",
+      "narrow_probe_k1": 0.7472563012616728,
+      "wide_probe_k200": 0.7472563012616728
+    },
+    {
+      "question_id": "qst_0387",
+      "question_type": "constrained",
+      "narrow_probe_k1": 0.7878504052340501,
+      "wide_probe_k200": 0.7878504052340501
+    },
+    {
+      "question_id": "qst_0392",
+      "question_type": "constrained",
+      "narrow_probe_k1": 0.8686061940915816,
+      "wide_probe_k200": 0.8686061940915816
+    },
+    {
+      "question_id": "qst_0393",
+      "question_type": "constrained",
+      "narrow_probe_k1": 0.8878729610746062,
+      "wide_probe_k200": 0.8878729610746062
+    },
+    {
+      "question_id": "qst_0400",
+      "question_type": "constrained",
+      "narrow_probe_k1": 0.6867729425430298,
+      "wide_probe_k200": 0.6666388710356443
+    },
+    {
+      "question_id": "qst_0401",
+      "question_type": "constrained",
+      "narrow_probe_k1": 0.8611496604174188,
+      "wide_probe_k200": 0.8611496604174188
+    },
+    {
+      "question_id": "qst_0402",
+      "question_type": "constrained",
+      "narrow_probe_k1": 0.8830292751210511,
+      "wide_probe_k200": 0.8830292751210511
+    },
+    {
+      "question_id": "qst_0403",
+      "question_type": "constrained",
+      "narrow_probe_k1": 0.6914991920292871,
+      "wide_probe_k200": 0.6914991920292871
+    },
+    {
+      "question_id": "qst_0404",
+      "question_type": "constrained",
+      "narrow_probe_k1": 0.8241701931750602,
+      "wide_probe_k200": 0.8241701931750602
+    },
+    {
+      "question_id": "qst_0406",
+      "question_type": "constrained",
+      "narrow_probe_k1": 0.7981149433919767,
+      "wide_probe_k200": 0.7981149433919767
+    },
+    {
+      "question_id": "qst_0411",
+      "question_type": "conflicting_info",
+      "narrow_probe_k1": 0.5707599946630025,
+      "wide_probe_k200": 0.5910959176208902
+    },
+    {
+      "question_id": "qst_0415",
+      "question_type": "conflicting_info",
+      "narrow_probe_k1": 0.6080541481907235,
+      "wide_probe_k200": 0.563519887504595
+    },
+    {
+      "question_id": "qst_0417",
+      "question_type": "conflicting_info",
+      "narrow_probe_k1": 0.6056945793992825,
+      "wide_probe_k200": 0.6039621110007674
+    },
+    {
+      "question_id": "qst_0418",
+      "question_type": "conflicting_info",
+      "narrow_probe_k1": 0.718592865383201,
+      "wide_probe_k200": 0.718592865383201
+    },
+    {
+      "question_id": "qst_0422",
+      "question_type": "conflicting_info",
+      "narrow_probe_k1": 0.7146468162536672,
+      "wide_probe_k200": 0.7146468162536672
+    },
+    {
+      "question_id": "qst_0424",
+      "question_type": "conflicting_info",
+      "narrow_probe_k1": 0.7017358123221522,
+      "wide_probe_k200": 0.6517918913488464
+    },
+    {
+      "question_id": "qst_0425",
+      "question_type": "conflicting_info",
+      "narrow_probe_k1": 0.5302380603409979,
+      "wide_probe_k200": 0.5128378868103027
+    },
+    {
+      "question_id": "qst_0426",
+      "question_type": "conflicting_info",
+      "narrow_probe_k1": 0.7739235162734985,
+      "wide_probe_k200": 0.7739235162734985
+    },
+    {
+      "question_id": "qst_0427",
+      "question_type": "conflicting_info",
+      "narrow_probe_k1": 0.7484814374733841,
+      "wide_probe_k200": 0.7484814374733841
+    },
+    {
+      "question_id": "qst_0429",
+      "question_type": "conflicting_info",
+      "narrow_probe_k1": 0.6609013085751629,
+      "wide_probe_k200": 0.6609013085751629
+    },
+    {
+      "question_id": "qst_0431",
+      "question_type": "completeness",
+      "narrow_probe_k1": 0.7245371557634225,
+      "wide_probe_k200": 0.7245371557634225
+    },
+    {
+      "question_id": "qst_0433",
+      "question_type": "completeness",
+      "narrow_probe_k1": 0.6744670673887185,
+      "wide_probe_k200": 0.6744670673887185
+    },
+    {
+      "question_id": "qst_0434",
+      "question_type": "completeness",
+      "narrow_probe_k1": 0.4685551226139102,
+      "wide_probe_k200": 0.6231061962969537
+    },
+    {
+      "question_id": "qst_0435",
+      "question_type": "completeness",
+      "narrow_probe_k1": 0.4032724144025104,
+      "wide_probe_k200": 0.43198774146924257
+    },
+    {
+      "question_id": "qst_0437",
+      "question_type": "completeness",
+      "narrow_probe_k1": 0.5916543359550448,
+      "wide_probe_k200": 0.5916543359550448
+    },
+    {
+      "question_id": "qst_0438",
+      "question_type": "completeness",
+      "narrow_probe_k1": 0.6191169761558787,
+      "wide_probe_k200": 0.6920886474979916
+    },
+    {
+      "question_id": "qst_0439",
+      "question_type": "completeness",
+      "narrow_probe_k1": 0.6559359030704472,
+      "wide_probe_k200": 0.7051503658294678
+    },
+    {
+      "question_id": "qst_0443",
+      "question_type": "completeness",
+      "narrow_probe_k1": 0.6169803142547607,
+      "wide_probe_k200": 0.6169803142547607
+    },
+    {
+      "question_id": "qst_0446",
+      "question_type": "completeness",
+      "narrow_probe_k1": 0.7659675618429459,
+      "wide_probe_k200": 0.7659675618429459
+    },
+    {
+      "question_id": "qst_0449",
+      "question_type": "completeness",
+      "narrow_probe_k1": 0.5848054042342556,
+      "wide_probe_k200": 0.6295732855796814
+    },
+    {
+      "question_id": "qst_0451",
+      "question_type": "miscellaneous",
+      "narrow_probe_k1": 0.6585808992385864,
+      "wide_probe_k200": 0.6585808992385864
+    },
+    {
+      "question_id": "qst_0453",
+      "question_type": "miscellaneous",
+      "narrow_probe_k1": 0.3038419277620892,
+      "wide_probe_k200": 0.5186181951392782
+    },
+    {
+      "question_id": "qst_0455",
+      "question_type": "miscellaneous",
+      "narrow_probe_k1": 0.5720645189285319,
+      "wide_probe_k200": 0.5720645189285319
+    },
+    {
+      "question_id": "qst_0459",
+      "question_type": "miscellaneous",
+      "narrow_probe_k1": 0.5650684833526772,
+      "wide_probe_k200": 0.5650684833526772
+    },
+    {
+      "question_id": "qst_0460",
+      "question_type": "miscellaneous",
+      "narrow_probe_k1": 0.485953240749434,
+      "wide_probe_k200": 0.485953240749434
+    },
+    {
+      "question_id": "qst_0461",
+      "question_type": "miscellaneous",
+      "narrow_probe_k1": 0.4111006978482218,
+      "wide_probe_k200": 0.6345201891088756
+    },
+    {
+      "question_id": "qst_0465",
+      "question_type": "miscellaneous",
+      "narrow_probe_k1": 0.5884416944717361,
+      "wide_probe_k200": 0.5884416944717361
+    },
+    {
+      "question_id": "qst_0466",
+      "question_type": "miscellaneous",
+      "narrow_probe_k1": 0.590078806285788,
+      "wide_probe_k200": 0.590078806285788
+    },
+    {
+      "question_id": "qst_0467",
+      "question_type": "miscellaneous",
+      "narrow_probe_k1": 0.6029119964942979,
+      "wide_probe_k200": 0.751394525087218
+    },
+    {
+      "question_id": "qst_0470",
+      "question_type": "miscellaneous",
+      "narrow_probe_k1": 0.7011545896530151,
+      "wide_probe_k200": 0.7011545896530151
+    },
+    {
+      "question_id": "qst_0471",
+      "question_type": "high_level",
+      "narrow_probe_k1": 0.4373861253261566,
+      "wide_probe_k200": 0.494661808013916
+    },
+    {
+      "question_id": "qst_0472",
+      "question_type": "high_level",
+      "narrow_probe_k1": 0.46999927997580526,
+      "wide_probe_k200": 0.46999927997580526
+    },
+    {
+      "question_id": "qst_0473",
+      "question_type": "high_level",
+      "narrow_probe_k1": 0.6014383197688066,
+      "wide_probe_k200": 0.6031347749749056
+    },
+    {
+      "question_id": "qst_0474",
+      "question_type": "high_level",
+      "narrow_probe_k1": 0.5555241439058877,
+      "wide_probe_k200": 0.5555241439058877
+    },
+    {
+      "question_id": "qst_0475",
+      "question_type": "high_level",
+      "narrow_probe_k1": 0.5601719951732166,
+      "wide_probe_k200": 0.5636523365974426
+    },
+    {
+      "question_id": "qst_0476",
+      "question_type": "high_level",
+      "narrow_probe_k1": 0.6026866974848668,
+      "wide_probe_k200": 0.6026866974848668
+    },
+    {
+      "question_id": "qst_0477",
+      "question_type": "high_level",
+      "narrow_probe_k1": 0.4707391542636852,
+      "wide_probe_k200": 0.4707391542636852
+    },
+    {
+      "question_id": "qst_0478",
+      "question_type": "high_level",
+      "narrow_probe_k1": 0.37272536754608154,
+      "wide_probe_k200": 0.45906311029572033
+    },
+    {
+      "question_id": "qst_0479",
+      "question_type": "high_level",
+      "narrow_probe_k1": 0.581833004951477,
+      "wide_probe_k200": 0.6494271755218506
+    },
+    {
+      "question_id": "qst_0480",
+      "question_type": "high_level",
+      "narrow_probe_k1": 0.28575265407562256,
+      "wide_probe_k200": 0.34448009729385376
+    },
+    {
+      "question_id": "qst_0481",
+      "question_type": "info_not_found",
+      "narrow_probe_k1": 0.6568451319244595,
+      "wide_probe_k200": 0.6568451319244595
+    },
+    {
+      "question_id": "qst_0485",
+      "question_type": "info_not_found",
+      "narrow_probe_k1": 0.6028540673423473,
+      "wide_probe_k200": 0.6028540673423473
+    },
+    {
+      "question_id": "qst_0486",
+      "question_type": "info_not_found",
+      "narrow_probe_k1": 0.7015542806121278,
+      "wide_probe_k200": 0.7050599490159708
+    },
+    {
+      "question_id": "qst_0487",
+      "question_type": "info_not_found",
+      "narrow_probe_k1": 0.6698082286233777,
+      "wide_probe_k200": 0.6043345567980684
+    },
+    {
+      "question_id": "qst_0488",
+      "question_type": "info_not_found",
+      "narrow_probe_k1": 0.6358642199120402,
+      "wide_probe_k200": 0.6358642199120402
+    },
+    {
+      "question_id": "qst_0489",
+      "question_type": "info_not_found",
+      "narrow_probe_k1": 0.6014506099879057,
+      "wide_probe_k200": 0.6014506099879057
+    },
+    {
+      "question_id": "qst_0492",
+      "question_type": "info_not_found",
+      "narrow_probe_k1": 0.6987175345420837,
+      "wide_probe_k200": 0.6987175345420837
+    },
+    {
+      "question_id": "qst_0494",
+      "question_type": "info_not_found",
+      "narrow_probe_k1": 0.6466384355260852,
+      "wide_probe_k200": 0.6466384355260852
+    },
+    {
+      "question_id": "qst_0497",
+      "question_type": "info_not_found",
+      "narrow_probe_k1": 0.49238958909449604,
+      "wide_probe_k200": 0.48067373152532555
+    },
+    {
+      "question_id": "qst_0499",
+      "question_type": "info_not_found",
+      "narrow_probe_k1": 0.5410113608234319,
+      "wide_probe_k200": 0.5459808707237244
+    }
+  ]
+}
