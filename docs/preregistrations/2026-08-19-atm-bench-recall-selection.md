@@ -66,3 +66,7 @@ After the runner is implemented, the exact command will be recorded in the appen
 3. ATM Bench metrics: https://github.com/JingbiaoMei/ATM-Bench/blob/main/docs/metrics.md
 4. ATM Bench reproducibility: https://github.com/JingbiaoMei/ATM-Bench/blob/main/docs/reproducibility.md
 5. ATM Bench judge configuration: https://github.com/JingbiaoMei/ATM-Bench/blob/main/memqa/utils/evaluator/config.py
+
+## Protocol clarification recorded before measurement
+
+The official metrics document describes `Recall@k` as a question level hit metric. The official MMRag implementation currently writes `retrieval_recall` as the fraction of gold evidence items found at each `k`, and the official comprehensive evaluator also computes the mean item level recall. I will preserve both interpretations in the result: the official implementation compatible item level recall, question level hit rate, and complete evidence recall. I will not silently rename one into another.
