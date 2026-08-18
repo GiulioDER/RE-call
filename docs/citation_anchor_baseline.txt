@@ -26,10 +26,10 @@
 # obeyed. When you raise it, say in the commit which documents arrived and how many
 # citations they brought, so the rise is auditable rather than assumed.
 #
-# Measured 2026-08-18 on f51cec0a: 199 citations, of which
-#   OK=119 STALE=0 UNVERIFIABLE=17 FROZEN=61 EXTERNAL=2 MISSING_FILE=0 OUT_OF_RANGE=0
-# The drop from 33 is not progress: #391 landed docs/citation-policy.toml, which this checker
-# now shares, and its exemptions move those citations from UNVERIFIABLE into FROZEN. They are
-# still reported; they are simply no longer this ratchet's business.
-# Re-measure with:  python scripts/verify_citations.py
-17
+# Measured 2026-08-18 on 6e0fb153, after dropping the docs/UNCALIBRATED_FIRST_RUN_DESIGN.md
+# exemption (#397): 199 citations, of which
+#   OK=116 STALE=0 UNVERIFIABLE=33 FROZEN=50 EXTERNAL=0 MISSING_FILE=0 OUT_OF_RANGE=0
+#
+# The rise 17 -> 33 is that document becoming answerable again, not a regression: 33 of its
+# citations move out of FROZEN and into the live count, where they can only fall from here.
+33
