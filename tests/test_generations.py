@@ -19,6 +19,8 @@ from recall.generations import (
     UnsafePromotion,
     _body_rule_changed,
 )
+from psycopg.pq import TransactionStatus
+
 from recall.generation_store import GenerationStore, ImmutableGenerationError
 from recall.cli import main as cli_main
 from recall.lineage import (
@@ -1373,3 +1375,49 @@ def test_markdown_build_strips_the_derived_block_before_chunking(manager) -> Non
     blocked_texts = [text for uri, _, text in rows if uri == blocked_uri]
     assert plain_texts, "the plain source produced no chunks"
     assert blocked_texts == plain_texts
+
+
+@requires_db
+def test_iter_chunks_wraps_its_server_side_cursor_in_a_transaction(manager) -> None:
+    """`GenerationStore.iter_chunks` overrides the base method and dropped its transaction.
+
+    `PgVectorStore.iter_chunks` opens `conn.transaction()` around the named cursor, and says why
+    four lines above it: "a server-side cursor is transaction-scoped, and under autocommit each
+    FETCH would otherwise land in its own transaction, where the cursor no longer exists". The
+    override kept the cursor and lost the transaction, so on the autocommit connections this store
+    uses, `DECLARE CURSOR` fails outright.
+
+    Measured on VPS2 before this test existed: **five of the ten MCP tools** were unusable under
+    `RECALL_ENV=production` — `recall_reasoning_query`, `_projection`, `_proposals`, `_audit` and
+    `recall_rewrite_plan` — every one of them reporting `DECLARE CURSOR can only be used in
+    transaction blocks`. The same tools worked under `development`, because that path builds a
+    `PgVectorStore` instead. Production is the ONLY mode that selects `GenerationStore`, so the
+    defect was invisible to any test that did not ask for it.
+
+    Sibling of `test_cosines_for_matches_query_dense_on_the_generation_store`: both are overrides
+    that inherited a behaviour and silently discarded part of it.
+    """
+    data = b"alpha generation text"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = _ready(
+        manager, manifest, _pipeline("model-a"), _reader(manifest, data), _Embedder(1)
+    )
+    manager.promote(generation, unsafe_development=True)
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        # Consuming the iterator is the point: the failure is raised by DECLARE, and a lazy
+        # generator that is never advanced would pass while the tool it backs still breaks.
+        chunks = list(store.iter_chunks())
+
+        # ⚠️ AND the transaction must be RELEASED, which is a separate claim from "one was open".
+        # `conn.execute("BEGIN")` in place of `conn.transaction()` satisfies DECLARE and returns
+        # every row, so the assertions above alone cannot tell a fix from a leak — it just leaves
+        # the connection `idle in transaction` forever. This repository has already lost days to
+        # exactly that shape: a 5-day idle-in-transaction backend pinned the xmin horizon of a
+        # 205 GB production database and blocked every vacuum on it.
+        assert store._direct.info.transaction_status == TransactionStatus.IDLE, (
+            "iter_chunks left the connection in a transaction after the iterator was exhausted"
+        )
+
+    assert chunks, "iter_chunks yielded nothing for an active generation"
+    assert all(c.text for c in chunks)
