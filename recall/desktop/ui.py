@@ -1408,6 +1408,83 @@ if QApplication is not None:
             self._last_scope_index = self.scope.currentIndex()
             self.scope.blockSignals(False)
 
+        def _provision_project(self, name: str) -> None:
+            """Actually create the project, rather than only offering its name.
+
+            "+ Add project" used to append a string to this combo box and stop. The scope then
+            pointed at a tenant with no compose service, no MCP server block and no corpus, so it
+            did not survive a restart and anything reaching the runtime with it was refused — a
+            failure that arrived later, worded as a problem with a "tenant scope".
+
+            The corpora are NOT built or calibrated here. That takes minutes and the user has asked
+            for somewhere to put files, not for an index of files they have not chosen yet; the
+            queue page fills it and the calibration page certifies it. So the project arrives real
+            but empty and uncalibrated, and this says so instead of implying it is ready.
+
+            Docker only. `RuntimeManager._call_for` discards the tenant argument, so in VPS mode the
+            scope is a field sent to a remote server and provisioning it is that server's business,
+            not something this process can do or should claim to have done.
+            """
+            if not isinstance(self.runtime, DockerRuntime):
+                self.status.setText(
+                    f"Project {name!r} is selected. This app provisions projects only for the "
+                    f"managed local stack; on a remote server the scope has to exist there."
+                )
+                return
+
+            compose_file = self.profile.compose_file
+            if not compose_file:
+                self.status.setText(
+                    f"Cannot create {name!r}: this profile names no compose file, so there is no "
+                    f"stack to add it to."
+                )
+                return
+
+            from recall.wizard.projects import ProjectRefusal, add_project
+
+            try:
+                # The stack's own directory. `compose_path_for` puts the file at the data root, so
+                # the parent of the configured file is that root by construction.
+                added = add_project(Path(compose_file).resolve().parent, name)
+            except ProjectRefusal as refusal:
+                # The wizard's own reason, at the point of typing. The dialog used to accept names
+                # the wizard refuses and then tell the user to go and run it.
+                self.status.setText(f"Cannot create {name!r}: {refusal}")
+                self._forget_project(name)
+                return
+            except (OSError, ValueError) as exc:
+                self.status.setText(f"Cannot create {name!r}: {exc}")
+                self._forget_project(name)
+                return
+
+            if not added.created_anything:
+                self.status.setText(
+                    f"Project {name!r} already exists in this stack; selected it."
+                )
+                return
+
+            # `start()` re-reads the topology and applies the schema, so the new services become
+            # reachable without restarting the app. It is also what makes the claim below true.
+            try:
+                self.runtime.start()
+            except RuntimeErrorBase as exc:
+                self.status.setText(
+                    f"Created {name!r} in {added.compose_path.name}, but the stack did not come "
+                    f"back up: {exc}. The project exists and will be there on the next connect."
+                )
+                return
+
+            self.status.setText(
+                f"Created project {name!r} ({len(added.tenants)} corpora). It is empty and not yet "
+                f"calibrated: add files on the Queue page, then calibrate it before trusting search."
+            )
+
+        def _forget_project(self, name: str) -> None:
+            """Drop a name that was added to the combo box but could not be provisioned."""
+            if name in self._project_names:
+                self._project_names.remove(name)
+            self._populate_scopes(self._project_names)
+
         def _scope_changed(self, index: int) -> None:
             data = self.scope.itemData(index)
             if isinstance(data, dict) and data.get("action") == "add":
@@ -1436,27 +1513,7 @@ if QApplication is not None:
                         )
                         return
                     if not provisioned:
-                        # Naming a project here does not create one. The corpora, the MCP services
-                        # and the calibration are all the wizard's work, and until it has run the
-                        # scope exists only in this combo box and does not survive a restart. Say
-                        # so now, rather than let it surface later as a failure about a "tenant
-                        # scope".
-                        #
-                        # Qualified by runtime, because the refusal is DockerRuntime's: only it
-                        # resolves a scope to a compose service. `RuntimeManager._call_for` discards
-                        # the tenant argument, so in VPS mode the name goes to the remote server as
-                        # a plain field and nothing here can say what it will do with it.
-                        managed = isinstance(self.runtime, DockerRuntime)
-                        consequence = (
-                            "the managed stack cannot serve it until then"
-                            if managed
-                            else "your server may not recognise it"
-                        )
-                        self.status.setText(
-                            f"Project {clean_name!r} is selected but not provisioned. Run the "
-                            f"RE-call wizard to build and calibrate it; {consequence}, and this "
-                            f"choice is not saved."
-                        )
+                        self._provision_project(clean_name)
                 else:
                     self.scope.blockSignals(True)
                     self.scope.setCurrentIndex(self._last_scope_index)

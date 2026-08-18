@@ -52,6 +52,12 @@ __all__ = [
 #: chosen to keep possible.
 DB_IMAGE = "pgvector/pgvector:pg18"
 
+#: ⚠️ Nothing in the wizard BUILDS this tag. Its only `build:` stanza lives in
+#: `docker-compose.desktop.yml`, which needs the source checkout, so `docker compose up` against a
+#: generated stack tries to PULL a tag that exists in no registry. Tracked as the last blocker
+#: between a generated stack and a running one; it is a packaging decision, not a default to change.
+_DEFAULT_IMAGE = "recall-desktop-recall:local"
+
 #: Where pg18 wants its single mount. See the module docstring; the wrong path exits 1.
 DB_MOUNT = "/var/lib/postgresql"
 
@@ -81,7 +87,7 @@ class StackSpec:
     #: Per-tenant environment, from `wiring.server_blocks`, so the trust decision for a tenant is
     #: made in ONE place and applies to the agent's server and the UI's service alike.
     env: dict[str, dict[str, str]]
-    recall_image: str = "recall-desktop-recall:local"
+    recall_image: str = _DEFAULT_IMAGE
     project_name: str = "recall-desktop"
 
     def __post_init__(self) -> None:
@@ -142,6 +148,37 @@ def choose_port(preferred: int = DEFAULT_PORT, *, attempts: int = 64) -> int:
     )
 
 
+def existing_tenants(compose_path: Path) -> tuple[str, ...]:
+    """The tenants a previous run already provisioned, in sorted order.
+
+    ⚠️ **Read this before regenerating a stack that is meant to GAIN a project.**
+    `compose_document` builds the whole document from the tenants it is handed, and `write_compose`
+    replaces the file, so a run carrying only the new project's tenants does not add a project: it
+    **deletes every existing one**, taking their MCP services with it. The corpora survive in the
+    database, orphaned and unreachable, which is the worst shape for a data-loss bug to take,
+    because nothing errors and the user's projects simply stop existing in the UI.
+
+    So the caller unions: `existing_tenants(path) + new`. Kept as a separate reader rather than
+    folded into `write_compose`, because a silent union would be just as wrong in the other
+    direction — a genuine re-install that drops a project must be able to say so.
+
+    Empty for anything unreadable, matching `existing_port`: there is nothing to preserve in a file
+    that cannot be parsed, and refusing would block an install over a file the caller is about to
+    overwrite anyway.
+    """
+    try:
+        document = json.loads(compose_path.read_text(encoding="utf-8"))
+        services = document["services"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return ()
+    if not isinstance(services, dict):
+        return ()
+    prefix = _service_name("")
+    return tuple(sorted(
+        name[len(prefix) :] for name in services if name.startswith(prefix) and name != prefix
+    ))
+
+
 def existing_port(compose_path: Path) -> int | None:
     """The published port a previous run already chose, or None if there is no stack yet.
 
@@ -192,32 +229,88 @@ def compose_document(spec: StackSpec) -> dict[str, object]:
     }
 
     for tenant in spec.tenants:
-        # The tenant's own env, minus the DSN: inside the network the database is `db`, not a host
-        # port. Same store, and taking the rest verbatim is what keeps one trust decision per
-        # tenant rather than two that can drift.
-        environment = {k: v for k, v in spec.env[tenant].items() if k != "RECALL_DSN"}
-        environment["RECALL_DSN"] = container_dsn()
-        environment["RECALL_MIGRATION_DSN"] = container_dsn()
-        # ⚠️ **Without this the service refuses to start, and the whole generated stack is inert.**
-        # `require_secure_dsn` rejects the built-in `recall:recall` credentials against any host it
-        # does not consider local, and the compose hostname `db` is not local by that test. So
-        # `recall schema apply` and `python -m recall_mcp.server` both exit 1 inside every service
-        # here. Demonstrated by running the CLI with this exact DSN: `PermissionError: refusing to
-        # start against postgresql://recall:***@db:5432/recall`.
-        #
-        # It is safe for the same reason the hand-written `docker-compose.desktop.yml` sets it on
-        # all four of its services: this DSN never leaves the compose network, and the port that IS
-        # published is bound to loopback. The credentials are the thing to change if that stops
-        # being true, not this flag.
-        environment["RECALL_ALLOW_INSECURE_DSN"] = "1"
-        services[_service_name(tenant)] = {
-            "image": spec.recall_image,
-            "command": ["sleep", "infinity"],
-            "environment": environment,
-            "depends_on": {"db": {"condition": "service_healthy"}},
-        }
+        services[_service_name(tenant)] = tenant_service(
+            spec.env[tenant], image=spec.recall_image
+        )
 
     return {"name": spec.project_name, "services": services}
+
+
+def tenant_service(base_env: dict[str, str], *, image: str) -> dict[str, object]:
+    """One tenant's compose service. Shared, so an ADDED project is built exactly like an installed
+    one — a second construction site would drift, and the drift would only show up as a service
+    that starts differently from its siblings.
+    """
+    # The tenant's own env, minus the DSN: inside the network the database is `db`, not a host
+    # port. Same store, and taking the rest verbatim is what keeps one trust decision per
+    # tenant rather than two that can drift.
+    environment = {k: v for k, v in base_env.items() if k != "RECALL_DSN"}
+    environment["RECALL_DSN"] = container_dsn()
+    environment["RECALL_MIGRATION_DSN"] = container_dsn()
+    # ⚠️ **Without this the service refuses to start, and the whole generated stack is inert.**
+    # `require_secure_dsn` rejects the built-in `recall:recall` credentials against any host it
+    # does not consider local, and the compose hostname `db` is not local by that test. So
+    # `recall schema apply` and `python -m recall_mcp.server` both exit 1 inside every service
+    # here. Demonstrated by running the CLI with this exact DSN: `PermissionError: refusing to
+    # start against postgresql://recall:***@db:5432/recall`.
+    #
+    # It is safe for the same reason the hand-written `docker-compose.desktop.yml` sets it on
+    # all four of its services: this DSN never leaves the compose network, and the port that IS
+    # published is bound to loopback. The credentials are the thing to change if that stops
+    # being true, not this flag.
+    environment["RECALL_ALLOW_INSECURE_DSN"] = "1"
+    return {
+        "image": image,
+        "command": ["sleep", "infinity"],
+        "environment": environment,
+        "depends_on": {"db": {"condition": "service_healthy"}},
+    }
+
+
+def add_tenant_services(
+    compose_path: Path, env: dict[str, dict[str, str]], *, image: str = _DEFAULT_IMAGE
+) -> tuple[str, ...]:
+    """Add services for `env`'s tenants to an EXISTING compose file, and return the new tenants.
+
+    ⚠️ **This adds; it does not regenerate.** Rebuilding the document from a union of tenants would
+    also rewrite every existing service's environment, and that environment carries
+    `RECALL_TRUST_MODE`, which the wiring stage set per tenant from what actually certified. A
+    regeneration would quietly reset a certified corpus's posture to whatever the caller happened to
+    pass, so the safe operation on a live stack is a strictly additive one: existing services are
+    copied through untouched, byte for byte.
+
+    Refuses rather than returning empty when the file cannot be read, which is the opposite of
+    `existing_tenants` and `existing_port` and deliberately so: those two are consulted before
+    writing a fresh document over the top, where there is nothing to lose. Here the file IS the
+    stack, and overwriting an unreadable one would strand every corpus it described.
+
+    A tenant that already has a service is skipped, not overwritten, so a repeated add is a no-op
+    rather than a silent reset of that project's trust posture.
+    """
+    try:
+        document = json.loads(compose_path.read_text(encoding="utf-8"))
+        services = document["services"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError(
+            f"cannot add to the stack at {compose_path}: {exc}. The file describes the running "
+            "containers and every provisioned corpus, so it is not safe to write a new one over it."
+        ) from exc
+    if not isinstance(services, dict) or "db" not in services:
+        raise ValueError(
+            f"{compose_path} defines no `db` service, so it is not a recall stack to add to"
+        )
+
+    added: list[str] = []
+    for tenant, base_env in env.items():
+        name = _service_name(tenant)
+        if name in services:
+            continue
+        services[name] = tenant_service(base_env, image=image)
+        added.append(tenant)
+
+    if added:
+        write_compose(compose_path, document)
+    return tuple(sorted(added))
 
 
 def _service_name(tenant: str) -> str:
