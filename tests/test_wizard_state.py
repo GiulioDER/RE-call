@@ -86,11 +86,21 @@ def test_every_config_field_is_classified_as_digested_or_ignored() -> None:
 @pytest.mark.parametrize("field_name", DIGEST_FIELDS)
 def test_changing_a_digested_field_changes_the_digest(tmp_path: Path, field_name: str) -> None:
     """Parametrised over the real tuple, so a field added to it is covered without being retyped."""
-    base = _config(tmp_path)
-    changed = _config(
-        tmp_path,
-        **{field_name: str(tmp_path / "other") if field_name.endswith("_root") else "changed"},
-    )
+    if field_name == "data_root":
+        # `data_root` is the ALTERNATIVE to `dsn`, so a config carrying both is refused. Compare
+        # two provisioning configs instead of bolting a location onto a DSN one.
+        base = _config(
+            tmp_path, dsn=None, migration_dsn=None, data_root=str(tmp_path / "here")
+        )
+        changed = _config(
+            tmp_path, dsn=None, migration_dsn=None, data_root=str(tmp_path / "elsewhere")
+        )
+    else:
+        base = _config(tmp_path)
+        changed = _config(
+            tmp_path,
+            **{field_name: str(tmp_path / "other") if field_name.endswith("_root") else "changed"},
+        )
     assert config_digest(base) != config_digest(changed), f"{field_name} must invalidate"
 
 
@@ -121,8 +131,13 @@ def test_the_digest_does_not_depend_on_the_path_separator(tmp_path: Path) -> Non
     which matters because the config itself is written once and used on whichever machine installs.
     """
     config = _config(tmp_path)
+    # Only the roots that are SET: `data_root` is absent on a DSN-driven config.
     assert "\\" not in json.dumps(
-        {n: getattr(config, n).as_posix() for n in DIGEST_FIELDS if n.endswith("_root")}
+        {
+            n: getattr(config, n).as_posix()
+            for n in DIGEST_FIELDS
+            if n.endswith("_root") and getattr(config, n) is not None
+        }
     )
 
 

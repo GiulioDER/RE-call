@@ -97,11 +97,73 @@ def test_a_present_but_non_string_value_is_refused_by_name(tmp_path: Path, value
     `Path()` — from inside the function whose docstring promises to name the key at fault.
     """
     payload = _config(tmp_path)
-    payload["dsn"] = value
+    payload["embedder"] = value
 
     with pytest.raises(ConfigRefusal) as caught:
         load_config(_write(tmp_path, payload))
-    assert caught.value.keys == ("dsn",)
+    assert caught.value.keys == ("embedder",)
+
+
+def test_a_dsn_and_a_data_root_together_are_refused(tmp_path: Path) -> None:
+    """They are alternatives, and accepting both would mean silently ignoring one.
+
+    A setting taken and discarded looks applied and is not, which is the defect already fixed twice
+    on this branch (`--tenant`, and `index_memory_directory`'s hardcoded tenant). The refusal names
+    both keys so the operator can see the choice they have to make.
+    """
+    with pytest.raises(ConfigRefusal) as caught:
+        load_config(_write(tmp_path, _config(tmp_path, data_root=str(tmp_path / "store"))))
+    assert caught.value.keys == ("dsn", "data_root")
+
+
+def test_neither_a_dsn_nor_a_data_root_is_refused(tmp_path: Path) -> None:
+    """Otherwise the driver has nowhere to write, discovered later as a connection error."""
+    payload = _config(tmp_path)
+    del payload["dsn"]
+    del payload["migration_dsn"]
+
+    with pytest.raises(ConfigRefusal) as caught:
+        load_config(_write(tmp_path, payload))
+    assert caught.value.keys == ("dsn", "data_root")
+
+
+def test_a_provisioning_config_loads_and_defers_its_dsn(tmp_path: Path) -> None:
+    """`data_root` alone is the install shape: the wizard creates the database and owns the address.
+
+    `dsn` is genuinely absent at load time, and `resolved_dsn` says so rather than handing back a
+    None that would surface as a confusing connection error much later.
+    """
+    payload = _config(tmp_path, data_root=str(tmp_path / "store"))
+    del payload["dsn"]
+    del payload["migration_dsn"]
+
+    config = load_config(_write(tmp_path, payload))
+
+    assert config.data_root == tmp_path / "store"
+    assert config.dsn is None
+    with pytest.raises(RuntimeError, match="has not been resolved"):
+        _ = config.resolved_dsn
+
+
+def test_a_relative_data_root_is_refused(tmp_path: Path) -> None:
+    """It would put the user's index wherever the installer happened to be run from."""
+    payload = _config(tmp_path, data_root="somewhere/relative")
+    del payload["dsn"]
+    del payload["migration_dsn"]
+
+    with pytest.raises(ConfigRefusal) as caught:
+        load_config(_write(tmp_path, payload))
+    assert caught.value.keys == ("data_root",)
+
+
+def test_the_migration_dsn_defaults_to_the_serving_one(tmp_path: Path) -> None:
+    """The ordinary install has one role, and requiring the same string twice invites a typo."""
+    payload = _config(tmp_path)
+    del payload["migration_dsn"]
+
+    config = load_config(_write(tmp_path, payload))
+
+    assert config.resolved_migration_dsn == config.resolved_dsn
 
 
 def test_an_unknown_key_is_refused_rather_than_discarded(tmp_path: Path) -> None:
@@ -734,7 +796,9 @@ def test_an_optional_project_reaches_the_pipeline_and_an_absent_one_is_none(tmp_
 
     An absent one must be `None`, not the string "None", since it is stamped on every chunk.
     """
-    assert load_config(_write(tmp_path, _config(tmp_path))).project is None
+    from recall.wizard.corpora import DEFAULT_PROJECT
+
+    assert load_config(_write(tmp_path, _config(tmp_path))).project == DEFAULT_PROJECT
     assert load_config(_write(tmp_path, _config(tmp_path, project="recall"))).project == "recall"
 
 

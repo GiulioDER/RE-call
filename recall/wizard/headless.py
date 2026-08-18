@@ -50,7 +50,7 @@ from recall.calibration_v2 import CalibrationRepository
 from recall.embeddings import Embedder, resolve_embedder
 from recall.generations import GenerationManager
 from recall.store import redacted_dsn
-from recall.wizard.corpora import RELATIVE_ROOT, CorpusSpec, default_plan
+from recall.wizard.corpora import DEFAULT_PROJECT, RELATIVE_ROOT, CorpusSpec, default_plan
 from recall.wizard.pipeline import CorpusOutcome, PipelineRefusal, run_corpus
 from recall.wizard.state import WizardState, config_digest, load_state, save_state
 from recall.wizard.wiring import (
@@ -84,17 +84,32 @@ _GUTTER = 2
 
 @dataclass(frozen=True)
 class HeadlessConfig:
-    """Everything the driver needs. No REQUIRED field has a default it could guess wrong."""
+    """Everything the driver needs. No REQUIRED field has a default it could guess wrong.
 
-    dsn: str
-    migration_dsn: str
+    **`dsn` and `data_root` are alternatives, and exactly one must be present.** `dsn` points at a
+    database somebody else provisioned, which is how CI drives this. `data_root` says "make me one,
+    here", which is what a person installing on Windows wants and what the desktop UI then shares.
+    Accepting both would mean ignoring one, and a setting that is accepted and discarded is the
+    defect this branch has already fixed twice.
+    """
+
     embedder: str
     corpus_version: str
     docs_root: Path
     code_root: Path
     memory_root: Path
-    #: Optional: a `BuildRequest` label stamped on every chunk, not something the pipeline needs.
-    project: str | None = None
+    #: An existing database. Absent when `data_root` is set and the wizard provisions one.
+    dsn: str | None = None
+    #: The DDL owner. Defaults to `dsn` when the two are the same principal, which is the ordinary
+    #: single-role install.
+    migration_dsn: str | None = None
+    #: Where the user wants their index kept. Provisions the stack the desktop UI also uses, so
+    #: both surfaces reach ONE store. Absolute, because a relative location resolves against
+    #: whatever directory the installer happened to run from.
+    data_root: Path | None = None
+    #: The project scope. It names the tenants (`{project}-docs` and so on) AND is stamped on every
+    #: chunk as provenance, because for the person installing this they are one idea: "my project".
+    project: str = DEFAULT_PROJECT
     #: Optional: the role the SERVING dsn authenticates as, when it differs from the DDL owner.
     #: No migration emits a GRANT, because the role name is a deployment decision the packaged SQL
     #: cannot know, so a two-role install has to be told the name or it will not work.
@@ -105,6 +120,28 @@ class HeadlessConfig:
     #: config may well live somewhere temporary. When absent the report says the wiring was skipped
     #: and names the key, which is better than putting files where nobody will look for them.
     project_root: Path | None = None
+
+    @property
+    def resolved_dsn(self) -> str:
+        """The serving DSN, after the database has been resolved.
+
+        `dsn` is genuinely optional on the way IN, because `data_root` is the alternative. It is
+        never optional by the time anything connects, and this property is where that invariant is
+        stated once instead of being narrowed at every call site. Reaching it unresolved is a
+        programming error in the driver, not a user's configuration mistake, so it raises rather
+        than refusing.
+        """
+        if not self.dsn:
+            raise RuntimeError(
+                "the database has not been resolved yet; `run_headless` provisions it from "
+                "`data_root` before anything connects"
+            )
+        return self.dsn
+
+    @property
+    def resolved_migration_dsn(self) -> str:
+        """The DDL owner, which defaults to the serving DSN on a single-role install."""
+        return self.migration_dsn or self.resolved_dsn
 
 
 #: Every key the config must carry, DERIVED from the fields that have no default rather than
@@ -417,7 +454,7 @@ class _RealServices:
         spec.root.mkdir(parents=True, exist_ok=True)
         embedder = self.embedder()
         with PgVectorStore(
-            self.config.dsn, dim=embedder.dim, table=DEFAULT_TABLE, tenant=spec.tenant
+            self.config.resolved_dsn, dim=embedder.dim, table=DEFAULT_TABLE, tenant=spec.tenant
         ) as store:
             store.check_schema()
             stats = Indexer(store, embedder, chunker=chunk_text).index_path(
@@ -453,7 +490,7 @@ class _RealServices:
             else "SELECT text FROM chunks WHERE tenant_id = %s LIMIT 1"
         )
         try:
-            with psycopg.connect(self.config.dsn) as conn:
+            with psycopg.connect(self.config.resolved_dsn) as conn:
                 conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (block.tenant,))
                 row = conn.execute(statement, (block.tenant,)).fetchone()
         except Exception as exc:  # noqa: BLE001 - a failure to look is a failure, and it is reported
@@ -464,7 +501,7 @@ class _RealServices:
                 abstained=True,
                 trust_state="unknown",
                 failure_code=None,
-                error=_scrub(f"{type(exc).__name__}: {exc}", self.config.dsn),
+                error=_scrub(f"{type(exc).__name__}: {exc}", self.config.resolved_dsn),
             )
 
         if not row or not str(row[0]).strip():
@@ -487,10 +524,10 @@ class _RealServices:
             # `GenerationStore` subclasses it, and `trusted_search` takes the base.
             store: PgVectorStore
             if production:
-                store = GenerationStore(self.config.dsn, dim=embedder.dim, tenant=block.tenant)
+                store = GenerationStore(self.config.resolved_dsn, dim=embedder.dim, tenant=block.tenant)
             else:
                 store = PgVectorStore(
-                    self.config.dsn, dim=embedder.dim, table=table, tenant=block.tenant
+                    self.config.resolved_dsn, dim=embedder.dim, table=table, tenant=block.tenant
                 )
             with store:
                 result = trusted_search(store, embedder, query, k=5)
@@ -502,7 +539,7 @@ class _RealServices:
                 abstained=True,
                 trust_state="unknown",
                 failure_code=None,
-                error=_scrub(f"{type(exc).__name__}: {exc}", self.config.dsn),
+                error=_scrub(f"{type(exc).__name__}: {exc}", self.config.resolved_dsn),
             )
 
         return SmokeResult(
@@ -525,9 +562,9 @@ class _RealServices:
             # block. (This comment used to blame a file:// manifest. Nothing gates file:// on the
             # environment — see `_BUILD_ENVIRONMENTS` in pipeline.py for the correction.)
             manager=GenerationManager(
-                self.config.dsn, spec.tenant, actor="recall-wizard", environment="development"
+                self.config.resolved_dsn, spec.tenant, actor="recall-wizard", environment="development"
             ),
-            calibrations=CalibrationRepository(self.config.dsn, spec.tenant),
+            calibrations=CalibrationRepository(self.config.resolved_dsn, spec.tenant),
             embedder=self.embedder(),
             corpus_version=self.config.corpus_version,
             project=self.config.project,
@@ -619,26 +656,60 @@ def load_config(path: str | Path) -> HeadlessConfig:
                 f"{key} must be a string or absent, not {type(raw[key]).__name__}", (key,)
             )
 
-    # Checked with the same rule as the required roots, and for the same reason: a relative
-    # `project_root` resolves against the wizard's own working directory, so `.mcp.json` would be
-    # written somewhere that depends on where the command happened to be run from.
-    if raw.get("project_root") and not Path(raw["project_root"]).is_absolute():
+    # Checked with the same rule as the required roots, and for the same reason: a relative path
+    # here resolves against the wizard's own working directory, so the file would land somewhere
+    # that depends on where the command happened to be run from.
+    for optional_root, consequence in (
+        ("project_root", "the MCP configuration would land somewhere unpredictable"),
+        ("data_root", "the user's index would land somewhere they did not choose"),
+    ):
+        if raw.get(optional_root) and not Path(raw[optional_root]).is_absolute():
+            raise ConfigRefusal(
+                f"{optional_root} must be an absolute path on this platform, not "
+                f"{raw[optional_root]!r}: {consequence}.",
+                (optional_root,),
+            )
+
+    # `dsn` and `data_root` are ALTERNATIVES, and the refusal names both keys.
+    #
+    # Accepting both would mean silently ignoring one, which is the exact defect already fixed
+    # twice on this branch: a setting taken and discarded looks applied and is not. Accepting
+    # neither would leave the driver with nowhere to write, discovered as a connection error.
+    has_dsn = bool(raw.get("dsn"))
+    has_data_root = bool(raw.get("data_root"))
+    if has_dsn and has_data_root:
         raise ConfigRefusal(
-            f"project_root must be an absolute path on this platform, not "
-            f"{raw['project_root']!r}: a relative root resolves against the wizard's own working "
-            "directory, so the MCP configuration would land somewhere unpredictable.",
-            ("project_root",),
+            "dsn and data_root cannot both be set. `dsn` uses a database somebody else "
+            "provisioned, which is how CI drives this; `data_root` provisions one at a location "
+            "the user chose, which is what an install does. Setting both means one is ignored, and "
+            "you would not be able to tell which.",
+            ("dsn", "data_root"),
+        )
+    if not has_dsn and not has_data_root:
+        raise ConfigRefusal(
+            "one of dsn or data_root is required: either point at an existing database, or say "
+            "where the wizard should create one.",
+            ("dsn", "data_root"),
+        )
+    if has_data_root and raw.get("migration_dsn"):
+        raise ConfigRefusal(
+            "migration_dsn cannot be set alongside data_root: the wizard provisions the database "
+            "and owns both credentials, so a DDL address supplied here would be ignored.",
+            ("migration_dsn", "data_root"),
         )
 
     return HeadlessConfig(
-        dsn=raw["dsn"],
-        migration_dsn=raw["migration_dsn"],
         embedder=raw["embedder"],
         corpus_version=raw["corpus_version"],
         docs_root=Path(raw["docs_root"]),
         code_root=Path(raw["code_root"]),
         memory_root=Path(raw["memory_root"]),
-        project=raw.get("project") or None,
+        dsn=raw.get("dsn") or None,
+        # Defaulted to `dsn`, not left None. The ordinary install has one role, and requiring the
+        # same string twice is a way to get them different by typo.
+        migration_dsn=raw.get("migration_dsn") or raw.get("dsn") or None,
+        data_root=Path(raw["data_root"]) if raw.get("data_root") else None,
+        project=raw.get("project") or DEFAULT_PROJECT,
         serving_role=raw.get("serving_role") or None,
         project_root=Path(raw["project_root"]) if raw.get("project_root") else None,
     )
@@ -653,16 +724,16 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
     DSN in the log, and exactly when printing it verbatim writes the password to disk. Measured,
     a password containing `%` reached the terminal verbatim inside `invalid percent-encoded token`.
     """
-    if _database_identity(config.dsn) != _database_identity(config.migration_dsn):
+    if _database_identity(config.resolved_dsn) != _database_identity(config.resolved_migration_dsn):
         raise ConfigRefusal(
-            f"dsn and migration_dsn name different databases ({redacted_dsn(config.dsn)} and "
-            f"{redacted_dsn(config.migration_dsn)}). The schema would be applied to one and every "
+            f"dsn and migration_dsn name different databases ({redacted_dsn(config.resolved_dsn)} and "
+            f"{redacted_dsn(config.resolved_migration_dsn)}). The schema would be applied to one and every "
             "chunk written to the other, whose vector width was never checked — discovered after "
             "a full build, at calibration.",
             ("dsn", "migration_dsn"),
         )
 
-    two_role = urlsplit(config.dsn).username != urlsplit(config.migration_dsn).username
+    two_role = urlsplit(config.resolved_dsn).username != urlsplit(config.resolved_migration_dsn).username
     if two_role and not config.serving_role:
         raise ConfigRefusal(
             "dsn and migration_dsn authenticate as different roles, which is the two-role "
@@ -684,32 +755,32 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
         ) from exc
 
     try:
-        wiring.apply_schema(config.migration_dsn, dim=dim)
+        wiring.apply_schema(config.resolved_migration_dsn, dim=dim)
     except PipelineRefusal:
         raise
     except Exception as exc:
         raise ConfigRefusal(
             _scrub(
-                f"cannot prepare the schema at {redacted_dsn(config.migration_dsn)} for embedder "
+                f"cannot prepare the schema at {redacted_dsn(config.resolved_migration_dsn)} for embedder "
                 f"{config.embedder!r} (vector width {dim}): {type(exc).__name__}: {exc}",
-                config.migration_dsn,
-                config.dsn,
+                config.resolved_migration_dsn,
+                config.resolved_dsn,
             ),
             ("migration_dsn",),
         ) from exc
 
     if config.serving_role:
         try:
-            wiring.grant(config.migration_dsn, role=config.serving_role)
+            wiring.grant(config.resolved_migration_dsn, role=config.serving_role)
         except PipelineRefusal:
             raise
         except Exception as exc:
             raise ConfigRefusal(
                 _scrub(
                     f"cannot grant the serving role {config.serving_role!r} at "
-                    f"{redacted_dsn(config.migration_dsn)}: {type(exc).__name__}: {exc}",
-                    config.migration_dsn,
-                    config.dsn,
+                    f"{redacted_dsn(config.resolved_migration_dsn)}: {type(exc).__name__}: {exc}",
+                    config.resolved_migration_dsn,
+                    config.resolved_dsn,
                 ),
                 ("serving_role",),
             ) from exc
@@ -751,6 +822,7 @@ def run_headless(
             docs_root=config.docs_root,
             code_root=config.code_root,
             memory_root=config.memory_root,
+            project=config.project,
         )
     except PipelineRefusal:
         raise
@@ -813,7 +885,7 @@ def run_headless(
             # Reported, not raised. The remaining corpora are independent and a user with one
             # working corpus is better off than a user with a traceback.
             refused.append(
-                Refusal(tenant=spec.tenant, reason=_scrub(str(exc), config.dsn, config.migration_dsn))
+                Refusal(tenant=spec.tenant, reason=_scrub(str(exc), config.resolved_dsn, config.resolved_migration_dsn))
             )
         except Exception as exc:  # noqa: BLE001 - see below
             # Everything else, for the same reason and one more: `promote` is irreversible and
@@ -827,7 +899,7 @@ def run_headless(
                 Failure(
                     tenant=spec.tenant,
                     error=_scrub(
-                        f"{type(exc).__name__}: {exc}", config.dsn, config.migration_dsn
+                        f"{type(exc).__name__}: {exc}", config.resolved_dsn, config.resolved_migration_dsn
                     ),
                 )
             )
@@ -855,7 +927,7 @@ def run_headless(
             refused.append(
                 Refusal(
                     tenant=spec.tenant,
-                    reason=_scrub(str(exc), config.dsn, config.migration_dsn),
+                    reason=_scrub(str(exc), config.resolved_dsn, config.resolved_migration_dsn),
                 )
             )
         except Exception as exc:  # noqa: BLE001 - same reasoning as the calibrated loop above
@@ -863,7 +935,7 @@ def run_headless(
                 Failure(
                     tenant=spec.tenant,
                     error=_scrub(
-                        f"{type(exc).__name__}: {exc}", config.dsn, config.migration_dsn
+                        f"{type(exc).__name__}: {exc}", config.resolved_dsn, config.resolved_migration_dsn
                     ),
                 )
             )
@@ -876,7 +948,7 @@ def run_headless(
         o.tenant for o in outcomes if o.previously_serving
     ) | frozenset(i.tenant for i in indexed)
     blocks, unservable = server_blocks(
-        plan, dsn=config.dsn, promoted=promoted, serving=serving
+        plan, dsn=config.resolved_dsn, promoted=promoted, serving=serving
     )
     mcp_path: Path | None = None
     files: tuple[Path, ...] = ()
@@ -888,7 +960,7 @@ def run_headless(
             write_mcp_config(mcp_path, mcp_config(blocks, project_root=config.project_root))
             wrote = write_project_files(
                 project_root=config.project_root,
-                dsn=config.dsn,
+                dsn=config.resolved_dsn,
                 embedder=config.embedder,
                 memory_dir=config.memory_root,
             )
@@ -934,7 +1006,7 @@ def run_headless(
                         trust_state="unknown",
                         failure_code=None,
                         error=_scrub(
-                            f"{type(exc).__name__}: {exc}", config.dsn, config.migration_dsn
+                            f"{type(exc).__name__}: {exc}", config.resolved_dsn, config.resolved_migration_dsn
                         ),
                     )
                 )

@@ -1549,10 +1549,16 @@ def main(argv: list[str] | None = None) -> None:
             wizard_config = load_config(args.config)
             # The DSNs this command ACTUALLY uses, which the global guard above cannot see. Both,
             # because `migration_dsn` is the DDL owner and is the more privileged of the two.
+            # Only the DSNs actually PRESENT. With `data_root` the wizard provisions the database
+            # itself and there is no address yet to check; the one it creates is on 127.0.0.1, which
+            # is the case `require_secure_dsn` exists to permit. Checking a value that is None here
+            # would refuse every desktop install for having no remote credentials to object to.
             for key, value in (
                 ("dsn", wizard_config.dsn),
                 ("migration_dsn", wizard_config.migration_dsn),
             ):
+                if not value:
+                    continue
                 try:
                     _require_secure(value)
                 except PermissionError as exc:
