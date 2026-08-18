@@ -78,3 +78,13 @@ this corpus. It is not a certified answer quality result.
 ## Measurement result
 
 To be appended after the labeled run. Predictions above must not be edited.
+
+## Candidate pool sensitivity addendum
+
+Added before the next measurement on 2026-08-18. The same indexed corpus, hashing embedder,
+threshold, and five arms will be rerun with `candidate_k=200` instead of `candidate_k=20`.
+This is an exploratory sensitivity check because the first labeled run showed a retrieval ceiling
+before answer slot selection. The prediction is that current retrieval will recover more expected
+document sets at the wider pool, and that structural expansion will only improve cases whose gold
+document is present in the wider initial candidate set. This addendum does not change the launch
+criteria or convert the development calibration into certified evidence.
