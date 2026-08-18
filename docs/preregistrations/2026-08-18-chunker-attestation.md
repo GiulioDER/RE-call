@@ -206,3 +206,46 @@ the embedder check can only be a sample.
 - The comparison is exact string list equality, which is stricter than retrieval cares about. Two
   chunkings differing by a trailing newline would retrieve near identically and be counted as a
   mismatch, so the reproduction rate is a lower bound on practical equivalence.
+
+## Correction, appended 2026-08-18 after `79a0d6ed`
+
+**Appended, not edited.** The text above stands as written and measured. This records that one
+premise it rests on stopped being literally true a few hours after it was registered, and states
+exactly how much of the result that costs, which is nothing.
+
+**What changed.** `79a0d6ed` (#381) widened `_index_fingerprint` (`recall/index.py:420`) to hash
+`EmbeddingProfile.fingerprint()` instead of `embedding_profile_id(embedder)`. That fingerprint
+covers `chunker_version` (`recall/embeddings.py:412`), so the sentence "`_index_fingerprint` has no
+chunker term either" is now imprecise: a field of that NAME is in the hash.
+
+**What did not change, which is every conclusion drawn from it.** `chunker_version` is a field of
+the EMBEDDING profile, defaulted to `chunk-text-v1` at both of its definitions and set by nothing
+else in the tree. The `Indexer`'s actual chunker (`recall/index.py:535`) never reaches it, and
+neither `max_chars` nor `overlap` appears in an `EmbeddingProfile` at all. So the term is inert with
+respect to the thing it is named after. Measured against `79a0d6ed`, holding the embedder and the
+file fixed and varying only the chunker:
+
+| chunking | chunks produced | index fingerprint |
+|---|---|---|
+| `chunk_text(max_chars=800, overlap=80)` | 1 | `78e3179317b6a7d556b9…` |
+| `chunk_text(max_chars=60, overlap=10)` | 4 | `78e3179317b6a7d556b9…` |
+| `chunk_code` | 1 | `78e3179317b6a7d556b9…` |
+
+Three genuinely different chunkings, one fingerprint. So all three load bearing claims survive
+unchanged, and they should be read as being about the chunker CONFIGURATION rather than about the
+absence of any field:
+
+- an adopted generation's `ChunkerIdentity` is still an assertion with nothing behind it;
+- re indexing still does not repair a chunker change, because the skip guard still reports the file
+  unchanged;
+- the attestation must still IDENTIFY by re deriving and re chunking, because there is still no
+  stated chunker configuration to verify against.
+
+**The correct statement going forward**, replacing the one sentence: *the index fingerprint carries
+a coarse `chunker_version` string from the embedding profile, and no chunker configuration; no
+change to the chunker actually in use moves it.*
+
+⚠️ **What this DOES change is a future assumption, not a past result.** `chunker_version` is now
+key material for the skip guard, so if anything ever begins setting it per chunker, a chunker change
+would start forcing a re index. Nothing sets it today. Anyone adding that should know it is now a
+re embed trigger and not merely a label.
