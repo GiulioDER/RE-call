@@ -306,8 +306,13 @@ class DockerRuntime(RuntimeManager):
     def start(self) -> None:
         self._compose("up", "-d", "--wait")
         self._services = None  # the file may have gained services since the window opened
-        for service in sorted(self._service_names() - {"db"}):
-            self._compose("exec", "-T", service, "recall", "schema", "apply")
+        # Only the services that serve a tenant, not merely "everything that is not `db`". The
+        # loose form would run `recall schema apply` inside any sidecar the file happens to carry,
+        # and `_compose` uses check=True, so one unrelated service would fail the whole start.
+        for service in sorted(self._service_names()):
+            scope = _tenant_for_service(service)
+            if scope and scope.endswith(("-docs", "-code")):
+                self._compose("exec", "-T", service, "recall", "schema", "apply")
         default_scope = self.profile.default_tenant
         if not default_scope.endswith(("-docs", "-code")):
             default_scope = f"{default_scope}-docs"
@@ -351,7 +356,12 @@ class DockerRuntime(RuntimeManager):
             scope = _tenant_for_service(service)
             if scope and scope.endswith(("-docs", "-code")):
                 names.add(scope.rsplit("-", 1)[0])
-        names.discard(self.profile.shared_profile)
+        if self.profile.shared_profile != self.profile.default_tenant:
+            # Guarded, because a profile that names the same scope for both would otherwise leave
+            # the list EMPTY. The window recovers, since `_populate_scopes` reinserts the default,
+            # but a runtime that answers "no projects" for a stack that has one is not something to
+            # rely on a caller to paper over.
+            names.discard(self.profile.shared_profile)
         return sorted(names)
 
     def _call_for(self, tenant: str, name: str, arguments: dict[str, Any]) -> Any:

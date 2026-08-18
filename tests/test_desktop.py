@@ -197,6 +197,38 @@ def test_docker_runtime_reads_its_topology_from_the_compose_file(
     assert "wizard" in str(refusal.value), "and what would make the scope servable"
 
 
+def test_docker_start_applies_the_schema_only_where_a_tenant_lives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`start()` must not run `recall schema apply` inside every non-database service.
+
+    The first version of this loop was `services - {"db"}`, which would reach any sidecar the
+    compose file happens to carry. `_compose` runs with check=True, so one unrelated service would
+    fail the whole start, and the stack would look broken because of a container nothing needed.
+    """
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="whatever.yml")
+    runtime = DockerRuntime(profile)
+    calls: list[tuple[str, ...]] = []
+
+    def fake_compose(*args: str):
+        calls.append(args)
+        return None
+
+    monkeypatch.setattr(runtime, "_compose", fake_compose)
+    monkeypatch.setattr(
+        runtime,
+        "_service_names",
+        lambda: frozenset({"db", "recall-default-docs", "otel-collector", "recall-backup"}),
+    )
+    monkeypatch.setattr(runtime, "health", lambda: {"status": "ready"})
+    monkeypatch.setattr(runtime, "_call_for", lambda *a, **k: {})
+
+    runtime.start()
+
+    applied = [args[2] for args in calls if "schema" in args]
+    assert applied == ["recall-default-docs"], f"schema apply reached {applied}"
+
+
 def test_docker_runtime_still_serves_the_pre_wizard_compose_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
