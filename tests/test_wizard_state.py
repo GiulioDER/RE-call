@@ -133,21 +133,21 @@ def test_the_digest_does_not_depend_on_the_path_separator(tmp_path: Path) -> Non
 
 def test_state_round_trips_through_the_file(tmp_path: Path) -> None:
     path = tmp_path / "s.json"
-    state = WizardState(digest="d" * 8).with_outcome(_promoted("docs")).with_indexed(
-        LegacyIndex(tenant="memory", files=2, chunks=7)
+    state = WizardState(digest="d" * 8).with_outcome(_promoted("default-docs")).with_indexed(
+        LegacyIndex(tenant="default-memory", files=2, chunks=7)
     )
     save_state(path, state)
 
     restored = load_state(path, digest="d" * 8)
     assert restored == state, "a state file read back must compare equal to the run that wrote it"
-    assert restored.outcome_for("docs") is not None
-    assert restored.indexed_for("memory") == ("memory", 2, 7)
+    assert restored.outcome_for("default-docs") is not None
+    assert restored.indexed_for("default-memory") == ("default-memory", 2, 7)
 
 
 def test_a_digest_mismatch_forgets_everything(tmp_path: Path) -> None:
     """The operator changed the embedder or a root, so nothing recorded is valid any more."""
     path = tmp_path / "s.json"
-    save_state(path, WizardState(digest="old").with_outcome(_promoted("docs")))
+    save_state(path, WizardState(digest="old").with_outcome(_promoted("default-docs")))
 
     fresh = load_state(path, digest="new")
     assert fresh.outcomes == (), "work recorded under another configuration must not be reused"
@@ -182,11 +182,11 @@ def test_the_write_is_atomic_and_leaves_no_temporary(tmp_path: Path) -> None:
     is the failure this module exists to prevent.
     """
     path = tmp_path / "nested" / "s.json"
-    save_state(path, WizardState(digest="d").with_outcome(_promoted("docs")))
+    save_state(path, WizardState(digest="d").with_outcome(_promoted("default-docs")))
 
     assert path.exists()
     assert not list(path.parent.glob("*.tmp")), "no temporary file may survive the write"
-    assert load_state(path, digest="d").outcome_for("docs") is not None
+    assert load_state(path, digest="d").outcome_for("default-docs") is not None
 
 
 # ----------------------------------------------------------------------------------------------
@@ -233,18 +233,18 @@ def test_a_crash_part_way_keeps_what_finished(tmp_path: Path) -> None:
     config = _config(tmp_path)
     state_path = tmp_path / "s.json"
 
-    first = _CountingSpy(crash={"code"})
+    first = _CountingSpy(crash={"default-code"})
     report = run_headless(config, services=first, state_path=state_path)
-    assert first.built == ["docs", "code"]
-    assert [f.tenant for f in report.failures] == ["code"]
+    assert first.built == ["default-docs", "default-code"]
+    assert [f.tenant for f in report.failures] == ["default-code"]
     assert report.ok is False
 
     second = _CountingSpy()
     again = run_headless(config, services=second, state_path=state_path)
 
-    assert second.built == ["code"], "docs was already promoted and must not be rebuilt"
-    assert "docs" in again.reused
-    assert {o.tenant for o in again.outcomes} == {"docs", "code"}
+    assert second.built == ["default-code"], "docs was already promoted and must not be rebuilt"
+    assert "default-docs" in again.reused
+    assert {o.tenant for o in again.outcomes} == {"default-docs", "default-code"}
     assert again.ok is True
     assert "reused from a previous run" in again.render()
 
@@ -273,11 +273,11 @@ def test_a_degraded_corpus_is_retried_rather_than_reused(tmp_path: Path) -> None
 
     first = _Degrading()
     run_headless(config, services=first, state_path=state_path)
-    assert first.built == ["docs", "code"]
+    assert first.built == ["default-docs", "default-code"]
 
     second = _Degrading()
     run_headless(config, services=second, state_path=state_path)
-    assert second.built == ["docs", "code"], "an unpromoted corpus must be retried"
+    assert second.built == ["default-docs", "default-code"], "an unpromoted corpus must be retried"
 
 
 def test_fresh_ignores_recorded_state(tmp_path: Path) -> None:
@@ -288,7 +288,7 @@ def test_fresh_ignores_recorded_state(tmp_path: Path) -> None:
     again = _CountingSpy()
     report = run_headless(config, services=again, state_path=state_path, fresh=True)
 
-    assert again.built == ["docs", "code"], "--fresh must rebuild everything"
+    assert again.built == ["default-docs", "default-code"], "--fresh must rebuild everything"
     assert report.reused == ()
 
 
@@ -299,7 +299,7 @@ def test_no_state_path_means_no_state_file_and_no_reuse(tmp_path: Path) -> None:
     second = _CountingSpy()
     run_headless(config, services=second)
 
-    assert second.built == ["docs", "code"]
+    assert second.built == ["default-docs", "default-code"]
     assert not list(tmp_path.glob("*.state.json"))
 
 
@@ -327,7 +327,7 @@ def test_a_state_file_that_cannot_be_written_does_not_fail_the_install(
     )
 
     assert report.ok is True, "the install must still succeed"
-    assert spy.built == ["docs", "code"]
+    assert spy.built == ["default-docs", "default-code"]
     assert any("could not write" in n for n in notes), "and it must SAY the run is not resumable"
 
 
@@ -341,5 +341,5 @@ def test_an_indexed_corpus_is_reused_too(tmp_path: Path) -> None:
     report = run_headless(config, services=second, state_path=state_path)
 
     assert second.legacy == [], "memory was already indexed"
-    assert [i.tenant for i in report.indexed] == ["memory"]
-    assert "memory" in report.reused
+    assert [i.tenant for i in report.indexed] == ["default-memory"]
+    assert "default-memory" in report.reused

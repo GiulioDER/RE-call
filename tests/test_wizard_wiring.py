@@ -44,15 +44,15 @@ def test_a_promoted_tenant_is_served_from_its_generation_under_strict_trust(tmp_
     blocks, unservable = server_blocks(
         _plan(tmp_path),
         dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
-        promoted=frozenset({"docs", "code"}),
-        serving=frozenset({"docs", "code", "memory"}),
+        promoted=frozenset({"default-docs", "default-code"}),
+        serving=frozenset({"default-docs", "default-code", "default-memory"}),
     )
 
     assert unservable == ()
-    docs = _by_name(blocks)["docs"]
+    docs = _by_name(blocks)["default-docs"]
     assert docs.env["RECALL_ENV"] == "production"
     assert docs.env["RECALL_TRUST_MODE"] == "strict"
-    assert docs.env["RECALL_TENANT"] == "docs"
+    assert docs.env["RECALL_TENANT"] == "default-docs"
 
 
 def test_a_degraded_tenant_with_a_predecessor_is_served_with_relaxed_trust(tmp_path: Path) -> None:
@@ -61,11 +61,11 @@ def test_a_degraded_tenant_with_a_predecessor_is_served_with_relaxed_trust(tmp_p
         _plan(tmp_path),
         dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
         promoted=frozenset(),
-        serving=frozenset({"docs", "code", "memory"}),
+        serving=frozenset({"default-docs", "default-code", "default-memory"}),
     )
 
     assert unservable == ()
-    docs = _by_name(blocks)["docs"]
+    docs = _by_name(blocks)["default-docs"]
     assert docs.env["RECALL_ENV"] == "production"
     assert docs.env["RECALL_TRUST_MODE"] == "development"
     assert "EARLIER generation" in docs.rationale, "the operator must be told what is serving"
@@ -84,12 +84,12 @@ def test_a_degraded_tenant_with_nothing_serving_gets_no_server_at_all(tmp_path: 
         _plan(tmp_path),
         dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
         promoted=frozenset(),
-        serving=frozenset({"memory"}),
+        serving=frozenset({"default-memory"}),
     )
 
     served = set(_by_name(blocks))
-    assert served == {"memory"}, "no server may be written for a tenant that cannot answer"
-    assert {u.tenant for u in unservable} == {"docs", "code"}
+    assert served == {"default-memory"}, "no server may be written for a tenant that cannot answer"
+    assert {u.tenant for u in unservable} == {"default-docs", "default-code"}
     assert all("NoActiveGeneration" in u.reason for u in unservable), (
         "the reason must name what would actually happen, not just say it failed"
     )
@@ -100,11 +100,11 @@ def test_the_uncalibrated_tenant_is_never_put_into_production_mode(tmp_path: Pat
     blocks, _ = server_blocks(
         _plan(tmp_path),
         dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
-        promoted=frozenset({"docs", "code"}),
-        serving=frozenset({"docs", "code", "memory"}),
+        promoted=frozenset({"default-docs", "default-code"}),
+        serving=frozenset({"default-docs", "default-code", "default-memory"}),
     )
 
-    memory = _by_name(blocks)["memory"]
+    memory = _by_name(blocks)["default-memory"]
     assert "RECALL_ENV" not in memory.env, "production mode would route past the legacy table"
     assert memory.env["RECALL_TRUST_MODE"] == "development"
 
@@ -120,8 +120,8 @@ def test_every_block_sets_trust_in_its_own_env_rather_than_relying_on_the_shell(
     blocks, _ = server_blocks(
         _plan(tmp_path),
         dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
-        promoted=frozenset({"docs", "code"}),
-        serving=frozenset({"docs", "code", "memory"}),
+        promoted=frozenset({"default-docs", "default-code"}),
+        serving=frozenset({"default-docs", "default-code", "default-memory"}),
     )
 
     for block in blocks:
@@ -147,7 +147,7 @@ def test_writing_preserves_servers_this_wizard_knows_nothing_about(tmp_path: Pat
             {
                 "mcpServers": {
                     "someone-elses": {"type": "http", "url": "https://example.invalid/mcp"},
-                    "docs": {"type": "stdio", "command": "old"},
+                    "default-docs": {"type": "stdio", "command": "old"},
                 }
             }
         ),
@@ -157,15 +157,15 @@ def test_writing_preserves_servers_this_wizard_knows_nothing_about(tmp_path: Pat
     blocks, _ = server_blocks(
         _plan(tmp_path),
         dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
-        promoted=frozenset({"docs", "code"}),
-        serving=frozenset({"docs", "code", "memory"}),
+        promoted=frozenset({"default-docs", "default-code"}),
+        serving=frozenset({"default-docs", "default-code", "default-memory"}),
     )
     write_mcp_config(path, mcp_config(blocks, project_root=tmp_path))
 
     written = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
     assert written["someone-elses"]["url"] == "https://example.invalid/mcp", "must survive"
-    assert written["docs"]["command"] == "python", "and ours must be replaced, not merged into"
-    assert set(written) == {"someone-elses", "docs", "code", "memory"}
+    assert written["default-docs"]["command"] == "python", "and ours must be replaced, not merged into"
+    assert set(written) == {"someone-elses", "default-docs", "default-code", "default-memory"}
 
 
 def test_writing_over_a_corrupt_file_does_not_lose_the_install(tmp_path: Path) -> None:
@@ -176,15 +176,15 @@ def test_writing_over_a_corrupt_file_does_not_lose_the_install(tmp_path: Path) -
     blocks, _ = server_blocks(
         _plan(tmp_path),
         dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
-        promoted=frozenset({"docs", "code"}),
-        serving=frozenset({"docs", "code", "memory"}),
+        promoted=frozenset({"default-docs", "default-code"}),
+        serving=frozenset({"default-docs", "default-code", "default-memory"}),
     )
     write_mcp_config(path, mcp_config(blocks, project_root=tmp_path))
 
     assert set(json.loads(path.read_text(encoding="utf-8"))["mcpServers"]) == {
-        "docs",
-        "code",
-        "memory",
+        "default-docs",
+        "default-code",
+        "default-memory",
     }
 
 
@@ -193,8 +193,8 @@ def test_the_written_file_has_no_temporary_left_behind_and_lf_endings(tmp_path: 
     blocks, _ = server_blocks(
         _plan(tmp_path),
         dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
-        promoted=frozenset({"docs"}),
-        serving=frozenset({"docs", "memory"}),
+        promoted=frozenset({"default-docs"}),
+        serving=frozenset({"default-docs", "default-memory"}),
     )
     write_mcp_config(path, mcp_config(blocks, project_root=tmp_path))
 
@@ -207,12 +207,12 @@ def test_the_server_command_launches_the_real_module_from_the_project_root(tmp_p
     blocks, _ = server_blocks(
         _plan(tmp_path),
         dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
-        promoted=frozenset({"docs"}),
-        serving=frozenset({"docs", "memory"}),
+        promoted=frozenset({"default-docs"}),
+        serving=frozenset({"default-docs", "default-memory"}),
     )
     document = mcp_config(blocks, project_root=tmp_path / "project")
 
-    entry = document["mcpServers"]["docs"]  # type: ignore[index]
+    entry = document["mcpServers"]["default-docs"]  # type: ignore[index]
     assert entry["type"] == "stdio"
     assert entry["args"] == ["-m", "recall_mcp.server"]
     assert entry["cwd"] == str(tmp_path / "project")
@@ -246,9 +246,9 @@ def test_a_project_root_writes_the_configuration(tmp_path: Path) -> None:
     report = run_headless(config, services=_CountingSpy())
 
     assert report.mcp_path == root / ".mcp.json"
-    assert {b.name for b in report.servers} == {"docs", "code", "memory"}
+    assert {b.name for b in report.servers} == {"default-docs", "default-code", "default-memory"}
     written = json.loads((root / ".mcp.json").read_text(encoding="utf-8"))
-    assert set(written["mcpServers"]) == {"docs", "code", "memory"}
+    assert set(written["mcpServers"]) == {"default-docs", "default-code", "default-memory"}
     assert "wrote" in report.render()
 
     # `.env` and `CLAUDE.md` too, and every file touched must be NAMED: these are block-scoped
@@ -307,8 +307,8 @@ def test_every_written_server_is_smoke_tested(tmp_path: Path) -> None:
         load_config(_write(tmp_path, _config(tmp_path, project_root=str(root)))), services=spy
     )
 
-    assert spy.smoked == ["docs", "code", "memory"], "every written server must be queried"
-    assert [s.tenant for s in report.smoke] == ["docs", "code", "memory"]
+    assert spy.smoked == ["default-docs", "default-code", "default-memory"], "every written server must be queried"
+    assert [s.tenant for s in report.smoke] == ["default-docs", "default-code", "default-memory"]
     assert all(s.answered for s in report.smoke)
     assert report.ok is True
     assert "smoke ok" in report.render()
@@ -326,12 +326,12 @@ def test_a_server_whose_query_raises_makes_the_install_not_ok(tmp_path: Path) ->
 
     root = tmp_path / "project"
     root.mkdir()
-    spy = _Spy(smoke_raises={"code"})
+    spy = _Spy(smoke_raises={"default-code"})
     report = run_headless(
         load_config(_write(tmp_path, _config(tmp_path, project_root=str(root)))), services=spy
     )
 
-    assert [o.tenant for o in report.outcomes] == ["docs", "code"], "the builds all succeeded"
+    assert [o.tenant for o in report.outcomes] == ["default-docs", "default-code"], "the builds all succeeded"
     assert report.failures == (), "and nothing failed while building"
     assert report.ok is False, "yet the install is not ok, because one server cannot answer"
     rendered = report.render()
@@ -394,7 +394,7 @@ def test_an_unwritable_project_root_reports_rather_than_discarding_the_install(
     root.mkdir()
     report = H.run_headless(_config(tmp_path, project_root=str(root)), services=_CountingSpy())
 
-    assert [o.tenant for o in report.outcomes] == ["docs", "code"], "the builds must survive"
+    assert [o.tenant for o in report.outcomes] == ["default-docs", "default-code"], "the builds must survive"
     assert [f.tenant for f in report.failures] == ["wiring"]
     assert report.mcp_path is None
     assert report.ok is False, "an install nobody can reach is not complete"

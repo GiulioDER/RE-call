@@ -41,15 +41,15 @@ def test_the_three_corpora_match_the_design_table(tmp_path: Path) -> None:
     """The documented layout, asserted field by field rather than trusted to the factories."""
     plan = default_plan(
         embedder="fastembed",
-        docs_root=tmp_path / "docs",
+        docs_root=tmp_path / "default-docs",
         code_root=tmp_path / "repo",
-        memory_root=tmp_path / "memory",
+        memory_root=tmp_path / "default-memory",
     )
 
     by_tenant = {c.tenant: c for c in plan.corpora}
-    assert set(by_tenant) == {"docs", "code", "memory"}
+    assert set(by_tenant) == {"default-docs", "default-code", "default-memory"}
 
-    docs = by_tenant["docs"]
+    docs = by_tenant["default-docs"]
     assert docs.glob == "**/*.md"
     assert docs.chunker == "text"
     assert docs.calibrated is True
@@ -57,7 +57,7 @@ def test_the_three_corpora_match_the_design_table(tmp_path: Path) -> None:
     assert docs.trust_mode is TrustMode.STRICT
     assert docs.writable is False
 
-    code = by_tenant["code"]
+    code = by_tenant["default-code"]
     assert code.glob == "**/*.py"
     assert code.chunker == "code"
     assert code.calibrated is True
@@ -65,7 +65,7 @@ def test_the_three_corpora_match_the_design_table(tmp_path: Path) -> None:
     assert code.trust_mode is TrustMode.STRICT
     assert code.writable is False
 
-    memory = by_tenant["memory"]
+    memory = by_tenant["default-memory"]
     assert memory.glob == "**/*.md"
     assert memory.chunker == "text"
     assert memory.calibrated is False
@@ -146,7 +146,7 @@ def test_a_contradictory_spec_is_unbuildable(
     an install that fails at a later step with a message about something else.
     """
     fields: dict[str, object] = {
-        "tenant": "docs",
+        "tenant": "default-docs",
         "root": tmp_path,
         "glob": "**/*.md",
         "chunker": "text",
@@ -180,9 +180,9 @@ def test_one_embedder_for_the_whole_plan(tmp_path: Path) -> None:
     """
     plan = default_plan(
         embedder="fastembed",
-        docs_root=tmp_path / "docs",
+        docs_root=tmp_path / "default-docs",
         code_root=tmp_path / "repo",
-        memory_root=tmp_path / "memory",
+        memory_root=tmp_path / "default-memory",
     )
 
     assert plan.embedder == "fastembed"
@@ -236,14 +236,14 @@ def test_the_calibrated_view_excludes_the_writable_tenant(tmp_path: Path) -> Non
     """
     plan = default_plan(
         embedder="fastembed",
-        docs_root=tmp_path / "docs",
+        docs_root=tmp_path / "default-docs",
         code_root=tmp_path / "repo",
-        memory_root=tmp_path / "memory",
+        memory_root=tmp_path / "default-memory",
     )
 
-    assert [c.tenant for c in plan.calibrated] == ["docs", "code"]
+    assert [c.tenant for c in plan.calibrated] == ["default-docs", "default-code"]
     assert all(c.calibrated for c in plan.calibrated)
-    assert "memory" not in [c.tenant for c in plan.calibrated]
+    assert "default-memory" not in [c.tenant for c in plan.calibrated]
 
 
 def test_a_trust_mode_spelled_as_a_plain_string_cannot_bypass_the_strict_guard(
@@ -261,7 +261,7 @@ def test_a_trust_mode_spelled_as_a_plain_string_cannot_bypass_the_strict_guard(
     """
     with pytest.raises(ValueError, match="cannot be served strictly"):
         CorpusSpec(
-            tenant="memory",
+            tenant="default-memory",
             root=tmp_path,
             glob="**/*.md",
             chunker="text",
@@ -276,7 +276,7 @@ def test_a_trust_mode_spelled_as_a_plain_string_cannot_bypass_the_strict_guard(
     assert coerced.trust_mode is TrustMode.DEVELOPMENT
     assert isinstance(
         CorpusSpec(
-            tenant="memory",
+            tenant="default-memory",
             root=tmp_path,
             glob="**/*.md",
             chunker="text",
@@ -290,7 +290,7 @@ def test_a_trust_mode_spelled_as_a_plain_string_cannot_bypass_the_strict_guard(
 
     with pytest.raises(ValueError, match="trust_mode must be one of"):
         CorpusSpec(
-            tenant="memory",
+            tenant="default-memory",
             root=tmp_path,
             glob="**/*.md",
             chunker="text",
@@ -302,14 +302,14 @@ def test_a_trust_mode_spelled_as_a_plain_string_cannot_bypass_the_strict_guard(
 
 
 def test_a_wrongly_typed_corpora_argument_names_the_mistake(tmp_path: Path) -> None:
-    """A `str` is iterable, so `corpora="docs"` survived the tuple coercion.
+    """A `str` is iterable, so `corpora="default-docs"` survived the tuple coercion.
 
     It then failed inside the duplicate-tenant loop with `AttributeError: 'str' object has no
     attribute 'tenant'`, which names neither the argument nor the mistake, in a module where every
     other guard says exactly what is wrong.
     """
     with pytest.raises(TypeError, match="corpora must be an iterable of CorpusSpec"):
-        CorpusPlan(embedder="fastembed", corpora="docs")  # type: ignore[arg-type]
+        CorpusPlan(embedder="fastembed", corpora="default-docs")  # type: ignore[arg-type]
 
 
 def test_the_absolute_root_guard_has_the_same_meaning_on_both_platforms() -> None:
@@ -319,7 +319,7 @@ def test_the_absolute_root_guard_has_the_same_meaning_on_both_platforms() -> Non
     drive) while `PurePosixPath("/docs")` is. Every CI job that installs the package and imports
     `recall.wizard` runs ubuntu-latest, and the one windows-latest job deliberately skips
     `pip install -e .`, so the guard protecting provenance on the SHIPPED target is exercised only
-    under POSIX rules. The existing refusal test uses `Path("docs")`, which is relative under both
+    under POSIX rules. The existing refusal test uses `Path("default-docs")`, which is relative under both
     rule sets and therefore cannot tell them apart.
 
     This asserts the flavour semantics directly, so the meaning is pinned without a Windows runner.
@@ -340,7 +340,7 @@ def test_the_absolute_root_guard_has_the_same_meaning_on_both_platforms() -> Non
 
     # And whatever the platform, a plainly relative root is refused by the real guard.
     with pytest.raises(ValueError, match="root must be absolute"):
-        docs_corpus(Path("docs"))
+        docs_corpus(Path("default-docs"))
 
 
 def test_a_relative_root_is_refused_because_it_would_stamp_the_wizards_own_commit() -> None:
@@ -348,14 +348,14 @@ def test_a_relative_root_is_refused_because_it_would_stamp_the_wizards_own_commi
 
     `head_commit` shells out to `git -C <path>`, which resolves a relative path against the calling
     process's working directory and then walks upward looking for a repository. Measured before this
-    guard: `docs_corpus(Path("docs")).build_request()` stamped THIS repository's HEAD onto what is
+    guard: `docs_corpus(Path("default-docs")).build_request()` stamped THIS repository's HEAD onto what is
     nominally the user's corpus. Absent provenance is safe; present-and-wrong is not.
     """
     with pytest.raises(ValueError, match="root must be absolute"):
-        docs_corpus(Path("docs"))
+        docs_corpus(Path("default-docs"))
 
     with pytest.raises(ValueError, match="root must be absolute"):
-        memory_corpus(Path("memory"))
+        memory_corpus(Path("default-memory"))
 
 
 def test_a_root_that_is_a_file_is_refused(tmp_path: Path) -> None:
@@ -377,7 +377,7 @@ def test_a_list_of_corpora_becomes_a_tuple_so_the_plan_cannot_be_widened(tmp_pat
     refuse — after construction, past the check. A tenant has one active generation, so the
     duplicate does not merge: promoting the second leaves the first indexed but unsearchable.
     """
-    plan = CorpusPlan(embedder="fastembed", corpora=[docs_corpus(tmp_path / "docs")])
+    plan = CorpusPlan(embedder="fastembed", corpora=[docs_corpus(tmp_path / "default-docs")])
 
     assert isinstance(plan.corpora, tuple)
     with pytest.raises(AttributeError):
@@ -408,3 +408,79 @@ def test_an_uncalibrated_corpus_has_no_build_request(tmp_path: Path) -> None:
     """
     with pytest.raises(ValueError, match="memory.*is not calibrated"):
         memory_corpus(tmp_path / "memory").build_request()
+
+
+# ----------------------------------------------------------------------------------------------
+# Project scoping: the tenant name the desktop UI already uses
+# ----------------------------------------------------------------------------------------------
+
+
+def test_the_default_project_produces_the_tenants_the_ui_already_expects() -> None:
+    """`RuntimeProfile.default_tenant` is "default", so this install is one the UI can see.
+
+    A wizard that named its tenants anything else would build a parallel set the desktop app could
+    not list, which is the same silent split as two databases one layer up.
+    """
+    from recall.wizard.corpora import DEFAULT_PROJECT, tenant_for
+
+    assert DEFAULT_PROJECT == "default"
+    assert tenant_for(DEFAULT_PROJECT, "docs") == "default-docs"
+    assert tenant_for(DEFAULT_PROJECT, "code") == "default-code"
+    assert tenant_for(DEFAULT_PROJECT, "memory") == "default-memory"
+
+
+def test_a_project_may_contain_hyphens() -> None:
+    """`rsplit("-", 1)` recovers the scope, which is how the desktop reads a tenant back."""
+    from recall.wizard.corpora import tenant_for
+
+    tenant = tenant_for("my-side-project", "code")
+    assert tenant == "my-side-project-code"
+    assert tenant.rsplit("-", 1) == ["my-side-project", "code"]
+
+
+@pytest.mark.parametrize("kind", ["docs", "code", "memory"])
+def test_a_project_ending_in_a_kind_is_refused(kind: str) -> None:
+    """`my-docs` plus `-docs` is indistinguishable from the docs corpus of a project called `my`.
+
+    Two different corpora resolving to one tenant name is the kind of collision that silently
+    merges somebody's notes into somebody else's project.
+    """
+    from recall.wizard.corpora import tenant_for
+
+    with pytest.raises(ValueError, match=f"must not end in -{kind}"):
+        tenant_for(f"my-{kind}", "docs")
+
+
+@pytest.mark.parametrize("bad", ["my project", "proj/ect", "pro:ject", "pro$ject"])
+def test_a_project_that_is_not_a_valid_service_name_is_refused(bad: str) -> None:
+    """The tenant becomes a Docker Compose service name (`recall-{tenant}`).
+
+    Refused here rather than at `docker compose up`, where the error names a generated file the
+    user never wrote and cannot correct.
+    """
+    from recall.wizard.corpora import tenant_for
+
+    with pytest.raises(ValueError, match="only letters, digits"):
+        tenant_for(bad, "docs")
+
+
+def test_an_empty_project_is_refused() -> None:
+    from recall.wizard.corpora import tenant_for
+
+    with pytest.raises(ValueError, match="project must be non-empty"):
+        tenant_for("   ", "docs")
+
+
+def test_the_plan_scopes_every_corpus_to_the_same_project(tmp_path: Path) -> None:
+    """One project, three tenants, and nothing left on the old bare naming."""
+    from recall.wizard.corpora import default_plan
+
+    plan = default_plan(
+        embedder="hashing",
+        docs_root=tmp_path / "d",
+        code_root=tmp_path / "c",
+        memory_root=tmp_path / "m",
+        project="myapp",
+    )
+
+    assert [spec.tenant for spec in plan.corpora] == ["myapp-docs", "myapp-code", "myapp-memory"]
