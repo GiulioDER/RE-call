@@ -150,6 +150,36 @@ def test_libreoffice_dispatch_excludes_msg() -> None:
 # green runs do not sample the failure mode, because the failure mode is a busy machine.
 #
 # Re-measure: `python -m pytest tests/test_legacy_document_extraction.py -k libreoffice --durations=0`
+#
+# ----------------------------------------------------------------------------------------------
+# CORRECTION, appended 2026-08-18. Every figure above is left exactly as measured; this says which
+# of them the code moved out from under, and which still stand.
+#
+# The paragraph above that parks profile reuse as "not a change to make from a flaky test" has been
+# acted on. `_extract_with_libreoffice` no longer builds a profile per call: it checks one out of a
+# small process-wide pool. The answer to "concurrent extractions locking it" turned out not to be a
+# lock at all, because a single locked profile measured *worse* than the old always-cold code at
+# four way concurrency, 12.89s against 8.18s. Distinct profiles used concurrently are fine, so the
+# pool keeps the reuse and the parallelism both. Record, with the falsified prediction that produced
+# that design: `docs/preregistrations/2026-08-18-libreoffice-profile-reuse.md`.
+#
+# What still stands: the body really does start LibreOffice **ten** times. The five fixture
+# conversions above are unchanged, and each `extract_document` below still shells out once.
+#
+# What moved: the extraction half is no longer cold. Only the first of the five pays a profile
+# bootstrap, so measured 2026-08-18 on this machine the whole test now runs in **36.25, 35.36 and
+# 35.09 seconds**, against the 53.86, 53.93 and 57.26 recorded above for the same three-consecutive-
+# idle-runs condition. The 48.18s / 56.00s split above is therefore historical: the 48.18s fixture
+# half is untouched, the 56.00s extraction half is the part that shrank.
+#
+# ⚠️ **600 is deliberately NOT lowered, and the arithmetic above is why.** The margin was never
+# sized against the duration, it was sized against the 2.15x load-driven spread, and a pool of
+# LibreOffice profiles does nothing about a busy machine. The same multiplier applied to the new
+# median still lands near 76s, which clears the repository-wide 120 comfortably, but that comparison
+# is against three green runs on an idle box, and the paragraph above already says why three green
+# runs do not sample this failure mode. Lowering the ceiling is its own change and wants its own
+# measurement under load, not an inference from a faster median.
+# ----------------------------------------------------------------------------------------------
 @pytest.mark.timeout(600)
 @pytest.mark.skipif(_libreoffice_executable() is None, reason="LibreOffice is not installed")
 def test_libreoffice_converts_legacy_office_sources(tmp_path: Path) -> None:
