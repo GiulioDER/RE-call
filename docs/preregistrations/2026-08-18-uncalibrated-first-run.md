@@ -97,13 +97,21 @@ different measurement and would need its own record.
 
 ## A note on line numbers in every result below
 
-All source citations **below this rule** were re measured against the tree at commit `bd582316`,
-after rebasing onto it. An earlier draft cited a pre rebase tree and every one of thirteen checked
-citations had moved, which is the reason they were recomputed rather than carried forward.
+All source citations **below this rule** are re measured whenever this file is edited, against the
+commit the edit lands on.
+
+⚠️ **Line numbers in this repository drift faster than a document can be written.** Measured over
+this work: an intervening merge moved **13 of 13** checked citations while the first draft was in
+progress; a second merge moved a further one; a third moved another. Three separate concurrent
+merges in one working session. So a citation here is accurate as of its commit and carries no
+promise beyond it, and any reader finding one off by a few lines should search for the quoted text
+rather than assume the claim is wrong. The durable fix is a check in CI that resolves every
+`path:line` in `docs/` and fails when one stops matching its quoted anchor; that does not exist yet
+and is filed as follow up work.
 
 ⚠️ Citations **above** this rule are left exactly as registered, because a prediction is a
 historical record and must not be edited. One of them has since moved: `recall/index.py:707`, cited
-in "What I already know" for the metadata stamp, is `recall/index.py:810` on the current tree.
+in "What I already know" for the metadata stamp, is `recall/index.py:810` at the time of writing.
 
 ## Reproducing any of this
 
@@ -210,7 +218,7 @@ the pipeline check. At the measured tree, the fallback returned the **literal st
 track the model at all:
 
 - the corpus stores 1024 dimensional vectors labelled `bge-small-symmetric-v1`, while the registered
-  profile of that name is 384 dimensional (`recall/embedding_registry.py:223`);
+  profile of that name is 384 dimensional (`recall/embedding_registry.py:228-230`);
 - a locally constructed `fastembed:BAAI/bge-large-en-v1.5` embedder reports
   `name='BAAI/bge-large-en-v1.5' dim=1024 profile_id='bge-small-symmetric-v1'`.
 
