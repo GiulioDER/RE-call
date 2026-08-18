@@ -115,6 +115,21 @@ Measured 2026-08-18 on one Windows machine, LibreOffice 26.2.5.2, `pdfplumber` 0
 **Q1 and Q2 both confirmed. Neither makes an attestation sound**, which was stated before measuring
 and is restated below because a clean sweep is exactly the result most likely to be over read.
 
+### ⚠️ Two citations above the rule have since moved
+
+The registered sections are left exactly as written, because a prediction is a historical record.
+Two of their citations no longer resolve to what they described, both because `recall/index.py`
+grew after registration:
+
+| Cited | Was | Is now |
+|---|---|---|
+| `recall/index.py:762` | the `{**extracted.metadata, "media_type": ...}` dict | `recall/index.py:789` |
+| `recall/index.py:816` | `text_start` / `text_end` stored as `None` | `recall/index.py:841` |
+
+Neither claim changed; only the line numbers did. This is the fifth such drift in this document's
+short life, which is why the design now states requirements as behaviour rather than as the presence
+or absence of a field.
+
 ### Apparatus check, run first
 
 A deliberately corrupted extraction digest was reported as differing. Without that, every

@@ -45,7 +45,7 @@ property this system has. `promote()`'s message says the refusal stands "until c
 land", which is accurate: it is a placeholder, not a safety property.
 
 **F3. The legacy `chunks` table records enough to establish a binding, not merely assert one.**
-It has no `source_sha256` column, but `recall/index.py:810` stamps into every chunk's metadata:
+It has no `source_sha256` column, but `recall/index.py:836` stamps into every chunk's metadata:
 `content_hash`, `index_fingerprint`, `embedding_profile`, `context_mode`, `context_version`, `ord`
 and `file`, all written **at embed time**, so checking them is verification rather than
 reconstruction.
@@ -68,8 +68,8 @@ already written. Only `content_hash` is load bearing here, and the accessor that
 (`:2075`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
 
 ⚠️ **`content_hash` is media type dependent since `bd582316`.** A markdown source is hashed as
-decoded, newline normalised, NUL stripped text re encoded as UTF-8 (`recall/index.py:671` and
-`:690`); any other media type is hashed as **raw bytes** (`:692`). Any adoption path must branch the
+decoded, newline normalised, NUL stripped text re encoded as UTF-8 (`recall/index.py:697` and
+`:716`); any other media type is hashed as **raw bytes** (`:718`). Any adoption path must branch the
 same way, or it will refuse every markdown file with CRLF or a BOM.
 
 **F4. The first run wizard is half built and already solves the hardest part.**
@@ -235,12 +235,16 @@ is that the legacy metadata was written at embed time and can be checked against
 1. Read `metadata->>'content_hash'` via `source_raw_hashes`. Absent means **not adoptable**.
 2. Read the file at `metadata->>'file'`. Missing or unreadable means not adoptable.
 3. Re derive the hash **exactly as the indexer does for that media type**: decoded, newline
-   normalised, NUL stripped text for markdown (`recall/index.py:671`, `:690`), raw bytes otherwise
-   (`:692`). Not equal means the file changed since indexing: not adoptable.
+   normalised, NUL stripped text for markdown (`recall/index.py:697`, `:716`), raw bytes otherwise
+   (`:718`). Not equal means the file changed since indexing: not adoptable.
 4. 🔁 **Corrected 2026-08-18 by measurement.** This step originally compared
    `metadata->>'embedding_profile'` to the configured embedder's profile id. **That check does not
    work** (F3), and `index_fingerprint` inherits the defect because `_index_fingerprint` hashes the
-   same value (`recall/index.py:447`). Neither stored field may gate adoption. The check is the
+   same value. 🔁 **Corrected: #381 changed that.** `_index_fingerprint` now hashes
+   `embedding_profile(embedder).fingerprint()` (`recall/index.py:472`), which covers model name
+   and dimension, so a fingerprint computed *today* does distinguish models. It does not help
+   here: every fingerprint **already stored** was computed under the old formula, and those are
+   the rows adoption reads. Neither stored field may gate adoption. The check is the
    attestation sample below.
 5. Only then copy the vector, setting `source_sha256 = content_hash` and
    `object_version_id = content_hash`, the rule `recall/lineage.py:269` enforces for local files.
@@ -752,10 +756,16 @@ adoptable** and must be re embedded. Only markdown gets the complete answer of s
 
 ### Should extraction identity join `_index_fingerprint`?
 
-**Yes, and the cost is real.** Section 6c documents what its absence does to the chunker: because
-the fingerprint has no chunker term, a corpus silently accumulates chunks from several chunker eras.
-Leaving extraction out reproduces that defect one level down, with a worse blast radius, since an
-extractor upgrade can change every PDF in the corpus at once.
+**Yes, and the cost is real.** Section 6c documents what happens without an *effective* term:
+the fingerprint carries a `chunker_version` string that no chunker change moves, so a corpus
+silently accumulates chunks from several chunker eras. Leaving extraction out reproduces that defect
+one level down, with a worse blast radius, since an extractor upgrade can change every PDF in the
+corpus at once.
+
+⚠️ **State the requirement as a behaviour, not as the presence of a field.** The chunker case is the
+warning: a field named after the thing exists and is inert, so "there is a chunker term" was true and
+useless at the same time. An `ExtractionIdentity` term earns its place only if changing an extractor
+version changes the fingerprint, and that is what a test must pin.
 
 The price is that a `pdfplumber` patch bump re extracts and re embeds every PDF. That is the same
 price `EmbeddingProfile.dependencies` already charges for a `fastembed` bump, and it was accepted
