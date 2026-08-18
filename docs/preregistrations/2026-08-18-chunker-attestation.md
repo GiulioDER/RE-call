@@ -13,7 +13,7 @@ verify the chunker that produced that text. This asks whether a chunker attestat
 all, and if so what shape it must take.
 
 The legacy `chunks` table records **no chunker identity**: not the algorithm, not `max_chars`, not
-`overlap`. `_index_fingerprint` has no chunker term either (`recall/index.py:442-452`). So an
+`overlap`. `_index_fingerprint` has no chunker term either (`recall/index.py:467-478`). So an
 adopted generation's `ChunkerIdentity` is an assertion with nothing behind it, and the calibration
 binds to a `pipeline_fingerprint` that includes it.
 
@@ -75,7 +75,7 @@ Corpus: the same remote `memory` tenant used in
 1. Pull `(source, metadata->>'file', metadata->>'ord', text, metadata->>'content_hash')` for the
    tenant, read only.
 2. **Validate the local copy first.** For every source, sha256 the local file exactly as
-   `recall/index.py:671` and `:690` do for markdown and compare to the stored `content_hash`. A
+   `recall/index.py:697` and `:716` do for markdown and compare to the stored `content_hash`. A
    source whose local copy does not match is excluded and counted, because re chunking a different
    file would measure nothing. This is the apparatus check, and it runs before any comparison.
 3. Derive the body with `parse_frontmatter` (`recall/frontmatter.py:186`), which is what the
@@ -104,7 +104,7 @@ Corpus: the same remote `memory` tenant used in
 
 Every source here is markdown, so nothing measures the `content_blocks` extraction path that
 `bd582316` added for other media types, where `text_start` and `text_end` are recorded as `None`
-(`recall/index.py:800`). A corpus of PDFs would additionally depend on the extractor being
+(`recall/index.py:826`). A corpus of PDFs would additionally depend on the extractor being
 deterministic across versions, which is not tested here and is a strictly harder problem.
 
 The corpus is my own memo prose, which is unusually uniform in paragraph length, and paragraph
@@ -195,7 +195,7 @@ the embedder check can only be a sample.
 
 - **One corpus, all markdown.** Nothing here measures the `content_blocks` extraction path
   `bd582316` added for other media types, where `text_start` and `text_end` are stored as `None`
-  (`recall/index.py:800`). A PDF corpus would additionally require the extractor to be
+  (`recall/index.py:826`). A PDF corpus would additionally require the extractor to be
   deterministic across versions, which is a strictly harder problem and is untested.
 - **Reproduction shows an observationally equivalent chunker, not the identical one.** A different
   implementation producing identical output on these 1,058 sources is indistinguishable here. That
@@ -212,6 +212,15 @@ the embedder check can only be a sample.
 **Appended, not edited.** The text above stands as written and measured. This records that one
 premise it rests on stopped being literally true a few hours after it was registered, and states
 exactly how much of the result that costs, which is nothing.
+
+📍 **One later edit, disclosed here rather than made silently: the `recall/index.py` LINE NUMBERS
+above were repointed on 2026-08-18.** `79a0d6ed` shifted that file by 26 lines, so five citations in
+this document stopped resolving. Only the digits changed; no sentence, claim, prediction or result
+was touched, and the destinations were verified to hold the same code the originals named. This is
+the narrow exception to leaving a registered record alone: a pointer that no longer resolves informs
+nobody, and unlike a claim it carries no result. Anyone auditing the original digits will find them
+in the history of this file, and `docs/preregistrations/2026-08-18-uncalibrated-first-run.md` shows
+the stricter alternative, freezing its citations and tracking their drift in a separate note.
 
 **What changed.** `79a0d6ed` (#381) widened `_index_fingerprint` (`recall/index.py:420`) to hash
 `EmbeddingProfile.fingerprint()` instead of `embedding_profile_id(embedder)`. That fingerprint
