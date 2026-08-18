@@ -684,6 +684,67 @@ def _session_providers(model: object) -> list[str]:
     return [PROVIDERS_UNKNOWN]
 
 
+#: The identifiers the no-identity path has always minted, keyed by ``asymmetric``.
+#:
+#: They name ONE model at ONE width. Kept as literals rather than derived so that the default
+#: embedder's id is stable by construction: it is the key every shipped calibration file, every
+#: recorded promotion decision under `results/`, and every corpus indexed by `FastEmbedEmbedder()`
+#: is already written under, and re-deriving it would re-partition all of them for no defect.
+_LEGACY_FALLBACK_PROFILE_IDS = {
+    False: "bge-small-symmetric-v1",
+    True: "bge-small-asymmetric-v1",
+}
+
+
+def _fallback_profile_id(model_name: str, dimension: int, asymmetric: bool) -> str:
+    """The profile id for an embedder built with no registered identity and no explicit id.
+
+    The legacy literal is returned ONLY when this embedder is the model that literal names, at
+    the width the registry declares for it. Anything else gets an id derived from what actually
+    varies, because the literal was previously unconditional and a `profile_id` is a CLAIM about
+    which model wrote a vector, not a label. Measured 2026-08-18 before this guard existed: a
+    `fastembed:BAAI/bge-large-en-v1.5` embedder reported ``dim=1024`` under
+    ``profile_id='bge-small-symmetric-v1'``, an id whose registry entry is 384-dimensional, and a
+    production corpus of 8,716 chunks had stored that pairing in its chunk metadata.
+
+    Why the id and not just the fingerprint. `EmbeddingProfile.fingerprint` already covers
+    `model_name` and `dimension`, so the embedding cache (`recall/cache.py`) never confused the
+    two models. `recall.index._index_fingerprint` does not: it hashes `embedding_profile_id`
+    alone, so under the unconditional literal a bge-small corpus and a bge-large corpus produced
+    the SAME index fingerprint for the same file, and the incremental skip guard treated a model
+    swap as a no-op. Verified by execution: the 384-dimension and 1024-dimension fingerprints were
+    equal.
+
+    The comparison covers `model_name` and `dimension` only. The encoder modes cannot disagree
+    here: the legacy id is looked up BY ``asymmetric``, and both the registry pair and this
+    fallback derive their modes from that same flag, so a mode check could never fail and would
+    be a guard that cannot fire.
+    """
+    # Function-local: `recall.embedding_registry` imports this module at module level, so a
+    # top-level import here would be a cycle. Safe at call time because the registry only builds
+    # a `FastEmbedEmbedder` inside `RegisteredProfile.build`, never while it is being imported.
+    from recall.embedding_registry import find_registered_profile
+
+    legacy = _LEGACY_FALLBACK_PROFILE_IDS[asymmetric]
+    entry = find_registered_profile(legacy)
+    if entry is not None and entry.model_name == model_name and entry.dimension == dimension:
+        return legacy
+    # Namespaced so the id is self-describing in a chunk's metadata and cannot be mistaken for a
+    # registered profile. Injective in exactly the three inputs that reach it, which is the
+    # property `_index_fingerprint` needs and the regression test pins.
+    #
+    # ⚠️ FILENAME-SAFE, which is a constraint and not a style choice. A profile id is not only
+    # compared: `recall.eval.promotion.run.ArmConfig.key` interpolates it into a result FILENAME,
+    # and its own docstring says so ("a generation id can be long and a filename cannot"). A raw
+    # HuggingFace name would put a `/` in that path and a `:` that Windows refuses outright, so
+    # the separator is `__` and the org separator goes the same way. `SparseProfile` already
+    # resolved this identically (`model_name.replace("/", "__")`); this follows that precedent
+    # rather than inventing a second convention. Injectivity survives it for every real model
+    # name, none of which contain `__`.
+    kind = "asymmetric" if asymmetric else "symmetric"
+    return f"unregistered__{model_name.replace('/', '__')}__{dimension}__{kind}"
+
+
 class FastEmbedEmbedder:
     """Real local embeddings (no API key). Requires `pip install "recall-rag[fastembed]"`."""
 
@@ -795,8 +856,8 @@ class FastEmbedEmbedder:
             _with_provider_dependency(identity, self.session_providers)
             if identity
             else EmbeddingProfile(
-                profile_id=profile_id or (
-                    "bge-small-asymmetric-v1" if asymmetric else "bge-small-symmetric-v1"
+                profile_id=profile_id or _fallback_profile_id(
+                    model_name, self._dim, asymmetric
                 ),
                 model_name=model_name,
                 artifact_digest=artifact_sha256 or "legacy-unverified",
