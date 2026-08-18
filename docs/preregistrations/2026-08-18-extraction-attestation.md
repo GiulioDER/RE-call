@@ -13,9 +13,9 @@ it.
 
 The chunker attestation works because markdown body derivation is pure Python inside this
 repository: `parse_frontmatter` plus `chunk_text`. Non markdown is not. `extract_document`
-(`recall/extraction.py:156`) dispatches to **six third party libraries** (`pdfplumber`,
+(`recall/extraction.py:164`) dispatches to **six third party libraries** (`pdfplumber`,
 `python-docx`, `openpyxl`, `xlrd`, `python-pptx`, `beautifulsoup4`, plus `oxmsg` for `.msg`) and,
-for five suffixes, to an **external LibreOffice binary** (`recall/extraction.py:565`).
+for five suffixes, to an **external LibreOffice binary** (`recall/extraction.py:573`).
 
 **Q1 (run to run determinism).** Does `extract_document` produce byte identical output across two
 independent processes on one machine, for every format that can be exercised here?
@@ -39,7 +39,7 @@ what is read back is the converted document's text and I expect the temp path to
 
 **Q3. Five reachable suffixes** (`.doc`, `.odt`, `.ods`, `.odp`, `.ppt`) route to LibreOffice, out
 of the 24 in `DOCUMENT_EXTENSIONS`. A sixth, `.msg`, appears in that branch but is **unreachable**:
-`extract_document` matches `.msg` earlier at `recall/extraction.py:176`.
+`extract_document` matches `.msg` earlier at `recall/extraction.py:184`.
 
 ## What would falsify this
 
@@ -77,7 +77,7 @@ records which extractor ran. What Q1 and Q2 decide is whether an extraction atte
 
 ## What I already know
 
-- `STRUCTURED_DOCUMENT_VERSION = "table-row-groups-v1"` (`recall/extraction.py:130`) versions
+- `STRUCTURED_DOCUMENT_VERSION = "table-row-groups-v1"` (`recall/extraction.py:138`) versions
   recall's own **block shape** and is carried in `_index_fingerprint`. It says nothing about the
   third party libraries, so a `pdfplumber` upgrade changes extracted text without changing any
   recorded version.
@@ -152,9 +152,17 @@ which I named as the ones worth betting against, were as stable as the pure Pyth
 ### Q3, a code fact rather than a prediction
 
 Five reachable suffixes route to LibreOffice. A sixth, `.msg`, appears in that branch at
-`recall/extraction.py:183` but is **unreachable**, because `extract_document` matches `.msg`
-earlier at `:176`. So a deployment without `python-oxmsg` gets an extraction error where the code
+`recall/extraction.py:191` but is **unreachable**, because `extract_document` matches `.msg`
+earlier at `:184`. So a deployment without `python-oxmsg` gets an extraction error where the code
 appears to offer a LibreOffice fallback.
+
+🔁 **Fixed upstream by `64ffee52` (#389), which this finding prompted, and the citation above is now
+a record of the measured tree rather than of the code.** The branch reads
+`if suffix in LIBREOFFICE_EXTENSIONS:`, and that constant is
+`frozenset({".doc", ".odt", ".ods", ".odp", ".ppt"})` (`recall/extraction.py:129`): `.msg` is no
+longer in it, so the dead offer is gone rather than merely unreachable. Repointing the line number
+alone would have sent a reader to a branch where `.msg` does not appear, which is why this note
+exists instead of a silent renumber. The Q3 finding itself stands as measured.
 
 ### ⚠️ What this result is NOT
 

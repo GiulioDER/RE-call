@@ -31,13 +31,3 @@ reason = "archived records; their citations are the history, not pointers into t
 path = "docs/preregistrations/2026-08-18-uncalibrated-first-run.md"
 marker = "## A note on line numbers in every result below"
 reason = "citations above this rule are registered predictions and are never updated"
-
-# Citations into a DIFFERENT repository. `docs/their-harness-parity.md` documents the seam in a
-# third party evaluation harness, and two of its paths (`benchmarks/locomo/run.py`,
-# `benchmarks/beam/run.py`) happen to collide with paths in this tree. Resolving them here compares
-# a citation against a file it was never about, which produced exactly that false report when this
-# checker was first run. The collision is the reason this entry exists; without it the checker
-# looks confidently wrong.
-[[exempt]]
-path = "docs/their-harness-parity.md"
-reason = "cites a third party harness whose paths collide with this repository's"
