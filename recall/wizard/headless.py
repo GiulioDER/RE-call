@@ -52,12 +52,23 @@ from recall.generations import GenerationManager
 from recall.store import redacted_dsn
 from recall.wizard.corpora import RELATIVE_ROOT, CorpusSpec, default_plan
 from recall.wizard.pipeline import CorpusOutcome, PipelineRefusal, run_corpus
+from recall.wizard.state import WizardState, config_digest, load_state, save_state
+from recall.wizard.wiring import (
+    ServerBlock,
+    SmokeResult,
+    UnservableTenant,
+    mcp_config,
+    server_blocks,
+    write_mcp_config,
+    write_project_files,
+)
 
 __all__ = [
     "ConfigRefusal",
     "Failure",
     "HeadlessConfig",
     "HeadlessReport",
+    "LegacyIndex",
     "PipelineRefusal",
     "Refusal",
     "load_config",
@@ -88,6 +99,12 @@ class HeadlessConfig:
     #: No migration emits a GRANT, because the role name is a deployment decision the packaged SQL
     #: cannot know, so a two-role install has to be told the name or it will not work.
     serving_role: str | None = None
+    #: Optional: where `.mcp.json` is written, and the `cwd` each server is launched from.
+    #: Optional rather than derived from the config's own directory, because writing an MCP
+    #: configuration into a guessed location is a side effect an operator cannot predict, and a
+    #: config may well live somewhere temporary. When absent the report says the wiring was skipped
+    #: and names the key, which is better than putting files where nobody will look for them.
+    project_root: Path | None = None
 
 
 #: Every key the config must carry, DERIVED from the fields that have no default rather than
@@ -121,6 +138,20 @@ class Refusal:
 
 
 @dataclass(frozen=True)
+class LegacyIndex:
+    """An uncalibrated corpus written into the legacy `chunks` table, and what it wrote.
+
+    Reported with its counts rather than as a skip, because `memory` is a third of the install and
+    the report used to assert it had been "indexed into the legacy chunks table" while the driver
+    did nothing at all with it. Counts are the difference between a claim and a result.
+    """
+
+    tenant: str
+    files: int
+    chunks: int
+
+
+@dataclass(frozen=True)
 class Failure:
     """A corpus that crashed partway through, and may have left irreversible work behind.
 
@@ -140,9 +171,27 @@ class HeadlessReport:
     outcomes: tuple[CorpusOutcome, ...] = ()
     refused: tuple[Refusal, ...] = ()
     failures: tuple[Failure, ...] = ()
-    #: Corpora the driver deliberately did not drive. `memory` has no generation, so handing it to
-    #: `run_corpus` would produce a promoted generation nothing can calibrate.
-    skipped: tuple[str, ...] = ()
+    #: Uncalibrated corpora, indexed into the legacy `chunks` table. `memory` has no generation, so
+    #: handing it to `run_corpus` would produce a promoted generation nothing can calibrate, but it
+    #: still has to be INDEXED or its server answers nothing.
+    indexed: tuple[LegacyIndex, ...] = ()
+    #: Tenants taken from a previous run's recorded state rather than rebuilt. Reported, because
+    #: "this took four seconds" and "this took eleven minutes" should not look identical, and an
+    #: operator who expected a rebuild needs to see that they did not get one.
+    reused: tuple[str, ...] = ()
+    #: MCP servers written to `.mcp.json`, and the tenants deliberately left without one.
+    servers: tuple[ServerBlock, ...] = ()
+    unservable: tuple[UnservableTenant, ...] = ()
+    #: One query put through each configured server. This is the difference between "a config was
+    #: written" and "the install answers", and it checks `server_blocks`'s reasoning against the
+    #: database rather than trusting it.
+    smoke: tuple[SmokeResult, ...] = ()
+    #: Where `.mcp.json` was written, or None when `project_root` was absent from the config.
+    mcp_path: Path | None = None
+    #: Every file the wiring step created or edited. Named because these are edits to files the
+    #: operator owns, made block-scoped so they merge rather than replace, and a block-scoped edit
+    #: is invisible in a directory listing.
+    files_written: tuple[Path, ...] = ()
 
     @property
     def unserved(self) -> tuple[str, ...]:
@@ -158,8 +207,13 @@ class HeadlessReport:
         A DEGRADED corpus counts as ok only when the tenant has a previous generation still
         serving. A degraded FIRST install is not a working install with a limitation, it is a
         tenant that answers nothing, and exit 0 is the only thing CI reads.
+
+        A server whose smoke query RAISED is also not ok, whatever the corpora did. That is the
+        whole point of running one: the corpora can all be built and promoted correctly and the
+        configuration still be unable to reach them.
         """
-        return not (self.refused or self.failures or self.unserved)
+        raised = any(s.error for s in self.smoke)
+        return not (self.refused or self.failures or self.unserved or raised)
 
     @property
     def degraded(self) -> tuple[str, ...]:
@@ -171,7 +225,7 @@ class HeadlessReport:
             *(o.tenant for o in self.outcomes),
             *(r.tenant for r in self.refused),
             *(f.tenant for f in self.failures),
-            *self.skipped,
+            *(i.tenant for i in self.indexed),
         ]
         width = max([_TENANT_COLUMN, *(len(t) for t in tenants)]) if tenants else _TENANT_COLUMN
         indent = " " * (_GUTTER + width + 1)
@@ -183,11 +237,12 @@ class HeadlessReport:
         lines: list[str] = []
         for outcome in self.outcomes:
             head = f"{' ' * _GUTTER}{outcome.tenant:<{width}} "
+            note = "  [reused from a previous run]" if outcome.tenant in self.reused else ""
             if outcome.certified:
                 lines.append(
                     f"{head}certified and promoted  "
                     f"({outcome.answerable} answerable / {outcome.unanswerable} unanswerable, "
-                    f"{outcome.generation_id})"
+                    f"{outcome.generation_id}){note}"
                 )
             else:
                 lines.append(f"{head}DEGRADED, not promoted  {outcome.generation_id}")
@@ -207,15 +262,69 @@ class HeadlessReport:
         for failure in self.failures:
             lines.append(f"{' ' * _GUTTER}{failure.tenant:<{width}} FAILED")
             lines.append(detail(failure.error))
-        for tenant in self.skipped:
-            lines.append(f"{' ' * _GUTTER}{tenant:<{width}} skipped")
-            # What is TRUE, not what a reader might assume. This line used to say the corpus was
-            # "indexed into the legacy chunks table", asserting a database state the wizard never
-            # creates: nothing indexes it and nothing creates its directory.
+        for entry in self.indexed:
+            # Counts, because this line used to assert the corpus was "indexed into the legacy
+            # chunks table" while the driver did nothing with it at all. A count cannot be claimed
+            # without doing the work.
+            lines.append(
+                f"{' ' * _GUTTER}{entry.tenant:<{width}} indexed  "
+                f"({entry.chunks} chunks from {entry.files} files, legacy chunks table)"
+            )
+            if not entry.chunks:
+                # Says what is true of the DATABASE, and stops there. An earlier version added that
+                # this tenant's server "carries RECALL_TRUST_MODE=development", which the wizard
+                # does not do: writing `.mcp.json` is Phase 4 and does not exist yet. The corpus
+                # spec requires that setting; nothing here has applied it.
+                lines.append(
+                    detail(
+                        "the directory was empty, which is normal on a first install: this tenant "
+                        "is writable and fills up as you use it. It is not calibrated, so it needs "
+                        "a server configured for development trust; this command does not write "
+                        "that configuration."
+                    )
+                )
+
+        for block in self.servers:
+            # RECALL_DSN is omitted deliberately: it carries the password, and this report is what
+            # a CI job prints into a log. The variables that are shown are the ones an operator
+            # needs to sanity-check, and the DSN is the one they already know.
+            shown = ", ".join(f"{k}={v}" for k, v in block.env.items() if k != "RECALL_DSN")
+            lines.append(f"{' ' * _GUTTER}{block.name:<{width}} server   ({shown})")
+            lines.append(detail(block.rationale))
+        for missing in self.unservable:
+            lines.append(f"{' ' * _GUTTER}{missing.tenant:<{width}} NO SERVER")
+            lines.append(detail(missing.reason))
+        for result in self.smoke:
+            head = f"{' ' * _GUTTER}{result.tenant:<{width}} "
+            if result.error:
+                lines.append(f"{head}SMOKE FAILED")
+                lines.append(
+                    detail(
+                        f"a query through this server's own configuration raised: {result.error}. "
+                        "The corpus may be fine; this server cannot reach it."
+                    )
+                )
+            elif result.empty:
+                lines.append(f"{head}smoke skipped")
+                lines.append(
+                    detail("no indexed rows to draw a query from, which is normal for a fresh tenant")
+                )
+            else:
+                verdict = "abstained" if result.abstained else f"{result.hits} hits"
+                # An abstention is NOT a failure: it is a trust decision the gate is entitled to
+                # make. What the smoke test proves is that the query reached the gate at all.
+                lines.append(
+                    f"{head}smoke ok  ({verdict}, trust={result.trust_state}"
+                    f"{', ' + result.failure_code if result.failure_code else ''})"
+                )
+        for written in self.files_written:
+            lines.append(f"{' ' * _GUTTER}wrote {written}")
+        if self.mcp_path is None and (self.outcomes or self.indexed):
             lines.append(
                 detail(
-                    "not indexed by this command and not calibrated. Index it yourself with "
-                    f"`recall index --tenant {tenant} <root>`."
+                    "no MCP configuration was written: the config has no `project_root`, so nothing "
+                    "serves these corpora yet. This command will not guess a location to put one "
+                    "in. Set `project_root` and re-run; the corpora are recorded and will be reused."
                 )
             )
 
@@ -240,6 +349,8 @@ class _Services(Protocol):
     def run(
         self, spec: CorpusSpec, *, progress: Callable[[str], None] | None = None
     ) -> CorpusOutcome: ...
+    def index_legacy(self, spec: CorpusSpec) -> LegacyIndex: ...
+    def smoke(self, block: ServerBlock) -> SmokeResult: ...
 
 
 @dataclass
@@ -287,6 +398,121 @@ class _RealServices:
         with psycopg.connect(dsn) as conn, conn.transaction():
             for statement in serving_grants(role):
                 conn.execute(statement)
+
+    def index_legacy(self, spec: CorpusSpec) -> LegacyIndex:
+        """Index an uncalibrated corpus into the legacy `chunks` table, under ITS OWN tenant.
+
+        `recall.setup.index_memory_directory` exists and is deliberately not used: it hardcodes
+        `DEFAULT_TENANT`, so it would write `memory`'s content into `default`, and it swallows
+        every exception to print a suggestion, which is right for an interactive scaffolder and
+        wrong for a driver whose report is the only thing a CI job reads.
+
+        The directory is created when absent, because `memory_corpus`'s docstring says the wizard
+        creates it and `CorpusSpec` deliberately permits an absent root on that basis. A fresh
+        install therefore gets an empty, working memory tenant rather than a refusal.
+        """
+        from recall.index import Indexer, chunk_text
+        from recall.store import DEFAULT_TABLE, PgVectorStore
+
+        spec.root.mkdir(parents=True, exist_ok=True)
+        embedder = self.embedder()
+        with PgVectorStore(
+            self.config.dsn, dim=embedder.dim, table=DEFAULT_TABLE, tenant=spec.tenant
+        ) as store:
+            store.check_schema()
+            stats = Indexer(store, embedder, chunker=chunk_text).index_path(
+                spec.root, glob=spec.glob
+            )
+        return LegacyIndex(tenant=spec.tenant, files=stats.files, chunks=stats.chunks)
+
+    def smoke(self, block: ServerBlock) -> SmokeResult:
+        """Put one real query through one configured server, exactly as that server would.
+
+        The store is chosen from the BLOCK's own `RECALL_ENV`, mirroring `recall_mcp/server.py:627`,
+        because the point is to exercise the configuration that was just written rather than a
+        second guess at it. If `server_blocks` is ever wrong about which tenants can be served, this
+        is where it surfaces: as an exception, from the same code path the client will take.
+
+        The query is drawn from the tenant's OWN indexed text. A fixed question would abstain on
+        every corpus and prove only that nothing raised; a phrase the corpus actually contains can
+        produce a hit, so an empty result is informative instead of expected.
+        """
+        import psycopg
+
+        from recall.generation_store import GenerationStore
+        from recall.store import DEFAULT_TABLE, PgVectorStore
+        from recall.trust import trusted_search
+
+        production = block.env.get("RECALL_ENV") == "production"
+        table = "recall_chunks_v1" if production else DEFAULT_TABLE
+        # Written out per branch rather than interpolated: a query built by f-string is the shape
+        # that goes wrong later, even when today's value is a constant.
+        statement = (
+            "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s LIMIT 1"
+            if production
+            else "SELECT text FROM chunks WHERE tenant_id = %s LIMIT 1"
+        )
+        try:
+            with psycopg.connect(self.config.dsn) as conn:
+                conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (block.tenant,))
+                row = conn.execute(statement, (block.tenant,)).fetchone()
+        except Exception as exc:  # noqa: BLE001 - a failure to look is a failure, and it is reported
+            return SmokeResult(
+                tenant=block.tenant,
+                query="",
+                hits=0,
+                abstained=True,
+                trust_state="unknown",
+                failure_code=None,
+                error=_scrub(f"{type(exc).__name__}: {exc}", self.config.dsn),
+            )
+
+        if not row or not str(row[0]).strip():
+            return SmokeResult(
+                tenant=block.tenant,
+                query="",
+                hits=0,
+                abstained=True,
+                trust_state="unknown",
+                failure_code=None,
+                empty=True,
+            )
+
+        # A short phrase, not the whole chunk: a chunk-length query is a different retrieval problem
+        # and would not resemble anything a user types.
+        query = " ".join(str(row[0]).split()[:8])
+        embedder = self.embedder()
+        try:
+            # Annotated as the base, matching `recall_mcp/server.py`'s own `store: PgVectorStore`.
+            # `GenerationStore` subclasses it, and `trusted_search` takes the base.
+            store: PgVectorStore
+            if production:
+                store = GenerationStore(self.config.dsn, dim=embedder.dim, tenant=block.tenant)
+            else:
+                store = PgVectorStore(
+                    self.config.dsn, dim=embedder.dim, table=table, tenant=block.tenant
+                )
+            with store:
+                result = trusted_search(store, embedder, query, k=5)
+        except Exception as exc:  # noqa: BLE001 - THIS is the failure the smoke test exists for
+            return SmokeResult(
+                tenant=block.tenant,
+                query=query,
+                hits=0,
+                abstained=True,
+                trust_state="unknown",
+                failure_code=None,
+                error=_scrub(f"{type(exc).__name__}: {exc}", self.config.dsn),
+            )
+
+        return SmokeResult(
+            tenant=block.tenant,
+            query=query,
+            hits=len(result.hits),
+            abstained=result.abstained,
+            trust_state=result.trust_state,
+            failure_code=result.failure_code,
+        )
 
     def run(
         self, spec: CorpusSpec, *, progress: Callable[[str], None] | None = None
@@ -393,6 +619,17 @@ def load_config(path: str | Path) -> HeadlessConfig:
                 f"{key} must be a string or absent, not {type(raw[key]).__name__}", (key,)
             )
 
+    # Checked with the same rule as the required roots, and for the same reason: a relative
+    # `project_root` resolves against the wizard's own working directory, so `.mcp.json` would be
+    # written somewhere that depends on where the command happened to be run from.
+    if raw.get("project_root") and not Path(raw["project_root"]).is_absolute():
+        raise ConfigRefusal(
+            f"project_root must be an absolute path on this platform, not "
+            f"{raw['project_root']!r}: a relative root resolves against the wizard's own working "
+            "directory, so the MCP configuration would land somewhere unpredictable.",
+            ("project_root",),
+        )
+
     return HeadlessConfig(
         dsn=raw["dsn"],
         migration_dsn=raw["migration_dsn"],
@@ -403,6 +640,7 @@ def load_config(path: str | Path) -> HeadlessConfig:
         memory_root=Path(raw["memory_root"]),
         project=raw.get("project") or None,
         serving_role=raw.get("serving_role") or None,
+        project_root=Path(raw["project_root"]) if raw.get("project_root") else None,
     )
 
 
@@ -496,8 +734,17 @@ def run_headless(
     *,
     services: _Services | None = None,
     progress: Callable[[str], None] | None = None,
+    state_path: Path | None = None,
+    fresh: bool = False,
 ) -> HeadlessReport:
-    """Apply the schema, then drive every calibrated corpus, reporting rather than aborting."""
+    """Apply the schema, then drive every calibrated corpus, reporting rather than aborting.
+
+    `state_path` makes the run resumable: a corpus a previous run promoted under the same
+    configuration is reused instead of rebuilt, and the state is written after EVERY corpus so a run
+    that dies part-way keeps what it finished. `fresh=True` ignores any recorded state. With
+    `state_path` unset the behaviour is exactly as before, which keeps every existing caller and
+    test honest about what they are exercising.
+    """
     try:
         plan = default_plan(
             embedder=config.embedder,
@@ -515,12 +762,53 @@ def run_headless(
     wiring = services if services is not None else _RealServices(config)
     _prepare(config, wiring)
 
+    # Resumable state, keyed on a digest of the config fields that would invalidate finished work.
+    # `WizardState(digest=...)` with no recorded corpora is the no-state case, so the loops below do
+    # not branch on whether resuming is enabled.
+    digest = config_digest(config)
+    state = (
+        WizardState(digest=digest)
+        if fresh or state_path is None
+        else load_state(state_path, digest=digest)
+    )
+
+    def _remember() -> None:
+        """Written after EVERY corpus, not at the end. The end is what a crashed run never reaches.
+
+        A write failure is reported and swallowed. The state file is an OPTIMISATION: losing it
+        costs a rebuild, while raising here would throw away a completed corpus because a directory
+        was read-only, which is the more expensive of the two by a wide margin. The default path
+        sits beside the operator's config, which they may well not own.
+        """
+        if state_path is None:
+            return
+        try:
+            save_state(state_path, state)
+        except OSError as exc:
+            if progress:
+                progress(
+                    f"note: could not write {state_path} ({exc.strerror or exc}); this run cannot "
+                    "be resumed, but nothing already built is lost"
+                )
+
     outcomes: list[CorpusOutcome] = []
     refused: list[Refusal] = []
     failures: list[Failure] = []
+    reused: list[str] = []
     for spec in plan.calibrated:
+        if (recorded := state.outcome_for(spec.tenant)) is not None:
+            # Only a PROMOTED outcome is recorded, so this cannot silently reuse a degraded corpus:
+            # that one was left unpromoted precisely so re-running would retry it.
+            outcomes.append(recorded)
+            reused.append(spec.tenant)
+            if progress:
+                progress(f"{spec.tenant}: reused from a previous run")
+            continue
         try:
-            outcomes.append(wiring.run(spec, progress=_step_reporter(spec.tenant, progress)))
+            outcome = wiring.run(spec, progress=_step_reporter(spec.tenant, progress))
+            outcomes.append(outcome)
+            state = state.with_outcome(outcome)
+            _remember()
         except PipelineRefusal as exc:
             # Reported, not raised. The remaining corpora are independent and a user with one
             # working corpus is better off than a user with a traceback.
@@ -544,10 +832,123 @@ def run_headless(
                 )
             )
 
-    skipped = tuple(c.tenant for c in plan.corpora if not c.calibrated)
+    # The uncalibrated corpora. Driven, not skipped: `memory` is a third of the install, and a
+    # report that says "skipped" for it describes an install nobody finished.
+    indexed: list[LegacyIndex] = []
+    for spec in plan.corpora:
+        if spec.calibrated:
+            continue
+        if (previous := state.indexed_for(spec.tenant)) is not None:
+            indexed.append(LegacyIndex(tenant=previous[0], files=previous[1], chunks=previous[2]))
+            reused.append(spec.tenant)
+            if progress:
+                progress(f"{spec.tenant}: reused from a previous run")
+            continue
+        if progress:
+            progress(f"{spec.tenant}: index")
+        try:
+            entry = wiring.index_legacy(spec)
+            indexed.append(entry)
+            state = state.with_indexed(entry)
+            _remember()
+        except PipelineRefusal as exc:
+            refused.append(
+                Refusal(
+                    tenant=spec.tenant,
+                    reason=_scrub(str(exc), config.dsn, config.migration_dsn),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - same reasoning as the calibrated loop above
+            failures.append(
+                Failure(
+                    tenant=spec.tenant,
+                    error=_scrub(
+                        f"{type(exc).__name__}: {exc}", config.dsn, config.migration_dsn
+                    ),
+                )
+            )
+
+    # The wiring. Written from what ACTUALLY happened, not from the plan: a tenant with nothing
+    # promoted and nothing serving gets no server, because a production server over it would raise
+    # `NoActiveGeneration` on every query rather than refuse with a failure code.
+    promoted = frozenset(o.tenant for o in outcomes if o.promoted)
+    serving = promoted | frozenset(
+        o.tenant for o in outcomes if o.previously_serving
+    ) | frozenset(i.tenant for i in indexed)
+    blocks, unservable = server_blocks(
+        plan, dsn=config.dsn, promoted=promoted, serving=serving
+    )
+    mcp_path: Path | None = None
+    files: tuple[Path, ...] = ()
+    if config.project_root is not None:
+        if progress:
+            progress("wiring: .mcp.json")
+        mcp_path = config.project_root / ".mcp.json"
+        try:
+            write_mcp_config(mcp_path, mcp_config(blocks, project_root=config.project_root))
+            wrote = write_project_files(
+                project_root=config.project_root,
+                dsn=config.dsn,
+                embedder=config.embedder,
+                memory_dir=config.memory_root,
+            )
+            files = (mcp_path, *wrote)
+        except OSError as exc:
+            # Reported, not raised. Every corpus is already built and promoted by now; throwing that
+            # away because a directory is read-only would be the expensive half of the trade.
+            #
+            # The FAILING FILE is named from the exception rather than assumed. This block covers
+            # `.mcp.json`, `.env`, `CLAUDE.md` and `MEMORY.md`, and an earlier version of this
+            # message blamed `.mcp.json` for all four, which would have sent an operator to check a
+            # file that was written correctly.
+            mcp_path = None
+            blamed = exc.filename or "the project files"
+            failures.append(
+                Failure(
+                    tenant="wiring",
+                    error=f"could not write {blamed}: {exc.strerror or exc}",
+                )
+            )
+    else:
+        blocks = ()
+
+    # The verification half. Run against the blocks that were WRITTEN, so a config nobody wrote is
+    # not credited with answering, and after the wiring so it exercises the file on disk's semantics.
+    smoke: tuple[SmokeResult, ...] = ()
+    if blocks and mcp_path is not None:
+        results: list[SmokeResult] = []
+        for block in blocks:
+            if progress:
+                progress(f"{block.tenant}: smoke")
+            try:
+                results.append(wiring.smoke(block))
+            except Exception as exc:  # noqa: BLE001 - a smoke test must never be the thing that
+                # aborts an install. Its whole job is to report, and an unexpected failure inside
+                # it is still a report about this server rather than a reason to lose the run.
+                results.append(
+                    SmokeResult(
+                        tenant=block.tenant,
+                        query="",
+                        hits=0,
+                        abstained=True,
+                        trust_state="unknown",
+                        failure_code=None,
+                        error=_scrub(
+                            f"{type(exc).__name__}: {exc}", config.dsn, config.migration_dsn
+                        ),
+                    )
+                )
+        smoke = tuple(results)
+
     return HeadlessReport(
         outcomes=tuple(outcomes),
         refused=tuple(refused),
         failures=tuple(failures),
-        skipped=skipped,
+        indexed=tuple(indexed),
+        reused=tuple(reused),
+        servers=blocks,
+        unservable=unservable,
+        mcp_path=mcp_path,
+        files_written=files,
+        smoke=smoke,
     )

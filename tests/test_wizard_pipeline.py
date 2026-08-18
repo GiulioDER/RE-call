@@ -963,6 +963,40 @@ def test_the_real_services_wiring_drives_a_corpus(tmp_path: Path) -> None:
         assert outcome.generation_id
         assert "build" in steps, "progress must reach the caller through the real wiring too"
         assert outcome.promoted is outcome.certified
+
+        # The smoke query, through the real store selection, against the real database. This is the
+        # only place `_RealServices.smoke` is exercised for real, and it is worth exercising because
+        # it is the check that verifies `server_blocks`'s reasoning rather than trusting it.
+        from recall.wizard.wiring import ServerBlock
+
+        production = ServerBlock(
+            name=tenant,
+            tenant=tenant,
+            env={
+                "RECALL_DSN": TEST_DSN,
+                "RECALL_EMBEDDER": "hashing",
+                "RECALL_TENANT": tenant,
+                "RECALL_ENV": "production",
+                "RECALL_TRUST_MODE": "development",
+            },
+            rationale="constructed by the test",
+        )
+        result = services.smoke(production)
+
+        assert result.tenant == tenant
+        if outcome.promoted:
+            # Promoted, so the generation is live and the query must reach the trust gate. Whether
+            # it abstains is the gate's business; raising is not.
+            assert result.error is None, f"a promoted tenant must answer, got {result.error}"
+            assert result.answered is True
+            assert result.query, "the query must be drawn from the tenant's own indexed text"
+        else:
+            # NOT promoted, so this tenant has no active generation. The smoke test must SAY so
+            # rather than report a healthy server, and this is exactly the case `server_blocks`
+            # refuses to write a block for. Here it is confirmed against the database.
+            assert result.error is not None, "an unpromoted tenant cannot serve and must say so"
+            assert "NoActiveGeneration" in result.error or "no active generation" in result.error
+            assert result.answered is False
     finally:
         _purge(tenant)
 

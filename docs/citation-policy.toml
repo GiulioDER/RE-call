@@ -47,3 +47,37 @@ reason = "citations above this rule are registered predictions and are never upd
 path = "docs/preregistrations/2026-08-18-extraction-attestation.md"
 marker = "## Result"
 reason = "citations above the result are registered predictions and are never updated"
+
+# Pre-registrations whose citations are part of the registered record.
+#
+# A pre-registration is evidence of what was true and what was believed WHEN IT WAS WRITTEN, and its
+# citations are part of that evidence. A record that gets silently repointed whenever the tree moves
+# under it cannot be used to show what anyone believed beforehand, so the stale pointer is the more
+# informative artefact. This is a standing rule, and its consequence for tooling is the reason this
+# file exists: a gate must never be able to force an edit to a prediction. If the checker demands one,
+# the checker gets an exemption and the record is left alone.
+#
+# Both were flagged by a change that shifted `recall/cli.py` and `recall/eval/synthetic.py`, not by
+# anything wrong with the documents.
+#
+# ⚠️ These are whole-file entries and NOT a blanket `docs/preregistrations/*`, deliberately. The
+# `frozen_above` entry above describes a pre-registration that re-measures the citations below its
+# rule on every edit, and a blanket exemption would stop checking that live zone. Appending a result
+# is legitimate editing; repointing a prediction is not.
+[[exempt]]
+path = "docs/preregistrations/2026-08-16-generated-calibration-query-sets.md"
+reason = "registered predictions and their citations; never repointed after measuring"
+
+[[exempt]]
+path = "docs/preregistrations/2026-08-18-the-core-bind.md"
+reason = "registered predictions and their citations; never repointed after measuring"
+
+# Citations into a DIFFERENT repository. `docs/their-harness-parity.md` documents the seam in a
+# third party evaluation harness, and two of its paths (`benchmarks/locomo/run.py`,
+# `benchmarks/beam/run.py`) happen to collide with paths in this tree. Resolving them here compares
+# a citation against a file it was never about, which produced exactly that false report when this
+# checker was first run. The collision is the reason this entry exists; without it the checker
+# looks confidently wrong.
+[[exempt]]
+path = "docs/their-harness-parity.md"
+reason = "cites a third party harness whose paths collide with this repository's"

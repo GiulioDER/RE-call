@@ -12,6 +12,7 @@ generated set must have for the measurements taken on it to mean anything:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -201,3 +202,125 @@ def test_generate_accepts_an_empty_directory(tmp_path):
     c = generate(empty, n_answerable=1, n_unanswerable=1, n_successor=1, n_abstain=1,
                  n_filler_chunks=0, seed=1)
     assert c.n_chunks == 4
+
+
+def test_no_offtopic_subject_word_appears_in_recall_s_own_python_sources():
+    """The pool must stay out of the corpora it exists to be disjoint FROM.
+
+    These subjects lived as Python literals in `recall/eval/synthetic.py`, which put all 25 of them
+    into any code corpus rooted at this repository. `offtopic_subjects_absent_from` then
+    disqualified every one, and the wizard's `code` tenant could not build a gap class at all.
+    Measured 2026-08-18 over `recall/**/*.py`: 0 of 25 survived; with that one file excluded, 12.
+
+    The refusal it produced blamed the operator's corpus for overlapping the pool and told them to
+    supply a domain-specific subject list, which was a confident and wrong diagnosis. That is the
+    real cost: not the failure, but a failure that misdirected.
+
+    This is a guard on the whole tree rather than on one module, because the pool is data and data
+    can be pasted back into source by anyone, at any time, in any file.
+    """
+    from recall.eval.synthetic import _OFFTOPIC_SUBJECTS, _OFFTOPIC_TEMPLATES
+    from recall.wizard.queryset import DEFAULT_PER_CLASS, offtopic_subjects_absent_from
+
+    root = Path(__file__).resolve().parents[1] / "recall"
+    assert root.is_dir(), "the package must be found for this guard to mean anything"
+
+    sources = sorted(root.rglob("*.py"))
+    assert len(sources) > 50, f"only {len(sources)} sources found; the walk is not covering the tree"
+
+    texts = [path.read_text(encoding="utf-8", errors="ignore") for path in sources]
+    survivors = offtopic_subjects_absent_from(texts)
+    capacity = len(survivors) * len(_OFFTOPIC_TEMPLATES)
+
+    # CAPACITY, not zero overlap. Demanding that no subject word appear anywhere in the tree is
+    # both unachievable and the wrong question: `tuning`, `timing`, `methods` and `systems` are
+    # ordinary software words and always will be. What the wizard needs is enough SURVIVING
+    # subjects to build a full gap class, so that is what is asserted.
+    assert capacity >= DEFAULT_PER_CLASS, (
+        f"only {len(survivors)} of {len(_OFFTOPIC_SUBJECTS)} off-topic subjects survive against "
+        f"recall's own Python sources, giving {capacity} gap questions against the "
+        f"{DEFAULT_PER_CLASS} a default run needs. The commonest cause is the pool being pasted "
+        "back into source as literals: keep it in `recall/eval/offtopic_subjects.json`, which no "
+        "code or docs glob matches."
+    )
+
+
+def test_no_distinctive_pool_word_appears_in_recall_source():
+    """The capacity guard has a threshold, so it tolerates erosion. This one detects a QUOTE.
+
+    Ordinary software vocabulary kills subjects one at a time: `tuning`, `timing`, `patterns` and
+    `methods` are words any codebase contains, and demanding their absence is neither achievable
+    nor useful. What must never appear is the word that carries a subject's off-topic-ness, and the
+    pool declares those itself in its `distinctive` field, because the only thing that knows which
+    word is the domain anchor is the pool.
+
+    ⚠️ Caught for real, and by the measurement rather than by review. The comment in
+    `recall/wizard/queryset.py` explaining that the pool had been poisoned named the three words it
+    had collided on, which put them straight back into every code corpus rooted here and
+    disqualified those three subjects. Survivors fell from 12 to 11 and the capacity guard stayed
+    GREEN, because 55 still clears 40. An example drawn from the pool, written anywhere under
+    `recall/`, is not an example. It is corpus.
+
+    An earlier version of this test counted subjects disqualified per file and failed on `store.py`
+    and `index.py`, which contain `tuning` and `timing` innocently. Rarity is the signal, not count.
+    """
+    from recall.eval.synthetic import _OFFTOPIC_DATA, _OFFTOPIC_SUBJECTS
+    from recall.eval.vocab import word_tokens
+
+    distinctive = _OFFTOPIC_DATA["distinctive"]
+    assert len(distinctive) == len(_OFFTOPIC_SUBJECTS), (
+        "every subject needs an anchor word, or this guard silently covers only some of the pool"
+    )
+
+    root = Path(__file__).resolve().parents[1] / "recall"
+    sources = sorted(root.rglob("*.py"))
+    assert len(sources) > 50, f"only {len(sources)} sources found; the walk is not covering the tree"
+
+    offenders: dict[str, list[str]] = {}
+    for path in sources:
+        words = set(word_tokens([path.read_text(encoding="utf-8", errors="ignore")]))
+        if hits := sorted(w for w in distinctive if w in words):
+            offenders[path.relative_to(root).as_posix()] = hits
+
+    assert not offenders, (
+        f"distinctive off-topic pool words found in recall source: {offenders}. Each one silently "
+        "disqualifies its subject for every code corpus rooted at this repository. Refer to "
+        "`recall/eval/offtopic_subjects.json` rather than quoting a subject in code or a comment."
+    )
+
+
+def test_no_offtopic_subject_overlaps_the_generated_corpus_vocabulary():
+    """The module states this invariant and never checked it, and it was false.
+
+    The comment above the pool says the subjects are "deliberately from a domain the corpus never
+    mentions — no overlap with the subject adjectives/nouns, the aspect names, or the filler
+    vocabulary". `saffron` was in `_ADJECTIVES` AND in the subject "saffron harvesting by hand", so
+    that gap query was about a word the generated corpus actually contains.
+
+    That is the failure the pool exists to prevent, stated in this module's own words: a gap class
+    sharing the corpus vocabulary is not separable, and any abstention rate measured on it means
+    nothing. An invariant asserted in a comment is not asserted.
+    """
+    from recall.eval.synthetic import (
+        _ADJECTIVES,
+        _ASPECTS,
+        _FILLER_NOUNS,
+        _NOUNS,
+        _OFFTOPIC_SUBJECTS,
+    )
+    from recall.eval.vocab import word_tokens
+
+    generated: set[str] = set(_ADJECTIVES) | set(_NOUNS) | set(_FILLER_NOUNS)
+    for aspect, unit in _ASPECTS:
+        generated |= set(word_tokens([aspect, unit]))
+
+    offenders = {
+        subject: hits
+        for subject in _OFFTOPIC_SUBJECTS
+        if (hits := [w for w in word_tokens([subject]) if len(w) > 3 and w in generated])
+    }
+    assert not offenders, (
+        f"off-topic subjects sharing vocabulary with the generated corpus: {offenders}. A gap "
+        "query about a word the corpus contains is not a gap query, and every abstention rate "
+        "measured on this set would be measuring the wrong thing."
+    )

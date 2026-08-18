@@ -23,7 +23,7 @@ a **tenant**.
 | Missing `generation_id` degrades to `"legacy"` | `recall_mcp/service.py:973` | confirmed. A second site uses the same default but maps it to `None` immediately after, so the two do not behave identically |
 | `promote()` refuses in production, needs a flag otherwise | `recall/generations.py:847` | confirmed |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
-| `calibration = None` is deliberate, and names an open design question | `recall/cli.py:2026-2037` | confirmed |
+| `calibration = None` is deliberate, and names an open design question | `recall/cli.py:2058-2069` | confirmed |
 | Legacy `chunks` has no `source_sha256` **column** | `recall/store.py:271` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
 
 ### Four findings that change the available answers
@@ -83,10 +83,10 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 
 `RECALL_ENV` is one string carrying at least six unrelated policies:
 
-1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:1836`, `recall/cli.py:2043`).
+1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:1836`, `recall/cli.py:2075`).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:366`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
-   `recall_mcp/server.py:627`, `recall/cli.py:2082`, and the `generation_mode` parameter threaded
+   `recall_mcp/server.py:627`, `recall/cli.py:2114`, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`recall_mcp/stores.py:154`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:187`).
@@ -190,7 +190,7 @@ redirected. Section 6's claim that policy 1 is untouched does not survive withou
 
 ### Q: Is there an honest install time calibration binding that does not need a full build?
 
-**Yes, and `recall/cli.py:2037` was right to refuse the version that would have been dishonest.**
+**Yes, and `recall/cli.py:2069` was right to refuse the version that would have been dishonest.**
 
 The comment says: "Resolve that by deciding where install-time calibration binds, not by reinstating
 the line below." My answer is that **there is no honest process global calibration and there should
