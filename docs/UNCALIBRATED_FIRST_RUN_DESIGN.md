@@ -24,7 +24,7 @@ a **tenant**.
 | `promote()` refuses in production, needs a flag otherwise | `recall/generations.py:796` | confirmed |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:110` | confirmed, but this is **not** the search path. See Q2 |
 | `calibration = None` is deliberate, and names an open design question | `recall/cli.py:2026-2037` | confirmed |
-| Legacy `chunks` has no `source_sha256` **column** | `recall/store.py:271` vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
+| Legacy `chunks` has no `source_sha256` **column** | `recall/store.py:271` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
 
 ### Four findings that change the available answers
 

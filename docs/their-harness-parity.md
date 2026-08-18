@@ -1,5 +1,10 @@
 # Running RE-call inside Mem0's own benchmark harness
 
+<!-- citations: external -- every `benchmarks/...:line` below is in mem0ai/memory-benchmarks,
+     not in this repository. `benchmarks/beam/run.py` exists in BOTH trees and is a different
+     file in each, so scripts/verify_citations.py must not resolve these against ours. -->
+<!-- citations: external -->
+
 Every RE-call number published before this document was produced by **RE-call's** harness. Mem0's
 published numbers (LOCOMO 92.5, LongMemEval 94.4, BEAM 1M 0.641 avg score / 70.1% pass) were
 produced by **theirs**. Those two sets of numbers are not comparable, and no wording makes them

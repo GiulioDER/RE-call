@@ -1,0 +1,21 @@
+# Ceiling on UNVERIFIABLE citations in docs/**/*.md, enforced by scripts/verify_citations.py.
+#
+# An UNVERIFIABLE citation is one whose surrounding prose names no identifier distinctive
+# enough to check the cited line against. It is not a failure and it is not a pass: it is the
+# honest answer for a citation the tool cannot decide, and it is counted so the count can only
+# fall.
+#
+# This is a RATCHET, and it is EXACT rather than slack. Unlike the coverage floor next to it in
+# CI, a citation count has no rounding to be unlucky about, so any new unverifiable citation
+# should fail rather than be absorbed. Lower this when you anchor one. Do not raise it: a new
+# citation should be written beside the identifier it is about, in backticks, which is the
+# convention this repository's documentation already follows and which costs nothing to keep.
+#
+# It is also the second half of the detector. A citation that goes stale in a way the anchor
+# rule cannot diagnose does not read as OK -- it reads as UNVERIFIABLE, which raises this count
+# and fails the build anyway.
+#
+# Measured 2026-08-18 on cd697668: 152 citations, of which
+#   OK=87 STALE=0 UNVERIFIABLE=53 FROZEN=10 EXTERNAL=2 MISSING_FILE=0 OUT_OF_RANGE=0
+# Re-measure with:  python scripts/verify_citations.py
+53
