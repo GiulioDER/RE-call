@@ -90,3 +90,47 @@ mutating `build()` rather than by asserting it.
   the artifact failure specifically, not merely `ready is False`.
 - Voyage entries could be wrong in width and every test still pass, because no test can reach the
   real API. That is a known, stated gap, not a covered one.
+
+## Result (2026-08-18)
+
+**Status:** measured
+
+**5 of 5 predictions held.** Measured with `tests/test_hosted_embedding_profiles.py` (45 tests
+in that file plus the registry inventory), full suite `5506 passed, 32 skipped` with a database.
+
+| | Prediction | Measured |
+|---|---|---|
+| P1 | identity survives `build()` | held: `profile_id` is `voyage-code-3-v1`, digest `hosted-unverifiable` |
+| P2 | enterprise gate refuses hosted | held: `ready is False`, failure names attestation, not width |
+| P3 | width disagreement raises at construction | held: 512 against a declared 1024 raises `ValueError` |
+| P4 | index fingerprint separates two widths | held: differed once both carried registry ids |
+| P5 | hosted stays subject to the context check | held: `raw-v1` under a `section` policy raises |
+
+**Gap: none in direction, one in confidence.** I predicted P4 was likeliest to surprise because it
+was the only current-state number I measured myself. It did not surprise. What surprised instead
+was the apparatus, twice, and both would have produced a confident wrong answer:
+
+1. **The re-measure script imported a different checkout.** Running a file under `scripts/` puts
+   the script's directory on `sys.path[0]`, not the working directory, so `import recall` resolved
+   through the editable install, which this project shares across ~18 worktrees. It reported the
+   MAIN checkout's registry while appearing to work. Fixed by pinning the repo root. This is the
+   `guards that cannot fail` shape applied to a measurement tool rather than to a guard.
+2. **Two of the brief's premises were false, and one was false in the direction that stops you
+   trying.** Bare `text-embedding-3-small` does NOT 404 on OpenRouter (measured, 1536 wide), and
+   OpenRouter's `/v1/models` lists ZERO embedding models while `/v1/embeddings` serves them, so
+   the catalogue endpoint cannot validate an id and its silence is not evidence. Had I trusted the
+   catalogue result alone I would have concluded no Gemini embedding model existed there and
+   dropped the profile.
+
+**Confound check.** The named confounds were addressed rather than assumed away: the stubs
+reproduce both SDKs' real response shapes; P4's two profiles differ ONLY in `dimension`
+(asserted in the test); P2 asserts the specific attestation failure and has a positive control
+proving the harness can produce a passing gate. The apparatus requirement (rule 2) was met by
+mutation rather than by assertion: each of the five guards was removed in turn, compiled, and its
+test confirmed RED.
+
+**Still not covered, and stated rather than hidden:** Voyage's two declared widths. No
+`VOYAGE_API_KEY` on this machine, so no test can reach the real API and the 1024 declarations rest
+on provider documentation. The construction-time width check converts a wrong declaration into a
+loud startup failure instead of a corpus of mislabelled vectors, which bounds the damage without
+verifying the claim.
