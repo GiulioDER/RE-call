@@ -37,6 +37,7 @@ from typing import Any
 import pytest
 
 from recall.wizard.corpora import docs_corpus, memory_corpus
+from tests.conftest import TEST_DSN, requires_db
 from recall.wizard.queryset import MIN_PER_CLASS
 
 
@@ -748,3 +749,180 @@ def test_an_unverifiable_embedder_is_reported_rather_than_swallowed(tmp_path: Pa
     )
 
     assert outcome.unverified_embedder is True
+
+
+# ----------------------------------------------------------------------------------------------
+# The DB-backed end-to-end. Everything above this line uses fakes, and a fake modelling a contract
+# the real class does not have is precisely how this module's headline behaviour came to be
+# unreachable in production while passing in tests. This is the test that would have caught it.
+# ----------------------------------------------------------------------------------------------
+
+
+def _purge(tenant: str) -> None:
+    """Remove every row this tenant created. Statements are literal, not interpolated."""
+    import psycopg
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        for statement in (
+            "DELETE FROM recall_source_tombstones WHERE tenant_id = %s",
+            "DELETE FROM recall_audit_events WHERE tenant_id = %s",
+            "DELETE FROM recall_ingest_jobs WHERE tenant_id = %s",
+            "DELETE FROM recall_tenant_state WHERE tenant_id = %s",
+            "DELETE FROM recall_generations WHERE tenant_id = %s",
+            "DELETE FROM chunks WHERE tenant_id = %s",
+        ):
+            try:
+                conn.execute(statement, (tenant,))
+            except psycopg.Error:
+                conn.rollback()
+
+
+@requires_db
+def test_run_corpus_end_to_end_against_a_real_generation_store(tmp_path: Path) -> None:
+    """Drive `run_corpus` with a real `GenerationManager` and `CalibrationRepository`.
+
+    The property that matters is NOT "it certifies". A hashing embedder over a synthetic corpus may
+    or may not clear the separability bar, and pinning that would turn this into a measurement of
+    the fixture. What matters is that the pipeline COMPLETES either way and leaves the database in
+    the state it claims:
+
+    * it does not raise — the earlier version aborted right here with `CalibrationUncertified`,
+      because `publish` raises for exactly the artifact the module meant to degrade on;
+    * `certified` and `promoted` agree, since an uncertified generation must never go live;
+    * and the tenant's ACTIVE generation matches. Uncertified means nothing was promoted, so
+      whatever the tenant was serving keeps serving.
+
+    Asserted against the real `recall_tenant_state` and `recall_generations` rows rather than
+    against the returned object, so the outcome cannot corroborate itself.
+
+    ⚠️ Which branch this actually takes, measured rather than assumed: the UNCERTIFIED one.
+    `hashing` over this fixture scores separability 0.757 [0.651, 0.863] against a 0.9 bar, so the
+    run exercises the real `publish` raising `CalibrationUncertified`, the pipeline catching it, and
+    the generation being left `ready`. That is the precise path that was unreachable before, so it
+    is the valuable half. The CERTIFIED half is still covered only by fakes, and would need an
+    embedder and a corpus that genuinely separate; tuning this fixture until it certifies would make
+    the test a measurement of the fixture rather than of the pipeline.
+    """
+    import uuid
+
+    import psycopg
+
+    from recall.calibration_v2 import CalibrationRepository
+    from recall.embeddings import resolve_embedder
+    from recall.generations import GenerationManager
+    from recall.trust_policy import TrustMode
+    from recall.wizard.corpora import CorpusSpec
+    from recall.wizard.pipeline import run_corpus
+
+    tenant = "wizard-e2e-" + uuid.uuid4().hex[:10]
+    spec = CorpusSpec(
+        tenant=tenant,
+        root=_corpus(tmp_path, files=45),
+        glob="**/*.md",
+        chunker="text",
+        calibrated=True,
+        serving_environment="production",
+        trust_mode=TrustMode.STRICT,
+        writable=False,
+    )
+    # `environment="test"` is deliberate: it is what the rest of the DB suite uses, and accepting it
+    # as a build environment was one of the audit fixes. A production manager is refused, correctly,
+    # because a file:// manifest cannot be built there.
+    manager = GenerationManager(TEST_DSN, tenant, actor="pytest", environment="test")
+    calibrations = CalibrationRepository(TEST_DSN, tenant)
+
+    try:
+        outcome = run_corpus(
+            spec,
+            manager=manager,
+            calibrations=calibrations,
+            embedder=resolve_embedder("hashing"),
+            corpus_version="2026-01-01",
+        )
+
+        assert outcome.tenant == tenant
+        assert outcome.generation_id
+        assert outcome.calibration_id, "the artifact is kept whether or not it certified"
+        assert outcome.answerable >= MIN_PER_CLASS
+        assert outcome.unanswerable >= MIN_PER_CLASS
+        assert outcome.promoted is outcome.certified, "an uncertified generation must not go live"
+
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+            active = conn.execute(
+                "SELECT active_generation_id FROM recall_tenant_state WHERE tenant_id = %s",
+                (tenant,),
+            ).fetchone()
+            state = conn.execute(
+                "SELECT state FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
+                (tenant, outcome.generation_id),
+            ).fetchone()
+
+        assert state is not None, "the generation must exist in the database"
+        if outcome.certified:
+            assert active is not None and active[0] == outcome.generation_id
+            assert state[0] == "active"
+        else:
+            # Nothing promoted: either no tenant_state row at all, or it points elsewhere.
+            assert active is None or active[0] != outcome.generation_id
+            assert state[0] == "ready", "an uncertified generation is left ready, not promoted"
+            assert outcome.degraded_reason and outcome.generation_id in outcome.degraded_reason
+    finally:
+        _purge(tenant)
+
+
+@requires_db
+def test_the_pipeline_survives_a_corpus_it_cannot_certify_without_leaving_an_orphan(
+    tmp_path: Path,
+) -> None:
+    """A corpus too small to certify must cost nothing at all: no generation, no rows.
+
+    The floor check runs before the build precisely so this case never reaches the database. Pinned
+    against the real store rather than a fake, because "nothing was built" is a claim about the
+    database and only the database can answer it.
+    """
+    import uuid
+
+    import psycopg
+
+    from recall.calibration_v2 import CalibrationRepository
+    from recall.embeddings import resolve_embedder
+    from recall.generations import GenerationManager
+    from recall.trust_policy import TrustMode
+    from recall.wizard.corpora import CorpusSpec
+    from recall.wizard.pipeline import PipelineRefusal, run_corpus
+
+    tenant = "wizard-small-" + uuid.uuid4().hex[:10]
+    spec = CorpusSpec(
+        tenant=tenant,
+        root=_corpus(tmp_path, files=3),
+        glob="**/*.md",
+        chunker="text",
+        calibrated=True,
+        serving_environment="production",
+        trust_mode=TrustMode.STRICT,
+        writable=False,
+    )
+
+    try:
+        with pytest.raises(PipelineRefusal, match="cannot produce a certifiable query set"):
+            run_corpus(
+                spec,
+                manager=GenerationManager(TEST_DSN, tenant, actor="pytest", environment="test"),
+                calibrations=CalibrationRepository(TEST_DSN, tenant),
+                embedder=resolve_embedder("hashing"),
+                corpus_version="2026-01-01",
+            )
+
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+            generations = conn.execute(
+                "SELECT count(*) FROM recall_generations WHERE tenant_id = %s", (tenant,)
+            ).fetchone()
+
+        assert generations is not None and generations[0] == 0, (
+            "a refusal before the build must leave no generation behind"
+        )
+    finally:
+        _purge(tenant)
