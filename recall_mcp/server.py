@@ -1016,6 +1016,7 @@ def build_server() -> MCPServer:
         max_steps: int = 12,
         max_graph_nodes: int = 32,
         max_evidence_tokens: int = 2048,
+        expand_retrieval: bool = False,
     ) -> str:
         """Run explicit opt-in reasoning over trusted retrieval and a derived graph.
 
@@ -1023,6 +1024,8 @@ def build_server() -> MCPServer:
         This tool is additive and returns a full reasoning response: trust state, generation
         identity, proposals, trace, refusal reason, and diagnostics. It does not call a generator,
         so an answer is returned only if a future server explicitly wires an answer provider.
+        Set ``expand_retrieval`` only when the explicitly configured cheap expansion model should
+        be allowed to request one bounded second retrieval round.
         """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
@@ -1039,6 +1042,7 @@ def build_server() -> MCPServer:
                         max_steps=max_steps,
                         max_graph_nodes=max_graph_nodes,
                         max_evidence_tokens=max_evidence_tokens,
+                        expand_retrieval=expand_retrieval,
                         policy=TRUST_POLICY,
                     ).to_dict(),
                     indent=2,

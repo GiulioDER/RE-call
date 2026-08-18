@@ -1,0 +1,493 @@
+{
+  "qst_0001": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_ae068ee4aa9640159427cd941bef0238#0002"
+        ],
+        "query": "What are the default size limits for file uploads and total request size for the new multipart upload support on the OpenAI-compatible API endpoints?",
+        "rationale": "The user asks for default limits. A depth plan should fetch precise defaults and how they apply per-file vs per-request across OpenAI-compatible endpoints, including any tenant-level overrides mentioned in evidence."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [
+          "dsid_ae068ee4aa9640159427cd941bef0238#0007",
+          "dsid_ae068ee4aa9640159427cd941bef0238#0003"
+        ],
+        "query": "OpenAI-compatible API multipart upload defaults: per-file size, total request size, and any tenant or route overrides for OpenAI-compat paths.",
+        "rationale": "Rewriting to synthesize a targeted query that seeks explicit default values and override mechanisms, aligning with evidence about defaults (10MiB per file, 50MiB per request) and configurability."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [
+          "dsid_ae068ee4aa9640159427cd941bef0238#0001",
+          "dsid_ae068ee4aa9640159427cd941bef0238#0005"
+        ],
+        "query": "Details of multipart upload defaults and validation for OpenAI-compatible API: (a) default per-file limit, (b) default total request limit, (c) how overrides are configured (tenant/route level), (d) behavior when limits are exceeded (error codes and messages).",
+        "rationale": "Breaks down into subquestions to ensure complete coverage of defaults and error semantics described in evidence, enabling precise retrieval for each aspect."
+      }
+    ]
+  },
+  "qst_0002": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_9550250a59e74f1bbd5612480b2e7100#0006",
+          "dsid_9550250a59e74f1bbd5612480b2e7100#0004"
+        ],
+        "query": "What is the name of the new metric added so SRE can track when server-side streaming sessions get finalized due to hitting the time limit?",
+        "rationale": "The user query seeks the precise metric name introduced for timebox-based finalization. A deeper retrieval pass from the provided evidence should extract the explicit metric name and any associated labels."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [
+          "dsid_9550250a59e74f1bbd5612480b2e7100#0006",
+          "dsid_9550250a59e74f1bbd5612480b2e7100#0004"
+        ],
+        "query": "What is the metric introduced for timeboxed server-side streaming finalization and how is it labeled (e.g., route/model) for SRE tracking?",
+        "rationale": "Rewriting the query targets variations on phrasing to capture alternate mention forms of the metric name and labeling, improving chances of retrieving explicit mention in docs or commit notes."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [
+          "dsid_9550250a59e74f1bbd5612480b2e7100#0006",
+          "dsid_9550250a59e74f1bbd5612480b2e7100#0001"
+        ],
+        "query": "What is the server-side streaming timebox feature? Specifically, what is the final event name emitted when a stream is timeboxed, and what labels are attached to that metric for SRE dashboards?",
+        "rationale": "Decomposing the subquestions helps retrieve the exact final event name and labeling, which are likely documented together with the feature in the evidence."
+      }
+    ]
+  },
+  "qst_0176": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_45e2a8ccc16c4c048894f98c6cd8833c#0000"
+        ],
+        "query": "When does booking open for the new top end 80GB accelerator on dedicated clusters in the EU Central and India South locations?",
+        "rationale": "Use the original user query to search for explicit booking/opening dates across the specified regions, leveraging the evidence about reservations opening on 2026-04-06 09:00 UTC for eu-central-1 and ap-south-1, and any regional specifics."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [
+          "dsid_45e2a8ccc16c4c048894f98c6cd8833c#0000"
+        ],
+        "query": "When will reservations for NVIDIA H200 80GB (h200-80) in EU Central and AP South regions become available for dedicated clusters?",
+        "rationale": "Rephrase to align with internal terminology (reservations, dedicated clusters) and capture the same event to broaden hit likelihood if wording varies in docs."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [
+          "dsid_45e2a8ccc16c4c048894f98c6cd8833c#0000",
+          "dsid_45e2a8ccc16c4c048894f98c6cd8833c#0002",
+          "dsid_45e2a8ccc16c4c048894f98c6cd8833c#0004"
+        ],
+        "query": "What is the exact booking/opening date and region coverage for the NVIDIA H200 80GB (h200-80) dedicated capacity in eu-central-1 and ap-south-1, and what are the associated quota limits per org?",
+        "rationale": "Break down into subquestions to extract precise date and region coverage, plus quota policy details (soft quota 64 GPUs/org) from the evidence."
+      }
+    ]
+  },
+  "qst_0177": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_7d925287f5224f72b641acbd515beb2a#0013",
+          "dsid_7d925287f5224f72b641acbd515beb2a#0001"
+        ],
+        "query": "What were the final concession terms approved for the retail partner purchase through the major cloud providers marketplace, specifically the first year price reduction and the referral payout schedule after launch?",
+        "rationale": "The user asks for final approved terms, including first-year price reduction and referral payout schedule. A depth mode should extend the current data to confirm the exact final terms and post-launch payout schedule, exploring potential updates or caveats in the closure."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [
+          "dsid_7d925287f5224f72b641acbd515beb2a#0013",
+          "dsid_7d925287f5224f72b641acbd515beb2a#0004"
+        ],
+        "query": "Provide a concise summary of the final AWS Marketplace private offer terms for Redwood Inference with NovaRetail, focusing on the first-year discount percentage and the timing of the 15% revenue share pay-out post go-live.",
+        "rationale": "Rewriting to an alternative query helps surface the exact metrics in a compact form, suitable for quick verification or briefing."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [
+          "dsid_7d925287f5224f72b641acbd515beb2a#0013"
+        ],
+        "query": "Break down the final terms into: (a) discount structure (first-year percentage and duration), (b) rev-share structure (percentage, start timing, duration, and any step-down or renewal conditions), (c) termination and renewal terms, (d) milestones and review triggers.",
+        "rationale": "Decomposing the subquestions clarifies the components of the final terms and ensures no detail is missed regarding price, revenue share, and conditions."
+      }
+    ]
+  },
+  "qst_0301": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_ca18eee975d34f4da7b1b880ea5ac271#0006",
+          "dsid_ca18eee975d34f4da7b1b880ea5ac271#0001"
+        ],
+        "query": "During the 2025-02-10 capacity incident, what two thresholds should trigger noisy-tenant detection in the runbook update, and how long were SLA targets breached?",
+        "rationale": "The user query directly asks for two thresholds and the duration of SLA breach from the 2025-02-10 incident. A depth expansion should retrieve the most relevant evidence surrounding the noisy-tenant detection thresholds and SLA breach duration from the provided evidence chunks."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [
+          "dsid_ca18eee975d34f4da7b1b880ea5ac271#0006",
+          "dsid_ca18eee975d34f4da7b1b880ea5ac271#0001"
+        ],
+        "query": "What are the two detection thresholds for noisy-tenant in the runbook, and how long were SLA targets breached during the 2025-02-10 capacity incident?",
+        "rationale": "Rewriting the query as a single, concise question may help retrieve specific lines mentioning the thresholds and breach duration if the exact phrasing differs across sources."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [
+          "dsid_ca18eee975d34f4da7b1b880ea5ac271#0006",
+          "dsid_ca18eee975d34f4da7b1b880ea5ac271#0001"
+        ],
+        "query": "Identify the noisy-tenant detection thresholds and the SLA breach duration for the 2025-02-10 capacity incident mentioned in the runbook.",
+        "rationale": "Decomposing the subquestion isolates two components (thresholds and breach duration) which may be found in separate sections of the evidence; this helps ensure both parts are captured."
+      }
+    ]
+  },
+  "qst_0341": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [],
+        "query": "For the Proxima Bank 429 spike after priority routing rollout, what caused the throttling and what temporary policy exception did we apply, and how do we verify it is not burning the enterprise route SLOs?",
+        "rationale": "Use the original query to retrieve deeper, authoritative information across all chunks provided to confirm causation (overload_protection_admission) and the exact temporary policy exception (time-boxed burst multiplier for PROXIMA-ENT-014, guardrails) and SLO verification status."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [],
+        "query": "What caused the 429 throttling after the priority routing rollout for Proxima Bank, and what temporary exception was granted to address it? How can we confirm enterprise route SLOs remain intact?",
+        "rationale": "Reframes the question to a clearer single-shot inquiry suitable for targeted retrieval while preserving the key elements: cause (overload admission), temporary exception (burst multiplier, time-box), and SLO verification."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [],
+        "query": "Decompose into subquestions: (a) What specifically caused the overload_protection_admission for Proxima\u2019s chat and embeddings routes during the rollout? (b) What temporary policy exception was applied (scope, duration, guardrails)? (c) What monitoring/verification steps show enterprise route SLOs are not being burned, and what thresholds indicate safe operation?",
+        "rationale": "Necessary subquestions to ensure comprehensive evidence extraction: pinpoint cause, document exception details, and define verification criteria against SLOs."
+      }
+    ]
+  },
+  "qst_0342": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_86b915e7a2a3492c82224174383cd9f9#0009",
+          "dsid_377cdf4e378f40bebd7196e3a0ff1c38#0017",
+          "dsid_d64b62cc422c45108871fb097066e6f8#0011"
+        ],
+        "query": "What is the actual policy we should follow for DEK caching and KMS outage behavior, given conflicting guidance in the Key Management Standard and ADR-007?",
+        "rationale": "Leverages the original user query to surface a comprehensive, policy-alignment depth plan that resolves contradictions between standard and ADR-007, drawing from provided evidence chunks related to caching constraints, outage behavior, and rotation readiness."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [
+          "dsid_86b915e7a2a3492c82224174383cd9f9#0000",
+          "dsid_d64b62cc422c45108871fb097066e6f8#0000"
+        ],
+        "query": "Provide a concise, customer-facing policy statement on DEK caching and KMS-outage behavior that harmonizes the Key Management Standard and ADR-007.",
+        "rationale": "Generates a customer-ready alternative phrasing to help craft external-facing materials while ensuring alignment with internal standards."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [
+          "dsid_d64b62cc422c45108871fb097066e6f8#0011",
+          "dsid_377cdf4e378f40bebd7196e3a0ff1c38#0017"
+        ],
+        "query": "Subquestion: What exactly can be safely cached, for how long, and under what invalidation/rotation conditions, to satisfy both the standard and ADR-007?",
+        "rationale": "Breaks down the caching policy into concrete sub-rules (metadata vs. DEKs, TTLs, invalidation on cutover) to support precise implementation and measurement."
+      }
+    ]
+  },
+  "qst_0411": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_5f3a672da4974781a5577b0f3d4993e9#0008",
+          "dsid_8ffbd9fe82df457ca67d4fbc9ff1090c#0006"
+        ],
+        "query": "What is the recommended percentage of interactive burst credits to reserve exclusively for priority=high routes on dp-132-usw, given the Streamly AI dedicated pool scenario?",
+        "rationale": "The evidence indicates negotiations and updates converging on reserving 30% of interactive burst credits for high-priority routes on the dp-132-usw pool, with multiple references to 20% and 30% allocations and related mitigations. A depth query keeps the original question intact while seeking deeper confirmation across evidence slices."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [
+          "dsid_8ffbd9fe82df457ca67d4fbc9ff1090c#0006",
+          "dsid_5f3a672da4974781a5577b0f3d4993e9#0008"
+        ],
+        "query": "Propose a policy for reserving burst capacity in a dedicated pool for interactive priority=high traffic when background ingest runs, including target percentage and separation of route groups.",
+        "rationale": "Rewriting to an explicit policy framing aligns with evidence that a 30% reservation and separation of route groups were implemented and discussed, enabling evaluation of the proposed policy without relying on narrative context."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [
+          "dsid_8ffbd9fe82df457ca67d4fbc9ff1090c#0010",
+          "dsid_5f3a672da4974781a5577b0f3d4993e9#0005"
+        ],
+        "query": "Decompose the steps to validate the 30% reserved burst for priority=high on dp-132-usw, including metrics, tests, and rollback criteria.",
+        "rationale": "Evidence mentions verification steps, canary promotions, and controlled load tests. Decomposing the subquestion helps ensure concrete validation actions and traceability."
+      }
+    ]
+  },
+  "qst_0412": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_a2bf755670ad44e09b42c11e9d73e5d3#0011",
+          "dsid_a2bf755670ad44e09b42c11e9d73e5d3#0005"
+        ],
+        "query": "For extraction, what price-normalization correctness is reported at temp=0.0 with strict JSON + canonicalization, and what earlier % is it compared to?",
+        "rationale": "Directly explores the precise question using the original query to identify the best evidence slice that reports price normalization at temp=0.0 with strict JSON + canonicalization and its comparison percentage."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [
+          "dsid_a2bf755670ad44e09b42c11e9d73e5d3#0011",
+          "dsid_a2bf755670ad44e09b42c11e9d73e5d3#0005"
+        ],
+        "query": "What is the reported price-normalization accuracy at temperature 0.0 under strict JSON + canonicalization, and how does it compare to the prior baseline value?",
+        "rationale": "Provides an alternative phrasing to ensure retrieval surfaces the exact metric and predecessor value, potentially retrieving slightly different but relevant passages."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [
+          "dsid_a2bf755670ad44e09b42c11e9d73e5d3#0011",
+          "dsid_89c0c31e220c4777b15c3c6ff0eff61d#0005"
+        ],
+        "query": "Subquestion: What is the baseline percentage for price-normalization accuracy before canonicalization, and under what temperature settings was it measured?",
+        "rationale": "Breaks the main question into missing prerequisites to locate comparative baselines mentioned in logs, enabling retrieval of both the 0.0+canonicalization result and its comparison point."
+      }
+    ]
+  },
+  "qst_0431": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_840703a1cc37438a84e9beb68029d80b#0000",
+          "dsid_840703a1cc37438a84e9beb68029d80b#0002",
+          "dsid_840703a1cc37438a84e9beb68029d80b#0001"
+        ],
+        "query": "What is the procedure for an emergency rollback of a Serving Runtime release (Hosted and Dedicated)?",
+        "rationale": "Use the original query to locate the step-by-step rollback process, including hosted and dedicated specifics, verification criteria, and post-rollback validation."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [
+          "dsid_840703a1cc37438a84e9beb68029d80b#0000",
+          "dsid_840703a1cc37438a84e9beb68029d80b#0002"
+        ],
+        "query": "Emergency rollback steps for Serving Runtime deployments in Hosted and Dedicated environments using Redwood tooling",
+        "rationale": "Provide an alternative phrasing that emphasizes tooling (Redwood), environments, and emergency context to broaden search scope if needed."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [
+          "dsid_f6e3b7ad413142019dbb5a5fed07f548#0003",
+          "dsid_840703a1cc37438a84e9beb68029d80b#0001",
+          "dsid_f6e3b7ad413142019dbb5a5fed07f548#0004"
+        ],
+        "query": "Emergency rollback decision criteria and the step-by-step execution for Hosted and Dedicated Serving Runtime rollbacks",
+        "rationale": "Break down into subquestions: decision checklist, hosted rollback steps, dedicated rollback steps, and post-rollback validation to ensure comprehensive coverage."
+      }
+    ]
+  },
+  "qst_0432": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_91abfa2001d747b3b570e8abce00ef4d#0000",
+          "dsid_91abfa2001d747b3b570e8abce00ef4d#0001"
+        ],
+        "query": "Which intake channel has the most reports of token accounting discrepancy across Slack, Gmail, Jira, and Intercom-derived paths, given the evidence and normalization rules?",
+        "rationale": "The data includes multiple origin channels and guidance on canonical counting. A depth expansion on the original query will systematically determine which channel leads in reports while accounting for normalization rules described in the evidence (avoid double counting, track origin)."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [
+          "dsid_91abfa2001d747b3b570e8abce00ef4d#0000",
+          "dsid_91abfa2001d747b3b570e8abce00ef4d#0001"
+        ],
+        "query": "What is the most common intake channel for token accounting discrepancy reports when normalized to a single canonical record (Slack, Gmail, Jira, Intercom)?",
+        "rationale": "This rephrase targets a slightly different framing (most common intake channel under normalization) that could surface results from the provided definitions and approved channels."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [
+          "dsid_91abfa2001d747b3b570e8abce00ef4d#0001"
+        ],
+        "query": "What subquestions must be answered to determine which intake channel reports token accounting discrepancy most frequently, given approved channels and dedup rules?",
+        "rationale": "Decomposes the problem into manageable subquestions: origin channel, deduplication status, time window, and whether Intercom-derived cases map to Slack/Gmail/Jira as per the guidelines, enabling precise retrieval."
+      }
+    ]
+  },
+  "qst_0451": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_c91a34ed8dcb44aeacf7713c5aab8dea#0001"
+        ],
+        "query": "In the team chat about posting jokes when an AI makes things up in production, what tagging requirement did someone propose for the memes?",
+        "rationale": "The user prompt is ambiguous and asks about a tagging requirement mentioned in a discussion. A depth plan would seek the most relevant portion of the provided data to identify any tagging rule. This would extract direct references to memes and tagging constraints from the evidence chunks."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [
+          "dsid_c91a34ed8dcb44aeacf7713c5aab8dea#0001"
+        ],
+        "query": "What tagging rule was proposed for memes when a model hallucinates in production, as discussed in the team chat?",
+        "rationale": "Rewriting restates the exact inquiry to surface the specific phrasing and target the same concept (tagging rule for memes about hallucinations) to improve retrieval focus."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [
+          "dsid_c91a34ed8dcb44aeacf7713c5aab8dea#0001"
+        ],
+        "query": "What was the tagging requirement proposed for memes in response to production hallucinations, and which message contained that proposal?",
+        "rationale": "Decomposing breaks the question into subparts: identify the proposal and locate the exact message, enabling targeted retrieval if one piece lacks explicit tagging detail."
+      }
+    ]
+  },
+  "qst_0452": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_6279854275e44cce9115af8286fdf38b#0004",
+          "dsid_6279854275e44cce9115af8286fdf38b#0000"
+        ],
+        "query": "Who owns the messy go-to-market misc assets dump with placeholder marketing files and micro-copy ideas created during a last-minute scramble before a partner call?",
+        "rationale": "Directly expands on the original query to extract ownership and responsibility from the provided evidence chunks, leveraging the explicit ownership lines (Priya Nair as owner, Alex Kim as contributor, Samira Ortiz as legal). Depth mode preserves the current query while probing for explicit owners and accountability trails within the evidence."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [
+          "dsid_6279854275e44cce9115af8286fdf38b#0004",
+          "dsid_6279854275e44cce9115af8286fdf38b#0000"
+        ],
+        "query": "Who is the owner of the GTM misc assets batch created during a 30-minute scramble before a partner call, and who else contributed or is responsible for constraints?",
+        "rationale": "Provides an alternative phrasing that emphasizes the last-minute nature and constraints, aiming to surface ownership details from the evidence where Priya Nair is listed as owner and others as contributors."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [
+          "dsid_6279854275e44cce9115af8286fdf38b#0004"
+        ],
+        "query": "What are the explicit owners and responsible parties for the GTM misc assets dump, including any legal constraints and design updates, as evidenced by the 2025-11-03 and 2026-02-15 entries?",
+        "rationale": "Breaks down the subquestion into ownership (Priya Nair), contributors (Alex Kim), and compliance checks (Samira Ortiz) highlighted in the changelog to ensure coverage of all ownership dimensions present in the data."
+      }
+    ]
+  },
+  "qst_0471": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_7d925287f5224f72b641acbd515beb2a#0001"
+        ],
+        "query": "What is Redwood Inference's mission statement?",
+        "rationale": "The provided evidence focuses on technical standards, deployments, security, and commercial terms but does not include an explicit mission statement. A deeper search should target governance or corporate communications sections (e.g., mission, vision, values) to uncover the official mission statement."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [],
+        "query": "Redwood Inference company mission statement",
+        "rationale": "Reframing the query to a company-wide search may surface mission statements in leadership blogs, about pages, or corporate summaries that aren\u2019t captured in the current evidence set."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [],
+        "query": "Identify Redwood Inference's mission statement and summarize its core commitments",
+        "rationale": "Decomposing the task into two subquestions helps: (a) find the official mission statement; (b) extract core commitments or themes to summarize. The current data lacks a direct mission statement, so decomposing guides targeted retrieval for both parts."
+      }
+    ]
+  },
+  "qst_0472": {
+    "proposals": [
+      {
+        "id": "expansion_0",
+        "mode": "depth",
+        "parent_chunk_ids": [
+          "dsid_415ddf6bea1d4fc78dcdb4e14170f565",
+          "dsid_64dab5ab34404e0286d18d19319ac7bf",
+          "dsid_4cb57e06fe3449529e0a4cde5a8007d7#0005"
+        ],
+        "query": "What is the company's thesis about where competitive advantage shifts as LLM ecosystems expand?",
+        "rationale": "The provided data references governance, evaluation, and token economy considerations but does not explicitly state a thesis on competitive advantage shifts. A depth query on the same original topic can surface inferred theses from the evidence, or identify gaps needing further retrieval."
+      },
+      {
+        "id": "expansion_1",
+        "mode": "rewrite",
+        "parent_chunk_ids": [
+          "dsid_64dab5ab34404e0286d18d19319ac7bf",
+          "dsid_16fb37183e574e5797d4e4c8d870def6"
+        ],
+        "query": "How do the documents describe shifts in competitive advantage as LLM ecosystems expand, and what factors are highlighted as drivers or barriers?",
+        "rationale": "A rewrite of the query targets extracting explicit or explicit-leaning statements about competitive advantage shifts from the available evidence, potentially aligning with governance, token economy, and evaluation signals described."
+      },
+      {
+        "id": "expansion_2",
+        "mode": "decompose",
+        "parent_chunk_ids": [
+          "dsid_0f35a7f8313d4dcabfbf754495c84598#0013",
+          "dsid_64dab5ab34404e0286d18d19319ac7bf#0001",
+          "dsid_4cb57e06fe3449529e0a4cde5a8007d7#0014"
+        ],
+        "query": "What elements in the evidence imply a thesis about competitive advantage in expanding LLM ecosystems, and how are they linked to architecture choices, governance, and cost models?",
+        "rationale": "Decompose the broad question into subquestions that map to concrete evidence: architecture choices (quantization, caching), governance (change control, eval harness), and token economy. This helps identify specific data points to retrieve."
+      }
+    ]
+  }
+}

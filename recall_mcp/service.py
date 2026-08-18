@@ -58,6 +58,12 @@ from recall.reasoning import (
     ReasoningRetriever,
     reason,
 )
+from recall.reasoning_expansion import (
+    ExpansionProposal,
+    ReasoningRequestLike,
+    ReasoningExpansionRetriever,
+    resolve_expansion_provider,
+)
 from recall.reasoning_graph import (
     ReasoningGraphProjection,
     build_reasoning_graph,
@@ -1562,15 +1568,19 @@ def reasoning_query(
     max_steps: int = 12,
     max_graph_nodes: int = 32,
     max_evidence_tokens: int = 2048,
+    expand_retrieval: bool = False,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
 ) -> ReasoningResponse:
     budget = ReasoningBudget(
         max_steps=max_steps,
         max_graph_nodes=max_graph_nodes,
+        max_model_calls=1 if expand_retrieval else 0,
         max_evidence_tokens=max_evidence_tokens,
     )
     reasoning_policy = _reasoning_policy(mode)
+    if expand_retrieval:
+        reasoning_policy = replace(reasoning_policy, allow_retrieval_expansion=True)
     if policy is not None and not policy.strict:
         reasoning_policy = replace(reasoning_policy, require_certified_evidence=False)
 
@@ -1612,9 +1622,35 @@ def reasoning_query(
                 graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
             )
 
+        expansion_provider = resolve_expansion_provider() if expand_retrieval else None
+
+        def expansion_retriever(
+            request: ReasoningRequestLike,
+            proposal: ExpansionProposal,
+            initial: TrustedResult,
+        ) -> TrustedResult:
+            del request, initial
+            expanded_query = query if proposal.mode == "depth" else proposal.query
+            expanded_k = min(MAX_SEARCH_K, max(k + 1, k * 2))
+            result = _retrieve_trusted(
+                store, embedder, expanded_query, source, expanded_k, calibration, policy
+            ).result
+            generation_id = result.generation_id or str(
+                getattr(store, "generation_id", "legacy")
+            )
+            return replace(
+                result,
+                query=expanded_query,
+                tenant_id=result.tenant_id or store.tenant,
+                generation_id=generation_id,
+            )
+
         retriever_port: ReasoningRetriever = retrieve
         graph_port: ReasoningGraphProvider = graph_provider
         proposal_port: ReasoningProposalProvider = proposal_provider
+        expansion_retriever_port: ReasoningExpansionRetriever | None = (
+            expansion_retriever if expand_retrieval else None
+        )
 
         request = ReasoningRequest(
             query=query,
@@ -1624,6 +1660,8 @@ def reasoning_query(
                 retriever=retriever_port,
                 graph_provider=graph_port,
                 proposal_provider=proposal_port,
+                expansion_provider=expansion_provider,
+                expansion_retriever=expansion_retriever_port,
             ),
             policy=reasoning_policy,
             budget=budget,
