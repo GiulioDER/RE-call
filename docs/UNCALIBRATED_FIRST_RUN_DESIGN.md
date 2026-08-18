@@ -1,9 +1,11 @@
 # Serving a corpus before it has a calibration
 
 **Status:** design, 2026-08-18. **Nothing here is implemented.** It is a proposal with measured
-support for two of its claims and a list of open questions it does not answer. The measurements are
-pre registered in `docs/preregistrations/2026-08-18-uncalibrated-first-run.md`. All source citations
-are against the tree at commit `bd582316`.
+support for two of its claims. Section 6 answers the eleven questions an audit found it had left
+open; two of those answers change the design and one dissolves a question that rested on a
+falsified premise. The measurements are pre registered in
+`docs/preregistrations/2026-08-18-uncalibrated-first-run.md`. All source citations are against the
+tree at commit `295379fd`.
 
 The goal is unchanged: someone must be able to index and search before they have labelled queries.
 What follows argues that `RECALL_ENV=development` is the wrong mechanism for that, not because it is
@@ -116,18 +118,20 @@ docstring argues the point for a different reason: "A per-tenant fault must cost
 tenant". The same argument applies to a per tenant relaxation, and an operator must be able to *see*
 it.
 
-So: add `serving_mode` to `recall_tenant_state`, with three values.
+So: record `serving_mode` beside the generation pointer, with three values.
 
 | `serving_mode` | Means | `trust_state` on the wire |
 |---|---|---|
-| `certified` | A published, certified calibration binds to the active generation. | `trusted` |
-| `provisional` | A generation is active and a **measured but uncertified** threshold is bound to it. | `provisional` |
+| `certified` | A published, certified calibration bound to the active generation, fitted on a **human labelled** query set. | `trusted` |
+| `provisional` | The same, but the query set was **machine generated**. The statistics are real; the questions were invented by the process being scored. | `provisional` |
 | absent | No active generation. | `refused` |
 
-`provisional` is a new `TrustState` and a new `CalibrationStatus`. It is deliberately **not**
-`degraded`, because `degraded` currently means "we ran with a number bound to nothing" and
-`provisional` means "we ran with a number measured on this corpus, on a query set no human
-labelled".
+`provisional` is a new `TrustState`. It is deliberately **not** `degraded`, because `degraded`
+means "we ran with a number bound to nothing", and it is deliberately **not** a new
+`CalibrationStatus`: see decision 5, which is the correction the measurement forced. Certification
+is a *statistical* verdict and provenance is a *separate axis*; the measured result was that a
+generated set passes the statistical bar, so folding provenance into `CalibrationStatus` would
+have conflated two independent facts.
 
 What this buys, stated precisely: a stray exported variable can no longer make a tenant *look*
 certified, because `serving_mode` is read from the database. It does **not** close the escape hatch.
@@ -158,7 +162,7 @@ design does not make. `rollback()` today takes no arguments (`recall/generations
 cannot record a reason, and its target's calibration may have gone stale or superseded in the
 meantime. Under the certification rule it would either refuse, which blocks incident recovery
 exactly when it is needed, or grant `provisional` with no reason, which is the weakness this design
-uses to argue against `unsafe_development=True`. See the open questions.
+uses to argue against `unsafe_development=True`. **Resolved in decision 2.**
 
 Then delete the `generation_mode` branch. Two corrections to an earlier version of this section,
 both found by audit:
@@ -212,7 +216,7 @@ is justified **only** by provenance, which `docs/CALIBRATION.md:169-176` states 
 certified calibration "does not mean the labelled set was a good one".
 
 ⚠️ **`query_set_provenance` as described is caller asserted and forgeable**, and adding it is a
-checksum covered schema change. See the open questions.
+checksum covered schema change. **Resolved in decision 10.**
 
 ### Q: Should a first run adopt a legacy `chunks` corpus without re embedding?
 
@@ -294,9 +298,244 @@ Pre registered before the first run; full record, controls and scope limits in t
 - ⚠️ Two method deviations are on the record: the corpus was substituted, because no human labelled
   set exists for the registered one, and the primary ran at half the registered sample size.
 
-## 6. Open questions this design does not answer
+## 6. Decisions on the eleven questions
 
-Recorded rather than invented. Each needs a decision before implementation.
+Answered 2026-08-18. Each states the decision, the reason, and what it costs. Two of them
+(1 and 9) change the design rather than merely completing it, and one (5) dissolves rather than
+resolves: the question rested on a premise the Q2 measurement had already falsified.
+
+### 1. The enterprise control plane: same rule, and the mode moves to the pointer
+
+**Decision: `serving_mode` is a column on the row that holds the generation pointer, not on the
+tenant.** That means both `recall_tenant_state` and `recall_tenant_routes.active_generation`. One
+function, `activation_decision(conn, tenant, generation_id, provisional_reason) -> ServingMode`,
+computes it, and **all three activation paths call it**: `promote()`, `rollback()`, and
+`ControlPlane.cutover()` / `set_route()`.
+
+**Why the pointer and not the tenant.** A mode stored on the tenant while the *route* selects the
+generation can drift from the generation it describes, and `StoreRegistry._get_generation` resolves
+the route first (`recall_mcp/stores.py:150`). Putting the mode in the same row as the pointer makes
+drift unrepresentable rather than merely unlikely. This is the same reasoning F2 applies to
+`promote()` and `rollback()`, taken one step further: **do not enumerate writers by discipline when
+you can make the datum travel with the thing it describes.**
+
+**What it costs.** A migration on two tables, and `cutover()` gains a parameter. `cutover()`'s
+existing gate checks parity and outbox lag, not calibration, so this genuinely adds a refusal it did
+not have. That is the point of the question.
+
+### 2. `rollback()` takes a reason and never refuses
+
+**Decision: `rollback(*, provisional_reason: str | None = None)`, and it never refuses on
+certification grounds.** When the target has no certified calibration it activates as `provisional`
+and records the reason, defaulting to `"rollback: incident recovery"` when the caller gives none.
+
+**Why not refuse.** Rollback is the incident path. A gate that blocks recovery precisely when
+recovery is needed is worse than serving a `provisional` answer that says so on the wire, and an
+operator facing a bad generation will route around a refusal in a way nobody audits. **Refusing here
+would trade a visible degradation for an invisible workaround.**
+
+**The honest cost:** rollback can silently downgrade a tenant from `certified` to `provisional`.
+That is correct, and it must be **reported**: the audit event records the downgrade, and
+`recall status` shows it. Prevented, no; hidden, never.
+
+### 3. `serving_mode` is ADVISORY. The live resolver stays authoritative
+
+**Decision: `CalibrationRepository.resolve()` remains the runtime answer. `serving_mode` records
+what was decided at activation time and why.** Where they disagree, the resolver wins and the
+disagreement is itself reportable.
+
+**Why.** `resolve()` re-derives the lineage comparison on every query, which is what catches a
+`forget()` that rewrote `corpus_fingerprint` (`recall/generations.py:915`) or a `publish()` that
+superseded the artifact (`recall/calibration_v2.py:511`). A cached mode cannot catch either.
+Making it authoritative would require every current and future invalidator to update it, which is
+exactly the growing-enumeration failure this design criticises in F2. **A cache that must be
+invalidated by an open-ended set of writers is a bug with a schedule.**
+
+**What is therefore NOT claimed:** `serving_mode` is not a fast path and must not be read to skip
+`resolve()`. It buys operator visibility and an audit record, which is what the question about
+environment variables was really asking for.
+
+### 4. Add `provisional` to the reasoning whitelist, and bump the API version
+
+**Decision: `recall/reasoning.py:1461` accepts `{trusted, degraded, refused, provisional}`, and
+`REASONING_API_VERSION` goes 1 → 2.** The several `!= "trusted"` comparisons keep their current
+behaviour and become an explicit named set, `_CERTIFIED_STATES = frozenset({"trusted"})`.
+
+**Why the comparisons keep their behaviour.** `require_certified_evidence` means certified. A
+provisional result must not satisfy it. The change is that the intent is *stated* rather than
+inferred from a string comparison, so the next person adding a state has to make a decision instead
+of inheriting one by default.
+
+**Why the version bump.** A client written against version 1 may enumerate the three states. Adding
+a fourth is additive for a client that treats unknown states as untrusted and breaking for one that
+does not, and the contract never told them which to do. Version 2 says it: **unknown `trust_state`
+must be treated as untrusted.**
+
+### 5. Dissolved: `PROVISIONAL` is not a `CalibrationStatus`
+
+**Decision: do not add it. `code_for_status` and `_STATUS_CODES` are untouched, so the stable
+failure-code API is untouched and the fail-closed default stays exactly as it is.**
+
+The question assumed provisional was a *weaker certification*. The Q2 measurement falsified that:
+a generated query set **passes** `Calibration.certified`, and `publish()` accepts the artifact
+(`recall/calibration_v2.py:513` only refuses `not artifact.certified`). So certification and
+provenance are **two independent axes**, and the original framing conflated them.
+
+So: `CalibrationStatus` keeps meaning "is this artifact bound and statistically sound". Provenance
+lives on the artifact as `query_set_provenance` (decision 10). `trust_state` is then computed from
+the pair, which needs no new failure code:
+
+```
+failure_code is not None              -> refused / degraded, exactly as today
+None and provenance == human          -> trusted
+None and provenance == generated      -> provisional
+```
+
+⚠️ **One thing this does NOT give for free, and the design was wrong to imply it did.** A strict
+policy must still decide whether it *accepts* a provisional answer. `TrustPolicy` gains
+`accept_provisional: bool = False`, so strict-by-omission still refuses. `recall init` writes the
+acceptance explicitly into the local configuration rather than defaulting it on. That keeps the
+first run free of manual environment fiddling **without** a fail-open default, and it matches
+`TrustPolicy.development()`'s existing rule: "Explicit opt-in for local workflows. Never reachable
+by omission."
+
+### 6. The adoption column mapping, stated
+
+**Decision:** every `recall_chunks_v1` column has a named origin, and anything without one makes the
+source not adoptable.
+
+| v1 column | Origin | Note |
+|---|---|---|
+| `source_uri` | `file://` + the absolute resolved path | Root comes from the project's recorded index root, not guessed |
+| `object_version_id` | `metadata->>'content_hash'` | The `file://` rule: version_id **is** the digest (`recall/lineage.py:269`) |
+| `source_sha256` | `metadata->>'content_hash'` | Verified against disk first |
+| `chunk_ordinal` | `int(metadata->>'ord')` | **Required alongside `content_hash` in step 1**; absent means not adoptable, matching `_write_source` (`recall/generations.py:493`) |
+| `text`, `embedding`, `metadata` | copied | The vectors are the whole point |
+| `tsv` | **recomputed**, never copied | `to_tsvector(<pipeline fts_language>::regconfig, text)`, exactly as `_write_source` does. Legacy is `GENERATED ALWAYS ... 'english'`, so a copy is right only by coincidence when the adopted pipeline declares English |
+
+`recall_generations`' NOT NULL columns come from a **synthesized manifest built from the verified
+set**: one `ManifestObjectV1` per adopted source with `uri`/`sha256`/`version_id` from the
+verification, `size` and `media_type` from disk. This is not fabrication, and the distinction is the
+same one `lineage.py` draws: the manifest records **what was checked against disk at adoption
+time**, which is precisely the guarantee a `file://` manifest offers anywhere else.
+
+### 7. No new state. Adoption uses the existing lifecycle
+
+**Decision:** `create()` (→ `building`) → adopt-copy → `validate()` (→ `ready`) → `promote()`.
+
+**Why not `legacy_unverified`,** which already exists in the state CHECK
+(`recall/migrations/sql/0008_generation_foundation.sql:7`): **nothing downstream accepts it.**
+`CalibrationRepository._generation` takes `{ready, active, retired}` and `pin_generation` the same,
+so an adopted generation parked there could never be calibrated, which defeats the entire purpose.
+A state that no consumer accepts is not a lifecycle stage, it is a dead end.
+
+`validate()` then works unmodified, because it compares chunk `source_uri` / `source_sha256` /
+`object_version_id` against the manifest. ⚠️ **Say plainly what that check is worth here:** both
+sides derive from the same verified digest, so validation confirms the copy is *internally
+consistent*, not that the bytes were re-checked. The disk check in step 3 is the evidence; this is
+an integrity check on the copy.
+
+⛔ **Constraint this surfaces:** `create()` refuses `allow_unverified` in production
+(`recall/generations.py:288`), and an adopted generation is unverified by construction. **Adoption
+is therefore development-only under the current gate**, which is policy 6 in section 2 and is a
+second reason that gate should move off the environment. The first-run design depends on it.
+
+### 8. One transaction, and failure uses the existing compensating path
+
+**Decision:** one transaction per generation for the copy, and any failure calls
+`GenerationManager.fail(generation_id, reason)`.
+
+**Why this needs nothing new:** `fail()` moves `building`/`validating` → `failed`
+(`recall/generations.py:723`), and `gc()` already reclaims `failed`. The abandoned-generation
+problem the question raised only exists for a generation left in `building`, which is exactly what
+this prevents. `validate()` already wraps itself this way, so adoption inherits a tested shape
+rather than inventing one.
+
+**Sources that fail verification:** the generation still adopts, and the failures are re-embedded
+into the same generation before `validate()`. Refusing wholesale on one changed file would make
+adoption useless on any live corpus. What is refused wholesale is an **attestation** failure, which
+is different in kind: see decision 9.
+
+### 9. The attestation sample size, and the measured sample was too small
+
+**Decision:** `n = ceil(ln(alpha) / ln(1 - p))`, sampled **by source** and not by chunk, with
+`alpha = 0.05` and `p` the smallest contaminated fraction worth detecting.
+
+| smallest fraction detectable | n at 95% | n at 99% |
+|---:|---:|---:|
+| 20% | 14 | 21 |
+| 10% | 29 | 44 |
+| 5% | 59 | 90 |
+| 2% | 149 | 228 |
+| 1% | 299 | 459 |
+
+⛔ **This retires a number the measurement reported.** The 20-chunk sample detects only a
+contaminated fraction of **13.9% or larger** at 95% confidence. As the *sole* embedder check
+(which decision 4 of the adoption path makes it) that is not adequate, and the pre-registration's
+"20 of 20" should be read as a feasibility and cost result, not as coverage. **Default `p = 0.05`,
+so n = 59.** At the measured ~0.05 s per chunk that is about three seconds.
+
+**Stratify by source, not chunk.** Contamination arrives per source, since it is a re-index of some
+files under a different model. Sampling chunks uniformly over-weights long documents and can draw
+all 59 from a handful of sources.
+
+**Abort rule: a single sample below the bar aborts the whole adoption.** Not a majority. One failure
+means the recorded pipeline identity is wrong for at least one source, and nothing in the legacy
+metadata says which other sources share its provenance.
+
+**Bar: cosine ≥ 0.9999, and if the platform cannot reproduce it, refuse rather than lower it.** A
+lowered bar cannot distinguish "different ONNX execution provider" from "different model", which is
+the only thing the check exists to tell apart. Measured margin: 20 of 20 at 1.0000 against an
+off-diagonal control of 0.709 max.
+
+### 10. Provenance is ATTRIBUTABLE, not unforgeable
+
+**Decision:** `query_set_provenance` is stamped **server side from the entry point that stored the
+query set**, is part of the artifact's immutable payload and therefore inside its checksum, and
+takes three values, not two.
+
+| value | Written when |
+|---|---|
+| `generated` | The set came from `recall/wizard/queryset.py` |
+| `human_asserted` | A file was supplied via `recall calibration calibrate --queries FILE` |
+| `human_reviewed` | As above, plus a recorded reviewer identity and timestamp |
+
+Only `human_reviewed` yields `trust_state: trusted`. `human_asserted` yields `provisional`, the
+same as `generated`.
+
+**Why not claim unforgeability.** The operator owns the database; any local scheme is defeatable by
+writing the row directly. Claiming otherwise would be the exact failure this project's `lineage.py`
+refuses for `file://` objects, where the comment says plainly that what a local path buys is
+**detection of divergence, never prevention**. So the honest guarantee is: **the default is safe,
+the claim is attributable, and asserting a human label is a distinct recorded act rather than the
+absence of a flag.** That is the same standard `recall rewrite` already applies, where nothing
+reaches corpus metadata without a named human.
+
+**Cost:** a column on `recall_calibration_query_sets`, an artifact-version bump, and a migration.
+
+### 11. Additive, with the contracts and the pinned test updated
+
+**Decision:** the change is additive for clients that treat unknown states as untrusted, and the
+contract is amended to *require* that. Concretely: `docs/USING_WITH_CLAUDE.md`,
+`docs/REASONING_CONTRACT.md`, and the test pinning `trust_state in {"trusted", "degraded"}` all move
+to the four-state set, and `REASONING_API_VERSION` 2 (decision 4) is what a client checks to know
+which set to expect.
+
+**The pinned test is not an obstacle, it is the mechanism.** It exists so that adding a state is a
+deliberate act with a visible diff, which is what is happening here.
+
+## 6b. What remains genuinely open
+
+Two things, and neither blocks implementation:
+
+- **Whether enterprise deployments want decision 1 at all.** Adding a certification gate to
+  `cutover()` is a real behaviour change for an existing operator, and that is a product call rather
+  than an engineering one. The engineering answer is that the gate belongs there; whether to ship it
+  default-on for existing tenants is not mine to make.
+- **The chunker is still unverified.** Decision 9 sizes the *embedder* check. Nothing here verifies
+  that the recorded chunker produced the stored chunk text, because the attestation re-embeds that
+  text rather than re-deriving it. A re-chunk attestation (re-chunk N verified sources, compare
+  texts and ordinals) is the missing counterpart and is not designed here.
 
 1. **The enterprise control plane is a second activation surface.** `ControlPlane.set_route()` and
    `cutover()` (`recall/control_plane.py:802`) write `recall_tenant_routes.active_generation`, and
@@ -340,7 +579,10 @@ Recorded rather than invented. Each needs a decision before implementation.
 
 - It does not touch policies 1, 2 or 4, **subject to the `recall_index` correction in Q2**.
   `RECALL_ENV` survives for those and should be renamed per axis so it cannot be re overloaded.
-- It does not lift the strict default. `provisional` is a *third* answer, not a relaxation.
+- It does not lift the strict default. `provisional` is a *third* answer, not a relaxation, and
+  decision 5 keeps a strict policy refusing it unless the operator opts in explicitly.
 - It does not make a generated query set equivalent to a labelled one, and says so on the wire.
 - It does not fix the 0.5 constant's remaining user, `RECALL_TRUST_MODE=development`, which stays as
   the explicit escape hatch for an uncalibratable corpus.
+- It does not verify the CHUNKER. Decision 9 sizes the embedder check only; the re chunk
+  counterpart is named in section 6b and not designed here.
