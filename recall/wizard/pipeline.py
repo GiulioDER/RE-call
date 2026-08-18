@@ -46,7 +46,11 @@ from typing import Any
 from recall.calibration_v2 import CalibrationUncertified
 from recall.embeddings import Embedder
 from recall.generation_build import BuildRequest, build_generation, chunker_for
-from recall.generations import GenerationManager
+from recall.generations import (
+    GenerationManager,
+    InvalidGenerationTransition,
+    NoActiveGeneration,
+)
 from recall.lineage import MANIFEST_SCHEMA_VERSION, IndexManifestV1
 from recall.manifest import LocalObjectReader, ObjectReader
 from recall.wizard.corpora import CorpusSpec
@@ -64,9 +68,18 @@ from recall.wizard.queryset import (
 
 __all__ = ["CorpusOutcome", "PipelineRefusal", "run_corpus"]
 
-#: Environments a `file://` manifest may be built under. `production` is excluded because
-#: `GenerationManager.create` refuses a non-S3 manifest there; `test` is included because the suite
-#: uses it and the underlying guards key on production specifically.
+#: Environments this build may run under. `test` is included because the suite uses it and the
+#: underlying guards key on production specifically.
+#:
+#: 🔁 Corrected. This used to say `production` is excluded because `GenerationManager.create`
+#: refuses a non-S3 manifest there. It does not, and nothing in the tree gates `file://` on the
+#: environment: `lineage.py` accepts `file://` alongside `s3://` unconditionally, and `manifest.py`
+#: gates it on `RECALL_LOCAL_ALLOWLIST` being set. What `create` actually calls in production is
+#: `pipeline.require_production_identity()` (`lineage.py:184`), which refuses an embedder with no
+#: immutable revision or artifact digest. That is the real reason the wizard cannot build there:
+#: its embedders are unverified, which is the same fact `CorpusOutcome.unverified_embedder`
+#: already reports. The old wording sent an operator with a properly pinned embedder looking for a
+#: manifest problem they did not have.
 _BUILD_ENVIRONMENTS = ("development", "test")
 
 
@@ -96,6 +109,13 @@ class CorpusOutcome:
     #: True when no verifiable embedder identity could be resolved, so the generation records
     #: `verified: false`. Surfaced rather than swallowed: the wizard should say it, not discover it.
     unverified_embedder: bool = False
+    #: The generation this tenant was serving BEFORE this run, or `None` on a first install. It is
+    #: the difference between two outcomes that otherwise render identically: an uncertified build
+    #: on an existing install is a working tenant with a named limitation, while an uncertified
+    #: build on an empty tenant leaves nothing serving at all. Under production trust that second
+    #: case raises `NoActiveGeneration` from outside `trusted_search`'s try block, so the caller
+    #: gets a raw exception with no failure code and no advice.
+    previously_serving: str | None = None
     answerable: int = 0
     unanswerable: int = 0
     steps: tuple[str, ...] = field(default_factory=tuple)
@@ -105,6 +125,15 @@ class CorpusOutcome:
         # and read back, and a JSON round trip returns a list, which compares unequal to the tuple
         # that produced it and makes the frozen record unhashable.
         object.__setattr__(self, "steps", tuple(self.steps))
+        # An uncertified outcome without a reason is a defect, not a state to render. The renderer
+        # used to interpolate this field straight into the operator's explanation line, so the word
+        # `None` shipped as the advice. Refusing it here means the renderer does not have to guard
+        # a case that should never exist.
+        if not self.certified and not (self.degraded_reason or "").strip():
+            raise ValueError(
+                f"an uncertified outcome for {self.tenant!r} must carry a degraded_reason: it is "
+                "the only thing that tells the operator what fell short"
+            )
 
 
 def _labelled_set(
@@ -183,6 +212,47 @@ def _identified_request(spec: CorpusSpec, embedder: Any, project: str | None) ->
     )
 
 
+def _degraded_reason(
+    spec: CorpusSpec,
+    generation_id: str,
+    certification_reason: str,
+    previously_serving: str | None,
+) -> str:
+    """What an uncertified corpus means for this tenant, which depends on what it was serving.
+
+    Two states rendered identically for one release, and only one of them is an install: on an
+    upgrade the previous generation keeps answering, and on a first install nothing answers at all.
+    Saying "whatever this tenant was serving still serves" in the second case is not a hedge, it is
+    a false statement about an empty tenant, and it was printed under the heading "install
+    complete".
+
+    Both cases also leave the generation READY, holding a full copy of the corpus's chunk rows.
+    That is deliberate (it is the evidence, and it can still be promoted), but it is not free and
+    the operator is the only one who can decide to reclaim it, so the command is named here rather
+    than left to be discovered when the disk fills.
+    """
+    lead = (
+        f"certification failed ({certification_reason}). The generation {generation_id} is built "
+        "and validated but NOT promoted"
+    )
+    if previously_serving:
+        serving = (
+            f", so generation {previously_serving} keeps serving this tenant. Promote it "
+            "deliberately once a certified calibration is published, or add content and re-run."
+        )
+    else:
+        serving = (
+            f", and {spec.tenant!r} has NO active generation, so this tenant answers nothing. "
+            f"It is served as {spec.serving_environment}/{spec.trust_mode}, under which a query "
+            "raises NoActiveGeneration rather than returning a refusal with a failure code. Add "
+            "content and re-run, or promote this generation deliberately to serve it uncertified."
+        )
+    return (
+        f"{lead}{serving} It still holds a full copy of the corpus, which `recall generation "
+        f"abandon {generation_id}` releases for `recall generation gc`."
+    )
+
+
 def run_corpus(
     spec: CorpusSpec,
     *,
@@ -213,7 +283,8 @@ def run_corpus(
     if manager.environment not in _BUILD_ENVIRONMENTS:
         raise PipelineRefusal(
             f"the build must run under one of {_BUILD_ENVIRONMENTS}, not "
-            f"{manager.environment!r}: a file:// manifest is refused in production. Serving this "
+            f"{manager.environment!r}: a production build requires an embedder with an immutable "
+            "revision or artifact digest, and the wizard's embedders have neither. Serving this "
             "corpus under production is correct and separate; only the BUILD is not."
         )
     if manager.tenant_id != spec.tenant:
@@ -252,14 +323,30 @@ def run_corpus(
     generation_id = stats.generation_id
 
     def _fail(step: str, exc: BaseException) -> None:
-        """Mark the generation failed so `gc` can reclaim it, then re-raise.
+        """Mark the generation failed so `gc` can reclaim it, then let the caller re-raise.
 
         Without this an abort after `validate` leaves the generation READY, and `gc` collects only
         `retired` and `failed`, so every failed attempt leaks a full copy of the corpus's chunk rows
         that nothing will ever reclaim.
+
+        ⚠️ For most of this module's life the paragraph above was false, and it was false on the
+        path it was written for. `validate` sets the state to READY, and `GenerationManager.fail`
+        refuses READY outright; the `InvalidGenerationTransition` landed in a bare `except
+        Exception: pass` directly below, so the leak this guard exists to prevent happened every
+        time, silently. The test that pinned it asserted against a fake whose `fail` succeeds from
+        any state, so the guard could not be observed failing. Hence `abandon`, which is the
+        READY-only reclaim route, and hence the real-manager test alongside the fake one.
         """
+        reason = f"wizard pipeline failed at {step}: {exc}"
         try:
-            manager.fail(generation_id, f"wizard pipeline failed at {step}: {exc}")
+            manager.fail(generation_id, reason)
+            return
+        except InvalidGenerationTransition:
+            pass
+        except Exception:  # noqa: BLE001 - the original failure is what matters
+            return
+        try:
+            manager.abandon(generation_id, reason)
         except Exception:  # noqa: BLE001 - the original failure is what matters
             pass
 
@@ -286,6 +373,14 @@ def run_corpus(
         # version of this module never reached its own degraded branch against the real repository.
         certified = False
 
+    # Read BEFORE promoting, because promoting is what replaces it. Its absence is the whole
+    # difference between a degraded upgrade and a degraded first install, and only one of those is
+    # an install that answers anything.
+    try:
+        previously_serving: str | None = manager.active_generation_id()
+    except NoActiveGeneration:
+        previously_serving = None
+
     if certified:
         announce("promote")
         try:
@@ -304,14 +399,12 @@ def run_corpus(
         degraded_reason=(
             None
             if certified
-            else (
-                f"certification failed ({artifact.certification_reason}). The generation "
-                f"{generation_id} is built and validated but NOT promoted, so whatever this tenant "
-                "was serving still serves. Promote it deliberately once a certified calibration is "
-                "published, or add content and re-run."
+            else _degraded_reason(
+                spec, generation_id, artifact.certification_reason, previously_serving
             )
         ),
         unverified_embedder=request.unverified,
+        previously_serving=previously_serving,
         answerable=answerable,
         unanswerable=unanswerable,
         steps=tuple(steps),

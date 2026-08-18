@@ -60,16 +60,47 @@ class _FakeManager:
         *,
         environment: str = "development",
         tenant_id: str = "docs",
+        serving: str | None = None,
     ) -> None:
         self._recorder = recorder
         self.environment = environment
         self.tenant_id = tenant_id
+        #: What this tenant is serving before the run. `None` is a FIRST INSTALL, which is the
+        #: default because it is the state a wizard actually meets, and the one whose degraded
+        #: outcome used to be described with the upgrade's wording.
+        self.serving = serving
         self.built = False
         self.failed: list[str] = []
+        self.abandoned: list[str] = []
+        #: Tracked because the real manager's transitions key on it, and a fake that ignores state
+        #: cannot reproduce a refusal. See `fail` below.
+        self.state = "building"
 
     def fail(self, generation_id: str, reason: str) -> None:
+        """REFUSES a READY generation, exactly as `GenerationManager.fail` does.
+
+        This fake used to accept `fail` from any state, and that single permissiveness hid a live
+        storage leak through a full audit: `validate` sets READY, the real `fail` raises
+        `InvalidGenerationTransition` for READY, and the wizard's `_fail` swallowed it, so the
+        guard whose whole purpose is to stop a leak had never once worked. The test was green
+        because the double could not say no. A fake that cannot reproduce the real object's
+        refusals does not test the caller, it tests itself.
+        """
         self._recorder.note("fail")
+        if self.state in {"ready", "active", "retired"}:
+            from recall.generations import InvalidGenerationTransition
+
+            raise InvalidGenerationTransition(f"cannot fail generation in {self.state} state")
         self.failed.append(reason)
+
+    def abandon(self, generation_id: str, reason: str) -> None:
+        """READY only, exactly as `GenerationManager.abandon` is."""
+        self._recorder.note("abandon")
+        if self.state != "ready":
+            from recall.generations import InvalidGenerationTransition
+
+            raise InvalidGenerationTransition(f"abandon requires ready state, found {self.state}")
+        self.abandoned.append(reason)
 
     def create(self, manifest: Any, pipeline: Any, *, allow_unverified: bool = False) -> Any:
         self._recorder.note("create")
@@ -88,12 +119,23 @@ class _FakeManager:
 
     def validate(self, generation_id: str) -> Any:
         self._recorder.note("validate")
+        self.state = "ready"
         from types import SimpleNamespace
 
         return SimpleNamespace(generation_id=generation_id, sources=1, chunks=40)
 
+    def active_generation_id(self) -> str:
+        """RAISES when nothing is serving, exactly as `GenerationManager.active_generation_id` does."""
+        if not self.serving:
+            from recall.generations import NoActiveGeneration
+
+            raise NoActiveGeneration(f"tenant {self.tenant_id!r} has no active generation")
+        return self.serving
+
     def promote(self, generation_id: str, *, unsafe_development: bool = False) -> None:
         self._recorder.note("promote")
+        self.state = "active"
+        self.serving = generation_id
 
 
 class _FakeCalibrations:
@@ -436,12 +478,18 @@ def test_the_uncalibrated_tenant_is_not_driven_down_the_generation_path(tmp_path
 def test_the_build_runs_under_development_whatever_the_serving_environment(
     tmp_path: Path,
 ) -> None:
-    """A `file://` manifest is refused in production, and `docs` is SERVED in production.
+    """A production build requires a verifiable embedder identity, and `docs` is SERVED in production.
 
     So the manager the build runs against must be a development one. This is the constraint that
-    makes the two environments coexist on one machine, and getting it wrong fails at build time with
-    "production generation builds require a versioned S3 manifest", which names neither the wizard
-    nor the corpus.
+    makes the two environments coexist on one machine, and getting it wrong fails inside
+    `GenerationManager.create` with "production generation builds require an immutable embedder
+    revision or artifact digest", which names neither the wizard nor the corpus.
+
+    🔁 This docstring used to blame a `file://` manifest, citing "production generation builds
+    require a versioned S3 manifest". That message is real but belongs to a layer the wizard never
+    touches: it is a CLI guard on `recall generation build` (`recall/cli.py:1694`). The wizard calls
+    `build_generation` directly, so the manifest scheme is never checked against the environment at
+    all, and the embedder identity is the only thing that actually refuses.
     """
     from recall.wizard.pipeline import PipelineRefusal, run_corpus
 
@@ -683,11 +731,17 @@ def test_only_a_resolvable_revision_is_recorded(
     assert request.artifact_digest == "b" * 64, "the digest is what makes it immutable"
 
 
-def test_a_failure_after_validate_marks_the_generation_failed(tmp_path: Path) -> None:
+def test_a_failure_after_validate_reclaims_the_generation(tmp_path: Path) -> None:
     """Otherwise the orphan is unreclaimable: `gc` collects only `retired` and `failed`.
 
     A generation left READY by an aborted run keeps a full copy of the corpus's chunk rows, once
     per failed attempt, and nothing will ever collect it.
+
+    The abort happens AFTER `validate`, so the generation is READY, so `fail` is the wrong verb and
+    the real manager refuses it. The reclaim must therefore go through `abandon`, and asserting on
+    `abandoned` rather than on `failed` is the whole point of this test: the previous version
+    asserted `manager.failed` against a fake that accepted `fail` from any state, and passed for
+    months while the leak it describes happened on every run.
     """
     from recall.wizard.pipeline import run_corpus
 
@@ -707,8 +761,10 @@ def test_a_failure_after_validate_marks_the_generation_failed(tmp_path: Path) ->
             corpus_version="2026-01-01",
         )
 
-    assert manager.failed, "the generation must be marked failed so gc can reclaim it"
-    assert "gen_test" not in [c for c in recorder.calls if c == "promote"]
+    assert manager.state == "ready", "the precondition this test exists for: fail() cannot apply"
+    assert manager.abandoned, "a READY generation must be reclaimed via abandon, not left behind"
+    assert not manager.failed, "fail() does not apply to READY and must not be recorded as working"
+    assert "calibration blew up" in manager.abandoned[0], "the reason must name the real cause"
     assert "promote" not in recorder.calls
 
 
@@ -723,7 +779,14 @@ def test_the_outcome_survives_the_json_round_trip_it_is_written_for(tmp_path: Pa
 
     from recall.wizard.pipeline import CorpusOutcome
 
-    built = CorpusOutcome(tenant="docs", generation_id="gen_x", steps=["build", "validate"])
+    # `certified` defaults to False, and an uncertified outcome must carry its reason, so the
+    # round trip is exercised on a record that is actually constructible.
+    built = CorpusOutcome(
+        tenant="docs",
+        generation_id="gen_x",
+        steps=["build", "validate"],
+        degraded_reason="separability below the bar",
+    )
     assert isinstance(built.steps, tuple)
 
     restored = CorpusOutcome(**json.loads(json.dumps(dataclasses.asdict(built))))
@@ -779,6 +842,132 @@ def _purge(tenant: str) -> None:
 
 
 @requires_db
+def test_the_real_manager_refuses_to_fail_a_ready_generation_and_abandon_reclaims_it(
+    tmp_path: Path,
+) -> None:
+    """The defect DAT-001 named, proved against the real object rather than a fake.
+
+    `validate` sets READY, and `GenerationManager.fail` refuses READY, so the wizard's leak guard
+    could never fire on the path it was written for. The `InvalidGenerationTransition` was swallowed
+    by a bare `except Exception: pass`, and `gc` collects only `retired` and `failed`, so every
+    uncertified build left a full copy of the corpus's chunk rows that nothing could ever reclaim.
+
+    This is the test the fake could not be: `_FakeManager.fail` accepted any state, so the refusal
+    below was invisible to the suite for the whole life of the module.
+    """
+    import uuid
+
+    import psycopg
+
+    from recall.calibration_v2 import CalibrationRepository
+    from recall.embeddings import resolve_embedder
+    from recall.generations import GenerationManager, InvalidGenerationTransition
+    from recall.trust_policy import TrustMode
+    from recall.wizard.corpora import CorpusSpec
+    from recall.wizard.pipeline import run_corpus
+
+    tenant = "wizard-abandon-" + uuid.uuid4().hex[:10]
+    spec = CorpusSpec(
+        tenant=tenant,
+        root=_corpus(tmp_path, files=45),
+        glob="**/*.md",
+        chunker="text",
+        calibrated=True,
+        serving_environment="production",
+        trust_mode=TrustMode.STRICT,
+        writable=False,
+    )
+    manager = GenerationManager(TEST_DSN, tenant, actor="pytest", environment="test")
+
+    try:
+        outcome = run_corpus(
+            spec,
+            manager=manager,
+            calibrations=CalibrationRepository(TEST_DSN, tenant),
+            embedder=resolve_embedder("hashing"),
+            corpus_version="2026-01-01",
+        )
+        if outcome.certified:
+            pytest.skip("this fixture certified, so there is no READY generation to reclaim")
+
+        generation_id = outcome.generation_id
+
+        with pytest.raises(InvalidGenerationTransition, match="ready"):
+            manager.fail(generation_id, "this is the refusal the fake could not reproduce")
+
+        manager.abandon(generation_id, "reclaimed by the test")
+
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+            state = conn.execute(
+                "SELECT state FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
+                (tenant, generation_id),
+            ).fetchone()
+
+        assert state is not None and state[0] == "failed", (
+            "abandon must move it into a state gc actually collects"
+        )
+    finally:
+        _purge(tenant)
+
+
+@requires_db
+def test_the_real_services_wiring_drives_a_corpus(tmp_path: Path) -> None:
+    """`_RealServices` is the only code here that runs on a real deploy, and had zero coverage.
+
+    Every other test in the driver's module injects a spy, so the DSN plumbing, the `actor` and
+    `environment` choices and the dimension lookup were exercised by nothing but the one manual run
+    named in a commit message. A unique tenant rather than `default_plan`, so this does not write
+    into the shared `docs`/`code` tenants of a container other tests are using.
+    """
+    import uuid
+
+    from recall.trust_policy import TrustMode
+    from recall.wizard.corpora import CorpusSpec
+    from recall.wizard.headless import HeadlessConfig, _RealServices
+
+    tenant = "wizard-real-" + uuid.uuid4().hex[:10]
+    config = HeadlessConfig(
+        dsn=TEST_DSN,
+        migration_dsn=TEST_DSN,
+        embedder="hashing",
+        corpus_version="2026-01-01",
+        docs_root=tmp_path / "unused",
+        code_root=tmp_path / "unused",
+        memory_root=tmp_path / "unused",
+    )
+    services = _RealServices(config)
+    spec = CorpusSpec(
+        tenant=tenant,
+        root=_corpus(tmp_path, files=45),
+        glob="**/*.md",
+        chunker="text",
+        calibrated=True,
+        serving_environment="production",
+        trust_mode=TrustMode.STRICT,
+        writable=False,
+    )
+
+    try:
+        from recall.embeddings import resolve_embedder
+
+        assert services.dim() == resolve_embedder("hashing").dim
+        assert services.embedder() is services.embedder(), "the embedder must be resolved once"
+
+        services.apply_schema(config.migration_dsn, dim=services.dim())
+
+        steps: list[str] = []
+        outcome = services.run(spec, progress=steps.append)
+
+        assert outcome.tenant == tenant
+        assert outcome.generation_id
+        assert "build" in steps, "progress must reach the caller through the real wiring too"
+        assert outcome.promoted is outcome.certified
+    finally:
+        _purge(tenant)
+
+
+@requires_db
 def test_run_corpus_end_to_end_against_a_real_generation_store(tmp_path: Path) -> None:
     """Drive `run_corpus` with a real `GenerationManager` and `CalibrationRepository`.
 
@@ -828,7 +1017,7 @@ def test_run_corpus_end_to_end_against_a_real_generation_store(tmp_path: Path) -
     )
     # `environment="test"` is deliberate: it is what the rest of the DB suite uses, and accepting it
     # as a build environment was one of the audit fixes. A production manager is refused, correctly,
-    # because a file:// manifest cannot be built there.
+    # because the wizard's embedders carry no immutable revision or artifact digest.
     manager = GenerationManager(TEST_DSN, tenant, actor="pytest", environment="test")
     calibrations = CalibrationRepository(TEST_DSN, tenant)
 

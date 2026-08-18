@@ -731,6 +731,53 @@ class GenerationManager:
                 payload={"reason": reason[:2000]},
             )
 
+    def abandon(self, generation_id: str, reason: str) -> None:
+        """Mark a READY generation failed, so `gc` can reclaim its rows.
+
+        `fail` refuses READY, ACTIVE, RETIRED and LEGACY_UNVERIFIED, and that is right for the
+        states where failing something would destroy what is serving. But it left READY with no
+        exit at all, and READY is where a generation lands when it built and validated and was
+        then not promoted. `gc` collects only `retired` and `failed`, and `recall_chunks_v1`
+        cascades from `recall_generations`, so such a generation holds a full copy of the corpus's
+        chunk rows that no supported path could ever reclaim. The installation wizard reaches that
+        state twice per run whenever certification falls short, which is the ordinary outcome of a
+        first install, so without this the database grows without bound on the success path.
+
+        READY only. This is a reclaim route, not a second way to fail something, and widening
+        `fail` instead would have removed the protection ACTIVE and RETIRED actually need.
+        """
+        with self._connect() as conn, conn.transaction():
+            current = self._require_generation(conn, generation_id, lock=True)
+            if current.state != GenerationState.READY:
+                raise InvalidGenerationTransition(
+                    f"abandon requires ready state, found {current.state.value}"
+                )
+            # The generation a rollback would return to must survive. `promote` moves the outgoing
+            # generation to RETIRED, so a READY generation is normally neither — but the read is
+            # cheap and the alternative is destroying the only thing `rollback` can restore.
+            state = conn.execute(
+                "SELECT active_generation_id, previous_generation_id "
+                "FROM recall_tenant_state WHERE tenant_id = %s FOR UPDATE",
+                (self.tenant_id,),
+            ).fetchone()
+            protected = {str(item) for item in (state or ()) if item}
+            if generation_id in protected:
+                raise InvalidGenerationTransition(
+                    f"cannot abandon generation {generation_id!r}: it is the tenant's active or "
+                    "previous generation"
+                )
+            conn.execute(
+                "UPDATE recall_generations SET state = 'failed', failure_reason = %s "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (reason[:2000], self.tenant_id, generation_id),
+            )
+            self._audit(
+                conn,
+                "generation_abandoned",
+                generation_id=generation_id,
+                payload={"reason": reason[:2000]},
+            )
+
     def _validate(self, generation_id: str) -> ValidationResult:
         with self._connect() as conn, conn.transaction():
             current = self._require_generation(conn, generation_id, lock=True)

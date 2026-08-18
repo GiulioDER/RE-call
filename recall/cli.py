@@ -30,6 +30,7 @@ from recall.index import (
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.store import (
+    DEFAULT_TABLE,
     DEFAULT_TENANT,
     PgVectorStore,
     _env_opt_out,
@@ -882,7 +883,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--table",
-        default="chunks",
+        default=DEFAULT_TABLE,  # imported, not retyped: the wizard compares against it
         help="table to read/write (default: chunks). Use a throwaway name to keep an "
         "experiment out of your real memory index.",
     )
@@ -895,8 +896,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
+    # Deliberately does NOT say "wizard": `recall wizard` is a different command, and `recall
+    # --help` listed both describing themselves as the install wizard with no way to tell which.
     sub.add_parser(
-        "setup", help="run the first install wizard and write a local .env file"
+        "setup", help="configure recall interactively and write a local .env file"
     ).set_defaults(
         _opens_db=True  # the wizard connects when the operator accepts the calibrate prompt
     )
@@ -918,7 +921,10 @@ def main(argv: list[str] | None = None) -> None:
     p_wizard.add_argument(
         "--config",
         required=True,
-        help="JSON config: dsn, migration_dsn, embedder, corpus_version and the three corpus roots",
+        help="JSON config. Required keys: dsn, migration_dsn, embedder, corpus_version, "
+        "docs_root, code_root, memory_root (roots must be absolute). Optional: project, and "
+        "serving_role, which is required when dsn and migration_dsn authenticate as different "
+        "roles, because no migration emits a GRANT.",
     )
 
     p_schema = sub.add_parser("schema", help="inspect or apply versioned database migrations")
@@ -1013,6 +1019,18 @@ def main(argv: list[str] | None = None) -> None:
     p_promote = generation_sub.add_parser("promote", help="promote a ready generation")
     p_promote.add_argument("generation_id")
     p_promote.add_argument("--unsafe-development-promotion", action="store_true")
+    # The reclaim route for a generation that built and validated and was then never promoted.
+    # Without it such a generation was unreachable: `fail` refuses READY, and `gc` collects only
+    # `retired` and `failed`, so its full copy of the corpus's chunk rows could never be released.
+    # Every uncertified wizard build lands there, which is the ordinary first-install outcome.
+    p_abandon = generation_sub.add_parser(
+        "abandon",
+        help="release a ready-but-unpromoted generation so `gc` can reclaim its rows",
+    )
+    p_abandon.add_argument("generation_id")
+    p_abandon.add_argument(
+        "--reason", default="abandoned by operator", help="recorded on the generation row"
+    )
     generation_sub.add_parser("rollback", help="atomically restore the previous generation")
     generation_sub.add_parser("list", help="list immutable generation history")
     p_gc = generation_sub.add_parser("gc", help="collect expired retired generations")
@@ -1452,6 +1470,14 @@ def main(argv: list[str] | None = None) -> None:
                     "command. Re-run with a DSN carrying a real password, or set "
                     "RECALL_ALLOW_INSECURE_DSN=1 to accept the risk deliberately."
                 ) from exc
+        elif args.cmd == "wizard":
+            # `recall wizard` never contacts `args.dsn`. Every DSN it uses comes from --config, so
+            # checking the global one is wrong in BOTH directions and both were reproduced: a
+            # config naming `recall:recall` against a remote host sailed through unchecked, and a
+            # `--serving-dsn`/RECALL_SERVING_DSN pointing at a remote host refused the command
+            # outright, as a raw PermissionError traceback, before the config was even read. The
+            # real DSNs are checked in the wizard branch below, once they exist.
+            pass
         else:
             _require_secure(args.dsn)
     else:
@@ -1459,8 +1485,12 @@ def main(argv: list[str] | None = None) -> None:
 
     # The DDL-owner credential was never checked or even warned about on any path, which is the
     # wrong way round: it is the most privileged DSN this CLI accepts.
+    #
+    # No longer scoped to `schema`. That scoping meant the credential was guarded on exactly one of
+    # the commands that use it, and `generation`, `calibration` and the wizard's own DDL all ran
+    # unchecked. `opens_db` still keeps `schema grants` exempt, since it only prints SQL.
     migration_dsn = getattr(args, "migration_dsn", None)
-    if migration_dsn and opens_db and args.cmd == "schema":  # `opens_db` so grants stays exempt
+    if migration_dsn and opens_db:
         _require_secure(migration_dsn)
 
     if args.cmd == "setup":
@@ -1480,22 +1510,58 @@ def main(argv: list[str] | None = None) -> None:
                 "GUI front ends are not built yet, and a command that silently ran unattended "
                 "would be the wrong surprise for an installer."
             )
+        # Accepted and silently discarded before. The tenants come from the plan and the table from
+        # the migrator's default, so `recall --tenant myproject --table probe wizard ...` promoted
+        # into `docs` and migrated the real `chunks` while looking like it had done neither.
+        for flag, value, default in (
+            ("--tenant", args.tenant, DEFAULT_TENANT),
+            ("--table", args.table, DEFAULT_TABLE),
+        ):
+            if value != default:
+                raise SystemExit(
+                    f"`recall wizard` does not accept {flag}: the tenants come from the corpus "
+                    f"plan and the table from the migrator, so {flag} {value!r} would be ignored "
+                    "rather than applied. Remove it."
+                )
         try:
             # `wizard_report`, not `report`: `main()` is one long function and the `manifest
             # inventory` branch below already binds `report` to an `InventoryReport`. Reusing the
             # name type-narrows it across the whole function, which mypy caught as
             # "HeadlessReport has no attribute written" in a branch this one can never reach at
             # runtime. Invisible to every test, because the two branches are mutually exclusive.
-            wizard_report = run_headless(load_config(args.config))
+            wizard_config = load_config(args.config)
+            # The DSNs this command ACTUALLY uses, which the global guard above cannot see. Both,
+            # because `migration_dsn` is the DDL owner and is the more privileged of the two.
+            for key, value in (
+                ("dsn", wizard_config.dsn),
+                ("migration_dsn", wizard_config.migration_dsn),
+            ):
+                try:
+                    _require_secure(value)
+                except PermissionError as exc:
+                    raise SystemExit(f"the wizard config's {key} is refused: {exc}") from exc
+            wizard_report = run_headless(wizard_config, progress=lambda step: print(step))
         except PipelineRefusal as exc:
             # A refusal is an operator-actionable message, not a traceback. It is raised before
-            # anything is built, so there is nothing to clean up either.
+            # any corpus is built, so there is nothing to clean up either.
             raise SystemExit(str(exc)) from exc
+        except ValueError as exc:
+            # Anything the wizard's own modules did not spell as a refusal. `PipelineRefusal` is a
+            # `ValueError`, so it is caught above; this is the backstop for a value error raised
+            # deeper, which used to reach a first-run installer as a stack trace.
+            #
+            # `TypeError` is deliberately NOT caught. `load_config` now type-checks every key, so a
+            # TypeError here is a programming error, and absorbing it into "cannot run with this
+            # config" would point the operator at their file for a defect in ours. An earlier
+            # version did catch it, and immediately masked a real signature mismatch in a test
+            # while returning the exit code that test expected.
+            raise SystemExit(f"the wizard cannot run with this config: {exc}") from exc
         print(wizard_report.render())
-        # Exit 1 when a corpus was REFUSED, which is a configuration problem the user must act on.
-        # A DEGRADED corpus is exit 0: it built, it validated, it did not certify, and it was
-        # deliberately not promoted. Collapsing the two would make "did the install work" unanswerable
-        # from the exit code alone, which is the only thing CI reads.
+        # Exit 1 when a corpus was REFUSED or FAILED, and when a corpus is degraded with nothing
+        # serving behind it: that tenant answers nothing, so it is not a working install. A
+        # degraded corpus over an existing generation IS exit 0, because the predecessor keeps
+        # answering and the limitation is named. `HeadlessReport.ok` holds that distinction; CI
+        # reads the exit code and nothing else.
         raise SystemExit(0 if wizard_report.ok else 1)
 
     if args.cmd == "schema":
@@ -1657,6 +1723,10 @@ def main(argv: list[str] | None = None) -> None:
                 unsafe_development=args.unsafe_development_promotion,
             )
             print(f"active generation: {args.generation_id}")
+            return
+        if args.generation_cmd == "abandon":
+            manager.abandon(args.generation_id, args.reason)
+            print(f"abandoned {args.generation_id}; `recall generation gc` can now reclaim it")
             return
 
         from recall.generation_build import BuildRequest, build_generation

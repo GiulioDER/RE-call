@@ -63,6 +63,15 @@ from recall.trust_policy import TrustMode
 #: this branch already fixed once for `ChunkerKind`.
 ServingEnvironment = Literal["development", "test", "production"]
 
+#: Why a corpus root must be absolute. One constant rather than the same sentence written out in
+#: two modules: `load_config` names the config KEY at fault and `CorpusSpec` names the PATH, which
+#: is a deliberate duplication of the CHECK, but the explanation behind it must not be able to
+#: drift into two different reasons for one rule.
+RELATIVE_ROOT = (
+    "a relative root resolves against the wizard's own working directory, so the commit stamped "
+    "on every chunk would be the wizard's rather than the corpus's"
+)
+
 #: Python is the code corpus's default. Not `DEFAULT_GLOB`, which is markdown: a code tenant globbed
 #: for markdown would build, promote and calibrate happily over the repository's documentation and
 #: report success, which is worse than failing.
@@ -149,11 +158,7 @@ class CorpusSpec:
         # that is absolute and absent stamps no commit, which is an absent record rather than a false
         # one, and absent is safe.
         if not self.root.is_absolute():
-            raise ValueError(
-                f"root must be absolute, not {str(self.root)!r}: a relative root resolves against "
-                "the wizard's own working directory, so the commit stamped on every chunk would be "
-                "the wizard's rather than the corpus's"
-            )
+            raise ValueError(f"root must be absolute, not {str(self.root)!r}: {RELATIVE_ROOT}")
         if self.root.exists() and not self.root.is_dir():
             raise ValueError(f"root {str(self.root)!r} exists and is not a directory")
         if self.calibrated and self.writable:
