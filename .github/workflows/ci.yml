@@ -244,6 +244,41 @@ jobs:
       - name: Test (pytest on real pgvector)
         run: pytest -q
 
+  # Every `path:line` citation in docs/**/*.md still points at the code it claims.
+  #
+  # Its own job, and a fast one: pure file reading, no database, no models, no install beyond a
+  # Python interpreter, so a stale citation surfaces in seconds rather than behind the 12-minute
+  # integration suite. The same check also runs inside `test` as tests/test_citation_anchors.py,
+  # which is where the mutation tests live; this job exists so the answer arrives early and so a
+  # red database service cannot hide it.
+  #
+  # WHY IT IS A GATE AT ALL. Measured 2026-08-18: while docs/UNCALIBRATED_FIRST_RUN_DESIGN.md was
+  # being written, three concurrent merges to master moved cited lines, one of them moving 13 of
+  # 13 checked citations in a single commit. Every one was caught by hand. A merged document
+  # asserting `file.py:123 does X` when line 123 is a closing paren is a silent correctness
+  # defect, and it is silent precisely because the line still exists -- which is why an
+  # existence check reported "41 citations, 0 broken" over three citations pointing at a `try:`,
+  # a docstring's closing quotes and the wrong error branch.
+  #
+  # No `pip install`: the checker imports nothing outside the standard library, on purpose, so
+  # this job cannot be taken down by a dependency resolution failure that has nothing to do with
+  # documentation.
+  citation-anchors:
+    name: Citation anchors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+
+      # Two failure modes, one exit code: a citation that no longer points at the code it claims,
+      # and a NEW citation with nothing to check it against. The second is a ratchet against
+      # docs/citation_anchor_baseline.txt, so unverifiable citations can only ever fall.
+      - name: Verify path:line citations in docs/
+        run: python scripts/check_citation_anchors.py
+
   # Dependency vulnerability scan against the committed uv.lock. Runs independently of the
   # test job (no DB needed) so a CVE advisory never blocks the functional suite and vice versa.
   audit:
