@@ -434,6 +434,22 @@ def verify(citation: Citation, context: str, root: Path) -> Result:
         low = max(1, citation.start - ANCHOR_WINDOW)
         high = min(total, citation.end + ANCHOR_WINDOW)
 
+    # Scopes of the OTHER citations to this same file in the same sentence. A sentence commonly
+    # cites one file twice -- "`extract_document` (`recall/extraction.py:156`) dispatches to ... an
+    # external LibreOffice binary (`recall/extraction.py:565`)" -- and both citations then see the
+    # union of the sentence's anchors. `extract_document` lives at 156, nowhere near 565, so the
+    # second citation was accused of being stale by the first citation's anchor. It was correct:
+    # line 565 is `def _extract_with_libreoffice`.
+    #
+    # This is the same principle already applied across files ("a token absent from THIS file is
+    # evidence about the other one"), which simply could not fire when both citations name the
+    # same file. An anchor sitting at another citation's target is evidence about that citation.
+    neighbours = [
+        scope_span(source, other.start, total)
+        for other in extract_citations(citation.doc, context.splitlines())
+        if other.path == citation.path and (other.start, other.end) != (citation.start, citation.end)
+    ] if target.suffix == ".py" else []
+
     tried: list[tuple[str, list[int]]] = []
     weak_on_cited_line: list[str] = []
     for token in anchor_candidates(context):
@@ -463,6 +479,14 @@ def verify(citation: Citation, context: str, root: Path) -> Result:
             return Result(
                 citation, OK, f"anchor `{token}` found in scope {low}-{high}", anchor=token
             )
+        # ONLY here, after the OK test has already failed. Suppressing an accusation is safe;
+        # suppressing a pass is not, and doing this test first cost 10 correct verdicts, because
+        # scopes nest -- a citation inside its neighbour's function had every one of its own
+        # anchors discarded as the neighbour's.
+        if neighbours and all(
+            any(low2 <= hit <= high2 for low2, high2 in neighbours) for hit in hits
+        ):
+            continue
         tried.append((token, hits))
 
     if weak_on_cited_line:

@@ -243,6 +243,60 @@ def test_a_common_token_at_the_cited_line_withholds_an_accusation(repo: Path) ->
     assert "occurs too often" in result.detail
 
 
+def test_a_sibling_citation_to_the_same_file_does_not_accuse_this_one(repo: Path) -> None:
+    """One sentence, one file, two citations, each with its own anchor.
+
+    Real instance: "`extract_document` (`recall/extraction.py:156`) dispatches to ... an external
+    LibreOffice binary (`recall/extraction.py:565`)". `extract_document` is at 156, nowhere near
+    565, so the second citation was reported stale on the FIRST one's anchor. It was correct.
+
+    This is the same principle the checker already applied across files -- a token absent from
+    this file is evidence about the other one -- which simply could not fire when both citations
+    name the same file.
+    """
+    # Its own file, shaped like the real one: the anchor occurs ONCE, inside the first citation's
+    # scope and far from the second's. The shared `widget.py` cannot show this -- `WIDGET_LIMIT`
+    # is also on the line the second citation points at, so that one passes on its own merits.
+    (repo / "recall" / "dispatch.py").write_text(
+        '"""Doc."""\n\n\ndef extract_document(path):\n    return None\n\n\n'
+        "def helper_one():\n    return None\n\n\n"
+        "def _extract_with_libreoffice(path):\n    return None\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert vc.anchor_lines(
+        (repo / "recall" / "dispatch.py").read_text(encoding="utf-8").splitlines(),
+        "extract_document",
+    ) == [4]
+
+    write_doc(
+        repo,
+        "`extract_document` (`recall/dispatch.py:4`) dispatches to an external binary "
+        "(`recall/dispatch.py:12`).\n",
+    )
+    statuses = dict(verdicts(repo))
+    assert statuses["recall/dispatch.py:4"] == vc.OK
+    # The second names nothing of its own. Without the sibling rule it reads STALE on the first
+    # citation's anchor; with it, the honest "cannot decide".
+    assert statuses["recall/dispatch.py:12"] == vc.UNVERIFIABLE
+
+
+def test_the_sibling_rule_never_suppresses_a_pass(repo: Path) -> None:
+    """The ordering that cost 10 correct verdicts when I got it backwards.
+
+    Scopes NEST. A citation sitting inside its neighbour's function has its own anchors fall
+    inside the neighbour's scope too, so testing the sibling rule BEFORE the pass test discarded
+    every one of them. Suppressing an accusation is safe; suppressing a pass is not.
+    """
+    write_doc(
+        repo,
+        f"`compute_widget` (`recall/widget.py:{LINE_DEF_COMPUTE}`) scales it "
+        f"(`recall/widget.py:{LINE_SCALED}`).\n",
+    )
+    # Both are inside `compute_widget`, so each is in the other's scope. Both must still pass.
+    assert {status for _c, status in verdicts(repo)} == {vc.OK}
+
+
 def test_a_missing_file_and_an_out_of_range_line_are_distinct_verdicts(repo: Path) -> None:
     write_doc(repo, "Gone `WIDGET_LIMIT` (`recall/absent.py:5`) and `recall/widget.py:9999`.\n")
     assert verdicts(repo) == [
