@@ -3,9 +3,12 @@
 **Status:** design, 2026-08-18. **Nothing here is implemented.** It is a proposal with measured
 support for two of its claims. Section 6 answers the eleven questions an audit found it had left
 open; two of those answers change the design and one dissolves a question that rested on a
-falsified premise. The measurements are pre registered in
-`docs/preregistrations/2026-08-18-uncalibrated-first-run.md`. All source citations are against the
-tree at commit `295379fd`.
+falsified premise. Sections 6c and 6d then design the two attestations that were still missing.
+Measurements are pre registered in `docs/preregistrations/`:
+`2026-08-18-uncalibrated-first-run.md`, `2026-08-18-chunker-attestation.md` and
+`2026-08-18-extraction-attestation.md`. Source citations are re measured whenever this file is
+edited, against the commit the edit lands on; see the note in the first pre registration about
+how fast they drift.
 
 The goal is unchanged: someone must be able to index and search before they have labelled queries.
 What follows argues that `RECALL_ENV=development` is the wrong mechanism for that, not because it is
@@ -42,7 +45,7 @@ property this system has. `promote()`'s message says the refusal stands "until c
 land", which is accurate: it is a placeholder, not a safety property.
 
 **F3. The legacy `chunks` table records enough to establish a binding, not merely assert one.**
-It has no `source_sha256` column, but `recall/index.py:810` stamps into every chunk's metadata:
+It has no `source_sha256` column, but `recall/index.py:836` stamps into every chunk's metadata:
 `content_hash`, `index_fingerprint`, `embedding_profile`, `context_mode`, `context_version`, `ord`
 and `file`, all written **at embed time**, so checking them is verification rather than
 reconstruction.
@@ -65,8 +68,8 @@ already written. Only `content_hash` is load bearing here, and the accessor that
 (`:2075`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
 
 ⚠️ **`content_hash` is media type dependent since `bd582316`.** A markdown source is hashed as
-decoded, newline normalised, NUL stripped text re encoded as UTF-8 (`recall/index.py:671` and
-`:690`); any other media type is hashed as **raw bytes** (`:692`). Any adoption path must branch the
+decoded, newline normalised, NUL stripped text re encoded as UTF-8 (`recall/index.py:697` and
+`:716`); any other media type is hashed as **raw bytes** (`:718`). Any adoption path must branch the
 same way, or it will refuse every markdown file with CRLF or a BOM.
 
 **F4. The first run wizard is half built and already solves the hardest part.**
@@ -232,12 +235,16 @@ is that the legacy metadata was written at embed time and can be checked against
 1. Read `metadata->>'content_hash'` via `source_raw_hashes`. Absent means **not adoptable**.
 2. Read the file at `metadata->>'file'`. Missing or unreadable means not adoptable.
 3. Re derive the hash **exactly as the indexer does for that media type**: decoded, newline
-   normalised, NUL stripped text for markdown (`recall/index.py:671`, `:690`), raw bytes otherwise
-   (`:692`). Not equal means the file changed since indexing: not adoptable.
+   normalised, NUL stripped text for markdown (`recall/index.py:697`, `:716`), raw bytes otherwise
+   (`:718`). Not equal means the file changed since indexing: not adoptable.
 4. 🔁 **Corrected 2026-08-18 by measurement.** This step originally compared
    `metadata->>'embedding_profile'` to the configured embedder's profile id. **That check does not
    work** (F3), and `index_fingerprint` inherits the defect because `_index_fingerprint` hashes the
-   same value (`recall/index.py:447`). Neither stored field may gate adoption. The check is the
+   same value. 🔁 **Corrected: #381 changed that.** `_index_fingerprint` now hashes
+   `embedding_profile(embedder).fingerprint()` (`recall/index.py:472`), which covers model name
+   and dimension, so a fingerprint computed *today* does distinguish models. It does not help
+   here: every fingerprint **already stored** was computed under the old formula, and those are
+   the rows adoption reads. Neither stored field may gate adoption. The check is the
    attestation sample below.
 5. Only then copy the vector, setting `source_sha256 = content_hash` and
    `object_version_id = content_hash`, the rule `recall/lineage.py:269` enforces for local files.
@@ -622,10 +629,9 @@ half the corpus, aborts** and reports that the candidate set does not describe t
 - **Observational equivalence, not identity.** A different implementation producing identical output
   on these sources is indistinguishable here. Same standard as cosine 1.0 for the embedder, and it
   should be claimed no more strongly.
-- **Markdown only.** The `content_blocks` path `bd582316` added for other media types stores
-  `text_start` and `text_end` as `None` (`recall/index.py:800`), and re deriving those chunks means
-  re running extraction, whose determinism across library versions is untested. **A non markdown
-  corpus is out of scope for this attestation** until that is measured.
+- 🔁 **Markdown only, and the non markdown case is now designed in section 6d.** It was out of
+  scope when this section was written; the measurement is
+  `docs/preregistrations/2026-08-18-extraction-attestation.md`.
 - **The body rule can move under it.** `parse_frontmatter` changed once, and the fix carries a
   version marker (`recall/generations.py:109`) precisely because the same bytes then yielded a
   different body. A corpus indexed before such a change reports a chunker mismatch when the real
@@ -669,6 +675,108 @@ half the corpus, aborts** and reports that the candidate set does not describe t
     a migration.
 11. **Two published contracts enumerate the trust states exhaustively** (`docs/USING_WITH_CLAUDE.md`,
     `docs/REASONING_CONTRACT.md`) and a pinned test asserts the current set.
+
+## 6d. The non markdown extraction attestation
+
+Section 6c attests the chunker for markdown. This is the counterpart for everything else, and it
+reaches a **weaker** conclusion on purpose.
+
+### Why it cannot be the same check
+
+Markdown body derivation is pure Python inside this repository, so a chunker mismatch is
+diagnosable: the code that would differ is versioned by the repo. Extraction is not.
+`extract_document` (`recall/extraction.py:156`) dispatches to **six third party libraries** and, for
+five suffixes, to an **external LibreOffice binary** (`recall/extraction.py:565`). Those libraries
+are declared with open lower bounds in an optional extra (`pdfplumber>=0.11` and friends), and
+LibreOffice is not a Python dependency at all.
+
+⛔ **So "the same recall version" says nothing about what extraction produces**, and a re extraction
+mismatch is ambiguous between four causes rather than being evidence of a defect.
+
+### Measured: comparison is possible, which is necessary and not sufficient
+
+17 of 17 formats, including `.pdf` and the five LibreOffice ones, are **byte identical across two
+independent processes**, and **none** leaks a temporary path, working directory, user name or date
+into its output. So a re extraction comparison is meaningful rather than noise.
+
+⚠️ **That is the weakest of the good outcomes and must not be read as more.** It was measured on one
+machine, one OS and one set of library versions, on fixtures whose extracted text ran from 6 to 124
+characters. Determinism across *versions* is the question an adoption path actually faces and is
+**not** tested. This limitation was committed in writing before the run.
+
+### The mechanism: an `ExtractionIdentity`, recorded at index time
+
+The precedent is already in the tree and is deliberate. `EmbeddingProfile.dependencies`
+(`recall/embeddings.py:414`) carries the inference library version as key material, and its
+docstring says a `fastembed` upgrade costs a re embed on purpose, "because ONNX runtime changes are
+free to move the last bits of a vector and a cache cannot tell". **The identical argument applies to
+`pdfplumber` and to LibreOffice**, and extraction has no equivalent:
+`STRUCTURED_DOCUMENT_VERSION` (`recall/extraction.py:130`) versions recall's own block shape and
+says nothing about the libraries.
+
+So record, per extracted source:
+
+```
+ExtractionIdentity(
+    structured_document_version,   # already exists
+    extractor,                     # "pdfplumber", "libreoffice", "stdlib-email", ...
+    dependencies,                  # resolved versions, as EmbeddingProfile.dependencies does
+    external_tool,                 # ("libreoffice", "26.2.5.2") or None
+)
+```
+
+⚠️ **Implementation constraint, found the hard way:** `soffice --version` exits 0 and prints
+**nothing** on Windows. A naive implementation records an empty version, compares equal across
+upgrades, and defeats the identity it was added for. Read the binary's file version metadata or the
+`version.ini` beside it, and **refuse to record an identity when the version cannot be determined**
+rather than recording a blank.
+
+### The verdict is four way, not a boolean
+
+| Stored identity vs current | Re extraction | Verdict |
+|---|---|---|
+| same | matches | **verified** |
+| same | differs | **defect**, and loud: at one identity, extraction is deterministic |
+| different | matches | verified, plus evidence the version change is output neutral for this corpus |
+| different | differs | ⚠️ **not attestable in this environment**. Refuse or re embed, and claim nothing |
+
+That bottom row is what the chunker attestation does not need, and it is the whole difference.
+**"Cannot tell" has to be a first class outcome**, because collapsing it into failure would report a
+routine LibreOffice upgrade as corpus corruption, and collapsing it into success would be the
+fail open this design exists to remove.
+
+### Retroactively: not attestable, and that is the honest answer
+
+Nothing today records an extraction identity, so **no existing non markdown corpus can be attested**,
+however deterministic extraction turns out to be. This is the same shape as the `embedding_profile`
+defect in F3: fixing a writer does not repair rows already written.
+
+**Rule for adoption:** a non markdown source with no recorded `ExtractionIdentity` is **not
+adoptable** and must be re embedded. Only markdown gets the complete answer of section 6c.
+
+### Should extraction identity join `_index_fingerprint`?
+
+**Yes, and the cost is real.** Section 6c documents what happens without an *effective* term:
+the fingerprint carries a `chunker_version` string that no chunker change moves, so a corpus
+silently accumulates chunks from several chunker eras. Leaving extraction out reproduces that defect
+one level down, with a worse blast radius, since an extractor upgrade can change every PDF in the
+corpus at once.
+
+⚠️ **State the requirement as a behaviour, not as the presence of a field.** The chunker case is the
+warning: a field named after the thing exists and is inert, so "there is a chunker term" was true and
+useless at the same time. An `ExtractionIdentity` term earns its place only if changing an extractor
+version changes the fingerprint, and that is what a test must pin.
+
+The price is that a `pdfplumber` patch bump re extracts and re embeds every PDF. That is the same
+price `EmbeddingProfile.dependencies` already charges for a `fastembed` bump, and it was accepted
+there for the same reason. Naming it here so the trade is chosen rather than inherited.
+
+### A defect found while measuring
+
+`.msg` appears in the LibreOffice branch at `recall/extraction.py:183` but is **unreachable**:
+`extract_document` matches `.msg` earlier at `:176`. A deployment without `python-oxmsg` therefore
+gets an extraction error where the code appears to offer a fallback. Filed separately; it is not
+part of this design.
 
 ## 7. What this design does not do
 
