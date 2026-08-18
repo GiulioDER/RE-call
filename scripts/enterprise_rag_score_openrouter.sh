@@ -7,7 +7,7 @@ ANSWERS_FILE="${ENTERPRISE_RAG_ANSWERS_FILE:-$BENCH_DIR/answer_evaluation/re_cal
 RESULTS_FILE="${ENTERPRISE_RAG_RESULTS_FILE:-$BENCH_DIR/answer_evaluation/re_call_voyage_splade_gpt4o.judge_gpt54_medium.default_results.json}"
 UPDATED_QUESTIONS_FILE="${ENTERPRISE_RAG_UPDATED_QUESTIONS_FILE:-$BENCH_DIR/answer_evaluation/re_call_voyage_splade_gpt4o.judge_gpt54_medium.default_questions_updated.jsonl}"
 UUID_INDEX_FILE="${ENTERPRISE_RAG_UUID_INDEX_FILE:-$BENCH_DIR/generated_data/uuid_index.json}"
-PARALLELISM="${ENTERPRISE_RAG_SCORE_PARALLELISM:-4}"
+PARALLELISM="${ENTERPRISE_RAG_SCORE_PARALLELISM:-1}"
 MODEL="${ENTERPRISE_RAG_JUDGE_MODEL:-openai/gpt-5.4}"
 JUDGE_REASONING="${ENTERPRISE_RAG_JUDGE_REASONING:-medium}"
 
@@ -65,6 +65,8 @@ sys.argv = [
     sys.argv[4],
     "--parallelism",
     sys.argv[5],
+    "--skip-citation-stripping",
+    "--no-correction",
     "--resume",
 ]
 evaluator.main()
@@ -77,5 +79,7 @@ else
     --updated-questions-file "$UPDATED_QUESTIONS_FILE" \
     --uuid-index-cache-file "$UUID_INDEX_FILE" \
     --parallelism "$PARALLELISM" \
+    --skip-citation-stripping \
+    --no-correction \
     --resume
 fi

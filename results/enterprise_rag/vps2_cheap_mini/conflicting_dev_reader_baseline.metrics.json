@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 40.0,
+    "average_completeness_pct": 60.83,
+    "combined_correctness_completeness_score": 35.5,
+    "average_recall_pct": 80.0,
+    "average_invalid_extra_docs": 6.0
+  },
+  "question_type_stats": {
+    "conflicting_info": {
+      "count": 5,
+      "average_correctness_pct": 40.0,
+      "average_completeness_pct": 60.83,
+      "combined_correctness_completeness_score": 35.5,
+      "average_recall_pct": 80.0,
+      "average_invalid_extra_docs": 6.0
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0418",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": false,
+      "correctness_reasoning": "Candidate denies availability of numeric ranges while the gold answer explicitly lists v2 thresholds (\u226585: Tier1; 70\u201384: Tier2; 35\u201369: Tier3; <35: Tier4) and previous thresholds (\u226580: Tier1; 60\u201379: Tier2; 30\u201359: Tier3; <30: Tier4), so it conflicts with the gold answer.",
+      "completeness_pct": 20.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 5
+    },
+    {
+      "question_id": "qst_0419",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate incorrectly states no endpoint is available, while the gold specifies POST /v1/capacity/migrations/start (with legacy alias POST /v1/migration/start).",
+      "completeness_pct": 66.67,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0423",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the gold answer specifies exporting the last 12 months (superseding an earlier 18-month note), but the candidate says documents don't state how many months and fails to instruct exporting 12 months despite mentioning retention and a 12-month requirement.",
+      "completeness_pct": 40.0,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0424",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": true,
+      "correctness_reasoning": "Matches the gold answer's current token-based cutoffs exactly (short <128, medium 128\u20131024, long >1024).",
+      "completeness_pct": 90.0,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0425",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate matches the gold: v1 uses an optional integrity field (none, sha256-only, sigstore-oidc) with an integrity_ref URI for external signature/envelope material and removes the earlier embedded signature blob.",
+      "completeness_pct": 87.5,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    }
+  ]
+}

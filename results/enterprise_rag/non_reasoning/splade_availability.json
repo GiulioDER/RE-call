@@ -1,0 +1,9 @@
+{
+  "measured_at": "2026-08-18",
+  "transformers_available": true,
+  "torch_available": true,
+  "cuda_available": false,
+  "cuda_device_count": 0,
+  "isolated_splade_index": false,
+  "decision": "defer_lexical_plus_splade_until_required_model_and_index_are_available"
+}

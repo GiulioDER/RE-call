@@ -1,0 +1,295 @@
+{
+  "phase": "official_evaluator_posthoc",
+  "questions": "C:\\Users\\gde00\\Documents\\recall\\.benchdata\\enterprise-rag-v1.0.0\\questions.jsonl",
+  "baseline": "results\\enterprise_rag\\non_reasoning\\historical\\completeness_dev_none.answers.jsonl",
+  "candidate": "results\\enterprise_rag\\non_reasoning\\completeness_dev_reranker.answers.jsonl",
+  "runtime": {
+    "baseline": {
+      "benchmark": "EnterpriseRAG-Bench",
+      "started_at": "2026-08-18T09:59:59.424830+00:00",
+      "finished_at": "2026-08-18T10:02:32.488959+00:00",
+      "elapsed_s": 153.064,
+      "recall_revision": null,
+      "recall_version": "0.9.5",
+      "questions": {
+        "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+        "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905",
+        "selected_count": 5,
+        "question_types": [
+          "completeness"
+        ],
+        "question_ids_file": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/top5_slices/dev.ids",
+        "question_ids_file_sha256": "2e3199469c8da0afbf06304b6896910ed0f6d689c37e00e7f65499deec241d8c"
+      },
+      "documents": [
+        {
+          "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+          "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905"
+        }
+      ],
+      "index": {
+        "table": "ber_voy_lex_12k_full",
+        "tenant": "enterprise-rag-voyage-lexical-chunk12k-full",
+        "pool_size": null,
+        "reset": false,
+        "skipped": true,
+        "documents": 0,
+        "chunks": 0
+      },
+      "retrieval": {
+        "embedder": "voyage:voyage-4-large",
+        "embedding_profile": "voyage:voyage-4-large",
+        "embedding_cache": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/completeness_dev_vectors.sqlite",
+        "k": 8,
+        "candidate_k": 200,
+        "gap_threshold": 0.5,
+        "sparse_backend": "lexical",
+        "splade_model": null,
+        "splade_backfill": null,
+        "reranker": "none",
+        "retrieval_captures": 1
+      },
+      "answering": {
+        "mode": "extractive",
+        "model": null,
+        "max_context_chars": 3500,
+        "answer_policy": "baseline"
+      },
+      "reasoning": {
+        "arm": "none",
+        "provider": null,
+        "summary": {
+          "rows": 5,
+          "expanded_rows": 0,
+          "expanded_rate": 0.0,
+          "fallback_rows": 0,
+          "fallback_rate": 0.0,
+          "passes_total": 5,
+          "queries_total": 0,
+          "capture_stability_rate": 1.0,
+          "model": null
+        },
+        "cache": null,
+        "promotion": {
+          "status": "pending",
+          "expensive_model_allowed": false,
+          "missing": [
+            "baseline_correctness",
+            "candidate_correctness",
+            "useful_expansion_precision",
+            "stable_repeated_captures",
+            "validation_failure_rate",
+            "no_material_false_abstention",
+            "info_not_found_correctness"
+          ],
+          "failed": []
+        }
+      },
+      "outputs": {
+        "answers": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/completeness_dev_none.answers.jsonl",
+        "rows": 5,
+        "new_rows": 5,
+        "resumed_rows": 0
+      },
+      "retrieval_metrics": {
+        "questions_with_expected_docs": 5,
+        "document_recall": 0.2571428571428571,
+        "exact_doc_set_coverage": 0.0,
+        "expected_docs": 35,
+        "hit_expected_docs": 9
+      },
+      "calibration": null
+    },
+    "candidate": {
+      "benchmark": "EnterpriseRAG-Bench",
+      "started_at": "2026-08-18T13:17:19.144962+00:00",
+      "finished_at": "2026-08-18T13:25:04.848570+00:00",
+      "elapsed_s": 465.704,
+      "recall_revision": null,
+      "recall_version": "0.9.5",
+      "questions": {
+        "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+        "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905",
+        "selected_count": 10,
+        "question_types": [
+          "completeness"
+        ],
+        "question_ids_file": "results/enterprise_rag/top5_slices/dev.ids",
+        "question_ids_file_sha256": "2e3199469c8da0afbf06304b6896910ed0f6d689c37e00e7f65499deec241d8c"
+      },
+      "documents": [
+        {
+          "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+          "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905"
+        }
+      ],
+      "index": {
+        "table": "ber_voy_lex_12k_full",
+        "tenant": "enterprise-rag-voyage-lexical-chunk12k-full",
+        "pool_size": 1,
+        "reset": false,
+        "skipped": true,
+        "documents": 0,
+        "chunks": 0
+      },
+      "retrieval": {
+        "embedder": "voyage:voyage-4-large",
+        "embedding_profile": "voyage:voyage-4-large",
+        "embedding_cache": "results/enterprise_rag/non_reasoning_v2/mini_vectors.sqlite",
+        "k": 8,
+        "candidate_k": 200,
+        "gap_threshold": 0.5,
+        "sparse_backend": "lexical",
+        "splade_model": null,
+        "splade_backfill": null,
+        "reranker": "voyage:rerank-2.5",
+        "reranker_rank_weight": 1.0,
+        "retrieval_captures": 1,
+        "gold_fields_used_at_runtime": false,
+        "posthoc_metrics": "scripts/enterprise_rag_posthoc_metrics.py"
+      },
+      "answering": {
+        "mode": "extractive",
+        "model": null,
+        "max_context_chars": 3500,
+        "answer_policy": "baseline"
+      },
+      "reasoning": {
+        "arm": "none",
+        "provider": null,
+        "summary": {
+          "rows": 10,
+          "expanded_rows": 0,
+          "expanded_rate": 0.0,
+          "fallback_rows": 0,
+          "fallback_rate": 0.0,
+          "passes_total": 10,
+          "queries_total": 0,
+          "capture_stability_rate": 1.0,
+          "model": null
+        },
+        "cache": null,
+        "promotion": {
+          "status": "pending",
+          "expensive_model_allowed": false,
+          "missing": [
+            "baseline_correctness",
+            "candidate_correctness",
+            "useful_expansion_precision",
+            "stable_repeated_captures",
+            "validation_failure_rate",
+            "no_material_false_abstention",
+            "info_not_found_correctness"
+          ],
+          "failed": []
+        }
+      },
+      "outputs": {
+        "answers": "results/enterprise_rag/non_reasoning_v2/completeness_dev_reranker.answers.jsonl",
+        "rows": 10,
+        "new_rows": 10,
+        "resumed_rows": 0
+      },
+      "retrieval_metrics": null,
+      "runtime_telemetry": {
+        "questions_with_telemetry": 10,
+        "mean_question_retrieval_latency_ms": 39467.934499999996,
+        "p95_question_retrieval_latency_ms": 59239.965,
+        "calls": {
+          "embedding": 10,
+          "lexical": 10,
+          "splade": 0,
+          "reranker": 10,
+          "answer_model": 0
+        },
+        "cost_usd": null,
+        "cost_status": "not_available_for_retrieval_providers"
+      },
+      "calibration": null
+    }
+  },
+  "common_questions": 5,
+  "overall": {
+    "count": 5,
+    "answerable_count": 5,
+    "baseline_document_recall": 0.2583333333333333,
+    "candidate_document_recall": 0.6083333333333333,
+    "mean_recall_delta": 0.35,
+    "baseline_exact_coverage": 0.0,
+    "candidate_exact_coverage": 0.4,
+    "mean_extra_delta": -2.2,
+    "questions_with_recall_gain": 4,
+    "questions_with_recall_loss": 0
+  },
+  "by_category": {
+    "completeness": {
+      "count": 5,
+      "answerable_count": 5,
+      "baseline_document_recall": 0.2583333333333333,
+      "candidate_document_recall": 0.6083333333333333,
+      "mean_recall_delta": 0.35,
+      "baseline_exact_coverage": 0.0,
+      "candidate_exact_coverage": 0.4,
+      "mean_extra_delta": -2.2,
+      "questions_with_recall_gain": 4,
+      "questions_with_recall_loss": 0
+    }
+  },
+  "pairs": [
+    {
+      "question_id": "qst_0433",
+      "question_type": "completeness",
+      "baseline_recall": 0.0,
+      "candidate_recall": 0.3333333333333333,
+      "recall_delta": 0.3333333333333333,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 8,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0434",
+      "question_type": "completeness",
+      "baseline_recall": 0.3333333333333333,
+      "candidate_recall": 1.0,
+      "recall_delta": 0.6666666666666667,
+      "baseline_exact": false,
+      "candidate_exact": true,
+      "baseline_extra": 6,
+      "candidate_extra": 2
+    },
+    {
+      "question_id": "qst_0438",
+      "question_type": "completeness",
+      "baseline_recall": 0.3333333333333333,
+      "candidate_recall": 0.3333333333333333,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 5,
+      "candidate_extra": 5
+    },
+    {
+      "question_id": "qst_0440",
+      "question_type": "completeness",
+      "baseline_recall": 0.5,
+      "candidate_recall": 1.0,
+      "recall_delta": 0.5,
+      "baseline_exact": false,
+      "candidate_exact": true,
+      "baseline_extra": 5,
+      "candidate_extra": 2
+    },
+    {
+      "question_id": "qst_0442",
+      "question_type": "completeness",
+      "baseline_recall": 0.125,
+      "candidate_recall": 0.375,
+      "recall_delta": 0.25,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 7,
+      "candidate_extra": 5
+    }
+  ]
+}

@@ -1,0 +1,214 @@
+# EnterpriseRAG non reasoning retrieval research
+
+**Date:** 2026-08-18
+**Status:** global reranker rejected; completeness candidate continues repeated confirmation
+**Recommendation:** continue only the completeness candidate to stable repeated captures. Do not
+promote the global reranker and do not claim top five status.
+
+## Scope and evaluation boundary
+
+This session studies retrieval, reranking, indexing, chunking, hybrid configuration, and answer
+generation without a reasoning expansion arm. The requested runtime policy is:
+
+1. `--no-correction`
+2. `--skip-citation-stripping`
+3. `--parallelism 1`
+4. no gold expected document ids, answer facts, or competitor answers in the runner
+
+The official evaluator may use gold fields only after an answer file has been generated. The
+runner now strips those fields while loading questions. Retrieval quality is computed by
+`scripts/enterprise_rag_posthoc_metrics.py` or the official evaluator after generation.
+
+The code and experiment plan are in the current isolated worktree on branch
+`claude/reasoning-366-next`. The preregistration was committed as `eb9dace` before the new
+measurement attempt.
+
+## Reproduction of the five question finding
+
+The existing triage report records this prior paired retrieval result on five fixed
+`project_related` development questions:
+
+1. Configuration: Voyage `voyage-4-large`, lexical hybrid retrieval, `k=8`, `candidate_k=200`,
+   extractive output, and no reasoning arm.
+2. No reranker: document recall `46.67%`, exact document set coverage `20.0%`.
+3. Voyage `rerank-2.5`: document recall `66.67%`, exact coverage `40.0%`, mean extra document
+   delta `-0.4`, two retrieval gains, and zero retrieval losses.
+
+The answer files were recovered from the isolated VPS2 stage and compared locally after
+generation. The five-question result reproduces the earlier finding. The held-out confirmation
+is negative for the global reranker. The paired reports are
+`results/enterprise_rag/non_reasoning/paired_dev.json` and
+`results/enterprise_rag/non_reasoning/paired_confirmation.json`.
+
+The capture recovery used these checks on 2026-08-18:
+
+```powershell
+mcp__qwen_mcp__port_check(host="vps2", port=22, timeout_ms=3000)
+ssh -o BatchMode=yes -o ConnectTimeout=8 vps2 "printf 'remote-ok\n'"
+py -3 -c "import zipfile; p=r'C:/Users/gde00/Documents/recall/.benchdata/enterprise-rag-v1.0.0/all_documents.zip'; z=zipfile.ZipFile(p); n=[x for x in z.namelist() if x.endswith('.txt')]; print(len(n), sum(z.getinfo(x).file_size for x in n))"
+```
+
+The VPS2 port and SSH checks later succeeded. The local official release contains `511962` text
+documents and `2473634648` uncompressed bytes. I did not rebuild that corpus locally. The
+recovered VPS2 answer artifacts remain historical captures because their older manifests include
+evaluator-style posthoc retrieval fields. I used those fields only for post-generation analysis,
+never as runtime retrieval inputs.
+
+I started a session owned local database on port `5641` for harness verification. I did not reset,
+drop, or mutate the shared VPS2 benchmark table.
+
+## Experiment implementation
+
+The following files are reproducible artifacts:
+
+1. `benchmarks/enterprise_rag.py` now removes gold fields from runtime question objects and records
+   retrieval stage timings, document capture stability, embedding calls, lexical calls, SPLADE
+   calls, reranker calls, and answer model calls in the run manifest. Retrieval cost remains
+   `null` when the provider does not expose a measured usage record.
+2. `scripts/enterprise_rag_experiment.py` constructs and optionally executes a serial grid with
+   isolated table and tenant names. Its default grid is `k` in `5,8,12`, `candidate_k` in
+   `100,200,400`, and reranker in `none,voyage:rerank-2.5`. The default sparse arm is lexical.
+3. `scripts/enterprise_rag_posthoc_metrics.py` computes document recall, exact coverage, and
+   invalid extra documents only after answer rows exist.
+4. `scripts/enterprise_rag_retrieval_compare.py` compares paired answer files and can include the
+   two run manifests for latency and call deltas. Its output declares the posthoc phase.
+5. `scripts/enterprise_rag_score_openrouter.sh` now passes the requested no correction and skip
+   citation stripping flags and defaults evaluator parallelism to one.
+6. `results/enterprise_rag/reranker_grid_plan/experiment.manifest.json` records the lexical grid
+   plan with the official question and document hashes.
+
+The full grid is not executed against an incomplete local index. The recovered VPS2 index was
+used only for the paired project reproduction and confirmation. Any changed index configuration
+still requires a new isolated table and tenant.
+
+## Retrieval arms and current status
+
+The five fixed slices are `project_related`, `completeness`, `semantic`, `basic`, `constrained`,
+and `conflicting_info`. The dev and confirmation ids are in
+`results/enterprise_rag/top5_slices`.
+
+The requested full paired grid remains pending. The measured project pair and the completeness
+development and confirmation pairs are recorded in the JSON artifacts. The planned measurements
+are:
+
+1. No reranker and Voyage `rerank-2.5`.
+2. Candidate pools `100`, `200`, and `400`.
+3. Final `k` values `5`, `8`, and `12`.
+4. Lexical retrieval, then lexical plus SPLADE only after the SPLADE model and isolated index are
+   available and source coverage is verified.
+5. Three repeated captures per selected arm.
+6. Document recall, exact coverage, invalid extras, per question gains and losses, latency, stage
+   timings, provider call counts, and measured monetary cost.
+
+The Pareto rule is not higher `k` by default. A candidate must improve paired recall or exact
+coverage without a material increase in invalid extras or context latency. It must also remain
+stable across repeated captures.
+
+## Answer generation
+
+No global reranker answer run is accepted for promotion because the global reranker failed the
+held-out project retrieval gate. Existing reader artifacts are retained as historical exploratory
+output, not as a promotion result. Retrieval must first improve paired confirmation rows before
+the same answer model and prompt are run over a changed document set.
+
+The completeness candidate did pass its paired retrieval confirmation, so I ran the controlled
+answer experiment on the same 10 confirmation questions. Both arms used `openai/gpt-4o`, the
+baseline answer policy, a 3,500-character context, serial retrieval, and the requested official
+evaluator flags. The answer metrics were:
+
+| arm | correctness | completeness | combined score | recall | invalid extras |
+|---|---:|---:|---:|---:|---:|
+| no reranker | 10.0% | 4.17% | 4.17 | 21.0% | 7.0 |
+| Voyage reranker | 50.0% | 21.67% | 21.67 | 37.58% | 6.0 |
+
+The candidate added one reranker call per question and increased mean retrieval latency from
+20,568.9 ms to 21,566.0 ms, with p95 latency from 27,391.0 ms to 27,734.2 ms. Retrieval-provider
+cost was not exposed by the runtime telemetry. The answer manifests are
+`results/enterprise_rag/non_reasoning/completeness_confirmation_none_openrouter.answers.jsonl.manifest.json`
+and
+`results/enterprise_rag/non_reasoning/completeness_confirmation_reranker_openrouter.answers.jsonl.manifest.json`.
+This is promising but not promotable: it has one capture, only one category, no 500-question
+evaluation, and no stable repeated-capture evidence.
+
+The answer side remains a separate experiment. Candidate variables are answer model, context
+length, document order, structured answer format, source labels, abstention wording, and the
+official correction and citation settings. They must not be changed together with the first
+reranker comparison.
+
+## Index improvement agenda
+
+The current implementation exposes chunk size, overlap, reranker document truncation, candidate
+pool size, sparse backend, title and source type inclusion, query embedding caching, table, and
+tenant in the manifest. The following items are not yet measured in this session:
+
+1. Chunk size and overlap sweep.
+2. Document level ranking compared with chunk level ranking.
+3. Source type weighting.
+4. Lexical normalization.
+5. Duplicate and near duplicate handling beyond the current document id collapse.
+6. Tunable dense and sparse fusion weights beyond the current RRF behavior.
+7. SPLADE fusion on an isolated index.
+8. Reranker truncation values.
+9. Query cache correctness on repeated captures.
+10. Tenant freshness and source coverage checks.
+
+Each future index arm must use a distinct table and tenant. No shared VPS2 benchmark table may be
+reset or mutated.
+
+## Official competitor artifact analysis
+
+I analyzed only the downloaded leaderboard snapshot in `.tmp_erbleaderboard`, using its official
+`leaderboard.csv`, `systems.yaml`, and `results_*.json` artifacts. The reproducible output is
+`results/enterprise_rag/official_competitor_analysis.json`.
+
+The official top five rows are:
+
+1. Troml: score `76.79`, correctness `83.8`, completeness `81.84`, recall `86.55`, invalid extras
+   `12.65`.
+2. Skyller: score `71.93`, correctness `77.0`, completeness `79.14`, recall `81.6`, invalid extras
+   `8.86`.
+3. OpenClaw: score `68.22`, correctness `81.6`, completeness `72.86`, recall `79.02`, invalid
+   extras `0.47`.
+4. fgroo: score `63.27`, correctness `71.0`, completeness `71.03`, recall `72.5`, invalid extras
+   `0.63`.
+5. OpenAI File Search: score `61.03`, correctness `69.8`, completeness `67.87`, recall `71.65`,
+   invalid extras `15.7`.
+
+The artifacts show outcome associations, not undocumented internal mechanisms. They support three
+limited observations:
+
+1. Strong systems are not uniformly low in invalid extras. Troml leads on recall and answer
+   metrics while carrying more extras than OpenClaw and fgroo.
+2. Low extras alone do not establish a top score. OpenClaw and fgroo combine low extras with
+   different recall and answer quality profiles.
+3. The strongest measurable public pattern is joint performance on recall, correctness, and
+   completeness. The artifacts do not prove whether any system used reranking, source weighting,
+   or document set construction internally.
+
+## Held out reranker confirmation
+
+The preregistered confirmation used 23 held out `project_related` questions with the same index,
+`candidate_k=200`, `k=8`, lexical hybrid retrieval, and extractive output. The no-reranker and
+`voyage:rerank-2.5` arms were paired question by question.
+
+| arm | document recall | exact coverage | invalid extra delta | gains/losses |
+|---|---:|---:|---:|---:|
+| no reranker | 61.7% | 13.0% | reference | reference |
+| Voyage reranker | 60.9% | 26.1% | +0.22 | 6/6 |
+
+The exact-coverage increase is useful evidence that the reranker can improve set precision on
+some questions, but the primary recall prediction failed and invalid extras increased. The
+simple global reranker is rejected. No reranker answer-quality confirmation was run after this
+failure, preserving the preregistered retrieval-first gate.
+
+The next candidates should explain the dev to confirmation reversal through deterministic score
+calibration, adaptive reranking, source or parent-document coverage, or chunk selection. Each
+candidate needs a new preregistration and a held out confirmation before answer generation.
+
+## Promotion decision
+
+The candidate is not promoted. Promotion criteria remain positive paired confirmation, stable
+repeated captures, no material invalid extra increase, no citation or document id mismatch, no
+info not found regression, measured latency and cost, and a homogeneous 500 question official
+evaluation using the requested evaluator flags. Only that final evaluation can be compared with
+the `61.03` top five threshold, and no top five claim is made here.

@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 40.0,
+    "average_completeness_pct": 33.4,
+    "combined_correctness_completeness_score": 17.68,
+    "average_recall_pct": 25.83,
+    "average_invalid_extra_docs": 6.2
+  },
+  "question_type_stats": {
+    "completeness": {
+      "count": 5,
+      "average_correctness_pct": 40.0,
+      "average_completeness_pct": 33.4,
+      "combined_correctness_completeness_score": 17.68,
+      "average_recall_pct": 25.83,
+      "average_invalid_extra_docs": 6.2
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0433",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "No \u2014 the candidate provides a general, useful rotation checklist but omits or changes several Redwood\u2011specific requirements (Credential Dependencies inventory, Vault path/versioning and the dual\u2011valid overlap default/7\u2011day removal, the \u226530/\u226560 minute monitor windows, the formal incident 'emergency secret rotation' workflow including time\u2011limited break\u2011glass (60 min), Tier\u20110\u2192Tier\u20111 prioritization, and the required timestamped/change\u2011recording steps), so it does not match the gold process.",
+      "completeness_pct": 16.67,
+      "document_recall_pct": 0.0,
+      "invalid_extra_docs": 8
+    },
+    {
+      "question_id": "qst_0434",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "No \u2014 the candidate contradicts the gold answer by reporting only 1 published Fintech story (LumenMoney) and marking Northwind as unpublished, whereas the gold states Fintech had 3 published stories (2 case studies and 1 one-page).",
+      "completeness_pct": 33.33,
+      "document_recall_pct": 33.33,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0438",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": true,
+      "correctness_reasoning": "Matches the gold answer: Eng Infra is identified as owning the most incidents in H1 2025 with the same two incident IDs (INC-2025-0112 and INC-2025-0522); the candidate also adds dates.",
+      "completeness_pct": 66.67,
+      "document_recall_pct": 33.33,
+      "invalid_extra_docs": 5
+    },
+    {
+      "question_id": "qst_0440",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate covers prerequisites, security reviews, per\u2011deployment configuration, validation, customer communication, and operations broadly but omits critical Gold details (internal intake/Jira and priority, explicit approval gates for cross\u2011region/legal, at\u2011least\u2011once delivery and deduplication guidance, and disable/rollback commands), so it is not fully aligned.",
+      "completeness_pct": 28.57,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 5
+    },
+    {
+      "question_id": "qst_0442",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate covers the same end-to-end process (definition/scope, approvals by change type including emergency, pre-deploy verification and canary requirement, deployment recordkeeping, communications assessment, explicit rollback and post-change validation) without contradicting the gold answer, though it omits some quantitative thresholds and scheduling/alerting specifics present in the gold.",
+      "completeness_pct": 21.74,
+      "document_recall_pct": 12.5,
+      "invalid_extra_docs": 7
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 20.0,
+    "average_completeness_pct": 13.33,
+    "combined_correctness_completeness_score": 13.33,
+    "average_recall_pct": 60.0,
+    "average_invalid_extra_docs": 7.4
+  },
+  "question_type_stats": {
+    "semantic": {
+      "count": 5,
+      "average_correctness_pct": 20.0,
+      "average_completeness_pct": 13.33,
+      "combined_correctness_completeness_score": 13.33,
+      "average_recall_pct": 60.0,
+      "average_invalid_extra_docs": 7.4
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0177",
+      "corrected": false,
+      "question_type": "semantic",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned \u2014 the candidate cites a non-final proposal with different figures (35% first-year discount vs gold 30%, and a 70/30 rev-share for 12 months vs gold\u2019s 15% for two quarters then 8%), so it conflicts with the gold answer.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0178",
+      "corrected": false,
+      "question_type": "semantic",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the candidate incorrectly states the default pass rate is unavailable, while the gold specifies it is 0.92 (92%).",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 0.0,
+      "invalid_extra_docs": 8
+    },
+    {
+      "question_id": "qst_0180",
+      "corrected": false,
+      "question_type": "semantic",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate gives the exact mechanism name in both forms (TrafficEscrow / traffic_escrow), matching the gold answer's identifier.",
+      "completeness_pct": 66.67,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0181",
+      "corrected": false,
+      "question_type": "semantic",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate does not provide the recommended scheduling change \u2014 staggering credential refreshes with randomized jitter (~30\u2013120 seconds) \u2014 and instead incorrectly states the answer is unavailable.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0182",
+      "corrected": false,
+      "question_type": "semantic",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the candidate gives no answer and claims documents lack the information, but the gold answer states the default token-grace window is 45 seconds.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 0.0,
+      "invalid_extra_docs": 8
+    }
+  ]
+}

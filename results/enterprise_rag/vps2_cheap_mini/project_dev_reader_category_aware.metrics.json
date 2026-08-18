@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 0.0,
+    "average_completeness_pct": 26.86,
+    "combined_correctness_completeness_score": 0.0,
+    "average_recall_pct": 46.67,
+    "average_invalid_extra_docs": 7.0
+  },
+  "question_type_stats": {
+    "project_related": {
+      "count": 5,
+      "average_correctness_pct": 0.0,
+      "average_completeness_pct": 26.86,
+      "combined_correctness_completeness_score": 0.0,
+      "average_recall_pct": 46.67,
+      "average_invalid_extra_docs": 7.0
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0341",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "No \u2014 the candidate matches the cause and verification checks but directly contradicts the gold answer by saying no temporary burst exception was granted while the gold states a region-scoped temporary policy override (14-day burst/budget increase) was applied.",
+      "completeness_pct": 70.0,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0345",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the candidate claims no information is available and therefore fails to provide the approved US-only data residency stance, the 7-year audit log/export approach, or the specific evidence-pack artifacts and sharing process described in the gold answer.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 0.0,
+      "invalid_extra_docs": 8
+    },
+    {
+      "question_id": "qst_0346",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned \u2014 the candidate incorrectly states there is no specific approved wording, omits the approved 'observed in production' range-based metric and measurement context (p95 at Redwood gateway, 7-day trailing window excluding the spike), and fails to state the precise private-sharing allowance (only the approved URL and PDF 1\u2011pager 1:1), instead offering different ranges and generic guidance.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 33.33,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0347",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "Candidate correctly lists the required CRDs but contradicts the gold by saying the restore fails during the apply stage with kubectl errors instead of the installer stopping at a preflight step (and writing a preflight failure report) and thus is misaligned.",
+      "completeness_pct": 50.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0353",
+      "corrected": false,
+      "question_type": "project_related",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the candidate omits the specified immutable baseline key, uses different min-sample thresholds and timing (not matching the \u2265200 requests and \u226550,000 tokens requirement), and provides an incorrect/insufficient incident-bot dedupe key.",
+      "completeness_pct": 14.29,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 7
+    }
+  ]
+}

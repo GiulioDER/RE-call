@@ -1,0 +1,145 @@
+{
+  "aggregate_stats": {
+    "total_questions": 12,
+    "completed_questions": 12,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 50.0,
+    "average_completeness_pct": 64.11,
+    "combined_correctness_completeness_score": 42.56,
+    "average_recall_pct": 87.5,
+    "average_invalid_extra_docs": 6.25
+  },
+  "question_type_stats": {
+    "conflicting_info": {
+      "count": 12,
+      "average_correctness_pct": 50.0,
+      "average_completeness_pct": 64.11,
+      "combined_correctness_completeness_score": 42.56,
+      "average_recall_pct": 87.5,
+      "average_invalid_extra_docs": 6.25
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0411",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned \u2014 the gold states to reserve 30% (updated from 20%) for priority=high on dp-132-usw, while the candidate incorrectly claims no percentage is provided.",
+      "completeness_pct": 60.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0412",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned \u2014 the candidate incorrectly states no reported values, while the gold states ~96% correctness at temp=0.0 with strict JSON+canonicalization compared to an earlier ~89%.",
+      "completeness_pct": 40.0,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0413",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned \u2014 while both state cost-ops (Priya Desai) approves termination after the grace window, the candidate contradicts the gold by claiming an infra manager (Nina Hwang) changed the 72h window to 5 business days, whereas the gold says no infra-manager approval is recorded.",
+      "completeness_pct": 50.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0414",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate claims no information is available about INC-9821, which contradicts the gold answer stating the issue was intermittent driver/kernel launch stalls (not a sustained GPU OOM).",
+      "completeness_pct": 40.0,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0415",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned \u2014 the candidate omits the required explicit decoding parameter values (do_sample=false, temperature=0.0, top_k=1, top_p=1.0, and num_beams=1) though it mentions an explicit per-example torch.Generator and stable ordering.",
+      "completeness_pct": 40.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0416",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": true,
+      "correctness_reasoning": "Matches the gold's latest projections exactly (60/140/260 QPS) and the ~150 peak concurrent sessions; the extra note about KV cache is acceptable.",
+      "completeness_pct": 83.33,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0417",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": true,
+      "correctness_reasoning": "Candidate matches gold: recommends Sigstore/cosign (offline key mode) for v1.8+ and notes older deployments may use GPG with both supported during migration.",
+      "completeness_pct": 100.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 5
+    },
+    {
+      "question_id": "qst_0420",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the candidate fails to provide the required egress measurement basis (GiB-based) and the catalog rate (+$0.085 per GiB) and incorrectly claims the documents lack the answer.",
+      "completeness_pct": 28.57,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0421",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate correctly states the current default TTL as 120 seconds, matching the gold answer (omitting the historical 180-second note which is not required),",
+      "completeness_pct": 66.67,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0422",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": true,
+      "correctness_reasoning": "Candidate matches the gold: it states exports can't retrieve records past retention cutoff, notes the super-admin override is deprecated, requires a legal_hold_id for tenants with Legal Hold enabled, and logs uses to the immutable audit stream with a ticket reference.",
+      "completeness_pct": 85.71,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0427",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": true,
+      "correctness_reasoning": "Candidate matches the gold: it specifies the po_fingerprint as the lowercase SHA-256 hex of the exact 'PO_NUMBER|PO_LINE_UUID' (no whitespace) and the weekly invoices are delivered Tuesdays by 07:00 PT; extra details (don't send raw, avoid SHA-1, SFTP) are consistent and omission of the superseded earlier-email note is non-critical.",
+      "completeness_pct": 100.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0429",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate conveys the same core points: tool-signal is auto-enabled when tool calls are present, there's no per-request enable_tool_signal flag on the public surface, and private deployments can disable it via openai_compat.tool_signal_enabled=false, so it aligns with the gold answer.",
+      "completeness_pct": 75.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    }
+  ]
+}

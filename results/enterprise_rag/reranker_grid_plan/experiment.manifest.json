@@ -1,0 +1,243 @@
+{
+  "phase": "retrieval_only_runtime",
+  "created_at": "2026-08-18T12:29:45.085635+00:00",
+  "questions": {
+    "path": "C:\\Users\\gde00\\Documents\\recall\\.benchdata\\enterprise-rag-v1.0.0\\questions.jsonl",
+    "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905"
+  },
+  "documents": {
+    "path": "C:\\Users\\gde00\\Documents\\recall\\.benchdata\\enterprise-rag-v1.0.0\\all_documents.zip",
+    "sha256": "9d1174928696ad08bc15f3f104739519de633c1605a4ec2034e0e3c0087bc5cd"
+  },
+  "runtime_policy": {
+    "reasoning_arm": "none",
+    "answer_mode": "extractive",
+    "parallelism": 1,
+    "gold_fields_used_at_runtime": false,
+    "official_evaluator": {
+      "no_correction": true,
+      "skip_citation_stripping": true,
+      "parallelism": 1
+    }
+  },
+  "grid": {
+    "k": [
+      5,
+      8,
+      12
+    ],
+    "candidate_k": [
+      100,
+      200,
+      400
+    ],
+    "sparse_backend": [
+      "lexical"
+    ],
+    "reranker": [
+      "none",
+      "voyage:rerank-2.5"
+    ],
+    "retrieval_captures": 3
+  },
+  "arms": [
+    {
+      "id": "arm_001",
+      "name": "lexical_none_c100_k5",
+      "sparse_backend": "lexical",
+      "reranker": "none",
+      "candidate_k": 100,
+      "k": 5,
+      "table": "bench_er_grid_001",
+      "tenant": "er_grid_001",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_none_c100_k5.answers.jsonl"
+    },
+    {
+      "id": "arm_002",
+      "name": "lexical_none_c100_k8",
+      "sparse_backend": "lexical",
+      "reranker": "none",
+      "candidate_k": 100,
+      "k": 8,
+      "table": "bench_er_grid_002",
+      "tenant": "er_grid_002",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_none_c100_k8.answers.jsonl"
+    },
+    {
+      "id": "arm_003",
+      "name": "lexical_none_c100_k12",
+      "sparse_backend": "lexical",
+      "reranker": "none",
+      "candidate_k": 100,
+      "k": 12,
+      "table": "bench_er_grid_003",
+      "tenant": "er_grid_003",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_none_c100_k12.answers.jsonl"
+    },
+    {
+      "id": "arm_004",
+      "name": "lexical_none_c200_k5",
+      "sparse_backend": "lexical",
+      "reranker": "none",
+      "candidate_k": 200,
+      "k": 5,
+      "table": "bench_er_grid_004",
+      "tenant": "er_grid_004",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_none_c200_k5.answers.jsonl"
+    },
+    {
+      "id": "arm_005",
+      "name": "lexical_none_c200_k8",
+      "sparse_backend": "lexical",
+      "reranker": "none",
+      "candidate_k": 200,
+      "k": 8,
+      "table": "bench_er_grid_005",
+      "tenant": "er_grid_005",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_none_c200_k8.answers.jsonl"
+    },
+    {
+      "id": "arm_006",
+      "name": "lexical_none_c200_k12",
+      "sparse_backend": "lexical",
+      "reranker": "none",
+      "candidate_k": 200,
+      "k": 12,
+      "table": "bench_er_grid_006",
+      "tenant": "er_grid_006",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_none_c200_k12.answers.jsonl"
+    },
+    {
+      "id": "arm_007",
+      "name": "lexical_none_c400_k5",
+      "sparse_backend": "lexical",
+      "reranker": "none",
+      "candidate_k": 400,
+      "k": 5,
+      "table": "bench_er_grid_007",
+      "tenant": "er_grid_007",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_none_c400_k5.answers.jsonl"
+    },
+    {
+      "id": "arm_008",
+      "name": "lexical_none_c400_k8",
+      "sparse_backend": "lexical",
+      "reranker": "none",
+      "candidate_k": 400,
+      "k": 8,
+      "table": "bench_er_grid_008",
+      "tenant": "er_grid_008",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_none_c400_k8.answers.jsonl"
+    },
+    {
+      "id": "arm_009",
+      "name": "lexical_none_c400_k12",
+      "sparse_backend": "lexical",
+      "reranker": "none",
+      "candidate_k": 400,
+      "k": 12,
+      "table": "bench_er_grid_009",
+      "tenant": "er_grid_009",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_none_c400_k12.answers.jsonl"
+    },
+    {
+      "id": "arm_010",
+      "name": "lexical_voyage_rerank-2.5_c100_k5",
+      "sparse_backend": "lexical",
+      "reranker": "voyage:rerank-2.5",
+      "candidate_k": 100,
+      "k": 5,
+      "table": "bench_er_grid_010",
+      "tenant": "er_grid_010",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_voyage_rerank-2.5_c100_k5.answers.jsonl"
+    },
+    {
+      "id": "arm_011",
+      "name": "lexical_voyage_rerank-2.5_c100_k8",
+      "sparse_backend": "lexical",
+      "reranker": "voyage:rerank-2.5",
+      "candidate_k": 100,
+      "k": 8,
+      "table": "bench_er_grid_011",
+      "tenant": "er_grid_011",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_voyage_rerank-2.5_c100_k8.answers.jsonl"
+    },
+    {
+      "id": "arm_012",
+      "name": "lexical_voyage_rerank-2.5_c100_k12",
+      "sparse_backend": "lexical",
+      "reranker": "voyage:rerank-2.5",
+      "candidate_k": 100,
+      "k": 12,
+      "table": "bench_er_grid_012",
+      "tenant": "er_grid_012",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_voyage_rerank-2.5_c100_k12.answers.jsonl"
+    },
+    {
+      "id": "arm_013",
+      "name": "lexical_voyage_rerank-2.5_c200_k5",
+      "sparse_backend": "lexical",
+      "reranker": "voyage:rerank-2.5",
+      "candidate_k": 200,
+      "k": 5,
+      "table": "bench_er_grid_013",
+      "tenant": "er_grid_013",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_voyage_rerank-2.5_c200_k5.answers.jsonl"
+    },
+    {
+      "id": "arm_014",
+      "name": "lexical_voyage_rerank-2.5_c200_k8",
+      "sparse_backend": "lexical",
+      "reranker": "voyage:rerank-2.5",
+      "candidate_k": 200,
+      "k": 8,
+      "table": "bench_er_grid_014",
+      "tenant": "er_grid_014",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_voyage_rerank-2.5_c200_k8.answers.jsonl"
+    },
+    {
+      "id": "arm_015",
+      "name": "lexical_voyage_rerank-2.5_c200_k12",
+      "sparse_backend": "lexical",
+      "reranker": "voyage:rerank-2.5",
+      "candidate_k": 200,
+      "k": 12,
+      "table": "bench_er_grid_015",
+      "tenant": "er_grid_015",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_voyage_rerank-2.5_c200_k12.answers.jsonl"
+    },
+    {
+      "id": "arm_016",
+      "name": "lexical_voyage_rerank-2.5_c400_k5",
+      "sparse_backend": "lexical",
+      "reranker": "voyage:rerank-2.5",
+      "candidate_k": 400,
+      "k": 5,
+      "table": "bench_er_grid_016",
+      "tenant": "er_grid_016",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_voyage_rerank-2.5_c400_k5.answers.jsonl"
+    },
+    {
+      "id": "arm_017",
+      "name": "lexical_voyage_rerank-2.5_c400_k8",
+      "sparse_backend": "lexical",
+      "reranker": "voyage:rerank-2.5",
+      "candidate_k": 400,
+      "k": 8,
+      "table": "bench_er_grid_017",
+      "tenant": "er_grid_017",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_voyage_rerank-2.5_c400_k8.answers.jsonl"
+    },
+    {
+      "id": "arm_018",
+      "name": "lexical_voyage_rerank-2.5_c400_k12",
+      "sparse_backend": "lexical",
+      "reranker": "voyage:rerank-2.5",
+      "candidate_k": 400,
+      "k": 12,
+      "table": "bench_er_grid_018",
+      "tenant": "er_grid_018",
+      "answers": "results\\enterprise_rag\\reranker_grid_plan\\lexical_voyage_rerank-2.5_c400_k12.answers.jsonl"
+    }
+  ]
+}

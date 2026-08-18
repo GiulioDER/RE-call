@@ -1,0 +1,56 @@
+{
+  "phase": "non_reasoning_voyage_reranker_reproduction",
+  "measured_at": "2026-08-18",
+  "status": "prior_reproduction_and_confirmation_available",
+  "requested_runtime": {
+    "reasoning_arm": "none",
+    "answer_mode": "extractive",
+    "no_correction": true,
+    "skip_citation_stripping": true,
+    "parallelism": 1,
+    "gold_fields_used_at_runtime": false
+  },
+  "prior_triage_evidence": {
+    "source": "docs/ENTERPRISE_RAG_REASONING_TRIAGE.md",
+    "slice": "five fixed project_related dev questions",
+    "configuration": {
+      "k": 8,
+      "candidate_k": 200,
+      "embedder": "voyage:voyage-4-large",
+      "sparse_backend": "lexical",
+      "answer_mode": "extractive"
+    },
+    "no_reranker": {
+      "document_recall_pct": 46.67,
+      "exact_coverage_pct": 20.0
+    },
+    "voyage_rerank_2_5": {
+      "document_recall_pct": 66.67,
+      "exact_coverage_pct": 40.0,
+      "mean_extra_document_delta": -0.4,
+      "retrieval_gains": 2,
+      "retrieval_losses": 0
+    },
+    "evidence_status": "prior_reported_result_not_remeasured_in_this_capture"
+  },
+  "new_capture_attempt": {
+    "vps2_port_check": "available",
+    "vps2_ssh": "available",
+    "remote_stage": "/home/sentiment/enterprise-rag-run/reasoning-366-next",
+    "local_full_release": {
+      "document_text_files": 511962,
+      "uncompressed_bytes": 2473634648,
+      "usable_prebuilt_voyage_index": false
+    },
+    "result": "paired VPS2 answer artifacts were recovered and scored posthoc"
+  },
+  "paired_results": {
+    "dev": "results/enterprise_rag/non_reasoning/paired_dev.json",
+    "confirmation": "results/enterprise_rag/non_reasoning/paired_confirmation.json"
+  },
+  "artifacts": {
+    "grid_plan": "results/enterprise_rag/reranker_grid_plan/experiment.manifest.json",
+    "competitor_analysis": "results/enterprise_rag/official_competitor_analysis.json"
+  },
+  "promotion_status": "not_eligible"
+}

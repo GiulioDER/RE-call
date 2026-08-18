@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 20.0,
+    "average_completeness_pct": 52.93,
+    "combined_correctness_completeness_score": 13.33,
+    "average_recall_pct": 100.0,
+    "average_invalid_extra_docs": 6.4
+  },
+  "question_type_stats": {
+    "constrained": {
+      "count": 5,
+      "average_correctness_pct": 20.0,
+      "average_completeness_pct": 52.93,
+      "combined_correctness_completeness_score": 13.33,
+      "average_recall_pct": 100.0,
+      "average_invalid_extra_docs": 6.4
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0381",
+      "corrected": false,
+      "question_type": "constrained",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate matches the cause (noisy/false-positive reachability signals plus weak anti\u2011flap/rollback guardrails) but omits/conflicts with the gold answer\u2019s follow-up ticket ENG-2422 and target ship date 2026-02-07, so it is misaligned.",
+      "completeness_pct": 70.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0382",
+      "corrected": false,
+      "question_type": "constrained",
+      "answer_correct": false,
+      "correctness_reasoning": "No \u2014 the candidate answer incorrectly says information is unavailable and fails to report the gold answer\u2019s root cause (deduplication bug counting retried streaming chunks) and the mitigation/follow-up steps, so it does not align.",
+      "completeness_pct": 7.14,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0383",
+      "corrected": false,
+      "question_type": "constrained",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate correctly identifies the BOM (EF BB BF) causing the first group to not match, but it fails to state the server-side fix (normalize/sanitize groups by stripping BOM/invisible chars then TrimSpace/split) and instead claims patch details are truncated, so it is misaligned.",
+      "completeness_pct": 87.5,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0384",
+      "corrected": false,
+      "question_type": "constrained",
+      "answer_correct": false,
+      "correctness_reasoning": "No \u2014 the candidate fails to specify the exact knobs (kv.compaction.budget_ms_per_step and kv.compaction.budget_bytes_per_step) and suggested numeric reductions (25\u201350%), does not give the precise kill-switch (kv.kill_switch=true), and cites different/unspecified metrics instead of the required runtime_kv_compaction_steps_total and runtime_kv_evictions_total checks.",
+      "completeness_pct": 33.33,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0385",
+      "corrected": false,
+      "question_type": "constrained",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate correctly identifies the root causes (baseline lookup/key mismatch and high-cardinality label fragmentation causing fallback thresholds and dedupe/min-sample failures) and lists the immediate mitigations used (disable/silence paging, increase dampening, roll back canary coverage), matching the gold answer\u2019s core points without conflicting details.",
+      "completeness_pct": 66.67,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    }
+  ]
+}
