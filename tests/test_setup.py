@@ -453,6 +453,73 @@ def test_index_memory_directory_indexes_via_indexer(monkeypatch, tmp_path):
     assert "Indexed 3 chunks from 1 files" in output.getvalue()
 
 
+def test_index_memory_directory_honours_the_requested_tenant_and_table(monkeypatch, tmp_path):
+    """It wrote to DEFAULT_TENANT unconditionally, so a `memory` tenant landed in `default`.
+
+    The index succeeded, printed success, and put the rows where nothing would look for them. The
+    existing test above cannot see this: its store stub is `lambda *a, **k: FakeStore()`, which
+    discards the very keywords that decide where the rows go. Recording them is the whole test.
+    """
+    from recall.index import IndexStats
+    from recall.setup import index_memory_directory
+
+    monkeypatch.delenv("RECALL_ENV", raising=False)
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "MEMORY.md").write_text("# Memory index\n", encoding="utf-8")
+
+    opened: dict[str, object] = {}
+
+    class FakeStore:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def check_schema(self):
+            pass
+
+    class FakeIndexer:
+        def __init__(self, store, embedder, chunker=None):
+            pass
+
+        def index_path(self, path, glob=None):
+            return IndexStats(files=1, chunks=3)
+
+    def _store(*args, **kwargs):
+        opened.update(kwargs)
+        return FakeStore()
+
+    monkeypatch.setattr("recall.store.PgVectorStore", _store)
+    monkeypatch.setattr("recall.index.Indexer", FakeIndexer)
+
+    index_memory_directory(
+        dsn="postgresql://example/recall",
+        embedder_name="hashing",
+        memory_dir=memory_dir,
+        tenant="memory",
+        table="probe_chunks",
+        print_fn=lambda *a, **k: None,
+    )
+
+    assert opened["tenant"] == "memory", "the caller's tenant must decide where the rows go"
+    assert opened["table"] == "probe_chunks"
+
+    # And the default is unchanged, so existing callers keep their behaviour.
+    opened.clear()
+    index_memory_directory(
+        dsn="postgresql://example/recall",
+        embedder_name="hashing",
+        memory_dir=memory_dir,
+        print_fn=lambda *a, **k: None,
+    )
+    from recall.store import DEFAULT_TABLE, DEFAULT_TENANT
+
+    assert opened["tenant"] == DEFAULT_TENANT
+    assert opened["table"] == DEFAULT_TABLE
+
+
 def test_index_memory_directory_survives_indexing_failure(monkeypatch, tmp_path):
     from recall.setup import index_memory_directory
 

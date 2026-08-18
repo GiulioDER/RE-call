@@ -154,6 +154,10 @@ class _Spy:
         self.schema_dsns: list[str] = []
         self.grants: list[tuple[str, str]] = []
         self.corpora: list[str] = []
+        #: Uncalibrated corpora handed to `index_legacy`. Recorded separately from `corpora`,
+        #: because "which corpora were CALIBRATED" and "which were indexed" are different questions
+        #: and the report used to answer neither for `memory`.
+        self.legacy: list[str] = []
         self.steps: list[str] = []
         self._refuse = refuse or set()
         self._crash = crash or set()
@@ -169,6 +173,16 @@ class _Spy:
 
     def grant(self, dsn: str, *, role: str) -> None:
         self.grants.append((dsn, role))
+
+    def index_legacy(self, spec: Any) -> Any:
+        from recall.wizard.headless import LegacyIndex
+
+        self.legacy.append(spec.tenant)
+        if spec.tenant in self._refuse:
+            raise PipelineRefusal(f"corpus {spec.tenant!r} refused for the test")
+        if spec.tenant in self._crash:
+            raise RuntimeError(f"psycopg: connection lost while indexing {spec.tenant}")
+        return LegacyIndex(tenant=spec.tenant, files=3, chunks=11)
 
     def run(self, spec: Any, *, progress: Any = None) -> Any:
         from recall.wizard.pipeline import CorpusOutcome
@@ -202,8 +216,13 @@ def test_only_the_calibrated_corpora_are_driven(tmp_path: Path) -> None:
     report = run_headless(load_config(_write(tmp_path, _config(tmp_path))), services=spy)
 
     assert spy.corpora == ["docs", "code"]
-    assert "memory" not in spy.corpora
-    assert report.skipped == ("memory",)
+    assert "memory" not in spy.corpora, "memory must not go down the generation path"
+    # But it must still be DRIVEN. The report used to say `memory` was "indexed into the legacy
+    # chunks table" while nothing indexed it and nothing created its directory, so a third of the
+    # install was a claim rather than a result.
+    assert spy.legacy == ["memory"], "memory must be indexed, not skipped"
+    assert [i.tenant for i in report.indexed] == ["memory"]
+    assert report.indexed[0].chunks == 11, "the report carries counts, which cannot be claimed"
 
 
 def test_the_schema_is_applied_at_the_embedders_own_dimension(tmp_path: Path) -> None:
@@ -360,7 +379,10 @@ def test_progress_reaches_the_caller(tmp_path: Path) -> None:
         progress=seen.append,
     )
 
-    assert seen == ["docs: build", "code: build"], "each step must name the corpus it belongs to"
+    assert seen == ["docs: build", "code: build", "memory: index"], (
+        "each step must name the corpus it belongs to, and the uncalibrated corpus is a step too: "
+        "indexing memory is work the operator waits for, so silence there is the same defect"
+    )
 
 
 def test_the_report_renders_every_corpus_and_its_state(tmp_path: Path) -> None:
@@ -371,7 +393,8 @@ def test_the_report_renders_every_corpus_and_its_state(tmp_path: Path) -> None:
     rendered = report.render()
 
     assert "docs" in rendered and "code" in rendered
-    assert "memory" in rendered, "a skipped corpus must still be accounted for"
+    assert "memory" in rendered, "an uncalibrated corpus must still be accounted for"
+    assert "indexed" in rendered, "and it must say it was indexed, with counts"
     assert "refused" in rendered.lower()
 
 
@@ -436,7 +459,7 @@ def test_a_refused_corpus_exits_nonzero_and_a_degraded_one_does_not(
                 ),
             ),
             refused=(headless.Refusal(tenant="code", reason="corpus is empty"),),
-            skipped=("memory",),
+            indexed=(headless.LegacyIndex(tenant="memory", files=3, chunks=11),),
         ),
     )
     assert _cli(config, "--headless")[0] == 1
@@ -449,7 +472,7 @@ def test_a_refused_corpus_exits_nonzero_and_a_degraded_one_does_not(
             outcomes=(CorpusOutcome(tenant="docs", generation_id="g", certified=False,
                                     degraded_reason="separability below the bar",
                                     previously_serving="gen_previous"),),
-            skipped=("memory",),
+            indexed=(headless.LegacyIndex(tenant="memory", files=3, chunks=11),),
         ),
     )
     # `previously_serving` is what makes this exit 0. Without it the tenant answers nothing, and

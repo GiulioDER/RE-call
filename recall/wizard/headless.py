@@ -58,6 +58,7 @@ __all__ = [
     "Failure",
     "HeadlessConfig",
     "HeadlessReport",
+    "LegacyIndex",
     "PipelineRefusal",
     "Refusal",
     "load_config",
@@ -121,6 +122,20 @@ class Refusal:
 
 
 @dataclass(frozen=True)
+class LegacyIndex:
+    """An uncalibrated corpus written into the legacy `chunks` table, and what it wrote.
+
+    Reported with its counts rather than as a skip, because `memory` is a third of the install and
+    the report used to assert it had been "indexed into the legacy chunks table" while the driver
+    did nothing at all with it. Counts are the difference between a claim and a result.
+    """
+
+    tenant: str
+    files: int
+    chunks: int
+
+
+@dataclass(frozen=True)
 class Failure:
     """A corpus that crashed partway through, and may have left irreversible work behind.
 
@@ -140,9 +155,10 @@ class HeadlessReport:
     outcomes: tuple[CorpusOutcome, ...] = ()
     refused: tuple[Refusal, ...] = ()
     failures: tuple[Failure, ...] = ()
-    #: Corpora the driver deliberately did not drive. `memory` has no generation, so handing it to
-    #: `run_corpus` would produce a promoted generation nothing can calibrate.
-    skipped: tuple[str, ...] = ()
+    #: Uncalibrated corpora, indexed into the legacy `chunks` table. `memory` has no generation, so
+    #: handing it to `run_corpus` would produce a promoted generation nothing can calibrate, but it
+    #: still has to be INDEXED or its server answers nothing.
+    indexed: tuple[LegacyIndex, ...] = ()
 
     @property
     def unserved(self) -> tuple[str, ...]:
@@ -171,7 +187,7 @@ class HeadlessReport:
             *(o.tenant for o in self.outcomes),
             *(r.tenant for r in self.refused),
             *(f.tenant for f in self.failures),
-            *self.skipped,
+            *(i.tenant for i in self.indexed),
         ]
         width = max([_TENANT_COLUMN, *(len(t) for t in tenants)]) if tenants else _TENANT_COLUMN
         indent = " " * (_GUTTER + width + 1)
@@ -207,17 +223,27 @@ class HeadlessReport:
         for failure in self.failures:
             lines.append(f"{' ' * _GUTTER}{failure.tenant:<{width}} FAILED")
             lines.append(detail(failure.error))
-        for tenant in self.skipped:
-            lines.append(f"{' ' * _GUTTER}{tenant:<{width}} skipped")
-            # What is TRUE, not what a reader might assume. This line used to say the corpus was
-            # "indexed into the legacy chunks table", asserting a database state the wizard never
-            # creates: nothing indexes it and nothing creates its directory.
+        for entry in self.indexed:
+            # Counts, because this line used to assert the corpus was "indexed into the legacy
+            # chunks table" while the driver did nothing with it at all. A count cannot be claimed
+            # without doing the work.
             lines.append(
-                detail(
-                    "not indexed by this command and not calibrated. Index it yourself with "
-                    f"`recall index --tenant {tenant} <root>`."
-                )
+                f"{' ' * _GUTTER}{entry.tenant:<{width}} indexed  "
+                f"({entry.chunks} chunks from {entry.files} files, legacy chunks table)"
             )
+            if not entry.chunks:
+                # Says what is true of the DATABASE, and stops there. An earlier version added that
+                # this tenant's server "carries RECALL_TRUST_MODE=development", which the wizard
+                # does not do: writing `.mcp.json` is Phase 4 and does not exist yet. The corpus
+                # spec requires that setting; nothing here has applied it.
+                lines.append(
+                    detail(
+                        "the directory was empty, which is normal on a first install: this tenant "
+                        "is writable and fills up as you use it. It is not calibrated, so it needs "
+                        "a server configured for development trust; this command does not write "
+                        "that configuration."
+                    )
+                )
 
         if self.ok:
             head = "install complete"
@@ -240,6 +266,7 @@ class _Services(Protocol):
     def run(
         self, spec: CorpusSpec, *, progress: Callable[[str], None] | None = None
     ) -> CorpusOutcome: ...
+    def index_legacy(self, spec: CorpusSpec) -> LegacyIndex: ...
 
 
 @dataclass
@@ -287,6 +314,32 @@ class _RealServices:
         with psycopg.connect(dsn) as conn, conn.transaction():
             for statement in serving_grants(role):
                 conn.execute(statement)
+
+    def index_legacy(self, spec: CorpusSpec) -> LegacyIndex:
+        """Index an uncalibrated corpus into the legacy `chunks` table, under ITS OWN tenant.
+
+        `recall.setup.index_memory_directory` exists and is deliberately not used: it hardcodes
+        `DEFAULT_TENANT`, so it would write `memory`'s content into `default`, and it swallows
+        every exception to print a suggestion, which is right for an interactive scaffolder and
+        wrong for a driver whose report is the only thing a CI job reads.
+
+        The directory is created when absent, because `memory_corpus`'s docstring says the wizard
+        creates it and `CorpusSpec` deliberately permits an absent root on that basis. A fresh
+        install therefore gets an empty, working memory tenant rather than a refusal.
+        """
+        from recall.index import Indexer, chunk_text
+        from recall.store import DEFAULT_TABLE, PgVectorStore
+
+        spec.root.mkdir(parents=True, exist_ok=True)
+        embedder = self.embedder()
+        with PgVectorStore(
+            self.config.dsn, dim=embedder.dim, table=DEFAULT_TABLE, tenant=spec.tenant
+        ) as store:
+            store.check_schema()
+            stats = Indexer(store, embedder, chunker=chunk_text).index_path(
+                spec.root, glob=spec.glob
+            )
+        return LegacyIndex(tenant=spec.tenant, files=stats.files, chunks=stats.chunks)
 
     def run(
         self, spec: CorpusSpec, *, progress: Callable[[str], None] | None = None
@@ -544,10 +597,36 @@ def run_headless(
                 )
             )
 
-    skipped = tuple(c.tenant for c in plan.corpora if not c.calibrated)
+    # The uncalibrated corpora. Driven, not skipped: `memory` is a third of the install, and a
+    # report that says "skipped" for it describes an install nobody finished.
+    indexed: list[LegacyIndex] = []
+    for spec in plan.corpora:
+        if spec.calibrated:
+            continue
+        if progress:
+            progress(f"{spec.tenant}: index")
+        try:
+            indexed.append(wiring.index_legacy(spec))
+        except PipelineRefusal as exc:
+            refused.append(
+                Refusal(
+                    tenant=spec.tenant,
+                    reason=_scrub(str(exc), config.dsn, config.migration_dsn),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - same reasoning as the calibrated loop above
+            failures.append(
+                Failure(
+                    tenant=spec.tenant,
+                    error=_scrub(
+                        f"{type(exc).__name__}: {exc}", config.dsn, config.migration_dsn
+                    ),
+                )
+            )
+
     return HeadlessReport(
         outcomes=tuple(outcomes),
         refused=tuple(refused),
         failures=tuple(failures),
-        skipped=skipped,
+        indexed=tuple(indexed),
     )

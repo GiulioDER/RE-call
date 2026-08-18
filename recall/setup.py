@@ -1046,8 +1046,17 @@ def index_memory_directory(
     embedder_name: str,
     memory_dir: Path = DEFAULT_MEMORY_DIR,
     env: dict[str, str] | None = None,
+    tenant: str | None = None,
+    table: str | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
+    """Index `memory_dir` into the legacy `chunks` table.
+
+    `tenant` and `table` are parameters rather than constants because this wrote unconditionally to
+    `DEFAULT_TENANT`, so a caller configuring a `memory` tenant got its content in `default`
+    instead: the index succeeded, reported success, and put the rows where nothing would look for
+    them. `None` keeps the historical defaults, so existing callers are unaffected.
+    """
     if os.environ.get("RECALL_ENV", "development").lower() == "production":
         print_fn(
             f"Skipping auto-index: RECALL_ENV is production. Index {memory_dir} via your "
@@ -1060,7 +1069,10 @@ def index_memory_directory(
 
         embedder = resolve_embedder(embedder_name, env=env)
         with PgVectorStore(
-            dsn, dim=embedder.dim, table=DEFAULT_TABLE, tenant=DEFAULT_TENANT
+            dsn,
+            dim=embedder.dim,
+            table=table or DEFAULT_TABLE,
+            tenant=tenant or DEFAULT_TENANT,
         ) as store:
             store.check_schema()
             indexer = Indexer(store, embedder, chunker=chunk_text)
