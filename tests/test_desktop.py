@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from recall.desktop.sources import (
     scan_files,
 )
 from recall.desktop.updates import is_newer
+from recall.desktop.uploads import stage_uploads
 
 
 class FakeGateway:
@@ -107,6 +109,42 @@ def test_vps_runtime_uses_mcp_contract(tmp_path: Path) -> None:
     assert arguments["tenant"] == "default-docs"
     assert base64.b64decode(arguments["files"][0]["content_b64"]) == b"memory"
     assert runtime.job_status(job.job_id).state == "completed"
+
+
+def test_staging_follows_the_configured_index_root_and_never_the_checkout() -> None:
+    """`stage_uploads` writes under `RECALL_INDEX_ROOT`, and this suite's root is not the checkout.
+
+    Two claims, deliberately in one test, because either alone is satisfiable by the defect:
+
+    * that the staging root is derived from `RECALL_INDEX_ROOT` at all, the production behaviour
+      documented in docs/SECURITY_MODEL.md and NOT changed here;
+    * that the value this suite runs with points somewhere disposable. The variable's documented
+      default is `.`, the working directory, which for a test session is the repository. Left unset,
+      every test that reached `stage_uploads` decoded its upload into `uploads/<tenant>/<job_id>/`
+      at the repository root and left it there, untracked, once per run.
+
+    The second assertion is the regression guard for `tests/conftest.py::_confine_index_root`, and
+    the reason it lives in a test rather than only in that fixture: an autouse fixture that stops
+    doing its job breaks nothing and fails nothing. Delete the `setenv` and this goes red, naming
+    the fixture.
+    """
+    configured = os.environ.get("RECALL_INDEX_ROOT")
+    assert configured, (
+        "RECALL_INDEX_ROOT is unset, so stage_uploads falls back to the working directory. "
+        "tests/conftest.py::_confine_index_root is meant to set it for every test."
+    )
+    root = Path(configured).resolve()
+    checkout = Path(__file__).resolve().parent.parent
+    assert root != checkout and checkout not in root.parents, (
+        f"RECALL_INDEX_ROOT resolves to {root}, inside the checkout at {checkout}; uploads staged "
+        f"during the suite would land in the working tree and show up in `git status`"
+    )
+
+    payload = base64.b64encode(b"memory").decode("ascii")
+    job_id, staged = stage_uploads("acme", [{"name": "memo.md", "content_b64": payload}])
+
+    assert staged == root / "uploads" / "acme" / job_id
+    assert (staged / "memo.md").read_bytes() == b"memory"
 
 
 def test_runtime_factory_and_calibration_status() -> None:
