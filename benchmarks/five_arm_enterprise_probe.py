@@ -181,7 +181,9 @@ def _run_case(
         "complete_documents": expected_docs <= selected_docs if expected_docs else True,
         "required_chunk_ids": sorted(required_chunks),
         "complete_chunks": required_chunks <= selected_chunks if required_chunks else None,
-        "complete_slots": bundle.decision == "answer" if slots else None,
+        "complete_slots": (
+            bundle.decision == "answer" if arm in {"answer_slots", "bundle_beam"} else None
+        ),
         "forbidden_selected": len(forbidden & selected_chunks),
         "false_positive": not expected_docs and bundle.decision == "answer",
         "elapsed_ms": elapsed_ms,

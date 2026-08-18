@@ -133,6 +133,11 @@ figures are retained as an audit trail but are invalid for comparison.
 The runner now passes answer slots only to `answer_slots` and `bundle_beam`. The corrected labeled
 fixed and candidate pool runs will be rerun before any conclusion is drawn.
 
+The corrected output also exposed a reporting issue: the slot completeness field was populated for
+non slot arms even when their selection policy did not use slots. That field is now explicitly not
+applicable for current retrieval, document grouping, and structural expansion. The final reruns
+will report slot completeness only for the two slot aware arms.
+
 ## Candidate pool sensitivity addendum
 
 Added before the next measurement on 2026-08-18. The same indexed corpus, hashing embedder,
