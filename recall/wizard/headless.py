@@ -55,6 +55,7 @@ from recall.wizard.pipeline import CorpusOutcome, PipelineRefusal, run_corpus
 from recall.wizard.state import WizardState, config_digest, load_state, save_state
 from recall.wizard.wiring import (
     ServerBlock,
+    SmokeResult,
     UnservableTenant,
     mcp_config,
     server_blocks,
@@ -181,6 +182,10 @@ class HeadlessReport:
     #: MCP servers written to `.mcp.json`, and the tenants deliberately left without one.
     servers: tuple[ServerBlock, ...] = ()
     unservable: tuple[UnservableTenant, ...] = ()
+    #: One query put through each configured server. This is the difference between "a config was
+    #: written" and "the install answers", and it checks `server_blocks`'s reasoning against the
+    #: database rather than trusting it.
+    smoke: tuple[SmokeResult, ...] = ()
     #: Where `.mcp.json` was written, or None when `project_root` was absent from the config.
     mcp_path: Path | None = None
     #: Every file the wiring step created or edited. Named because these are edits to files the
@@ -202,8 +207,13 @@ class HeadlessReport:
         A DEGRADED corpus counts as ok only when the tenant has a previous generation still
         serving. A degraded FIRST install is not a working install with a limitation, it is a
         tenant that answers nothing, and exit 0 is the only thing CI reads.
+
+        A server whose smoke query RAISED is also not ok, whatever the corpora did. That is the
+        whole point of running one: the corpora can all be built and promoted correctly and the
+        configuration still be unable to reach them.
         """
-        return not (self.refused or self.failures or self.unserved)
+        raised = any(s.error for s in self.smoke)
+        return not (self.refused or self.failures or self.unserved or raised)
 
     @property
     def degraded(self) -> tuple[str, ...]:
@@ -284,6 +294,29 @@ class HeadlessReport:
         for missing in self.unservable:
             lines.append(f"{' ' * _GUTTER}{missing.tenant:<{width}} NO SERVER")
             lines.append(detail(missing.reason))
+        for result in self.smoke:
+            head = f"{' ' * _GUTTER}{result.tenant:<{width}} "
+            if result.error:
+                lines.append(f"{head}SMOKE FAILED")
+                lines.append(
+                    detail(
+                        f"a query through this server's own configuration raised: {result.error}. "
+                        "The corpus may be fine; this server cannot reach it."
+                    )
+                )
+            elif result.empty:
+                lines.append(f"{head}smoke skipped")
+                lines.append(
+                    detail("no indexed rows to draw a query from, which is normal for a fresh tenant")
+                )
+            else:
+                verdict = "abstained" if result.abstained else f"{result.hits} hits"
+                # An abstention is NOT a failure: it is a trust decision the gate is entitled to
+                # make. What the smoke test proves is that the query reached the gate at all.
+                lines.append(
+                    f"{head}smoke ok  ({verdict}, trust={result.trust_state}"
+                    f"{', ' + result.failure_code if result.failure_code else ''})"
+                )
         for written in self.files_written:
             lines.append(f"{' ' * _GUTTER}wrote {written}")
         if self.mcp_path is None and (self.outcomes or self.indexed):
@@ -317,6 +350,7 @@ class _Services(Protocol):
         self, spec: CorpusSpec, *, progress: Callable[[str], None] | None = None
     ) -> CorpusOutcome: ...
     def index_legacy(self, spec: CorpusSpec) -> LegacyIndex: ...
+    def smoke(self, block: ServerBlock) -> SmokeResult: ...
 
 
 @dataclass
@@ -390,6 +424,95 @@ class _RealServices:
                 spec.root, glob=spec.glob
             )
         return LegacyIndex(tenant=spec.tenant, files=stats.files, chunks=stats.chunks)
+
+    def smoke(self, block: ServerBlock) -> SmokeResult:
+        """Put one real query through one configured server, exactly as that server would.
+
+        The store is chosen from the BLOCK's own `RECALL_ENV`, mirroring `recall_mcp/server.py:627`,
+        because the point is to exercise the configuration that was just written rather than a
+        second guess at it. If `server_blocks` is ever wrong about which tenants can be served, this
+        is where it surfaces: as an exception, from the same code path the client will take.
+
+        The query is drawn from the tenant's OWN indexed text. A fixed question would abstain on
+        every corpus and prove only that nothing raised; a phrase the corpus actually contains can
+        produce a hit, so an empty result is informative instead of expected.
+        """
+        import psycopg
+
+        from recall.generation_store import GenerationStore
+        from recall.store import DEFAULT_TABLE, PgVectorStore
+        from recall.trust import trusted_search
+
+        production = block.env.get("RECALL_ENV") == "production"
+        table = "recall_chunks_v1" if production else DEFAULT_TABLE
+        # Written out per branch rather than interpolated: a query built by f-string is the shape
+        # that goes wrong later, even when today's value is a constant.
+        statement = (
+            "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s LIMIT 1"
+            if production
+            else "SELECT text FROM chunks WHERE tenant_id = %s LIMIT 1"
+        )
+        try:
+            with psycopg.connect(self.config.dsn) as conn:
+                conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (block.tenant,))
+                row = conn.execute(statement, (block.tenant,)).fetchone()
+        except Exception as exc:  # noqa: BLE001 - a failure to look is a failure, and it is reported
+            return SmokeResult(
+                tenant=block.tenant,
+                query="",
+                hits=0,
+                abstained=True,
+                trust_state="unknown",
+                failure_code=None,
+                error=_scrub(f"{type(exc).__name__}: {exc}", self.config.dsn),
+            )
+
+        if not row or not str(row[0]).strip():
+            return SmokeResult(
+                tenant=block.tenant,
+                query="",
+                hits=0,
+                abstained=True,
+                trust_state="unknown",
+                failure_code=None,
+                empty=True,
+            )
+
+        # A short phrase, not the whole chunk: a chunk-length query is a different retrieval problem
+        # and would not resemble anything a user types.
+        query = " ".join(str(row[0]).split()[:8])
+        embedder = self.embedder()
+        try:
+            # Annotated as the base, matching `recall_mcp/server.py`'s own `store: PgVectorStore`.
+            # `GenerationStore` subclasses it, and `trusted_search` takes the base.
+            store: PgVectorStore
+            if production:
+                store = GenerationStore(self.config.dsn, dim=embedder.dim, tenant=block.tenant)
+            else:
+                store = PgVectorStore(
+                    self.config.dsn, dim=embedder.dim, table=table, tenant=block.tenant
+                )
+            with store:
+                result = trusted_search(store, embedder, query, k=5)
+        except Exception as exc:  # noqa: BLE001 - THIS is the failure the smoke test exists for
+            return SmokeResult(
+                tenant=block.tenant,
+                query=query,
+                hits=0,
+                abstained=True,
+                trust_state="unknown",
+                failure_code=None,
+                error=_scrub(f"{type(exc).__name__}: {exc}", self.config.dsn),
+            )
+
+        return SmokeResult(
+            tenant=block.tenant,
+            query=query,
+            hits=len(result.hits),
+            abstained=result.abstained,
+            trust_state=result.trust_state,
+            failure_code=result.failure_code,
+        )
 
     def run(
         self, spec: CorpusSpec, *, progress: Callable[[str], None] | None = None
@@ -789,6 +912,34 @@ def run_headless(
     else:
         blocks = ()
 
+    # The verification half. Run against the blocks that were WRITTEN, so a config nobody wrote is
+    # not credited with answering, and after the wiring so it exercises the file on disk's semantics.
+    smoke: tuple[SmokeResult, ...] = ()
+    if blocks and mcp_path is not None:
+        results: list[SmokeResult] = []
+        for block in blocks:
+            if progress:
+                progress(f"{block.tenant}: smoke")
+            try:
+                results.append(wiring.smoke(block))
+            except Exception as exc:  # noqa: BLE001 - a smoke test must never be the thing that
+                # aborts an install. Its whole job is to report, and an unexpected failure inside
+                # it is still a report about this server rather than a reason to lose the run.
+                results.append(
+                    SmokeResult(
+                        tenant=block.tenant,
+                        query="",
+                        hits=0,
+                        abstained=True,
+                        trust_state="unknown",
+                        failure_code=None,
+                        error=_scrub(
+                            f"{type(exc).__name__}: {exc}", config.dsn, config.migration_dsn
+                        ),
+                    )
+                )
+        smoke = tuple(results)
+
     return HeadlessReport(
         outcomes=tuple(outcomes),
         refused=tuple(refused),
@@ -799,4 +950,5 @@ def run_headless(
         unservable=unservable,
         mcp_path=mcp_path,
         files_written=files,
+        smoke=smoke,
     )

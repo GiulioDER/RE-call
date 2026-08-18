@@ -289,6 +289,91 @@ def test_an_operators_existing_claude_md_and_env_survive(tmp_path: Path) -> None
     assert "RECALL_DSN" in env
 
 
+def test_every_written_server_is_smoke_tested(tmp_path: Path) -> None:
+    """Writing a config is not the same as the config working, and only one of those was checked.
+
+    Found the honest way: adding the smoke step left this module green with the spies having no
+    `smoke` method at all, because the driver caught the AttributeError and reported it. A feature
+    nothing exercises is a feature nothing protects.
+    """
+    from recall.wizard.headless import run_headless
+    from recall.wizard.headless import load_config
+    from tests.test_wizard_headless import _Spy, _config, _write
+
+    root = tmp_path / "project"
+    root.mkdir()
+    spy = _Spy()
+    report = run_headless(
+        load_config(_write(tmp_path, _config(tmp_path, project_root=str(root)))), services=spy
+    )
+
+    assert spy.smoked == ["docs", "code", "memory"], "every written server must be queried"
+    assert [s.tenant for s in report.smoke] == ["docs", "code", "memory"]
+    assert all(s.answered for s in report.smoke)
+    assert report.ok is True
+    assert "smoke ok" in report.render()
+
+
+def test_a_server_whose_query_raises_makes_the_install_not_ok(tmp_path: Path) -> None:
+    """The corpora can all be built and promoted correctly and the CONFIG still not reach them.
+
+    That is the only reason to run a smoke query at all, so a raise has to change the exit code.
+    Without this the report would say "install complete" over a server that answers nothing.
+    """
+    from recall.wizard.headless import run_headless
+    from recall.wizard.headless import load_config
+    from tests.test_wizard_headless import _Spy, _config, _write
+
+    root = tmp_path / "project"
+    root.mkdir()
+    spy = _Spy(smoke_raises={"code"})
+    report = run_headless(
+        load_config(_write(tmp_path, _config(tmp_path, project_root=str(root)))), services=spy
+    )
+
+    assert [o.tenant for o in report.outcomes] == ["docs", "code"], "the builds all succeeded"
+    assert report.failures == (), "and nothing failed while building"
+    assert report.ok is False, "yet the install is not ok, because one server cannot answer"
+    rendered = report.render()
+    assert "SMOKE FAILED" in rendered
+    assert "NoActiveGeneration" in rendered, "the reason must reach the operator"
+
+
+def test_an_abstention_is_not_a_smoke_failure(tmp_path: Path) -> None:
+    """Abstaining is a trust decision the gate is entitled to make.
+
+    A smoke test that treated it as broken would fail on a server behaving exactly as designed, and
+    would push whoever hit it toward relaxing trust to make the installer happy.
+    """
+    from recall.wizard.headless import run_headless
+    from recall.wizard.wiring import SmokeResult
+    from recall.wizard.headless import load_config
+    from tests.test_wizard_headless import _Spy, _config, _write
+
+    class _Abstaining(_Spy):
+        def smoke(self, block: object) -> SmokeResult:
+            return SmokeResult(
+                tenant=getattr(block, "tenant"),
+                query="q",
+                hits=0,
+                abstained=True,
+                trust_state="trusted",
+                failure_code="CALIBRATION_MISSING",
+            )
+
+    root = tmp_path / "project"
+    root.mkdir()
+    report = run_headless(
+        load_config(_write(tmp_path, _config(tmp_path, project_root=str(root)))),
+        services=_Abstaining(),
+    )
+
+    assert all(s.answered for s in report.smoke), "reaching the gate IS answering"
+    assert report.ok is True
+    assert "abstained" in report.render()
+    assert "SMOKE FAILED" not in report.render()
+
+
 def test_an_unwritable_project_root_reports_rather_than_discarding_the_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

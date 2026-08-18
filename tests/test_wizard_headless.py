@@ -147,7 +147,17 @@ def test_unreadable_or_malformed_json_says_which(tmp_path: Path) -> None:
 class _Spy:
     """Captures what the driver asked for, without touching a database."""
 
-    def __init__(self, *, refuse: set[str] | None = None, crash: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        refuse: set[str] | None = None,
+        crash: set[str] | None = None,
+        smoke_raises: set[str] | None = None,
+    ) -> None:
+        #: Tenants whose smoke query is reported as having raised. Present because a spy that cannot
+        #: fail leaves the smoke path proven only for the happy case.
+        self._smoke_raises = smoke_raises or set()
+        self.smoked: list[str] = []
         self.schema_dims: list[int] = []
         #: The DSN is recorded, not dropped. Dropping it made the DDL-owner separation untestable:
         #: a mutation applying the schema with the SERVING dsn left the whole module green.
@@ -173,6 +183,29 @@ class _Spy:
 
     def grant(self, dsn: str, *, role: str) -> None:
         self.grants.append((dsn, role))
+
+    def smoke(self, block: Any) -> Any:
+        from recall.wizard.wiring import SmokeResult
+
+        self.smoked.append(block.tenant)
+        if block.tenant in self._smoke_raises:
+            return SmokeResult(
+                tenant=block.tenant,
+                query="q",
+                hits=0,
+                abstained=True,
+                trust_state="unknown",
+                failure_code=None,
+                error="NoActiveGeneration: tenant has no active generation",
+            )
+        return SmokeResult(
+            tenant=block.tenant,
+            query="a phrase from the corpus",
+            hits=3,
+            abstained=False,
+            trust_state="trusted",
+            failure_code=None,
+        )
 
     def index_legacy(self, spec: Any) -> Any:
         from recall.wizard.headless import LegacyIndex

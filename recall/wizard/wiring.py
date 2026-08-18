@@ -47,6 +47,7 @@ from recall.wizard.corpora import CorpusPlan, CorpusSpec
 
 __all__ = [
     "ServerBlock",
+    "SmokeResult",
     "UnservableTenant",
     "mcp_config",
     "server_blocks",
@@ -65,6 +66,38 @@ class ServerBlock:
     #: Why this block looks like this, carried so the report can say it and a reader of the JSON is
     #: not left guessing why one tenant is strict and another is not.
     rationale: str
+
+
+@dataclass(frozen=True)
+class SmokeResult:
+    """One query put through one configured server, and what came back.
+
+    **A raise is the failure; an abstention is not.** That distinction is the whole design. Abstaining
+    is a trust decision the gate is entitled to make, and a smoke test that treated it as broken
+    would fail on a server behaving correctly. What must never happen is an exception, because that
+    means the block cannot serve at all: a wrong `RECALL_ENV` reads a table the build never wrote to,
+    and a tenant with no active generation raises `NoActiveGeneration` from outside the trust gate.
+
+    So this exists to check the reasoning in `server_blocks` against the database rather than trust
+    it. If that reasoning is ever wrong about which tenants are servable, `error` is where it shows.
+    """
+
+    tenant: str
+    #: The query actually used, drawn from the tenant's own indexed text so a hit is possible at all.
+    query: str
+    hits: int
+    abstained: bool
+    trust_state: str
+    failure_code: str | None
+    #: Set only when the search RAISED. Non-None means this server cannot answer.
+    error: str | None = None
+    #: True when the tenant has no rows to draw a query from. Expected for a fresh `memory`.
+    empty: bool = False
+
+    @property
+    def answered(self) -> bool:
+        """Reached the trust gate without raising. Abstaining still counts as answering."""
+        return self.error is None and not self.empty
 
 
 @dataclass(frozen=True)
