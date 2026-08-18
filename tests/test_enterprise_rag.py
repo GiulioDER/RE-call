@@ -14,6 +14,7 @@ from benchmarks.enterprise_rag import (
     EnterpriseQuestion,
     QueryCachedEmbedder,
     answer_hits,
+    adaptive_depth_choice,
     apply_top_config,
     build_parser,
     category_answer_policy,
@@ -326,6 +327,38 @@ def test_blended_voyage_reranker_uses_voyage_order_at_one_weight() -> None:
     output = BlendedVoyageReranker(rank_weight=1.0, client=FakeVoyage()).rerank("q", hits)
 
     assert [hit.chunk.id for hit in output] == ["b", "a"]
+
+
+def test_adaptive_depth_expands_on_low_eighth_hit_score() -> None:
+    hits = [_rerank_test_hit(f"id-{index}", 0.9 if index < 7 else 0.6) for index in range(8)]
+
+    selected, value, expanded = adaptive_depth_choice(
+        hits,
+        base_k=8,
+        expanded_k=12,
+        feature="eighth_hit_dense_score",
+        threshold=0.7,
+    )
+
+    assert selected == 12
+    assert value == 0.6
+    assert expanded is True
+
+
+def test_adaptive_depth_keeps_base_k_on_high_max_score() -> None:
+    hits = [_rerank_test_hit(f"id-{index}", 0.8) for index in range(8)]
+
+    selected, value, expanded = adaptive_depth_choice(
+        hits,
+        base_k=8,
+        expanded_k=12,
+        feature="max_dense_score",
+        threshold=0.75,
+    )
+
+    assert selected == 8
+    assert value == 0.8
+    assert expanded is False
 
 
 def test_generated_answer_prompt_includes_question_type_and_strict_abstention(

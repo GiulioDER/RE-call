@@ -1105,12 +1105,16 @@ def _answers(
     expansion_cache: dict[str, Any] | None,
     answer_policy: str = "baseline",
     retrieval_captures: int = 1,
+    adaptive_depth_feature: str | None = None,
+    adaptive_depth_threshold: float | None = None,
+    adaptive_depth_k: int | None = None,
 ) -> Iterator[Mapping[str, Any]]:
     if retrieval_captures < 1 or retrieval_captures > MAX_RETRIEVAL_CAPTURES:
         raise ValueError(
             f"retrieval_captures must be between 1 and {MAX_RETRIEVAL_CAPTURES}"
         )
     for question in questions:
+        retrieval_k = max(k, adaptive_depth_k or k)
         capture_rows: list[dict[str, Any]] = []
         first_answer: tuple[
             list[str], list[ScoredChunk], bool, dict[str, Any], list[str], int,
@@ -1122,20 +1126,28 @@ def _answers(
                 store,
                 embedder,
                 question.question,
-                k=k,
+                k=retrieval_k,
                 candidate_k=candidate_k,
                 sparse_backend=sparse_backend,
                 sparse_encoder=sparse_encoder,
                 reranker=reranker,
                 gap_threshold=gap_threshold,
             )
+            document_k, confidence_value, depth_expanded = adaptive_depth_choice(
+                hits,
+                base_k=k,
+                expanded_k=retrieval_k,
+                feature=adaptive_depth_feature,
+                threshold=adaptive_depth_threshold,
+            )
+            selected_document_ids = _doc_ids_from_hits(hits, k=document_k)
             reasoning_doc_ids, reasoning_hits, reasoning_diagnostics = expand_retrieval_hits(
                 question,
                 store,
                 embedder,
                 initial_hits=hits,
                 initial_gap_warning=gap_warning,
-                k=k,
+                k=document_k,
                 candidate_k=candidate_k,
                 sparse_backend=sparse_backend,
                 sparse_encoder=sparse_encoder,
@@ -1151,7 +1163,7 @@ def _answers(
                     reasoning_hits,
                     gap_warning,
                     reasoning_diagnostics,
-                    doc_ids,
+                    selected_document_ids,
                     len(hits),
                     retrieval_diagnostics,
                 )
@@ -1165,9 +1177,16 @@ def _answers(
             capture_rows.append(
                 {
                     "capture": capture + 1,
-                    "initial_document_ids": doc_ids,
+                    "initial_document_ids": selected_document_ids,
                     "initial_hit_count": len(hits),
                     "document_ids": reasoning_doc_ids,
+                    "adaptive_depth": {
+                        "feature": adaptive_depth_feature,
+                        "threshold": adaptive_depth_threshold,
+                        "value": confidence_value,
+                        "expanded": depth_expanded,
+                        "selected_k": document_k,
+                    },
                     "expanded": bool(reasoning_diagnostics.get("expanded")),
                     "latency_ms": round((time.perf_counter() - capture_started) * 1000.0, 3),
                     "stage_ms": stage_ms,
@@ -1213,6 +1232,11 @@ def _answers(
                 "gap_warning": gap_warning,
                 "initial_document_ids": initial_document_ids,
                 "initial_hit_count": initial_hit_count,
+                "adaptive_depth": {
+                    "feature": adaptive_depth_feature,
+                    "threshold": adaptive_depth_threshold,
+                    "k": adaptive_depth_k,
+                },
                 "reasoning": reasoning_diagnostics,
                 "answer_policy": answer_policy,
                 "answer_context_document_ids": [
@@ -1264,6 +1288,32 @@ def _doc_ids_from_hits(hits: Sequence[ScoredChunk], *, k: int) -> list[str]:
         if len(ids) >= k:
             break
     return ids
+
+
+ADAPTIVE_DEPTH_FEATURES = frozenset({"max_dense_score", "eighth_hit_dense_score"})
+
+
+def adaptive_depth_choice(
+    hits: Sequence[ScoredChunk],
+    *,
+    base_k: int,
+    expanded_k: int,
+    feature: str | None,
+    threshold: float | None,
+) -> tuple[int, float | None, bool]:
+    """Choose a document depth from non-gold dense-score confidence."""
+
+    if feature is None or threshold is None:
+        return base_k, None, False
+    if feature not in ADAPTIVE_DEPTH_FEATURES:
+        raise ValueError(f"unknown adaptive depth feature: {feature}")
+    scores = [float(hit.score) for hit in hits if isinstance(hit.score, (int, float))]
+    if feature == "max_dense_score":
+        value = max(scores) if scores else None
+    else:
+        value = float(hits[7].score) if len(hits) >= 8 else None
+    expanded = value is not None and value < threshold
+    return (expanded_k if expanded else base_k), value, expanded
 
 
 def _expected_docs(question: EnterpriseQuestion) -> set[str]:
@@ -1652,6 +1702,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Voyage rank contribution; 1.0 preserves pure reranking, lower values blend hybrid rank",
     )
+    parser.add_argument(
+        "--adaptive-depth-feature",
+        choices=sorted(ADAPTIVE_DEPTH_FEATURES),
+        help="non-gold confidence feature used to widen the submitted document depth",
+    )
+    parser.add_argument(
+        "--adaptive-depth-threshold",
+        type=float,
+        help="expand to --adaptive-depth-k when the selected feature is below this value",
+    )
+    parser.add_argument(
+        "--adaptive-depth-k",
+        type=int,
+        default=12,
+        help="expanded document depth for the selective-depth arm",
+    )
     parser.add_argument("--limit-docs", type=int)
     parser.add_argument("--limit-questions", type=int)
     parser.add_argument(
@@ -1742,6 +1808,14 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     if not 0.0 <= args.reranker_rank_weight <= 1.0:
         raise ValueError("--reranker-rank-weight must be between 0 and 1")
+    if (args.adaptive_depth_feature is None) != (args.adaptive_depth_threshold is None):
+        raise ValueError(
+            "--adaptive-depth-feature and --adaptive-depth-threshold must be provided together"
+        )
+    if args.adaptive_depth_threshold is not None and not 0.0 <= args.adaptive_depth_threshold <= 1.0:
+        raise ValueError("--adaptive-depth-threshold must be between 0 and 1")
+    if args.adaptive_depth_k < args.k:
+        raise ValueError("--adaptive-depth-k must be at least --k")
     reranker = build_reranker(
         args.reranker,
         max_document_chars=args.rerank_document_chars,
@@ -1878,6 +1952,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                     expansion_cache=expansion_cache,
                     answer_policy=args.answer_policy,
                     retrieval_captures=args.retrieval_captures,
+                    adaptive_depth_feature=args.adaptive_depth_feature,
+                    adaptive_depth_threshold=args.adaptive_depth_threshold,
+                    adaptive_depth_k=(
+                        args.adaptive_depth_k if args.adaptive_depth_feature is not None else None
+                    ),
                 ),
                 overwrite=args.overwrite,
                 resume=args.resume,
@@ -1930,6 +2009,11 @@ def main(argv: Iterable[str] | None = None) -> int:
             "splade_backfill": sparse_stats,
             "reranker": args.reranker,
             "reranker_rank_weight": args.reranker_rank_weight,
+            "adaptive_depth_feature": args.adaptive_depth_feature,
+            "adaptive_depth_threshold": args.adaptive_depth_threshold,
+            "adaptive_depth_k": (
+                args.adaptive_depth_k if args.adaptive_depth_feature is not None else None
+            ),
             "retrieval_captures": args.retrieval_captures,
             "gold_fields_used_at_runtime": False,
             "posthoc_metrics": "scripts/enterprise_rag_posthoc_metrics.py",
