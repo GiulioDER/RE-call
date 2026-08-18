@@ -8,6 +8,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from recall.desktop.models import RuntimeProfile, SourceCategory, SourceSelection
+from recall.desktop.profiles import load_pipelines, save_pipelines
 from recall.desktop.runtime import RuntimeManager, RuntimeErrorBase, create_runtime
 from recall.desktop.sources import (
     CLAUDE_MEMORY_FILENAMES,
@@ -302,6 +303,12 @@ if QApplication is not None:
                 }
                 for source_type in ("Documents", "Memory", "Code")
             }
+            # Saved choices layered OVER the defaults, key by key. A wholesale replacement would
+            # drop any setting added after the file was written, so an upgrade would silently lose
+            # a control's value rather than keep the new default for it.
+            for source_type, saved in load_pipelines().items():
+                if source_type in self._pipeline_configs:
+                    self._pipeline_configs[source_type].update(saved)
             self.setWindowTitle("RE-call")
             self.resize(980, 760)
             self._build_ui()
@@ -1050,6 +1057,21 @@ if QApplication is not None:
                 self.status.setText("BGE and Voyage models are not available in this RE-call configuration.")
                 return
             self._pipeline_configs[self._active_config_type] = self._capture_config()
+            # ⚠️ Actually WRITE it. Until this line the button set an in-memory dict and then told
+            # the user "Configuration saved", so reopening the app restored the defaults and the
+            # status line was a false claim. Demonstrated before fixing: set the embedder model,
+            # save, close, reopen, and the field read `hashing-64` again.
+            try:
+                save_pipelines(self._pipeline_configs)
+            except OSError as exc:
+                # Say so rather than claim success. The choices are still live in this session, so
+                # the user can keep working; what they cannot do is rely on them surviving.
+                self.status.setText(
+                    f"Configuration applied for this session but NOT saved: {exc.strerror or exc}"
+                )
+                self._config_dirty = False
+                self._calibration_required = True
+                return
             self._config_dirty = False
             self._calibration_required = True
             self.configuration_warning.setText(

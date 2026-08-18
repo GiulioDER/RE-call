@@ -36,6 +36,56 @@ def save_profile(profile: RuntimeProfile, path: Path | None = None) -> Path:
     return target
 
 
+def pipeline_path() -> Path:
+    """Where the per-corpus pipeline choices live, beside `runtime.json`.
+
+    A separate file rather than a field on `RuntimeProfile`, because they answer different
+    questions: the profile says how to REACH recall (mode, compose file, endpoint, tenant), and this
+    says what the retrieval stack should BE. The wizard writes the profile and knows nothing about
+    embedder or reranker choices; keeping them apart means neither has to load the other's concerns.
+    """
+    return profile_path().with_name("pipeline.json")
+
+
+def load_pipelines(path: Path | None = None) -> dict[str, dict[str, object]]:
+    """The saved pipeline choices, or an empty mapping.
+
+    Empty for anything unreadable, on the same reasoning as the wizard's state file: a corrupt
+    settings file must not stop the application starting. The worst case of ignoring it is the user
+    re-entering their choices; the worst case of refusing is an app that will not open.
+    """
+    target = path or pipeline_path()
+    try:
+        value = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(source_type): dict(settings)
+        for source_type, settings in value.items()
+        if isinstance(settings, dict)
+    }
+
+
+def save_pipelines(configs: dict[str, dict[str, object]], path: Path | None = None) -> Path:
+    """Persist the pipeline choices, atomically.
+
+    ⚠️ **This exists because the UI told the user "Configuration saved" and did not save.** The
+    choices lived in an in-memory dict, so the status line asserted a state nothing had created and
+    reopening the app restored the defaults. Demonstrated before fixing: set the embedder model,
+    press Save, close the window, reopen, and the field reads `hashing-64` again.
+    """
+    target = path or pipeline_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(configs, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+    temporary.replace(target)
+    return target
+
+
 def read_token(profile: RuntimeProfile) -> str | None:
     """Read a token through keyring when configured, without persisting it in runtime.json."""
     if not profile.token_key:
