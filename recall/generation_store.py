@@ -523,8 +523,15 @@ class GenerationStore(PgVectorStore):
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
         generation_id = self._generation_id()
+        # The explicit transaction is NOT optional, and its absence here made five MCP tools
+        # unusable under `RECALL_ENV=production` — the only mode that selects this class. A
+        # server-side cursor is transaction-scoped, and these connections are autocommit, so
+        # `DECLARE CURSOR` fails outright. `PgVectorStore.iter_chunks` has carried the same
+        # `conn.transaction()` and the same reasoning all along; this override inherited the
+        # cursor and dropped the transaction around it.
         with (
             self._borrowed() as conn,
+            conn.transaction(),
             conn.cursor(name=f"recall_gen_{uuid.uuid4().hex[:12]}") as cur,
         ):
             cur.execute(
