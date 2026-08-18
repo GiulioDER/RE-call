@@ -59,7 +59,7 @@ class _FakeManager:
         recorder: _Recorder,
         *,
         environment: str = "development",
-        tenant_id: str = "docs",
+        tenant_id: str = "default-docs",
         serving: str | None = None,
     ) -> None:
         self._recorder = recorder
@@ -685,7 +685,7 @@ def test_the_query_set_is_chunked_with_the_callable_the_build_binds(
     try:
         run_corpus(
             code_corpus(root),
-            manager=_FakeManager(_Recorder(), tenant_id="code"),
+            manager=_FakeManager(_Recorder(), tenant_id="default-code"),
             calibrations=_FakeCalibrations(_Recorder()),
             embedder=_FakeEmbedder(),
             corpus_version="2026-01-01",

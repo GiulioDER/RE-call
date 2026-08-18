@@ -77,8 +77,54 @@ RELATIVE_ROOT = (
 #: report success, which is worse than failing.
 CODE_GLOB = "**/*.py"
 
+#: The corpus kinds a project has. A closed vocabulary because each one is a separate MCP service
+#: and a separate row in the UI, so a fourth kind is a topology change rather than a string.
+CorpusKind = Literal["docs", "code", "memory"]
+
+#: The project scope used when the user names none. Chosen to match the desktop UI's
+#: `RuntimeProfile.default_tenant`, so a wizard install with no project named produces exactly the
+#: tenants that UI already expects rather than a parallel set it cannot see.
+DEFAULT_PROJECT = "default"
+
+
+def tenant_for(project: str, kind: CorpusKind) -> str:
+    """`{project}-{kind}`, which is the desktop UI's naming and now the wizard's too.
+
+    The scope has to reach the TENANT NAME rather than sit beside it, because on unauthenticated
+    stdio a server serves exactly one tenant: `_require` returns its own store and ignores the
+    tenant argument. So one project times three kinds is three servers, and the tenant string is
+    the only thing that distinguishes them.
+
+    A project may contain hyphens (`my-app-docs` splits back with `rsplit("-", 1)`), but it may not
+    END in a kind, because `my-docs-docs` and a project literally called `my-docs` would produce
+    tenants nothing could tell apart.
+    """
+    scope = project.strip()
+    if not scope:
+        raise ValueError("project must be non-empty; it names the user's whole scope")
+    if kind not in get_args(CorpusKind):
+        raise ValueError(f"kind must be one of {get_args(CorpusKind)}, not {kind!r}")
+    for suffix in get_args(CorpusKind):
+        if scope.endswith(f"-{suffix}"):
+            raise ValueError(
+                f"project {scope!r} must not end in -{suffix}: the tenant would be "
+                f"{scope}-{kind!r} and nothing could tell it apart from the {suffix} corpus of a "
+                "project one name shorter"
+            )
+    # The tenant becomes a compose SERVICE name (`recall-{tenant}`), and Docker restricts those.
+    # Refused here rather than at `docker compose up`, where the error names a generated file the
+    # user never wrote.
+    if not all(char.isalnum() or char in "-_." for char in scope):
+        raise ValueError(
+            f"project {scope!r} may contain only letters, digits, hyphen, underscore and dot: it "
+            "becomes a Docker Compose service name"
+        )
+    return f"{scope}-{kind}"
+
 __all__ = [
     "CODE_GLOB",
+    "DEFAULT_PROJECT",
+    "CorpusKind",
     "CorpusPlan",
     "CorpusSpec",
     "ServingEnvironment",
@@ -86,6 +132,7 @@ __all__ = [
     "default_plan",
     "docs_corpus",
     "memory_corpus",
+    "tenant_for",
 ]
 
 
@@ -237,10 +284,10 @@ class CorpusSpec:
         )
 
 
-def docs_corpus(root: Path) -> CorpusSpec:
+def docs_corpus(root: Path, *, project: str = DEFAULT_PROJECT) -> CorpusSpec:
     """Markdown documentation, calibrated and read-only."""
     return CorpusSpec(
-        tenant="docs",
+        tenant=tenant_for(project, "docs"),
         root=Path(root),
         glob=DEFAULT_GLOB,
         chunker="text",
@@ -251,10 +298,10 @@ def docs_corpus(root: Path) -> CorpusSpec:
     )
 
 
-def code_corpus(root: Path) -> CorpusSpec:
+def code_corpus(root: Path, *, project: str = DEFAULT_PROJECT) -> CorpusSpec:
     """A source repository, calibrated and read-only, chunked as code rather than prose."""
     return CorpusSpec(
-        tenant="code",
+        tenant=tenant_for(project, "code"),
         root=Path(root),
         glob=CODE_GLOB,
         chunker="code",
@@ -265,7 +312,7 @@ def code_corpus(root: Path) -> CorpusSpec:
     )
 
 
-def memory_corpus(root: Path) -> CorpusSpec:
+def memory_corpus(root: Path, *, project: str = DEFAULT_PROJECT) -> CorpusSpec:
     """The project's own memory directory: writable, and deliberately never calibrated.
 
     A fresh memory directory holds one file, so it cannot meet the 20-per-class certification floor
@@ -275,7 +322,7 @@ def memory_corpus(root: Path) -> CorpusSpec:
     the user infer it from a degraded answer.
     """
     return CorpusSpec(
-        tenant="memory",
+        tenant=tenant_for(project, "memory"),
         root=Path(root),
         glob=DEFAULT_GLOB,
         chunker="text",
@@ -347,13 +394,14 @@ def default_plan(
     docs_root: Path,
     code_root: Path,
     memory_root: Path,
+    project: str = DEFAULT_PROJECT,
 ) -> CorpusPlan:
-    """The three-tenant layout the design specifies, under one embedder."""
+    """The three-tenant layout the design specifies, under one embedder, for one project."""
     return CorpusPlan(
         embedder=embedder,
         corpora=(
-            docs_corpus(docs_root),
-            code_corpus(code_root),
-            memory_corpus(memory_root),
+            docs_corpus(docs_root, project=project),
+            code_corpus(code_root, project=project),
+            memory_corpus(memory_root, project=project),
         ),
     )

@@ -52,6 +52,9 @@ __all__ = ["WizardState", "config_digest", "load_state", "save_state"]
 #: `test_wizard_state.py` asserts every field is classified.
 DIGEST_FIELDS = (
     "dsn",
+    # Selects the database when `dsn` is absent, so a changed location is a different store and
+    # nothing recorded against the old one is reusable.
+    "data_root",
     "embedder",
     "corpus_version",
     "project",
