@@ -3883,7 +3883,7 @@
       "tenant": "enterprise-rag-voyage-lexical-chunk12k-full"
     },
     "questions": {
-      "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+      "name": "questions.jsonl",
       "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905"
     },
     "sampling": {

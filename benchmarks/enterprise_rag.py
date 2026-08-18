@@ -1695,8 +1695,13 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "embedder": args.embedder,
                 "embedding_profile": embedding_profile_id(embedder),
                 "index": {"table": args.table, "tenant": args.tenant},
+                # ⛔ NAME and digest, never the absolute path. This artifact is committed to a
+                # public repository, and an absolute path names a user and a directory layout on
+                # an internal host, which this project treats as disclosure in its own right. No
+                # committed artifact here carried a /home/ path before, and the digest is the half
+                # that makes provenance verifiable anyway.
                 "questions": {
-                    "path": str(args.questions),
+                    "name": args.questions.name,
                     "sha256": sha256_file(args.questions),
                 },
                 "sampling": sampling,
