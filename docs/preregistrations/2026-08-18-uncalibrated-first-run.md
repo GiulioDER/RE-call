@@ -205,8 +205,8 @@ here rather than absorbed into a clean "confirmed".
 
 ⛔ **Step 4 of the adoption path in `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md` is unsound as written.**
 It proposed comparing `metadata->>'embedding_profile'` to the configured embedder's profile id as
-the pipeline check. `recall/embeddings.py:799` falls back to the **literal string**
-`"bge-small-symmetric-v1"` for any model without a registered profile, so `profile_id` does not
+the pipeline check. At the measured tree, the fallback returned the **literal string**
+`"bge-small-symmetric-v1"` for any model without a registered profile, so `profile_id` did not
 track the model at all:
 
 - the corpus stores 1024 dimensional vectors labelled `bge-small-symmetric-v1`, while the registered
@@ -222,6 +222,13 @@ The consequence for the design is a promotion, not a retreat: the **pipeline att
 the only sound embedder check available**, and must be a required step of adoption rather than the
 supplementary evidence the design called it. Its cost was not measured; what was measured is that a
 20 chunk sample runs in seconds.
+
+🔁 **Fixed upstream the same day by #370**, which this measurement prompted: `_fallback_profile_id`
+(`recall/embeddings.py:699`) now derives `unregistered__{model}__{dimension}__{kind}`
+(`recall/embeddings.py:750`). The measurement above stands as a dated record of the tree it ran
+against, and **the conclusion is unchanged**: every corpus indexed before #370 still carries the old
+literal, and those are precisely the rows an adoption path reads. Fixing a writer does not repair
+rows already written.
 
 ## Scope, so this is not over read
 
