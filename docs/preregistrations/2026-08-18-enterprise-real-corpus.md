@@ -77,7 +77,38 @@ this corpus. It is not a certified answer quality result.
 
 ## Measurement result
 
-To be appended after the labeled run. Predictions above must not be edited.
+Measured after the protocol and label set were committed. The fixed run used `candidate_k=20`:
+
+| arm | questions | complete document sets | complete slots | false positives | mean ms | p95 ms | trust |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| current retrieval | 500 | 129 | not applicable | 20 | 27.4790 | 52.9516 | degraded 500 |
+| document grouping | 500 | 104 | not applicable | 20 | 27.3449 | 52.7959 | degraded 500 |
+| structural expansion | 500 | 104 | not applicable | 20 | 41.3551 | 70.3541 | degraded 500 |
+| answer slots | 50 labeled | 10 | 0/40 answerable | 0/10 unanswerable | 44.4978 | 97.0845 | degraded 50 |
+| bundle beam | 50 labeled | 10 | 0/40 answerable | 0/10 unanswerable | 167.5987 | 351.1791 | degraded 50 |
+
+The 10 answer slot and beam document completions are the 10 unanswerable labels, where an empty
+expected document set is treated as complete by the runner. They must not be read as answer quality.
+Both selection arms abstained on all 40 answerable labels because the hashing retriever did not
+surface their expected documents. An annotation coverability audit also found that only 65 of 109
+v1 labeled slots had all of their terms in one indexed chunk. The labeled slot result is therefore
+diagnostic only and does not validate the selection arms.
+
+The candidate pool sensitivity addendum was then measured with `candidate_k=200`:
+
+| arm | complete document sets | false positives | mean ms | p95 ms |
+| --- | ---: | ---: | ---: | ---: |
+| current retrieval | 109/500 | 20 | 45.9701 | 86.7251 |
+| document grouping | 87/500 | 20 | 44.8189 | 83.7271 |
+| structural expansion | 87/500 | 20 | 59.1977 | 107.9661 |
+| answer slots | 0/40 answerable slots | 0/10 unanswerable | 57.5530 | 94.3944 |
+| bundle beam | 0/40 answerable slots | 0/10 unanswerable | 170.4684 | 310.8782 |
+
+The sensitivity check falsified its prediction: widening the candidate pool did not improve recall
+and increased latency. The real corpus evidence says not to promote document grouping, structural
+expansion, answer slots, or bundle beam as a serving default yet. The next valid experiment is a
+gold-document-conditioned selector test with independently repaired labels, followed by a
+certified calibration and a serving benchmark.
 
 ## Candidate pool sensitivity addendum
 
