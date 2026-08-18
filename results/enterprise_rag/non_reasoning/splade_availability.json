@@ -5,5 +5,15 @@
   "cuda_available": false,
   "cuda_device_count": 0,
   "isolated_splade_index": false,
-  "decision": "defer_lexical_plus_splade_until_required_model_and_index_are_available"
+  "existing_artifact": {
+    "answers": "benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.answers.jsonl",
+    "manifest": "benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.answers.manifest.json",
+    "rows": 500,
+    "sparse_backend": "both",
+    "splade_model": "prithivida/Splade_PP_en_v1",
+    "reranker": "voyage:rerank-2.5",
+    "k": 8,
+    "candidate_k": 200
+  },
+  "decision": "reuse_existing_splade_artifact_for_posthoc_analysis; do_not_run_new_cpu_backfill"
 }

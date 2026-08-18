@@ -81,6 +81,16 @@ The full grid is not executed against an incomplete local index. The recovered V
 used only for the paired project reproduction and confirmation. Any changed index configuration
 still requires a new isolated table and tenant.
 
+SPLADE is handled through the existing checked-in artifact rather than a new CPU run. The source
+is `benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.answers.jsonl` with manifest
+`benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.answers.manifest.json`. It has
+500 answer rows and records Voyage dense retrieval, lexical plus SPLADE sparse retrieval, Voyage
+`rerank-2.5`, `k=8`, `candidate_k=200`, and `openai/gpt-4o` answering. Its posthoc retrieval
+summary is 77.34% document recall, 72.13% exact coverage, and 6.94 mean invalid extras. This is
+useful full-benchmark evidence, but it is not a paired SPLADE versus lexical retrieval capture,
+so it does not establish a causal SPLADE gain. The no-GPU VPS2 availability check remains valid
+for new SPLADE backfill work.
+
 ## Retrieval arms and current status
 
 The five fixed slices are `project_related`, `completeness`, `semantic`, `basic`, `constrained`,
