@@ -111,7 +111,7 @@ and is filed as follow up work.
 
 ⚠️ Citations **above** this rule are left exactly as registered, because a prediction is a
 historical record and must not be edited. One of them has since moved: `recall/index.py:707`, cited
-in "What I already know" for the metadata stamp, is `recall/index.py:810` at the time of writing.
+in "What I already know" for the metadata stamp, is `recall/index.py:836` at the time of writing.
 
 ## Reproducing any of this
 
@@ -134,12 +134,12 @@ throughout, which is *why* embedding was kept local, not evidence that it was.
 
 ### Verification census
 
-Every source read exactly as `recall/index.py:671` reads a markdown source
+Every source read exactly as `recall/index.py:697` reads a markdown source
 (`read_text(encoding="utf-8-sig")`, universal newlines, then `_strip_nul`, then
-`sha256(text.encode("utf-8"))` at `recall/index.py:690`). A `sha256sum` over raw bytes would have
+`sha256(text.encode("utf-8"))` at `recall/index.py:716`). A `sha256sum` over raw bytes would have
 been wrong for any file with CRLF or a BOM. **Every source in this corpus is markdown**, which
 matters because `bd582316` made the derivation media type dependent: a non markdown source is
-hashed as raw bytes instead (`recall/index.py:692`).
+hashed as raw bytes instead (`recall/index.py:718`).
 
 | Bucket | Sources | Chunks |
 |---|---:|---:|
@@ -223,7 +223,7 @@ track the model at all:
   `name='BAAI/bge-large-en-v1.5' dim=1024 profile_id='bge-small-symmetric-v1'`.
 
 `index_fingerprint` inherits the defect, because `_index_fingerprint` hashes
-`embedding_profile_id(embedder)` (`recall/index.py:447`). So **neither stored field can identify the
+`embedding_profile_id(embedder)` (`recall/index.py:472`). So **neither stored field can identify the
 model**, and two different unregistered models of equal width would compare equal.
 
 The consequence for the design is a promotion, not a retreat: the **pipeline attestation sample is
@@ -237,6 +237,21 @@ supplementary evidence the design called it. Its cost was not measured; what was
 against, and **the conclusion is unchanged**: every corpus indexed before #370 still carries the old
 literal, and those are precisely the rows an adoption path reads. Fixing a writer does not repair
 rows already written.
+
+🔁 **The second half was fixed the same day by #381**, and the sentence above about
+`_index_fingerprint` is now a record of the measured tree rather than of the code. It no longer
+hashes `embedding_profile_id(embedder)`: `79a0d6ed` widened it to
+`embedding_profile(embedder).fingerprint()` (`recall/index.py:472`), which covers `model_name` and
+`dimension`, so two different unregistered models of equal width no longer compare equal. The
+citation is kept pointing at that call site because it is the same position in the tuple, but the
+expression it names has changed, which is why this note exists rather than a silent renumber.
+
+⚠️ **This changes nothing about the conclusion drawn from it, for the same reason as #370.** Both
+fixes repair a WRITER. Every corpus indexed before them still carries the defective
+`index_fingerprint` and the literal `embedding_profile`, and those are exactly the rows an adoption
+path reads, so the pipeline attestation sample remains the only sound embedder check available and
+must stay a required step. The one practical difference is forward looking: after #381 those
+corpora re embed on their next index, because their stored fingerprint no longer matches.
 
 ## Scope, so this is not over read
 

@@ -15,7 +15,7 @@ inference into the same namespace a human authors, where the trust layer reads i
 
 ## The hazard this design exists to prevent
 
-`content_hash` is computed over raw file bytes (`recall/index.py:518`). Writing a block changes the
+`content_hash` is computed over raw file bytes (`recall/index.py:544`). Writing a block changes the
 bytes, so the file re-indexes. If the block is chunked, the next extraction pass reads its own prior
 output as evidence and amplifies: a proposal becomes a citation for the next proposal, and the
 corpus grows a self-referential belief no human ever stated.
@@ -29,7 +29,7 @@ document as evidence. That is the whole design.
 
 Not a preference. `structure_chunks` computes offsets with `body.find(text, ...)`
 (`recall/context.py:197`). If `human_body` is a strict prefix of `body`, every offset is identical
-with or without the block, so `text_start` / `text_end` (`recall/index.py:600`) are invariant.
+with or without the block, so `text_start` / `text_end` (`recall/index.py:626`) are invariant.
 Prepending shifts every offset in every chunk of every file that gains a block.
 
 End placement also keeps the block out of `document_title` (`recall/context.py:159`), which reads
@@ -190,7 +190,7 @@ isolation.
 
 | Site | Note |
 |---|---|
-| `recall/index.py:568` | `contextual_passages(raw, body, ...)` keeps taking the unstripped `raw` for `document_title`, which reads frontmatter and the first H1 — both above the block. The `body` argument becomes `human_body`. |
+| `recall/index.py:594` | `contextual_passages(raw, body, ...)` keeps taking the unstripped `raw` for `document_title`, which reads frontmatter and the first H1 — both above the block. The `body` argument becomes `human_body`. |
 | `recall/generations.py:500` | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused under `RECALL_ENV=production` (`recall/cli.py:1209`), so hooking only the index path leaves the one build path that runs in production uncovered. |
 | `recall/lint.py:124` | The only reader of `derived_text`. |
 | `recall/check.py:53` | `_ANY_REF` over the body would otherwise hand the author the machine's own values back as `supersedes:` candidates. |
