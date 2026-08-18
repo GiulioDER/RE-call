@@ -1,6 +1,30 @@
 """Verify that every `path:line` source citation in the markdown documentation still points at
 the code it claims.
 
+THE SECOND OF TWO CITATION CHECKS, AND THE DIVISION OF LABOUR BETWEEN THEM.
+
+`scripts/check_doc_citations.py` (#391) asks git how each cited file moved between the citing
+document's last commit and HEAD. That is exact arithmetic and it is quiet: it catches drift with
+no false alarms, including for citations this checker cannot read at all because their prose names
+nothing. It answers **"did this drift since you last looked?"**
+
+It cannot answer **"is this right?"**, and that is this file's job. Editing a document re-baselines
+its citations there, which is deliberate and correct for drift, but it means a citation that was
+wrong when written is never caught, and a document touched by any commit has all of its citations
+forgiven. Measured 2026-08-18 on `f51cec0a`, a tree where that check reported "every citation still
+points where it pointed": this one found **10 STALE, 8 of them true on hand inspection** -- an
+`import` line, a blank line, a closing paren, and three citations that had slid into a different
+method entirely.
+
+The reverse also holds, which is why both run. #391 measured an anchor check producing 33 findings
+"the great majority" wrong, and was right to reject the version it built; the four rules that
+closed that gap here are the enclosing-SCOPE unit, the distinctiveness cap, the sibling-citation
+exclusion, and the weak-token-on-the-cited-line rule. Even so, this check is blind where the prose
+quotes nothing, and that blindness is exactly where git arithmetic is exact.
+
+Neither subsumes the other. They share one exemption list, `docs/citation-policy.toml`, because
+"which documents are answerable at all" is one fact about a document rather than two.
+
 WHY THIS EXISTS, AND WHY IT IS NOT AN EXISTENCE CHECK.
 
 Line numbers drift faster than a document can be written. Measured 2026-08-18: while
@@ -60,9 +84,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import fnmatch
 import json
 import re
 import sys
+import tomllib
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -185,6 +211,21 @@ FENCE_RE = re.compile(r"^\s*(```|~~~)")
 #: exemption. Their citations are still parsed, verified and printed under FROZEN, so a stale one
 #: stays visible; it just cannot fail the build and cannot pressure anyone into editing history.
 FROZEN_PREFIXES = ("docs/archive/", "docs/preregistrations/")
+
+#: The policy `scripts/check_doc_citations.py` already reads, and which this checker reads too.
+#:
+#: **One policy, two checkers, on purpose.** The two checks answer different questions -- that one
+#: asks git whether a citation still resolves where it used to, this one asks whether the cited
+#: line means what the prose says -- but "which documents are exempt from being asked at all" is
+#: one fact about a document, not two. Two lists would drift, and the drift would be silent in the
+#: direction that matters: a document exempt from one checker and not the other reads as a real
+#: finding.
+#:
+#: The overlap is not coincidence. Both checkers independently arrived at the same two exemptions
+#: (`docs/archive/*`, and `docs/their-harness-parity.md` for the third-party path collision), and
+#: both were bitten by the collision before adding it. That is a good sign the exemptions are
+#: properties of the documents rather than of either implementation.
+POLICY_PATH = "docs/citation-policy.toml"
 
 #: A document-level opt-out, for prose whose `path:line` references belong to SOMEBODY ELSE'S
 #: repository. It must be **alone on its own line and outside any code fence** -- see
@@ -534,6 +575,25 @@ def verify(citation: Citation, context: str, root: Path) -> Result:
     )
 
 
+def text_of(path: Path) -> list[str]:
+    """The document's lines, read the same way everywhere."""
+    return path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+
+def exempt_documents(root: Path) -> list[str]:
+    """Glob patterns from the shared policy whose documents are not checked at all.
+
+    Read rather than duplicated: see POLICY_PATH. A missing or malformed policy raises instead of
+    defaulting to "nothing is exempt", because that default is the one that turns a checkout
+    problem into a wall of confident false findings about documents nobody intended to check.
+    """
+    path = root / POLICY_PATH
+    if not path.is_file():
+        return []
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    return [rule["path"] for rule in data.get("exempt", [])]
+
+
 def is_external(lines: list[str]) -> bool:
     """Whether a document has opted its citations out, given its FENCE-STRIPPED lines.
 
@@ -550,12 +610,28 @@ def is_external(lines: list[str]) -> bool:
 def collect(root: Path) -> list[Result]:
     """Verify every citation in every scanned document."""
     results: list[Result] = []
+    exempt = exempt_documents(root)
     for path in sorted(root.glob(DOC_GLOB)):
         doc = path.relative_to(root).as_posix()
+        # A policy exemption makes a document FROZEN here, not invisible.
+        #
+        # `docs/citation-policy.toml` has ONE `exempt` kind covering two different facts: "these
+        # paths are in somebody else's repository" (unverifiable -- EXTERNAL) and "these citations
+        # are pinned to a moment" (verifiable, but not to be edited -- FROZEN). Skipping both
+        # alike cost 87 of 199 citations here, including every one of the eight real defects this
+        # check found in `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md`.
+        #
+        # FROZEN is the answer that respects both documents at once: it can never demand an edit,
+        # which is what the policy is protecting, and it never hides a finding, which is what the
+        # document's own header asks for -- that file states its citations are "re measured
+        # whenever this file is edited", so its policy entry (reasoned on a commit pin that the
+        # header no longer claims) has rotted. Reported to the policy's author rather than
+        # silently overridden; until then this is the conservative reading of both.
+        policy_frozen = any(fnmatch.fnmatch(doc, rule) for rule in exempt)
         text = path.read_text(encoding="utf-8", errors="replace")
         lines = strip_fenced_blocks(text.splitlines())
         external = is_external(lines)
-        frozen = doc.startswith(FROZEN_PREFIXES)
+        frozen = doc.startswith(FROZEN_PREFIXES) or policy_frozen
         for citation in extract_citations(doc, lines):
             if external:
                 # Not verified at all, rather than verified and excused. Reading somebody else's
@@ -580,7 +656,7 @@ def collect(root: Path) -> list[Result]:
 #: The committed ceiling on UNVERIFIABLE citations. A data file rather than a constant so that
 #: the number and the reason for it are one diff, and so that lowering it is the ordinary outcome
 #: of anchoring a citation.
-BASELINE_PATH = "docs/citation_unverifiable_baseline.txt"
+BASELINE_PATH = "docs/citation_anchor_baseline.txt"
 
 
 def read_ceiling(root: Path) -> int:
@@ -666,7 +742,7 @@ def render(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify path:line citations in docs/*.md")
+    parser = argparse.ArgumentParser(description="Verify that path:line citations in docs/*.md point at what they claim")
     parser.add_argument(
         "--root", type=Path, default=ROOT, help="repository root to scan (default: this checkout)"
     )

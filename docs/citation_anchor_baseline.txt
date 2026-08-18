@@ -26,8 +26,10 @@
 # obeyed. When you raise it, say in the commit which documents arrived and how many
 # citations they brought, so the rise is auditable rather than assumed.
 #
-# Measured 2026-08-18 on 1388b5da: 199 citations, of which
-#   OK=119 STALE=0 UNVERIFIABLE=33 FROZEN=45 EXTERNAL=2 MISSING_FILE=0 OUT_OF_RANGE=0
-# (#390 and #393 arrived while this branch was open and brought 8 more citations.)
+# Measured 2026-08-18 on f51cec0a: 199 citations, of which
+#   OK=119 STALE=0 UNVERIFIABLE=17 FROZEN=61 EXTERNAL=2 MISSING_FILE=0 OUT_OF_RANGE=0
+# The drop from 33 is not progress: #391 landed docs/citation-policy.toml, which this checker
+# now shares, and its exemptions move those citations from UNVERIFIABLE into FROZEN. They are
+# still reported; they are simply no longer this ratchet's business.
 # Re-measure with:  python scripts/verify_citations.py
-33
+17

@@ -248,7 +248,7 @@ jobs:
   #
   # Its own job, and a fast one: pure file reading, no database, no models, no install beyond a
   # Python interpreter, so a stale citation surfaces in seconds rather than behind the 12-minute
-  # integration suite. The same check also runs inside `test` as tests/test_verify_citations.py,
+  # integration suite. The same check also runs inside `test` as tests/test_citation_anchors.py,
   # which is where the mutation tests live; this job exists so the answer arrives early and so a
   # red database service cannot hide it.
   #
@@ -263,8 +263,8 @@ jobs:
   # No `pip install`: the checker imports nothing outside the standard library, on purpose, so
   # this job cannot be taken down by a dependency resolution failure that has nothing to do with
   # documentation.
-  citations:
-    name: Doc citations
+  citation-anchors:
+    name: Citation anchors
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -275,9 +275,9 @@ jobs:
 
       # Two failure modes, one exit code: a citation that no longer points at the code it claims,
       # and a NEW citation with nothing to check it against. The second is a ratchet against
-      # docs/citation_unverifiable_baseline.txt, so unverifiable citations can only ever fall.
+      # docs/citation_anchor_baseline.txt, so unverifiable citations can only ever fall.
       - name: Verify path:line citations in docs/
-        run: python scripts/verify_citations.py
+        run: python scripts/check_citation_anchors.py
 
   # Dependency vulnerability scan against the committed uv.lock. Runs independently of the
   # test job (no DB needed) so a CVE advisory never blocks the functional suite and vice versa.

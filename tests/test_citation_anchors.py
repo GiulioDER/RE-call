@@ -1,6 +1,6 @@
 """The citation checker, and the mutations that prove it can fail.
 
-A gate is not shown to work by passing. `scripts/verify_citations.py` reports 0 STALE against this
+A gate is not shown to work by passing. `scripts/check_citation_anchors.py` reports 0 STALE against this
 repository, and the only reason that number is worth anything is the set of tests below that
 deliberately break a citation and watch the exit code go to 1. Its predecessor reported "41
 citations, 0 broken" while three of them pointed at a `try:`, a docstring's closing quotes and the
@@ -22,17 +22,17 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _load_module():
-    """Import `scripts/verify_citations.py`, which is not on any import path.
+    """Import `scripts/check_citation_anchors.py`, which is not on any import path.
 
     It lives in `scripts/` rather than in `recall/` because it is repository maintenance, not
     shipped behaviour: putting it in the package would publish it to PyPI users and add it to the
     coverage denominator of code that has to work on somebody else's machine.
     """
-    path = ROOT / "scripts" / "verify_citations.py"
-    spec = importlib.util.spec_from_file_location("verify_citations", path)
+    path = ROOT / "scripts" / "check_citation_anchors.py"
+    spec = importlib.util.spec_from_file_location("check_citation_anchors", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules["verify_citations"] = module
+    sys.modules["check_citation_anchors"] = module
     spec.loader.exec_module(module)
     return module
 
@@ -466,6 +466,62 @@ def test_a_pre_registration_is_frozen_like_the_archive(repo: Path) -> None:
     assert vc.render(results, ceiling=0)[1] is True
     # Visible, though: frozen means unmaintained, not unreported.
     assert f"`WIDGET_LIMIT` on line {LINE_WIDGET_LIMIT}" in results[0].detail
+
+
+def test_a_policy_exemption_freezes_a_document_rather_than_hiding_it(repo: Path) -> None:
+    """The shared `docs/citation-policy.toml` is honoured, but mapped to FROZEN, not to skipped.
+
+    That file has one `exempt` kind covering two different facts: "these paths are in somebody
+    else's repository" (unverifiable) and "these citations are pinned to a moment" (verifiable,
+    but not to be edited). Skipping both alike cost 87 of 199 citations, including all eight real
+    defects this check found in `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md`.
+
+    FROZEN respects both: it can never demand an edit, and it never hides a finding.
+    """
+    (repo / "docs" / "citation-policy.toml").write_text(
+        '[[exempt]]\npath = "docs/PINNED.md"\nreason = "pinned to a moment"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    write_doc(
+        repo,
+        f"The cap is `WIDGET_LIMIT` (`recall/widget.py:{LINE_IMPORT}`).\n",
+        "PINNED.md",
+    )
+    results = vc.collect(repo)
+    assert [r.status for r in results] == [vc.FROZEN]
+    # Reported, with the repair still spelled out.
+    assert f"`WIDGET_LIMIT` on line {LINE_WIDGET_LIMIT}" in results[0].detail
+    assert vc.render(results, ceiling=0)[1] is True
+
+
+def test_the_policy_file_is_actually_read_and_not_assumed(repo: Path) -> None:
+    """Without the entry the same document fails, so the exemption is doing real work.
+
+    The mirror of the test above: a policy that changed nothing would be indistinguishable from a
+    policy that was never parsed.
+    """
+    write_doc(
+        repo,
+        f"The cap is `WIDGET_LIMIT` (`recall/widget.py:{LINE_IMPORT}`).\n",
+        "PINNED.md",
+    )
+    assert vc.exempt_documents(repo) == []
+    (citation, status), = verdicts(repo)
+    assert status == vc.STALE
+
+
+def test_the_real_policy_file_parses_and_names_documents_that_exist() -> None:
+    """A rule pointing at a document that no longer exists silently protects nothing."""
+    import fnmatch
+
+    patterns = vc.exempt_documents(ROOT)
+    assert patterns, "the shared policy should carry at least one exemption"
+    docs = [p.relative_to(ROOT).as_posix() for p in ROOT.glob(vc.DOC_GLOB)]
+    for pattern in patterns:
+        assert any(fnmatch.fnmatch(doc, pattern) for doc in docs), (
+            f"{vc.POLICY_PATH} exempts {pattern!r}, which matches no document"
+        )
 
 
 def test_freezing_does_not_hide_a_stale_citation_from_the_report(repo: Path) -> None:
