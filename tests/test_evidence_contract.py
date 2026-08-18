@@ -230,7 +230,7 @@ def test_the_bundle_cannot_contain_a_passage_that_was_not_retrieved() -> None:
     # `__import__("recall.store")`, which produces no import node. That hole is closed by the
     # separate byte-level assertion below rather than by keeping a guard that cannot fire.
     assert imported <= {"__future__", "json", "collections.abc", "dataclasses", "datetime",
-                        "typing", "recall.types"}, f"unexpected import: {imported}"
+                        "re", "typing", "recall.types"}, f"unexpected import: {imported}"
     # The one thing an AST import walk cannot see, and the only thing the old denylist caught
     # that this does not.
     assert "__import__" not in source, "a dynamic import would bypass the allowlist above"

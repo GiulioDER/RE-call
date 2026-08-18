@@ -14,6 +14,7 @@ import pytest
 pytest.importorskip("langchain_core")
 
 from recall.integrations.langchain import RecallRetriever  # noqa: E402
+from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy  # noqa: E402
 from recall.types import (  # noqa: E402
     Chunk,
     Provenance,
@@ -109,7 +110,16 @@ def test_from_store_wires_trusted_search(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr("recall.integrations.langchain.trusted_search", fake_trusted_search)
 
-    retriever = RecallRetriever.from_store("STORE", "EMBEDDER", k=3, entailment="JUDGE")
+    expansion = DocumentExpansionPolicy(enabled=True, max_sources=3, chunks_per_source=4)
+    structural = StructuralExpansionPolicy(enabled=True, max_sources=1, chunks_per_source=8)
+    retriever = RecallRetriever.from_store(
+        "STORE",
+        "EMBEDDER",
+        k=3,
+        entailment="JUDGE",
+        document_expansion=expansion,
+        structural_expansion=structural,
+    )
     docs = retriever.invoke("how many rps?")
 
     assert captured["store"] == "STORE"
@@ -117,4 +127,6 @@ def test_from_store_wires_trusted_search(monkeypatch: pytest.MonkeyPatch) -> Non
     assert captured["query"] == "how many rps?"
     assert captured["k"] == 3
     assert captured["entailment"] == "JUDGE"
+    assert captured["document_expansion"] == expansion
+    assert captured["structural_expansion"] == structural
     assert docs[0].metadata["recall_verdict"] == "ok"

@@ -34,7 +34,14 @@ from recall.frontmatter import validity_bounds
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.observability import get_logger
 from recall.rerank import Reranker
-from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
+from recall.retriever import (
+    DEFAULT_CANDIDATE_K,
+    DocumentExpansionPolicy,
+    HybridRetriever,
+    StructuralExpansionPolicy,
+    expand_retrieval_by_source,
+    expand_retrieval_by_structure,
+)
 from recall.store import EdgeCandidates, PgVectorStore
 from recall.trust_policy import (
     TrustFailureCode,
@@ -613,6 +620,8 @@ def trusted_search(
     retrieval_profile: str = "legacy",
     index_generation: str = "legacy",
     policy: TrustPolicy | None = None,
+    document_expansion: DocumentExpansionPolicy | None = None,
+    structural_expansion: StructuralExpansionPolicy | None = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
@@ -646,6 +655,8 @@ def trusted_search(
                 retrieval_profile=retrieval_profile,
                 index_generation=index_generation,
                 policy=policy,
+                document_expansion=document_expansion,
+                structural_expansion=structural_expansion,
                 _generation_snapshot=False,
             )
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
@@ -726,6 +737,10 @@ def trusted_search(
         index_generation=index_generation,
     )
     result = retriever.search(query, k=k, source=source)
+    if document_expansion is not None:
+        result = expand_retrieval_by_source(result, retriever.search, document_expansion)
+    if structural_expansion is not None:
+        result = expand_retrieval_by_structure(result, retriever.search, structural_expansion)
     # ONE call when the candidates are needed: `supersession_all()` returns edges and their
     # dates from a single validated scan, so they cannot describe different scans. Read
     # defensively: `store` is duck-typed in
