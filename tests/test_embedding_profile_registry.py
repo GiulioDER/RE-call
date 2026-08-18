@@ -31,6 +31,12 @@ EXPECTED_IDS = (
     "bge-small-context-document-v1",
     "bge-small-context-section-v1",
     "bge-small-context-neighbor-v1",
+    "bge-base-symmetric-v1",
+    "bge-large-symmetric-v1",
+    "bge-large-asymmetric-v1",
+    "minilm-l6-symmetric-v1",
+    "minilm-multilingual-symmetric-v1",
+    "arctic-embed-xs-symmetric-v1",
     "qwen3-embedding-0.6b-384-v1",
 )
 
@@ -280,6 +286,9 @@ def test_the_index_path_agrees_with_the_registry_for_every_profile() -> None:
             return [[0.0] * self.dim for _ in texts]
 
     for entry in REGISTERED_PROFILES.values():
+        # Three cases, not two. A pinned profile accepts only its own digest; a provisioned one
+        # takes an operator-supplied digest; a HOSTED one refuses a digest outright, because
+        # supplying one would assert a verification nobody performed.
         # A pinned profile accepts only its own digest; every other one is operator supplied.
         identity = entry.identity(artifact_digest=entry.artifact_digest or "a" * 64)
         Indexer(

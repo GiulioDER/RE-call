@@ -192,6 +192,11 @@ class RegisteredProfile:
 
 
 _BGE_SMALL = "BAAI/bge-small-en-v1.5"
+_BGE_BASE = "BAAI/bge-base-en-v1.5"
+_BGE_LARGE = "BAAI/bge-large-en-v1.5"
+_MINILM_L6 = "sentence-transformers/all-MiniLM-L6-v2"
+_MINILM_MULTILINGUAL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+_ARCTIC_XS = "snowflake/snowflake-arctic-embed-xs"
 
 #: Measured on VPS2 on 2026-08-03 against the provisioned artifact at a four-thread budget, then
 #: rejected on CPU latency. Retained verbatim: `/opt/recall-enterprise/qwen-benchmark-result.json`
@@ -262,6 +267,78 @@ _PROFILES: tuple[RegisteredProfile, ...] = (
         query_mode="query_embed",
         passage_mode="passage_embed",
         context_mode="neighbor",
+        backend="fastembed",
+    ),
+    #: bge-base and bge-large exist so a corpus built at 768 or 1024 dimensions can be SERVED at
+    #: all. `make_embedder` builds a registered profile or nothing, and plain `fastembed` is
+    #: bge-small, so before these a 1024-dim corpus was unreachable from the MCP server — measured
+    #: on a live 8,671-chunk bge-large corpus, where every one of the ten tools failed with
+    #: `unknown embedder` before any search ran.
+    #:
+    #: Registering is deliberately preferred over letting `make_embedder` fall through to
+    #: `resolve_embedder`. That fallback was written, audited and rejected: a resolver-built
+    #: fastembed embedder carries no identity, so `embeddings.py:794-801` stamps EVERY fastembed
+    #: model with `bge-small-symmetric-v1`, and two models of the same width become
+    #: indistinguishable to readiness, lineage and calibration alike. `build()` passes a real
+    #: identity, so each of these carries its own id and its own fingerprint.
+    #:
+    #: `context_mode="none"` and symmetric `embed` match how these corpora are indexed by
+    #: default; the asymmetric and context-carrying variants are separate profiles for bge-small
+    #: and would be separate profiles here too, not flags on these.
+    RegisteredProfile(
+        profile_id="bge-base-symmetric-v1",
+        model_name=_BGE_BASE,
+        dimension=768,
+        query_mode="embed",
+        passage_mode="embed",
+        context_mode="none",
+        backend="fastembed",
+    ),
+    RegisteredProfile(
+        profile_id="bge-large-symmetric-v1",
+        model_name=_BGE_LARGE,
+        dimension=1024,
+        query_mode="embed",
+        passage_mode="embed",
+        context_mode="none",
+        backend="fastembed",
+    ),
+    RegisteredProfile(
+        profile_id="bge-large-asymmetric-v1",
+        model_name=_BGE_LARGE,
+        dimension=1024,
+        query_mode="query_embed",
+        passage_mode="passage_embed",
+        context_mode="none",
+        backend="fastembed",
+    ),
+    #: The cheap local end. All three are fastembed-supported and CPU-friendly, and exist so a
+    #: small or offline deployment has a registered option rather than reaching for the resolver.
+    RegisteredProfile(
+        profile_id="minilm-l6-symmetric-v1",
+        model_name=_MINILM_L6,
+        dimension=384,
+        query_mode="embed",
+        passage_mode="embed",
+        context_mode="none",
+        backend="fastembed",
+    ),
+    RegisteredProfile(
+        profile_id="minilm-multilingual-symmetric-v1",
+        model_name=_MINILM_MULTILINGUAL,
+        dimension=384,
+        query_mode="embed",
+        passage_mode="embed",
+        context_mode="none",
+        backend="fastembed",
+    ),
+    RegisteredProfile(
+        profile_id="arctic-embed-xs-symmetric-v1",
+        model_name=_ARCTIC_XS,
+        dimension=384,
+        query_mode="embed",
+        passage_mode="embed",
+        context_mode="none",
         backend="fastembed",
     ),
     RegisteredProfile(
