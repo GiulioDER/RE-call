@@ -1,6 +1,9 @@
 # Pre registration: does the promote/serve bind actually reproduce?
 
-**Date:** 2026-08-18   **Status:** predicted, not yet measured
+**Date:** 2026-08-18   **Status:** measured 2026-08-18. **Every registered prediction
+confirmed.** The bind reproduces end to end on master at `bda88122`: a generation can be
+promoted only in the mode that cannot serve it. Predictions and falsifiers below are unedited;
+the result is appended below the horizontal rule.
 
 ## The question
 
@@ -88,3 +91,64 @@ A single corpus and a single embedder. The probe uses the CLI rather than the MC
 select the store from the same `RECALL_ENV` test, but the original report was against the server, so
 this reproduces the mechanism rather than the exact deployment. If the codes match the prediction it
 is strong evidence for the mechanism and slightly weaker evidence for the server specifically.
+
+---
+
+## Result
+
+Measured 2026-08-18 on master at `bda88122`, end to end through the shipped CLI, on a throwaway
+session database at 384 dim with `fastembed` bge-small over `recall/eval/corpus` (22 files).
+
+**The claim reproduces exactly, including the mechanism, and every registered prediction holds.**
+
+### The two halves of the bind
+
+| Step | `RECALL_ENV=development` | `RECALL_ENV=production` |
+|---|---|---|
+| build / validate / promote | **succeeds** (22 objects, 22 chunks, promoted) | ⛔ `UnsafePromotion: generation promotion is unavailable in production until certification gates land` |
+| strict search, same corpus | ⛔ **`INDEX_NOT_READY`** | ⛔ **`CALIBRATION_MISSING`** |
+
+The generation was genuinely live before either probe: `active_generation_id =
+gen_247764a2a6184239969821d8b15caa61`, `state = active`, 22 rows in `recall_chunks_v1`. So the
+development refusal is not a null result dressed up as the bind.
+
+**Only `RECALL_ENV` changed between the two probes.** Same database, same tenant, same promoted
+generation, same embedder, same query, same command.
+
+### Apparatus check
+
+Registered as required before believing either probe, because two probes taking the *same* store
+class would make identical codes the expected result rather than a falsification:
+
+```
+RECALL_ENV=development  -> PgVectorStore
+RECALL_ENV=production   -> GenerationStore
+```
+
+Different classes, so the experiment could discriminate. It also did discriminate, since the two
+codes differ.
+
+### Verdict against the prediction
+
+| Registered prediction | Measured | Verdict |
+|---|---|---|
+| `development` refuses `INDEX_NOT_READY` | `INDEX_NOT_READY` | **confirmed** |
+| `production` refuses `CALIBRATION_MISSING` | `CALIBRATION_MISSING` | **confirmed** |
+| only `RECALL_ENV` need change between probes | nothing else changed | **confirmed** |
+| the bind still holds on today's master | holds at `bda88122` | **confirmed** |
+| mechanism: no `generation_binding` on `PgVectorStore` forces the override | store classes differ as predicted | **confirmed** |
+
+### What this settles, and what it does not
+
+⛔ **It settles the premise the merged design was built on**, which until now had been confirmed
+only at the level of the code sites that explain it. A generation can be promoted **only** in the
+mode that cannot serve it, and served **only** in the mode that cannot promote it. Both refusals
+were observed in one run.
+
+⚠️ **It does not reproduce the original report's exact surface.** That report was against the MCP
+server; this is the CLI. Both select the store from the same `RECALL_ENV` test and both call
+`trusted_search`, so this is strong evidence for the mechanism and slightly weaker evidence for the
+server specifically. The registered confound stands as written.
+
+One corpus, one embedder, one machine. Nothing here measures whether the codes would differ on a
+corpus with a calibration present, which is a different experiment.
