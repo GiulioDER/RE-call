@@ -4,7 +4,13 @@
 > record's identity, and a pre-registration that moves is one nobody can cite. See the
 > amendment below for why SPLADE left the configuration.
 
-**Date:** 2026-08-15   **Status:** predicted, not yet measured
+**Date:** 2026-08-15   **Status:** measured 2026-08-17, results appended below
+
+> 🔁 **Status header corrected 2026-08-18.** It read "predicted, not yet measured"
+> for a day after the results were appended, which is the failure this format exists to
+> prevent: a record that has been scored and one that never was looked identical. **No
+> prediction, confound or falsification criterion was touched**, only this line and the
+> matching one in the Result section.
 
 Written and committed **before** the new generation is indexed or calibrated. The gap between these
 predictions and the measurement is the output; the pass rate is not.
@@ -124,7 +130,8 @@ store does not (itself a reason both are being indexed):
 
 ## Result
 
-**Status:** not yet measured. Append below; do not edit anything above.
+**Status:** measured 2026-08-17, in the three sections below. Nothing above this line has
+been edited, and nothing above it may be.
 
 > ## Amendment, 2026-08-17, written BEFORE the calibration was run
 >
@@ -366,3 +373,36 @@ These two figures are descriptive: no CI was computed for them, and they were no
 
 **Rerank trades top-1 for breadth, in both arms.** MRR falls from 0.8016 to 0.7845 when the
 reranker is added, the same direction as the standalone rerank arm.
+
+## Appended 2026-08-18: the number that SERVES is 0.7120, not the 0.7100 recorded above
+
+Nothing above is retracted. The 0.7100 fit stands exactly as measured. But it is not the value the
+server applies, and both numbers were in circulation for a day without either being wrong.
+
+| | fitted | store it was fitted against | date |
+|---|---:|---|---|
+| `results/calibration_memory.json` | **0.7100** | legacy `chunks` table | 2026-08-17 |
+| published row in `recall_calibrations` | **0.7120** | generation `recall_chunks_v1` | 2026-08-18 |
+
+Every other field is identical: scale 0.0155, separability 0.9886363636363636 to all sixteen
+digits, n=22 answerable and n=28 unanswerable, same 50 query file. Only the threshold moved, by
+0.002.
+
+**What is verified:** the two rows exist with those values, the fits are one day apart, and
+`bin/install_calibrations.py` applies no transform to a threshold, so nothing rewrote 0.7100 into
+0.7120 in transit. Confirm with:
+
+```bash
+psql "$RECALL_DSN" -x -c "SELECT threshold, scale, separability, n_answerable, n_unanswerable, created_at FROM recall_calibrations WHERE tenant_id='memory';"
+```
+
+**What is inferred and NOT measured:** that the difference comes from the generation build
+re-chunking the corpus, so a few top cosines shift while the ranking (and therefore separability)
+does not. That is consistent with an identical rank statistic beside a moved threshold, and it is
+consistent with the legacy `chunks` table now holding **0 rows** for this tenant, but I did not
+re-fit against both stores to demonstrate it. Do not cite it as measured.
+
+🔑 **The operational rule this yields: a threshold in a results file is not necessarily the
+threshold in service.** They are bound to different stores, and a generation re-embeds and
+re-chunks. Read the published row, not the artefact, when you want to know what the server will
+do.
