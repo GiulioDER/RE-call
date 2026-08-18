@@ -447,8 +447,19 @@ def test_a_non_object_entry_is_refused_rather_than_skipped() -> None:
 
 
 def test_offtopic_subjects_absent_from_filters_on_content_words() -> None:
-    subjects = offtopic_subjects_absent_from(["a note about sourdough fermentation at home"])
-    assert "sourdough fermentation" not in subjects
+    """Named through the pool rather than spelled out, and that is not only tidiness.
+
+    A literal subject in a test file is a literal subject in the CORPUS whenever a code corpus is
+    rooted at this repository, and the filter then disqualifies it for everyone. That is exactly
+    how the pool came to disqualify all 25 of its own subjects: they were Python literals in
+    `recall/eval/synthetic.py`. Referencing the pool keeps this test honest and keeps `tests/` out
+    of the vocabulary the filter has to avoid.
+    """
+    from recall.eval.synthetic import _OFFTOPIC_SUBJECTS
+
+    overlapping = _OFFTOPIC_SUBJECTS[1]
+    subjects = offtopic_subjects_absent_from([f"a note about {overlapping} at home"])
+    assert overlapping not in subjects
     assert len(subjects) > 10, "one collision must not empty the pool"
 
 

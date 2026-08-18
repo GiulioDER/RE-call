@@ -249,12 +249,17 @@ def test_a_gap_query_the_model_copied_from_the_corpus_is_dropped() -> None:
     list against the corpus: a gap class sharing the corpus vocabulary is the failure that made an
     earlier abstention measurement meaningless.
     """
+    # Drawn from the pool rather than spelled out: a literal subject in a test file joins the
+    # corpus whenever a code corpus is rooted at this repository, and the filter then disqualifies
+    # it for every user. That is precisely how the pool came to disqualify all 25 of its own
+    # subjects when it lived as Python literals.
+    from recall.eval.synthetic import _OFFTOPIC_SUBJECTS
+
     client = _FakeClient(
         [
             _payload(
                 ["a", "b", "c"],
-                ["what is the read-through cache p99", "sourdough fermentation", "baroque counterpoint",
-                 "tidal locking of moons"],
+                ["what is the read-through cache p99", *_OFFTOPIC_SUBJECTS[1:4]],
             )
         ]
     )

@@ -2349,7 +2349,11 @@ def main(argv: list[str] | None = None) -> None:
                     "what did we decide about caching?",
                     "do we inject retrieved context into the prompt?",
                     "how many requests per second can a client make?",
-                    "how do we handle penguins on mars?",
+                    # A deliberately unanswerable demo query. Its subject is chosen NOT to appear
+                    # in `recall/eval/offtopic_subjects.json`: a distinctive word from that pool,
+                    # written anywhere under `recall/`, disqualifies its subject for every code
+                    # corpus rooted at this repository. `tests/test_eval_synthetic.py` asserts it.
+                    "how do we handle llamas on mars?",
                 ],
                 calibration,
                 _demo_judge,
