@@ -1,11 +1,17 @@
 """The three tenant definitions, and the couplings that make them safe.
 
 The design's corpus table is four independent-looking columns that are not independent at all:
-`RECALL_ENV=production` is the only switch that routes search through `GenerationStore`, and the
-same switch refuses local filesystem indexing. So "calibrated" and "writable" are mutually
+`RECALL_ENV=production` is the only switch that routes search through `GenerationStore`, and
+`recall index` refuses to run under that same switch. So "calibrated" and "writable" are mutually
 exclusive, and a spec that claims both describes an install that cannot work. Recording that as a
 table in prose leaves the wizard to discover it as a runtime refusal three steps later; recording it
 as a constructor invariant makes it unbuildable.
+
+🔁 That second clause used to read "the same switch refuses local filesystem indexing", which
+`corpora.py` had already retracted by name while this file kept the disproven wording — one
+changeset disagreeing with itself. The refusal lives in `recall index`'s own dispatch and in
+`setup.py`'s auto-index; `Indexer` reads no such variable, which is why the wizard must impose the
+rule on itself rather than inherit it.
 
 The embedder is deliberately NOT a per-corpus field. All three tenants share one database and one
 `chunks`-family schema, and the dimension is welded to the table, so two embedders across corpora is
@@ -118,6 +124,14 @@ def test_memory_stays_uncalibrated_on_purpose(tmp_path: Path) -> None:
         ({"tenant": "   "}, "tenant must be non-empty"),
         ({"serving_environment": "staging"}, "serving_environment must be one of"),
         ({"chunker": "Code"}, "chunker must be one of"),
+        # The converse of the uncalibrated-and-strict guard, which was missing entirely: every
+        # other guard refuses a corpus claiming MORE than it can deliver, this one refuses a
+        # calibrated corpus claiming LESS. Nothing enforced the docstring's own statement that a
+        # calibrated corpus is served strictly.
+        (
+            {"trust_mode": TrustMode.DEVELOPMENT},
+            "a calibrated corpus is served strictly",
+        ),
         ({"chunker": "prose", "calibrated": False, "serving_environment": "development",
           "trust_mode": TrustMode.DEVELOPMENT}, "chunker must be one of"),
     ],
@@ -179,10 +193,15 @@ def test_one_embedder_for_the_whole_plan(tmp_path: Path) -> None:
 
 
 def test_two_corpora_cannot_share_a_tenant(tmp_path: Path) -> None:
-    """A manifest is bound to one tenant, and re-indexing a tenant PRUNES what is not in it.
+    """A tenant has ONE active generation, so two corpora on it cannot both be served.
 
-    So two corpora on one tenant do not merge, they delete each other. Refused where it is cheap to
-    refuse rather than discovered as a corpus that silently lost half its sources.
+    🔁 This docstring used to say re-indexing prunes what is absent from the new manifest, so the
+    second corpus deletes the first. That was false twice over: `_prune_vanished` is scoped to the
+    indexed root (its own docstring says the scoping exists so one root's re-index cannot delete
+    another's rows), and it prunes only what is gone from DISK, never what is missing from a
+    manifest. The real hazard is supersession: promoting the second generation leaves the first
+    indexed but unsearchable, and `rollback()` exists precisely because those rows are still there.
+    Quieter than deletion, not smaller.
     """
     with pytest.raises(ValueError, match="tenant .* appears twice"):
         CorpusPlan(
@@ -227,6 +246,103 @@ def test_the_calibrated_view_excludes_the_writable_tenant(tmp_path: Path) -> Non
     assert "memory" not in [c.tenant for c in plan.calibrated]
 
 
+def test_a_trust_mode_spelled_as_a_plain_string_cannot_bypass_the_strict_guard(
+    tmp_path: Path,
+) -> None:
+    """`TrustMode` is a `StrEnum`, so `"strict" == TrustMode.STRICT` while `is` is False.
+
+    The uncalibrated-and-strict guard compared with `is`, and `trust_mode` was the one field with no
+    validation at all, so passing the plain string sailed past the guard and produced exactly the
+    tenant that answers INDEX_NOT_READY forever. Measured before the fix: that spec constructed with
+    `type(trust_mode) is str`.
+
+    Both halves are pinned here, because either alone leaves the guard spellable-past: the value is
+    COERCED to the enum, and the comparison is `==`.
+    """
+    with pytest.raises(ValueError, match="cannot be served strictly"):
+        CorpusSpec(
+            tenant="memory",
+            root=tmp_path,
+            glob="**/*.md",
+            chunker="text",
+            calibrated=False,
+            serving_environment="development",
+            trust_mode="strict",  # type: ignore[arg-type]
+            writable=True,
+        )
+
+    # A legitimate string spelling is coerced rather than rejected, so config read from a file works.
+    coerced = memory_corpus(tmp_path)
+    assert coerced.trust_mode is TrustMode.DEVELOPMENT
+    assert isinstance(
+        CorpusSpec(
+            tenant="memory",
+            root=tmp_path,
+            glob="**/*.md",
+            chunker="text",
+            calibrated=False,
+            serving_environment="development",
+            trust_mode="development",  # type: ignore[arg-type]
+            writable=True,
+        ).trust_mode,
+        TrustMode,
+    )
+
+    with pytest.raises(ValueError, match="trust_mode must be one of"):
+        CorpusSpec(
+            tenant="memory",
+            root=tmp_path,
+            glob="**/*.md",
+            chunker="text",
+            calibrated=False,
+            serving_environment="development",
+            trust_mode="paranoid",  # type: ignore[arg-type]
+            writable=True,
+        )
+
+
+def test_a_wrongly_typed_corpora_argument_names_the_mistake(tmp_path: Path) -> None:
+    """A `str` is iterable, so `corpora="docs"` survived the tuple coercion.
+
+    It then failed inside the duplicate-tenant loop with `AttributeError: 'str' object has no
+    attribute 'tenant'`, which names neither the argument nor the mistake, in a module where every
+    other guard says exactly what is wrong.
+    """
+    with pytest.raises(TypeError, match="corpora must be an iterable of CorpusSpec"):
+        CorpusPlan(embedder="fastembed", corpora="docs")  # type: ignore[arg-type]
+
+
+def test_the_absolute_root_guard_has_the_same_meaning_on_both_platforms() -> None:
+    """Pins what `is_absolute()` accepts per platform, which no CI job can currently observe.
+
+    `Path.is_absolute()` is platform-polymorphic: `PureWindowsPath("/docs")` is NOT absolute (no
+    drive) while `PurePosixPath("/docs")` is. Every CI job that installs the package and imports
+    `recall.wizard` runs ubuntu-latest, and the one windows-latest job deliberately skips
+    `pip install -e .`, so the guard protecting provenance on the SHIPPED target is exercised only
+    under POSIX rules. The existing refusal test uses `Path("docs")`, which is relative under both
+    rule sets and therefore cannot tell them apart.
+
+    This asserts the flavour semantics directly, so the meaning is pinned without a Windows runner.
+    """
+    from pathlib import PurePosixPath, PureWindowsPath
+
+    # The form that differs, and the reason a Git Bash user on Windows can be surprised.
+    assert PurePosixPath("/docs").is_absolute() is True
+    assert PureWindowsPath("/docs").is_absolute() is False
+
+    # Native absolute forms, both flavours, including UNC which `recall.manifest` supports.
+    assert PureWindowsPath(r"C:\corpus").is_absolute() is True
+    assert PureWindowsPath("//server/share/corpus").is_absolute() is True
+    assert PurePosixPath("/srv/corpus").is_absolute() is True
+
+    # Drive-relative is NOT absolute, which is the trap `C:docs` sets.
+    assert PureWindowsPath("C:docs").is_absolute() is False
+
+    # And whatever the platform, a plainly relative root is refused by the real guard.
+    with pytest.raises(ValueError, match="root must be absolute"):
+        docs_corpus(Path("docs"))
+
+
 def test_a_relative_root_is_refused_because_it_would_stamp_the_wizards_own_commit() -> None:
     """The provenance bug `commit_root` exists to prevent, reintroduced one layer up.
 
@@ -258,8 +374,8 @@ def test_a_list_of_corpora_becomes_a_tuple_so_the_plan_cannot_be_widened(tmp_pat
     """`frozen=True` blocks rebinding, not mutation, and the annotation is not a runtime constraint.
 
     A list was accepted, and appending to it reinstated the duplicate tenant `CorpusPlan` exists to
-    refuse — after construction, past the check. Re-indexing a tenant prunes what is absent from the
-    new manifest, so a duplicate does not merge, it deletes.
+    refuse — after construction, past the check. A tenant has one active generation, so the
+    duplicate does not merge: promoting the second leaves the first indexed but unsearchable.
     """
     plan = CorpusPlan(embedder="fastembed", corpora=[docs_corpus(tmp_path / "docs")])
 

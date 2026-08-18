@@ -32,8 +32,17 @@ a tenant that answers `INDEX_NOT_READY` while its rows are visibly in the table,
 corpora is not a configuration to validate — it is one the API should be unable to express.
 `CorpusPlan` therefore takes a single embedder for the whole plan.
 
-Nothing here touches a database, a network or the environment. It is the answer to "what am I about
-to build", which the pipeline then executes and the resumable state records.
+Nothing here touches a database or reads an environment variable. It is the answer to "what am I
+about to build", which the pipeline then executes and the resumable state records.
+
+⚠️ **One exception, stated because an earlier version of this paragraph claimed purity it did not
+have:** `CorpusSpec.__post_init__` stats `root`. Three auditors caught the contradiction
+independently. The stat is worth its cost, since a root that is a file should not survive
+construction, but it has two consequences a reader should not have to discover. On a UNC path it
+resolves through the network redirector, so a dead share can block construction with no timeout,
+and `recall.manifest` treats UNC roots as a supported shape. And it is a snapshot, not an
+invariant: the directory can vanish between constructing the spec and the pipeline reading it, so
+the build step must re-check rather than trust this.
 """
 
 from __future__ import annotations
@@ -102,11 +111,39 @@ class CorpusSpec:
             raise ValueError(
                 f"chunker must be one of {get_args(ChunkerKind)}, not {self.chunker!r}"
             )
+        # COERCED, not merely checked, and this is the third erased-type field in a row for the
+        # same reason. `TrustMode` is a `StrEnum`, so the plain string "strict" compares EQUAL to
+        # `TrustMode.STRICT` while failing `is`. The uncalibrated-and-strict guard below used `is`,
+        # so passing the string sailed past it and produced exactly the tenant that answers
+        # INDEX_NOT_READY forever. Measured: that spec constructed with `type(trust_mode) is str`.
+        # Coercing here means the guard cannot be bypassed by spelling, and every later reader gets
+        # a real enum member rather than something that merely prints like one.
+        try:
+            object.__setattr__(self, "trust_mode", TrustMode(self.trust_mode))
+        except ValueError:
+            raise ValueError(
+                f"trust_mode must be one of {[m.value for m in TrustMode]}, not "
+                f"{self.trust_mode!r}"
+            ) from None
         # Absolute, because `commit_root` is derived from it and `head_commit` shells out to
         # `git -C <path>`, which resolves a relative path against the WIZARD's working directory and
         # then walks upward. Measured: `docs_corpus(Path("docs"))` stamped this repository's own HEAD
         # onto what is nominally the user's corpus — exactly the false provenance `commit_root`
         # exists to prevent, reintroduced one layer up.
+        #
+        # ⚠️ This closes ONE vector, not the class, and an earlier version of this comment read as
+        # though it closed the class. `git -C <root>` walks UPWARD to the nearest `.git`, so an
+        # ABSOLUTE root that merely sits inside an unrelated checkout still records that
+        # repository's HEAD. Measured: an absolute scratch directory inside this worktree was
+        # accepted and stamped `e5d8435c`, this worktree's own commit. A scratch folder under a
+        # monorepo, a vendored subtree, anything beneath `node_modules` does the same.
+        #
+        # It is not fixable by refusing non-repository roots, because the common case is exactly a
+        # subdirectory of a repository: a `docs/` folder genuinely WAS produced by its repo's
+        # commit, and that is the provenance you want. Distinguishing "this repo's docs" from "a
+        # directory that happens to sit inside a checkout" needs the pipeline to ask whether the
+        # root holds files that repository actually tracks, which is a step this layer does not
+        # have. Recorded here so the residual is visible rather than implied to be handled.
         #
         # Existence is deliberately NOT required: the wizard creates the memory directory. A root
         # that is absolute and absent stamps no commit, which is an absent record rather than a false
@@ -146,12 +183,25 @@ class CorpusSpec:
                 "trusted_search's try block. The caller gets a raw exception rather than a refusal, "
                 "with no failure code and no advice, which is worse than any refusal."
             )
-        if not self.calibrated and self.trust_mode is TrustMode.STRICT:
+        # `==`, not `is`. Identity on a `StrEnum` was half the bypass above; the coercion is the
+        # other half, and either alone would leave the guard spellable-past.
+        if not self.calibrated and self.trust_mode == TrustMode.STRICT:
             raise ValueError(
                 f"an uncalibrated corpus cannot be served strictly: {self.tenant!r} would refuse "
                 "every query with INDEX_NOT_READY, which outranks the calibration verdict because "
                 "a legacy-chunks tenant has no generation binding. Use development trust, and say "
                 "so to the user rather than letting them infer it from a degraded answer."
+            )
+        # The converse, which was missing. Every guard above refused a corpus claiming MORE than it
+        # could deliver; this one refuses a calibrated corpus claiming LESS. The module's own
+        # docstring says a calibrated corpus is served strictly, and nothing enforced it: a
+        # `calibrated=True` spec with development trust constructed happily and would have thrown
+        # away the refusal guarantee that calibrating the corpus was the whole point of buying.
+        if self.calibrated and self.trust_mode != TrustMode.STRICT:
+            raise ValueError(
+                f"a calibrated corpus is served strictly, so {self.tenant!r} cannot ask for "
+                f"{self.trust_mode.value!r} trust: calibration exists to make a confident answer "
+                "refusable, and development trust degrades instead of refusing"
             )
 
     def build_request(self, *, project: str | None = None) -> BuildRequest:
@@ -246,17 +296,37 @@ class CorpusPlan:
         # reinstated the duplicate tenant this class exists to refuse — after construction, past the
         # check below. It also cost the record its hashability.
         object.__setattr__(self, "corpora", tuple(self.corpora))
+        if not all(isinstance(corpus, CorpusSpec) for corpus in self.corpora):
+            # A `str` is iterable, so `corpora="docs"` survived the coercion above and failed three
+            # lines down with `AttributeError: 'str' object has no attribute 'tenant'` — an error
+            # that names neither the argument nor the mistake.
+            raise TypeError(
+                "corpora must be an iterable of CorpusSpec, not "
+                f"{[type(c).__name__ for c in self.corpora]}"
+            )
         if not self.corpora:
             raise ValueError("a plan needs at least one corpus; an empty install is not a no-op")
         seen: set[str] = set()
         for corpus in self.corpora:
             if corpus.tenant in seen:
-                # Not a cosmetic uniqueness check. A manifest is bound to one tenant, and
-                # re-indexing a tenant PRUNES sources that are no longer present, so two corpora
-                # sharing a tenant do not merge: whichever runs second deletes the first.
+                # 🔁 The reason here was WRONG, and wrong in a way that would have sent an operator
+                # looking for deleted rows. It said re-indexing a tenant prunes sources absent from
+                # the new manifest, so the second corpus deletes the first. Neither half holds:
+                # `_prune_vanished` is scoped to the indexed ROOT, and its own docstring says the
+                # scoping exists precisely so that "a corpus may be indexed in several roots;
+                # pruning everything absent from THIS glob would delete the others' rows on every
+                # run". It also prunes only what is gone from DISK, never what is missing from a
+                # manifest.
+                #
+                # The real hazard is supersession, not deletion: one tenant has one
+                # `active_generation_id`, so two calibrated corpora on one tenant produce two
+                # generations of which only one can be active. Promoting the second does not delete
+                # the first, it makes it unsearchable, and `rollback()` exists because the rows are
+                # still there. Silently serving half the corpus you asked for is a quieter failure
+                # than deletion, not a smaller one.
                 raise ValueError(
-                    f"tenant {corpus.tenant!r} appears twice; re-indexing a tenant prunes what is "
-                    "not in the new manifest, so the second corpus would delete the first"
+                    f"tenant {corpus.tenant!r} appears twice; a tenant has one active generation, "
+                    "so promoting the second corpus would leave the first indexed but unsearchable"
                 )
             seen.add(corpus.tenant)
 
