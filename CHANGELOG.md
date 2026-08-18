@@ -10,6 +10,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* **An embedder built without a registered profile claimed `bge-small-symmetric-v1` whatever model
+  it actually was.** `FastEmbedEmbedder.__init__` minted that literal (or `bge-small-asymmetric-v1`)
+  unconditionally on the no-identity path, so the id was a label rather than a claim. Measured
+  2026-08-18: a `fastembed:BAAI/bge-large-en-v1.5` embedder reported `dim=1024` under
+  `profile_id='bge-small-symmetric-v1'`, whose registry entry is 384-dimensional, and a production
+  corpus of 8,716 chunks had stored that pairing in its chunk metadata. The fallback id is now
+  derived from the model name, dimension and encoder modes
+  (`unregistered__BAAI__bge-large-en-v1.5__1024__symmetric`) unless the embedder genuinely is the
+  model the legacy literal names, at the width the registry declares for it. The `/` is replaced
+  because a profile id is interpolated into a result filename by
+  `recall.eval.promotion.run.ArmConfig.key`, the same reason `SparseProfile` already did this.
+
+  The embedding cache was never affected: `EmbeddingProfile.fingerprint` already covers
+  `model_name` and `dimension`, so the two models keyed apart despite sharing an id. What was
+  affected is `recall.index._index_fingerprint`, which hashes the profile id alone with no
+  dimension term of its own. A bge-small corpus and a bge-large corpus therefore produced the
+  **same** fingerprint for the same file, so the incremental skip guard treated a model swap as a
+  no-op and left stale vectors in place. Verified by execution before the fix: the 384-dimension
+  and 1024-dimension fingerprints were equal.
+
+  ⚠️ **Scope of the change, which is narrower than it looks.** The default `FastEmbedEmbedder()`
+  is bge-small at 384 and keeps `bge-small-symmetric-v1`, so its index fingerprints are
+  byte-identical to before (verified) and no default corpus needs re-indexing. Registered
+  enterprise profiles never reach this path at all. Only a corpus indexed with an *unregistered*
+  model changes id, and for those the change is the repair: the next `recall index` run sees a
+  different fingerprint and re-embeds, replacing vectors whose recorded provenance was false.
+  Search keeps working in the meantime, because the stored `embedding_profile` metadata is
+  reported as a diagnostic and never compared at read time. One thing to re-do deliberately: a
+  calibration file fitted for such a corpus was written under the wrong id and will stop
+  resolving, which is correct (a bge-small-keyed threshold does not transfer to bge-large cosines)
+  but shows up as "uncalibrated" until it is re-fitted.
+
 * **`recall generation build` recorded an overlap the chunker never used, and correcting it moves
   the pipeline fingerprint.** The chunker clamps overlap to `max_chars // 4`; the generation's
   `ChunkerIdentity` recorded what was asked for. So the record described a pipeline that did not
