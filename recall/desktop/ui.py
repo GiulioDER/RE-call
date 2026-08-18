@@ -1392,12 +1392,24 @@ if QApplication is not None:
                 name, accepted = QInputDialog.getText(self, "Add project", "Project name")
                 clean_name = _project_name(name) if accepted else ""
                 if clean_name:
-                    if clean_name not in self._project_names:
+                    provisioned = clean_name in self._project_names
+                    if not provisioned:
                         self._project_names.append(clean_name)
                         self._populate_scopes(self._project_names)
                     selected = self.scope.findText(clean_name)
                     if selected >= 0:
                         self.scope.setCurrentIndex(selected)
+                    if not provisioned:
+                        # Naming a project here does not create one. The corpora, the MCP services
+                        # and the calibration are all the wizard's work, and until it has run the
+                        # scope exists only in this combo box: it does not survive a restart, and
+                        # anything that reaches the runtime with it will be refused. Say so now,
+                        # rather than let it surface later as a failure about a "tenant scope".
+                        self.status.setText(
+                            f"Project {clean_name!r} is selected but not provisioned. Run the "
+                            f"RE-call wizard to build and calibrate it; until then this choice is "
+                            f"not saved and cannot be indexed."
+                        )
                 else:
                     self.scope.blockSignals(True)
                     self.scope.setCurrentIndex(self._last_scope_index)

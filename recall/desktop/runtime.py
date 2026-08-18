@@ -201,26 +201,78 @@ class VpsMcpRuntime(RuntimeManager):
         return result if isinstance(result, dict) else {"status": "ready", "details": result}
 
 
+_LEGACY_SERVICES = {
+    "default-docs": "recall-docs",
+    "default-code": "recall-code",
+    "user-docs": "recall-user-docs",
+    "user-code": "recall-user-code",
+}
+"""Service names used by the hand-written `docker-compose.desktop.yml` that shipped before the
+wizard. The wizard's generated stack uses `recall-<tenant>` throughout; these are the aliases that
+keep an existing install working."""
+
+_SERVICE_TENANTS = {service: tenant for tenant, service in _LEGACY_SERVICES.items()}
+
+
+def _tenant_for_service(service: str) -> str | None:
+    """The tenant scope a compose service serves, or None if it serves none.
+
+    The legacy names are checked first, because `recall-docs` would otherwise read as the scope
+    `docs` and invent a project by that name in the scope selector.
+    """
+    if service in _SERVICE_TENANTS:
+        return _SERVICE_TENANTS[service]
+    if service.startswith("recall-"):
+        return service[len("recall-") :]
+    return None
+
+
 class DockerRuntime(RuntimeManager):
     def __init__(self, profile: RuntimeProfile, gateway: ToolGateway | None = None) -> None:
         super().__init__(profile, gateway)
         self._process: subprocess.Popen[str] | None = None
         self._gateways: dict[str, ToolGateway] = {}
+        self._services: frozenset[str] | None = None
 
-    @staticmethod
-    def _service_for_tenant(tenant: str) -> str:
-        services = {
-            "default-docs": "recall-docs",
-            "default-code": "recall-code",
-            "user-docs": "recall-user-docs",
-            "user-code": "recall-user-code",
-        }
-        try:
-            return services[tenant]
-        except KeyError as exc:
-            raise RuntimeErrorBase(
-                f"Docker runtime has no managed MCP service for tenant scope {tenant!r}"
-            ) from exc
+    def _service_names(self) -> frozenset[str]:
+        """The services this compose file actually defines, asked of Compose itself.
+
+        Not parsed here, for two reasons. Compose is the authority on what its own file declares,
+        so anything this module parsed could disagree with what `exec` will accept; and the
+        alternative needs a YAML parser, which the `desktop` extra does not install — the wizard
+        writes JSON, but `docker-compose.desktop.yml` is real YAML.
+
+        Cached, because this sits under every tool call and a subprocess per call is not free.
+        `start()` clears it, which is also the hook for a project added after the window opened.
+        """
+        if self._services is None:
+            result = self._compose("config", "--services")
+            self._services = frozenset(
+                line.strip() for line in result.stdout.splitlines() if line.strip()
+            )
+        return self._services
+
+    def _service_for_tenant(self, tenant: str) -> str:
+        """Map a tenant scope onto a compose service, by asking the file rather than a literal map.
+
+        ⚠️ **This was a hardcoded four-entry dict, and it made the UI unable to drive the stack the
+        wizard installs.** The wizard names a service `recall-<tenant>`, so `recall-default-docs`;
+        the dict asked for `recall-docs`, which that file does not contain. Measured against a
+        generated document: every scope missed, including the default one, so the mismatch was not
+        confined to projects the user added.
+
+        `_LEGACY_SERVICES` keeps `docker-compose.desktop.yml` working. Note that only the `default`
+        project differs between the two schemes — `user-docs` is `recall-user-docs` under both.
+        """
+        names = self._service_names()
+        for candidate in (f"recall-{tenant}", _LEGACY_SERVICES.get(tenant)):
+            if candidate and candidate in names:
+                return candidate
+        offered = ", ".join(sorted(names - {"db"})) or "none"
+        raise RuntimeErrorBase(
+            f"the compose file defines no MCP service for tenant scope {tenant!r}; it offers "
+            f"{offered}. A project has to be provisioned by the wizard before it can be served."
+        )
 
     def _gateway_for(self, tenant: str) -> ToolGateway:
         if self.gateway is not None:
@@ -253,7 +305,8 @@ class DockerRuntime(RuntimeManager):
 
     def start(self) -> None:
         self._compose("up", "-d", "--wait")
-        for service in ("recall-docs", "recall-code", "recall-user-docs", "recall-user-code"):
+        self._services = None  # the file may have gained services since the window opened
+        for service in sorted(self._service_names() - {"db"}):
             self._compose("exec", "-T", service, "recall", "schema", "apply")
         default_scope = self.profile.default_tenant
         if not default_scope.endswith(("-docs", "-code")):
@@ -274,15 +327,31 @@ class DockerRuntime(RuntimeManager):
         return {"status": "ready", "compose": result.stdout, "mcp": "ready" if self._gateways or self.gateway else "starting"}
 
     def list_tenants(self) -> list[str]:
-        """Return the project scopes provisioned in the managed local stack.
+        """The projects the managed local stack can actually serve.
 
-        Docker mode has one compose service per physical docs/code scope. Keep the
-        shared profile out of the project list because the desktop adds it as an
-        explicit "all projects" choice.
+        Read from the compose file, so a project the wizard provisioned appears here and one it did
+        not is never offered. It used to be derived from a literal `("default-docs", "default-code")`
+        pair, which meant the answer was `["default"]` whatever the stack contained: a project added
+        through the UI vanished on the next start, and one the wizard had genuinely built never
+        showed up at all.
+
+        The shared profile stays out because the desktop adds it as an explicit "all projects" entry.
+
+        An enumeration failure falls back to the default project rather than propagating. This runs
+        while the window is being built, and being unable to ask is not the same as there being
+        nothing: refusing here would leave the user with an app that will not open, when every
+        operation that needs a service still raises on its own.
         """
         names = {self.profile.default_tenant}
-        for physical_scope in ("default-docs", "default-code"):
-            names.add(physical_scope.rsplit("-", 1)[0])
+        try:
+            services = self._service_names()
+        except RuntimeErrorBase:
+            return sorted(names)
+        for service in services:
+            scope = _tenant_for_service(service)
+            if scope and scope.endswith(("-docs", "-code")):
+                names.add(scope.rsplit("-", 1)[0])
+        names.discard(self.profile.shared_profile)
         return sorted(names)
 
     def _call_for(self, tenant: str, name: str, arguments: dict[str, Any]) -> Any:

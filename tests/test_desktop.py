@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from recall.desktop.models import RuntimeMode, RuntimeProfile, SourceCategory, SourceSelection
-from recall.desktop.runtime import DockerRuntime, VpsMcpRuntime, create_runtime
+from recall.desktop.runtime import DockerRuntime, RuntimeErrorBase, VpsMcpRuntime, create_runtime
 from recall.desktop.sources import (
     classify,
     collect_files,
@@ -164,10 +164,59 @@ def test_docker_profile_requires_compose_file() -> None:
         RuntimeProfile(mode=RuntimeMode.DOCKER)
 
 
-def test_docker_runtime_exposes_managed_project_scopes() -> None:
+def test_docker_runtime_reads_its_topology_from_the_compose_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The UI could not drive the stack the wizard installs, and this is why.
+
+    `_service_for_tenant` was a literal four-entry dict mapping `default-docs` to `recall-docs`.
+    The wizard names every service `recall-<tenant>`, so it writes `recall-default-docs`. Measured
+    against a generated compose document, EVERY scope missed, the default one included, so the
+    mismatch was never confined to projects the user had added.
+
+    Both directions are asserted from one fake service list, because either alone is satisfiable by
+    the defect: the wizard's naming must resolve, the legacy names must keep resolving, an unknown
+    scope must be refused with what is on offer, and `list_tenants` must report what the file
+    contains rather than a constant.
+    """
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="whatever.yml")
+    runtime = DockerRuntime(profile)
+    monkeypatch.setattr(
+        runtime,
+        "_service_names",
+        lambda: frozenset({"db", "recall-default-docs", "recall-default-code", "recall-acme-docs"}),
+    )
+
+    assert runtime._service_for_tenant("default-docs") == "recall-default-docs"
+    assert runtime._service_for_tenant("acme-docs") == "recall-acme-docs"
+    assert runtime.list_tenants() == ["acme", "default"]
+
+    with pytest.raises(RuntimeErrorBase) as refusal:
+        runtime._service_for_tenant("nothere-docs")
+    assert "recall-acme-docs" in str(refusal.value), "a refusal must say what IS on offer"
+    assert "wizard" in str(refusal.value), "and what would make the scope servable"
+
+
+def test_docker_runtime_still_serves_the_pre_wizard_compose_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`docker-compose.desktop.yml` shipped before the wizard and names services differently.
+
+    An existing install must keep working, so the legacy names resolve too. `recall-docs` must map
+    back to the `default` project and not invent one called `docs`, which a naive prefix strip does.
+    """
     profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
     runtime = DockerRuntime(profile)
+    monkeypatch.setattr(
+        runtime,
+        "_service_names",
+        lambda: frozenset(
+            {"db", "recall-docs", "recall-code", "recall-user-docs", "recall-user-code"}
+        ),
+    )
 
+    assert runtime._service_for_tenant("default-docs") == "recall-docs"
+    assert runtime._service_for_tenant("user-code") == "recall-user-code"
     assert runtime.list_tenants() == ["default"]
 
 
