@@ -8,12 +8,6 @@
 # tree. Do not add one to silence a real failure: the checker reports where each anchor actually
 # moved to, and copying that number in is almost always the correct repair.
 
-# Citations pinned to one commit, stated in the document's own header. They are not stale; they are
-# anchored, and repointing them would break the contract the header states.
-[[exempt]]
-path = "docs/UNCALIBRATED_FIRST_RUN_DESIGN.md"
-reason = "header states: all source citations are against the tree at commit 295379fd"
-
 # Archived records. Their citations are part of the history they preserve.
 [[exempt]]
 path = "docs/archive/*"
