@@ -38,7 +38,7 @@ before the user's first real turn with Claude.
 A new step inside `run_setup_wizard` (`recall/setup.py`), placed after the existing
 embedder/reranker/sparse/entailment prompts and before the calibration question. It
 must run on every path through the wizard, including the early-return path taken when
-calibration is skipped (`recall/setup.py:491-510`), since that branch currently
+calibration is skipped (`recall/setup.py:1345-1350`), since that branch currently
 `return`s before reaching the shared tail at the bottom of the function. Concretely,
 this means moving the new step above that `if _ask_yes_no(...)` calibration block, not
 adding it after, so both exit paths pass through it.
@@ -55,7 +55,7 @@ files are created or modified, no indexing happens.
 ### CLAUDE.md handling
 
 Reuses the `.env` block pattern (`SETUP_BEGIN`/`SETUP_END`, `_update_env_block` in
-`recall/setup.py:290-304`) but adapted to Markdown, since HTML comments are inert in
+`recall/setup.py:957-973`) but adapted to Markdown, since HTML comments are inert in
 rendered Markdown and won't corrupt the file's structure:
 
 ```
@@ -111,7 +111,7 @@ reusable as a template instead of one-off prose.
 ### Auto-index
 
 After scaffolding, the wizard indexes `memory/` into the DB immediately, using the
-same `Indexer`/`PgVectorStore` path `recall index` uses (`recall/cli.py:1208-1229`),
+same `Indexer`/`PgVectorStore` path `recall index` uses (`recall/cli.py:2055-2077`),
 so `recall_search` can find the new memory files without the user needing to run
 `recall index` by hand first.
 

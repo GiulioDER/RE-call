@@ -6,7 +6,7 @@ reasoning arm, which is being built separately.
 ## Why
 
 The reasoning layer has no model configuration of any kind. `grep -rn "RECALL_REASONING" .` returns
-nothing, `ReasoningProviderPorts.answer_provider` is never passed by `recall_mcp/service.py:1493`,
+nothing, `ReasoningProviderPorts.answer_provider` is never passed by `recall_mcp/service.py:1659`,
 and every shipped provider implementation is deterministic. A user who wants a model backed
 reasoning arm today has no supported way to say which model, which provider, or which key.
 
@@ -42,7 +42,7 @@ the other, which a shared setting makes impossible. The name also has to stay ho
 called `RECALL_EXTRACTION_MODEL` driving reasoning would be lying about its scope.
 
 The naming follows the precedent set by `RECALL_ENTAILMENT` (`recall/entailment.py:77-95`) and
-`RECALL_TRUTH_EXTRACTION` (`recall/truth_extraction/_engine.py:155-180`): a boolean named for the
+`RECALL_TRUTH_EXTRACTION` (`recall/truth_extraction/_engine.py:161-186`): a boolean named for the
 feature, plus `_MODEL`, plus the provider settings.
 
 ### Keys written

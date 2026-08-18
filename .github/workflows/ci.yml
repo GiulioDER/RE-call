@@ -150,6 +150,26 @@ jobs:
         shell: bash
         run: bash scripts/session_space_tests.sh
 
+  # Documentation citations, which rot faster than anything else in this repository: one commit
+  # (79a0d6ed) shifted recall/index.py by 26 lines and broke 23 `path:line` references across five
+  # documents at once. `fetch-depth: 0` is load-bearing and not a habit — the check asks git how
+  # each cited file moved since the citing document was last committed, and a shallow clone cannot
+  # answer that. The script refuses a shallow checkout rather than reporting a pass it never made.
+  citations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+
+      # Standard library only, so this needs no install step and cannot be broken by a dependency.
+      - name: Check documentation citations
+        run: python scripts/check_doc_citations.py
+
   typecheck:
     runs-on: ubuntu-latest
     steps:

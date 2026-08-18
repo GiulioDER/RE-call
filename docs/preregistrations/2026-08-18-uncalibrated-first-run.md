@@ -109,6 +109,18 @@ rather than assume the claim is wrong. The durable fix is a check in CI that res
 `path:line` in `docs/` and fails when one stops matching its quoted anchor; that does not exist yet
 and is filed as follow up work.
 
+🔁 **Built 2026-08-18: `scripts/check_doc_citations.py`, run by the `citations` job in CI.** The
+shape above turned out to be the wrong one and is recorded here because the correction is the
+useful part. Matching against a "quoted anchor" was implemented first and **produced 33 findings on
+a tree whose citations had just been repaired by hand**, nearly all of them correct citations
+flagged wrongly: a documentation line routinely carries several backticked symbols and several
+citations, with no reliable pairing between them. Thirty false alarms do not make a strict check,
+they make a check somebody disables. What shipped instead asks git how each cited file moved between
+the citing document's last commit and HEAD, which turns drift into arithmetic and needs no anchor.
+Its own limits are stated in the script: it cannot see uncommitted edits, it needs `fetch-depth: 0`,
+and its suggested destination is exact only where the citation was accurate to begin with, which in
+this repository is not always true.
+
 ⚠️ Citations **above** this rule are left exactly as registered, because a prediction is a
 historical record and must not be edited. One of them has since moved: `recall/index.py:707`, cited
 in "What I already know" for the metadata stamp, is `recall/index.py:836` at the time of writing.
