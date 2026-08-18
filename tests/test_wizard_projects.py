@@ -36,6 +36,60 @@ def _install(root: Path, trust: str = "production") -> Path:
     return path
 
 
+def test_the_generated_stack_can_build_its_own_image(tmp_path: Path) -> None:
+    """`image:` alone makes Compose PULL a tag published to no registry.
+
+    The only other `build:` for it lives in `docker-compose.desktop.yml`, whose context is the
+    source checkout, which a user who installed recall from PyPI does not have. So the wizard
+    writes its own Dockerfile beside the compose file, and every tenant service must reference it:
+    a compose document naming a Dockerfile that is not there is broken by construction, which is
+    why `write_compose` writes both.
+    """
+    from recall.wizard.stack import DOCKERFILE_NAME
+
+    root = (tmp_path / "install").resolve()
+    root.mkdir()
+    path = _install(root)
+
+    assert (root / DOCKERFILE_NAME).exists(), "the build stanza points at a file that must exist"
+    services = json.loads(path.read_text(encoding="utf-8"))["services"]
+    for name, service in services.items():
+        if name == "db":
+            continue
+        assert service["build"] == {"context": ".", "dockerfile": DOCKERFILE_NAME}, name
+        assert service["image"], f"{name} must still tag the build rather than build anonymously"
+
+
+def test_the_generated_dockerfile_fails_the_build_on_a_missing_extra() -> None:
+    """pip only WARNS about an extra a release does not provide, so the check must be explicit.
+
+    Measured against the real 0.9.5 wheel in a real container:
+
+        WARNING: recall-rag 0.9.5 does not provide the extra 'documents'
+        --- pip exit: 0 ---
+        ModuleNotFoundError: No module named 'pypdf'
+
+    So a pin whose version predates an extra produces an image that builds clean and then silently
+    extracts nothing from every .docx, .pdf, .xlsx and .pptx the user feeds it. These imports move
+    that failure to build time. The test pins their presence, not their contents, because losing
+    the assertion is what would make the defect silent again.
+    """
+    from recall.wizard.stack import dockerfile_text
+
+    text = dockerfile_text(version="9.9.9")
+
+    assert '"recall-rag[mcp,fastembed,documents]==9.9.9"' in text, "the pin must be explicit"
+    assert "import pypdf, docx, openpyxl, pptx, bs4" in text, (
+        "without a post-install import the missing document extra is only a pip WARNING"
+    )
+    assert "import fastembed" in text
+    assert "import recall_mcp.server" in text
+    assert "COPY" not in text, (
+        "the wizard runs from an installed wheel and has no source tree to copy; copying is what "
+        "made the shipped Dockerfile unusable for a generated stack"
+    )
+
+
 def test_regenerating_the_stack_would_delete_the_existing_projects(tmp_path: Path) -> None:
     """The hazard, pinned. This is what `add_project` must not do.
 
