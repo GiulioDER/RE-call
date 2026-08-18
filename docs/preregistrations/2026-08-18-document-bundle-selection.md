@@ -60,4 +60,23 @@ falsify the proposed mechanism even if the aggregate score improved.
 
 ## Result
 
-To be appended after the preregistered measurement.
+Measured 2026-08-18 with:
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks/document_bundle_probe.py
+```
+
+**Status: partially confirmed, with the intended mechanism confirmed on the fixture.**
+
+| Metric | Prediction | Measured |
+| --- | --- | --- |
+| Required evidence set recall on distant section questions | +0.20 to +0.40 | **0 of 4 to 4 of 4**, +1.00 |
+| Overall evidence set recall | +0.05 to +0.20 | **7 of 12 to 12 of 12**, +0.417 |
+| Unsupported or demoted citation rate | 0.00 | **0**, all treatment bundles remained trusted |
+| Correct abstention on unanswerable controls | no decrease greater than 0.05 | **unchanged**, false positives 1 to 1 |
+| Treatment latency relative to baseline | no more than 3x | **2.05x mean CPU bundle assembly**, database query latency not measured |
+
+The direct question controls did not gain evidence, as predicted. The gain came from adding a
+second trusted section from the same source, and the comparison case also gained sections from both
+source documents. The result is strong enough to keep the feature available and continue toward a
+database backed latency measurement, but it is not evidence for making the feature the default yet.

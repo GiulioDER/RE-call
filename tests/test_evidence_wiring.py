@@ -249,6 +249,9 @@ def test_the_search_subcommand_accepts_the_evidence_flag_and_defaults_it_off() -
         with pytest.raises(SystemExit):
             main(["search", "a question", "--evidence"])
         assert captured["ns"].evidence is True
+        with pytest.raises(SystemExit):
+            main(["search", "a question", "--expand-documents"])
+        assert captured["ns"].expand_documents is True
     finally:
         argparse.ArgumentParser.parse_args = original  # type: ignore[method-assign]
 

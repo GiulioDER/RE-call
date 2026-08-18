@@ -59,3 +59,21 @@ For every arm report:
 
 The measurement is offline and deterministic. It does not claim database latency or general corpus
 quality. A database backed latency measurement is required before any serving default changes.
+
+## First measurement
+
+Measured with `benchmarks/five_arm_bundle_probe.py` on 2026-08-18 after the preregistration commit.
+There were 6 cases. The arm summaries were:
+
+| arm | complete ids | complete slots | forbidden selected | false positives | mean selection ms | p95 selection ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| current retrieval | 1 | 0 | 1 | 1 | 0.0810 | 0.1421 |
+| document grouping | 1 | 0 | 1 | 1 | 0.0845 | 0.1282 |
+| structural expansion | 6 | 5 | 1 | 1 | 0.1776 | 0.2582 |
+| answer slots | 6 | 5 | 0 | 0 | 0.4449 | 0.8750 |
+| bundle beam | 6 | 5 | 0 | 0 | 1.0838 | 2.0983 |
+
+The measurement supports the registered direction on this fixture. Structural expansion recovers
+distant evidence but can retain a misleading passage. Slot selection removes that passage and
+abstains when a required slot is absent. Bundle beam matches slot selection here at higher CPU
+cost. The fixture is too small to justify a serving default or a general quality claim.
