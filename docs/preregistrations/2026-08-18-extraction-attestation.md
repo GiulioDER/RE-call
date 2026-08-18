@@ -152,14 +152,14 @@ which I named as the ones worth betting against, were as stable as the pure Pyth
 ### Q3, a code fact rather than a prediction
 
 Five reachable suffixes route to LibreOffice. A sixth, `.msg`, appears in that branch at
-`recall/extraction.py:191` but is **unreachable**, because `extract_document` matches `.msg`
-earlier at `:184`. So a deployment without `python-oxmsg` gets an extraction error where the code
+`recall/extraction.py:195` but is **unreachable**, because `extract_document` matches `.msg`
+earlier at `:188`. So a deployment without `python-oxmsg` gets an extraction error where the code
 appears to offer a LibreOffice fallback.
 
 🔁 **Fixed upstream by `64ffee52` (#389), which this finding prompted, and the citation above is now
 a record of the measured tree rather than of the code.** The branch reads
 `if suffix in LIBREOFFICE_EXTENSIONS:`, and that constant is
-`frozenset({".doc", ".odt", ".ods", ".odp", ".ppt"})` (`recall/extraction.py:129`): `.msg` is no
+`frozenset({".doc", ".odt", ".ods", ".odp", ".ppt"})` (`recall/extraction.py:133`): `.msg` is no
 longer in it, so the dead offer is gone rather than merely unreachable. Repointing the line number
 alone would have sent a reader to a branch where `.msg` does not appear, which is why this note
 exists instead of a silent renumber. The Q3 finding itself stands as measured.
