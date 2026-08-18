@@ -747,19 +747,25 @@ class GenerationManager:
         `fail` instead would have removed the protection ACTIVE and RETIRED actually need.
         """
         with self._connect() as conn, conn.transaction():
-            current = self._require_generation(conn, generation_id, lock=True)
-            if current.state != GenerationState.READY:
-                raise InvalidGenerationTransition(
-                    f"abandon requires ready state, found {current.state.value}"
-                )
+            # ⚠️ Lock ORDER matters, and it is tenant state first, then the generation row. That is
+            # the order `promote` and `gc` both take, and taking the two the other way round is a
+            # deadlock: `promote` would hold tenant state waiting for the generation row while this
+            # held the generation row waiting for tenant state. The first version of this method
+            # had them reversed.
+            #
             # The generation a rollback would return to must survive. `promote` moves the outgoing
-            # generation to RETIRED, so a READY generation is normally neither — but the read is
+            # generation to RETIRED, so a READY generation is normally neither, but the read is
             # cheap and the alternative is destroying the only thing `rollback` can restore.
             state = conn.execute(
                 "SELECT active_generation_id, previous_generation_id "
                 "FROM recall_tenant_state WHERE tenant_id = %s FOR UPDATE",
                 (self.tenant_id,),
             ).fetchone()
+            current = self._require_generation(conn, generation_id, lock=True)
+            if current.state != GenerationState.READY:
+                raise InvalidGenerationTransition(
+                    f"abandon requires ready state, found {current.state.value}"
+                )
             protected = {str(item) for item in (state or ()) if item}
             if generation_id in protected:
                 raise InvalidGenerationTransition(
