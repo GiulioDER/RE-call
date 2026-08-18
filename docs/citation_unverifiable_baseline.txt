@@ -15,10 +15,12 @@
 # rule cannot diagnose does not read as OK -- it reads as UNVERIFIABLE, which raises this count
 # and fails the build anyway.
 #
+# The ceiling governs LIVE documents only. Anything under docs/archive/ or
+# docs/preregistrations/ is frozen: it may not be edited, so counting its citations in a
+# number that can only fall would be incoherent, and the only legal way to clear it would be
+# raising this ceiling -- a ratchet turned into a rubber stamp.
+#
 # Measured 2026-08-18 on 79a0d6ed: 169 citations, of which
-#   OK=98 STALE=0 UNVERIFIABLE=59 FROZEN=10 EXTERNAL=2 MISSING_FILE=0 OUT_OF_RANGE=0
-# (The rise from 53 came from rebasing onto master, which added documents. The rebase also
-# broke two citations, which this check caught: `recall/index.py:568` had become a comment
-# because the `contextual_passages` call moved to 807.)
+#   OK=97 STALE=0 UNVERIFIABLE=31 FROZEN=39 EXTERNAL=2 MISSING_FILE=0 OUT_OF_RANGE=0
 # Re-measure with:  python scripts/verify_citations.py
-59
+31

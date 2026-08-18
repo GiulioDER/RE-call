@@ -35,8 +35,10 @@ The verdicts:
   UNVERIFIABLE  no distinctive anchor could be derived from the prose, or the only one that fits
                 is too common to certify. Reported, never silently passed, and held to a
                 committed ceiling so the count can only fall.
-  FROZEN        a stale citation in `docs/archive/`, printed but not failed: an archive records
-                what was true when it was written.
+  FROZEN        any non-OK verdict in `docs/archive/` or `docs/preregistrations/`, printed but
+                never failed and never counted against the ratchet. Those documents record what
+                was true when they were written and may not be edited, so a gate that could
+                pressure someone into editing them would be the defect.
   EXTERNAL      a document whose paths are in somebody else's repository.
 
 UNVERIFIABLE is not a pass. It is the honest answer for a citation this check cannot decide, and
@@ -166,12 +168,23 @@ FENCE_RE = re.compile(r"^\s*(```|~~~)")
 #: the build, because the remedy would be to edit an archive until it agreed with the present,
 #: which is the opposite of what an archive is for.
 #:
-#: Deliberately ONLY `docs/archive/`. Pre-registrations were considered and rejected: they are
-#: written continuously and cite code heavily, so freezing them would put a large and growing
-#: share of the corpus outside the gate, and the standing rule they live under protects
-#: PREDICTIONS from revision, not pointers. A stale line number in a live pre-registration is
-#: fixed like any other.
-FROZEN_PREFIXES = ("docs/archive/",)
+#: `docs/preregistrations/` is here on an explicit standing instruction (2026-08-18): **never edit
+#: a number in a committed pre-registration, including a citation's line number.** An earlier
+#: version of this file argued the opposite -- that pre-registrations are written continuously and
+#: cite code heavily, so freezing them puts a large share of the corpus outside the gate, and that
+#: the rule protects predictions rather than pointers. Acting on that, this tool's first run
+#: rewrote `recall/embedding_registry.py:223` to `:228` inside a committed record.
+#:
+#: That was wrong, and the way it was wrong is the point: a pre-registration is evidence of what
+#: was true WHEN IT WAS WRITTEN, its citations are part of that evidence, and a record silently
+#: corrected whenever the world moves under it can no longer show what anyone believed beforehand.
+#: The stale pointer was the more informative artefact.
+#:
+#: So the general principle, worth more than this one directory: **a gate must never be able to
+#: force an edit to an immutable record.** When a check and a record disagree, the check gets the
+#: exemption. Their citations are still parsed, verified and printed under FROZEN, so a stale one
+#: stays visible; it just cannot fail the build and cannot pressure anyone into editing history.
+FROZEN_PREFIXES = ("docs/archive/", "docs/preregistrations/")
 
 #: A document-level opt-out, for prose whose `path:line` references belong to SOMEBODY ELSE'S
 #: repository. It must be **alone on its own line and outside any code fence** -- see
@@ -527,7 +540,14 @@ def collect(root: Path) -> list[Result]:
                 continue
             context = context_lines(lines, citation.doc_line - 1)
             result = verify(citation, context, root)
-            if frozen and result.failed:
+            if frozen and result.status != OK:
+                # EVERY non-OK verdict in a frozen document, not only the failing ones.
+                # UNVERIFIABLE used to survive freezing and still count against the ratchet, which
+                # is incoherent once the document may not be edited: the ceiling is supposed to be
+                # a number that can only fall, and nobody is permitted to lower this part of it.
+                # Left alone, a new pre-registration with unanchored citations would push the
+                # count over and the only legal remedy would be raising the ceiling -- turning a
+                # ratchet into a rubber stamp. So the ratchet governs live documents only.
                 result = Result(result.citation, FROZEN, result.detail, result.anchor)
             results.append(result)
     return results

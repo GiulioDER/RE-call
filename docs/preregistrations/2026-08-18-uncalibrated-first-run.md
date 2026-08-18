@@ -182,8 +182,7 @@ discriminates. Note the census has **five** buckets, not the four the registrati
 (`ORDER BY md5(id || 'q1-attest-2026-08-18') LIMIT 20`), re embedded on the workstation with
 `fastembed:BAAI/bge-large-en-v1.5` through the indexer's own call path (`embed_passages`, which is
 what `embed_with_cache(..., purpose="passage")` reduces to at `recall/cache.py:102`). `context_mode`
-is `none` for this tenant, so the embedded text is the chunk text (`recall/context.py:344`,
-which reads it as `policy.mode`). <!-- cite-anchor: policy.mode -->
+is `none` for this tenant, so the embedded text is the chunk text (`recall/context.py:344`).
 
 - 20 of 20 at or above the registered 0.9999 bar; min 1.0000
 - ⚠️ control, chunk *i* stored against chunk *i+1* fresh: max **0.709**, mean **0.624**

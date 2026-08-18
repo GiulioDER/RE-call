@@ -379,6 +379,41 @@ def test_a_frozen_document_reports_its_stale_citations_without_failing(repo: Pat
     assert passed
 
 
+def test_a_frozen_documents_unverifiable_citations_do_not_load_the_ratchet(repo: Path) -> None:
+    """The ceiling governs live documents only.
+
+    A frozen document may not be edited, so counting its unverifiable citations in a number that
+    "can only fall" is incoherent: nobody is permitted to lower that part of it. Left in, a new
+    pre-registration with unanchored citations would push the count over and the only legal remedy
+    would be raising the ceiling, which turns a ratchet into a rubber stamp.
+    """
+    write_doc(
+        repo,
+        f"Something over there (`recall/widget.py:{LINE_SCALED}`).\n",
+        "preregistrations/2026-08-18-thing.md",
+    )
+    results = vc.collect(repo)
+    assert [r.status for r in results] == [vc.FROZEN]
+    # A ceiling of zero, and it still passes, because nothing unverifiable is live.
+    assert vc.render(results, ceiling=0)[1] is True
+
+
+def test_a_pre_registration_is_frozen_like_the_archive(repo: Path) -> None:
+    """Standing instruction, 2026-08-18: never edit a number in a committed pre-registration,
+    including a citation's line number. So the gate must never be able to demand one."""
+    assert "docs/preregistrations/" in vc.FROZEN_PREFIXES
+    write_doc(
+        repo,
+        f"The cap is `WIDGET_LIMIT` (`recall/widget.py:{LINE_IMPORT}`).\n",
+        "preregistrations/2026-08-18-thing.md",
+    )
+    results = vc.collect(repo)
+    assert [r.status for r in results] == [vc.FROZEN]
+    assert vc.render(results, ceiling=0)[1] is True
+    # Visible, though: frozen means unmaintained, not unreported.
+    assert f"`WIDGET_LIMIT` on line {LINE_WIDGET_LIMIT}" in results[0].detail
+
+
 def test_freezing_does_not_hide_a_stale_citation_from_the_report(repo: Path) -> None:
     write_doc(
         repo,
