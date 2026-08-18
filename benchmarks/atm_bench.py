@@ -37,7 +37,7 @@ class NativeSentenceTransformerEmbedder:
     name = "st:sentence-transformers/all-MiniLM-L6-v2"
     dim = 384
 
-    def __init__(self, model_name: str, batch_size: int = 32) -> None:
+    def __init__(self, model_name: str, batch_size: int = 64) -> None:
         try:
             import torch
             from transformers import AutoModel, AutoTokenizer
@@ -58,7 +58,7 @@ class NativeSentenceTransformerEmbedder:
                     batch,
                     padding=True,
                     truncation=True,
-                    max_length=512,
+                    max_length=256,
                     return_tensors="pt",
                 )
                 output = self._model(**encoded).last_hidden_state
