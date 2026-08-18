@@ -70,9 +70,6 @@ def add_halo(image: Image.Image, center: tuple[int, int], radius: int) -> None:
 def banner() -> Image.Image:
     image = background().convert("RGBA")
     draw = ImageDraw.Draw(image)
-    draw.rectangle((48, 42, 1232, 45), fill=GOLD)
-    draw.rectangle((48, 46, 360, 48), fill=GOLD_BRIGHT)
-
     draw.text((74, 112), "RE-call", font=font(76, bold=True), fill=INK)
     draw.text((78, 218), "MEMORY THAT KNOWS WHEN NOT TO GUESS", font=font(19, mono=True), fill=GOLD_BRIGHT)
     draw.line((78, 260, 545, 260), fill=LINE, width=2)
