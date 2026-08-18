@@ -1,9 +1,10 @@
 # EnterpriseRAG non reasoning retrieval research
 
 **Date:** 2026-08-18
-**Status:** global reranker rejected; completeness candidate continues repeated confirmation
-**Recommendation:** continue only the completeness candidate to stable repeated captures. Do not
-promote the global reranker and do not claim top five status.
+**Status:** global reranker rejected; completeness candidate passed retrieval confirmation, answer
+comparison blocked by OpenRouter credits
+**Recommendation:** continue the fixed answer comparison when credits are available. Do not
+promote the candidate or claim top five status.
 
 ## Scope and evaluation boundary
 
@@ -268,3 +269,31 @@ question. The candidate had one gain and two losses. It made 84 embedding and le
 23 questions, with mean retrieval latency 27.47 seconds and p95 latency 43.28 seconds per question.
 Reranker, SPLADE, and answer-model calls were zero. Capture stability was 1.0 and retrieval cost was
 unavailable. No answer-quality test is authorized for this arm.
+
+## Candidate pool screen
+
+The completeness confirmation was screened at `k=8` with candidate pools 100, 200, and 400 using
+the existing lexical index. Candidate pools 100 without reranking and 400 without reranking
+matched the repeated `candidate_k=200` baseline at 21.0% recall, 10% exact coverage, and no
+invalid-extra delta. Candidate pool 100 took 17.84 seconds mean latency and 25.93 seconds p95;
+candidate pool 400 took 30.75 seconds mean latency and 91.23 seconds p95. The smaller pool is
+therefore the lower latency tie, while the larger pool has no retrieval benefit.
+
+The candidate pool 100 Voyage reranker arm reproduced the `candidate_k=200` reranker result:
+37.58% recall, 10% exact coverage, and 1.0 fewer invalid extras per question. It took 18.15
+seconds mean latency and 26.23 seconds p95, with 10 reranker calls. It does not dominate the
+candidate pool 200 reranker on retrieval quality.
+
+The candidate pool 400 Voyage reranker arm with the preregistered 4,000 character truncation
+failed before producing an answer file. Voyage rejected a 666,493 token batch against its 600,000
+token limit. This provider failure is retained. A separately preregistered 2,000 character
+truncation fallback produced 40.92% recall, 10% exact coverage, and 1.2 fewer invalid extras per
+question, with five gains and one loss. Three repeated captures were stable at 1.0. The repeated
+fallback averaged 19.74 seconds per question with 29.18 seconds p95, and recorded 30 embedding,
+30 lexical, and 30 reranker calls. This is a retrieval continuation candidate, not a promotion.
+
+The fixed answer comparison for the fallback was attempted with `openai/gpt-4o`, the baseline
+answer policy, 3,500 character context, and no correction or citation stripping. OpenRouter
+rejected the first request because the remaining credit allowed only 1,197 tokens while the runner
+requested up to 16,384. No complete candidate answer file or answer score exists. I did not change
+the model, prompt, or policy to work around the credit limit.
