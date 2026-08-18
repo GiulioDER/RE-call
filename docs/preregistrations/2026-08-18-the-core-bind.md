@@ -101,6 +101,23 @@ session database at 384 dim with `fastembed` bge-small over `recall/eval/corpus`
 
 **The claim reproduces exactly, including the mechanism, and every registered prediction holds.**
 
+### ⚠️ Two citations above the rule moved before this was even opened as a PR
+
+The registered sections are left byte identical, because a prediction is a historical record. #390
+landed between writing and pushing and moved two of the three:
+
+| Cited above | Was | Is now |
+|---|---|---|
+| `recall/cli.py:2082` | the `generation_mode = ...` store selection | `recall/cli.py:2199` |
+| `recall/generations.py:796` | the `UnsafePromotion` message | `recall/generations.py:849` |
+
+`recall/readiness.py:110` is unmoved. No claim changed; only line numbers did.
+
+🔑 **This is the sixth such drift in one working session**, and the interval this time was under an
+hour, from writing a prediction to opening its pull request. It is the reason the design states
+requirements as behaviour rather than as the presence of a field, and the reason a CI check that
+resolves every `path:line` against its anchor is filed as follow up work.
+
 ### The two halves of the bind
 
 | Step | `RECALL_ENV=development` | `RECALL_ENV=production` |
