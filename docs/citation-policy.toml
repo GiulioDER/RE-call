@@ -1,0 +1,43 @@
+# Which `path:line` citations `scripts/check_doc_citations.py` may demand be current.
+#
+# This file lives OUTSIDE the documents it describes, and that is the whole point. Every entry
+# below names a document whose citations must NOT be updated, so recording the policy inside those
+# documents would require editing exactly the records that exist in order to stay unedited.
+#
+# Add an entry when a document's citations are deliberately anchored to a moment rather than to the
+# tree. Do not add one to silence a real failure: the checker reports where each anchor actually
+# moved to, and copying that number in is almost always the correct repair.
+
+# Citations pinned to one commit, stated in the document's own header. They are not stale; they are
+# anchored, and repointing them would break the contract the header states.
+[[exempt]]
+path = "docs/UNCALIBRATED_FIRST_RUN_DESIGN.md"
+reason = "header states: all source citations are against the tree at commit 295379fd"
+
+# Archived records. Their citations are part of the history they preserve.
+[[exempt]]
+path = "docs/archive/*"
+reason = "archived records; their citations are the history, not pointers into the current tree"
+
+# A pre-registration with TWO zones, which is the case that makes this file necessary rather than
+# merely tidy. Above its line-number rule the citations are frozen, in the document's own words,
+# "because a prediction is a historical record and must not be edited"; it tracks their drift in a
+# separate note below the rule instead. Below the rule they are re measured on every edit, so those
+# are checked normally.
+#
+# The marker is matched as a line PREFIX. If it ever stops matching, the checker refuses the file
+# loudly rather than quietly checking a frozen zone or quietly skipping a live one.
+[[frozen_above]]
+path = "docs/preregistrations/2026-08-18-uncalibrated-first-run.md"
+marker = "## A note on line numbers in every result below"
+reason = "citations above this rule are registered predictions and are never updated"
+
+# Citations into a DIFFERENT repository. `docs/their-harness-parity.md` documents the seam in a
+# third party evaluation harness, and two of its paths (`benchmarks/locomo/run.py`,
+# `benchmarks/beam/run.py`) happen to collide with paths in this tree. Resolving them here compares
+# a citation against a file it was never about, which produced exactly that false report when this
+# checker was first run. The collision is the reason this entry exists; without it the checker
+# looks confidently wrong.
+[[exempt]]
+path = "docs/their-harness-parity.md"
+reason = "cites a third party harness whose paths collide with this repository's"
