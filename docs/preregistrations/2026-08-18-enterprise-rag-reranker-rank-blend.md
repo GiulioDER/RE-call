@@ -14,8 +14,10 @@ Voyage `rerank-2.5`, then combines the original hybrid rank and Voyage rank with
 fusion using the fixed constant 60.
 
 The preregistered rank weights are `0.25`, `0.50`, and `0.75`. Pure Voyage reranking at weight
-`1.00` is the already measured reference. The Voyage relevance score is never written into the
-trust score. Only ranks are blended, and the original `ScoredChunk` objects remain unchanged.
+`1.00` is the already measured reference. The `0.50` arm is the primary screen. The `0.25` and
+`0.75` arms are secondary screens and run only if the primary screen clears its development gate,
+to avoid unnecessary provider calls. The Voyage relevance score is never written into the trust
+score. Only ranks are blended, and the original `ScoredChunk` objects remain unchanged.
 
 ## Slices and measurements
 
@@ -25,8 +27,8 @@ slice in `results/enterprise_rag/project_slices/confirmation.ids`. The earlier f
 reader screen is a smaller diagnostic subset and is not the development split for this retrieval
 test. Use the same VPS2 index, query embedding cache, question hash, `candidate_k`, `k`, 4,000
 character reranker limit, and extractive answer mode.
-Use one capture for the initial screen and three repeated captures for any candidate that reaches
-confirmation. Runtime must not read gold fields.
+Use one capture for the initial primary screen and three repeated captures for any candidate that
+reaches confirmation. Runtime must not read gold fields.
 
 Report document recall, exact coverage, invalid extra documents, paired gains and losses, capture
 stability, reranker calls, latency, and provider cost status.
