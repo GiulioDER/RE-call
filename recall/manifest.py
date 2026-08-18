@@ -12,6 +12,12 @@ from collections.abc import Callable
 from urllib.request import url2pathname
 from urllib.parse import unquote, urlsplit
 
+from recall.extraction import (
+    DocumentExtractionError,
+    ExtractedBlock,
+    extract_document,
+    extraction_path_for,
+)
 from recall.lineage import IndexManifestV1, LineageError, ManifestObjectV1
 
 
@@ -93,9 +99,18 @@ class S3Allowlist:
 
 @dataclass(frozen=True)
 class VerifiedObject:
+    """A manifest checked object, optionally carrying its extracted generation view.
+
+    ``data`` is raw immutable source bytes for base readers and UTF 8 extracted bytes for
+    extracting readers. ``metadata`` and ``blocks`` are populated only for generation building;
+    ``verify()`` deliberately returns the raw form so checksum verification never invokes an
+    optional parser or LibreOffice.
+    """
+
     entry: ManifestObjectV1
     data: bytes
     metadata: dict[str, Any] = field(default_factory=dict)
+    blocks: tuple[ExtractedBlock, ...] = ()
 
 
 @runtime_checkable
@@ -344,10 +359,8 @@ class ExtractingLocalObjectReader(LocalObjectReader):
     """Verify original bytes, then expose a UTF 8 extracted view to generation building."""
 
     def fetch(self, entry: ManifestObjectV1) -> VerifiedObject:
-        from recall.extraction import DocumentExtractionError, extract_document
-
         verified = super().fetch(entry)
-        path = self._resolve(entry)
+        path = extraction_path_for(self._resolve(entry), entry.media_type)
         try:
             extracted = extract_document(path, verified.data)
         except DocumentExtractionError:
@@ -359,8 +372,40 @@ class ExtractingLocalObjectReader(LocalObjectReader):
         return VerifiedObject(
             entry,
             extracted.text.encode("utf-8"),
-            extracted.metadata,
+            {**verified.metadata, **extracted.metadata},
+            extracted.blocks,
         )
+
+    def verify(self, manifest: IndexManifestV1) -> tuple[VerifiedObject, ...]:
+        return tuple(LocalObjectReader.fetch(self, entry) for entry in manifest.objects)
+
+
+class ExtractingS3ObjectReader:
+    """Apply the same format extraction to verified S3 bytes."""
+
+    def __init__(self, base: S3ObjectReader) -> None:
+        self._base = base
+
+    def fetch(self, entry: ManifestObjectV1) -> VerifiedObject:
+        verified = self._base.fetch(entry)
+        name = extraction_path_for(Path(unquote(urlsplit(entry.uri).path)).name, entry.media_type)
+        try:
+            extracted = extract_document(Path(name), verified.data)
+        except Exception as exc:
+            if isinstance(exc, ManifestVerificationError):
+                raise
+            raise ManifestVerificationError(
+                f"could not extract {entry.uri}: {type(exc).__name__}"
+            ) from exc
+        return VerifiedObject(
+            entry,
+            extracted.text.encode("utf-8"),
+            {**verified.metadata, **extracted.metadata},
+            extracted.blocks,
+        )
+
+    def verify(self, manifest: IndexManifestV1) -> tuple[VerifiedObject, ...]:
+        return tuple(self._base.fetch(entry) for entry in manifest.objects)
 
 
 def reader_for_manifest(
@@ -396,8 +441,11 @@ def reader_for_manifest(
     scheme = schemes.pop()
     if scheme == "file":
         if local_roots is not None:
-            return LocalObjectReader(local_roots)
-        return LocalObjectReader.from_environment()
+            return ExtractingLocalObjectReader(local_roots)
+        return ExtractingLocalObjectReader.from_environment()
     if scheme == "s3":
-        return (s3_factory or S3ObjectReader.from_environment)()
+        reader = (s3_factory or S3ObjectReader.from_environment)()
+        if isinstance(reader, S3ObjectReader):
+            return ExtractingS3ObjectReader(reader)
+        return reader
     raise ValueError(f"manifest objects use unsupported scheme {scheme!r}")

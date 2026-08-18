@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import warnings
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -26,9 +27,20 @@ if TYPE_CHECKING:  # the pool extra is optional; the annotation must not require
 
 #: The built-in dev credentials shipped in the default DSN — safe only against a local database.
 _DEFAULT_CREDS = ("recall", "recall")
+_NUMERIC_TOKEN_RE = re.compile(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)?%?(?![\w.])")
 #: "" covers a hostless/unix-socket DSN. Bracketed IPv6 is absent on purpose: urlsplit strips
 #: the brackets. All of 127.0.0.0/8 is handled numerically by `_is_local_host`.
 _LOCAL_HOSTS = ("", "localhost", "::1", "0.0.0.0", "host.docker.internal")
+
+
+def _numeric_query_terms(text: str) -> list[str]:
+    """Return normalized numeric terms for the table exact-match boost."""
+    terms: list[str] = []
+    for value in _NUMERIC_TOKEN_RE.findall(text):
+        normalized = value.replace(",", ".")
+        if normalized not in terms:
+            terms.append(normalized)
+    return terms
 
 
 def _is_local_host(host: str) -> bool:
@@ -1385,9 +1397,10 @@ class PgVectorStore:
     def query_sparse(
         self, text: str, k: int, source: str | None = None, vec: list[float] | None = None
     ) -> list[ScoredChunk]:
-        """Full-text search. Ranking is always ts_rank; when `vec` is given, each hit's `score`
-        is its true dense cosine against `vec` instead of the ts_rank value, so lexical-only
-        hits are comparable with dense hits downstream.
+        """Full-text search. Lexical ranking is ts_rank plus a bounded numeric match boost when
+        the query contains numeric terms. When `vec` is given, each hit's `score` is its true dense
+        cosine against `vec` instead of the lexical value, so lexical-only hits are comparable
+        with dense hits downstream.
 
         The query is a DISJUNCTION of the question's lexemes, not a conjunction. This used to
         build its tsquery with ``websearch_to_tsquery``, which implements web-search-box
@@ -1421,6 +1434,13 @@ class PgVectorStore:
         self, text: str, k: int, source: str | None = None, vec: list[float] | None = None
     ) -> list[ScoredChunk]:
         t = self._table
+        numeric_terms = _numeric_query_terms(text)
+        numeric_boost = (
+            "CASE WHEN c.metadata->'numeric_values' ?| %(numeric_terms)s::text[] "
+            "THEN 0.25 ELSE 0 END"
+            if numeric_terms
+            else "0"
+        )
         # See `_query_dense`: the caller-facing identifier is the relative `file`, so match it (with
         # a `source` fall-back for legacy rows). Aliased `c.` here.
         where = (
@@ -1446,7 +1466,7 @@ class PgVectorStore:
                 FROM (
                     SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.first_indexed_at,
                            c.embedding,
-                           ts_rank(c.tsv, q.tsq) AS rank
+                           ts_rank(c.tsv, q.tsq) + {numeric_boost} AS rank
                     FROM {t} c, q
                     WHERE c.tenant_id = %(tenant)s
                       AND c.tsv @@ q.tsq
@@ -1460,7 +1480,7 @@ class PgVectorStore:
             sql = f"""
                 {tsquery_cte}
                 SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.first_indexed_at,
-                       ts_rank(c.tsv, q.tsq) AS score
+                       ts_rank(c.tsv, q.tsq) + {numeric_boost} AS score
                 FROM {t} c, q
                 WHERE c.tenant_id = %(tenant)s
                   AND c.tsv @@ q.tsq
@@ -1468,7 +1488,12 @@ class PgVectorStore:
                 ORDER BY score DESC
                 LIMIT %(k)s
             """
-        params: dict = {"q": text, "k": k, "tenant": self._tenant}
+        params: dict = {
+            "q": text,
+            "k": k,
+            "tenant": self._tenant,
+            "numeric_terms": numeric_terms,
+        }
         if vec is not None:
             params["vec"] = Vector(vec)
         if source:
