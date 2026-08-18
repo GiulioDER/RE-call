@@ -100,3 +100,60 @@ Both arms run on this branch off `f51cec0a`.
 - **Chunk count is not question count.** 1154 code chunks does not mean 40 usable answerable
   subjects, because `generate_offline` needs *distinct* subjects. If the corpus yields fewer, the
   refusal is on the answerable side and my prediction is wrong for a reason unrelated to the pool.
+
+## Result (2026-08-18)
+
+**Status:** measured
+
+### Arm 1, survivors
+
+Measured: **14 of 25 survivors, capacity 70.**
+Predicted: 12 of 25, capacity 60.
+**Gap: +2 subjects, +10 capacity.** Not a surprise about the mechanism, and not a hit either. The
+prediction was for moving the pool out of source ALONE, and that step on its own reproduced 12
+exactly. Two further collisions were found while doing the work and fixed in the same change:
+
+* one subject's anchor word was also in `_ADJECTIVES`, the generated corpus's own vocabulary. The
+  comment directly above the pool claims "no overlap with the subject adjectives/nouns", so this was
+  an invariant stated in prose, never asserted, and false.
+* one appeared in a demo query in `cli.py`.
+
+Both were pre-existing and neither was predicted, because I had not looked for them.
+
+### Arm 2, certification
+
+Measured over a snapshot of `recall/**/*.py` (1,155 chunks) with `fastembed`, n = **40 answerable /
+40 unanswerable**:
+
+    certified            True
+    promoted             True
+    separability         0.99875
+    ci_low               0.9909041024269646
+    ci_high              1.0
+    certification_reason "separability 0.999 [0.991, 1.000] over 40/40 samples"
+
+Predicted: certified True, AUC lower bound **0.95 to 1.00**.
+**Gap: none. `ci_low` = 0.9909 falls inside the predicted interval**, and above the 0.9496 the
+offline generator scored on `docs/`, as predicted and for the predicted reason: a code corpus and a
+pool about penguins and gamelan tuning share almost no vocabulary.
+
+**The named risk did not materialise.** I gave roughly 30% to the ANSWERABLE half failing, because
+`_subject_of` builds a question from a markdown heading and Python chunks have none, so subjects
+fall back to bare term lists. Forty answerable subjects were generated and separability was 0.999,
+so the term-list fallback retrieves its own chunk perfectly well here. Worth keeping: the heading
+path is a nicety for prose, not a requirement.
+
+### Apparatus defects found while checking it, both mine
+
+1. **The first run's follow-up query named a column that does not exist** (`metrics`), and the
+   `finally` block had already purged the tenant, so the certification verdict survived but the
+   number did not. Re-run against the real columns (`separability`, `ci_low`, `ci_high`).
+2. **The second run died with `ManifestVerificationError: object size mismatch`** on
+   `recall/wizard/headless.py`: 24,808 bytes recorded, 28,112 received. I was editing that file while
+   the build read it. That is the `file://` integrity guarantee working exactly as `lineage.py`
+   documents it, a local manifest buying DETECTION of divergence rather than prevention, and it
+   correctly invalidated a measurement taken over a corpus I was mutating. The third run builds from
+   an immutable snapshot, which is also what makes it reproducible.
+
+Neither defect was in the code under test. Both would have produced a confident wrong answer had the
+apparatus failed silently instead of loudly.

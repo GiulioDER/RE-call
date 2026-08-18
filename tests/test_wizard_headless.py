@@ -449,7 +449,7 @@ def test_a_refused_corpus_exits_nonzero_and_a_degraded_one_does_not(
     monkeypatch.setattr(
         headless,
         "run_headless",
-        lambda cfg, services=None, progress=None: headless.HeadlessReport(
+        lambda cfg, services=None, progress=None, state_path=None, fresh=False: headless.HeadlessReport(
             outcomes=(
                 CorpusOutcome(
                     tenant="docs",
@@ -468,7 +468,7 @@ def test_a_refused_corpus_exits_nonzero_and_a_degraded_one_does_not(
     monkeypatch.setattr(
         headless,
         "run_headless",
-        lambda cfg, services=None, progress=None: headless.HeadlessReport(
+        lambda cfg, services=None, progress=None, state_path=None, fresh=False: headless.HeadlessReport(
             outcomes=(CorpusOutcome(tenant="docs", generation_id="g", certified=False,
                                     degraded_reason="separability below the bar",
                                     previously_serving="gen_previous"),),

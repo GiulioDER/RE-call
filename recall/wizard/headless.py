@@ -52,6 +52,7 @@ from recall.generations import GenerationManager
 from recall.store import redacted_dsn
 from recall.wizard.corpora import RELATIVE_ROOT, CorpusSpec, default_plan
 from recall.wizard.pipeline import CorpusOutcome, PipelineRefusal, run_corpus
+from recall.wizard.state import WizardState, config_digest, load_state, save_state
 
 __all__ = [
     "ConfigRefusal",
@@ -159,6 +160,10 @@ class HeadlessReport:
     #: handing it to `run_corpus` would produce a promoted generation nothing can calibrate, but it
     #: still has to be INDEXED or its server answers nothing.
     indexed: tuple[LegacyIndex, ...] = ()
+    #: Tenants taken from a previous run's recorded state rather than rebuilt. Reported, because
+    #: "this took four seconds" and "this took eleven minutes" should not look identical, and an
+    #: operator who expected a rebuild needs to see that they did not get one.
+    reused: tuple[str, ...] = ()
 
     @property
     def unserved(self) -> tuple[str, ...]:
@@ -199,11 +204,12 @@ class HeadlessReport:
         lines: list[str] = []
         for outcome in self.outcomes:
             head = f"{' ' * _GUTTER}{outcome.tenant:<{width}} "
+            note = "  [reused from a previous run]" if outcome.tenant in self.reused else ""
             if outcome.certified:
                 lines.append(
                     f"{head}certified and promoted  "
                     f"({outcome.answerable} answerable / {outcome.unanswerable} unanswerable, "
-                    f"{outcome.generation_id})"
+                    f"{outcome.generation_id}){note}"
                 )
             else:
                 lines.append(f"{head}DEGRADED, not promoted  {outcome.generation_id}")
@@ -549,8 +555,17 @@ def run_headless(
     *,
     services: _Services | None = None,
     progress: Callable[[str], None] | None = None,
+    state_path: Path | None = None,
+    fresh: bool = False,
 ) -> HeadlessReport:
-    """Apply the schema, then drive every calibrated corpus, reporting rather than aborting."""
+    """Apply the schema, then drive every calibrated corpus, reporting rather than aborting.
+
+    `state_path` makes the run resumable: a corpus a previous run promoted under the same
+    configuration is reused instead of rebuilt, and the state is written after EVERY corpus so a run
+    that dies part-way keeps what it finished. `fresh=True` ignores any recorded state. With
+    `state_path` unset the behaviour is exactly as before, which keeps every existing caller and
+    test honest about what they are exercising.
+    """
     try:
         plan = default_plan(
             embedder=config.embedder,
@@ -568,12 +583,53 @@ def run_headless(
     wiring = services if services is not None else _RealServices(config)
     _prepare(config, wiring)
 
+    # Resumable state, keyed on a digest of the config fields that would invalidate finished work.
+    # `WizardState(digest=...)` with no recorded corpora is the no-state case, so the loops below do
+    # not branch on whether resuming is enabled.
+    digest = config_digest(config)
+    state = (
+        WizardState(digest=digest)
+        if fresh or state_path is None
+        else load_state(state_path, digest=digest)
+    )
+
+    def _remember() -> None:
+        """Written after EVERY corpus, not at the end. The end is what a crashed run never reaches.
+
+        A write failure is reported and swallowed. The state file is an OPTIMISATION: losing it
+        costs a rebuild, while raising here would throw away a completed corpus because a directory
+        was read-only, which is the more expensive of the two by a wide margin. The default path
+        sits beside the operator's config, which they may well not own.
+        """
+        if state_path is None:
+            return
+        try:
+            save_state(state_path, state)
+        except OSError as exc:
+            if progress:
+                progress(
+                    f"note: could not write {state_path} ({exc.strerror or exc}); this run cannot "
+                    "be resumed, but nothing already built is lost"
+                )
+
     outcomes: list[CorpusOutcome] = []
     refused: list[Refusal] = []
     failures: list[Failure] = []
+    reused: list[str] = []
     for spec in plan.calibrated:
+        if (recorded := state.outcome_for(spec.tenant)) is not None:
+            # Only a PROMOTED outcome is recorded, so this cannot silently reuse a degraded corpus:
+            # that one was left unpromoted precisely so re-running would retry it.
+            outcomes.append(recorded)
+            reused.append(spec.tenant)
+            if progress:
+                progress(f"{spec.tenant}: reused from a previous run")
+            continue
         try:
-            outcomes.append(wiring.run(spec, progress=_step_reporter(spec.tenant, progress)))
+            outcome = wiring.run(spec, progress=_step_reporter(spec.tenant, progress))
+            outcomes.append(outcome)
+            state = state.with_outcome(outcome)
+            _remember()
         except PipelineRefusal as exc:
             # Reported, not raised. The remaining corpora are independent and a user with one
             # working corpus is better off than a user with a traceback.
@@ -603,10 +659,19 @@ def run_headless(
     for spec in plan.corpora:
         if spec.calibrated:
             continue
+        if (previous := state.indexed_for(spec.tenant)) is not None:
+            indexed.append(LegacyIndex(tenant=previous[0], files=previous[1], chunks=previous[2]))
+            reused.append(spec.tenant)
+            if progress:
+                progress(f"{spec.tenant}: reused from a previous run")
+            continue
         if progress:
             progress(f"{spec.tenant}: index")
         try:
-            indexed.append(wiring.index_legacy(spec))
+            entry = wiring.index_legacy(spec)
+            indexed.append(entry)
+            state = state.with_indexed(entry)
+            _remember()
         except PipelineRefusal as exc:
             refused.append(
                 Refusal(
@@ -629,4 +694,5 @@ def run_headless(
         refused=tuple(refused),
         failures=tuple(failures),
         indexed=tuple(indexed),
+        reused=tuple(reused),
     )

@@ -926,6 +926,23 @@ def main(argv: list[str] | None = None) -> None:
         "serving_role, which is required when dsn and migration_dsn authenticate as different "
         "roles, because no migration emits a GRANT.",
     )
+    p_wizard.add_argument(
+        "--state",
+        default=None,
+        help="resumable state file (default: the config path with a .state.json suffix). A corpus a "
+        "previous run PROMOTED under the same configuration is reused rather than rebuilt, and the "
+        "file is written after every corpus. A degraded corpus is always retried.",
+    )
+    p_wizard.add_argument(
+        "--fresh",
+        action="store_true",
+        help="ignore any recorded state and rebuild every corpus.",
+    )
+    p_wizard.add_argument(
+        "--no-state",
+        action="store_true",
+        help="do not read or write a state file at all.",
+    )
 
     p_schema = sub.add_parser("schema", help="inspect or apply versioned database migrations")
 
@@ -1540,7 +1557,22 @@ def main(argv: list[str] | None = None) -> None:
                     _require_secure(value)
                 except PermissionError as exc:
                     raise SystemExit(f"the wizard config's {key} is refused: {exc}") from exc
-            wizard_report = run_headless(wizard_config, progress=lambda step: print(step))
+            # Derived from the config path rather than required, so resumability is on by default
+            # without a new mandatory key. `--no-state` opts out entirely; a run that cannot write
+            # beside its config should say so rather than have the driver guess.
+            wizard_state = (
+                None
+                if args.no_state
+                else Path(args.state)
+                if args.state
+                else Path(args.config).with_suffix(".state.json")
+            )
+            wizard_report = run_headless(
+                wizard_config,
+                progress=lambda step: print(step),
+                state_path=wizard_state,
+                fresh=args.fresh,
+            )
         except PipelineRefusal as exc:
             # A refusal is an operator-actionable message, not a traceback. It is raised before
             # any corpus is built, so there is nothing to clean up either.
