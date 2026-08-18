@@ -8,6 +8,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Changed
+
+* ⚠️ **BREAKING, and it costs one full re-index: the incremental skip guard now keys on the whole
+  embedding identity rather than the profile id.** `index._index_fingerprint` hashed
+  `embedding_profile_id(embedder)`, which is ONE field of an `EmbeddingProfile`, so any two
+  embedders sharing an id were the same embedder as far as the skip guard was concerned. It now
+  hashes `EmbeddingProfile.fingerprint()`, bringing it into line with `recall/cache.py`, which has
+  always keyed on the whole profile and whose docstring gives the reason: "The ID alone is not an
+  identity".
+
+  The hole was reachable. A 384-dimension corpus and a 1024-dimension corpus produced **equal**
+  index fingerprints for the same file, so swapping the model left every file skipped, every vector
+  stale, and the run reporting success with a skipped count. Ten identity fields now reach the
+  fingerprint that did not before: model name, artifact digest, dimension, both encoder modes,
+  normalization, instruction version, chunker version, context version and dependencies.
+
+  **What you have to do.** Every `index_fingerprint` already stored in chunk metadata is now
+  stale, so the next `recall index` over an existing corpus re-reads, re-chunks and **re-embeds
+  every file, once**. Measured: the default `FastEmbedEmbedder()` moves from `a93f4428…` to
+  `1832d370…`. There is no cache to soften this on the shipped paths, because nothing in `recall`
+  or `recall_mcp` passes an `EmbeddingCache` to the `Indexer`; only the benchmarks do. Budget the
+  re-embed on a metered embedder accordingly, and prefer to run it deliberately rather than
+  discovering it inside an unattended job. Nothing is lost if you do not: the corpus keeps serving
+  its existing vectors until it is re-indexed, since `index_fingerprint` is only ever compared to
+  itself.
+
+  **New re-index triggers, deliberately.** `dependencies` carries the inference-library version and
+  the ONNX execution providers, so a fastembed upgrade or a CPU-to-CUDA move now re-fingerprints
+  the corpus. That is the trade `EmbeddingProfile.fingerprint` already makes for the cache, for the
+  same stated reason: a runtime change is free to move the last bits of a vector, and neither a
+  cache nor a skip guard can tell. The two agree now instead of disagreeing.
+
+  **`ContextPolicy.max_tokens` is now covered too**, in the same change and for the same reason.
+  It selects a different rung of `contextual_passages`' degradation ladder, so two policies
+  differing only in it build different passages and used to hash equal. It had been carried as a
+  known gap on one ground only, that closing it re-fingerprints every corpus, and that cost is
+  being paid here regardless; deferring it again would have charged a second full re-embed later
+  for a one-term change. No shipped path sets it (`context_policy_for_profile` leaves it unset),
+  so this widens the identity without moving any shipped corpus further than the paragraph above
+  already does.
+
+  ⚠️ `ContextPolicy.tokenizer` is deliberately **not** covered, and that is a decision rather than
+  an oversight. It changes the passage exactly as `max_tokens` does, but a callable has no identity
+  stable across processes: `__qualname__` collides for closures and lambdas and `id()` differs
+  every run. An unstable term is far worse than a missing one, because the fingerprint would differ
+  from itself and re-embed the whole corpus on every single run, silently and permanently. Closing
+  it needs a caller-supplied stable tokenizer identity. A test pins the current behaviour so the
+  limit is recorded rather than assumed.
+
 ### Fixed
 
 * **An embedder built without a registered profile claimed `bge-small-symmetric-v1` whatever model

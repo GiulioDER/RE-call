@@ -422,17 +422,42 @@ def _index_fingerprint(
 ) -> str:
     """What "this file is already indexed under this configuration" means, in one place.
 
-    It covers the file's bytes plus the embedding profile that produced the vector and the
-    context mode and version that built its passage. A fingerprint omitting any of those
+    It covers the file's bytes plus the COMPLETE embedding identity that produced the vector and
+    the context mode and version that built its passage. A fingerprint omitting any of those
     would let a profile switch look like a no-op.
 
-    ⚠️ It does NOT cover `ContextPolicy.max_tokens`, which also changes the embedded passage:
-    `contextual_passages` selects a different rung of its degradation ladder when it is set.
-    Two policies differing only in `max_tokens` therefore hash equal and the second is
-    skipped. No shipped path reaches this — `context_policy_for_profile` leaves `max_tokens`
-    unset — so it bites a library caller constructing a policy by hand. Recorded rather than
-    fixed because widening the tuple re-fingerprints every indexed corpus, which is a
-    migration, not a comment change.
+    ⚠️ **This hashes `EmbeddingProfile.fingerprint()`, not `embedding_profile_id()`, and that
+    changed in 2026-08.** The id is one field of an identity, and the skip guard was treating it
+    as the whole of it, so any two embedders sharing an id were indistinguishable here. That was
+    not hypothetical: until `92619999` the no-identity path minted `bge-small-symmetric-v1` for
+    every unregistered model, and a 384-dimension corpus and a 1024-dimension corpus produced
+    EQUAL fingerprints for the same file, so a model swap read as a no-op and the stale vectors
+    stayed. Fixing the id closed the reachable case; it left the guard still trusting one field.
+    `cache_key` in `recall/cache.py` has always keyed on the whole profile for exactly this
+    reason, and its docstring says why: "The ID alone is not an identity".
+
+    What this now inherits, deliberately, is every field of that identity, INCLUDING
+    `dependencies`. So an inference-library upgrade or an ONNX execution-provider change
+    (CPU to CUDA) re-fingerprints the corpus and re-embeds it. That is the same trade
+    `EmbeddingProfile.fingerprint` already makes for the cache, made for the same reason:
+    a runtime change is free to move the last bits of a vector and neither a cache nor a skip
+    guard can tell. The two now agree rather than disagreeing.
+
+    `ContextPolicy.max_tokens` is covered too, as of the same change. It selects a different rung
+    of `contextual_passages`' degradation ladder, so two policies differing only in it build
+    different passages, and they used to hash equal and skip the second. It was carried as a known
+    gap for one reason only, that fixing it re-fingerprints every corpus; that cost is being paid
+    here anyway, and deferring it again would have charged a SECOND full re-embed later for a
+    one-term change. It is stringified, so `None` (the shipped value everywhere, since
+    `context_policy_for_profile` never sets it) stays distinct from any integer.
+
+    ⚠️ `ContextPolicy.tokenizer` is still NOT covered, and this one is deliberate rather than
+    deferred. It changes the passage exactly as `max_tokens` does, but it is a CALLABLE with no
+    identity that is stable across processes: `__qualname__` collides for closures and lambdas,
+    and `id()` differs on every run. A term that is merely unstable would be far worse than a
+    missing one, because the fingerprint would differ from itself and re-embed the whole corpus on
+    every single run, silently and forever. A stable tokenizer identity has to be supplied by the
+    caller before this can be closed.
 
     One derivation because it is consumed twice and the two consumers are 60 lines apart: the skip
     guard reads it to decide whether to do the work, and the write path stores it so the NEXT run's
@@ -444,9 +469,10 @@ def _index_fingerprint(
             (
                 content_hash,
                 STRUCTURED_DOCUMENT_VERSION,
-                embedding_profile_id(embedder),
+                embedding_profile(embedder).fingerprint(),
                 context_policy.mode,
                 context_policy.version,
+                str(context_policy.max_tokens),
             )
         ).encode("utf-8")
     ).hexdigest()
