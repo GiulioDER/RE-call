@@ -22,7 +22,7 @@ import subprocess
 import time
 import zipfile
 from io import TextIOWrapper
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
@@ -47,7 +47,7 @@ from recall.reasoning_expansion import (
     resolve_expansion_provider,
 )
 from recall.store import PgVectorStore
-from recall.types import Chunk, ScoredChunk
+from recall.types import Chunk, RetrievalDiagnostics, ScoredChunk
 from benchmarks.artifact_contract import load_published_artifact
 
 DEFAULT_TABLE = "bench_enterprise_rag_chunks"
@@ -74,6 +74,17 @@ TOP_CONFIG_EMBEDDER = "voyage:voyage-4-large"
 TOP_CONFIG_SPARSE_BACKEND = "both"
 TOP_CONFIG_RERANKER = f"voyage:{DEFAULT_VOYAGE_RERANKER}"
 DOC_ID_RE = re.compile(r"(dsid_[A-Za-z0-9]+)")
+RUNTIME_EXCLUDED_QUESTION_FIELDS = frozenset(
+    {
+        "expected_doc_ids",
+        "answer_facts",
+        "answer",
+        "answers",
+        "gold_answer",
+        "expected_answer",
+        "competitor_answers",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -216,16 +227,32 @@ def _doc_from_row(row: Mapping[str, Any]) -> EnterpriseDoc:
     return EnterpriseDoc(doc_id=doc_id, source_type=source_type, title=title, content=content)
 
 
-def load_questions(path: Path, *, limit: int | None = None) -> list[EnterpriseQuestion]:
+def load_questions(
+    path: Path,
+    *,
+    limit: int | None = None,
+    question_types: Collection[str] | None = None,
+    question_ids: Collection[str] | None = None,
+) -> list[EnterpriseQuestion]:
+    selected_types = {str(value).strip().lower() for value in (question_types or ()) if str(value).strip()}
+    selected_ids = {str(value).strip() for value in (question_ids or ()) if str(value).strip()}
     questions: list[EnterpriseQuestion] = []
     for row in _json_rows(path):
-        questions.append(
-            EnterpriseQuestion(
-                question_id=_required_text(row, "question_id", "id"),
-                question=_required_text(row, "question", "query"),
-                raw=row,
-            )
+        runtime_raw = {
+            key: value
+            for key, value in row.items()
+            if key not in RUNTIME_EXCLUDED_QUESTION_FIELDS
+        }
+        question = EnterpriseQuestion(
+            question_id=_required_text(row, "question_id", "id"),
+            question=_required_text(row, "question", "query"),
+            raw=runtime_raw,
         )
+        if selected_types and _text(row.get("question_type")).lower() not in selected_types:
+            continue
+        if selected_ids and question.question_id not in selected_ids:
+            continue
+        questions.append(question)
         if limit is not None and len(questions) >= limit:
             break
     return questions
@@ -379,14 +406,27 @@ def build_sparse_encoder(
     )
 
 
-def build_reranker(name: str, *, max_document_chars: int | None = None) -> object | None:
+def build_reranker(
+    name: str,
+    *,
+    max_document_chars: int | None = None,
+    rank_weight: float = 1.0,
+) -> object | None:
     if not name or name == "none":
         return None
     if name.startswith("voyage:"):
-        from benchmarks.voyage_rerank import VoyageReranker
+        from benchmarks.voyage_rerank import BlendedVoyageReranker, VoyageReranker
 
-        return VoyageReranker(
+        if not 0.0 <= rank_weight <= 1.0:
+            raise ValueError("rank_weight must be between 0 and 1")
+        if rank_weight == 1.0:
+            return VoyageReranker(
+                model=name[len("voyage:"):],
+                max_document_chars=max_document_chars,
+            )
+        return BlendedVoyageReranker(
             model=name[len("voyage:"):],
+            rank_weight=rank_weight,
             max_document_chars=max_document_chars,
         )
     if name == "local" or name.startswith("local:"):
@@ -402,7 +442,7 @@ def _write_batch(store: PgVectorStore, embedder: Embedder, chunks: list[Chunk]) 
     return store.upsert(chunks, embeddings)
 
 
-def retrieve_docs(
+def retrieve_docs_with_diagnostics(
     store: PgVectorStore,
     embedder: Embedder,
     question: str,
@@ -413,7 +453,7 @@ def retrieve_docs(
     sparse_encoder: object | None,
     reranker: object | None,
     gap_threshold: float,
-) -> tuple[list[str], list[ScoredChunk], bool]:
+) -> tuple[list[str], list[ScoredChunk], bool, RetrievalDiagnostics]:
     retriever = HybridRetriever(
         store,
         embedder,
@@ -432,7 +472,33 @@ def retrieve_docs(
         if doc_id and doc_id not in seen:
             seen.add(doc_id)
             ids.append(doc_id)
-    return ids, result.hits, result.gap_warning
+    return ids, result.hits, result.gap_warning, result.diagnostics
+
+
+def retrieve_docs(
+    store: PgVectorStore,
+    embedder: Embedder,
+    question: str,
+    *,
+    k: int,
+    candidate_k: int,
+    sparse_backend: str,
+    sparse_encoder: object | None,
+    reranker: object | None,
+    gap_threshold: float,
+) -> tuple[list[str], list[ScoredChunk], bool]:
+    ids, hits, gap_warning, _diagnostics = retrieve_docs_with_diagnostics(
+        store,
+        embedder,
+        question,
+        k=k,
+        candidate_k=candidate_k,
+        sparse_backend=sparse_backend,
+        sparse_encoder=sparse_encoder,
+        reranker=reranker,
+        gap_threshold=gap_threshold,
+    )
+    return ids, hits, gap_warning
 
 
 class QueryCachedEmbedder:
@@ -458,14 +524,14 @@ class QueryCachedEmbedder:
 
 
 def _merge_scored_hits(initial: Sequence[ScoredChunk], additions: Sequence[ScoredChunk]) -> list[ScoredChunk]:
-    merged: list[ScoredChunk] = []
-    seen: set[str] = set()
+    merged: dict[str, ScoredChunk] = {}
     for hit in (*initial, *additions):
-        if hit.chunk.id in seen:
-            continue
-        seen.add(hit.chunk.id)
-        merged.append(hit)
-    return merged
+        previous = merged.get(hit.chunk.id)
+        if previous is None or hit.score > previous.score:
+            merged[hit.chunk.id] = hit
+    # Expansion is useful only if a strong newly found hit can displace a weak original hit
+    # before the document-level k cutoff. Ties retain the first-pass ordering for stability.
+    return sorted(merged.values(), key=lambda hit: hit.score, reverse=True)
 
 
 def _expansion_evidence(hits: Sequence[ScoredChunk]) -> tuple[Mapping[str, object], ...]:
@@ -750,6 +816,7 @@ def generated_answer(
     api_key: str,
     max_chars: int,
     question_type: str | None = None,
+    answer_policy: str = "baseline",
 ) -> str:
     from benchmarks.llm import OpenRouterLLM
 
@@ -776,9 +843,98 @@ def generated_answer(
         "separately. Reason through conflicts, completeness, and missing evidence before giving "
         "the final answer, but return only the final answer."
     )
+    if answer_policy == "category_aware":
+        system += "\n\n" + category_answer_policy(question_type)
+    elif answer_policy != "baseline":
+        raise ValueError(f"unknown answer policy: {answer_policy}")
     type_line = f"Question type: {question_type}\n" if question_type else ""
     user = f"{type_line}Question:\n{question}\n\nDocuments:\n\n" + "\n\n".join(evidence)
     return OpenRouterLLM(model=model, api_key=api_key).complete(system, user)
+
+
+def category_answer_policy(question_type: str | None) -> str:
+    """Return the bounded reader policy for an official benchmark category.
+
+    This is deliberately an answer-side policy. It does not use gold document ids or answer
+    facts, and it is therefore safe to evaluate as a system behavior rather than as an oracle.
+    """
+
+    policies = {
+        "project_related": (
+            "This is a project-related multi-document question. Build one coherent answer from "
+            "all relevant documents. Track each requested entity, decision, dependency, and "
+            "causal step separately, then merge them without dropping a supported detail. "
+            "Distinguish facts from different source systems and do not fill gaps from general "
+            "knowledge."
+        ),
+        "completeness": (
+            "This is a completeness question. Treat the requested result as a checklist or set. "
+            "Search the provided documents for every distinct item, count, comparison, or fact "
+            "needed by the question. Before answering, verify that every part of the checklist "
+            "is supported and do not stop after finding only the most salient document."
+        ),
+        "conflicting_info": (
+            "This is a conflicting-information question. Compare the relevant documents before "
+            "answering. Use explicit dates, version markers, status, and source specificity to "
+            "separate superseded information from the current answer. Mention the older or "
+            "contradictory value when it is necessary to explain the change, and never silently "
+            "blend incompatible values."
+        ),
+        "constrained": (
+            "This is a constrained question. Treat every qualifier in the question as mandatory. "
+            "Filter out documents that match the topic but fail even one condition, and report "
+            "only facts supported after all constraints are applied."
+        ),
+        "intra_document_reasoning": (
+            "This question requires joining evidence from different parts of a document. Check "
+            "the whole supplied evidence for exceptions, conditions, and later qualifications "
+            "before deciding what the document supports."
+        ),
+        "high_level": (
+            "This is a high-level synthesis question. Separate directly supported company-wide "
+            "patterns from individual examples, and state the scope of the evidence instead of "
+            "inventing a precise number or universal conclusion."
+        ),
+    }
+    return policies.get(
+        (question_type or "").strip().lower(),
+        "First identify the exact facts requested, then verify each fact against the supplied evidence before answering.",
+    )
+
+
+def answer_hits(
+    hits: Sequence[ScoredChunk],
+    document_ids: Sequence[str],
+    *,
+    question_type: str | None,
+    answer_policy: str = "baseline",
+) -> list[ScoredChunk]:
+    """Keep answer context and submitted document ids aligned for the experimental policy."""
+
+    if answer_policy == "baseline":
+        return list(hits)
+    if answer_policy != "category_aware":
+        raise ValueError(f"unknown answer policy: {answer_policy}")
+
+    allowed = {str(value) for value in document_ids}
+    if not allowed:
+        return list(hits)
+    selected: list[ScoredChunk] = []
+    seen_documents: set[str] = set()
+    # Conflict questions benefit from one representative chunk per submitted document so the
+    # reader compares distinct sources instead of repeating the same stale/current claim. The
+    # other multi-evidence categories need all available chunks: completeness and project answers
+    # often distribute separate requested facts across several chunks of one document.
+    deduplicate_by_document = question_type == "conflicting_info"
+    for hit in hits:
+        doc_id = str(hit.chunk.metadata.get("doc_id") or hit.chunk.source)
+        if doc_id not in allowed:
+            continue
+        if deduplicate_by_document and doc_id in seen_documents:
+            continue
+        seen_documents.add(doc_id)
+        selected.append(hit)
+    return selected or list(hits)
 
 
 def write_answers(
@@ -839,7 +995,15 @@ def write_answers_stream(
 
 def retrieval_capture_summary(captures: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     if not captures:
-        return {"count": 0, "stable": None, "mean_document_jaccard": None}
+        return {
+            "count": 0,
+            "stable": None,
+            "mean_document_jaccard": None,
+            "mean_latency_ms": None,
+            "p95_latency_ms": None,
+            "mean_stage_ms": {},
+            "calls": {},
+        }
     document_sets = [
         {str(value) for value in capture.get("document_ids", ())}
         for capture in captures
@@ -851,10 +1015,73 @@ def retrieval_capture_summary(captures: Sequence[Mapping[str, Any]]) -> dict[str
             union = left | right
             jaccard_sum += len(left & right) / len(union) if union else 1.0
             pair_count += 1
+    latencies = sorted(
+        float(capture["latency_ms"])
+        for capture in captures
+        if isinstance(capture.get("latency_ms"), (int, float))
+    )
+    stage_totals: dict[str, float] = {}
+    call_totals: dict[str, int] = {}
+    for capture in captures:
+        stage_ms = capture.get("stage_ms")
+        if isinstance(stage_ms, Mapping):
+            for name, value in stage_ms.items():
+                if isinstance(value, (int, float)):
+                    stage_totals[str(name)] = stage_totals.get(str(name), 0.0) + float(value)
+        calls = capture.get("calls")
+        if isinstance(calls, Mapping):
+            for name, value in calls.items():
+                if isinstance(value, int):
+                    call_totals[str(name)] = call_totals.get(str(name), 0) + value
+    p95_index = min(len(latencies) - 1, max(0, int(len(latencies) * 0.95 + 0.999) - 1))
     return {
         "count": len(captures),
         "stable": len({tuple(sorted(values)) for values in document_sets}) == 1,
         "mean_document_jaccard": jaccard_sum / pair_count if pair_count else 1.0,
+        "mean_latency_ms": sum(latencies) / len(latencies) if latencies else None,
+        "p95_latency_ms": latencies[p95_index] if latencies else None,
+        "mean_stage_ms": (
+            {name: value / len(captures) for name, value in sorted(stage_totals.items())}
+            if stage_totals
+            else {}
+        ),
+        "calls": call_totals,
+    }
+
+
+def runtime_telemetry(rows: Sequence[Mapping[str, Any]], *, answer_mode: str) -> dict[str, Any]:
+    """Summarize non gold runtime measurements for the run manifest."""
+
+    captures = [
+        row.get("_diagnostics", {}).get("captures")
+        for row in rows
+        if isinstance(row.get("_diagnostics"), Mapping)
+    ]
+    summaries = [item for item in captures if isinstance(item, Mapping)]
+    latencies = [
+        float(item["mean_latency_ms"])
+        for item in summaries
+        if isinstance(item.get("mean_latency_ms"), (int, float))
+    ]
+    calls: dict[str, int] = {}
+    for item in summaries:
+        raw_calls = item.get("calls")
+        if isinstance(raw_calls, Mapping):
+            for name, value in raw_calls.items():
+                if isinstance(value, int):
+                    calls[str(name)] = calls.get(str(name), 0) + value
+    calls["answer_model"] = len(rows) if answer_mode == "openrouter" else 0
+    return {
+        "questions_with_telemetry": len(summaries),
+        "mean_question_retrieval_latency_ms": sum(latencies) / len(latencies) if latencies else None,
+        "p95_question_retrieval_latency_ms": (
+            sorted(latencies)[min(len(latencies) - 1, max(0, int(len(latencies) * 0.95 + 0.999) - 1))]
+            if latencies
+            else None
+        ),
+        "calls": calls,
+        "cost_usd": None,
+        "cost_status": "not_available_for_retrieval_providers",
     }
 
 
@@ -876,6 +1103,7 @@ def _answers(
     reasoning_arm: str,
     expansion_provider: OpenAIExpansionProvider | None,
     expansion_cache: dict[str, Any] | None,
+    answer_policy: str = "baseline",
     retrieval_captures: int = 1,
 ) -> Iterator[Mapping[str, Any]]:
     if retrieval_captures < 1 or retrieval_captures > MAX_RETRIEVAL_CAPTURES:
@@ -885,10 +1113,12 @@ def _answers(
     for question in questions:
         capture_rows: list[dict[str, Any]] = []
         first_answer: tuple[
-            list[str], list[ScoredChunk], bool, dict[str, Any], list[str], int
+            list[str], list[ScoredChunk], bool, dict[str, Any], list[str], int,
+            RetrievalDiagnostics,
         ] | None = None
         for capture in range(retrieval_captures):
-            doc_ids, hits, gap_warning = retrieve_docs(
+            capture_started = time.perf_counter()
+            doc_ids, hits, gap_warning, retrieval_diagnostics = retrieve_docs_with_diagnostics(
                 store,
                 embedder,
                 question.question,
@@ -923,7 +1153,15 @@ def _answers(
                     reasoning_diagnostics,
                     doc_ids,
                     len(hits),
+                    retrieval_diagnostics,
                 )
+            stage_ms = dict(retrieval_diagnostics.stage_ms)
+            calls = {
+                "embedding": 1,
+                "lexical": int(sparse_backend in ("lexical", "both")),
+                "splade": int(sparse_backend in ("splade", "both")),
+                "reranker": int(retrieval_diagnostics.reranking_ran),
+            }
             capture_rows.append(
                 {
                     "capture": capture + 1,
@@ -931,6 +1169,9 @@ def _answers(
                     "initial_hit_count": len(hits),
                     "document_ids": reasoning_doc_ids,
                     "expanded": bool(reasoning_diagnostics.get("expanded")),
+                    "latency_ms": round((time.perf_counter() - capture_started) * 1000.0, 3),
+                    "stage_ms": stage_ms,
+                    "calls": calls,
                 }
             )
         assert first_answer is not None
@@ -941,18 +1182,26 @@ def _answers(
             reasoning_diagnostics,
             initial_document_ids,
             initial_hit_count,
+            retrieval_diagnostics,
         ) = first_answer
         capture_diagnostics = retrieval_capture_summary(capture_rows)
         if mode == "openrouter":
             if not api_key:
                 raise RuntimeError("OPENROUTER_API_KEY is required for --answer-mode openrouter")
+            answer_hits_for_model = answer_hits(
+                reasoning_hits,
+                reasoning_doc_ids,
+                question_type=_question_type(question),
+                answer_policy=answer_policy,
+            )
             answer = generated_answer(
                 question.question,
-                reasoning_hits,
+                answer_hits_for_model,
                 model=model,
                 api_key=api_key,
                 max_chars=max_chars,
                 question_type=_text(question.raw.get("question_type")),
+                answer_policy=answer_policy,
             )
         else:
             answer = extractive_answer(question.question, reasoning_hits, max_chars=max_chars)
@@ -965,7 +1214,20 @@ def _answers(
                 "initial_document_ids": initial_document_ids,
                 "initial_hit_count": initial_hit_count,
                 "reasoning": reasoning_diagnostics,
+                "answer_policy": answer_policy,
+                "answer_context_document_ids": [
+                    str(hit.chunk.metadata.get("doc_id") or hit.chunk.source)
+                    for hit in answer_hits_for_model
+                ] if mode == "openrouter" else reasoning_doc_ids,
                 "captures": capture_diagnostics,
+                "retrieval_diagnostics": {
+                    "embedding_profile": retrieval_diagnostics.embedding_profile,
+                    "retrieval_profile": retrieval_diagnostics.retrieval_profile,
+                    "index_generation": retrieval_diagnostics.index_generation,
+                    "candidate_pool_size": retrieval_diagnostics.candidate_pool_size,
+                    "reranking_ran": retrieval_diagnostics.reranking_ran,
+                    "stage_ms": dict(retrieval_diagnostics.stage_ms),
+                },
             },
         }
 
@@ -1384,8 +1646,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_RERANK_DOCUMENT_CHARS,
         help="maximum characters per candidate document sent to the reranker",
     )
+    parser.add_argument(
+        "--reranker-rank-weight",
+        type=float,
+        default=1.0,
+        help="Voyage rank contribution; 1.0 preserves pure reranking, lower values blend hybrid rank",
+    )
     parser.add_argument("--limit-docs", type=int)
     parser.add_argument("--limit-questions", type=int)
+    parser.add_argument(
+        "--question-types",
+        help="comma-separated official question_type values to run, preserving release order",
+    )
+    parser.add_argument(
+        "--question-ids-file",
+        type=Path,
+        help="newline-delimited question ids to run, preserving the file order from the release",
+    )
     parser.add_argument("--reset-index", action="store_true")
     parser.add_argument(
         "--skip-indexed-sources",
@@ -1397,6 +1674,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--answer-mode", choices=("extractive", "openrouter"), default="extractive")
+    parser.add_argument(
+        "--answer-policy",
+        choices=("baseline", "category_aware"),
+        default="baseline",
+        help="answer-side evidence policy; category_aware is an opt-in experiment",
+    )
     parser.add_argument(
         "--reasoning-arm",
         choices=("none", "depth", "cheap", "closed_loop"),
@@ -1457,7 +1740,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     retrieval_embedder: Embedder = (
         QueryCachedEmbedder(embedder, embedding_cache) if embedding_cache is not None else embedder
     )
-    reranker = build_reranker(args.reranker, max_document_chars=args.rerank_document_chars)
+    if not 0.0 <= args.reranker_rank_weight <= 1.0:
+        raise ValueError("--reranker-rank-weight must be between 0 and 1")
+    reranker = build_reranker(
+        args.reranker,
+        max_document_chars=args.rerank_document_chars,
+        rank_weight=args.reranker_rank_weight,
+    )
     expansion_provider = (
         resolve_expansion_provider()
         if args.reasoning_arm in ("cheap", "closed_loop")
@@ -1468,7 +1757,26 @@ def main(argv: Iterable[str] | None = None) -> int:
         expansion_cache = expansion_cache or {}
     promotion_metrics = load_promotion_metrics(args.promotion_metrics)
     sparse_encoder: object | None = None
-    questions = load_questions(args.questions, limit=args.limit_questions)
+    question_types = (
+        {item.strip().lower() for item in args.question_types.split(",") if item.strip()}
+        if args.question_types
+        else None
+    )
+    question_ids = (
+        {
+            line.strip()
+            for line in args.question_ids_file.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        if args.question_ids_file
+        else None
+    )
+    questions = load_questions(
+        args.questions,
+        limit=args.limit_questions,
+        question_types=question_types,
+        question_ids=question_ids,
+    )
     all_questions = list(questions)
     existing_answer_rows: list[dict[str, Any]] = []
     if args.resume:
@@ -1488,6 +1796,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     retrieval_metrics: dict[str, Any] | None = None
     reasoning_metrics: dict[str, Any] | None = None
     calibration: dict[str, Any] | None = None
+    new_answer_rows: list[Mapping[str, Any]] = []
     with PgVectorStore(
         dsn,
         dim=embedder.dim,
@@ -1567,13 +1876,16 @@ def main(argv: Iterable[str] | None = None) -> int:
                     reasoning_arm=args.reasoning_arm,
                     expansion_provider=expansion_provider,
                     expansion_cache=expansion_cache,
+                    answer_policy=args.answer_policy,
                     retrieval_captures=args.retrieval_captures,
                 ),
                 overwrite=args.overwrite,
                 resume=args.resume,
             )
             answer_rows = [*existing_answer_rows, *new_answer_rows]
-            retrieval_metrics = retrieval_summary(all_questions, answer_rows)
+            # Gold document ids are intentionally excluded from the runtime object. Retrieval
+            # quality is scored only after this answer file exists, by the posthoc evaluator.
+            retrieval_metrics = None
             reasoning_metrics = reasoning_summary(answer_rows)
             write_reasoning_cache(args.reasoning_cache, expansion_cache)
     if embedding_cache is not None:
@@ -1585,7 +1897,18 @@ def main(argv: Iterable[str] | None = None) -> int:
         "elapsed_s": round(time.perf_counter() - t0, 3),
         "recall_revision": git_revision(Path(__file__).resolve().parents[1]),
         "recall_version": package_version("recall-rag"),
-        "questions": {"path": str(args.questions), "sha256": sha256_file(args.questions)},
+        "questions": {
+            "path": str(args.questions),
+            "sha256": sha256_file(args.questions),
+            "selected_count": len(all_questions),
+            "question_types": sorted(question_types) if question_types else None,
+            "question_ids_file": (
+                str(args.question_ids_file) if args.question_ids_file else None
+            ),
+            "question_ids_file_sha256": (
+                sha256_file(args.question_ids_file) if args.question_ids_file else None
+            ),
+        },
         "documents": [{"path": str(path), "sha256": sha256_file(path)} for path in args.documents],
         "index": {
             "table": args.table,
@@ -1606,12 +1929,16 @@ def main(argv: Iterable[str] | None = None) -> int:
             "splade_model": args.splade_model if args.sparse_backend in ("splade", "both") else None,
             "splade_backfill": sparse_stats,
             "reranker": args.reranker,
+            "reranker_rank_weight": args.reranker_rank_weight,
             "retrieval_captures": args.retrieval_captures,
+            "gold_fields_used_at_runtime": False,
+            "posthoc_metrics": "scripts/enterprise_rag_posthoc_metrics.py",
         },
         "answering": {
             "mode": args.answer_mode,
             "model": args.model if args.answer_mode == "openrouter" else None,
             "max_context_chars": args.max_context_chars,
+            "answer_policy": args.answer_policy,
         },
         "reasoning": {
             "arm": args.reasoning_arm,
@@ -1631,6 +1958,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             "resumed_rows": len(existing_answer_rows),
         },
         "retrieval_metrics": retrieval_metrics,
+        "runtime_telemetry": runtime_telemetry(
+            [*existing_answer_rows, *new_answer_rows], answer_mode=args.answer_mode
+        ),
         "calibration": {"path": str(args.calibrate_retrieval_out)} if calibration else None,
     }
     manifest_path = args.out.with_suffix(args.out.suffix + ".manifest.json")

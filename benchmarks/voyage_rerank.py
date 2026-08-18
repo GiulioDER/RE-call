@@ -85,3 +85,49 @@ class VoyageReranker:
         # `result.results` is sorted by descending relevance; each item's `.index` points back into
         # `documents`. Reorder the ORIGINAL ScoredChunk objects — identity preserved, scores intact.
         return [hits[item.index] for item in result.results]
+
+
+class BlendedVoyageReranker:
+    """Blend the original hybrid rank with the Voyage reranker rank.
+
+    Voyage relevance scores remain isolated from trust scores. This wrapper combines only the
+    original and reranked positions, then returns the original hit objects unchanged.
+    """
+
+    def __init__(
+        self,
+        model: str = "rerank-2.5",
+        api_key: str | None = None,
+        rank_weight: float = 0.5,
+        max_document_chars: int | None = None,
+        client: Any | None = None,
+    ) -> None:
+        if not 0.0 <= rank_weight <= 1.0:
+            raise ValueError("rank_weight must be between 0 and 1")
+        self.rank_weight = rank_weight
+        self._voyage = VoyageReranker(
+            model=model,
+            api_key=api_key,
+            max_document_chars=max_document_chars,
+            client=client,
+        )
+
+    def rerank(self, query: str, hits: list[ScoredChunk]) -> list[ScoredChunk]:
+        if not hits:
+            return hits
+        reranked = self._voyage.rerank(query, hits)
+        baseline_rank = {hit.chunk.id: index for index, hit in enumerate(hits)}
+        voyage_rank = {hit.chunk.id: index for index, hit in enumerate(reranked)}
+        reciprocal_rank_constant = 60.0
+        scored = [
+            (
+                self.rank_weight / (reciprocal_rank_constant + voyage_rank[hit.chunk.id])
+                + (1.0 - self.rank_weight)
+                / (reciprocal_rank_constant + baseline_rank[hit.chunk.id]),
+                -baseline_rank[hit.chunk.id],
+                hit,
+            )
+            for hit in hits
+        ]
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [item[2] for item in scored]
