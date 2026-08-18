@@ -41,7 +41,7 @@ from __future__ import annotations
 import json
 import textwrap
 from collections.abc import Callable
-from dataclasses import MISSING, dataclass, field, fields
+from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -50,8 +50,24 @@ from recall.calibration_v2 import CalibrationRepository
 from recall.embeddings import Embedder, resolve_embedder
 from recall.generations import GenerationManager
 from recall.store import redacted_dsn
-from recall.wizard.corpora import DEFAULT_PROJECT, RELATIVE_ROOT, CorpusSpec, default_plan
+from recall.wizard.corpora import (
+    DEFAULT_PROJECT,
+    RELATIVE_ROOT,
+    CorpusPlan,
+    CorpusSpec,
+    default_plan,
+)
 from recall.wizard.pipeline import CorpusOutcome, PipelineRefusal, run_corpus
+from recall.wizard.stack import (
+    StackSpec,
+    bring_up,
+    choose_port,
+    compose_document,
+    existing_port,
+    host_dsn,
+    wait_for_database,
+    write_compose,
+)
 from recall.wizard.state import WizardState, config_digest, load_state, save_state
 from recall.wizard.wiring import (
     ServerBlock,
@@ -61,6 +77,7 @@ from recall.wizard.wiring import (
     server_blocks,
     write_mcp_config,
     write_project_files,
+    write_runtime_profile,
 )
 
 __all__ = [
@@ -786,6 +803,80 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
             ) from exc
 
 
+#: The generated stack's file name, under the user's chosen `data_root`. Beside their data rather
+#: than in the package, because it is theirs: they chose the location, and `docker compose -f` on
+#: it is how they inspect or stop their own install.
+COMPOSE_NAME = "docker-compose.recall.yml"
+COMPOSE_PROJECT = "recall-desktop"
+
+
+def _provisional_env(tenants: tuple[str, ...], *, dsn: str, embedder: str) -> dict[str, dict[str, str]]:
+    """Enough environment to WRITE the stack before the corpora have been driven.
+
+    The real trust posture per tenant is not knowable yet: it depends on what certified and what was
+    promoted, which is the whole output of the run. So the first compose is written with development
+    trust and rewritten at the wiring stage from `server_blocks`, which is the single source for it.
+    Only `db` is started from this first version, so nothing ever runs against the provisional value.
+    """
+    return {
+        tenant: {
+            "RECALL_DSN": dsn,
+            "RECALL_EMBEDDER": embedder,
+            "RECALL_TENANT": tenant,
+            "RECALL_TRUST_MODE": "development",
+        }
+        for tenant in tenants
+    }
+
+
+def _provision(
+    config: HeadlessConfig,
+    plan: CorpusPlan,
+    progress: Callable[[str], None] | None,
+) -> HeadlessConfig:
+    """Create the database at the user's chosen location and return a config that can reach it.
+
+    Only when `data_root` is set. With a `dsn` the caller already has a database and this does
+    nothing, which is how CI drives the rest of the pipeline without Docker.
+
+    The port is READ BACK from an existing compose file when there is one. It must be stable across
+    runs: `runtime.json` names this file and the UI connects through whatever it publishes, so
+    re-choosing would repoint the store out from under the UI and the agent at once.
+    """
+    if config.data_root is None:
+        return config
+
+    compose_path = config.data_root / COMPOSE_NAME
+    port = existing_port(compose_path) or choose_port()
+    dsn = host_dsn(port)
+    tenants = tuple(spec.tenant for spec in plan.corpora)
+
+    if progress:
+        progress(f"database: {config.data_root} on port {port}")
+    write_compose(
+        compose_path,
+        compose_document(
+            StackSpec(
+                data_root=config.data_root,
+                port=port,
+                tenants=tenants,
+                env=_provisional_env(tenants, dsn=dsn, embedder=config.embedder),
+                project_name=COMPOSE_PROJECT,
+            )
+        ),
+    )
+    # `db` only. The recall image is built later and the store must not wait for it.
+    bring_up(compose_path, project_name=COMPOSE_PROJECT, services=("db",))
+    # ⚠️ `--wait` is NOT enough: the healthcheck is `pg_isready` inside the container, which the
+    # temporary server the postgres entrypoint runs during initdb also answers. Poll the address
+    # the caller will actually use.
+    wait_for_database(dsn)
+    if progress:
+        progress("database: ready")
+
+    return replace(config, dsn=dsn, migration_dsn=dsn)
+
+
 def _step_reporter(
     tenant: str, progress: Callable[[str], None] | None
 ) -> Callable[[str], None] | None:
@@ -830,6 +921,9 @@ def run_headless(
         # `CorpusSpec.__post_init__` and `default_plan` raise plain value errors that name the
         # PATH, and the operator needs to be told which config key holds it.
         raise ConfigRefusal(f"the corpus plan is not buildable from this config: {exc}") from exc
+
+    # The database, at the user's chosen location, before anything tries to reach one.
+    config = _provision(config, plan, progress)
 
     wiring = services if services is not None else _RealServices(config)
     _prepare(config, wiring)
@@ -952,6 +1046,48 @@ def run_headless(
     )
     mcp_path: Path | None = None
     files: tuple[Path, ...] = ()
+
+    # Rewrite the stack with the REAL trust posture, now that it is known, and hand the desktop UI
+    # its profile. The first compose was written with development trust because certification had
+    # not happened yet; only `db` was ever started from it, so nothing ran against the provisional
+    # value. `server_blocks` stays the single source, so the agent's server and the UI's service
+    # cannot end up on different rules for one corpus.
+    if config.data_root is not None and blocks:
+        compose_path = config.data_root / COMPOSE_NAME
+        try:
+            port = existing_port(compose_path) or choose_port()
+            write_compose(
+                compose_path,
+                compose_document(
+                    StackSpec(
+                        data_root=config.data_root,
+                        port=port,
+                        tenants=tuple(block.tenant for block in blocks),
+                        env={block.tenant: dict(block.env) for block in blocks},
+                        project_name=COMPOSE_PROJECT,
+                    )
+                ),
+            )
+            profile_written = write_runtime_profile(
+                compose_path=compose_path,
+                project=config.project,
+                compose_project=COMPOSE_PROJECT,
+            )
+            files = (*files, compose_path, profile_written)
+            if progress:
+                progress(f"desktop: {profile_written}")
+        except OSError as exc:
+            # Reported, not raised. The corpora are built and promoted by now; losing that because
+            # a profile could not be written would be the expensive half of the trade. The install
+            # works from the CLI and the agent either way; only the UI handoff is missing.
+            failures.append(
+                Failure(
+                    tenant="desktop",
+                    error=f"could not write {exc.filename or 'the desktop profile'}: "
+                    f"{exc.strerror or exc}",
+                )
+            )
+
     if config.project_root is not None:
         if progress:
             progress("wiring: .mcp.json")

@@ -196,6 +196,57 @@ def test_an_absent_or_unreadable_compose_yields_no_port(tmp_path: Path) -> None:
     assert existing_port(broken) is None
 
 
+def test_run_headless_provisions_from_data_root_and_reuses_the_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The install path: no DSN in the config, a location instead, and a database at the end.
+
+    Docker is stubbed so this runs everywhere, but the SEQUENCE is the real one and the assertions
+    are on what a user would care about: the compose lands under their location, the DSN handed to
+    everything downstream is the published port, and a SECOND run reuses that port instead of
+    repointing the store out from under the UI.
+    """
+    import recall.wizard.headless as H
+    from recall.wizard.stack import existing_port
+    from tests.test_wizard_state import _CountingSpy, _config
+
+    started: list[tuple[Path, tuple[str, ...]]] = []
+    waited: list[str] = []
+    monkeypatch.setattr(
+        H, "bring_up", lambda p, *, project_name, services=(), timeout=300.0: started.append((p, services))
+    )
+    monkeypatch.setattr(H, "wait_for_database", lambda dsn, **kw: waited.append(dsn))
+
+    location = tmp_path / "My RE-call data"
+    config = _config(tmp_path, dsn=None, migration_dsn=None, data_root=str(location))
+
+    class _Recording(_CountingSpy):
+        """Records the DSN the schema was applied with, which is the provisioned one or nothing."""
+
+        schema_dsns: list[str] = []
+
+        def apply_schema(self, dsn: str, *, dim: int) -> None:
+            self.schema_dsns.append(dsn)
+
+    spy = _Recording()
+    spy.schema_dsns = []
+    report = H.run_headless(config, services=spy)
+
+    compose = location / H.COMPOSE_NAME
+    assert compose.exists(), "the stack must be written under the user's own location"
+    assert started and started[0][1] == ("db",), "only the database starts before the build"
+    assert waited, "the published port must be polled; --wait does not prove it is usable"
+    assert waited[0] == spy.schema_dsns[0], "everything downstream uses the provisioned address"
+    assert report.ok is True
+
+    first_port = existing_port(compose)
+    assert first_port is not None and f":{first_port}" in waited[0]
+
+    # A re-install must NOT repoint the database: runtime.json names this compose file.
+    H.run_headless(config, services=_CountingSpy())
+    assert existing_port(compose) == first_port, "a re-run must reuse the port it already published"
+
+
 def test_choose_port_steps_past_a_busy_one() -> None:
     """The allow path for the search, so it cannot be satisfied by always returning the preferred."""
     import socket
