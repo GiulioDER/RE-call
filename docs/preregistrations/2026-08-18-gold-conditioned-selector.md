@@ -43,4 +43,17 @@ document before measuring. If the audit fails, the run stops.
 
 ## Measurement result
 
-To be appended after the diagnostic run. Predictions above must not be edited.
+Measured after the preregistration commit on the corrected 7,788 chunk index. The label coverage
+audit passed for all 22 questions:
+
+| arm | complete slot recall | selected non gold chunks | mean ms | p95 ms |
+| --- | ---: | ---: | ---: | ---: |
+| current retrieval | 9/22 | 109 | 0.0622 | 0.0960 |
+| document grouping | 9/22 | 24 | 0.0804 | 0.1277 |
+| gold document grouping | 12/22 | 24 | 0.0873 | 0.1530 |
+| gold answer slots | 22/22 | 0 | 2.4674 | 7.4398 |
+| gold bundle beam | 22/22 | 0 | 100.6513 | 183.8691 |
+
+The registered predictions for gold answer slots and beam were met. This confirms that selection can
+assemble complete bundles from real chunks when retrieval coverage is supplied. It does not show
+that the serving retriever supplies that coverage.

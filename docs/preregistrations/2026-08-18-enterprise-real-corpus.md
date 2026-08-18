@@ -147,3 +147,41 @@ before answer slot selection. The prediction is that current retrieval will reco
 document sets at the wider pool, and that structural expansion will only improve cases whose gold
 document is present in the wider initial candidate set. This addendum does not change the launch
 criteria or convert the development calibration into certified evidence.
+
+## Corrected measurement result
+
+After both integrity corrections, the table contained 7,788 chunks from all 722 expected source
+ids. The corrected retrieval only run was:
+
+| arm | complete document sets | false positives | mean ms | p95 ms | trust |
+| --- | ---: | ---: | ---: | ---: | --- |
+| current retrieval | 393/500 | 30/30 no document questions | 169.6279 | 436.7138 | degraded 500 |
+| document grouping | 300/500 | 30/30 no document questions | 168.4101 | 423.7825 | degraded 500 |
+| structural expansion | 300/500 | 30/30 no document questions | 193.7262 | 485.6610 | degraded 500 |
+
+The final fixed labeled run used `candidate_k=20` and measured the slot arms on 40 answerable and
+10 unanswerable labeled questions:
+
+| arm | complete document sets | complete slots | unanswerable answers | mean ms | p95 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| current retrieval | 393/500 | not applicable | 10/10 | 108.4535 | 200.3648 |
+| document grouping | 300/500 | not applicable | 10/10 | 109.0371 | 202.9135 |
+| structural expansion | 300/500 | not applicable | 10/10 | 127.1232 | 231.4515 |
+| answer slots | 26/50 | 16/40 | 0/10 | 134.7693 | 249.0458 |
+| bundle beam | 26/50 | 16/40 | 0/10 | 248.6235 | 517.1439 |
+
+The final wider pool run with `candidate_k=200` was:
+
+| arm | complete document sets | complete slots | unanswerable answers | mean ms | p95 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| current retrieval | 361/500 | not applicable | 10/10 | 125.7696 | 220.1733 |
+| document grouping | 172/500 | not applicable | 10/10 | 124.5947 | 216.6410 |
+| structural expansion | 172/500 | not applicable | 10/10 | 142.2821 | 271.6043 |
+| answer slots | 21/50 | 11/40 | 0/10 | 128.2388 | 182.5354 |
+| bundle beam | 21/50 | 11/40 | 0/10 | 233.2249 | 379.8357 |
+
+The corrected result confirms that answer slots improve abstention on the labeled unanswerable
+questions and recover 16/40 complete answerable bundles when retrieval supplies the needed
+evidence. Beam matches slots here at substantially higher latency. Grouping and structural
+expansion reduce complete document coverage versus current retrieval. None of these results is a
+launch approval because trust remains degraded.
