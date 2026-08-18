@@ -110,6 +110,18 @@ expansion, answer slots, or bundle beam as a serving default yet. The next valid
 gold-document-conditioned selector test with independently repaired labels, followed by a
 certified calibration and a serving benchmark.
 
+## Data integrity correction
+
+Discovered before the gold conditioned selector measurement on 2026-08-18. The shared benchmark
+table contained only 100 indexed sources from the earlier 100 question smoke run. The earlier 500
+question outputs were run with `--skip-index`, so they did not use the intended 723 source filtered
+index. Those 500 question figures are retained as an audit trail but are invalid for quality or
+launch decisions. They must not be replaced silently.
+
+The runner now verifies that every expected source is present whenever `--gold-doc-filter` is used.
+The corrected measurement will rebuild the table with `--reset-index`, verify all 722 expected
+source ids are present, and then rerun the fixed and candidate pool sensitivity measurements.
+
 ## Candidate pool sensitivity addendum
 
 Added before the next measurement on 2026-08-18. The same indexed corpus, hashing embedder,
