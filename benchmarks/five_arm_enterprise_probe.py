@@ -85,11 +85,7 @@ def _load_documents(path: Path, questions: list[Any], gold_doc_filter: bool):
     if not gold_doc_filter:
         yield from load_documents([path])
         return
-    expected_ids = {
-        str(doc_id)
-        for question in questions
-        for doc_id in question.raw.get("expected_doc_ids", [])
-    }
+    expected_ids = _expected_doc_ids(questions)
     if path.suffix.lower() != ".zip":
         yield from load_documents([path])
         return
@@ -102,6 +98,14 @@ def _load_documents(path: Path, questions: list[Any], gold_doc_filter: bool):
                 continue
             content = archive.read(name).decode("utf-8", errors="replace")
             yield _doc_from_text_file(name, content)
+
+
+def _expected_doc_ids(questions: list[Any]) -> set[str]:
+    return {
+        str(doc_id)
+        for question in questions
+        for doc_id in question.raw.get("expected_doc_ids", [])
+    }
 
 
 def _slots(payload: dict[str, Any]) -> tuple[AnswerSlot, ...]:
@@ -234,6 +238,16 @@ def main(argv: list[str] | None = None) -> int:
                 chunk_overlap=80,
                 reset=args.reset_index,
             )
+        if args.gold_doc_filter:
+            expected_ids = _expected_doc_ids(questions)
+            indexed_ids = {chunk.source for chunk in store.iter_chunks()}
+            missing_ids = sorted(expected_ids - indexed_ids)
+            if missing_ids:
+                raise SystemExit(
+                    "gold filtered index is incomplete: "
+                    f"missing {len(missing_ids)} of {len(expected_ids)} expected sources; "
+                    "rerun with --reset-index"
+                )
         rows = [
             _run_case(store, embedder, question, labels.get(question.question_id), calibration, arm, args)
             for question in questions
