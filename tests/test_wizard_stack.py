@@ -267,3 +267,36 @@ def test_choose_port_steps_past_a_busy_one() -> None:
         taken.listen(1)
 
         assert choose_port(busy) != busy, "a listening port must not be handed out"
+
+
+def test_every_generated_service_can_pass_the_insecure_dsn_guard(tmp_path: Path) -> None:
+    """Without this key the whole generated stack is inert, and nothing said so.
+
+    `require_secure_dsn` refuses the built-in `recall:recall` credentials against any host it does
+    not consider local, and the compose hostname `db` is not local by that test. So every service
+    here exits 1 before connecting, for both commands the desktop runs inside them:
+    `recall schema apply` and `python -m recall_mcp.server`. Demonstrated by running the CLI with
+    exactly this DSN and no opt-out:
+
+        PermissionError: refusing to start against postgresql://recall:***@db:5432/recall
+
+    and after the fix the same command reaches `failed to resolve host 'db'`, which is the correct
+    answer from OUTSIDE the compose network.
+
+    The hand-written `docker-compose.desktop.yml` sets this on all four of its services, which is
+    why the pre-wizard stack worked and the generated one did not. This test exists so the two
+    cannot drift apart silently again.
+    """
+    document = compose_document(_spec(tmp_path))
+    services = document["services"]
+    assert isinstance(services, dict)
+
+    for name, service in services.items():
+        if name == "db":
+            continue
+        assert isinstance(service, dict)
+        environment = service["environment"]
+        assert isinstance(environment, dict)
+        assert environment["RECALL_ALLOW_INSECURE_DSN"] == "1", (
+            f"service {name} would refuse to start against {environment['RECALL_DSN']}"
+        )

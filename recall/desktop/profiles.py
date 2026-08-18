@@ -20,20 +20,29 @@ def load_profile(path: Path | None = None) -> RuntimeProfile | None:
     target = path or profile_path()
     try:
         value = json.loads(target.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except (OSError, ValueError):  # ValueError also covers UnicodeDecodeError; see load_pipelines
         return None
     if not isinstance(value, dict):
         return None
     return RuntimeProfile.from_dict(value)
 
 
-def save_profile(profile: RuntimeProfile, path: Path | None = None) -> Path:
-    target = path or profile_path()
+def _write_json_atomically(target: Path, payload: object) -> Path:
+    """Write `payload` to `target` through a sibling temporary, then rename over it.
+
+    One implementation, because there were two and they had already diverged: `save_profile` wrote
+    platform newlines and `save_pipelines` pinned LF, so on Windows two files in the same directory
+    written by the same module disagreed. LF wins, matching every writer in the install path.
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".tmp")
-    temporary.write_text(json.dumps(profile.to_dict(), indent=2) + "\n", encoding="utf-8")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
     temporary.replace(target)
     return target
+
+
+def save_profile(profile: RuntimeProfile, path: Path | None = None) -> Path:
+    return _write_json_atomically(path or profile_path(), profile.to_dict())
 
 
 def pipeline_path() -> Path:
@@ -57,7 +66,12 @@ def load_pipelines(path: Path | None = None) -> dict[str, dict[str, object]]:
     target = path or pipeline_path()
     try:
         value = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # ValueError, not json.JSONDecodeError. UnicodeDecodeError is a ValueError and NOT a
+        # JSONDecodeError, so a file that is not valid UTF-8 — a torn write, a file saved as
+        # UTF-16 — used to propagate out of `MainWindow.__init__` and stop the app opening, which
+        # is the exact outcome the docstring above promises it prevents. JSONDecodeError is a
+        # ValueError too, so this is strictly wider.
         return {}
     if not isinstance(value, dict):
         return {}
@@ -76,14 +90,7 @@ def save_pipelines(configs: dict[str, dict[str, object]], path: Path | None = No
     reopening the app restored the defaults. Demonstrated before fixing: set the embedder model,
     press Save, close the window, reopen, and the field reads `hashing-64` again.
     """
-    target = path or pipeline_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(".tmp")
-    temporary.write_text(
-        json.dumps(configs, indent=2) + "\n", encoding="utf-8", newline="\n"
-    )
-    temporary.replace(target)
-    return target
+    return _write_json_atomically(path or pipeline_path(), configs)
 
 
 def read_token(profile: RuntimeProfile) -> str | None:

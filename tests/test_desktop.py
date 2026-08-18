@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import recall.desktop.profiles as profiles
 from recall.desktop.models import RuntimeMode, RuntimeProfile, SourceCategory, SourceSelection
 from recall.desktop.runtime import DockerRuntime, RuntimeErrorBase, VpsMcpRuntime, create_runtime
 from recall.desktop.sources import (
@@ -164,6 +165,58 @@ def test_docker_profile_requires_compose_file() -> None:
         RuntimeProfile(mode=RuntimeMode.DOCKER)
 
 
+def test_the_corpus_suffixes_match_the_wizards_kinds() -> None:
+    """The desktop's scope suffixes must equal the wizard's `CorpusKind`, or services go missing.
+
+    Pinned rather than imported: `recall.desktop` keeps no import dependency on `recall.wizard`,
+    but a divergence between them is exactly the bug this branch exists to remove, so it fails a
+    test instead of waiting to be noticed. The first version of the topology change spelled
+    `("-docs", "-code")` inline in three places and omitted `-memory`, which every install builds,
+    so `recall-<project>-memory` was excluded from the schema loop and from the project list.
+    """
+    from typing import get_args
+
+    from recall.desktop.runtime import _CORPUS_SUFFIXES
+    from recall.wizard.corpora import CorpusKind
+
+    assert set(_CORPUS_SUFFIXES) == {f"-{kind}" for kind in get_args(CorpusKind)}
+
+
+def test_pipeline_configuration_round_trips_without_a_gui() -> None:
+    """The persistence contract, testable where CI can actually run it.
+
+    The MainWindow-driven test beside this one is skipped in CI: no job installs the `desktop`
+    extra, so `pytest.importorskip("PySide6")` skips it on every run and the regression test for
+    "Configuration saved" saved nothing would only ever have run on a maintainer's machine. This
+    covers the same contract with no Qt, including the layer-over-defaults merge the UI relies on.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as raw:
+        target = Path(raw) / "pipeline.json"
+
+        assert profiles.load_pipelines(target) == {}, "absent file must not raise"
+
+        profiles.save_pipelines({"Documents": {"embedder": "chosen", "splade": True}}, target)
+        assert profiles.load_pipelines(target) == {"Documents": {"embedder": "chosen", "splade": True}}
+
+        defaults = {"embedder": "hashing-64", "reranker": "none", "splade": False}
+        defaults.update(profiles.load_pipelines(target)["Documents"])
+        assert defaults == {"embedder": "chosen", "reranker": "none", "splade": True}, (
+            "a key absent from the saved file must keep its default rather than vanish"
+        )
+
+        target.write_bytes(b"\xff\xfe not utf-8 at all")
+        assert profiles.load_pipelines(target) == {}, (
+            "a file that is not valid UTF-8 must not raise; UnicodeDecodeError is a ValueError "
+            "and was not caught, so it propagated out of MainWindow.__init__ and the app would "
+            "not open, which is the outcome load_pipelines documents that it prevents"
+        )
+
+        target.write_text("[1, 2, 3]", encoding="utf-8")
+        assert profiles.load_pipelines(target) == {}, "a non-object document must not raise"
+
+
 def test_docker_runtime_reads_its_topology_from_the_compose_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -174,10 +227,11 @@ def test_docker_runtime_reads_its_topology_from_the_compose_file(
     against a generated compose document, EVERY scope missed, the default one included, so the
     mismatch was never confined to projects the user had added.
 
-    Both directions are asserted from one fake service list, because either alone is satisfiable by
-    the defect: the wizard's naming must resolve, the legacy names must keep resolving, an unknown
-    scope must be refused with what is on offer, and `list_tenants` must report what the file
-    contains rather than a constant.
+    Three claims from one fake service list, because any one alone is satisfiable by the defect:
+    the wizard's naming must resolve, an unknown scope must be refused with what IS on offer, and
+    `list_tenants` must report what the file contains rather than a constant. The legacy names are
+    covered by `test_docker_runtime_still_serves_the_pre_wizard_compose_file`, which needs a
+    different fixture — this one contains no legacy name, so it cannot assert anything about them.
     """
     profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="whatever.yml")
     runtime = DockerRuntime(profile)
@@ -193,7 +247,11 @@ def test_docker_runtime_reads_its_topology_from_the_compose_file(
 
     with pytest.raises(RuntimeErrorBase) as refusal:
         runtime._service_for_tenant("nothere-docs")
-    assert "recall-acme-docs" in str(refusal.value), "a refusal must say what IS on offer"
+    # Scopes, not service names: the refusal answers in the vocabulary of the argument it refused,
+    # and it is built from the same predicate the rest of the class uses, so it can never advertise
+    # a sidecar the compose file happens to carry as something this call accepts.
+    assert "acme-docs" in str(refusal.value), "a refusal must say what IS on offer"
+    assert "recall-acme-docs" not in str(refusal.value), "and say it as a scope, not a service"
     assert "wizard" in str(refusal.value), "and what would make the scope servable"
 
 
@@ -218,7 +276,10 @@ def test_docker_start_applies_the_schema_only_where_a_tenant_lives(
     monkeypatch.setattr(
         runtime,
         "_service_names",
-        lambda: frozenset({"db", "recall-default-docs", "otel-collector", "recall-backup"}),
+        lambda: frozenset(
+            {"db", "recall-default-docs", "recall-default-code", "recall-default-memory",
+             "otel-collector", "recall-backup"}
+        ),
     )
     monkeypatch.setattr(runtime, "health", lambda: {"status": "ready"})
     monkeypatch.setattr(runtime, "_call_for", lambda *a, **k: {})
@@ -226,7 +287,67 @@ def test_docker_start_applies_the_schema_only_where_a_tenant_lives(
     runtime.start()
 
     applied = [args[2] for args in calls if "schema" in args]
-    assert applied == ["recall-default-docs"], f"schema apply reached {applied}"
+    # ONCE, not once per service. `schema apply` migrates a database and every service in the stack
+    # shares one migration DSN, so the second and later applies were identical redundant work that
+    # made startup scale with the number of projects: roughly 3-6s per service, sequentially.
+    assert len(applied) == 1, f"schema apply ran {len(applied)} times: {applied}"
+    # And in a service that actually serves a tenant. `services - {"db"}` would have reached the
+    # sidecars, and `_compose` runs with check=True, so one unrelated service fails the whole start.
+    assert applied[0].startswith("recall-default-"), f"schema apply reached {applied}"
+
+
+def test_restarting_the_stack_forgets_the_routing_it_derived(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cached gateway must not outlive the topology it was resolved from.
+
+    `_gateways` memoises a fully resolved `docker compose exec <service> ...` argv, not a lookup.
+    Clearing only `_services` left the two disagreeing: re-run the wizard while the window is open,
+    press Reconnect, and the refreshed topology would be correct while every already-connected
+    tenant kept writing to the service resolved before. Since the chosen service IS the corpus on
+    this path, that is a silent misroute of ingest, not merely a stale name.
+
+    Asserted through `_compose` rather than through `start()`, because `apply_update()` restarts
+    the stack too and was missed the first time; the invalidation belongs to the mutating verb.
+    """
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="whatever.yml")
+    runtime = DockerRuntime(profile)
+    monkeypatch.setattr(runtime, "_service_names", lambda: frozenset({"db", "recall-a-docs"}))
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: None)
+
+    closed: list[str] = []
+
+    class Gateway:
+        def close(self) -> None:
+            closed.append("closed")
+
+    runtime._services = frozenset({"db", "recall-a-docs"})
+    runtime._gateways["a-docs"] = Gateway()  # type: ignore[assignment]
+
+    runtime._compose("up", "-d", "--wait")
+
+    assert runtime._services is None, "the topology cache must be dropped"
+    assert runtime._gateways == {}, "and so must the routing derived from it"
+    assert closed == ["closed"], "a dropped gateway must be closed, not leaked"
+
+
+def test_docker_start_refuses_a_stack_with_no_tenant_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Applying no migrations at all must fail loudly, not report ready.
+
+    The hardcoded loop this replaced failed here by accident: `check=True` hit a missing service.
+    A derived loop instead matches nothing, applies nothing, and falls through to `health()`, so a
+    stack that can serve nothing would have looked like a clean start.
+    """
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="whatever.yml")
+    runtime = DockerRuntime(profile)
+    monkeypatch.setattr(runtime, "_compose", lambda *args: None)
+    monkeypatch.setattr(runtime, "_service_names", lambda: frozenset({"db", "otel-collector"}))
+    monkeypatch.setattr(runtime, "health", lambda: {"status": "ready"})
+
+    with pytest.raises(RuntimeErrorBase, match="no tenant-serving MCP service"):
+        runtime.start()
 
 
 def test_docker_runtime_still_serves_the_pre_wizard_compose_file(
@@ -330,7 +451,18 @@ def test_saving_the_pipeline_configuration_actually_persists_it(
     import recall.desktop.profiles as profiles
     from recall.desktop.ui import MainWindow
 
-    real = profiles.profile_path()
+    # Snapshot BOTH real paths and assert they are unchanged, rather than asserting they are
+    # absent. Two defects in the first version, found by four auditors independently:
+    #   * it checked `runtime.json`, which no path in this test can write. The file this test can
+    #     actually pollute is `pipeline.json`, so if the monkeypatch ever stopped taking effect the
+    #     user's real settings would be overwritten and the assertion would still have passed.
+    #   * `assert not real.exists()` is a claim about the developer's machine, not about this test.
+    #     Anyone who has run the wizard once has a real `runtime.json`, and the suite would fail
+    #     for them with a pollution message about a file it never touched.
+    real_profile = profiles.profile_path()
+    real_pipeline = profiles.pipeline_path()
+    before = {p: (p.exists(), p.stat().st_mtime_ns if p.exists() else 0)
+              for p in (real_profile, real_pipeline)}
     monkeypatch.setattr(profiles, "profile_path", lambda: tmp_path / "runtime.json")
 
     class UiRuntime:
@@ -361,4 +493,6 @@ def test_saving_the_pipeline_configuration_actually_persists_it(
         app.processEvents()
 
     assert (tmp_path / "pipeline.json").exists()
-    assert not real.exists(), "a test must never write the user's real desktop configuration"
+    for path, state in before.items():
+        now = (path.exists(), path.stat().st_mtime_ns if path.exists() else 0)
+        assert now == state, f"a test must never write the user's real {path.name}"

@@ -198,6 +198,18 @@ def compose_document(spec: StackSpec) -> dict[str, object]:
         environment = {k: v for k, v in spec.env[tenant].items() if k != "RECALL_DSN"}
         environment["RECALL_DSN"] = container_dsn()
         environment["RECALL_MIGRATION_DSN"] = container_dsn()
+        # ⚠️ **Without this the service refuses to start, and the whole generated stack is inert.**
+        # `require_secure_dsn` rejects the built-in `recall:recall` credentials against any host it
+        # does not consider local, and the compose hostname `db` is not local by that test. So
+        # `recall schema apply` and `python -m recall_mcp.server` both exit 1 inside every service
+        # here. Demonstrated by running the CLI with this exact DSN: `PermissionError: refusing to
+        # start against postgresql://recall:***@db:5432/recall`.
+        #
+        # It is safe for the same reason the hand-written `docker-compose.desktop.yml` sets it on
+        # all four of its services: this DSN never leaves the compose network, and the port that IS
+        # published is bound to loopback. The credentials are the thing to change if that stops
+        # being true, not this flag.
+        environment["RECALL_ALLOW_INSECURE_DSN"] = "1"
         services[_service_name(tenant)] = {
             "image": spec.recall_image,
             "command": ["sleep", "infinity"],
