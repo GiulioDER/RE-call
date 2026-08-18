@@ -78,7 +78,7 @@ and wrote it. A 0/3 with no file written measures a broken hook, not the orderin
 
 ## Apparatus failure (2026-08-16)
 
-**Status: still predicted, not yet measured.** The prediction above is unchanged and must stay that
+**Status at the time: still predicted, not yet measured.** The prediction above is unchanged and must stay that
 way.
 
 The control run never produced a number. `claude -p` in a checkout that already had `.mcp.json`
@@ -110,7 +110,7 @@ deliberately states both outcomes rather than asserting the predicted one.
 
 ## Treatment run 1 (2026-08-18): a genuine treatment run, and NO usable data point
 
-**Status: still predicted, not yet measured.** The prediction above is unchanged and stays that way.
+**Status at the time: still predicted, not yet measured.** The prediction above is unchanged and stays that way.
 
 The deferred method fired exactly as designed. Session `4ea95a6b` started in a fresh worktree and
 the hook logged:
