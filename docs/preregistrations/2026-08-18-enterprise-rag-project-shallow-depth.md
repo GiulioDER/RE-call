@@ -1,6 +1,6 @@
 # EnterpriseRAG project shallow depth expansion
 
-**Date:** 2026-08-18  
+**Date:** 2026-08-18
 **Benchmark commit:** `d36685e273713975ee20299bbf1ab64165575b3c`  
 **Question release SHA256:** `f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905`  
 **Development slice:** `results/enterprise_rag/project_slices/dev.ids`, 17 project-related questions  
