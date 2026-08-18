@@ -32,7 +32,7 @@ const MAX_TRANSLATION_RESPONSE_CHARS = 2_000_000;
 const TRANSLATION_TIMEOUT_MS = 3_000;
 const TRANSLATION_ATTEMPTS = 2;
 const TRANSLATION_TOTAL_TIMEOUT_MS = 15_000;
-const STORAGE_KEY = "recall-readme-language";
+const STORAGE_KEY = "recall-language";
 
 const content = document.querySelector("#readme-content");
 const language = document.querySelector("#readme-language");

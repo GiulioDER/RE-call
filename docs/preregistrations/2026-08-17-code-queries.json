@@ -1,0 +1,487 @@
+[
+ {
+  "query": "how does indexing decide to refuse pruning most of the corpus",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/index.py:0",
+   "recall/index.py:1",
+   "recall/index.py:10",
+   "recall/index.py:11",
+   "recall/index.py:12",
+   "recall/index.py:13",
+   "recall/index.py:14",
+   "recall/index.py:15",
+   "recall/index.py:2",
+   "recall/index.py:3",
+   "recall/index.py:4",
+   "recall/index.py:5",
+   "recall/index.py:6",
+   "recall/index.py:7",
+   "recall/index.py:8",
+   "recall/index.py:9"
+  ]
+ },
+ {
+  "query": "which chunker is chosen for a python source file",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/index.py:0",
+   "recall/index.py:1",
+   "recall/index.py:10",
+   "recall/index.py:11",
+   "recall/index.py:12",
+   "recall/index.py:13",
+   "recall/index.py:14",
+   "recall/index.py:15",
+   "recall/index.py:2",
+   "recall/index.py:3",
+   "recall/index.py:4",
+   "recall/index.py:5",
+   "recall/index.py:6",
+   "recall/index.py:7",
+   "recall/index.py:8",
+   "recall/index.py:9"
+  ]
+ },
+ {
+  "query": "how are NUL bytes handled before text is written to postgres",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/index.py:0",
+   "recall/index.py:1",
+   "recall/index.py:10",
+   "recall/index.py:11",
+   "recall/index.py:12",
+   "recall/index.py:13",
+   "recall/index.py:14",
+   "recall/index.py:15",
+   "recall/index.py:2",
+   "recall/index.py:3",
+   "recall/index.py:4",
+   "recall/index.py:5",
+   "recall/index.py:6",
+   "recall/index.py:7",
+   "recall/index.py:8",
+   "recall/index.py:9"
+  ]
+ },
+ {
+  "query": "how is the embedding profile identifier derived from an embedder",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/embeddings.py:0",
+   "recall/embeddings.py:1",
+   "recall/embeddings.py:10",
+   "recall/embeddings.py:11",
+   "recall/embeddings.py:12",
+   "recall/embeddings.py:13",
+   "recall/embeddings.py:14",
+   "recall/embeddings.py:15",
+   "recall/embeddings.py:16",
+   "recall/embeddings.py:17",
+   "recall/embeddings.py:18",
+   "recall/embeddings.py:19",
+   "recall/embeddings.py:2",
+   "recall/embeddings.py:20",
+   "recall/embeddings.py:21",
+   "recall/embeddings.py:22",
+   "recall/embeddings.py:23",
+   "recall/embeddings.py:24",
+   "recall/embeddings.py:25",
+   "recall/embeddings.py:26",
+   "recall/embeddings.py:27",
+   "recall/embeddings.py:28",
+   "recall/embeddings.py:3",
+   "recall/embeddings.py:4",
+   "recall/embeddings.py:5",
+   "recall/embeddings.py:6",
+   "recall/embeddings.py:7",
+   "recall/embeddings.py:8",
+   "recall/embeddings.py:9"
+  ]
+ },
+ {
+  "query": "how is a voyage reranker selected by name",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/rerank.py:0",
+   "recall/rerank.py:1",
+   "recall/rerank.py:10",
+   "recall/rerank.py:2",
+   "recall/rerank.py:3",
+   "recall/rerank.py:4",
+   "recall/rerank.py:5",
+   "recall/rerank.py:6",
+   "recall/rerank.py:7",
+   "recall/rerank.py:8",
+   "recall/rerank.py:9"
+  ]
+ },
+ {
+  "query": "what happens when the primary reranker fails at query time",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/rerank.py:0",
+   "recall/rerank.py:1",
+   "recall/rerank.py:10",
+   "recall/rerank.py:2",
+   "recall/rerank.py:3",
+   "recall/rerank.py:4",
+   "recall/rerank.py:5",
+   "recall/rerank.py:6",
+   "recall/rerank.py:7",
+   "recall/rerank.py:8",
+   "recall/rerank.py:9"
+  ]
+ },
+ {
+  "query": "how are concurrent schema migrations prevented from colliding",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/schema.py:0",
+   "recall/schema.py:1",
+   "recall/schema.py:10",
+   "recall/schema.py:11",
+   "recall/schema.py:12",
+   "recall/schema.py:13",
+   "recall/schema.py:14",
+   "recall/schema.py:15",
+   "recall/schema.py:16",
+   "recall/schema.py:17",
+   "recall/schema.py:18",
+   "recall/schema.py:19",
+   "recall/schema.py:2",
+   "recall/schema.py:20",
+   "recall/schema.py:21",
+   "recall/schema.py:22",
+   "recall/schema.py:3",
+   "recall/schema.py:4",
+   "recall/schema.py:5",
+   "recall/schema.py:6",
+   "recall/schema.py:7",
+   "recall/schema.py:8",
+   "recall/schema.py:9"
+  ]
+ },
+ {
+  "query": "how is the abstention threshold fitted from labelled samples",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/calibration.py:0",
+   "recall/calibration.py:1",
+   "recall/calibration.py:10",
+   "recall/calibration.py:11",
+   "recall/calibration.py:12",
+   "recall/calibration.py:2",
+   "recall/calibration.py:3",
+   "recall/calibration.py:4",
+   "recall/calibration.py:5",
+   "recall/calibration.py:6",
+   "recall/calibration.py:7",
+   "recall/calibration.py:8",
+   "recall/calibration.py:9"
+  ]
+ },
+ {
+  "query": "how does a query get filtered to one source document",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/store.py:0",
+   "recall/store.py:1",
+   "recall/store.py:10",
+   "recall/store.py:11",
+   "recall/store.py:12",
+   "recall/store.py:13",
+   "recall/store.py:2",
+   "recall/store.py:3",
+   "recall/store.py:4",
+   "recall/store.py:5",
+   "recall/store.py:6",
+   "recall/store.py:7",
+   "recall/store.py:8",
+   "recall/store.py:9"
+  ]
+ },
+ {
+  "query": "how is a filename made safe to write into frontmatter",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/frontmatter.py:0",
+   "recall/frontmatter.py:1",
+   "recall/frontmatter.py:10",
+   "recall/frontmatter.py:11",
+   "recall/frontmatter.py:12",
+   "recall/frontmatter.py:13",
+   "recall/frontmatter.py:14",
+   "recall/frontmatter.py:2",
+   "recall/frontmatter.py:3",
+   "recall/frontmatter.py:4",
+   "recall/frontmatter.py:5",
+   "recall/frontmatter.py:6",
+   "recall/frontmatter.py:7",
+   "recall/frontmatter.py:8",
+   "recall/frontmatter.py:9"
+  ]
+ },
+ {
+  "query": "how are dense and sparse results fused before reranking",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/retriever.py:0",
+   "recall/retriever.py:1",
+   "recall/retriever.py:2",
+   "recall/retriever.py:3",
+   "recall/retriever.py:4",
+   "recall/retriever.py:5"
+  ]
+ },
+ {
+  "query": "how does a generation reuse chunks from an earlier build",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/generations.py:0",
+   "recall/generations.py:1",
+   "recall/generations.py:2",
+   "recall/generations.py:3",
+   "recall/generations.py:4",
+   "recall/generations.py:5",
+   "recall/generations.py:6",
+   "recall/generations.py:7"
+  ]
+ },
+ {
+  "query": "how are learned sparse vectors stored beside the dense ones",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/sparse.py:0",
+   "recall/sparse.py:1",
+   "recall/sparse.py:10",
+   "recall/sparse.py:11",
+   "recall/sparse.py:12",
+   "recall/sparse.py:13",
+   "recall/sparse.py:14",
+   "recall/sparse.py:15",
+   "recall/sparse.py:16",
+   "recall/sparse.py:17",
+   "recall/sparse.py:18",
+   "recall/sparse.py:19",
+   "recall/sparse.py:2",
+   "recall/sparse.py:3",
+   "recall/sparse.py:4",
+   "recall/sparse.py:5",
+   "recall/sparse.py:6",
+   "recall/sparse.py:7",
+   "recall/sparse.py:8",
+   "recall/sparse.py:9"
+  ]
+ },
+ {
+  "query": "how is nDCG computed over retrieved results",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/eval/metrics.py:0",
+   "recall/eval/metrics.py:1",
+   "recall/eval/metrics.py:10",
+   "recall/eval/metrics.py:11",
+   "recall/eval/metrics.py:2",
+   "recall/eval/metrics.py:3",
+   "recall/eval/metrics.py:4",
+   "recall/eval/metrics.py:5",
+   "recall/eval/metrics.py:6",
+   "recall/eval/metrics.py:7",
+   "recall/eval/metrics.py:8",
+   "recall/eval/metrics.py:9"
+  ]
+ },
+ {
+  "query": "what identifies an embedder for a certified calibration binding",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/lineage.py:0",
+   "recall/lineage.py:1",
+   "recall/lineage.py:10",
+   "recall/lineage.py:11",
+   "recall/lineage.py:12",
+   "recall/lineage.py:13",
+   "recall/lineage.py:14",
+   "recall/lineage.py:2",
+   "recall/lineage.py:3",
+   "recall/lineage.py:4",
+   "recall/lineage.py:5",
+   "recall/lineage.py:6",
+   "recall/lineage.py:7",
+   "recall/lineage.py:8",
+   "recall/lineage.py:9"
+  ]
+ },
+ {
+  "query": "how does the eval harness measure top cosines per query",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/eval/calibrate.py:0",
+   "recall/eval/calibrate.py:1",
+   "recall/eval/calibrate.py:2",
+   "recall/eval/calibrate.py:3",
+   "recall/eval/calibrate.py:4",
+   "recall/eval/calibrate.py:5"
+  ]
+ },
+ {
+  "query": "how is contextual passage text built around a chunk",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/context.py:0",
+   "recall/context.py:1",
+   "recall/context.py:10",
+   "recall/context.py:2",
+   "recall/context.py:3",
+   "recall/context.py:4",
+   "recall/context.py:5",
+   "recall/context.py:6",
+   "recall/context.py:7",
+   "recall/context.py:8",
+   "recall/context.py:9"
+  ]
+ },
+ {
+  "query": "how does the trust layer decide to abstain",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/trust.py:0",
+   "recall/trust.py:1",
+   "recall/trust.py:10",
+   "recall/trust.py:11",
+   "recall/trust.py:12",
+   "recall/trust.py:13",
+   "recall/trust.py:2",
+   "recall/trust.py:3",
+   "recall/trust.py:4",
+   "recall/trust.py:5",
+   "recall/trust.py:6",
+   "recall/trust.py:7",
+   "recall/trust.py:8",
+   "recall/trust.py:9"
+  ]
+ },
+ {
+  "query": "how is a corpus manifest verified against immutable objects",
+  "answerable": true,
+  "relevant_ids": [
+   "recall/manifest.py:0",
+   "recall/manifest.py:1",
+   "recall/manifest.py:10",
+   "recall/manifest.py:2",
+   "recall/manifest.py:3",
+   "recall/manifest.py:4",
+   "recall/manifest.py:5",
+   "recall/manifest.py:6",
+   "recall/manifest.py:7",
+   "recall/manifest.py:8",
+   "recall/manifest.py:9"
+  ]
+ },
+ {
+  "query": "how does the GraphQL resolver batch nested queries",
+  "answerable": false
+ },
+ {
+  "query": "which message broker does the ingest queue publish to",
+  "answerable": false
+ },
+ {
+  "query": "how is the Kubernetes readiness probe configured",
+  "answerable": false
+ },
+ {
+  "query": "how does the React component memoize expensive renders",
+  "answerable": false
+ },
+ {
+  "query": "what is the retry policy for the Stripe webhook handler",
+  "answerable": false
+ },
+ {
+  "query": "how does the mobile SDK reconcile offline writes",
+  "answerable": false
+ },
+ {
+  "query": "which OAuth scopes does the admin console request",
+  "answerable": false
+ },
+ {
+  "query": "how are feature flags evaluated at runtime",
+  "answerable": false
+ },
+ {
+  "query": "how does the recommendation model rank products",
+  "answerable": false
+ },
+ {
+  "query": "what does the image thumbnail pipeline do on upload",
+  "answerable": false
+ },
+ {
+  "query": "how is the WebSocket connection kept alive behind the proxy",
+  "answerable": false
+ },
+ {
+  "query": "how does the billing service prorate a mid-cycle upgrade",
+  "answerable": false
+ },
+ {
+  "query": "where is the CSS theme for dark mode defined",
+  "answerable": false
+ },
+ {
+  "query": "how does the crawler respect robots.txt",
+  "answerable": false
+ },
+ {
+  "query": "what is the sharding key for the user table",
+  "answerable": false
+ },
+ {
+  "query": "how does the email template renderer handle localisation",
+  "answerable": false
+ },
+ {
+  "query": "how are push notifications batched per device",
+  "answerable": false
+ },
+ {
+  "query": "how does the video transcoder pick a bitrate ladder",
+  "answerable": false
+ },
+ {
+  "query": "which CDN cache headers are set on static assets",
+  "answerable": false
+ },
+ {
+  "query": "how does the fraud model score a transaction",
+  "answerable": false
+ },
+ {
+  "query": "how is the shopping cart persisted between sessions",
+  "answerable": false
+ },
+ {
+  "query": "how does the map view cluster nearby markers",
+  "answerable": false
+ },
+ {
+  "query": "what does the SAML assertion consumer endpoint validate",
+  "answerable": false
+ },
+ {
+  "query": "how are audit logs shipped to the SIEM",
+  "answerable": false
+ },
+ {
+  "query": "how does the chat client handle typing indicators",
+  "answerable": false
+ },
+ {
+  "query": "how is the PDF invoice generated and signed",
+  "answerable": false
+ }
+]

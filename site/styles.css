@@ -269,6 +269,32 @@ p {
   transform: scaleX(1);
 }
 
+@media (max-width: 1280px) {
+  .masthead-inner {
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: 0.35rem;
+    padding-block: 0.65rem;
+  }
+
+  .masthead nav {
+    order: 3;
+    flex-basis: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    padding-block: 0.35rem;
+    scrollbar-width: none;
+  }
+
+  .masthead nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .masthead .language-control {
+    margin-left: auto;
+  }
+}
+
 /* Mobile nav collapses to a horizontally scrollable strip rather than a
    hamburger: five links, all worth showing, no JS needed. */
 @media (max-width: 860px) {
@@ -294,13 +320,12 @@ p {
 
   .masthead nav {
     gap: 1.25rem;
-    overflow-x: auto;
-    padding-block: 0.5rem;
-    scrollbar-width: none;
+    width: 100%;
+    min-width: 0;
   }
 
-  .masthead nav::-webkit-scrollbar {
-    display: none;
+  .masthead .language-control {
+    margin-left: 0;
   }
 }
 
@@ -1042,6 +1067,10 @@ td {
   gap: clamp(2rem, 5vw, 4rem);
 }
 
+.split > * {
+  min-width: 0;
+}
+
 @media (min-width: 900px) {
   .split {
     grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
@@ -1405,6 +1434,18 @@ td {
 .translation-status[data-tone="error"] {
   color: #fca5a5;
   border-color: rgba(252, 165, 165, 0.35);
+}
+
+.translation-status--sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .translation-disclosure {

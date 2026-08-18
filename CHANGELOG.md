@@ -8,7 +8,88 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Changed
+
+* ⚠️ **BREAKING, and it costs one full re-index: the incremental skip guard now keys on the whole
+  embedding identity rather than the profile id.** `index._index_fingerprint` hashed
+  `embedding_profile_id(embedder)`, which is ONE field of an `EmbeddingProfile`, so any two
+  embedders sharing an id were the same embedder as far as the skip guard was concerned. It now
+  hashes `EmbeddingProfile.fingerprint()`, bringing it into line with `recall/cache.py`, which has
+  always keyed on the whole profile and whose docstring gives the reason: "The ID alone is not an
+  identity".
+
+  The hole was reachable. A 384-dimension corpus and a 1024-dimension corpus produced **equal**
+  index fingerprints for the same file, so swapping the model left every file skipped, every vector
+  stale, and the run reporting success with a skipped count. Ten identity fields now reach the
+  fingerprint that did not before: model name, artifact digest, dimension, both encoder modes,
+  normalization, instruction version, chunker version, context version and dependencies.
+
+  **What you have to do.** Every `index_fingerprint` already stored in chunk metadata is now
+  stale, so the next `recall index` over an existing corpus re-reads, re-chunks and **re-embeds
+  every file, once**. Measured: the default `FastEmbedEmbedder()` moves from `a93f4428…` to
+  `1832d370…`. There is no cache to soften this on the shipped paths, because nothing in `recall`
+  or `recall_mcp` passes an `EmbeddingCache` to the `Indexer`; only the benchmarks do. Budget the
+  re-embed on a metered embedder accordingly, and prefer to run it deliberately rather than
+  discovering it inside an unattended job. Nothing is lost if you do not: the corpus keeps serving
+  its existing vectors until it is re-indexed, since `index_fingerprint` is only ever compared to
+  itself.
+
+  **New re-index triggers, deliberately.** `dependencies` carries the inference-library version and
+  the ONNX execution providers, so a fastembed upgrade or a CPU-to-CUDA move now re-fingerprints
+  the corpus. That is the trade `EmbeddingProfile.fingerprint` already makes for the cache, for the
+  same stated reason: a runtime change is free to move the last bits of a vector, and neither a
+  cache nor a skip guard can tell. The two agree now instead of disagreeing.
+
+  **`ContextPolicy.max_tokens` is now covered too**, in the same change and for the same reason.
+  It selects a different rung of `contextual_passages`' degradation ladder, so two policies
+  differing only in it build different passages and used to hash equal. It had been carried as a
+  known gap on one ground only, that closing it re-fingerprints every corpus, and that cost is
+  being paid here regardless; deferring it again would have charged a second full re-embed later
+  for a one-term change. No shipped path sets it (`context_policy_for_profile` leaves it unset),
+  so this widens the identity without moving any shipped corpus further than the paragraph above
+  already does.
+
+  ⚠️ `ContextPolicy.tokenizer` is deliberately **not** covered, and that is a decision rather than
+  an oversight. It changes the passage exactly as `max_tokens` does, but a callable has no identity
+  stable across processes: `__qualname__` collides for closures and lambdas and `id()` differs
+  every run. An unstable term is far worse than a missing one, because the fingerprint would differ
+  from itself and re-embed the whole corpus on every single run, silently and permanently. Closing
+  it needs a caller-supplied stable tokenizer identity. A test pins the current behaviour so the
+  limit is recorded rather than assumed.
+
 ### Fixed
+
+* **An embedder built without a registered profile claimed `bge-small-symmetric-v1` whatever model
+  it actually was.** `FastEmbedEmbedder.__init__` minted that literal (or `bge-small-asymmetric-v1`)
+  unconditionally on the no-identity path, so the id was a label rather than a claim. Measured
+  2026-08-18: a `fastembed:BAAI/bge-large-en-v1.5` embedder reported `dim=1024` under
+  `profile_id='bge-small-symmetric-v1'`, whose registry entry is 384-dimensional, and a production
+  corpus of 8,716 chunks had stored that pairing in its chunk metadata. The fallback id is now
+  derived from the model name, dimension and encoder modes
+  (`unregistered__BAAI__bge-large-en-v1.5__1024__symmetric`) unless the embedder genuinely is the
+  model the legacy literal names, at the width the registry declares for it. The `/` is replaced
+  because a profile id is interpolated into a result filename by
+  `recall.eval.promotion.run.ArmConfig.key`, the same reason `SparseProfile` already did this.
+
+  The embedding cache was never affected: `EmbeddingProfile.fingerprint` already covers
+  `model_name` and `dimension`, so the two models keyed apart despite sharing an id. What was
+  affected is `recall.index._index_fingerprint`, which hashes the profile id alone with no
+  dimension term of its own. A bge-small corpus and a bge-large corpus therefore produced the
+  **same** fingerprint for the same file, so the incremental skip guard treated a model swap as a
+  no-op and left stale vectors in place. Verified by execution before the fix: the 384-dimension
+  and 1024-dimension fingerprints were equal.
+
+  ⚠️ **Scope of the change, which is narrower than it looks.** The default `FastEmbedEmbedder()`
+  is bge-small at 384 and keeps `bge-small-symmetric-v1`, so its index fingerprints are
+  byte-identical to before (verified) and no default corpus needs re-indexing. Registered
+  enterprise profiles never reach this path at all. Only a corpus indexed with an *unregistered*
+  model changes id, and for those the change is the repair: the next `recall index` run sees a
+  different fingerprint and re-embeds, replacing vectors whose recorded provenance was false.
+  Search keeps working in the meantime, because the stored `embedding_profile` metadata is
+  reported as a diagnostic and never compared at read time. One thing to re-do deliberately: a
+  calibration file fitted for such a corpus was written under the wrong id and will stop
+  resolving, which is correct (a bge-small-keyed threshold does not transfer to bge-large cosines)
+  but shows up as "uncalibrated" until it is re-fitted.
 
 * **`recall generation build` recorded an overlap the chunker never used, and correcting it moves
   the pipeline fingerprint.** The chunker clamps overlap to `max_chars // 4`; the generation's

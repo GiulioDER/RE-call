@@ -31,7 +31,7 @@ from __future__ import annotations
 import random
 import re
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -192,8 +192,19 @@ def prepare_for_calibration(
     return require_balance(canonicalize(entries), min_per_class=min_per_class)
 
 
-def chunks_from_directory(root: str | Path, glob: str = DEFAULT_GLOB) -> list[str]:
+def chunks_from_directory(
+    root: str | Path,
+    glob: str = DEFAULT_GLOB,
+    chunker: "Callable[[str], list[str]] | None" = None,
+) -> list[str]:
     """Every chunk of the corpus at `root`, chunked exactly as indexing will chunk it.
+
+    `chunker` defaults to `chunk_text` and MUST be the callable the generation will actually be
+    built with. A caller indexing code with `chunk_code` while generating queries from `chunk_text`
+    breaks the invariant this docstring states two paragraphs down, and it breaks it invisibly:
+    measured on this repository's own `pipeline.py`, the two produce 20 chunks against 8 with no
+    exact string in common, so every "answerable" query would be generated from text that is not in
+    the index it is about to be measured against.
 
     `chunk_text` rather than a local splitter: a query generated from text that was never a chunk
     cannot retrieve that chunk, so the two must be the same function and not merely similar ones.
@@ -212,6 +223,7 @@ def chunks_from_directory(root: str | Path, glob: str = DEFAULT_GLOB) -> list[st
         raise QuerySetError(str(exc)) from exc
 
     chunks: list[str] = []
+    split = chunker if chunker is not None else chunk_text
     unreadable: list[str] = []
     vanished = 0
     for file in files:
@@ -237,7 +249,7 @@ def chunks_from_directory(root: str | Path, glob: str = DEFAULT_GLOB) -> list[st
             # caller never learned was truncated.
             unreadable.append(f"{file} ({type(exc).__name__})")
             continue
-        chunks.extend(chunk_text(body))
+        chunks.extend(split(body))
 
     if unreadable:
         shown = ", ".join(unreadable[:3])

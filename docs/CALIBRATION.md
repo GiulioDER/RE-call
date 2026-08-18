@@ -1,5 +1,9 @@
 # Generation-bound calibration
 
+> New to this? [docs/FIRST_CALIBRATION.md](FIRST_CALIBRATION.md) walks the whole path from an
+> indexed folder to a trusted answer, including why indexing alone reports `INDEX_NOT_READY`
+> and why `recall calibrate`'s file is never read back. This page is the reference.
+
 RE-call v1 stores calibration as immutable evidence for one tenant and one exact index generation.
 It never treats a threshold measured on another corpus, model revision, chunker configuration, or
 labelled query set as applicable merely because the vector dimensions match.
