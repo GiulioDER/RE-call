@@ -5,9 +5,10 @@ import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime
+import re
 from typing import Literal, Protocol
 
-from recall.types import TrustedResult
+from recall.types import TrustedHit, TrustedResult
 
 
 class Tokenizer(Protocol):
@@ -15,10 +16,32 @@ class Tokenizer(Protocol):
 
 
 @dataclass(frozen=True)
+class AnswerSlot:
+    """A deterministic lexical description of one evidence requirement."""
+
+    name: str
+    terms: tuple[str, ...]
+    min_matches: int = 1
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("answer slot name must not be empty")
+        if not self.terms or any(not term.strip() for term in self.terms):
+            raise ValueError("answer slot terms must not be empty")
+        if self.min_matches < 1 or self.min_matches > len(self.terms):
+            raise ValueError("answer slot min_matches must be within the term count")
+
+
+@dataclass(frozen=True)
 class EvidencePolicy:
     max_items: int = 5
     max_tokens: int | None = None
     tokenizer: Tokenizer | None = None
+    bundle_mode: Literal["retrieval", "document"] = "retrieval"
+    max_documents: int = 2
+    answer_slots: tuple[AnswerSlot, ...] = ()
+    selection_mode: Literal["prefix", "beam"] = "prefix"
+    beam_width: int = 4
 
     def __post_init__(self) -> None:
         if self.max_items < 1:
@@ -27,6 +50,16 @@ class EvidencePolicy:
             raise ValueError("max_tokens must be positive")
         if self.max_tokens is not None and self.tokenizer is None:
             raise ValueError("an exact tokenizer is required when max_tokens is set")
+        if self.bundle_mode not in {"retrieval", "document"}:
+            raise ValueError("bundle_mode must be 'retrieval' or 'document'")
+        if self.max_documents < 1:
+            raise ValueError("max_documents must be positive")
+        if len({slot.name for slot in self.answer_slots}) != len(self.answer_slots):
+            raise ValueError("answer slot names must be unique")
+        if self.selection_mode not in {"prefix", "beam"}:
+            raise ValueError("selection_mode must be 'prefix' or 'beam'")
+        if self.beam_width < 1:
+            raise ValueError("beam_width must be positive")
 
 
 @dataclass(frozen=True)
@@ -200,6 +233,33 @@ def build_evidence_bundle(
             failure_code=result.failure_code,
         )
     trusted = [hit for hit in result.hits if hit.verdict == "ok"]
+    missing_slots: tuple[str, ...] = ()
+    if policy.answer_slots:
+        if policy.selection_mode == "beam":
+            trusted = _select_beam_hits(trusted, policy)
+            missing_slots = tuple(
+                slot.name for slot in policy.answer_slots if not _slot_is_covered(slot, trusted)
+            )
+        else:
+            trusted, missing_slots = _select_answer_slot_hits(trusted, policy)
+        if missing_slots:
+            return EvidenceBundle(
+                query=result.query,
+                decision="abstain",
+                reason_code="answer_slot_gap",
+                calibrated=result.calibrated,
+                stale=result.staleness.stale,
+                embedding_profile=diagnostics.embedding_profile,
+                retrieval_profile=diagnostics.retrieval_profile,
+                index_generation=diagnostics.index_generation,
+                items=(),
+                trust_state=result.trust_state,
+                failure_code=result.failure_code,
+            )
+    elif policy.selection_mode == "beam":
+        trusted = _select_beam_hits(trusted, policy)
+    if policy.bundle_mode == "document":
+        trusted = _select_document_hits(trusted, policy.max_items, policy.max_documents)
     selected: list[EvidenceItem] = []
     for hit in trusted:
         if len(selected) >= policy.max_items:
@@ -258,6 +318,145 @@ def build_evidence_bundle(
         trust_state=result.trust_state,
         failure_code=result.failure_code,
     )
+
+
+def _document_key(hit: TrustedHit) -> str:
+    file = hit.chunk.metadata.get("file")
+    if isinstance(file, str) and file:
+        return file
+    return hit.provenance.file or hit.provenance.source
+
+
+def _ordinal(hit: TrustedHit, fallback: int) -> tuple[int, int]:
+    ordinal = hit.provenance.ord
+    return (ordinal if isinstance(ordinal, int) else fallback, fallback)
+
+
+def _select_document_hits(
+    trusted: list[TrustedHit], max_items: int, max_documents: int
+) -> list[TrustedHit]:
+    """Select a coherent, bounded set of trusted chunks grouped by source document."""
+    groups: dict[str, list[tuple[int, TrustedHit]]] = {}
+    for index, hit in enumerate(trusted):
+        groups.setdefault(_document_key(hit), []).append((index, hit))
+    ranked = sorted(groups.items(), key=lambda item: min(index for index, _ in item[1]))
+    selected_groups = [
+        (key, sorted(items, key=lambda item: _ordinal(item[1], item[0])))
+        for key, items in ranked[:max_documents]
+    ]
+    chosen: list[tuple[int, TrustedHit, int]] = []
+    positions = [0] * len(selected_groups)
+    while len(chosen) < max_items:
+        progressed = False
+        for group_index, (_key, items) in enumerate(selected_groups):
+            position = positions[group_index]
+            if position >= len(items) or len(chosen) >= max_items:
+                continue
+            original_index, hit = items[position]
+            positions[group_index] += 1
+            chosen.append((group_index, hit, original_index))
+            progressed = True
+        if not progressed:
+            break
+    chosen.sort(key=lambda item: (item[0], _ordinal(item[1], item[2])))
+    return [hit for _group_index, hit, _original_index in chosen]
+
+
+def _term_matches(text: str, term: str) -> bool:
+    escaped = re.escape(term.strip().casefold())
+    return re.search(rf"(?<!\w){escaped}(?!\w)", text.casefold()) is not None
+
+
+def _slot_match_count(slot: AnswerSlot, hit: TrustedHit) -> int:
+    return sum(_term_matches(hit.chunk.text, term) for term in slot.terms)
+
+
+def _slot_is_covered(slot: AnswerSlot, hits: list[TrustedHit]) -> bool:
+    return any(_slot_match_count(slot, hit) >= slot.min_matches for hit in hits)
+
+
+def _slot_score(slot: AnswerSlot, hit: TrustedHit, index: int) -> tuple[int, float, float, int]:
+    return (
+        _slot_match_count(slot, hit),
+        hit.confidence,
+        hit.cosine,
+        -index,
+    )
+
+
+def _select_answer_slot_hits(
+    trusted: list[TrustedHit], policy: EvidencePolicy
+) -> tuple[list[TrustedHit], tuple[str, ...]]:
+    """Greedily select one strong candidate per required slot, then fill the bundle."""
+    selected: list[TrustedHit] = []
+    selected_ids: set[str] = set()
+    selected_documents: set[str] = set()
+    missing: list[str] = []
+    for slot in policy.answer_slots:
+        candidates = [
+            (index, hit)
+            for index, hit in enumerate(trusted)
+            if _slot_match_count(slot, hit) >= slot.min_matches
+        ]
+        candidates.sort(key=lambda item: _slot_score(slot, item[1], item[0]), reverse=True)
+        chosen: TrustedHit | None = None
+        for _index, hit in candidates:
+            document = _document_key(hit)
+            if document in selected_documents or len(selected_documents) < policy.max_documents:
+                chosen = hit
+                break
+        if chosen is None:
+            missing.append(slot.name)
+            continue
+        selected_documents.add(_document_key(chosen))
+        if chosen.chunk.id not in selected_ids:
+            selected.append(chosen)
+            selected_ids.add(chosen.chunk.id)
+
+    if missing:
+        return selected, tuple(missing)
+
+    # Slot mode is deliberately representative only. Filling unused capacity with ordinary
+    # retrieval neighbors would reintroduce the misleading partial passage the slots were meant
+    # to keep out of the generator context.
+    return selected, ()
+
+
+def _beam_score(hits: list[TrustedHit], indices: tuple[int, ...], policy: EvidencePolicy) -> float:
+    selected = [hits[index] for index in indices]
+    documents = {_document_key(hit) for hit in selected}
+    if len(documents) > policy.max_documents:
+        return -1_000_000.0
+    slot_coverage = sum(_slot_is_covered(slot, selected) for slot in policy.answer_slots)
+    irrelevant = sum(
+        not any(_slot_match_count(slot, hit) >= slot.min_matches for slot in policy.answer_slots)
+        for hit in selected
+    )
+    quality = sum(hit.confidence + 0.1 * hit.cosine for hit in selected)
+    diversity = 0.25 * len(documents)
+    position_cost = 0.0001 * sum(indices)
+    return 100.0 * slot_coverage + quality + diversity - 3.0 * irrelevant - position_cost
+
+
+def _select_beam_hits(trusted: list[TrustedHit], policy: EvidencePolicy) -> list[TrustedHit]:
+    """Select a bounded bundle by coverage, trust quality, and document diversity."""
+    if not trusted or policy.max_items < 1:
+        return []
+    candidate_limit = max(policy.max_items * 4, policy.max_items)
+    candidates = trusted[:candidate_limit]
+    states: list[tuple[int, ...]] = [()]
+    for index in range(len(candidates)):
+        expanded = list(states)
+        for state in states:
+            if len(state) < policy.max_items:
+                expanded.append((*state, index))
+        expanded.sort(key=lambda state: _beam_score(candidates, state, policy), reverse=True)
+        states = expanded[: policy.beam_width]
+    best = max(states, key=lambda state: _beam_score(candidates, state, policy))
+    selected = [candidates[index] for index in best]
+    if policy.answer_slots and not all(_slot_is_covered(slot, selected) for slot in policy.answer_slots):
+        return []
+    return selected
 
 
 def render_evidence_prompt(bundle: EvidenceBundle) -> tuple[str, str]:
