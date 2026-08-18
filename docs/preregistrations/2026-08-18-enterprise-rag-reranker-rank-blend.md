@@ -19,9 +19,12 @@ trust score. Only ranks are blended, and the original `ScoredChunk` objects rema
 
 ## Slices and measurements
 
-Run the three new blend weights on the frozen five-question `project_related` dev slice and the
-23-question held out project confirmation slice. Use the same VPS2 index, query embedding cache,
-question hash, `candidate_k`, `k`, 4,000 character reranker limit, and extractive answer mode.
+Run the three new blend weights on the frozen 17-question `project_related` development slice in
+`results/enterprise_rag/project_slices/dev.ids` and the 23-question held out project confirmation
+slice in `results/enterprise_rag/project_slices/confirmation.ids`. The earlier five-question
+reader screen is a smaller diagnostic subset and is not the development split for this retrieval
+test. Use the same VPS2 index, query embedding cache, question hash, `candidate_k`, `k`, 4,000
+character reranker limit, and extractive answer mode.
 Use one capture for the initial screen and three repeated captures for any candidate that reaches
 confirmation. Runtime must not read gold fields.
 
