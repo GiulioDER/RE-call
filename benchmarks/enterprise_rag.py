@@ -1085,6 +1085,26 @@ def runtime_telemetry(rows: Sequence[Mapping[str, Any]], *, answer_mode: str) ->
     }
 
 
+def _combine_retrieval_diagnostics(
+    first: RetrievalDiagnostics,
+    second: RetrievalDiagnostics,
+) -> RetrievalDiagnostics:
+    """Combine the two retrieval passes used by selective depth."""
+
+    stage_ms: dict[str, float] = {}
+    for diagnostics in (first, second):
+        for name, value in diagnostics.stage_ms.items():
+            stage_ms[name] = stage_ms.get(name, 0.0) + float(value)
+    return RetrievalDiagnostics(
+        embedding_profile=second.embedding_profile,
+        retrieval_profile=second.retrieval_profile,
+        index_generation=second.index_generation,
+        candidate_pool_size=max(first.candidate_pool_size, second.candidate_pool_size),
+        reranking_ran=first.reranking_ran or second.reranking_ran,
+        stage_ms=stage_ms,
+    )
+
+
 def _answers(
     questions: Sequence[EnterpriseQuestion],
     store: PgVectorStore,
@@ -1119,14 +1139,14 @@ def _answers(
         first_answer: tuple[
             list[str], list[ScoredChunk], bool, dict[str, Any], list[str], int,
             RetrievalDiagnostics,
-        ] | None = None
+    ] | None = None
         for capture in range(retrieval_captures):
             capture_started = time.perf_counter()
             doc_ids, hits, gap_warning, retrieval_diagnostics = retrieve_docs_with_diagnostics(
                 store,
                 embedder,
                 question.question,
-                k=retrieval_k,
+                k=k,
                 candidate_k=candidate_k,
                 sparse_backend=sparse_backend,
                 sparse_encoder=sparse_encoder,
@@ -1140,6 +1160,22 @@ def _answers(
                 feature=adaptive_depth_feature,
                 threshold=adaptive_depth_threshold,
             )
+            if depth_expanded:
+                doc_ids, hits, gap_warning, expanded_diagnostics = retrieve_docs_with_diagnostics(
+                    store,
+                    embedder,
+                    question.question,
+                    k=retrieval_k,
+                    candidate_k=candidate_k,
+                    sparse_backend=sparse_backend,
+                    sparse_encoder=sparse_encoder,
+                    reranker=reranker,
+                    gap_threshold=gap_threshold,
+                )
+                retrieval_diagnostics = _combine_retrieval_diagnostics(
+                    retrieval_diagnostics,
+                    expanded_diagnostics,
+                )
             selected_document_ids = _doc_ids_from_hits(hits, k=document_k)
             reasoning_doc_ids, reasoning_hits, reasoning_diagnostics = expand_retrieval_hits(
                 question,
@@ -1168,11 +1204,12 @@ def _answers(
                     retrieval_diagnostics,
                 )
             stage_ms = dict(retrieval_diagnostics.stage_ms)
+            retrieval_passes = 1 + int(depth_expanded)
             calls = {
-                "embedding": 1,
-                "lexical": int(sparse_backend in ("lexical", "both")),
-                "splade": int(sparse_backend in ("splade", "both")),
-                "reranker": int(retrieval_diagnostics.reranking_ran),
+                "embedding": retrieval_passes,
+                "lexical": retrieval_passes * int(sparse_backend in ("lexical", "both")),
+                "splade": retrieval_passes * int(sparse_backend in ("splade", "both")),
+                "reranker": retrieval_passes * int(retrieval_diagnostics.reranking_ran),
             }
             capture_rows.append(
                 {

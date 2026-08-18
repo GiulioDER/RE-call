@@ -250,3 +250,21 @@ repeated captures, no material invalid extra increase, no citation or document i
 info not found regression, measured latency and cost, and a homogeneous 500 question official
 evaluation using the requested evaluator flags. Only that final evaluation can be compared with
 the `61.03` top five threshold, and no top five claim is made here.
+
+## Selective-depth development screen
+
+The development feature screen selected `max_dense_score < 0.75` as the frozen selective-depth
+candidate. It expands six of 17 project development questions, raises mean document recall by
+3.43 points, leaves exact coverage unchanged, and adds 1.24 invalid documents per question. The
+feature priority was exploratory because the parent preregistration did not fix an order between
+the two feature candidates; that limitation is disclosed in the confirmation amendment.
+
+The first held out selective-depth capture was invalid because the implementation retrieved depth
+12 before deciding whether to expand, so it was discarded. I corrected the arm to retrieve depth 8
+first and perform a second depth 12 pass only when the frozen confidence rule fires. The corrected
+three-capture confirmation rejected the hypothesis. With `max_dense_score < 0.75`, recall fell from
+61.71% to 60.27%, exact coverage fell from 13.04% to 8.70%, and invalid extras rose by 0.83 per
+question. The candidate had one gain and two losses. It made 84 embedding and lexical calls across
+23 questions, with mean retrieval latency 27.47 seconds and p95 latency 43.28 seconds per question.
+Reranker, SPLADE, and answer-model calls were zero. Capture stability was 1.0 and retrieval cost was
+unavailable. No answer-quality test is authorized for this arm.

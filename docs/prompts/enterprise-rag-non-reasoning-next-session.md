@@ -120,6 +120,23 @@ The preregistered 23-question project confirmation did not reproduce the recall 
 The simple global reranker is therefore rejected for promotion. The exact-coverage increase may
 justify testing an adaptive reranker or score calibration, but only with a new preregistration.
 
+The follow-up rank blend also failed confirmation. A reciprocal rank blend with Voyage weight
+`0.50` improved the 17-question project development recall from 53.77% to 55.57%, but on the
+23-question confirmation recall moved from 61.71% to 61.59%, exact coverage stayed at 13.04%,
+and invalid extras rose by 0.043 per question. It is rejected.
+
+A deterministic `k=12` test with no reranker improved the same confirmation recall from 61.71% to
+66.55% and exact coverage from 13.04% to 17.39%, but increased invalid extras by 3.61 per
+question, above the preregistered 2.0 guardrail. Raw `k=12` is rejected globally. The next useful
+hypothesis is selective depth based on runtime confidence, dense score gap, source coverage, or
+other non-gold signals, with a smaller submitted set when confidence is high.
+
+Selective depth was then tested with the development-selected rule `max_dense_score < 0.75`,
+expanding from `k=8` to `k=12` for six of 17 development questions. On the 23-question held out
+confirmation, recall fell from 61.71% to 60.75%, exact coverage fell from 13.04% to 8.70%, and
+invalid extras rose by 0.96 per question. Mean retrieval latency was 31.6 seconds per question
+over three captures. This candidate is rejected and no answer test was run.
+
 ### Answer-side reader tests
 
 These are context for interpreting future retrieval work. They are not the focus of this session.

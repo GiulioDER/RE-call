@@ -240,3 +240,34 @@ These results point toward non-reasoning work on rank calibration, adaptive rera
 diversity, and chunk or parent-document selection. Any new arm must keep the answer reader fixed
 and report retrieval deltas before answer quality is measured. A dev result alone is insufficient;
 the next candidate needs a frozen held-out confirmation before an answer-side test.
+
+## Follow-up non-reasoning confirmations
+
+The first follow-up preserved the original hybrid order and blended it with Voyage reranker order
+using reciprocal rank fusion with constant 60 and weight 0.50. On the 17-question project
+development split, recall improved from 53.77% to 55.57%, exact coverage stayed at 23.53%, and
+invalid extras fell by 0.06 per question. On the preregistered 23-question confirmation, recall
+was 61.71% for baseline and 61.59% for the blend, exact coverage stayed at 13.04%, and invalid
+extras increased by 0.043. The blend is rejected because the held-out recall prediction failed.
+
+The second follow-up increased deterministic retrieval depth from `k=8` to `k=12` with no
+reranker. On the same 23-question project confirmation, recall improved from 61.71% to 66.55%,
+exact coverage from 13.04% to 17.39%, and there were six gains against one loss. Invalid extras
+increased by 3.61 per question, exceeding the preregistered 2.0 guardrail. Raw `k=12` is rejected
+as a global setting. The result justifies a selective depth policy based on runtime confidence or
+source coverage, not a blanket increase in submitted documents.
+
+The development-only selective-depth screen tested two non-gold dense-score features against the
+fixed threshold grid. The selected arm uses `max_dense_score < 0.75`, expands six of 17 questions,
+improves mean recall by 3.43 points, leaves exact coverage unchanged, and adds 1.24 invalid
+documents per question. Feature selection was exploratory because the parent preregistration did
+not establish a priority order. The choice and confirmation gate are recorded in a separate
+amendment before held out measurement.
+
+The first held out selective-depth capture was invalid because it retrieved depth 12 before deciding
+whether to expand. After correcting the arm to retrieve depth 8 first and perform a second depth 12
+pass only when the frozen confidence rule fires, the three-capture confirmation rejected the
+hypothesis. Recall fell from 61.71% to 60.27%, exact coverage fell from 13.04% to 8.70%, and
+invalid extras rose by 0.83 per question. The candidate had one gain and two losses, capture
+stability 1.0, 84 embedding and lexical calls, 27.47 seconds mean latency, and 43.28 seconds p95
+latency. No answer-quality comparison is authorized.
