@@ -901,6 +901,26 @@ def main(argv: list[str] | None = None) -> None:
         _opens_db=True  # the wizard connects when the operator accepts the calibrate prompt
     )
 
+    # The headless installer path. Separate from `setup`, which is the interactive configuration
+    # interview: this one takes a corpus from a directory to a calibrated, promoted generation and
+    # is what CI drives against a throwaway container.
+    p_wizard = sub.add_parser(
+        "wizard",
+        help="build and calibrate the configured corpora from a JSON config, without prompting",
+    )
+    p_wizard.set_defaults(_opens_db=True)
+    p_wizard.add_argument(
+        "--headless",
+        action="store_true",
+        help="required today, and named rather than implied: the interactive and GUI front ends "
+        "are not built yet, so a bare `recall wizard` must not look like it will prompt.",
+    )
+    p_wizard.add_argument(
+        "--config",
+        required=True,
+        help="JSON config: dsn, migration_dsn, embedder, corpus_version and the three corpus roots",
+    )
+
     p_schema = sub.add_parser("schema", help="inspect or apply versioned database migrations")
 
     p_schema.set_defaults(_opens_db=True)
@@ -1450,6 +1470,33 @@ def main(argv: list[str] | None = None) -> None:
         # it, and checking a different table than the one in use is worse than not checking.
         run_setup_wizard(dsn=args.dsn, migration_dsn=args.migration_dsn, table=args.table)
         return
+
+    if args.cmd == "wizard":
+        from recall.wizard.headless import PipelineRefusal, load_config, run_headless
+
+        if not args.headless:
+            raise SystemExit(
+                "recall wizard currently runs headless only: pass --headless. The interactive and "
+                "GUI front ends are not built yet, and a command that silently ran unattended "
+                "would be the wrong surprise for an installer."
+            )
+        try:
+            # `wizard_report`, not `report`: `main()` is one long function and the `manifest
+            # inventory` branch below already binds `report` to an `InventoryReport`. Reusing the
+            # name type-narrows it across the whole function, which mypy caught as
+            # "HeadlessReport has no attribute written" in a branch this one can never reach at
+            # runtime. Invisible to every test, because the two branches are mutually exclusive.
+            wizard_report = run_headless(load_config(args.config))
+        except PipelineRefusal as exc:
+            # A refusal is an operator-actionable message, not a traceback. It is raised before
+            # anything is built, so there is nothing to clean up either.
+            raise SystemExit(str(exc)) from exc
+        print(wizard_report.render())
+        # Exit 1 when a corpus was REFUSED, which is a configuration problem the user must act on.
+        # A DEGRADED corpus is exit 0: it built, it validated, it did not certify, and it was
+        # deliberately not promoted. Collapsing the two would make "did the install work" unanswerable
+        # from the exit code alone, which is the only thing CI reads.
+        raise SystemExit(0 if wizard_report.ok else 1)
 
     if args.cmd == "schema":
         from recall.schema import apply_migrations, schema_plan, schema_status
