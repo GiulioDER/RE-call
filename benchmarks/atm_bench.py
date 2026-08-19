@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from recall.embeddings import embed_passages, embedding_profile_id, resolve_embedder
+from recall.rerank import reranker_from_name
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 from recall.types import Chunk
@@ -245,6 +246,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     table = args.table
     tenant = args.tenant
     dsn = args.dsn or os.environ.get("RECALL_DSN") or DEFAULT_DSN
+    reranker = None if args.reranker == "none" else reranker_from_name(args.reranker)
     index_started = time.perf_counter()
     embeddings: list[list[float]] = []
     if not args.reuse_index:
@@ -265,7 +267,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "dense": HybridRetriever(
                 store,
                 embedder,
+                reranker=reranker,
                 candidate_k=args.candidate_k,
+                gap_threshold=args.gap_threshold,
                 use_dense=True,
                 use_sparse=False,
                 retrieval_profile="atm_dense",
@@ -274,7 +278,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "hybrid": HybridRetriever(
                 store,
                 embedder,
+                reranker=reranker,
                 candidate_k=args.candidate_k,
+                gap_threshold=args.gap_threshold,
                 use_dense=True,
                 use_sparse=True,
                 sparse_backend="lexical",
@@ -306,6 +312,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         "gt_evidence_ids": question["evidence_ids"],
                         "retrieval_ids": retrieved_ids,
                         "retrieval_scores": [float(hit.score) for hit in result.hits],
+                        "gap_warning": bool(result.gap_warning),
+                        "reranking_ran": bool(result.diagnostics.reranking_ran),
                         "latency_ms": round(latency_ms, 3),
                         **metric_values,
                     }
@@ -342,8 +350,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "measurement": "retrieval_only",
         "retrieval_max_k": max(K_VALUES),
         "candidate_k": args.candidate_k,
+        "gap_threshold": args.gap_threshold,
         "embedder": args.embedder,
         "embedding_profile": embedding_profile_id(embedder),
+        "reranker": args.reranker,
         "corpus_items": len(chunks),
         "index_ms": round(index_ms, 3),
         "table": table,
@@ -367,6 +377,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--tenant", default="atm-bench-20260819")
     ap.add_argument("--embedder", default="st:sentence-transformers/all-MiniLM-L6-v2")
     ap.add_argument("--candidate-k", type=int, default=200)
+    ap.add_argument("--gap-threshold", type=float, default=0.50)
+    ap.add_argument("--reranker", default="none")
     ap.add_argument(
         "--reuse-index",
         action="store_true",
