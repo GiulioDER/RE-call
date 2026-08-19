@@ -48,3 +48,9 @@ Temporary Codex authentication copies are removed when the launcher exits.
 ```text
 python scripts/launch_codex_ab_smoke.py
 ```
+
+## Execution correction
+
+The launch used the signed code commit `3fed0cdc`, but its run identifier constant still pointed
+to the previous rerun directory. The resulting files were moved to the `rerun-03` directory
+without changing their contents. No second Codex launch is represented by that directory.

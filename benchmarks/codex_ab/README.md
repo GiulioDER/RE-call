@@ -5,6 +5,8 @@ and disabled. It does not run a performance measurement by itself. A future meas
 pre-registered and committed before the runner is invoked.
 
 Start from [PREREGISTRATION.md](PREREGISTRATION.md) when defining a run.
+The current transport finding and the next execution gates are recorded in
+[CONTINUATION_PLAN.md](CONTINUATION_PLAN.md).
 
 ## Codex CLI adapter
 

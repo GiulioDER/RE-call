@@ -22,7 +22,7 @@ from benchmarks.codex_ab import (
     write_jsonl,
 )
 
-RUN_ID = "smoke-2026-08-19-rerun-02"
+RUN_ID = "smoke-2026-08-19-rerun-03"
 PROMPT = """Inspect the repository at the current working directory.
 Do not modify files or use web search. If RE-call memory is available, first make exactly one
 RE-call search for the phrase `paired Codex benchmark adapter`. Do not quote or reproduce any
