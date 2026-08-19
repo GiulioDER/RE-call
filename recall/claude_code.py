@@ -303,23 +303,28 @@ def _project_keys(document: dict[str, Any], project_root: Path) -> list[str]:
     python -c "import json,os,collections;from pathlib import Path;d=json.load(open(os.path.expanduser('~/.claude.json')));g=collections.defaultdict(list);[g[str(Path(k).resolve()).casefold()].append(k) for k in d.get('projects',{})];print(sum(1 for v in g.values() if len(v)>1))"
     ```
 
-    Found by the wizard session while landing the same change on its side. Writing every matching
-    spelling is strictly safer than picking one, because the cost of an extra key is a duplicate
-    entry and the cost of a missing one is silence.
+    Found by the wizard session while landing the same change on its side, along with the
+    comparison used below. Writing every matching spelling is safer than picking one, because a
+    missing key is silence, but only once "matching" means what the filesystem means by it.
     """
     try:
-        target = str(project_root.resolve()).casefold()
+        target = project_root.resolve()
     except OSError:  # pragma: no cover - an unresolvable root cannot be matched, only invented
         return [str(project_root)]
     matches: list[str] = []
     for key in document.get("projects", {}):
         try:
-            if str(Path(key).resolve()).casefold() == target:
+            # Resolved `Path` equality, NOT a casefolded string. `PurePath.__eq__` normalises case
+            # on Windows and not on POSIX, which is each platform's own rule. Casefolding, which
+            # is what this compared first, over-matches on POSIX where `/home/me/Proj` and
+            # `/home/me/proj` are two directories: it would register the server under an unrelated
+            # project, which is the corpus-boundary failure this change exists to prevent.
+            if Path(key).resolve() == target:
                 matches.append(key)
         except (OSError, ValueError):
             # A stored key this platform cannot even parse is not this project.
             continue
-    return matches or [str(project_root)]
+    return matches or [str(target)]
 
 
 def _write_server_entry(

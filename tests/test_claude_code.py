@@ -285,6 +285,28 @@ def test_every_spelling_of_the_project_directory_is_registered(
     assert all(written["projects"][k]["allowedTools"] == [] for k in (native, posix))
 
 
+def test_key_matching_follows_the_platform_rather_than_casefolding(tmp_path: Path) -> None:
+    """A casefolded comparison over-matches on POSIX, where case distinguishes directories.
+
+    `PurePath.__eq__` normalises case on Windows and not on POSIX, which is each platform's own
+    rule. Registering under a key that merely differs in case would put a recall server in an
+    unrelated project on Linux, which is the corpus-boundary failure this change exists to
+    prevent.
+    """
+    import os
+
+    project = tmp_path / "Proj"
+    project.mkdir()
+    document = {"projects": {str(tmp_path / "proj"): {}, str(project): {}}}
+
+    keys = claude_code._project_keys(document, project)
+
+    if os.name == "nt":
+        assert len(keys) == 2, "Windows treats the two spellings as one directory"
+    else:
+        assert keys == [str(project)], "POSIX must not match a differently-cased directory"
+
+
 def test_a_project_the_client_has_never_seen_gets_exactly_one_key(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
