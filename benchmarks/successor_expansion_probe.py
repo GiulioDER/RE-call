@@ -18,11 +18,21 @@ Apparatus checks run BEFORE any quality number is read, and a failure of any of 
 quality result must not be interpreted. See the four in the record.
 
     eval "$(scripts/session-db.sh up)"
-    python benchmarks/successor_expansion_probe.py
+    python -m benchmarks.successor_expansion_probe
+
+⚠️ `-m`, from the worktree root, NOT `python benchmarks/successor_expansion_probe.py`. Run as a
+script, Python puts the SCRIPT's directory on `sys.path[0]`, so `benchmarks/` goes on the path and
+the worktree root does not. `import recall` then falls through to whatever is installed, which on
+this machine is the MAIN CHECKOUT: the first run of this probe imported
+`C:/Users/gde00/Documents/recall/recall/retriever.py` and died on a symbol that exists only here.
+That failure was loud. The dangerous version is silent, a benchmark that runs happily and scores
+the main checkout while reporting a number against your branch. The guard below the imports
+turns the silent case back into a loud one.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import statistics
@@ -32,17 +42,34 @@ import time
 import uuid
 from pathlib import Path
 
-from recall.calibration import from_samples
-from recall.embeddings import FastEmbedEmbedder, embedding_profile_id
-from recall.eval._research_trust import research_search
-from recall.eval.calibrate import measure_top_cosines
-from recall.eval.metrics import wilson_ci
-from recall.index import Indexer
-from recall.retriever import HybridRetriever, SuccessorExpansionPolicy
-from recall.store import PgVectorStore
-from recall.types import TrustedResult
+_HERE = Path(__file__).resolve().parent.parent
+_SPEC = importlib.util.find_spec("recall")
+_ORIGIN = Path(_SPEC.origin).resolve() if _SPEC is not None and _SPEC.origin else None
+if _ORIGIN is None or _HERE not in _ORIGIN.parents:
+    # Refuse to measure a `recall` that is not the one in this tree. `find_spec` rather than
+    # `import recall`, so this can run BEFORE the imports it protects without executing the wrong
+    # package first.
+    raise SystemExit(
+        f"refusing to run: `recall` resolves to {_ORIGIN}\n"
+        f"                 but this probe lives under {_HERE}\n"
+        "run it as `python -m benchmarks.successor_expansion_probe` from the worktree root"
+    )
 
-from benchmarks.successor_fixture import PAIRS, UNANSWERABLE, documents
+# E402 below is deliberate and is the entire point of the block above. The case this guard exists
+# for is NOT the loud one that produced it, where a symbol was missing and the import died. It is
+# the silent one, where every symbol resolves in both trees, the probe runs happily, and the number
+# describes another checkout. That can only be caught before the first `recall` import.
+from recall.calibration import from_samples  # noqa: E402
+from recall.embeddings import FastEmbedEmbedder, embedding_profile_id  # noqa: E402
+from recall.eval._research_trust import research_search  # noqa: E402
+from recall.eval.calibrate import measure_top_cosines  # noqa: E402
+from recall.eval.metrics import wilson_ci  # noqa: E402
+from recall.index import Indexer  # noqa: E402
+from recall.retriever import HybridRetriever, SuccessorExpansionPolicy  # noqa: E402
+from recall.store import PgVectorStore  # noqa: E402
+from recall.types import TrustedResult  # noqa: E402
+
+from benchmarks.successor_fixture import PAIRS, UNANSWERABLE, documents  # noqa: E402
 
 #: The caller-facing depth. The library default, so the measurement describes the shipped shape.
 K = 5
