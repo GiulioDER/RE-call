@@ -8,10 +8,12 @@ evaluator can consume without transforming the predictions.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 import time
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Any
 
 import requests
@@ -172,7 +174,8 @@ def generate_answer(
     raise RuntimeError(f"answer generation failed: {last_error or 'unknown provider error'}")
 
 
-def _build_retriever(args: argparse.Namespace) -> tuple[Any, Any, list[Chunk], int]:
+@contextmanager
+def _build_retriever(args: argparse.Namespace) -> Iterator[tuple[Any, Any, list[Chunk], int]]:
     memory = build_memory_items(args.image_file, args.video_file, args.email_file)
     embedder = resolve_embedder(args.embedder)
     chunks = [
@@ -188,7 +191,8 @@ def _build_retriever(args: argparse.Namespace) -> tuple[Any, Any, list[Chunk], i
     reranker = reranker_from_name(args.reranker)
     index_started = time.perf_counter()
     embeddings: list[list[float]] = []
-    with PgVectorStore(dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
+    store = PgVectorStore(dsn, dim=embedder.dim, table=args.table, tenant=args.tenant)
+    try:
         store.ensure_schema()
         if args.reuse_index:
             facts = store.readiness_facts()
@@ -213,7 +217,9 @@ def _build_retriever(args: argparse.Namespace) -> tuple[Any, Any, list[Chunk], i
             retrieval_profile="atm_voyage4_lexical_hybrid",
             index_generation="atm_2026_08_19_voyage4",
         )
-        return retriever, embedder, chunks, index_ms
+        yield retriever, embedder, chunks, index_ms
+    finally:
+        store.close()
 
 
 def run(args: argparse.Namespace) -> int:
@@ -244,62 +250,60 @@ def run(args: argparse.Namespace) -> int:
     retrieval_path = args.out_dir / "retrieval.jsonl"
     answers = _load_jsonl(answers_path)
     retrieval_rows = _load_jsonl(retrieval_path)
-    retriever, embedder, chunks, index_ms = _build_retriever(args)
-    chunks_by_id = {chunk.id: chunk for chunk in chunks}
-
-    usage_total = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    returned_models: set[str] = set()
-    errors: list[dict[str, str]] = []
-    for position, question in enumerate(questions, start=1):
-        question_id = question["id"]
-        if question_id in answers:
-            continue
-        row = retrieval_rows.get(question_id)
-        if row is None:
-            result = retriever.search(question["question"], k=args.retrieval_k)
-            hits = [
-                {
-                    "id": hit.chunk.id,
-                    "text": hit.chunk.text,
-                    "score": float(hit.score),
+    with _build_retriever(args) as (retriever, embedder, chunks, index_ms):
+        usage_total = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        returned_models: set[str] = set()
+        errors: list[dict[str, str]] = []
+        for position, question in enumerate(questions, start=1):
+            question_id = question["id"]
+            if question_id in answers:
+                continue
+            row = retrieval_rows.get(question_id)
+            if row is None:
+                result = retriever.search(question["question"], k=args.retrieval_k)
+                hits = [
+                    {
+                        "id": hit.chunk.id,
+                        "text": hit.chunk.text,
+                        "score": float(hit.score),
+                    }
+                    for hit in result.hits
+                ]
+                row = {
+                    "id": question_id,
+                    "question": question["question"],
+                    "qtype": question.get("qtype"),
+                    "retrieval_ids": [hit["id"] for hit in hits],
+                    "hits": hits,
+                    "gap_warning": bool(result.gap_warning),
+                    "reranking_ran": bool(result.diagnostics.reranking_ran),
                 }
-                for hit in result.hits
-            ]
-            row = {
-                "id": question_id,
-                "question": question["question"],
-                "qtype": question.get("qtype"),
-                "retrieval_ids": [hit["id"] for hit in hits],
-                "hits": hits,
-                "gap_warning": bool(result.gap_warning),
-                "reranking_ran": bool(result.diagnostics.reranking_ran),
-            }
-            if any(hit_id not in memory_ids for hit_id in row["retrieval_ids"]):
-                raise RuntimeError(f"retrieval returned an unknown memory id for {question_id}")
-            _append_jsonl(retrieval_path, row)
-            retrieval_rows[question_id] = row
-        answer, usage, returned_model = generate_answer(
-            question=question["question"],
-            qtype=question.get("qtype"),
-            evidence=_evidence_text(row["hits"], args.evidence_chars),
-            model=args.answer_model,
-            base_url=args.answer_base_url,
-            api_key=api_key,
-            reasoning_effort=args.reasoning_effort,
-            max_output_tokens=args.max_output_tokens,
-            max_attempts=args.max_attempts,
-        )
-        answer_row = {"id": question_id, "answer": answer}
-        _append_jsonl(answers_path, answer_row)
-        answers[question_id] = answer_row
-        usage_total["calls"] += 1
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-            usage_total[key] += usage[key]
-        if returned_model:
-            returned_models.add(returned_model)
-        print(f"answered {position}/{len(questions)}")
+                if any(hit_id not in memory_ids for hit_id in row["retrieval_ids"]):
+                    raise RuntimeError(f"retrieval returned an unknown memory id for {question_id}")
+                _append_jsonl(retrieval_path, row)
+                retrieval_rows[question_id] = row
+            answer, usage, returned_model = generate_answer(
+                question=question["question"],
+                qtype=question.get("qtype"),
+                evidence=_evidence_text(row["hits"], args.evidence_chars),
+                model=args.answer_model,
+                base_url=args.answer_base_url,
+                api_key=api_key,
+                reasoning_effort=args.reasoning_effort,
+                max_output_tokens=args.max_output_tokens,
+                max_attempts=args.max_attempts,
+            )
+            answer_row = {"id": question_id, "answer": answer}
+            _append_jsonl(answers_path, answer_row)
+            answers[question_id] = answer_row
+            usage_total["calls"] += 1
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                usage_total[key] += usage[key]
+            if returned_model:
+                returned_models.add(returned_model)
+            print(f"answered {position}/{len(questions)}")
 
-    manifest = {
+        manifest = {
         "benchmark": "ATM-Bench",
         "measurement": "retrieve_rerank_answer",
         "question_count": len(questions),
@@ -331,8 +335,8 @@ def run(args: argparse.Namespace) -> int:
             str(path): sha256(path)
             for path in (args.qa_file, args.image_file, args.video_file, args.email_file)
         },
-    }
-    _write_json(args.out_dir / "manifest.json", manifest)
+        }
+        _write_json(args.out_dir / "manifest.json", manifest)
     print(f"wrote {answers_path}")
     return 0
 
