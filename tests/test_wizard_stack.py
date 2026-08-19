@@ -65,7 +65,13 @@ def test_the_database_publishes_a_host_port(tmp_path: Path) -> None:
     document = compose_document(_spec(tmp_path))
     db = document["services"]["db"]  # type: ignore[index]
 
-    assert db["ports"] == [f"5487:{DB_INTERNAL_PORT}"]
+    # 🔁 Was `f"5487:{DB_INTERNAL_PORT}"`, and that omission was an exposure rather than a style
+    # choice: Compose's short form with no host IP binds 0.0.0.0, so Docker Desktop published this
+    # database — with the `recall:recall` credentials this project's README publishes — on every
+    # interface of the Windows host. The comment justifying `RECALL_ALLOW_INSECURE_DSN` asserted
+    # "the port that IS published is bound to loopback"; this is what makes that true.
+    assert db["ports"] == [f"127.0.0.1:5487:{DB_INTERNAL_PORT}"]
+    assert db["ports"][0].startswith("127.0.0.1:"), "the database must never bind every interface"
 
 
 def test_the_database_lives_on_a_named_volume_not_the_users_directory(tmp_path: Path) -> None:
@@ -225,7 +231,7 @@ def test_the_port_is_read_back_rather_than_rechosen(tmp_path: Path) -> None:
     """A re-install must not repoint the database out from under the UI and the agent.
 
     `runtime.json` names a compose file and the desktop UI connects through whatever that file
-    publishes; `.mcp.json` carries the host address directly. Re-choosing a free port on every run
+    publishes; the registered server block carries the host address directly. Re-choosing a free port on every run
     would silently break both, and the symptom is a UI showing an empty corpus rather than an error.
     """
     from recall.wizard.stack import existing_port
@@ -258,8 +264,14 @@ def test_run_headless_provisions_from_data_root_and_reuses_the_port(
     repointing the store out from under the UI.
     """
     import recall.wizard.headless as H
+    from recall.desktop.profiles import profile_path as _default_profile_path
     from recall.wizard.stack import existing_port
     from tests.test_wizard_state import _CountingSpy, _config
+
+    # Snapshot BEFORE anything runs, so the guard below compares against reality rather than
+    # assuming the machine is pristine.
+    _real = _default_profile_path()
+    _real_profile_before = (_real.exists(), _real.stat().st_mtime_ns if _real.exists() else 0)
 
     started: list[tuple[Path, tuple[str, ...]]] = []
     waited: list[str] = []
@@ -294,9 +306,18 @@ def test_run_headless_provisions_from_data_root_and_reuses_the_port(
 
     from recall.desktop.profiles import profile_path as default_profile_path
 
-    assert not default_profile_path().exists(), (
-        "a test must never write the real user profile; this one did, pointing it at a "
-        "pytest temp directory"
+    # 🔁 This asserted the real profile does not EXIST. That is a claim about the machine, not
+    # about the test: anyone who has run the installer once has one, and the test then failed for a
+    # reason unrelated to the code — which is exactly how it failed here, on a profile written by
+    # this project's own clean-install run. Asserting it is UNCHANGED is strictly stronger: it
+    # still catches this test writing the file, and it no longer fails when something else did.
+    # The same defect was found in `tests/test_desktop.py` by four auditors and fixed the same way.
+    real = default_profile_path()
+    assert (real.exists(), real.stat().st_mtime_ns if real.exists() else 0) == _real_profile_before, (
+        f"a test must never write the real user profile; this one changed {real}, pointing it at "
+        f"a pytest temp directory. If you are diagnosing this, that ABSOLUTE PATH is the thing to "
+        f"look at: the assertion compares its existence and mtime before and after, so it fires "
+        f"only on a change made by this test, not on a machine that merely has a profile."
     )
 
     first_port = existing_port(compose)
@@ -351,3 +372,68 @@ def test_every_generated_service_can_pass_the_insecure_dsn_guard(tmp_path: Path)
         assert environment["RECALL_ALLOW_INSECURE_DSN"] == "1", (
             f"service {name} would refuse to start against {environment['RECALL_DSN']}"
         )
+
+
+def test_no_subprocess_call_decodes_with_the_platform_codec() -> None:
+    """⛔ `text=True` without an explicit `encoding` fails SILENTLY on Windows.
+
+    Verified 2026-08-19 on this machine, preferred encoding cp1252, feeding `b"ok\x8fend"` through
+    `subprocess.run(..., capture_output=True, text=True)`:
+
+        returned. rc = 0 | stdout = None | stderr = ''
+
+    The `UnicodeDecodeError` is raised inside subprocess's reader THREAD and never reaches the
+    caller. So a command that failed reports `exc.stderr or exc.stdout or ""` as an empty string and
+    names no cause, and a command that succeeded reads as having produced no output at all — which
+    is how `existing_port` and `existing_tenants` would decide a stack does not exist and provision
+    a second one.
+
+    0x8f is not exotic: it is a byte UTF-8 continuation sequences produce routinely, and Docker,
+    git and LibreOffice all emit UTF-8. Asserted across the whole distribution rather than per call
+    site, because the failure is in what a call site FORGETS, and a new one will forget it too.
+
+    ⚠️ **The roots come from the wheel's own `packages` list, not from a literal here.** The first
+    version walked `recall/` alone, which left `recall_mcp/` — shipped in the same wheel — outside a
+    guard whose entire argument is that a NEW call site will forget the codec. A hardcoded root
+    cannot notice a package being added; reading the manifest means the guard covers whatever is
+    actually distributed. Same reasoning as `CLAUDE_CONFIG_SUBPATHS`, where two consumers read one
+    list so they cannot drift apart. Gap reported by a peer session reviewing this check.
+    """
+    import ast
+    import tomllib
+
+    repository = Path(__file__).resolve().parent.parent
+    manifest = tomllib.loads((repository / "pyproject.toml").read_text(encoding="utf-8"))
+    names = manifest["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+    assert names, "the wheel declares no packages, so this guard would silently check nothing"
+
+    sources: list[Path] = []
+    for name in names:
+        root = repository / name
+        assert root.is_dir(), f"the wheel ships {name}, which is not in the tree"
+        sources.extend(root.rglob("*.py"))
+    assert sources, "no Python files found to check"
+
+    offenders: list[str] = []
+    for source in sources:
+        tree = ast.parse(source.read_text(encoding="utf-8"), str(source))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            target = node.func
+            if not (
+                isinstance(target, ast.Attribute)
+                and target.attr in {"run", "Popen", "call", "check_output", "check_call"}
+            ):
+                continue
+            if not (isinstance(target.value, ast.Name) and target.value.id == "subprocess"):
+                continue
+            keywords = {k.arg for k in node.keywords}
+            wants_text = "text" in keywords or "universal_newlines" in keywords
+            if wants_text and "encoding" not in keywords:
+                offenders.append(f"{source.relative_to(repository)}:{node.lineno}")
+
+    assert not offenders, (
+        "these subprocess calls decode with the platform codec, which on Windows returns "
+        "rc=0 with stdout=None instead of raising: " + ", ".join(offenders)
+    )

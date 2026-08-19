@@ -98,7 +98,10 @@ def test_local_scan_prunes_generated_directories_and_limits_claude_files(tmp_pat
     (claude / "settings.json").write_text("{}", encoding="utf-8")
 
     assert default_scan_roots(tmp_path) == (documents, claude)
-    found = scan_files(default_scan_roots(tmp_path))
+    # `home=tmp_path` for the same reason `default_scan_roots` takes it: the restriction is a prefix
+    # test against the REAL configuration directories, so a test using a temporary home has to say
+    # which home it means or the restriction correctly declines to fire.
+    found = scan_files(default_scan_roots(tmp_path), home=tmp_path)
 
     assert [path.relative_to(tmp_path).as_posix() for path in found] == [
         "Documents/app.py",
@@ -106,6 +109,55 @@ def test_local_scan_prunes_generated_directories_and_limits_claude_files(tmp_pat
         ".claude/MEMORY.md",
         ".claude/projects/demo/memory/notes.md",
     ]
+
+
+def test_a_project_living_under_a_dot_claude_path_is_scanned_normally(tmp_path: Path) -> None:
+    """⛔ The regression that made the local scan return almost nothing for this repository.
+
+    `_is_claude_root` used to ask whether ANY component of the path was named `.claude`, which is
+    true of every checkout made by this repository's own documented worktree workflow,
+    `<repo>/.claude/worktrees/<name>`. An ordinary project was therefore classified as a Claude
+    configuration folder and restricted to memory files.
+
+    Measured on a real worktree before the fix: scanning its `docs/` directory found **0 of 86**
+    markdown files. It did not look like a filter firing. It looked like a project with no
+    documents, which is the failure mode this repository keeps paying for.
+    """
+    project = tmp_path / "repo" / ".claude" / "worktrees" / "feature"
+    (project / "docs").mkdir(parents=True)
+    (project / "README.md").write_text("readme", encoding="utf-8")
+    (project / "docs" / "design.md").write_text("design", encoding="utf-8")
+    (project / "app.py").write_text("print('ok')", encoding="utf-8")
+
+    found = scan_files([project], home=tmp_path)
+
+    assert [path.relative_to(project).as_posix() for path in found] == [
+        "README.md",
+        "app.py",
+        "docs/design.md",
+    ]
+
+
+def test_the_restriction_follows_the_files_not_the_root(tmp_path: Path) -> None:
+    """Scanning the HOME directory must still keep Claude's own configuration out.
+
+    The old test was per-ROOT, so a scan rooted at the home directory was unrestricted throughout:
+    the home is not itself named `claude`, and the check never ran again. Applying it per file is
+    strictly wider, and this is the case that shows the difference.
+    """
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+    (tmp_path / ".claude" / "MEMORY.md").write_text("memory", encoding="utf-8")
+    (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
+
+    found = scan_files([tmp_path], home=tmp_path)
+
+    relative = [path.relative_to(tmp_path).as_posix() for path in found]
+    # `os.walk` yields the root's own files before it descends, so this is walk order, not luck.
+    assert relative == ["notes.md", ".claude/MEMORY.md"]
+    assert ".claude/settings.json" not in relative, (
+        "settings are what the restriction exists for, and a home-rooted scan reaches them"
+    )
 
 
 def test_vps_runtime_uses_mcp_contract(tmp_path: Path) -> None:
@@ -308,6 +360,379 @@ def test_the_calibration_page_reports_on_the_corpus_it_names(
     finally:
         window.close()
         app.processEvents()
+
+
+def test_every_background_job_delivers_its_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_run`'s callbacks were arriving by luck, and every page depends on them.
+
+    ⚠️ `_Worker` is a `QRunnable` with `autoDelete` on, so the instant `run()` returns Qt destroys
+    it, taking `_WorkerSignals` with it and purging the queued cross-thread call. Measured on
+    PySide6 6.11 with five identical jobs: **1 of 5 arrived**; the anti-regression reviewer measured
+    **0 of 5** on the same code. It is a garbage-collection race, not a deterministic failure, which
+    is why it survived: it works often enough to look correct.
+
+    This is not specific to provisioning. Connect, ingest, calibration and the GitHub download all
+    go through `_run`, so all of them could silently never report. Ten jobs rather than one, because
+    a race that fires nine times out of ten is exactly what a single-job test would bless.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+
+    class UiRuntime:
+        def start(self) -> None: ...
+        def stop(self) -> None: ...
+        def health(self) -> dict[str, str]:
+            return {"status": "ready"}
+        def list_tenants(self) -> list[str]:
+            return ["default"]
+
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(profile, runtime=UiRuntime())
+    try:
+        # ⚠️ **The structural assertion comes first, and it is the one that pins the fix.** The
+        # defect is a garbage-collection RACE, so a timing test blesses the broken code whenever
+        # the collector is slow: mutating the fix away and running the delivery check below passed.
+        # These two properties are what stop the runnable being destroyed before Qt delivers its
+        # queued signal, and they hold deterministically.
+        held: list[object] = []
+        window.pool.start = lambda worker: held.append(worker)  # type: ignore[method-assign]
+        window._run(lambda: 1, lambda _value: None)
+        assert held, "the job must reach the pool"
+        assert held[0].autoDelete() is False, (
+            "a QRunnable with autoDelete on is destroyed the moment run() returns, taking its "
+            "signals object with it and purging the queued callback"
+        )
+        # Membership, not equality: the window dispatches its own connect job during construction,
+        # so the list is not empty when this test starts.
+        assert held[0] in window._workers, "`_run` must keep a reference to the live worker"
+        window._workers.clear()
+        del window.pool.start
+
+        delivered: list[object] = []
+        jobs = 10
+        for index in range(jobs):
+            window._run(lambda i=index: i, lambda value: delivered.append(value))
+
+        # Waits for the release too, not just the callback. Each connection to a cross-thread
+        # signal is its own queued call, so the last `append` can arrive while its matching
+        # `_release` is still queued behind it — exiting on the callback alone made this test
+        # flaky against correct code.
+        deadline = time.time() + 10.0
+        while time.time() < deadline and (len(delivered) < jobs or window._workers):
+            app.processEvents()
+            time.sleep(0.02)
+
+        assert len(delivered) == jobs, (
+            f"only {len(delivered)} of {jobs} background jobs reported. `_run` must keep a "
+            f"reference to its worker; without one the runnable is deleted before Qt delivers "
+            f"the queued signal, and every page that loads data in the background can hang."
+        )
+        assert window._workers == [], "a finished job must release its worker"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_a_project_that_was_created_but_would_not_start_is_reported_as_created(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Creating and starting are two outcomes, and the third state has to survive.
+
+    ⚠️ Moving provisioning onto the worker pool collapsed them: any failure became "Cannot create
+    {name}" and dropped the name from the selector. By then `add_project` has already written the
+    compose file and the tenants exist, so that message asserts a state the code did create — and
+    a retry then finds nothing to add, reports "already exists", and never starts anything, leaving
+    the user with no route back to a running stack. Caught by the anti-regression review, not by a
+    test, which is why this one exists.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+
+    class UiRuntime:
+        def start(self) -> None:
+            raise RuntimeErrorBase("dependency failed to start: container is unhealthy")
+
+        def stop(self) -> None: ...
+        def health(self) -> dict[str, str]:
+            return {"status": "ready"}
+        def list_tenants(self) -> list[str]:
+            return ["default"]
+        def _service_for_tenant(self, scope: str) -> str:
+            return f"recall-{scope}"
+
+    class _Added:
+        tenants = ("acme-docs", "acme-code", "acme-memory")
+        compose_path = Path("docker-compose.recall.yml")
+
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(profile, runtime=UiRuntime())
+    try:
+        window._project_names.append("acme")
+
+        # ⚠️ Drive `_do_provision`, NOT `_provision_done`. The first version of this test called
+        # the display handler with a hand-built tuple, so it exercised the wording and nothing
+        # about the routing: deleting the try/except in `_do_provision` left the whole suite green.
+        # The reviewer proved that by mutation. The routing is the finding, so the routing is what
+        # this asserts.
+        monkeypatch.setattr(
+            "recall.wizard.projects.add_project", lambda *a, **k: _Added(), raising=False
+        )
+        added, start_error = window._do_provision("acme", "docker-compose.desktop.yml")
+
+        assert start_error, "a failing start must be RETURNED, not raised into _provision_failed"
+        assert added is not None, "the project object must survive a start failure"
+
+        window._provision_done("acme", (added, start_error))
+        text = window.status.text()
+
+        assert "exists" in text.lower(), f"a written project must not be reported as absent: {text}"
+        assert "cannot create" not in text.lower(), (
+            "the compose file was already written, so 'cannot create' is a false claim"
+        )
+        assert "acme" in window._project_names, "a created project must stay in the selector"
+        assert window.scope.isEnabled(), "every outcome must re-enable the scope selector"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_provisioning_is_dispatched_to_the_pool_not_the_gui_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-inlining the provision would restore the frozen window with a fully green suite.
+
+    `_provision_project` used to call `add_project` and `runtime.start()` directly inside a
+    `currentIndexChanged` slot, so the window stopped repainting and Windows marked it
+    "(Not Responding)" for the length of a compose `up --wait` — which on a first start includes
+    building the image. Four auditors reported it. The sibling test drives `_do_provision`
+    directly, so it says nothing about HOW `_do_provision` is reached; this asserts the dispatch.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+
+    def _never(*args: object, **kwargs: object) -> object:
+        raise AssertionError("add_project ran on the GUI thread; it must go through the pool")
+
+    monkeypatch.setattr("recall.wizard.projects.add_project", _never, raising=False)
+
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(profile, runtime=DockerRuntime(profile))
+    try:
+        dispatched: list[tuple[object, ...]] = []
+        window._run = lambda fn, done, failed=None: dispatched.append((fn, done, failed))  # type: ignore[method-assign]
+
+        window._provision_project("acme")
+
+        assert dispatched, "provisioning must be handed to the worker pool, not run inline"
+        assert all(callable(part) for part in dispatched[0]), "fn, done and failed are all callables"
+        assert window.scope.isEnabled() is False, (
+            "the scope selector must be disabled while the job is outstanding"
+        )
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_a_retry_starts_the_stack_even_when_nothing_new_was_created(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stranding case: a retry after a failed start finds nothing to add.
+
+    ⚠️ The old code returned before starting when `created_anything` was False, so a user whose
+    first attempt created the project but failed to start it was told "already exists" forever,
+    with the services still down and no route back. `start()` is therefore called unconditionally.
+    The sibling test's fixture has three tenants, so it cannot see this: reintroducing the guard
+    would leave it green.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+
+    class _AlreadyThere:
+        tenants: tuple[str, ...] = ()
+        already_present = ("acme-docs", "acme-code", "acme-memory")
+        compose_path = Path("docker-compose.recall.yml")
+
+    starts: list[int] = []
+
+    class UiRuntime:
+        def start(self) -> None:
+            starts.append(1)
+
+        def stop(self) -> None: ...
+        def health(self) -> dict[str, str]:
+            return {"status": "ready"}
+        def list_tenants(self) -> list[str]:
+            return ["default"]
+
+    monkeypatch.setattr(
+        "recall.wizard.projects.add_project", lambda *a, **k: _AlreadyThere(), raising=False
+    )
+
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(profile, runtime=UiRuntime())
+    try:
+        # DRAIN the window's own connect job first. It calls `start()` on a worker thread and can
+        # land at any moment, so neither an absolute count nor a delta measured around the call is
+        # stable — both were flaky before this loop.
+        import time as _time
+
+        deadline = _time.time() + 10.0
+        while _time.time() < deadline and window._workers:
+            app.processEvents()
+            _time.sleep(0.02)
+        app.processEvents()
+
+        before = len(starts)
+        added, start_error = window._do_provision("acme", "docker-compose.recall.yml")
+
+        assert len(starts) - before == 1, (
+            "a retry must still start the stack; skipping it when nothing was created is what "
+            "left the user with a created project and no way to run it"
+        )
+        assert not start_error
+        window._provision_done("acme", (added, start_error))
+        assert "already exists" in window.status.text().lower()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_a_compose_failure_reports_dockers_own_words(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A build failure, a pull denial and an unhealthy dependency were one identical sentence.
+
+    `str(CalledProcessError)` is only "Command '[...]' returned non-zero exit status 1", and the
+    stderr had already been captured and thrown away — on exactly the paths that now build images
+    and provision projects. `stack.bring_up` already extracted it; this copies that.
+    """
+    import subprocess as _subprocess
+
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="whatever.yml")
+    runtime = DockerRuntime(profile)
+
+    def failing(command, **kwargs):  # noqa: ANN001, ANN003
+        raise _subprocess.CalledProcessError(
+            1, command, output="", stderr="dependency failed to start: container is unhealthy"
+        )
+
+    monkeypatch.setattr(_subprocess, "run", failing)
+    with pytest.raises(RuntimeErrorBase) as failure:
+        runtime._compose("up", "-d", "--wait")
+    assert "container is unhealthy" in str(failure.value), (
+        "the captured stderr must reach the user; without it every compose failure reads alike"
+    )
+
+    def timing_out(command, **kwargs):  # noqa: ANN001, ANN003
+        raise _subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(_subprocess, "run", timing_out)
+    with pytest.raises(RuntimeErrorBase) as timeout:
+        runtime._compose("up", "-d", "--wait")
+    text = str(timeout.value)
+    assert "did not finish" in text and "1800" in text, (
+        "a timeout must say so, and name the budget, rather than reading as a failure"
+    )
+
+
+def test_an_invalid_profile_does_not_stop_the_app_opening(tmp_path: Path) -> None:
+    """A file that PARSES but does not validate must fall back, not raise.
+
+    ⚠️ `load_profile` caught `(OSError, ValueError)` around `json.loads` and then constructed the
+    `RuntimeProfile` OUTSIDE the guard — and `from_dict` raises `ValueError` too: an unknown
+    `RuntimeMode`, a docker profile with no compose file, an empty `default_tenant`. So an invalid
+    profile escaped through the unguarded call in `main.py` and the application would not open,
+    which is precisely what the sibling `load_pipelines` docstring promises a bad settings file
+    never causes.
+    """
+    import json as _json
+
+    bad = tmp_path / "runtime.json"
+
+    bad.write_text(_json.dumps({"mode": "docker"}), encoding="utf-8")  # no compose_file
+    assert profiles.load_profile(bad) is None, "a docker profile with no compose file must not raise"
+
+    bad.write_text(_json.dumps({"mode": "not-a-mode"}), encoding="utf-8")
+    assert profiles.load_profile(bad) is None, "an unknown runtime mode must not raise"
+
+    bad.write_text("not json at all", encoding="utf-8")
+    assert profiles.load_profile(bad) is None
+
+    good = tmp_path / "good.json"
+    good.write_text(
+        _json.dumps({"mode": "docker", "compose_file": "docker-compose.desktop.yml"}),
+        encoding="utf-8",
+    )
+    assert profiles.load_profile(good) is not None, "a valid profile must still load"
+
+
+def test_a_project_name_drops_every_corpus_suffix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`-memory` was missing, which is the same omission `runtime.py` records making three times.
+
+    A runtime that returns raw tenant names — the base `RuntimeManager.list_tenants` does, reading
+    `recall_tenants` — then yields a phantom project called `<project>-memory`, and the calibration
+    page builds `<project>-memory-docs` from it.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from recall.desktop.ui import _project_name
+
+    assert _project_name("acme-docs") == "acme"
+    assert _project_name("acme-code") == "acme"
+    assert _project_name("acme-memory") == "acme", "the memory suffix must be dropped too"
+    assert _project_name("acme") == "acme"
+
+
+def test_a_build_gets_a_longer_budget_than_a_status_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One 120s timeout governed every compose verb, and it could not cover the work.
+
+    The generated stack gives each tenant service a `build:` stanza and nothing in the install path
+    ever builds it, so the desktop's first `up` builds LibreOffice plus a PyPI install. Separately
+    the database healthcheck carries `start_period: 180s`, already longer than the old cap, so
+    `up --wait` was killed while Compose was still legitimately waiting. Five auditors reached this
+    from five directions.
+    """
+    import subprocess as _subprocess
+
+    from recall.desktop.runtime import _QUICK_VERB_TIMEOUT, _SLOW_VERB_TIMEOUT
+
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="whatever.yml")
+    runtime = DockerRuntime(profile)
+    seen: dict[str, int] = {}
+
+    def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
+        seen[command[command.index("whatever.yml") + 1]] = kwargs["timeout"]
+        return _subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+
+    runtime._compose("up", "-d", "--wait")
+    runtime._compose("config", "--services")
+
+    assert seen["up"] == _SLOW_VERB_TIMEOUT
+    assert seen["config"] == _QUICK_VERB_TIMEOUT
+    assert seen["up"] > 240, (
+        "an `up` must outlast the healthcheck it waits on: start_period 180s plus "
+        "interval 2s x retries 30"
+    )
 
 
 def test_the_corpus_suffixes_match_the_wizards_kinds() -> None:
@@ -640,4 +1065,8 @@ def test_saving_the_pipeline_configuration_actually_persists_it(
     assert (tmp_path / "pipeline.json").exists()
     for path, state in before.items():
         now = (path.exists(), path.stat().st_mtime_ns if path.exists() else 0)
-        assert now == state, f"a test must never write the user's real {path.name}"
+        # The ABSOLUTE path, not just the filename: a guard on a real user location has to say
+        # WHICH file, or diagnosing it means searching for a path the message withheld. This
+        # compares existence and mtime before and after, so it fires on a change made by this
+        # test, never on a machine that merely has a profile.
+        assert now == state, f"a test must never write the user's real profile at {path}"

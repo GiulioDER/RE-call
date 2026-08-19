@@ -18,13 +18,19 @@ def profile_path() -> Path:
 
 def load_profile(path: Path | None = None) -> RuntimeProfile | None:
     target = path or profile_path()
+    # ⚠️ **Construction is INSIDE the guard, and that was the bug.** Widening the catch to
+    # `ValueError` covered `json.loads`, but `RuntimeProfile.from_dict` sat outside it — and it
+    # raises `ValueError` too: an unknown `RuntimeMode`, a docker profile with no compose file, an
+    # empty `default_tenant`. So a file that PARSED but did not validate escaped, out through the
+    # unguarded call in `main.py`, and the application would not open — the exact outcome the
+    # sibling `load_pipelines` docstring promises a bad settings file never causes.
     try:
         value = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError):  # ValueError also covers UnicodeDecodeError; see load_pipelines
+        if not isinstance(value, dict):
+            return None
+        return RuntimeProfile.from_dict(value)
+    except (OSError, ValueError, TypeError):
         return None
-    if not isinstance(value, dict):
-        return None
-    return RuntimeProfile.from_dict(value)
 
 
 def _write_json_atomically(target: Path, payload: object) -> Path:

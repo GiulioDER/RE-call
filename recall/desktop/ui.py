@@ -9,7 +9,13 @@ from typing import Any
 
 from recall.desktop.models import RuntimeProfile, SourceCategory, SourceSelection
 from recall.desktop.profiles import load_pipelines, save_pipelines
-from recall.desktop.runtime import DockerRuntime, RuntimeManager, RuntimeErrorBase, create_runtime
+from recall.desktop.runtime import (
+    _CORPUS_SUFFIXES,
+    DockerRuntime,
+    RuntimeManager,
+    RuntimeErrorBase,
+    create_runtime,
+)
 from recall.desktop.sources import (
     CLAUDE_MEMORY_FILENAMES,
     CODE_EXTENSIONS,
@@ -66,9 +72,17 @@ QApplication: Any = getattr(_qt_widgets, "QApplication", None)
 if QApplication is not None:
 
     def _project_name(value: str) -> str:
-        """Show one project entry for the paired docs and code scopes."""
+        """Show one project entry for a project's corpus scopes.
+
+        ⚠️ **This listed `("-docs", "-code")` and missed `-memory`** — the same omission, in the
+        same words, that `runtime.py` records having made in three places at once. It survived here
+        because nothing pinned the two files together. With memory tenants now real, a runtime that
+        returns raw tenant names (the base `RuntimeManager.list_tenants` does, from `recall_tenants`)
+        yields a phantom project called `<project>-memory`, and the calibration page then builds
+        `<project>-memory-docs` from it.
+        """
         text = value.strip()
-        for suffix in ("-docs", "-code"):
+        for suffix in _CORPUS_SUFFIXES:
             if text.endswith(suffix):
                 return text[: -len(suffix)]
         return text
@@ -274,6 +288,9 @@ if QApplication is not None:
             self.profile = profile
             self.runtime = runtime or create_runtime(profile)
             self.pool = QThreadPool(self)
+            #: Live workers. Holding them is what makes `_run`'s callbacks arrive at all; see the
+            #: measurement in `_run`. Entries are removed when their job reports.
+            self._workers: list[Any] = []
             self.pending_files: list[tuple[Path, SourceCategory]] = []
             self.pending_scopes: list[dict[str, Any]] = []
             self.calibration_snapshot: Any = None
@@ -1489,44 +1506,83 @@ if QApplication is not None:
                 )
                 return
 
-            from recall.wizard.projects import ProjectRefusal, add_project
-
-            try:
-                # The stack's own directory. `compose_path_for` puts the file at the data root, so
-                # the parent of the configured file is that root by construction.
-                added = add_project(Path(compose_file).resolve().parent, name)
-            except ProjectRefusal as refusal:
-                # The wizard's own reason, at the point of typing. The dialog used to accept names
-                # the wizard refuses and then tell the user to go and run it.
-                self.status.setText(f"Cannot create {name!r}: {refusal}")
-                self._forget_project(name)
-                return
-            except (OSError, ValueError) as exc:
-                self.status.setText(f"Cannot create {name!r}: {exc}")
-                self._forget_project(name)
-                return
-
-            if not added.created_anything:
-                self.status.setText(
-                    f"Project {name!r} already exists in this stack; selected it."
-                )
-                return
-
-            # `start()` re-reads the topology and applies the schema, so the new services become
-            # reachable without restarting the app. It is also what makes the claim below true.
-            try:
-                self.runtime.start()
-            except RuntimeErrorBase as exc:
-                self.status.setText(
-                    f"Created {name!r} in {added.compose_path.name}, but the stack did not come "
-                    f"back up: {exc}. The project exists and will be there on the next connect."
-                )
-                return
-
-            self.status.setText(
-                f"Created project {name!r} ({len(added.tenants)} corpora). It is empty and not yet "
-                f"calibrated: add files on the Queue page, then calibrate it before trusting search."
+            # ⚠️ **On the worker pool, not the GUI thread.** This ran `add_project` and a full
+            # `runtime.start()` inline in a `currentIndexChanged` slot, so the window stopped
+            # repainting and Windows marked it "(Not Responding)" for the length of a compose
+            # `up --wait` — which, on a first start, includes building the image. Every other
+            # long operation in this class already goes through `_run`; this was the only one that
+            # did not. Four auditors found it.
+            self.status.setText(f"Creating project {name!r}…")
+            self.scope.setEnabled(False)
+            self._run(
+                lambda: self._do_provision(name, compose_file),
+                lambda outcome: self._provision_done(name, outcome),
+                lambda message: self._provision_failed(name, message),
             )
+
+        def _do_provision(self, name: str, compose_file: str) -> tuple[object, str]:
+            """Worker half: create the project and bring the stack back up. No Qt here.
+
+            Returns `(added, start_error)`. ⚠️ **Creating and starting are separate outcomes, and
+            collapsing them lost a state the user has to be told about.** Once `add_project`
+            returns, the compose file HAS been written and the tenants exist; if the restart then
+            fails, "cannot create" is false and dropping the name from the selector strands the
+            user — a retry finds the tenants already present, reports "already exists", and never
+            starts anything.
+            """
+            # Hand over the compose path the profile ACTUALLY records, not just its directory.
+            # Passing the parent alone discarded the filename and let `add_project` guess it,
+            # and the guess was wrong: the installer writes `docker-compose.recall.yml`.
+            from recall.wizard.projects import add_project
+
+            stack_file = Path(compose_file).resolve()
+            added = add_project(stack_file.parent, name, compose_path=stack_file)
+            try:
+                # Unconditionally, not only when something was created: a retry after a failed
+                # start finds nothing to add, and skipping the start there is what left the user
+                # with no route back to a running stack. `start()` is idempotent.
+                self.runtime.start()
+            except Exception as exc:  # noqa: BLE001 - reported, not handled; see the docstring
+                return added, str(exc)
+            return added, ""
+
+        def _provision_done(self, name: str, outcome: tuple[object, str]) -> None:
+            self.scope.setEnabled(True)
+            added, start_error = outcome
+            created = getattr(added, "tenants", ())
+
+            if start_error:
+                # The project EXISTS — the compose file was written before the start was attempted.
+                # Saying "cannot create" here would be a claim about a state the code did create,
+                # and the name stays in the selector so a retry can start it.
+                where = getattr(added, "compose_path", None)
+                self.status.setText(
+                    f"Project {name!r} was written to {where.name if where else 'the stack'}, but "
+                    f"the stack did not come back up: {start_error}. The project exists; it will "
+                    f"be there on the next connect."
+                )
+                return
+
+            if not created:
+                self.status.setText(f"Project {name!r} already exists in this stack; selected it.")
+                return
+
+            # Names the pages as the navigation labels them. This said "the Queue page", which the
+            # user cannot find: the buttons are MAIN, GITHUB, CALIBRATION, CONFIG, SETTINGS, and
+            # `queue_page` is only the internal name of the one shown as MAIN. (Finding DOC-005.)
+            self.status.setText(
+                f"Created project {name!r} ({len(created)} corpora). It is empty and not yet "
+                f"calibrated: add files on the MAIN page, then calibrate it on the CALIBRATION "
+                f"page before trusting search."
+            )
+
+        def _provision_failed(self, name: str, message: str) -> None:
+            self.scope.setEnabled(True)
+            # Every failure shape lands here, including the ones `_Worker` converts from arbitrary
+            # exceptions. The previous inline version caught only `RuntimeErrorBase`, while
+            # `runtime.start()` reaches the MCP client and can raise types that are not.
+            self.status.setText(f"Cannot create {name!r}: {message}")
+            self._forget_project(name)
 
         def _forget_project(self, name: str) -> None:
             """Drop a name that was added to the combo box but could not be provisioned."""
@@ -1984,9 +2040,35 @@ if QApplication is not None:
             )
 
         def _run(self, fn: Any, done: Any, failed: Any | None = None) -> None:
+            """Run `fn` on the pool and deliver its result to `done` (or `failed`).
+
+            ⚠️ **The worker must be KEPT, or the callback is delivered by luck.** `_Worker` is a
+            `QRunnable` with `autoDelete` on, so the moment `run()` returns Qt destroys it — taking
+            `_WorkerSignals` with it and purging the queued cross-thread call before it is
+            delivered. Measured on PySide6 6.11 with five identical jobs: **1 of 5 arrived** as this
+            was written, **5 of 5** with a reference held. Zero in another run, because it is a
+            garbage-collection race rather than a deterministic failure, which is worse: it works
+            often enough to look correct.
+
+            This affects every caller — connect, ingest, calibration, the GitHub download — not
+            just the one that exposed it. It surfaced because provisioning disables the scope
+            selector and re-enables it only from these callbacks, so a lost signal left the control
+            disabled for good.
+            """
             worker = _Worker(fn)
+            worker.setAutoDelete(False)
+            self._workers.append(worker)
+
+            def _release(_: Any = None) -> None:
+                # Idempotent: both signals are connected to it, and only one ever fires, but a
+                # double release must not raise inside a Qt slot.
+                if worker in self._workers:
+                    self._workers.remove(worker)
+
             worker.signals.done.connect(done)
             worker.signals.failed.connect(failed or (lambda message: self._job_failed(message)))
+            worker.signals.done.connect(_release)
+            worker.signals.failed.connect(_release)
             self.pool.start(worker)
 
         def _runtime_ready(self, result: Any) -> None:

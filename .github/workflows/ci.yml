@@ -176,6 +176,13 @@ jobs:
           echo "a durable fact about widget alignment tolerances" \
             > "$RUNNER_TEMP/install/memory/notes.md"
 
+      # ⚠️ The wizard registers its servers in Claude Code's OWN config and refuses to CREATE that
+      # file, because inventing another application's configuration is not an installer's business.
+      # A runner has never started Claude Code, so without this the install would correctly report
+      # that nothing was registered and this job would test the refusal rather than the install.
+      - name: A client config the wizard can register into
+        run: echo '{}' > "$HOME/.claude.json"
+
       - name: Install recall
         run: python -m recall.cli wizard --headless --config "$RUNNER_TEMP/install/wizard.json"
 
@@ -183,9 +190,16 @@ jobs:
       # can still exit 0 and print a report, and this repository has shipped a report claiming
       # "install complete" for a tenant that could answer nothing.
       #
-      # `.mcp.json` is the sharp check: `wiring.server_blocks` omits a tenant it cannot serve, so a
-      # block for `default-docs` existing IS the assertion that the corpus built, validated,
-      # calibrated and promoted. A corpus that failed any of those silently loses its block.
+      # The registered servers are the sharp check: `wiring.server_blocks` omits a tenant it cannot
+      # serve, so a block for `default-docs` existing IS the assertion that the corpus built,
+      # validated, calibrated and promoted. A corpus that failed any of those silently loses its
+      # block.
+      #
+      # Asserted at LOCAL scope, under this project's own entry in `~/.claude.json`, and two other
+      # locations are asserted EMPTY. A top-level `mcpServers` is user scope, which would load these
+      # per-tenant servers in every unrelated checkout the user opens; a project-scoped `.mcp.json`
+      # is the file the approval prompt guards. Each of the three looks like a working install from
+      # the outside and only one of them is.
       - name: The install produced a servable stack
         run: |
           set -euo pipefail
@@ -193,12 +207,36 @@ jobs:
           for f in docker-compose.recall.yml Dockerfile wizard.state.json; do
             test -f "$root/$f" || { echo "missing $f"; exit 1; }
           done
-          mcp="$root/project/.mcp.json"
-          test -f "$mcp" || { echo "no .mcp.json: nothing was wired"; exit 1; }
-          python - "$mcp" <<'PY'
-          import json, sys
-          servers = json.loads(open(sys.argv[1], encoding="utf-8").read())["mcpServers"]
-          print("wired servers:", sorted(servers))
+          # The wizard CREATES `project_root` when only its last directory is missing, which is
+          # what a first install looks like and what this config asks for. Asserted as files
+          # rather than as a directory: a run that made the directory and then wrote nothing into
+          # it would satisfy a `test -d` and leave the user exactly where the regression did.
+          for f in .env CLAUDE.md; do
+            test -f "$root/project/$f" || { echo "missing project/$f"; exit 1; }
+          done
+          if [ -f "$root/project/.mcp.json" ]; then
+            echo "a project-scoped .mcp.json was written; that file is what the prompt guards"
+            exit 1
+          fi
+          python - "$HOME/.claude.json" "$root/project" <<'PY'
+          import json, pathlib, sys
+          document = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          if document.get("mcpServers"):
+              raise SystemExit(
+                  "servers were registered at USER scope (top-level mcpServers). Each carries a "
+                  "RECALL_TENANT for this project, so they would answer about the wrong corpus in "
+                  "every other checkout the user opens."
+              )
+          wanted = pathlib.Path(sys.argv[2]).resolve()
+          entries = [
+              entry.get("mcpServers", {})
+              for key, entry in document.get("projects", {}).items()
+              if pathlib.Path(key).resolve() == wanted
+          ]
+          if len(entries) != 1:
+              raise SystemExit(f"expected one project entry for {wanted}, found {len(entries)}")
+          servers = entries[0]
+          print("registered servers:", sorted(servers))
           missing = [t for t in ("default-docs", "default-code") if t not in servers]
           if missing:
               raise SystemExit(

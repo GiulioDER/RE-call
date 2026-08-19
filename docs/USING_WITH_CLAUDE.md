@@ -42,8 +42,26 @@ Both clients use the same `mcpServers` block; only the entry point differs.
 }
 ```
 
-- **Claude Code** — save this as `.mcp.json` in your project root, or run
-  `claude mcp add recall -- python -m recall_mcp.server`.
+- **Claude Code** — register it at **local scope**, which is what
+  `claude mcp add recall -- python -m recall_mcp.server` does by default. It writes the block into
+  Claude Code's own `~/.claude.json` under this project, and loads only here.
+
+  ⚠️ **Saving the block as `.mcp.json` in the project root also works, and is the worse option.**
+  Claude Code gates project-scoped servers from that file behind an approval prompt, and until you
+  answer it in an interactive session the tools are simply absent — no error, nothing naming the
+  cause. It also puts a DSN in the repository, which the credentials note below says not to do.
+
+  When one server name is defined in more than one scope, Claude Code uses **one** definition and
+  does not merge fields across scopes. The order, **highest precedence first**, is:
+
+  1. **local** — `~/.claude.json` under this project's entry
+  2. **project** — `.mcp.json` in the repository
+  3. **user** — `~/.claude.json` at the top level
+
+  So a local entry **beats** an `.mcp.json` of the same name rather than losing to it. If the tools
+  do not appear, read that order before deleting anything: a `.mcp.json` sitting under a local entry
+  of the same name is already inert, and removing it changes nothing. `docs/WIZARD.md` has the full
+  reasoning, and the installer does all of this for you.
 - **Claude Desktop** — add the block to `claude_desktop_config.json`
   (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`), then restart.
 

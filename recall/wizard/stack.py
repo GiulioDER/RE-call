@@ -2,7 +2,7 @@
 
 Until this existed there were two. `docker-compose.desktop.yml` published no ports at all, so its
 Postgres was reachable only inside the compose network at the hostname `db`, while the wizard and
-every MCP server it writes into `.mcp.json` are HOST processes reaching a host address. Two stores,
+every MCP server it registers are HOST processes reaching a host address. Two stores,
 one user, and the failure is silent: files added through the UI build generations the agent cannot
 see, corpora the wizard builds never appear on the UI's calibration page, and both surfaces report
 themselves healthy because each is telling the truth about a different world.
@@ -11,11 +11,25 @@ One store, two addresses. Host processes use `127.0.0.1:<published>`; services i
 network use `db:5432`. Those are the same database, and that is the whole point of publishing a
 port.
 
-**The data lives where the user put it.** `data_root` is bind mounted rather than kept in a
-Docker-managed volume, because a person installing this on Windows should be able to say where their
-index goes, find it, back it up and delete it. Measured on Docker Desktop with the WSL2 backend
-before relying on it: PostgreSQL 18.4 with pgvector 0.8.6 initialises on a bind-mounted Windows path
-and serves normally, writing ~47 MB there for an empty database.
+**`data_root` holds the stack; the DATABASE lives on a named volume.** The user's chosen directory
+holds the compose file, the generated Dockerfile and `.env` — everything they need to inspect or
+stop their own install — but not the index.
+
+🔁 **This paragraph asserted the opposite until 2026-08-19, and the measurement it carried is what
+made the wrong half read as authoritative.** It said the database was bind mounted into `data_root`
+"because a person installing this on Windows should be able to say where their index goes, find it,
+back it up and delete it", and cited: PostgreSQL 18.4 with pgvector 0.8.6 initialises on a
+bind-mounted Windows path and serves normally, writing ~47 MB there for an empty database.
+
+That measurement was real and is retained deliberately, because it is why the design survived as
+long as it did: a bind mount initialises and serves. What it does not survive is sustained WAL
+writing, where Docker Desktop's filesystem passthrough returns EINTR and PostgreSQL treats it as
+fatal (`could not write to file "pg_wal/xlogtemp...": Interrupted system call`). The failure is
+INTERMITTENT — one full install certified both corpora, the next died mid-run — which makes it a
+corruption risk rather than an availability one. See `compose_document` for the detail.
+
+The cost is real and is not hidden: the user's index is no longer under the folder they chose, so
+backup and uninstall have to name the volume instead.
 
 ⚠️ **The mount point is `/var/lib/postgresql`, NOT `/var/lib/postgresql/data`.** pg18 refuses the
 latter outright and says why: it wants a single mount one level up so `pg_upgrade --link` can work
@@ -77,6 +91,16 @@ def _default_image() -> str:
 
 _DEFAULT_IMAGE = _default_image()
 
+#: The generated stack's file name, under the user's chosen `data_root`.
+#:
+#: ⚠️ **Defined here, beside the writer, because a second definition made the whole "+ Add project"
+#: feature inert.** `recall/wizard/projects.py` had its own literal `"docker-compose.yml"`, so it
+#: looked for a file the installer never writes and refused every add with "no recall stack at
+#: {data_root} ... Run the installer for this location" — told to somebody who had just run it.
+#: Five auditors found it independently; no test could, because the fixtures built their stacks
+#: through the same wrong helper, so the suite agreed with itself.
+COMPOSE_NAME = "docker-compose.recall.yml"
+
 #: Written beside the compose file, and referenced by every tenant service's `build:` stanza.
 DOCKERFILE_NAME = "Dockerfile"
 
@@ -101,8 +125,10 @@ DEFAULT_PORT = 5487
 class StackSpec:
     """What to generate. Every field is a decision the user or the wizard already made."""
 
-    #: The user's chosen location. The database directory is created underneath it, so the user can
-    #: point at a folder they recognise rather than one Docker invented.
+    #: The user's chosen location. Holds the compose file, the generated Dockerfile and `.env`; the
+    #: database itself is on the named volume, not here (see the module docstring). Still required
+    #: absolute, and the reason is now Compose's rather than the user's: a relative path is resolved
+    #: against whatever directory invoked `docker compose`, not against this file.
     data_root: Path
     #: Published host port. Chosen by `choose_port` at install time rather than fixed, because a
     #: collision here is invisible until the first query and looks like a recall bug.
@@ -138,7 +164,7 @@ class StackSpec:
 
 
 def host_dsn(port: int, *, user: str = "recall", password: str = "recall") -> str:
-    """The address a HOST process uses: the wizard, and every server in `.mcp.json`."""
+    """The address a HOST process uses: the wizard, and every MCP server it registers."""
     return f"postgresql://{user}:{password}@127.0.0.1:{port}/recall"
 
 
@@ -196,7 +222,7 @@ def existing_tenants(compose_path: Path) -> tuple[str, ...]:
     try:
         document = json.loads(compose_path.read_text(encoding="utf-8"))
         services = document["services"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError):
         return ()
     if not isinstance(services, dict):
         return ()
@@ -210,7 +236,7 @@ def existing_port(compose_path: Path) -> int | None:
     """The published port a previous run already chose, or None if there is no stack yet.
 
     **The port must be STABLE across runs.** `runtime.json` names a compose file, and the desktop
-    UI connects through whatever that file publishes; the `.mcp.json` the agent uses carries the
+    UI connects through whatever that file publishes; the server block the agent uses carries the
     host address directly. Re-choosing a free port on every install would silently repoint the
     database out from under both, and the symptom is a UI that shows an empty corpus rather than an
     error. So a re-run reads the port back rather than picking again.
@@ -221,12 +247,22 @@ def existing_port(compose_path: Path) -> int | None:
     try:
         document = json.loads(compose_path.read_text(encoding="utf-8"))
         published = document["services"]["db"]["ports"][0]
-    except (OSError, json.JSONDecodeError, KeyError, IndexError, TypeError):
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
         return None
-    # "5487:5432" — the published half is what a host process connects to.
-    host_half = str(published).split(":")[0]
+    # ⚠️ **Parse from the RIGHT, because the mapping now carries a host IP.**
+    # It is `127.0.0.1:5487:5432`, not `5487:5432`, so taking field 0 returns "127.0.0.1", which
+    # is not an int: `existing_port` would answer None for a perfectly good stack, the installer
+    # would choose a fresh port on every re-run, and `add_project` would refuse every add with
+    # "no recall stack at ...". Binding to loopback and this parser are ONE change; shipping the
+    # bind alone would trade an exposure for a stack nobody can add to.
+    #
+    # The container port is always last and the published port immediately precedes it, so
+    # `[-2]` reads both the two-field and three-field forms.
+    fields = str(published).split(":")
+    if len(fields) < 2:
+        return None
     try:
-        return int(host_half)
+        return int(fields[-2])
     except ValueError:
         return None
 
@@ -243,7 +279,17 @@ def compose_document(spec: StackSpec) -> dict[str, object]:
             },
             # PUBLISHED. Without this line the wizard and the agent cannot reach the database the
             # UI is filling, which is the entire defect this module exists to remove.
-            "ports": [f"{spec.port}:{DB_INTERNAL_PORT}"],
+            # ⚠️ **`127.0.0.1:` is load-bearing, and its absence was a real exposure.** Compose's
+            # short syntax with no host IP binds 0.0.0.0, and Docker Desktop's proxy then listens
+            # on every interface of the Windows host — with the `recall:recall` credentials this
+            # project's own README publishes. Anyone who could reach the machine on this port had
+            # read and write on every indexed document.
+            #
+            # The comment justifying `RECALL_ALLOW_INSECURE_DSN` below asserted "the port that IS
+            # published is bound to loopback" as its risk acceptance. That was the claim; this is
+            # what makes it true. The stack this replaces published no database port at all, so
+            # the generated one had been strictly more exposed than its predecessor.
+            "ports": [f"127.0.0.1:{spec.port}:{DB_INTERNAL_PORT}"],
             # ⚠️ **A NAMED VOLUME, not a bind mount into `data_root`, and this was measured the
             # hard way.** Bind-mounting the user's chosen directory is what the wizard promises
             # everywhere else, but PostgreSQL cannot survive it on Windows: Docker Desktop's
@@ -413,7 +459,7 @@ def add_tenant_services(
     try:
         document = json.loads(compose_path.read_text(encoding="utf-8"))
         services = document["services"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ValueError(
             f"cannot add to the stack at {compose_path}: {exc}. The file describes the running "
             "containers and every provisioned corpus, so it is not safe to write a new one over it."
@@ -524,7 +570,18 @@ def bring_up(
         *services,
     ]
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout)
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            # ⚠️ See `recall/desktop/runtime.py`: `text=True` alone decodes Docker's output with
+            # the platform codec, and an undecodable byte silently yields rc=0 and `stdout=None`
+            # rather than an exception. The message below would then name no cause at all.
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
             f"could not start the recall stack: {(exc.stderr or exc.stdout or '').strip()[:400]}"

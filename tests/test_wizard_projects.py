@@ -36,6 +36,123 @@ def _install(root: Path, trust: str = "production") -> Path:
     return path
 
 
+def test_add_project_finds_the_stack_the_INSTALLER_actually_writes(tmp_path: Path) -> None:
+    """The filename both halves must agree on, pinned to the installer rather than to this file.
+
+    ⚠️ **`compose_path_for` returned `docker-compose.yml` while the installer writes
+    `docker-compose.recall.yml`**, so `add_project` never found a stack and refused every add with
+    "no recall stack at {data_root} ... Run the installer for this location before adding a project
+    to it" — told to somebody who had just run it. "+ Add project" was inert on 100% of real
+    installs. Five auditors found it independently.
+
+    No existing test could: every fixture in this file builds its stack through `compose_path_for`
+    itself, so the suite agreed with itself about a name the product never used. This test writes
+    the stack at `headless.COMPOSE_NAME` — the constant the INSTALLER uses — and then adds to it,
+    so the two names are pinned to each other rather than to a helper.
+    """
+    import recall.wizard.headless as headless
+
+    root = (tmp_path / "install").resolve()
+    root.mkdir()
+    env = {
+        tenant: {
+            "RECALL_DSN": "postgresql://recall:recall@db:5432/recall",
+            "RECALL_EMBEDDER": "fastembed",
+            "RECALL_TENANT": tenant,
+            "RECALL_TRUST_MODE": "development",
+        }
+        for tenant in INSTALLED
+    }
+    installer_path = root / headless.COMPOSE_NAME
+    write_compose(
+        installer_path,
+        compose_document(StackSpec(data_root=root, port=5487, tenants=INSTALLED, env=env)),
+    )
+
+    added = add_project(root, "acme")
+
+    assert added.created_anything, "the add must find the stack the installer wrote"
+    assert added.compose_path == installer_path
+    assert set(existing_tenants(installer_path)) == set(INSTALLED) | set(added.tenants)
+
+
+def test_add_project_uses_the_compose_path_the_caller_hands_it(tmp_path: Path) -> None:
+    """The desktop knows the absolute path; it must not be made to guess.
+
+    The UI passed only the parent directory and let `add_project` re-derive the filename, throwing
+    away the reliable answer the profile records. Passing the path through is what makes the desktop
+    independent of any naming convention at all.
+    """
+    root = (tmp_path / "install").resolve()
+    root.mkdir()
+    elsewhere = root / "named-by-the-caller.yml"
+    env = {t: {"RECALL_EMBEDDER": "fastembed", "RECALL_TENANT": t} for t in INSTALLED}
+    write_compose(
+        elsewhere,
+        compose_document(StackSpec(data_root=root, port=5487, tenants=INSTALLED, env=env)),
+    )
+
+    added = add_project(root, "acme", compose_path=elsewhere)
+
+    assert added.compose_path == elsewhere
+    assert added.created_anything
+
+
+def test_the_published_port_survives_the_loopback_bind(tmp_path: Path) -> None:
+    """Binding to loopback and reading the port back are ONE change.
+
+    `existing_port` split on ":" and took field 0. With the host IP present that is "127.0.0.1",
+    which is not an int, so it would answer None for a perfectly good stack: the installer would
+    choose a fresh port on every re-run and `add_project` would refuse every add. Shipping the bind
+    without this parser would have traded a security exposure for a stack nobody can add to.
+    """
+    from recall.wizard.stack import existing_port
+
+    root = (tmp_path / "install").resolve()
+    root.mkdir()
+    path = _install(root)
+
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["services"]["db"]["ports"] == ["127.0.0.1:5487:5432"]
+    assert existing_port(path) == 5487, "the published port must survive the host-IP prefix"
+
+    # The two-field form written by every stack generated before this change must still parse,
+    # or upgrading would strand every existing install.
+    document["services"]["db"]["ports"] = ["5487:5432"]
+    legacy = root / "legacy.yml"
+    legacy.write_text(json.dumps(document), encoding="utf-8")
+    assert existing_port(legacy) == 5487, "an older generated stack must still be readable"
+
+
+def test_a_compose_file_that_is_not_utf8_takes_the_unreadable_branch(tmp_path: Path) -> None:
+    """Every compose reader documents an "unreadable → empty" branch that a non-UTF-8 file escaped.
+
+    They caught `json.JSONDecodeError`, but `read_text(encoding="utf-8")` raises
+    `UnicodeDecodeError` — a `ValueError`, and NOT a `JSONDecodeError`. So a torn write or a file
+    saved as UTF-16 propagated raw: `existing_port` crashed the installer instead of choosing a
+    fresh port, and `add_tenant_services` raised a decode error instead of its own refusal about
+    not overwriting a stack it cannot read.
+
+    `recall/desktop/profiles.py` fixed exactly this in the same change, with a comment saying so,
+    and the compose readers did not follow. This pins all four together.
+    """
+    from recall.wizard.stack import add_tenant_services, existing_port, existing_tenants
+    from recall.wizard.projects import stack_embedder
+
+    root = (tmp_path / "install").resolve()
+    root.mkdir()
+    path = compose_path_for(root)
+    path.write_bytes(b"\xff\xfe n\x00o\x00t\x00 \x00u\x00t\x00f\x008\x00")
+
+    assert existing_port(path) is None
+    assert existing_tenants(path) == ()
+    assert stack_embedder(path) is None
+    with pytest.raises(ValueError, match="not safe to write a new one over it"):
+        add_tenant_services(path, {"acme-docs": {"RECALL_EMBEDDER": "fastembed"}})
+
+    assert path.read_bytes().startswith(b"\xff\xfe"), "an unreadable stack must be left alone"
+
+
 def test_the_generated_stack_can_build_its_own_image(tmp_path: Path) -> None:
     """`image:` alone makes Compose PULL a tag published to no registry.
 

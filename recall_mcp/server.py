@@ -23,6 +23,7 @@ from pydantic import AnyHttpUrl
 from recall.calibration import load_for as calibration_load_for
 from recall.control_plane import ControlPlane
 from recall.embeddings import embedding_profile_id
+from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
 from recall.store import DEFAULT_TENANT, PgVectorStore, redacted_dsn
@@ -808,7 +809,21 @@ def ingest_into_serving_store(
     embedder = state["embedder"]
     if state.get("generation_mode"):
         return generation_ingest(store, embedder, staged_root, category)  # type: ignore[arg-type]
-    return index_memory(store, embedder, staged_root)  # type: ignore[arg-type]
+    # ⚠️ **`category` must reach BOTH branches.** The first version of this function passed it to
+    # `generation_ingest` and dropped it here, so the legacy branch fell back to `chunk_text` while
+    # the generation branch chose `chunk_code` for code. Every project created by `add_project` is
+    # development-mode by construction, so that was not an edge case: it was the default path, and
+    # source files uploaded into a `-code` corpus were chunked as prose. Nothing errored, nothing
+    # was missing, only the chunk boundaries were wrong — the quietest failure available.
+    #
+    # The test that accompanied that fix asserted WHICH function was called and never what it was
+    # called with, which is why neither it nor its mutation run could see this.
+    return index_memory(
+        store,  # type: ignore[arg-type]
+        embedder,  # type: ignore[arg-type]
+        staged_root,
+        chunker=chunk_code if category == "code" else chunk_text,
+    )
 
 
 def build_server() -> MCPServer:

@@ -104,6 +104,56 @@ def test_a_present_but_non_string_value_is_refused_by_name(tmp_path: Path, value
     assert caught.value.keys == ("embedder",)
 
 
+def test_a_project_root_whose_parent_is_absent_is_refused(tmp_path: Path) -> None:
+    """A typo has to be caught HERE, because everything expensive happens before it is used.
+
+    `project_root` is read at the very end of the run: the corpora are built, calibrated, promoted
+    and the MCP servers registered in the user's `~/.claude.json` first. A path discovered to be
+    unusable at that point costs the whole install and leaves it half-committed, which is precisely
+    what CI reported — thirty minutes of work, then `could not write .../project/.env: No such file
+    or directory` and `install incomplete`.
+
+    The refusal is scoped to a missing PARENT. A missing leaf is an ordinary first install and is
+    created by `write_project_files`; refusing that too would make the wizard demand the user
+    pre-create the directory it exists to set up.
+    """
+    payload = _config(tmp_path, project_root=str(tmp_path / "nowhere" / "project"))
+
+    with pytest.raises(ConfigRefusal) as caught:
+        load_config(_write(tmp_path, payload))
+    assert caught.value.keys == ("project_root",)
+    assert not (tmp_path / "nowhere").exists(), "refusing must not create what it refused"
+
+
+def test_a_project_root_that_is_a_file_is_refused_by_name(tmp_path: Path) -> None:
+    """One of the three first-run conditions this module's docstring promises to name.
+
+    `.env`, the `CLAUDE.md` block and `memory/MEMORY.md` are all written INSIDE this path, and none
+    of them can be written underneath a file. Asserted on `.keys` rather than the message, for the
+    reason the required-key test records: the prose enumerates other keys too.
+    """
+    root = tmp_path / "aproject"
+    root.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ConfigRefusal) as caught:
+        load_config(_write(tmp_path, _config(tmp_path, project_root=str(root))))
+    assert caught.value.keys == ("project_root",)
+
+
+def test_a_project_root_that_does_not_exist_yet_is_accepted(tmp_path: Path) -> None:
+    """The ordinary first install, and the case CI actually drives.
+
+    Paired with the two refusals above deliberately. A guard that rejected every absent
+    `project_root` would satisfy "refuse early" and break the only path the wizard is FOR, so the
+    accepted case is asserted rather than assumed, and nothing is created at config-reading time.
+    """
+    root = tmp_path / "project"
+    config = load_config(_write(tmp_path, _config(tmp_path, project_root=str(root))))
+
+    assert config.project_root == root
+    assert not root.exists(), "reading a config must build nothing"
+
+
 def test_a_dsn_and_a_data_root_together_are_refused(tmp_path: Path) -> None:
     """They are alternatives, and accepting both would mean silently ignoring one.
 
@@ -818,7 +868,7 @@ def test_the_wizard_refuses_flags_it_would_otherwise_discard(tmp_path: Path) -> 
 
 
 def test_the_smoke_query_uses_the_servers_own_trust_mode() -> None:
-    """The smoke must run under the trust mode it is about to WRITE into `.mcp.json`.
+    """The smoke must run under the trust mode it is about to WRITE into the server block.
 
     `trusted_search` resolves its policy from `TrustPolicy.from_env()` when none is passed, which
     reads the WIZARD's environment — and the wizard sets no `RECALL_TRUST_MODE`, so every smoke ran

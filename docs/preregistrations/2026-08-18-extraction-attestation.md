@@ -123,8 +123,8 @@ grew after registration:
 
 | Cited | Was | Is now |
 |---|---|---|
-| `recall/index.py:782` | the `{**extracted.metadata, "media_type": ...}` dict | `recall/index.py:809` |
-| `recall/index.py:836` | `text_start` / `text_end` stored as `None` | `recall/index.py:861` |
+| `recall/index.py:787` | the `{**extracted.metadata, "media_type": ...}` dict | `recall/index.py:814` |
+| `recall/index.py:841` | `text_start` / `text_end` stored as `None` | `recall/index.py:866` |
 
 Neither claim changed; only the line numbers did. This is the fifth such drift in this document's
 short life, which is why the design now states requirements as behaviour rather than as the presence

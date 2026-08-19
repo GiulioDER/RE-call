@@ -30,7 +30,23 @@ SCAN_EXCLUDED_DIRECTORIES = frozenset(
     }
 )
 CLAUDE_MEMORY_FILENAMES = frozenset({"claude.md", "claude.local.md", "memory.md"})
-CLAUDE_MEMORY_EXTENSIONS = frozenset({".md", ".txt", ".json", ".jsonl", ".yaml", ".yml"})
+#: ⚠️ `.jsonl` is deliberately absent. Claude Code's session transcripts are `.jsonl`, they are the
+#: bulk of that directory by an order of magnitude (measured 2026-08-19: 4,011 files, 1.8 GB, about
+#: 15:1 against the same project's durable documents), and they hold every secret the user has ever
+#: pasted into a session. Nothing here is currently reachable through it, because `.jsonl` is in
+#: neither `DOCUMENT_EXTENSIONS` nor `CODE_EXTENSIONS` and the suffix filter runs first, but the
+#: entry stated an intention that would have taken effect the moment the extractable set grew.
+CLAUDE_MEMORY_EXTENSIONS = frozenset({".md", ".txt", ".json", ".yaml", ".yml"})
+
+#: Where Claude keeps its OWN configuration, relative to the user's home directory. Written once
+#: and read by both the scan roots and the restriction below, because two copies of this list
+#: drifting apart is a restriction that silently stops covering a directory.
+CLAUDE_CONFIG_SUBPATHS = (
+    (".claude",),
+    (".config", "claude"),
+    ("AppData", "Roaming", "Claude"),
+    ("AppData", "Local", "Claude"),
+)
 
 
 def category_extensions(category: SourceCategory) -> frozenset[str]:
@@ -65,10 +81,7 @@ def default_scan_roots(home: str | Path | None = None) -> tuple[Path, ...]:
         base / "Documents",
         base / "Desktop",
         base / "Downloads",
-        base / ".claude",
-        base / ".config" / "claude",
-        base / "AppData" / "Roaming" / "Claude",
-        base / "AppData" / "Local" / "Claude",
+        *(base.joinpath(*parts) for parts in CLAUDE_CONFIG_SUBPATHS),
     )
     result: list[Path] = []
     seen: set[str] = set()
@@ -82,8 +95,47 @@ def default_scan_roots(home: str | Path | None = None) -> tuple[Path, ...]:
     return tuple(result)
 
 
-def _is_claude_root(root: Path) -> bool:
-    return root.name.casefold() == "claude" or ".claude" in {part.casefold() for part in root.parts}
+def _resolved(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path.absolute()
+
+
+def claude_config_directories(home: str | Path | None = None) -> tuple[Path, ...]:
+    """The directories holding Claude's own configuration, resolved for prefix comparison."""
+    base = Path(home).expanduser() if home is not None else Path.home()
+    result: list[Path] = []
+    seen: set[str] = set()
+    for parts in CLAUDE_CONFIG_SUBPATHS:
+        resolved = _resolved(base.joinpath(*parts))
+        key = str(resolved).casefold()
+        if key not in seen:
+            seen.add(key)
+            result.append(resolved)
+    return tuple(result)
+
+
+def _claude_config_base(resolved: Path, config_directories: tuple[Path, ...]) -> Path | None:
+    """The Claude configuration directory this file lies inside, or None.
+
+    ⚠️ **A prefix test against the REAL configuration directories, not a substring test.** This
+    used to ask whether any component of the path was named `.claude`, which is true of any project
+    that happens to live under one — including every checkout made by this repository's own
+    documented worktree workflow, `<repo>/.claude/worktrees/<name>`. Such a checkout was classified
+    as a Claude config folder and restricted to memory files, so a scan of an ordinary project
+    returned almost nothing and looked like a project with no documents rather than like a filter
+    that had fired. Measured on this worktree before the fix: scanning `docs/` found **0 of 86**
+    markdown files.
+
+    Applied per FILE rather than per root, which is strictly wider than the test it replaces: a
+    scan rooted at the user's home directory now restricts what is under `~/.claude` instead of
+    treating the whole home as unrestricted because its own name is not `claude`.
+    """
+    for base in config_directories:
+        if resolved == base or base in resolved.parents:
+            return base
+    return None
 
 
 def _is_claude_memory_file(path: Path, root: Path) -> bool:
@@ -100,20 +152,26 @@ def scan_files(
     category: SourceCategory | None = None,
     *,
     max_files: int = 5000,
+    home: str | Path | None = None,
 ) -> tuple[Path, ...]:
     """Find supported local sources while pruning generated and private dependency folders.
 
-    Claude folders are restricted to named memory files and memory directories so a scan does
-    not ingest settings, credentials, caches, or conversation databases by accident.
+    Files inside Claude's own configuration directories are restricted to named memory files and
+    memory directories, so a scan does not ingest settings, credentials, caches, or conversation
+    transcripts by accident. That restriction is a prefix test against the real configuration
+    locations: see `_claude_config_base` for what it replaced and why.
+
+    `home` exists so the restriction can be pointed at a temporary directory in tests. Left unset
+    it reads the real home, which is what the UI wants.
     """
     allowed = category_extensions(category) if category is not None else DOCUMENT_EXTENSIONS | CODE_EXTENSIONS
+    config_directories = claude_config_directories(home)
     result: list[Path] = []
     seen: set[str] = set()
     for raw_root in roots:
         root = Path(raw_root).expanduser()
         if not root.is_dir():
             continue
-        claude_root = _is_claude_root(root)
         for current, directories, filenames in os.walk(root, topdown=True, onerror=lambda _error: None):
             directories[:] = sorted(
                 directory
@@ -124,12 +182,11 @@ def scan_files(
                 path = Path(current) / filename
                 if path.suffix.casefold() not in allowed:
                     continue
-                if claude_root and not _is_claude_memory_file(path, root):
+                resolved = _resolved(path)
+                config_base = _claude_config_base(resolved, config_directories)
+                if config_base is not None and not _is_claude_memory_file(resolved, config_base):
                     continue
-                try:
-                    key = str(path.resolve()).casefold()
-                except OSError:
-                    key = str(path.absolute()).casefold()
+                key = str(resolved).casefold()
                 if key in seen:
                     continue
                 seen.add(key)

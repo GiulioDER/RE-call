@@ -29,15 +29,22 @@ import recall_mcp.server as server
 class _Recorder:
     """Stands in for the two ingest paths, recording which one was chosen."""
 
-    def __init__(self) -> None:
+    def __init__(self) -> None:  # noqa: D107 - see the class docstring
         self.calls: list[str] = []
+        #: The chunker each branch was called with. ⚠️ Recorded because the first version of this
+        #: fake accepted no `chunker` at all and the tests asserted only WHICH function was called,
+        #: never what it was called with — so `index_memory` losing `category` (and therefore
+        #: falling back to `chunk_text` for code) passed every test and survived a mutation run.
+        self.chunkers: list[object] = []
 
     def generation(self, store, embedder, staged_root, category):  # noqa: ANN001, ANN201
         self.calls.append("generation")
+        self.chunkers.append(category)
         return "generation-result"
 
-    def legacy(self, store, embedder, staged_root):  # noqa: ANN001, ANN201
+    def legacy(self, store, embedder, staged_root, chunker=None):  # noqa: ANN001, ANN201
         self.calls.append("legacy")
+        self.chunkers.append(chunker)
         return "legacy-result"
 
 
@@ -69,6 +76,33 @@ def test_a_legacy_server_indexes_into_the_legacy_table(recorder: _Recorder) -> N
         "succeeded and then could not be found"
     )
     assert result == "legacy-result"
+
+
+def test_both_branches_chunk_code_as_code(recorder: _Recorder) -> None:
+    """`category` must reach BOTH branches, not just the generation one.
+
+    ⚠️ The first version of this fix passed `category` to `generation_ingest` and dropped it on the
+    legacy call, so `index_memory` fell back to `chunk_text`. Every project created by `add_project`
+    is development-mode by construction, so that was the DEFAULT path: source files uploaded into a
+    `-code` corpus were chunked as prose. Nothing errored and nothing was missing — only the chunk
+    boundaries were wrong, which is the quietest failure available.
+
+    The tests that shipped with that fix asserted only which function was called. That is why this
+    one asserts the argument.
+    """
+    from recall.index import chunk_code, chunk_text
+
+    server.ingest_into_serving_store(
+        {"embedder": object(), "generation_mode": False}, object(), "/staged", "code"
+    )
+    assert recorder.chunkers == [chunk_code], "a code upload must be chunked as code"
+
+    recorder.calls.clear()
+    recorder.chunkers.clear()
+    server.ingest_into_serving_store(
+        {"embedder": object(), "generation_mode": False}, object(), "/staged", "documents"
+    )
+    assert recorder.chunkers == [chunk_text], "and prose as prose"
 
 
 def test_an_absent_flag_is_treated_as_legacy(recorder: _Recorder) -> None:

@@ -1,7 +1,8 @@
 """Turn a finished install into the three MCP servers that serve it, and refuse to lie about them.
 
-`.mcp.json` is the artifact that decides whether any of the preceding work is reachable. Every
-variable below is set in the server's OWN `env` block rather than left to the operator's shell,
+The MCP registration is the artifact that decides whether any of the preceding work is reachable.
+Every variable below is set in the server's OWN `env` block rather than left to the operator's
+shell,
 because a stdio server launched with an explicit `env` inherits nothing: a corpus that searches
 correctly from the terminal answered `INDEX_NOT_READY` through the client for exactly that reason.
 That per-block isolation is also what lets one machine serve `docs` in production mode and `memory`
@@ -11,7 +12,7 @@ in development mode at the same time.
 actually answer.** Three cases, and they are not interchangeable:
 
 * **Certified and promoted** → `RECALL_ENV=production` with strict trust. `RECALL_ENV` is what
-  selects `GenerationStore` (`recall_mcp/server.py:627`), so a calibrated generation is only reached
+  selects `GenerationStore` (`recall_mcp/server.py:629`), so a calibrated generation is only reached
   through it, and the published calibration is what makes strict trust answerable.
 
 * **Degraded with a predecessor still serving** → production, but development trust, and the block
@@ -40,6 +41,7 @@ names the container instead.
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,9 +51,11 @@ __all__ = [
     "ServerBlock",
     "SmokeResult",
     "UnservableTenant",
+    "LocalScopeRegistration",
+    "claude_config_path",
     "mcp_config",
+    "register_local_scope",
     "server_blocks",
-    "write_mcp_config",
     "write_project_files",
     "write_runtime_profile",
 ]
@@ -214,13 +218,26 @@ def _legacy_block(spec: CorpusSpec, *, dsn: str, embedder: str) -> ServerBlock:
     )
 
 
-def mcp_config(blocks: tuple[ServerBlock, ...], *, project_root: Path) -> dict[str, object]:
-    """The `.mcp.json` document, in the shape a working configuration already uses."""
+def mcp_config(
+    blocks: tuple[ServerBlock, ...], *, project_root: Path, interpreter: str | None = None
+) -> dict[str, object]:
+    """The `.mcp.json` document, in the shape a working configuration already uses.
+
+    ⚠️ **The interpreter is an ABSOLUTE path, not the word `python`.** A bare `python` resolves
+    against whatever PATH the CLIENT has, which is not the environment recall was installed into.
+    On Windows it routinely resolves to the Microsoft Store stub, which opens the Store instead of
+    running anything, and the user sees a server that will not start with no cause named. Captured
+    from `sys.executable` at install time, which is by construction the interpreter that has
+    `recall_mcp` importable, since it is the one running this code.
+
+    `args` stays a list so a path containing spaces — `C:\\Program Files\\...` — is never re-split
+    by a shell.
+    """
     return {
         "mcpServers": {
             block.name: {
                 "type": "stdio",
-                "command": "python",
+                "command": interpreter or sys.executable,
                 "args": ["-m", "recall_mcp.server"],
                 "cwd": str(project_root),
                 "env": dict(block.env),
@@ -247,8 +264,28 @@ def write_project_files(
     `.env` carries the serving DSN and embedder for the CLI, not for the MCP servers. The servers get
     their variables in their own `env` blocks, because a stdio server launched with an explicit `env`
     inherits nothing, so `.env` alone would leave them on defaults.
+
+    **`project_root` is created if it is absent, and exactly one level of it.** Nothing else creates
+    it: the directory used to appear as a side effect of the deleted `write_mcp_config`, which did
+    `path.parent.mkdir(parents=True, exist_ok=True)` on its way to writing `project_root/.mcp.json`,
+    and when `03456359` moved registration to local scope in `~/.claude.json` that incidental mkdir
+    went with it. What was left is this function opening `.env` for writing inside a directory that
+    may not exist, at the END of an install, after every corpus is built, calibrated, promoted and
+    registered. In CI that read as `could not write .../project/.env: No such file or directory`
+    with the whole install already paid for.
+
+    `parents=False` is the deliberate half. A missing LEAF is an ordinary first install: the user
+    named a project directory and this is the thing that makes it. A missing PARENT is a mistyped
+    path, and `recall.wizard.headless.load_config` refuses that by name before anything is built,
+    which is where a cheap check belongs. Passing `parents=True` here would quietly manufacture the
+    tree the reader already decided not to, and would do it thirty minutes too late to be useful.
     """
     from recall.setup import _update_env_block, scaffold_claude_md, scaffold_memory_index
+
+    # `exist_ok=True` covers the re-run and the ordinary case of an existing project. It does NOT
+    # swallow a file sitting at this path: `mkdir` only suppresses `FileExistsError` for a
+    # directory, so a root that is a file still raises here rather than being written into.
+    project_root.mkdir(exist_ok=True)
 
     written: list[Path] = []
 
@@ -307,33 +344,208 @@ def write_runtime_profile(
     return save_profile(profile, path)
 
 
-def write_mcp_config(path: Path, config: dict[str, object]) -> None:
-    """Write `.mcp.json`, merging into any existing `mcpServers` rather than replacing the file.
+def claude_config_path() -> Path:
+    """Claude Code's own configuration. Not recall's, which is why it is touched so carefully."""
+    return Path.home() / ".claude.json"
 
-    An operator's `.mcp.json` is very likely to hold servers this wizard knows nothing about, and
-    replacing the file would silently delete them. Only the keys this install owns are overwritten.
 
-    `newline="\\n"` because Python would otherwise write CRLF on Windows, and a JSON file that
-    changes every line on every platform is a diff nobody can read.
+@dataclass(frozen=True)
+class LocalScopeRegistration:
+    """What was written into the client's LOCAL-scope server list, and what was refused."""
+
+    config_path: Path
+    #: The `projects` keys the servers were written under. Usually one. Reported because the entry
+    #: is keyed by PATH, so moving or renaming the project orphans it with no error: the same shape
+    #: as the memory-store forking this project has already been bitten by.
+    project_keys: tuple[str, ...] = ()
+    registered: tuple[str, ...] = ()
+    #: Names already present that this install did NOT overwrite, with what they point at. A second
+    #: install under the same project name is the reachable case, and silently replacing the first
+    #: one's servers would repoint a working install at another corpus.
+    conflicts: tuple[tuple[str, str], ...] = ()
+    skipped_reason: str = ""
+
+    @property
+    def recorded(self) -> bool:
+        return bool(self.registered)
+
+
+def _project_keys(projects: dict[str, object], project_root: Path) -> tuple[str, ...]:
+    """Which `projects` keys this install belongs under, preferring the client's own spelling.
+
+    ⚠️ **The client does NOT normalise this key, and one project can hold several spellings.**
+    Measured 2026-08-19 on a real config with 313 project keys: the same directory appeared as both
+    `C:\\Users\\...\\progetto sentimental` and `C:/Users/.../progetto sentimental`, which is
+    what a native launch and a Git Bash launch produce. A local-scope entry written under a spelling
+    the client does not use is invisible, with no error, which is the failure this whole change is
+    removing.
+
+    So every existing key that resolves to this directory is used, rather than one invented one. A
+    project the user has never opened has no key at all, and only then is one invented from the
+    resolved path.
     """
-    existing: dict[str, object] = {}
+    matches = [key for key in projects if _same_directory(key, project_root)]
+    return tuple(matches) if matches else (str(project_root.resolve()),)
+
+
+def _same_directory(key: str, project_root: Path) -> bool:
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            existing = loaded
-    except (OSError, json.JSONDecodeError):
-        existing = {}
+        return Path(key).resolve() == project_root.resolve()
+    except (OSError, ValueError):
+        return False
 
-    servers = existing.get("mcpServers")
-    merged = dict(servers) if isinstance(servers, dict) else {}
-    incoming = config.get("mcpServers")
-    if isinstance(incoming, dict):
-        merged.update(incoming)
-    existing["mcpServers"] = merged
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(
-        json.dumps(existing, indent=2) + "\n", encoding="utf-8", newline="\n"
+def _written_by_this_project(existing: object, project_root: Path) -> bool:
+    """Whether an entry already under this name came from an install of THIS project.
+
+    Two judgements, and both were wrong in the first version of this function.
+
+    **A missing `cwd` means the entry is NOT ours.** Every block this module writes carries one, so
+    an entry without it was written by somebody else, by hand or by another tool. Treating "no cwd"
+    as ours would silently replace a server the operator configured themselves, which is precisely
+    the harm the conflict path exists to prevent.
+
+    **Paths are compared RESOLVED.** A config that named the project relatively on one run and
+    absolutely on the next would otherwise have its own previous install reported as a stranger, and
+    the user would be told to rename a project that was already theirs.
+    """
+    if not isinstance(existing, dict):
+        return False
+    cwd = existing.get("cwd")
+    if not isinstance(cwd, str):
+        return False
+    try:
+        return Path(cwd).resolve() == project_root.resolve()
+    except (OSError, ValueError):
+        # A path the platform will not even parse cannot be shown to be ours, and guessing in the
+        # permissive direction here overwrites somebody's configuration.
+        return cwd == str(project_root)
+
+
+def _describe_owner(existing: object) -> str:
+    """What to tell the user about the entry that is in the way, without pretending to know more."""
+    if isinstance(existing, dict):
+        cwd = existing.get("cwd")
+        if isinstance(cwd, str):
+            return f"cwd {cwd}"
+    return "no cwd, so it was not written by this wizard"
+
+
+def register_local_scope(
+    blocks: tuple[ServerBlock, ...],
+    *,
+    project_root: Path,
+    config_path: Path | None = None,
+    interpreter: str | None = None,
+) -> LocalScopeRegistration:
+    """Register the servers at LOCAL scope: this project only, and no approval prompt.
+
+    **Why not project scope, which is what this wrote first.** Claude Code gates project-scoped
+    `.mcp.json`: it prompts for approval in an interactive session, and until the user answers, the
+    tools are silently absent — no error, nothing naming the cause. Measured on this machine, 2 of
+    310 tracked projects had any approval recorded, neither created by the wizard. For the audience
+    this installer exists for, a first-run user who is not a Claude Code expert, an invisible gate
+    between "the installer said it worked" and "the tools are there" is the whole product failing.
+
+    **And why not USER scope, which is what this wrote second.** User scope also skips the prompt,
+    but it is the only scope that loads in EVERY project on the machine, and `server_blocks` emits
+    one server per tenant with `RECALL_TENANT` baked into each. All three would then load in every
+    unrelated checkout the user opens and answer confidently about a corpus that is not the
+    repository they are in. That is the corpus-boundary failure this project documents as the worst
+    kind available: not an error, a well-formed answer about the wrong repository. Local scope is
+    per-project by construction, which matches how the blocks are already built: one `project_root`,
+    one DSN, one tenant each.
+
+    ⚠️ **The wizard must therefore NOT also write `.mcp.json`.** Precedence is local, then project,
+    then user, and entries are NOT merged: local wins over a project file in the same directory, so
+    a `.mcp.json` would be dead weight that still has to be trusted, explained and kept in step.
+
+    ⚠️ **The approval sentence is about `.mcp.json` specifically**, which is also why the client's
+    keys are named `enabledMcpjsonServers` / `disabledMcpjsonServers`. Local scope is not that file
+    and is outside the gate. That reading is documentary rather than measured: no project on this
+    machine carried a local-scope entry to observe, and an interactive session is the only place the
+    difference shows.
+
+    **Collisions are refused, not overwritten.** Server names are `{project}-{kind}`, so a second
+    install using the same project name would silently repoint the first install's servers at a
+    different corpus. That is a data-visibility change the user never asked for, so a name already
+    present and not ours is reported and left alone; the remedy is a distinct `project` in the
+    config.
+
+    Written by merging directly rather than shelling out to `claude mcp add`. The CLI is the
+    schema's owner and would be preferable, but it is frequently absent from PATH on Windows (the
+    app installs without it), and its output does not decode under the console's default codec
+    there — measured: `UnicodeDecodeError: 'charmap' codec can't decode byte 0x8f`. Depending on it
+    would make the install fail on the platform this wizard is for. The merge touches one key, backs
+    up first, and writes atomically.
+    """
+    target = config_path or claude_config_path()
+    if not blocks:
+        return LocalScopeRegistration(config_path=target, skipped_reason="no servers to register")
+
+    try:
+        raw = target.read_text(encoding="utf-8")
+        document = json.loads(raw)
+    except OSError as exc:
+        return LocalScopeRegistration(
+            config_path=target,
+            skipped_reason=f"no Claude Code config at {target} ({exc.strerror or exc})",
+        )
+    except ValueError as exc:
+        return LocalScopeRegistration(
+            config_path=target,
+            skipped_reason=f"{target} is not readable JSON ({exc}); left untouched",
+        )
+    if not isinstance(document, dict):
+        return LocalScopeRegistration(
+            config_path=target, skipped_reason=f"{target} is not a JSON object"
+        )
+
+    projects = document.get("projects")
+    if not isinstance(projects, dict):
+        projects = {}
+        document["projects"] = projects
+    keys = _project_keys(projects, project_root)
+
+    incoming = mcp_config(blocks, project_root=project_root, interpreter=interpreter)["mcpServers"]
+    assert isinstance(incoming, dict)
+
+    registered: list[str] = []
+    conflicts: list[tuple[str, str]] = []
+    for key in keys:
+        entry = projects.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+            projects[key] = entry
+        servers = entry.get("mcpServers")
+        merged = dict(servers) if isinstance(servers, dict) else {}
+        for name, definition in incoming.items():
+            existing = merged.get(name)
+            if existing is not None and not _written_by_this_project(existing, project_root):
+                if (name, _describe_owner(existing)) not in conflicts:
+                    conflicts.append((name, _describe_owner(existing)))
+                continue
+            merged[name] = definition
+            if name not in registered:
+                registered.append(name)
+        entry["mcpServers"] = merged
+
+    if not registered:
+        return LocalScopeRegistration(
+            config_path=target,
+            project_keys=tuple(keys),
+            conflicts=tuple(conflicts),
+            skipped_reason="every server name is already taken by something else in this project",
+        )
+
+    backup = target.with_name(target.name + ".recall-backup")
+    backup.write_text(raw, encoding="utf-8", newline="\n")
+    temporary = target.with_name(target.name + ".recall-tmp")
+    temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
+    temporary.replace(target)
+    return LocalScopeRegistration(
+        config_path=target,
+        project_keys=tuple(keys),
+        registered=tuple(registered),
+        conflicts=tuple(conflicts),
     )
-    temporary.replace(path)
