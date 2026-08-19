@@ -118,3 +118,16 @@ The Jaccard values were independently checked against the official ATM Bench `li
 Before measuring the larger split, I will repeat the same retrieval and deterministic list answer retention protocol on the official `atm-bench.json` file with all 1,013 questions, including its 139 `list_recall` questions. The memory corpus, text representation, embedding backbone, dense arm, hybrid arm, candidate pool, and cutoffs remain unchanged. The only changed input is the official question split.
 
 The primary outcomes are question level `Recall@10`, complete evidence `Recall@10GT`, list answer Jaccard at five, and list answer containment at five. Secondary outcomes are the complete `k` curves, latency, and qtype strata. The output selection remains exactly the first `k` retrieved IDs. I predict that hybrid will remain above dense on retrieval and list Jaccard, while containment will continue to rise with `k` and Jaccard will peak at a smaller output than containment.
+
+## Full split score correction appended after measurement
+
+The first full split list artifact used a narrower answer parser than the official scorer. The retrieval measurement is unaffected. I corrected the parser to match ATM Bench's official list splitting and normalization, reran the deterministic scoring only, and saved the corrected result as `results/atm_bench_full_list_selection_20260819_corrected.json`. The earlier full list artifact remains preserved as evidence of the correction and must not be used for claims.
+
+Corrected full split results:
+
+| Arm | Jaccard at 1 | Jaccard at 5 | Containment at 5 | Jaccard at 10 | Containment at 100 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Dense | 0.2068 | 0.1161 | 0.4222 | 0.0755 | 0.7601 |
+| Hybrid | 0.2716 | 0.1550 | 0.5263 | 0.1060 | 0.8582 |
+
+The corrected values match the official ATM Bench scorer. Hybrid improves retrieval and list containment, but the best Jaccard cutoff is one item, while containment continues increasing through 100 items. This confirms that a final answer selector must optimize precision and recall jointly.
