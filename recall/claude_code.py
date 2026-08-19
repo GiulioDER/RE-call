@@ -299,15 +299,23 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
     return {
         "SessionStart": [
             {
-                # Valid values: startup, resume, clear, compact, fork. `compact` is deliberately
-                # excluded, since a compaction is mid-conversation and re-injecting the standing
-                # instruction there spends context to say what was already said.
+                # Valid values: startup, resume, clear, compact, fork. `fork` is excluded: a fork
+                # inherits its parent's context, so the digest is already in it.
+                #
+                # `compact` was excluded here too, on the reasoning that a compaction is
+                # mid-conversation so re-injecting would "spend context to say what was already
+                # said". That was wrong, and in the direction that matters: a compaction is
+                # precisely the event that may have discarded the standing instruction, so after
+                # one it has NOT already been said. This is the only moment the client offers to
+                # put it back, since `PreCompact` and `PostCompact` support no `additionalContext`
+                # of their own. Inference from the documented matcher, not a measurement: what a
+                # compaction actually keeps has not been observed here.
                 #
                 # A matcher containing only letters, digits, `_`, `-`, spaces, `,` and `|` is read
                 # as a list of exact strings, NOT as a regular expression. That is why these stay
                 # alphabetic: adding a `.` or a `*` would silently move the whole matcher onto the
                 # regex path, where it is tested unanchored and would match more events than named.
-                "matcher": "startup|resume|clear",
+                "matcher": "startup|resume|clear|compact",
                 "hooks": [
                     {
                         "type": "command",
@@ -315,6 +323,30 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
                         "args": ["-m", HOOK_MODULE, "session-start"],
                         "timeout": SESSION_START_TIMEOUT_SECONDS,
                         "statusMessage": "Recalling project memory",
+                    }
+                ],
+            }
+        ],
+        # Compaction is the failure this product was built for: the moment a long session loses
+        # the detail behind its conclusions. Anything already written to `memory/` survives it, so
+        # this closes the write-to-searchable gap here rather than at `SessionEnd`, which can be
+        # hours away and is the wrong side of the turn that most needs the memo.
+        "PreCompact": [
+            {
+                # Valid values: manual, auto. Both, because an auto compaction is the one the user
+                # did not ask for and therefore the one whose context loss is unanticipated.
+                "matcher": "manual|auto",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": python_executable,
+                        "args": ["-m", HOOK_MODULE, "pre-compact"],
+                        # Async, and never blocking. Exit code 2 on this event BLOCKS compaction,
+                        # which would let a memory tool wedge a session whose context window is
+                        # already full. Async also means a cold embedder cannot delay the
+                        # compaction the user is waiting on.
+                        "async": True,
+                        "statusMessage": "Saving memory before compaction",
                     }
                 ],
             }

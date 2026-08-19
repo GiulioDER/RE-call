@@ -91,10 +91,37 @@ def test_session_end_runs_async_and_session_start_does_not() -> None:
     assert start["timeout"] <= 30
 
 
+def test_precompact_is_registered_async_and_never_blocking() -> None:
+    """Exit code 2 on `PreCompact` BLOCKS compaction.
+
+    A memory tool that can wedge a session whose context window is already full is worse than one
+    that occasionally misses an index, so the handler is async and its entry point returns 0 on
+    every path. Async also keeps a cold embedder from delaying a compaction the user is waiting on.
+    """
+    group = hook_entries(PYTHON)["PreCompact"][0]
+    handler = group["hooks"][0]
+    assert group["matcher"] == "manual|auto"
+    assert handler["async"] is True
+    assert handler["args"] == ["-m", "recall_hooks", "pre-compact"]
+
+
+def test_session_start_reinjects_after_a_compaction() -> None:
+    """Reverses an earlier exclusion of the `compact` matcher.
+
+    The original reasoning was that re-injecting mid-conversation restates what was already said.
+    A compaction is precisely the event that may have discarded it, and it is the only moment the
+    client offers to put it back, since neither compaction hook supports `additionalContext`.
+    """
+    matcher = hook_entries(PYTHON)["SessionStart"][0]["matcher"]
+    assert "compact" in matcher.split("|")
+    assert "fork" not in matcher.split("|"), "a fork inherits its parent's context"
+
+
 def test_matchers_use_only_documented_values() -> None:
     documented = {
         "SessionStart": {"startup", "resume", "clear", "compact", "fork"},
         "SessionEnd": {"clear", "resume", "logout", "prompt_input_exit", "other"},
+        "PreCompact": {"manual", "auto"},
     }
     for event, groups in hook_entries(PYTHON).items():
         for group in groups:

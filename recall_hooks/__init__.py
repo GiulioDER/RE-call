@@ -158,12 +158,11 @@ def session_start(payload: dict[str, Any]) -> int:
     return 0
 
 
-def session_end(payload: dict[str, Any]) -> int:
-    """Index what this session produced, then refresh the cached count for the next start.
+def _index_and_refresh(payload: dict[str, Any]) -> int:
+    """Index this project's `memory/` and refresh the cached count. Never raises.
 
-    Runs with `async: true`, so nothing waits on it and nothing reads its output. That is the
-    honest configuration rather than a concession: `SessionEnd` cannot block termination, so a
-    synchronous index would be a promise the client is not obliged to keep.
+    Shared by `SessionEnd` and `PreCompact`, which want the same thing at different moments: make
+    whatever the session wrote down searchable, and leave an accurate count behind.
     """
     config = load_config()
     dsn = config.get("dsn")
@@ -187,6 +186,38 @@ def session_end(payload: dict[str, Any]) -> int:
     return 0
 
 
+def session_end(payload: dict[str, Any]) -> int:
+    """Index what this session produced, then refresh the cached count for the next start.
+
+    Runs with `async: true`, so nothing waits on it and nothing reads its output. That is the
+    honest configuration rather than a concession: `SessionEnd` cannot block termination, so a
+    synchronous index would be a promise the client is not obliged to keep.
+    """
+    return _index_and_refresh(payload)
+
+
+def pre_compact(payload: dict[str, Any]) -> int:
+    """Make the session's memos searchable at the moment its context is about to be discarded.
+
+    Compaction is the event this product exists for: it is where a long session loses the detail
+    behind its conclusions. What it does NOT lose is anything already written to `memory/`, so the
+    useful move is to close the write-to-searchable gap right here, rather than at `SessionEnd`
+    which may be hours away. A memo written at 10:00 in a session that compacts at 11:00 and ends
+    at 17:00 is otherwise unsearchable for seven hours, including by the very turn that most needs
+    it: the one immediately after the compaction that just discarded its context.
+
+    **This hook cannot do the thing it first looks like it should.** `PreCompact` supports no
+    `additionalContext`, so it cannot prompt the model to write its conclusions down before they
+    go, and `PostCompact` cannot either. Injecting context is `SessionStart` and
+    `UserPromptSubmit`, which is why the `SessionStart` matcher here covers `compact`.
+
+    ⛔ Never blocks. Exit code 2 on this event blocks compaction, which would hand a memory tool
+    the power to wedge a session whose context window is already full. Every path returns 0, and
+    the handler is registered `async` so a slow embedder cannot delay the compaction either.
+    """
+    return _index_and_refresh(payload)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Dispatch for `python -m recall_hooks <event>`, invoked by the hooks themselves."""
     args = list(sys.argv[1:] if argv is None else argv)
@@ -202,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         return session_start(payload)
     if args[0] == "session-end":
         return session_end(payload)
+    if args[0] == "pre-compact":
+        return pre_compact(payload)
     return 0
 
 
@@ -210,6 +243,7 @@ __all__ = [
     "config_path",
     "load_config",
     "main",
+    "pre_compact",
     "refresh_stats",
     "session_end",
     "session_start",

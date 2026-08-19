@@ -86,6 +86,57 @@ def test_session_end_is_a_noop_outside_a_project(tmp_path: Path, monkeypatch: An
     assert recall_hooks.session_end({"cwd": str(tmp_path)}) == 0
 
 
+def test_pre_compact_indexes_and_refreshes_like_session_end(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Both want the same thing at different moments: make what was written searchable."""
+    _configure(tmp_path, monkeypatch, dsn="postgresql://h/db", embedder="hashing")
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "a.md").write_text("a fact\n", encoding="utf-8")
+    indexed: list[Path] = []
+    refreshed: list[int] = []
+    monkeypatch.setattr(
+        "recall.setup.index_memory_directory",
+        lambda **kw: indexed.append(kw["memory_dir"]),
+    )
+    monkeypatch.setattr(recall_hooks, "refresh_stats", lambda config=None: refreshed.append(1))
+
+    assert recall_hooks.pre_compact({"cwd": str(tmp_path)}) == 0
+
+    assert indexed == [tmp_path / "memory"]
+    assert refreshed == [1]
+
+
+def test_pre_compact_never_returns_a_blocking_exit_code(tmp_path: Path, monkeypatch: Any) -> None:
+    """Exit code 2 blocks compaction. No failure here may reach that.
+
+    A session compacting because its context window is full is the worst possible moment to be
+    told it may not proceed, and the cause would be a memory tool it never asked about.
+    """
+    _configure(tmp_path, monkeypatch, dsn="postgresql://u:p@127.0.0.1:1/db", embedder="hashing")
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "a.md").write_text("a fact\n", encoding="utf-8")
+
+    def explode(**kwargs: Any) -> None:
+        raise RuntimeError("embedder could not be resolved")
+
+    monkeypatch.setattr("recall.setup.index_memory_directory", explode)
+
+    assert recall_hooks.pre_compact({"cwd": str(tmp_path)}) == 0
+    # And with nothing configured at all.
+    monkeypatch.setattr(recall_hooks, "config_path", lambda: tmp_path / "absent.json")
+    assert recall_hooks.pre_compact({"cwd": str(tmp_path)}) == 0
+    assert recall_hooks.pre_compact({}) == 0
+
+
+def test_main_dispatches_pre_compact(monkeypatch: Any) -> None:
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"cwd": "C:/proj"}'))
+    monkeypatch.setattr(recall_hooks, "pre_compact", lambda payload: seen.append(payload) or 0)
+    assert recall_hooks.main(["pre-compact"]) == 0
+    assert seen == [{"cwd": "C:/proj"}]
+
+
 def test_main_survives_stdin_that_is_not_json(monkeypatch: Any) -> None:
     monkeypatch.setattr(sys, "stdin", io.StringIO("not json"))
     monkeypatch.setattr(sys, "stdout", io.StringIO())
