@@ -45,3 +45,20 @@ run. It is expected to complete without a rate-limit failure. I predict that
 the MiniLM hybrid arm will achieve at least 0.70 complete-evidence Recall@10GT
 and that the Voyage-reranked hybrid answer hit@5 will be at least 0.58 on the
 full local set. These predictions are recorded before the next measurement.
+
+## Completed control
+
+The `candidate_k=25` run completed on VPS2 with the Voyage reranker and the
+reasoning environment exported. The retrieval artifact reports:
+
+* full dense: item R@10 0.7107, question Recall@10 0.7512, complete
+  Recall@10GT 0.6673;
+* full hybrid: item R@10 0.8509, question Recall@10 0.8825, complete
+  Recall@10GT 0.8144;
+* hard dense: question Recall@10 0.7419, complete Recall@10GT 0.0645;
+* hard hybrid: question Recall@10 0.8710, complete Recall@10GT 0.1935.
+
+The full hybrid complete-evidence prediction was met. The ATM retrieval
+runner is retrieval-only: it did not call the reasoning provider or the
+official answer judge. These are retrieval results with reasoning configured,
+not end-to-end answer scores.
