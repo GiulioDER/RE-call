@@ -110,3 +110,5 @@ Measured on 2026-08-19 with `python -m benchmarks.atm_list_selection_probe --gro
 | Hybrid | 0.2472 | 0.2913 | 0.2050 | 0.3381 | 0.6592 |
 
 Hybrid improves both top five Jaccard and containment over dense retrieval. Increasing the output from five to ten improves containment from 0.2913 to 0.3381 but reduces Jaccard from 0.2472 to 0.2050. At 100 items, containment reaches 0.6592 while Jaccard falls to 0.0481. This is direct evidence that answer selection needs a precision aware stopping or selection rule. Retrieval depth alone is not a valid final answer policy.
+
+The Jaccard values were independently checked against the official ATM Bench `list_jaccard_score` implementation and matched at all reported cutoffs.
