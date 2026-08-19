@@ -1,0 +1,85 @@
+{
+  "benchmark": "ATM-Bench",
+  "measurement": "development_threshold_calibration_and_frozen_holdout",
+  "split_rule": "sha256(question_id) integer modulo 10 < 7 is development",
+  "threshold_limit": "answer-preservation floor only; no unanswerable ATM labels exist",
+  "ground_truth": "C:\\Users\\gde00\\Documents\\atm-bench-official\\data\\atm-bench\\atm-bench.json",
+  "artifacts": {
+    "fastembed:sentence-transformers/all-MiniLM-L6-v2|none": {
+      "source": "results\\atm_bench_full_retrieval_20260819_fastembed.json",
+      "embedder": "fastembed:sentence-transformers/all-MiniLM-L6-v2",
+      "reranker": "none",
+      "candidate_k": 200,
+      "arms": {
+        "dense": {
+          "threshold_fit": {
+            "rule": "development fifth percentile of max returned dense cosine",
+            "threshold": 0.45524731545166364,
+            "development": {
+              "questions": 712,
+              "item_R@10": 0.6433877296236847,
+              "question_Recall@10": 0.6952247191011236,
+              "complete_Recall@10GT": 0.5926966292134831,
+              "top_dense_score_p05": 0.45524731545166364,
+              "false_abstain_at_fitted_threshold": 0.05056179775280899,
+              "list": {
+                "jaccard@5": 0.11305432826051383,
+                "containment@5": 0.3792955326460481,
+                "answer_hit@5": 0.44329896907216493,
+                "questions": 97
+              }
+            }
+          },
+          "holdout": {
+            "questions": 301,
+            "item_R@10": 0.6536267995570322,
+            "question_Recall@10": 0.6976744186046512,
+            "complete_Recall@10GT": 0.6112956810631229,
+            "top_dense_score_p05": 0.43969907637823624,
+            "false_abstain_at_fitted_threshold": 0.0664451827242525,
+            "list": {
+              "jaccard@5": 0.12324263038548754,
+              "containment@5": 0.5214285714285714,
+              "answer_hit@5": 0.5952380952380952,
+              "questions": 42
+            }
+          }
+        },
+        "hybrid": {
+          "threshold_fit": {
+            "rule": "development fifth percentile of max returned dense cosine",
+            "threshold": 0.45524731545166364,
+            "development": {
+              "questions": 712,
+              "item_R@10": 0.7637278179061887,
+              "question_Recall@10": 0.8061797752808989,
+              "complete_Recall@10GT": 0.723314606741573,
+              "top_dense_score_p05": 0.45524731545166364,
+              "false_abstain_at_fitted_threshold": 0.05056179775280899,
+              "list": {
+                "jaccard@5": 0.1533145548609466,
+                "containment@5": 0.4747709049255441,
+                "answer_hit@5": 0.5463917525773195,
+                "questions": 97
+              }
+            }
+          },
+          "holdout": {
+            "questions": 301,
+            "item_R@10": 0.7823366555924695,
+            "question_Recall@10": 0.813953488372093,
+            "complete_Recall@10GT": 0.7541528239202658,
+            "top_dense_score_p05": 0.43969907637823624,
+            "false_abstain_at_fitted_threshold": 0.0664451827242525,
+            "list": {
+              "jaccard@5": 0.15884353741496599,
+              "containment@5": 0.6452380952380953,
+              "answer_hit@5": 0.6904761904761905,
+              "questions": 42
+            }
+          }
+        }
+      }
+    }
+  }
+}

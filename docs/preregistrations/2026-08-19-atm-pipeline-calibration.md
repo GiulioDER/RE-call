@@ -90,3 +90,14 @@ or answer depth may be tuned after seeing holdout results.
 The local arms use no paid API. Voyage calls and any Vast.ai rental are excluded
 from the no-credit result and require explicit authorization before execution.
 
+## Execution record
+
+The MiniLM full artifact was calibrated after this preregistration. The fitted
+development fifth-percentile threshold was 0.4552473155. On the 301-question
+holdout, the frozen hybrid arm reached complete evidence Recall@10GT 0.7542,
+list Jaccard@5 0.1588, and false abstention 0.0664.
+
+The BGE-small fresh-index attempt was stopped before index creation completed,
+so it produced no quality artifact. The local cross-encoder development run
+loaded successfully but was stopped after 5,829 seconds of CPU time before it
+produced a quality artifact. Neither incomplete run is used for selection.
