@@ -1145,3 +1145,184 @@ def test_closing_the_window_never_waits_on_a_long_running_job(
         release.set()
         window.pool.waitForDone(30_000)
         app.processEvents()
+
+
+# ----------------------------------------------------------------------------------------------
+# The third runtime: a PostgreSQL the user already runs, with no container anywhere
+# ----------------------------------------------------------------------------------------------
+
+
+def test_a_local_database_profile_needs_a_dsn() -> None:
+    """Each mode's required field is checked at construction, where the answer is still cheap."""
+    with pytest.raises(ValueError, match="dsn"):
+        RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE)
+
+    profile = RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@127.0.0.1:5432/r")
+    assert profile.dsn == "postgresql://u:p@127.0.0.1:5432/r"
+
+
+def test_the_dsn_survives_a_profile_round_trip(tmp_path: Path) -> None:
+    """A field that saves but does not load is a setting the user re-enters every launch."""
+    original = RuntimeProfile(
+        mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@127.0.0.1:5432/r"
+    )
+
+    restored = RuntimeProfile.from_dict(original.to_dict())
+
+    assert restored == original
+
+
+def test_each_mode_selects_its_own_runtime() -> None:
+    """⚠️ Compared against the ENUM, not the string it used to compare against.
+
+    The old form fell through to `DockerRuntime` for anything it did not recognise, so a mode added
+    to `RuntimeMode` and forgotten here became a Docker runtime with no compose file — a confusing
+    failure some distance from its cause.
+    """
+    from recall.desktop.runtime import LocalDatabaseRuntime, VpsMcpRuntime, create_runtime
+
+    docker = create_runtime(
+        RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    )
+    vps = create_runtime(
+        RuntimeProfile(mode=RuntimeMode.VPS_MCP, endpoint="https://example.test/mcp")
+    )
+    local = create_runtime(
+        RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@127.0.0.1:5432/r")
+    )
+
+    assert isinstance(docker, DockerRuntime)
+    assert isinstance(vps, VpsMcpRuntime)
+    assert isinstance(local, LocalDatabaseRuntime)
+
+    modes = {mode for mode in RuntimeMode}
+    covered = {RuntimeMode.DOCKER, RuntimeMode.VPS_MCP, RuntimeMode.LOCAL_DATABASE}
+    assert modes == covered, (
+        f"RuntimeMode gained {modes - covered} and this test did not notice; create_runtime "
+        "silently falls back to Docker for anything it does not name"
+    )
+
+
+def test_every_tenant_gets_its_own_server_with_its_own_tenant_variable() -> None:
+    """⛔ One shared server would answer every scope from whichever tenant started it.
+
+    Not an error. A confident, well-formed answer about the wrong corpus, which is the failure this
+    project treats as the worst available. `RECALL_TENANT` is per-process, so the separation has to
+    be one process per tenant.
+    """
+    from recall.desktop.runtime import LocalDatabaseRuntime
+
+    dsn = "postgresql://u:p@127.0.0.1:5432/r"
+    runtime = LocalDatabaseRuntime(RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn=dsn))
+
+    docs = runtime._gateway_for("myproject-docs")
+    code = runtime._gateway_for("myproject-code")
+
+    assert docs is not code, "two scopes must not share one server"
+    assert docs is runtime._gateway_for("myproject-docs"), "and the same scope must be cached"
+    assert docs.env == {"RECALL_DSN": dsn, "RECALL_TENANT": "myproject-docs"}
+    assert code.env == {"RECALL_DSN": dsn, "RECALL_TENANT": "myproject-code"}
+
+
+def test_the_server_is_launched_with_an_absolute_interpreter() -> None:
+    """A bare `python` resolves against whatever PATH the desktop inherited.
+
+    On Windows that is routinely the Microsoft Store stub, which opens the Store rather than
+    running anything, and the user sees a server that will not start with no cause named. Same
+    reasoning, and the same fix, as the server blocks the wizard writes for Claude Code.
+    """
+    import sys
+
+    from recall.desktop.runtime import LocalDatabaseRuntime
+
+    runtime = LocalDatabaseRuntime(
+        RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@127.0.0.1:5432/r")
+    )
+
+    command = runtime._gateway_for("default").command
+
+    assert command is not None
+    assert command[0] == sys.executable
+    assert Path(command[0]).is_absolute()
+    assert command[1:] == ["-m", "recall_mcp.server"]
+
+
+def test_the_trust_variables_are_left_to_the_install_not_asserted_by_the_runtime() -> None:
+    """Whether a tenant is served strictly is a property of what was calibrated and promoted.
+
+    `wiring.server_blocks` decides it at install time from what actually happened. A runtime that
+    set `RECALL_ENV` or `RECALL_TRUST_MODE` from a profile would either relax a gate the corpus has
+    not earned, or refuse one it has.
+    """
+    from recall.desktop.runtime import LocalDatabaseRuntime
+
+    runtime = LocalDatabaseRuntime(
+        RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@127.0.0.1:5432/r")
+    )
+
+    env = runtime._env_for("default-docs")
+
+    assert "RECALL_ENV" not in env
+    assert "RECALL_TRUST_MODE" not in env
+
+
+def test_the_gateway_overlays_the_environment_rather_than_replacing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠️ A replaced environment has no PATH, and the child then cannot start at all.
+
+    The overlay is what lets one variable differ per tenant while everything the interpreter needs
+    survives.
+    """
+    from recall.desktop.runtime import SdkMcpGateway
+
+    monkeypatch.setenv("A_VARIABLE_THE_CHILD_NEEDS", "kept")
+    gateway = SdkMcpGateway(
+        RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@h/r"),
+        command=["python", "-m", "recall_mcp.server"],
+        env={"RECALL_TENANT": "mine"},
+    )
+
+    merged = dict(os.environ)
+    merged.update(gateway.env or {})
+
+    assert merged["A_VARIABLE_THE_CHILD_NEEDS"] == "kept"
+    assert merged["RECALL_TENANT"] == "mine"
+
+
+def test_an_untargeted_call_reaches_the_default_projects_server() -> None:
+    """⛔ `list_tenants()` raised "runtime is not started" against a runtime that had started.
+
+    The base `_call` reaches for `self.gateway`, and this runtime never sets it: it holds one
+    gateway PER TENANT, because `RECALL_TENANT` is per-process. So every inherited method that does
+    not name a tenant failed, on a runtime whose `start()` and `health()` both worked.
+
+    Found by calling `list_tenants()` against a live server, not by the six tests of what this class
+    builds — all of which passed. `DockerRuntime` avoids it for an unrelated reason: it overrides
+    `list_tenants` to read the compose file and never reaches the base implementation.
+    """
+    from recall.desktop.runtime import LocalDatabaseRuntime
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _Gateway:
+        def __init__(self, tenant: str) -> None:
+            self.tenant = tenant
+
+        def call(self, name: str, arguments: dict[str, object]) -> object:
+            calls.append((name, {"tenant": self.tenant, **arguments}))
+            return {"tenants": ["alpha", "beta"]}
+
+    runtime = LocalDatabaseRuntime(
+        RuntimeProfile(
+            mode=RuntimeMode.LOCAL_DATABASE,
+            dsn="postgresql://u:p@127.0.0.1:5432/r",
+            default_tenant="myproject",
+        )
+    )
+    runtime._gateways["myproject"] = _Gateway("myproject")  # type: ignore[assignment]
+
+    assert runtime.list_tenants() == ["alpha", "beta"]
+    assert calls == [("recall_tenants", {"tenant": "myproject"})], (
+        "the call must be routed to the default project's server, not to a gateway that is None"
+    )
