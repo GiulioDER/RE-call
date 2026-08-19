@@ -158,7 +158,12 @@ def generate_answer(
             choices = body.get("choices") if isinstance(body, dict) else None
             if not isinstance(choices, list) or not choices:
                 raise RuntimeError("provider returned no choices")
-            message = choices[0].get("message", {})
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                raise RuntimeError("provider returned an invalid choice")
+            if choice.get("finish_reason") == "length":
+                raise RuntimeError("provider answer reached the configured output ceiling")
+            message = choice.get("message", {})
             answer = _message_text(message.get("content") if isinstance(message, dict) else None)
             if not answer:
                 raise RuntimeError("provider returned an empty answer")
@@ -255,9 +260,19 @@ def run(args: argparse.Namespace) -> int:
     retrieval_path = args.out_dir / "retrieval.jsonl"
     answers = _load_jsonl(answers_path)
     retrieval_rows = _load_jsonl(retrieval_path)
+    previous_manifest: dict[str, Any] = {}
+    manifest_path = args.out_dir / "manifest.json"
+    if manifest_path.exists():
+        loaded_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(loaded_manifest, dict):
+            previous_manifest = loaded_manifest
     with _build_retriever(args) as (retriever, embedder, chunks, index_ms):
-        usage_total = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-        returned_models: set[str] = set()
+        previous_usage = previous_manifest.get("usage", {})
+        usage_total = {
+            key: int(previous_usage.get(key, 0) or 0)
+            for key in ("calls", "prompt_tokens", "completion_tokens", "total_tokens")
+        }
+        returned_models: set[str] = set(previous_manifest.get("answer_models_returned", []))
         errors: list[dict[str, str]] = []
         for position, question in enumerate(questions, start=1):
             question_id = question["id"]
