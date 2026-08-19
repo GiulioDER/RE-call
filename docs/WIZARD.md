@@ -115,24 +115,36 @@ Three things worth knowing:
 
 With `project_root` set:
 
-- **MCP servers in `~/.claude.json`** — one per servable tenant, registered at **user scope**, which
-  is Claude Code's own configuration file. Merged into any existing `mcpServers`, backed up first and
-  written atomically, so servers the wizard knows nothing about survive.
+- **MCP servers in `~/.claude.json`** — one per servable tenant, registered at **local scope**, under
+  this project's own entry in Claude Code's configuration file. Merged into any existing
+  `mcpServers`, backed up first and written atomically, so servers the wizard knows nothing about
+  survive.
 
-  ⚠️ **User scope, and deliberately no project-scoped `.mcp.json`.** Claude Code gates project-scoped
-  servers behind an approval prompt, and until it is answered the tools are silently absent: no
-  error, nothing naming the cause. Measured on one machine, 2 of 310 tracked projects had any
-  approval recorded. User scope has no prompt and loads in every project. Writing both files would be
-  worse than either, because precedence is local, then project, then user with no merging, so the
-  project file would win in that directory and put the gate back.
+  ⚠️ **Local scope, and deliberately neither of the other two.** Project scope means a `.mcp.json`
+  in the tree, which Claude Code gates behind an approval prompt: until it is answered the tools are
+  silently absent, with no error naming the cause. Measured on one machine, 2 of 310 tracked
+  projects had any approval recorded. **User scope** skips that prompt but is the only scope that
+  loads in *every* project on the machine, and each of these servers carries a `RECALL_TENANT` for
+  this project's corpus, so they would answer confidently about the wrong repository everywhere
+  else. Local scope skips the prompt and loads in one project, which is how the blocks are built:
+  one `project_root`, one DSN, one tenant each.
 
-  Two consequences worth stating. **A server name already registered by another install is refused,
-  not repointed**: names are `{project}-{kind}`, so a second install under the same `project` would
-  silently aim the first one's servers at a different corpus. Use a distinct `project`. And **the
-  wizard will not create `~/.claude.json` if it is absent**, because inventing another application's
-  configuration file is not an installer's business; start Claude Code once and re-run. In both cases
-  the report says so and the install is reported as incomplete, since servers no client can see are
-  the whole failure this step exists to prevent.
+  Three consequences worth stating.
+
+  **The entry is keyed by PATH**, so moving or renaming the project orphans it silently. The report
+  names the key it registered under. Re-run the wizard after a move. Claude Code does not normalise
+  that key either, and one project can carry several spellings of it; every existing key that
+  resolves to the project directory is written, so a native launch and a Git Bash launch both find
+  the servers.
+
+  **A server name already registered by something else is refused, not repointed**: names are
+  `{project}-{kind}`, so a second install under the same `project` would silently aim the first
+  one's servers at a different corpus. Use a distinct `project`.
+
+  **The wizard will not create `~/.claude.json` if it is absent**, because inventing another
+  application's configuration file is not an installer's business; start Claude Code once and
+  re-run. In the refusal cases the report says so and the install is reported incomplete, since
+  servers no client can see are the whole failure this step exists to prevent.
 
   Restart Claude Code afterwards. It reads this file at startup.
 - **`.env`** — the serving DSN and embedder, for the CLI. **Not** for the MCP servers: a stdio server

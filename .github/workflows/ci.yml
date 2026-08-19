@@ -195,10 +195,11 @@ jobs:
       # validated, calibrated and promoted. A corpus that failed any of those silently loses its
       # block.
       #
-      # They are asserted in `~/.claude.json` at USER scope, and the absence of a project-scoped
-      # `.mcp.json` is asserted too: precedence is local, then project, then user with no merging,
-      # so a project file would win in that directory and reinstate the approval prompt that user
-      # scope exists to avoid. Writing both is worse than writing either.
+      # Asserted at LOCAL scope, under this project's own entry in `~/.claude.json`, and two other
+      # locations are asserted EMPTY. A top-level `mcpServers` is user scope, which would load these
+      # per-tenant servers in every unrelated checkout the user opens; a project-scoped `.mcp.json`
+      # is the file the approval prompt guards. Each of the three looks like a working install from
+      # the outside and only one of them is.
       - name: The install produced a servable stack
         run: |
           set -euo pipefail
@@ -207,12 +208,27 @@ jobs:
             test -f "$root/$f" || { echo "missing $f"; exit 1; }
           done
           if [ -f "$root/project/.mcp.json" ]; then
-            echo "a project-scoped .mcp.json was written; it takes precedence over user scope"
+            echo "a project-scoped .mcp.json was written; that file is what the prompt guards"
             exit 1
           fi
-          python - "$HOME/.claude.json" <<'PY'
-          import json, sys
-          servers = json.loads(open(sys.argv[1], encoding="utf-8").read()).get("mcpServers", {})
+          python - "$HOME/.claude.json" "$root/project" <<'PY'
+          import json, pathlib, sys
+          document = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          if document.get("mcpServers"):
+              raise SystemExit(
+                  "servers were registered at USER scope (top-level mcpServers). Each carries a "
+                  "RECALL_TENANT for this project, so they would answer about the wrong corpus in "
+                  "every other checkout the user opens."
+              )
+          wanted = pathlib.Path(sys.argv[2]).resolve()
+          entries = [
+              entry.get("mcpServers", {})
+              for key, entry in document.get("projects", {}).items()
+              if pathlib.Path(key).resolve() == wanted
+          ]
+          if len(entries) != 1:
+              raise SystemExit(f"expected one project entry for {wanted}, found {len(entries)}")
+          servers = entries[0]
           print("registered servers:", sorted(servers))
           missing = [t for t in ("default-docs", "default-code") if t not in servers]
           if missing:

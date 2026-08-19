@@ -51,10 +51,10 @@ __all__ = [
     "ServerBlock",
     "SmokeResult",
     "UnservableTenant",
-    "UserScopeRegistration",
+    "LocalScopeRegistration",
     "claude_config_path",
     "mcp_config",
-    "register_user_scope",
+    "register_local_scope",
     "server_blocks",
     "write_project_files",
     "write_runtime_profile",
@@ -330,10 +330,14 @@ def claude_config_path() -> Path:
 
 
 @dataclass(frozen=True)
-class UserScopeRegistration:
-    """What was written into the client's USER-scope server list, and what was refused."""
+class LocalScopeRegistration:
+    """What was written into the client's LOCAL-scope server list, and what was refused."""
 
     config_path: Path
+    #: The `projects` keys the servers were written under. Usually one. Reported because the entry
+    #: is keyed by PATH, so moving or renaming the project orphans it with no error: the same shape
+    #: as the memory-store forking this project has already been bitten by.
+    project_keys: tuple[str, ...] = ()
     registered: tuple[str, ...] = ()
     #: Names already present that this install did NOT overwrite, with what they point at. A second
     #: install under the same project name is the reachable case, and silently replacing the first
@@ -344,6 +348,31 @@ class UserScopeRegistration:
     @property
     def recorded(self) -> bool:
         return bool(self.registered)
+
+
+def _project_keys(projects: dict[str, object], project_root: Path) -> tuple[str, ...]:
+    """Which `projects` keys this install belongs under, preferring the client's own spelling.
+
+    ⚠️ **The client does NOT normalise this key, and one project can hold several spellings.**
+    Measured 2026-08-19 on a real config with 313 project keys: the same directory appeared as both
+    `C:\\Users\\...\\progetto sentimental` and `C:/Users/.../progetto sentimental`, which is
+    what a native launch and a Git Bash launch produce. A local-scope entry written under a spelling
+    the client does not use is invisible, with no error, which is the failure this whole change is
+    removing.
+
+    So every existing key that resolves to this directory is used, rather than one invented one. A
+    project the user has never opened has no key at all, and only then is one invented from the
+    resolved path.
+    """
+    matches = [key for key in projects if _same_directory(key, project_root)]
+    return tuple(matches) if matches else (str(project_root.resolve()),)
+
+
+def _same_directory(key: str, project_root: Path) -> bool:
+    try:
+        return Path(key).resolve() == project_root.resolve()
+    except (OSError, ValueError):
+        return False
 
 
 def _written_by_this_project(existing: object, project_root: Path) -> bool:
@@ -382,26 +411,40 @@ def _describe_owner(existing: object) -> str:
     return "no cwd, so it was not written by this wizard"
 
 
-def register_user_scope(
+def register_local_scope(
     blocks: tuple[ServerBlock, ...],
     *,
     project_root: Path,
     config_path: Path | None = None,
     interpreter: str | None = None,
-) -> UserScopeRegistration:
-    """Register the servers at USER scope, where they load in every project without approval.
+) -> LocalScopeRegistration:
+    """Register the servers at LOCAL scope: this project only, and no approval prompt.
 
-    **Why not project scope, which is what this wrote before.** Claude Code gates project-scoped
+    **Why not project scope, which is what this wrote first.** Claude Code gates project-scoped
     `.mcp.json`: it prompts for approval in an interactive session, and until the user answers, the
     tools are silently absent — no error, nothing naming the cause. Measured on this machine, 2 of
     310 tracked projects had any approval recorded, neither created by the wizard. For the audience
     this installer exists for, a first-run user who is not a Claude Code expert, an invisible gate
     between "the installer said it worked" and "the tools are there" is the whole product failing.
-    User scope has no approval step and loads everywhere.
+
+    **And why not USER scope, which is what this wrote second.** User scope also skips the prompt,
+    but it is the only scope that loads in EVERY project on the machine, and `server_blocks` emits
+    one server per tenant with `RECALL_TENANT` baked into each. All three would then load in every
+    unrelated checkout the user opens and answer confidently about a corpus that is not the
+    repository they are in. That is the corpus-boundary failure this project documents as the worst
+    kind available: not an error, a well-formed answer about the wrong repository. Local scope is
+    per-project by construction, which matches how the blocks are already built: one `project_root`,
+    one DSN, one tenant each.
 
     ⚠️ **The wizard must therefore NOT also write `.mcp.json`.** Precedence is local, then project,
-    then user, and entries are NOT merged: a project-scoped file would win in that directory and
-    reintroduce exactly the gate this removes.
+    then user, and entries are NOT merged: local wins over a project file in the same directory, so
+    a `.mcp.json` would be dead weight that still has to be trusted, explained and kept in step.
+
+    ⚠️ **The approval sentence is about `.mcp.json` specifically**, which is also why the client's
+    keys are named `enabledMcpjsonServers` / `disabledMcpjsonServers`. Local scope is not that file
+    and is outside the gate. That reading is documentary rather than measured: no project on this
+    machine carried a local-scope entry to observe, and an interactive session is the only place the
+    difference shows.
 
     **Collisions are refused, not overwritten.** Server names are `{project}-{kind}`, so a second
     install using the same project name would silently repoint the first install's servers at a
@@ -418,54 +461,71 @@ def register_user_scope(
     """
     target = config_path or claude_config_path()
     if not blocks:
-        return UserScopeRegistration(config_path=target, skipped_reason="no servers to register")
+        return LocalScopeRegistration(config_path=target, skipped_reason="no servers to register")
 
     try:
         raw = target.read_text(encoding="utf-8")
         document = json.loads(raw)
     except OSError as exc:
-        return UserScopeRegistration(
+        return LocalScopeRegistration(
             config_path=target,
             skipped_reason=f"no Claude Code config at {target} ({exc.strerror or exc})",
         )
     except ValueError as exc:
-        return UserScopeRegistration(
+        return LocalScopeRegistration(
             config_path=target,
             skipped_reason=f"{target} is not readable JSON ({exc}); left untouched",
         )
     if not isinstance(document, dict):
-        return UserScopeRegistration(
+        return LocalScopeRegistration(
             config_path=target, skipped_reason=f"{target} is not a JSON object"
         )
 
-    servers = document.get("mcpServers")
-    merged = dict(servers) if isinstance(servers, dict) else {}
+    projects = document.get("projects")
+    if not isinstance(projects, dict):
+        projects = {}
+        document["projects"] = projects
+    keys = _project_keys(projects, project_root)
+
     incoming = mcp_config(blocks, project_root=project_root, interpreter=interpreter)["mcpServers"]
     assert isinstance(incoming, dict)
 
     registered: list[str] = []
     conflicts: list[tuple[str, str]] = []
-    for name, definition in incoming.items():
-        existing = merged.get(name)
-        if existing is not None and not _written_by_this_project(existing, project_root):
-            conflicts.append((name, _describe_owner(existing)))
-            continue
-        merged[name] = definition
-        registered.append(name)
+    for key in keys:
+        entry = projects.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+            projects[key] = entry
+        servers = entry.get("mcpServers")
+        merged = dict(servers) if isinstance(servers, dict) else {}
+        for name, definition in incoming.items():
+            existing = merged.get(name)
+            if existing is not None and not _written_by_this_project(existing, project_root):
+                if (name, _describe_owner(existing)) not in conflicts:
+                    conflicts.append((name, _describe_owner(existing)))
+                continue
+            merged[name] = definition
+            if name not in registered:
+                registered.append(name)
+        entry["mcpServers"] = merged
 
     if not registered:
-        return UserScopeRegistration(
+        return LocalScopeRegistration(
             config_path=target,
+            project_keys=tuple(keys),
             conflicts=tuple(conflicts),
-            skipped_reason="every server name is already taken by another install",
+            skipped_reason="every server name is already taken by something else in this project",
         )
 
-    document["mcpServers"] = merged
     backup = target.with_name(target.name + ".recall-backup")
     backup.write_text(raw, encoding="utf-8", newline="\n")
     temporary = target.with_name(target.name + ".recall-tmp")
     temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
     temporary.replace(target)
-    return UserScopeRegistration(
-        config_path=target, registered=tuple(registered), conflicts=tuple(conflicts)
+    return LocalScopeRegistration(
+        config_path=target,
+        project_keys=tuple(keys),
+        registered=tuple(registered),
+        conflicts=tuple(conflicts),
     )

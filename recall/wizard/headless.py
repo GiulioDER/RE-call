@@ -74,8 +74,8 @@ from recall.wizard.wiring import (
     ServerBlock,
     SmokeResult,
     UnservableTenant,
-    UserScopeRegistration,
-    register_user_scope,
+    LocalScopeRegistration,
+    register_local_scope,
     server_blocks,
     write_project_files,
     write_runtime_profile,
@@ -237,7 +237,7 @@ class HeadlessReport:
     #: What was done about registering these servers with Claude Code. None when no wiring ran at
     #: all. Carried on the report because "the servers are configured" and "the servers will load"
     #: are different claims, and only the second one is what the user wanted.
-    registration: UserScopeRegistration | None = None
+    registration: LocalScopeRegistration | None = None
     #: MCP servers the wizard registered, and the tenants deliberately left without one.
     servers: tuple[ServerBlock, ...] = ()
     unservable: tuple[UnservableTenant, ...] = ()
@@ -270,7 +270,7 @@ class HeadlessReport:
         configuration still be unable to reach them.
 
         **And an install nothing was registered with is not ok either.** The servers go into Claude
-        Code's own config at user scope, and when that write is skipped there is no other place a
+        Code's own config at local scope, and when that write is skipped there is no other place a
         client will find them: not now, and not after a restart. The corpora would be perfect and
         the user would meet an assistant with no recall tools and nothing naming the cause, which is
         this project's recurring failure and the reason the exit code has to carry it.
@@ -396,13 +396,18 @@ class HeadlessReport:
         if self.registration is not None:
             if self.registration.recorded:
                 lines.append(
-                    f"{' ' * _GUTTER}registered {', '.join(self.registration.registered)} at user "
+                    f"{' ' * _GUTTER}registered {', '.join(self.registration.registered)} at local "
                     f"scope in {self.registration.config_path}"
                 )
                 lines.append(
-                    f"{' ' * _GUTTER}these load in EVERY project and need no approval; restart "
+                    f"{' ' * _GUTTER}they load in this project only and need no approval; restart "
                     f"Claude Code to pick them up"
                 )
+                # ⚠️ The path is NAMED because the entry is keyed by it. Moving or renaming the
+                # project orphans the registration silently, which is the same shape as the memory
+                # store this project has already lost to a directory rename.
+                for key in self.registration.project_keys:
+                    lines.append(f"{' ' * _GUTTER}  keyed to {key}")
             else:
                 lines.append(
                     detail(
@@ -1008,7 +1013,7 @@ def run_headless(
     state_path: Path | None = None,
     fresh: bool = False,
     profile_path: Path | None = None,
-    #: Claude Code's own config, where the user-scope servers are recorded.
+    #: Claude Code's own config, where the local-scope servers are recorded.
     #: ⚠️ Threaded rather than defaulted deep inside, for the same reason `profile_path` is: the
     #: default is a USER-GLOBAL file, and the first test run that reached it wrote five junk
     #: entries into the real one. A caller that does not want to touch the user's client — every
@@ -1208,11 +1213,11 @@ def run_headless(
     # Bound before the branch, not inside the `try`: the failure path and the no-`project_root`
     # path both reach the report, and an unbound name there would turn a written install into a
     # NameError at the moment it reports success.
-    registration: UserScopeRegistration | None = None
+    registration: LocalScopeRegistration | None = None
     if config.project_root is not None:
         if progress:
-            progress("wiring: MCP servers (user scope)")
-        # ⚠️ **USER scope, and deliberately no `.mcp.json`.** Project-scoped servers are gated: the
+            progress("wiring: MCP servers (local scope)")
+        # ⚠️ **LOCAL scope, and deliberately no `.mcp.json`.** Project-scoped servers are gated: the
         # client asks for approval in an interactive session and the tools are silently absent
         # until it is answered — measured, 2 of 310 tracked projects had any approval recorded.
         # This installer exists for people who are not Claude Code experts, so an invisible gate
@@ -1221,7 +1226,7 @@ def run_headless(
         # Writing BOTH would be worse than either: precedence is local, then project, then user,
         # and entries are not merged, so a project-scoped file would win in this very directory and
         try:
-            registration = register_user_scope(
+            registration = register_local_scope(
                 blocks,
                 project_root=config.project_root,
                 config_path=claude_config_path,

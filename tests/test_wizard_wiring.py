@@ -4,10 +4,11 @@ Each property below is a way this could produce a configuration that looks compl
 nothing, which is the worst outcome available here: the operator has no reason to doubt a file the
 installer wrote.
 
-The servers are registered at **user scope**, in Claude Code's own `~/.claude.json`, and the wizard
-deliberately writes no project-scoped `.mcp.json`. Project scope is gated behind an approval prompt
-that a non-interactive install can never answer, and precedence is local, then project, then user
-with no merging, so writing both would let the project file win and put the gate back.
+The servers are registered at **local scope**, in Claude Code's own `~/.claude.json` under this
+project's entry, and the wizard deliberately writes no project-scoped `.mcp.json`. Project scope is
+gated behind an approval prompt; user scope skips the prompt but loads in every project on the
+machine, and these servers each carry a `RECALL_TENANT` for THIS project's corpus. Local scope is
+the one that skips the prompt without answering about the wrong repository.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from recall.wizard.corpora import default_plan
-from recall.wizard.wiring import mcp_config, register_user_scope, server_blocks
+from recall.wizard.wiring import mcp_config, register_local_scope, server_blocks
 
 
 def _plan(tmp_path: Path):
@@ -29,6 +30,18 @@ def _plan(tmp_path: Path):
         code_root=tmp_path / "repo",
         memory_root=tmp_path / "memory",
     )
+
+
+def _registered(client: Path, project_root: Path) -> dict:
+    """The servers Claude Code would load for `project_root`, read back from the client's config."""
+    document = json.loads(client.read_text(encoding="utf-8"))
+    entries = [
+        entry.get("mcpServers", {})
+        for key, entry in document.get("projects", {}).items()
+        if Path(key).resolve() == project_root.resolve()
+    ]
+    assert len(entries) == 1, f"expected exactly one project entry, got {len(entries)}"
+    return entries[0]
 
 
 def _client(tmp_path: Path) -> Path:
@@ -149,7 +162,7 @@ def test_every_block_sets_trust_in_its_own_env_rather_than_relying_on_the_shell(
 
 
 # ----------------------------------------------------------------------------------------------
-# Registering at user scope
+# Registering at local scope
 # ----------------------------------------------------------------------------------------------
 
 
@@ -174,22 +187,38 @@ def test_registering_preserves_servers_this_wizard_knows_nothing_about(tmp_path:
         json.dumps(
             {
                 "someOtherSetting": {"kept": True},
-                "mcpServers": {
-                    "someone-elses": {"type": "http", "url": "https://example.invalid/mcp"},
-                    # A previous run of THIS install, which must be updated rather than refused.
-                    "default-docs": {"type": "stdio", "command": "old", "cwd": str(tmp_path)},
+                "projects": {
+                    str(tmp_path): {
+                        "someProjectSetting": 7,
+                        "mcpServers": {
+                            "someone-elses": {"type": "http", "url": "https://example.invalid/mcp"},
+                            # A previous run of THIS install: updated, not refused.
+                            "default-docs": {
+                                "type": "stdio",
+                                "command": "old",
+                                "cwd": str(tmp_path),
+                            },
+                        },
+                    },
+                    "C:\\elsewhere": {"mcpServers": {"theirs": {"type": "stdio"}}},
                 },
             }
         ),
         encoding="utf-8",
     )
 
-    result = register_user_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
+    result = register_local_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
 
     assert result.recorded
     assert result.conflicts == (), "our own previous install is not a stranger"
     document = json.loads(client.read_text(encoding="utf-8"))
-    written = document["mcpServers"]
+    written = _registered(client, tmp_path)
+    assert document["projects"][str(tmp_path)]["someProjectSetting"] == 7, (
+        "the rest of this project's entry must survive"
+    )
+    assert document["projects"]["C:\\elsewhere"] == {"mcpServers": {"theirs": {"type": "stdio"}}}, (
+        "another project's servers must survive"
+    )
     assert written["someone-elses"]["url"] == "https://example.invalid/mcp", "must survive"
     assert document["someOtherSetting"] == {"kept": True}, "unrelated settings must survive"
     # 🔁 Was `== "python"`. A bare `python` resolves against the CLIENT's PATH, not the environment
@@ -221,12 +250,15 @@ def test_an_entry_with_no_cwd_is_left_alone_because_this_wizard_did_not_write_it
     """
     client = tmp_path / ".claude.json"
     theirs = {"type": "stdio", "command": "their-own-thing"}
-    client.write_text(json.dumps({"mcpServers": {"default-docs": theirs}}), encoding="utf-8")
+    client.write_text(
+        json.dumps({"projects": {str(tmp_path): {"mcpServers": {"default-docs": theirs}}}}),
+        encoding="utf-8",
+    )
 
-    result = register_user_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
+    result = register_local_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
 
     assert result.conflicts == (("default-docs", "no cwd, so it was not written by this wizard"),)
-    assert json.loads(client.read_text(encoding="utf-8"))["mcpServers"]["default-docs"] == theirs
+    assert _registered(client, tmp_path)["default-docs"] == theirs
 
 
 def test_the_same_project_named_relatively_is_not_reported_as_a_stranger(
@@ -243,12 +275,59 @@ def test_the_same_project_named_relatively_is_not_reported_as_a_stranger(
     project = tmp_path / "project"
     project.mkdir()
 
-    register_user_scope(_blocks(tmp_path), project_root=project, config_path=client)
+    register_local_scope(_blocks(tmp_path), project_root=project, config_path=client)
     monkeypatch.chdir(tmp_path)
-    again = register_user_scope(_blocks(tmp_path), project_root=Path("project"), config_path=client)
+    again = register_local_scope(_blocks(tmp_path), project_root=Path("project"), config_path=client)
 
     assert again.conflicts == (), f"our own install came back as a stranger: {again.conflicts}"
     assert again.recorded
+
+
+
+def test_every_spelling_the_client_already_uses_for_this_project_is_registered(
+    tmp_path: Path,
+) -> None:
+    """⚠️ **The client does not normalise its project keys, and one project can hold several.**
+
+    Measured 2026-08-19 on a real config with 313 project keys: the same directory appeared as both
+    a backslash path and a forward-slash path, which is what a native launch and a Git Bash launch
+    produce. Registering under one spelling would leave the other launching with no recall tools,
+    with no error, which is the exact failure this whole change removes. So every existing key that
+    resolves to this directory is written, rather than one invented one.
+    """
+    client = tmp_path / ".claude.json"
+    native = str(tmp_path)
+    posix = tmp_path.as_posix()
+    assert native != posix, "this test needs two spellings of one path to be meaningful"
+    client.write_text(
+        json.dumps({"projects": {native: {}, posix: {}}}), encoding="utf-8"
+    )
+
+    result = register_local_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
+
+    assert set(result.project_keys) == {native, posix}
+    projects = json.loads(client.read_text(encoding="utf-8"))["projects"]
+    for key in (native, posix):
+        assert set(projects[key]["mcpServers"]) == {
+            "default-docs",
+            "default-code",
+            "default-memory",
+        }, f"the client launching as {key} would find no recall tools"
+
+
+def test_a_project_the_client_has_never_opened_gets_one_invented_key(tmp_path: Path) -> None:
+    """No existing key means Claude Code has not been run here, so there is nothing to match."""
+    client = tmp_path / ".claude.json"
+    client.write_text(json.dumps({"projects": {}}), encoding="utf-8")
+
+    result = register_local_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
+
+    assert result.project_keys == (str(tmp_path.resolve()),)
+    assert set(_registered(client, tmp_path)) == {
+        "default-docs",
+        "default-code",
+        "default-memory",
+    }
 
 
 def test_a_name_belonging_to_another_install_is_refused_not_repointed(tmp_path: Path) -> None:
@@ -262,27 +341,34 @@ def test_a_name_belonging_to_another_install_is_refused_not_repointed(tmp_path: 
     elsewhere = str(tmp_path / "some-other-install")
     client.write_text(
         json.dumps(
-            {"mcpServers": {"default-docs": {"type": "stdio", "cwd": elsewhere}}}
+            {
+                "projects": {
+                    str(tmp_path): {
+                        "mcpServers": {"default-docs": {"type": "stdio", "cwd": elsewhere}}
+                    }
+                }
+            }
         ),
         encoding="utf-8",
     )
 
-    result = register_user_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
+    result = register_local_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
 
     assert result.conflicts == (("default-docs", f"cwd {elsewhere}"),)
     assert "default-docs" not in result.registered
     assert set(result.registered) == {"default-code", "default-memory"}, (
         "the names that do NOT collide must still be registered"
     )
-    written = json.loads(client.read_text(encoding="utf-8"))["mcpServers"]
-    assert written["default-docs"]["cwd"] == elsewhere, "the other install must be untouched"
+    assert _registered(client, tmp_path)["default-docs"]["cwd"] == elsewhere, (
+        "the other install must be untouched"
+    )
 
 
 def test_the_written_file_has_no_temporary_left_behind_and_lf_endings(tmp_path: Path) -> None:
     client = tmp_path / ".claude.json"
     client.write_text("{}", encoding="utf-8")
 
-    register_user_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
+    register_local_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
 
     assert not list(tmp_path.glob("*.recall-tmp"))
     assert b"\r\n" not in client.read_bytes(), "CRLF would rewrite every line on every platform"
@@ -385,13 +471,13 @@ def test_no_project_root_writes_nothing_and_says_so(tmp_path: Path) -> None:
     assert not list(tmp_path.glob(".mcp.json"))
 
 
-def test_a_project_root_registers_the_servers_at_user_scope(tmp_path: Path) -> None:
+def test_a_project_root_registers_the_servers_at_local_scope(tmp_path: Path) -> None:
     """⚠️ **And writes NO `.mcp.json`.** Both would be worse than either.
 
-    Precedence is local, then project, then user, and entries are not merged: a project-scoped file
-    would win in this very directory and reintroduce the approval prompt that user scope exists to
-    avoid. The wizard's audience cannot be expected to know that prompt is what is standing between
-    "the installer said it worked" and an assistant with no tools.
+    Precedence is local, then project, then user, and entries are not merged, so a project-scoped
+    file would be dead weight that still has to be trusted and kept in step. The prompt behind it is
+    what stands between "the installer said it worked" and an assistant with no tools, and the
+    wizard's audience cannot be expected to know that.
     """
     from recall.wizard.headless import run_headless
     from tests.test_wizard_state import _CountingSpy, _config
@@ -407,15 +493,22 @@ def test_a_project_root_registers_the_servers_at_user_scope(tmp_path: Path) -> N
     assert report.registration is not None
     assert report.registration.recorded
     assert {b.name for b in report.servers} == {"default-docs", "default-code", "default-memory"}
-    written = json.loads(client.read_text(encoding="utf-8"))["mcpServers"]
+    written = _registered(client, root)
     assert set(written) == {"default-docs", "default-code", "default-memory"}
     assert written["default-docs"]["cwd"] == str(root), "the server must run from the project"
+    assert "mcpServers" not in json.loads(client.read_text(encoding="utf-8")), (
+        "a top-level entry is USER scope, which would load these tenants in every unrelated "
+        "checkout the user opens"
+    )
     assert not (root / ".mcp.json").exists(), (
-        "a project-scoped file would take precedence over the user-scoped one and put the "
-        "approval gate back"
+        "a project-scoped file is the one that carries the approval prompt"
     )
     rendered = report.render()
-    assert "user scope" in rendered
+    assert "local scope" in rendered
+    assert str(root) in rendered, (
+        "the entry is keyed by path, so moving the project orphans it silently; the report has to "
+        "say which path was registered"
+    )
     assert "restart" in rendered, "a registration nobody restarts into is not yet loaded"
 
     # `.env` and `CLAUDE.md` too, and every file touched must be NAMED: these are block-scoped
@@ -578,7 +671,7 @@ def test_registration_refuses_rather_than_inventing_a_client_config(tmp_path: Pa
     """
     blocks = _blocks(tmp_path)
 
-    absent = register_user_scope(
+    absent = register_local_scope(
         blocks, project_root=tmp_path, config_path=tmp_path / "none.json"
     )
     assert not absent.recorded
@@ -587,7 +680,7 @@ def test_registration_refuses_rather_than_inventing_a_client_config(tmp_path: Pa
 
     corrupt = tmp_path / "broken.json"
     corrupt.write_text("{not json", encoding="utf-8")
-    refused = register_user_scope(blocks, project_root=tmp_path, config_path=corrupt)
+    refused = register_local_scope(blocks, project_root=tmp_path, config_path=corrupt)
     assert not refused.recorded
     assert "left untouched" in refused.skipped_reason
     assert corrupt.read_text(encoding="utf-8") == "{not json", "an unreadable client config is kept"

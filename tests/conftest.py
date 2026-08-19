@@ -583,14 +583,15 @@ def _confine_claude_client_config(tmp_path_factory, monkeypatch) -> None:
     """Keep every test away from the user's REAL `~/.claude.json`.
 
     ⚠️ **Written after a test run put five junk entries into the developer's own client config.**
-    `wiring.register_user_scope` writes the wizard's servers into Claude Code's own config so they
-    load in every project without an approval prompt, and its default target is
+    `wiring.register_local_scope` writes the wizard's servers into Claude Code's own config so
+    they load in that project without an approval prompt, and its default target is
     `Path.home() / ".claude.json"` — a user-global file holding every project the user has. Five
     `run_headless` tests reached it with a `project_root` under `pytest-of-.../`, and each one
     appended an entry pointing at a temp directory that no longer exists.
 
-    🔁 The writer named above has since changed (it recorded an APPROVAL for a project-scoped
-    `.mcp.json` when this was written, and now registers the servers themselves at user scope).
+    🔁 The writer named above has changed twice (it recorded an APPROVAL for a project-scoped
+    `.mcp.json` when this was written, then registered the servers at user scope, and now at
+    local scope).
     The hazard did not change with it: the default target is still another application's
     user-global file, which is the only reason this fixture exists.
 
