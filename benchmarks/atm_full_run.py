@@ -24,7 +24,12 @@ if _SOURCE_ROOT not in sys.path:
 import requests
 
 from benchmarks.atm_bench import build_memory_items, git_revision, load_questions, sha256
-from recall.embeddings import embed_passages, embedding_profile_id, resolve_embedder
+from recall.embeddings import (
+    VoyageEmbedder,
+    embed_passages,
+    embedding_profile_id,
+    resolve_embedder,
+)
 from recall.rerank import reranker_from_name
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
@@ -187,7 +192,11 @@ def generate_answer(
 @contextmanager
 def _build_retriever(args: argparse.Namespace) -> Iterator[tuple[Any, Any, list[Chunk], int]]:
     memory = build_memory_items(args.image_file, args.video_file, args.email_file)
-    embedder = resolve_embedder(args.embedder)
+    if args.embedder == "voyage" or args.embedder.startswith("voyage:"):
+        voyage_model = args.embedder[len("voyage:") :] if args.embedder.startswith("voyage:") else "voyage-3"
+        embedder = VoyageEmbedder(model=voyage_model, batch_size=args.embedding_batch_size)
+    else:
+        embedder = resolve_embedder(args.embedder)
     chunks = [
         Chunk(
             id=evidence_id,
@@ -243,6 +252,7 @@ def run(args: argparse.Namespace) -> int:
             "embedder": args.embedder,
             "reranker": args.reranker,
             "candidate_k": args.candidate_k,
+            "embedding_batch_size": args.embedding_batch_size,
             "retrieval_k": args.retrieval_k,
             "answer_model": args.answer_model,
             "reasoning_effort": args.reasoning_effort,
@@ -334,6 +344,7 @@ def run(args: argparse.Namespace) -> int:
         "reranker": args.reranker,
         "sparse_backend": "lexical",
         "candidate_k": args.candidate_k,
+        "embedding_batch_size": args.embedding_batch_size,
         "retrieval_k": args.retrieval_k,
         "evidence_chars": args.evidence_chars,
         "answer_model_requested": args.answer_model,
@@ -374,6 +385,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--embedder", default=DEFAULT_EMBEDDER)
     ap.add_argument("--reranker", default=DEFAULT_RERANKER)
     ap.add_argument("--candidate-k", type=int, default=DEFAULT_CANDIDATE_K)
+    ap.add_argument("--embedding-batch-size", type=int, default=64)
     ap.add_argument("--retrieval-k", type=int, default=DEFAULT_RETRIEVAL_K)
     ap.add_argument("--gap-threshold", type=float, default=0.50)
     ap.add_argument("--answer-base-url", default=DEFAULT_BASE_URL)
