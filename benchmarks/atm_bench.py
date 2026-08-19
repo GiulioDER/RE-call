@@ -200,6 +200,11 @@ def percentile(values: Iterable[float], fraction: float) -> float:
     return ordered[index]
 
 
+def is_development_question(question_id: str) -> bool:
+    value = int(hashlib.sha256(question_id.encode("utf-8")).hexdigest(), 16)
+    return value % 10 < 7
+
+
 def metrics_for(retrieved_ids: list[str], gold_ids: list[str]) -> dict[str, Any]:
     gold = set(gold_ids)
     item_recall: dict[str, float] = {}
@@ -226,6 +231,10 @@ def summarize(details: list[dict[str, Any]], key: str) -> dict[str, float]:
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     questions = load_questions(args.qa_file)
+    if args.question_split == "development":
+        questions = [question for question in questions if is_development_question(question["id"])]
+    elif args.question_split == "holdout":
+        questions = [question for question in questions if not is_development_question(question["id"])]
     memory = build_memory_items(args.image_file, args.video_file, args.email_file)
     if args.embedder == "st:sentence-transformers/all-MiniLM-L6-v2":
         embedder: Any = NativeSentenceTransformerEmbedder(
@@ -346,7 +355,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     manifest_paths = [args.qa_file, args.image_file, args.video_file, args.email_file]
     return {
         "benchmark": "ATM-Bench",
-        "split": "hard",
+        "split": args.question_split,
         "measurement": "retrieval_only",
         "retrieval_max_k": max(K_VALUES),
         "candidate_k": args.candidate_k,
@@ -379,6 +388,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--candidate-k", type=int, default=200)
     ap.add_argument("--gap-threshold", type=float, default=0.50)
     ap.add_argument("--reranker", default="none")
+    ap.add_argument("--question-split", choices=("all", "development", "holdout"), default="all")
     ap.add_argument(
         "--reuse-index",
         action="store_true",
