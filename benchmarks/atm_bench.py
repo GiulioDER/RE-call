@@ -401,6 +401,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "enabled": reasoning_enabled,
             "model": os.environ.get("RECALL_REASONING_MODEL") if reasoning_enabled else None,
             "base_url": os.environ.get("RECALL_REASONING_BASE_URL") if reasoning_enabled else None,
+            "requested_effort": os.environ.get("RECALL_REASONING_EFFORT") if reasoning_enabled else None,
+            "effective_effort": None,
             "wired_into_runner": False,
         },
         "data_sha256": {str(path): sha256(path) for path in manifest_paths},

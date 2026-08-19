@@ -43,7 +43,8 @@ set +a
 export RECALL_REASONING=1
 export RECALL_REASONING_BASE_URL=https://openrouter.ai/api/v1
 export RECALL_REASONING_API_KEY="$OPENROUTER_API_KEY"
-export RECALL_REASONING_MODEL=openai/gpt-5-mini
+export RECALL_REASONING_MODEL=deepseek/deepseek-v4-pro
+export RECALL_REASONING_EFFORT=medium
 ```
 
 The benchmark process receives `VOYAGE_API_KEY` from the existing secret file.
@@ -95,6 +96,11 @@ The reasoning flag is captured in the process environment and must also be
 recorded in a run manifest. The current retrieval runner does not turn
 reasoning into an answer score, so the reasoning audit and retrieval artifact
 must remain separate.
+
+The reasoning smoke path uses OpenRouter model `deepseek/deepseek-v4-pro` with
+`reasoning.effort=medium`. DeepSeek documents that this legacy effort value is
+normalized to `high` in thinking mode; record both the requested and effective
+values when an answer provider is wired.
 
 ## Transfer back
 
