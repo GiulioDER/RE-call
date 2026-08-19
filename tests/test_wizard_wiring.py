@@ -176,7 +176,8 @@ def test_registering_preserves_servers_this_wizard_knows_nothing_about(tmp_path:
                 "someOtherSetting": {"kept": True},
                 "mcpServers": {
                     "someone-elses": {"type": "http", "url": "https://example.invalid/mcp"},
-                    "default-docs": {"type": "stdio", "command": "old"},
+                    # A previous run of THIS install, which must be updated rather than refused.
+                    "default-docs": {"type": "stdio", "command": "old", "cwd": str(tmp_path)},
                 },
             }
         ),
@@ -186,6 +187,7 @@ def test_registering_preserves_servers_this_wizard_knows_nothing_about(tmp_path:
     result = register_user_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
 
     assert result.recorded
+    assert result.conflicts == (), "our own previous install is not a stranger"
     document = json.loads(client.read_text(encoding="utf-8"))
     written = document["mcpServers"]
     assert written["someone-elses"]["url"] == "https://example.invalid/mcp", "must survive"
@@ -206,6 +208,49 @@ def test_registering_preserves_servers_this_wizard_knows_nothing_about(tmp_path:
     )
 
 
+
+def test_an_entry_with_no_cwd_is_left_alone_because_this_wizard_did_not_write_it(
+    tmp_path: Path,
+) -> None:
+    """Every block this module writes carries a `cwd`, so one without it belongs to somebody else.
+
+    Reading a missing `cwd` as "probably ours" would silently replace a server the operator
+    configured by hand, under a name they picked first. That is the harm the conflict path exists
+    to prevent, and it is invisible: the entry is gone and the tool they had simply behaves
+    differently.
+    """
+    client = tmp_path / ".claude.json"
+    theirs = {"type": "stdio", "command": "their-own-thing"}
+    client.write_text(json.dumps({"mcpServers": {"default-docs": theirs}}), encoding="utf-8")
+
+    result = register_user_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
+
+    assert result.conflicts == (("default-docs", "no cwd, so it was not written by this wizard"),)
+    assert json.loads(client.read_text(encoding="utf-8"))["mcpServers"]["default-docs"] == theirs
+
+
+def test_the_same_project_named_relatively_is_not_reported_as_a_stranger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user's own previous install must not come back as a name they have to rename around.
+
+    `cwd` is compared RESOLVED for exactly this: a config naming the project relatively on one run
+    and absolutely on the next is the same directory, and telling the user otherwise would send
+    them to rename a project that was already theirs.
+    """
+    client = tmp_path / ".claude.json"
+    client.write_text("{}", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+
+    register_user_scope(_blocks(tmp_path), project_root=project, config_path=client)
+    monkeypatch.chdir(tmp_path)
+    again = register_user_scope(_blocks(tmp_path), project_root=Path("project"), config_path=client)
+
+    assert again.conflicts == (), f"our own install came back as a stranger: {again.conflicts}"
+    assert again.recorded
+
+
 def test_a_name_belonging_to_another_install_is_refused_not_repointed(tmp_path: Path) -> None:
     """Server names are `{project}-{kind}`, so two installs sharing a project name collide.
 
@@ -224,7 +269,7 @@ def test_a_name_belonging_to_another_install_is_refused_not_repointed(tmp_path: 
 
     result = register_user_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
 
-    assert result.conflicts == (("default-docs", elsewhere),)
+    assert result.conflicts == (("default-docs", f"cwd {elsewhere}"),)
     assert "default-docs" not in result.registered
     assert set(result.registered) == {"default-code", "default-memory"}, (
         "the names that do NOT collide must still be registered"
@@ -554,16 +599,22 @@ def test_a_registration_that_was_skipped_is_reported_not_swallowed(tmp_path: Pat
     An install whose corpora built and whose servers reached no client looks identical, from the
     user's side, to one that is simply broken. The report is the only thing that can tell them
     apart, so a skip must never render as a success.
+
+    ⚠️ **`_Spy` rather than `_CountingSpy`, and that is the whole test.** `_CountingSpy` has no
+    `smoke`, so every smoke query raises and `ok` is already False for a reason that has nothing to
+    do with the registration. Written that way first, this passed with the `unregistered` term
+    deleted from `ok` — it was blessing a failure it did not cause. Caught by mutation, not by
+    reading.
     """
-    from recall.wizard.headless import run_headless
-    from tests.test_wizard_state import _CountingSpy, _config
+    from recall.wizard.headless import load_config, run_headless
+    from tests.test_wizard_headless import _Spy, _config, _write
 
     root = tmp_path / "project"
     root.mkdir()
-    config = _config(tmp_path, project_root=str(root))
-
     report = run_headless(
-        config, services=_CountingSpy(), claude_config_path=tmp_path / "absent.json"
+        load_config(_write(tmp_path, _config(tmp_path, project_root=str(root)))),
+        services=_Spy(),
+        claude_config_path=tmp_path / "absent.json",
     )
 
     assert report.registration is not None
@@ -571,12 +622,17 @@ def test_a_registration_that_was_skipped_is_reported_not_swallowed(tmp_path: Pat
     rendered = report.render()
     assert "NOT registered" in rendered
     assert "no Claude Code config" in rendered
+
+    # Nothing else is wrong: every corpus built, and every smoke query answered. The registration
+    # is the ONLY reason this install is incomplete, which is what makes it a test of the term.
+    assert not any(s.error for s in report.smoke), "no smoke query failed"
+    assert [s.tenant for s in report.smoke] == ["default-docs", "default-code", "default-memory"], (
+        "smoke must run even when no client was registered: which half failed is the "
+        "information the operator needs, and gating it hides the working half"
+    )
     assert report.ok is False, "an install no client can reach is not complete"
     assert "no client was registered" in rendered, (
         "the head line must name the registration, not blame a corpus that built correctly"
-    )
-    assert [o.tenant for o in report.outcomes] == ["default-docs", "default-code"], (
-        "and the corpora that DID build must keep their outcomes"
     )
 
 

@@ -417,7 +417,7 @@ class HeadlessReport:
             for name, where in self.registration.conflicts:
                 lines.append(
                     detail(
-                        f"{name} already belongs to another install (cwd {where}) and was left "
+                        f"{name} is already registered by something else ({where}) and was left "
                         f"alone. Server names are `{{project}}-{{kind}}`, so re-run with a "
                         f"different `project` in the config to give this install its own."
                     )

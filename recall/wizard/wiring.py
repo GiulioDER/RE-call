@@ -1,8 +1,8 @@
 """Turn a finished install into the three MCP servers that serve it, and refuse to lie about them.
 
-The MCP registration is the artifact that decides whether any of the preceding work is
-reachable. Every
-variable below is set in the server's OWN `env` block rather than left to the operator's shell,
+The MCP registration is the artifact that decides whether any of the preceding work is reachable.
+Every variable below is set in the server's OWN `env` block rather than left to the operator's
+shell,
 because a stdio server launched with an explicit `env` inherits nothing: a corpus that searches
 correctly from the terminal answered `INDEX_NOT_READY` through the client for exactly that reason.
 That per-block isolation is also what lets one machine serve `docs` in production mode and `memory`
@@ -333,7 +333,7 @@ def claude_config_path() -> Path:
 class UserScopeRegistration:
     """What was written into the client's USER-scope server list, and what was refused."""
 
-    config_path: Path | None
+    config_path: Path
     registered: tuple[str, ...] = ()
     #: Names already present that this install did NOT overwrite, with what they point at. A second
     #: install under the same project name is the reachable case, and silently replacing the first
@@ -344,6 +344,42 @@ class UserScopeRegistration:
     @property
     def recorded(self) -> bool:
         return bool(self.registered)
+
+
+def _written_by_this_project(existing: object, project_root: Path) -> bool:
+    """Whether an entry already under this name came from an install of THIS project.
+
+    Two judgements, and both were wrong in the first version of this function.
+
+    **A missing `cwd` means the entry is NOT ours.** Every block this module writes carries one, so
+    an entry without it was written by somebody else, by hand or by another tool. Treating "no cwd"
+    as ours would silently replace a server the operator configured themselves, which is precisely
+    the harm the conflict path exists to prevent.
+
+    **Paths are compared RESOLVED.** A config that named the project relatively on one run and
+    absolutely on the next would otherwise have its own previous install reported as a stranger, and
+    the user would be told to rename a project that was already theirs.
+    """
+    if not isinstance(existing, dict):
+        return False
+    cwd = existing.get("cwd")
+    if not isinstance(cwd, str):
+        return False
+    try:
+        return Path(cwd).resolve() == project_root.resolve()
+    except (OSError, ValueError):
+        # A path the platform will not even parse cannot be shown to be ours, and guessing in the
+        # permissive direction here overwrites somebody's configuration.
+        return cwd == str(project_root)
+
+
+def _describe_owner(existing: object) -> str:
+    """What to tell the user about the entry that is in the way, without pretending to know more."""
+    if isinstance(existing, dict):
+        cwd = existing.get("cwd")
+        if isinstance(cwd, str):
+            return f"cwd {cwd}"
+    return "no cwd, so it was not written by this wizard"
 
 
 def register_user_scope(
@@ -411,8 +447,8 @@ def register_user_scope(
     conflicts: list[tuple[str, str]] = []
     for name, definition in incoming.items():
         existing = merged.get(name)
-        if isinstance(existing, dict) and existing.get("cwd") not in (None, str(project_root)):
-            conflicts.append((name, str(existing.get("cwd"))))
+        if existing is not None and not _written_by_this_project(existing, project_root):
+            conflicts.append((name, _describe_owner(existing)))
             continue
         merged[name] = definition
         registered.append(name)
