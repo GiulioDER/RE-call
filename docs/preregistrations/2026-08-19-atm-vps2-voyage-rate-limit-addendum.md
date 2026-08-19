@@ -32,3 +32,16 @@ reasoning score.
 * 2026-08-19: `candidate_k=200` attempt failed before artifact creation with
   Voyage `RateLimitError` at 2,000,000 TPM.
 * 2026-08-19: revised `candidate_k=100` arm preregistered before rerun.
+* 2026-08-19: `candidate_k=100` also failed before artifact creation with
+  Voyage `RateLimitError` at 2,000,000 TPM.
+
+## Second rate-limit correction
+
+The `candidate_k=100` correction was insufficient because the ATM text items
+are long enough to consume almost the complete two-million-token minute even
+with 100 documents per request. I therefore preregister `candidate_k=25` for
+the next attempt. This is the only change from the failed `candidate_k=100`
+run. It is expected to complete without a rate-limit failure. I predict that
+the MiniLM hybrid arm will achieve at least 0.70 complete-evidence Recall@10GT
+and that the Voyage-reranked hybrid answer hit@5 will be at least 0.58 on the
+full local set. These predictions are recorded before the next measurement.
