@@ -545,6 +545,79 @@ def test_a_project_root_registers_the_servers_at_local_scope(tmp_path: Path) -> 
     assert {p.name for p in report.files_written} >= {".env", "CLAUDE.md"}
 
 
+def test_an_install_with_both_roots_reports_every_file_it_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`data_root` AND `project_root`, which is the ORDINARY install and the one CI drives.
+
+    Two steps write files, and they used to disagree about how: the stack and desktop step appended
+    to `files_written`, the wiring step ASSIGNED, so on every install that reached both the compose
+    file and `runtime.json` were dropped and the report never named them.
+
+    `runtime.json` is the one that matters. It is written to the user's config directory, outside
+    `data_root` and outside `project_root` both, so nothing in the install points at it and a
+    listing of either root cannot find it. The report line is the only thing that tells an operator
+    where their desktop UI was aimed.
+
+    Asserted on the RENDERED report as well as the tuple, because the report is the artifact the
+    operator actually reads, and a path in a field nobody prints is not a report.
+    """
+    import recall.wizard.headless as H
+    from tests.test_wizard_state import _CountingSpy, _config
+
+    # `dsn` and `data_root` are refused together by `load_config`, so an install that provisions is
+    # the only shape in which both branches run. The database is faked; this test is about which
+    # paths are reported, not about Docker.
+    monkeypatch.setattr(
+        H, "bring_up", lambda p, *, project_name, services=(), timeout=300.0: None
+    )
+    monkeypatch.setattr(H, "wait_for_database", lambda dsn, **kw: None)
+
+    location = tmp_path / "store"
+    root = tmp_path / "project"
+    root.mkdir()
+    profile = tmp_path / "runtime.json"
+    config = _config(
+        tmp_path,
+        dsn=None,
+        migration_dsn=None,
+        data_root=str(location),
+        project_root=str(root),
+    )
+
+    report = H.run_headless(
+        config,
+        services=_CountingSpy(),
+        profile_path=profile,
+        claude_config_path=_client(tmp_path),
+    )
+
+    compose = location / H.COMPOSE_NAME
+    assert compose.exists() and profile.exists() and (root / ".env").exists(), (
+        "the premise of this test is that all three steps wrote something"
+    )
+
+    # Every file on disk is in the tuple. Named individually rather than compared as a set, so a
+    # failure says WHICH artifact stopped being reported instead of printing two path lists.
+    written = set(report.files_written)
+    assert compose in written, "the compose file is written by the stack step and must survive"
+    assert profile in written, (
+        "the desktop handoff lives outside both roots; losing it from the report loses it entirely"
+    )
+    assert root / ".env" in written
+    assert root / "CLAUDE.md" in written
+
+    # No path is reported twice: appending is the fix, and appending is also how a step gets counted
+    # twice if it is ever run twice.
+    assert len(report.files_written) == len(written), (
+        f"duplicate paths in the report: {sorted(map(str, report.files_written))}"
+    )
+
+    rendered = report.render()
+    for path in report.files_written:
+        assert str(path) in rendered, f"{path} was written and not reported"
+
+
 def test_an_operators_existing_claude_md_and_env_survive(tmp_path: Path) -> None:
     """The writers are BLOCK-scoped, and that is the whole reason they are reused rather than rewritten.
 
@@ -667,6 +740,14 @@ def test_an_unwritable_project_root_reports_rather_than_discarding_the_install(
 
     Throwing that away because a directory is read-only would be the expensive half of the trade,
     so the failure is reported against a `wiring` pseudo-tenant and the corpora keep their outcomes.
+
+    🔁 This asserted `files_written == ()`, and ran with no `data_root`, so it was a claim about
+    the WHOLE report that happened to be true because only one step could write anything. What the
+    test means is narrower: the step that failed contributed nothing. Stated the old way it also
+    quietly asserted that a wiring failure leaves an install with no files at all, which is wrong
+    for the ordinary install and would have gone green on a bug that discarded the stack's paths.
+    So `data_root` is set here now, and both halves are asserted separately: nothing under the
+    project root, everything the earlier steps already earned.
     """
     import recall.wizard.headless as H
     from tests.test_wizard_state import _CountingSpy, _config
@@ -675,14 +756,36 @@ def test_an_unwritable_project_root_reports_rather_than_discarding_the_install(
         raise OSError(13, "Permission denied")
 
     monkeypatch.setattr(H, "write_project_files", _boom)
+    monkeypatch.setattr(
+        H, "bring_up", lambda p, *, project_name, services=(), timeout=300.0: None
+    )
+    monkeypatch.setattr(H, "wait_for_database", lambda dsn, **kw: None)
 
+    location = tmp_path / "store"
     root = tmp_path / "project"
     root.mkdir()
-    report = H.run_headless(_config(tmp_path, project_root=str(root)), services=_CountingSpy())
+    profile = tmp_path / "runtime.json"
+    report = H.run_headless(
+        _config(
+            tmp_path,
+            dsn=None,
+            migration_dsn=None,
+            data_root=str(location),
+            project_root=str(root),
+        ),
+        services=_CountingSpy(),
+        profile_path=profile,
+    )
 
     assert [o.tenant for o in report.outcomes] == ["default-docs", "default-code"], "the builds must survive"
     assert [f.tenant for f in report.failures] == ["wiring"]
-    assert report.files_written == ()
+    assert [p for p in report.files_written if root in p.parents] == [], (
+        "the step that failed wrote nothing, so it must claim nothing"
+    )
+    assert set(report.files_written) == {location / H.COMPOSE_NAME, profile}, (
+        "and it must not take the earlier steps' files down with it: the desktop handoff is "
+        "written outside both roots, so an unreported one is an unfindable one"
+    )
     assert report.ok is False, "an install nobody can reach is not complete"
 
 
