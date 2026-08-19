@@ -879,7 +879,11 @@ def _provision(
     tenants = tuple(spec.tenant for spec in plan.corpora)
 
     if progress:
-        progress(f"database: {config.data_root} on port {port}")
+        # Says where the stack is CONFIGURED, not where the database file sits, because those are
+        # no longer the same place: the database lives on a Docker named volume rather than under
+        # `data_root`. See `compose_document` for the measured reason. Naming the data root here as
+        # if it held the database would be a claim the code stopped creating.
+        progress(f"stack: {config.data_root}, database on volume, port {port}")
     write_compose(
         compose_path,
         compose_document(

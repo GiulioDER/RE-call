@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 
 from recall.wizard.stack import (
+    DB_VOLUME,
+    DOCKERFILE_NAME,
     DB_INTERNAL_PORT,
     DB_MOUNT,
     StackSpec,
@@ -66,13 +68,52 @@ def test_the_database_publishes_a_host_port(tmp_path: Path) -> None:
     assert db["ports"] == [f"5487:{DB_INTERNAL_PORT}"]
 
 
-def test_the_data_lands_at_the_location_the_user_chose(tmp_path: Path) -> None:
-    """A bind mount, not a Docker-managed volume, so the user can find and back up their index."""
+def test_the_database_lives_on_a_named_volume_not_the_users_directory(tmp_path: Path) -> None:
+    """🔁 **This test asserted the opposite until 2026-08-19, and the measurement overturned it.**
+
+    It read: "A bind mount, not a Docker-managed volume, so the user can find and back up their
+    index." That is what the wizard promises everywhere else, and it is the requirement this
+    module was built around. It does not survive contact with Docker Desktop on Windows, whose
+    filesystem passthrough returns EINTR on writes that PostgreSQL treats as fatal:
+
+        FATAL:  could not write to file "pg_wal/xlogtemp.1218": Interrupted system call
+        LOG:  shutting down due to startup process failure
+
+    The failure is INTERMITTENT. An earlier full install on the bind mount built, calibrated and
+    certified both corpora; the next run died mid-flight. Intermittent WAL write failure is a
+    corruption risk, not merely an availability one, so the index cannot live there — a promise
+    about where files sit is not worth an index that is occasionally wrong.
+
+    The user's directory keeps everything they need to see; only the database moved.
+    """
     root = tmp_path / "chosen by the user"
     document = compose_document(_spec(tmp_path, data_root=root))
     db = document["services"]["db"]  # type: ignore[index]
 
-    assert db["volumes"] == [f"{(root / 'database').as_posix()}:{DB_MOUNT}"]
+    assert db["volumes"] == [f"{DB_VOLUME}:{DB_MOUNT}"]
+    assert document["volumes"] == {DB_VOLUME: None}, (
+        "a named volume must be declared at the top level or compose treats it as a bind path"
+    )
+    assert str(root) not in json.dumps(db), (
+        "the database must not reference the user's directory at all; a stray path here is how a "
+        "bind mount would creep back in"
+    )
+
+
+def test_the_first_install_is_given_time_to_initdb(tmp_path: Path) -> None:
+    """Without a start_period the FIRST `up --wait` of every new install fails.
+
+    `initdb` runs before the first successful health check can pass, and it can outlast
+    interval x retries. Measured on a fresh install: `dependency failed to start: container
+    recall-...-db-1 is unhealthy`, with all three MCP services left at `created`, and a second
+    `up` then working — which a user reads as an installer that broke and then fixed itself.
+    """
+    db = compose_document(_spec(tmp_path))["services"]["db"]  # type: ignore[index]
+    health = db["healthcheck"]
+
+    assert "start_period" in health, "initdb needs a grace period before failures count"
+    assert health["start_period"].endswith("s")
+    assert int(health["start_period"].rstrip("s")) >= 60
 
 
 def test_the_mount_point_is_one_level_above_data(tmp_path: Path) -> None:
@@ -150,8 +191,18 @@ def test_the_compose_file_is_json_and_survives_a_path_with_spaces(tmp_path: Path
     assert b"\r\n" not in path.read_bytes(), "CRLF would rewrite every line on every platform"
 
     reloaded = json.loads(path.read_text(encoding="utf-8"))
-    volume = reloaded["services"]["db"]["volumes"][0]
-    assert "My Documents" in volume and "RE-call data" in volume
+    assert reloaded["services"]["db"]["volumes"] == [f"{DB_VOLUME}:{DB_MOUNT}"]
+    assert (path.parent / DOCKERFILE_NAME).exists(), (
+        "the build stanza names a Dockerfile beside the compose file; writing one without the "
+        "other produces a stack that cannot come up"
+    )
+
+    # 🔁 This used to assert the user's path appeared INSIDE the db volume line, which was the
+    # point of the JSON quoting. The database moved to a named volume, so the document no longer
+    # embeds that path anywhere — but the file is still WRITTEN to a directory with spaces in it,
+    # which is the part that has to keep working, and JSON is still what keeps the write
+    # deterministic and LF-only.
+    assert "My Documents" in str(root) and str(root) not in path.read_text(encoding="utf-8")
 
 
 def test_the_chosen_port_is_free_and_not_the_usual_postgres_one() -> None:
