@@ -216,6 +216,69 @@ superseded hit is never promoted, an already present successor is never refetche
 path returns the identical object, the fetch is bounded, and a cycle terminates. They pin the
 mechanism only, and say nothing about the rate, which is what the record above is for.
 
-## Result
+## Result (2026-08-19)
 
-Not yet measured.
+**Status: measured. The headline prediction is FALSIFIED, and the mechanism split is the part that
+teaches something.**
+
+```bash
+eval "$(scripts/session-db.sh up)"
+python -m benchmarks.successor_expansion_probe
+```
+
+Apparatus first, because the record says the outcome must not be read until these pass. All four
+passed. Corpus 1064 chunks from 71 files (20 authored pairs, 51 repository docs). Stratum B is
+non empty at 6 of 10 by `hits` and 3 of 10 by pool. Baseline recovery on stratum B is **0.00**, as
+it must be. Stratum A holds 4 and the baseline answers 3 of them, so the known answer case works.
+
+| Metric | Denominator | Predicted | Measured |
+|---|---|---|---|
+| Successor recovery, treatment | stratum B | **0.70 to 0.90** | **0.33 [0.10, 0.70] n=6** |
+| Successor recovery, baseline | stratum B | 0.00 | 0.00 [0.00, 0.39] n=6 |
+| Successor recovery, treatment | stratum A | unchanged +/- 0.05 | 0.75, identical to baseline, n=4 |
+| Superseded trust rate | all trust queries | 0.00 exactly | **0.00 [0.00, 0.28] n=10**, both arms |
+| Trust coverage | all trust queries | rises | 0.80 to **1.00**, n=10 |
+| Abstention accuracy | unanswerable controls | no fall over 0.05 | 1.00, both arms, n=6 |
+| p50 latency, triggering | fetching queries | no more than 2x | 0.90x, **not a valid comparison, see below** |
+
+**Gap: predicted 0.70 to 0.90, measured 0.33.** The point estimate is less than half the floor of
+the predicted band. The interval reaches 0.70, so at n=6 this is not a crushing falsification, it is
+an underpowered one; but the decision rule was fixed in advance at 0.40 and 0.33 is below it.
+
+**The confound named in advance is exactly what happened, and it resolves cleanly.** The record
+required separating "never fetched" from "fetched and not promoted" before concluding anything.
+Of 6 stratum B queries, **6 fetched a successor and 0 failed to fetch. 2 of the 6 were then
+promoted.** So the retrieval half works perfectly, at 6/6, and every one of the 4 misses is the
+promotion rule refusing, not the fetch failing. That is the ceiling this record predicted in
+advance and attributed to calibration rather than retrieval, and it is the whole of the shortfall.
+
+**Decision rule, applied as written:** recovery below 0.40 with the fetch confirmed to have run
+means record the null, keep the code out of the default path, and re examine the promotion rule
+rather than the fetch. That is the outcome. The feature stays opt in and no default promotion
+decision follows from this run.
+
+### Three weaknesses in this measurement, none of which rescue the prediction
+
+- ⚠️ **The calibration is uncertified and the run said so.** `bge-small-symmetric-v1` fitted a
+  threshold of 0.7110 from 10 answerable and 6 unanswerable samples against a stated minimum of 20
+  each. Promotion requires the STALE hit to clear that threshold, so the bottleneck this run
+  identifies sits directly downstream of a threshold that is not identifiable from this many
+  points. A properly sized labelled set could move the result in either direction. It does not
+  explain the result away; it means the number is provisional in a way the record did not
+  anticipate.
+- ⚠️ **The latency comparison is invalid as ordered.** Baseline and treatment ran sequentially in
+  one process with the treatment second, so page cache and model warmth favour it. A 0.90x ratio
+  for an arm doing strictly more work is measurement order, not speed. Reported rather than
+  quietly dropped, and it should be rerun interleaved or in separate processes before any latency
+  claim is made.
+- ⚠️ **Neither arm ran with a reranker.** The record names reranking as a confound because a wider
+  pool degrades the cross encoder. This run says nothing about that, in either direction.
+
+### One thing the run showed that the record did not ask about
+
+Baseline coverage is 0.80 while baseline recovery is 3 of 10. So five queries returned a
+verdict-`ok` hit that was neither the successor nor, since `str_trust` is 0.00, the stale memory.
+They were answered from the repository distractor prose. Coverage rising to 1.00 under treatment is
+accounted for exactly by the 2 recovered successors, so nothing is hiding in that number, but
+"covered" plainly is not "answered from the right document" on this fixture, and any future use of
+coverage here should say which it means.
