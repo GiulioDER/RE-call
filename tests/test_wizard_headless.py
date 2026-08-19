@@ -815,3 +815,38 @@ def test_the_wizard_refuses_flags_it_would_otherwise_discard(tmp_path: Path) -> 
         with pytest.raises(SystemExit) as exit_info:
             cli_main([flag, value, "wizard", "--headless", "--config", config])
         assert flag in str(exit_info.value.code), f"{flag} must be refused, not silently dropped"
+
+
+def test_the_smoke_query_uses_the_servers_own_trust_mode() -> None:
+    """The smoke must run under the trust mode it is about to WRITE into `.mcp.json`.
+
+    `trusted_search` resolves its policy from `TrustPolicy.from_env()` when none is passed, which
+    reads the WIZARD's environment — and the wizard sets no `RECALL_TRUST_MODE`, so every smoke ran
+    strict no matter how the server under test was configured.
+
+    Measured on a clean install before the fix. `default-memory` is written with
+    `RECALL_TRUST_MODE=development`, and its smoke reported:
+
+        default-memory SMOKE FAILED
+          TrustRefusal: INDEX_NOT_READY: refused in strict trust mode
+
+    which made the run conclude "install incomplete" and exit 1 on an install that was fine. After
+    the fix the same install reports `smoke ok (1 hits, trust=degraded, INDEX_NOT_READY)` and exits
+    0 — still naming the corpus as uncalibrated, which is the honest answer, rather than failing it.
+
+    The check had been testing a configuration nobody runs, while its own message claims to send
+    "a query through this server's own configuration".
+
+    Asserted against the source because `smoke` needs a live database and a built corpus. The
+    regression is dropping one argument, and that is visible here.
+    """
+    from pathlib import Path
+
+    import recall.wizard.headless as headless
+
+    source = Path(headless.__file__).read_text(encoding="utf-8")
+
+    assert "policy=TrustPolicy.from_env(block.env)" in source, (
+        "the smoke must take its trust policy from the BLOCK's env; without it `trusted_search` "
+        "falls back to the wizard process's environment and runs strict against every server"
+    )
