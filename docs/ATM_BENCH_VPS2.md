@@ -57,7 +57,7 @@ Run the MiniLM control first:
 ```bash
 cd /home/sentiment/atm-bench-run/source
 python -m benchmarks.atm_bench \
-  --qa-file /home/sentiment/atm-bench-run/data/atm-bench.json \
+  --qa-file /home/sentiment/atm-bench-run/data/atm-bench/atm-bench.json \
   --image-file /home/sentiment/atm-bench-run/data/image/batch_results.json \
   --video-file /home/sentiment/atm-bench-run/data/video/batch_results.json \
   --email-file /home/sentiment/atm-bench-run/data/emails.json \
@@ -76,7 +76,7 @@ Run the Voyage embedding comparison in a separate table and tenant:
 
 ```bash
 python -m benchmarks.atm_bench \
-  --qa-file /home/sentiment/atm-bench-run/data/atm-bench.json \
+  --qa-file /home/sentiment/atm-bench-run/data/atm-bench/atm-bench.json \
   --image-file /home/sentiment/atm-bench-run/data/image/batch_results.json \
   --video-file /home/sentiment/atm-bench-run/data/video/batch_results.json \
   --email-file /home/sentiment/atm-bench-run/data/emails.json \
@@ -102,4 +102,3 @@ Transfer only the JSON result files, per-arm detail files, calibration output,
 and the process log. Verify SHA-256 hashes before reading the results. Do not
 export database dumps or sparse vectors until the later SPLADE run requires
 them.
-
