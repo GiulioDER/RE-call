@@ -106,7 +106,8 @@ cd /home/sentiment/atm-bench-run
 ```
 
 The runner checkpoints `retrieval.jsonl` and `answers.jsonl` after every question. Repeating the
-same command resumes completed questions and does not regenerate their answer calls.
+same command with `--reuse-index` resumes completed questions and does not regenerate their answer
+calls or re embed the corpus.
 
 ## Official judge after answer completion
 
