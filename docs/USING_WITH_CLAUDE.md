@@ -24,6 +24,12 @@ matches the existing `chunks` table.
 
 ## 2. Register the server
 
+**`python -m recall.cli setup` does everything in this section for you**, including the session
+hooks below, and it is the recommended path. It registers at local scope, sets `RECALL_TRUST_MODE`,
+writes the entry under every spelling of your project path that the client already knows, and
+prints the keys it used. The rest of this section is what it does, for anyone wiring it by hand or
+debugging what the wizard wrote.
+
 Both clients use the same `mcpServers` block; only the entry point differs.
 
 ```json
@@ -64,6 +70,31 @@ Both clients use the same `mcpServers` block; only the entry point differs.
   reasoning, and the installer does all of this for you.
 - **Claude Desktop** — add the block to `claude_desktop_config.json`
   (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`), then restart.
+
+### Which scope, and why not `.mcp.json`
+
+This page previously said to save the block as `.mcp.json` in your project root. Do not, for two
+reasons that pull in the same direction.
+
+- **A `.mcp.json` lives in the repository**, so a DSN written there is one `git add` from being
+  committed. That directly contradicts the credentials note below, which this page has carried the
+  whole time.
+- **Project scope is the only scope the approval prompt covers.** Quoting the Claude Code docs:
+  "Claude Code prompts for approval in interactive sessions before using project-scoped servers
+  from `.mcp.json` files." Until that is answered the tools are absent, with no error naming the
+  cause. Since v2.1.196 an approval committed to the repository is additionally ignored until the
+  workspace is trusted, because "a cloned repository can't approve its own servers".
+
+Local scope has neither problem: it lives in `~/.claude.json` under `projects[<dir>].mcpServers`,
+outside the repository, and no approval prompt applies to it.
+
+**Do not use user scope for this.** It loads in every project on the machine, and a recall server
+carries one `RECALL_TENANT` and one DSN, so it would answer confidently about a corpus belonging to
+a different repository. That failure never raises an error, which is what makes it the expensive
+one.
+
+⚠️ A local entry is keyed by your project's path, so **moving or renaming the project orphans it**
+silently. Re-run the registration after a move.
 
 > 🔒 **Credentials.** The DSN above is the **local Docker dev** default — not a secret. For any real
 > database, supply the DSN (and the optional `VOYAGE_API_KEY` for the cloud embedder) through your
@@ -168,6 +199,35 @@ Claude:  "Memory has no real answer on that — I'd be guessing. Want me to rese
 
 The agent-side glue is tiny — see [`examples/self_recall_agent.py`](../examples/self_recall_agent.py)
 for the ~30-line pattern: search first; if a non-gap closed decision surfaces, back off.
+
+## Session hooks: what makes the tools get used
+
+Registering the server makes the tools *available*. It does not make Claude reach for them, and it
+does not keep the corpus current. `recall setup` also offers three hooks, written into
+`~/.claude/settings.json`:
+
+| Event | What it does | Why there |
+|---|---|---|
+| `SessionStart` | Injects a one-line digest naming the indexed chunk count and the standing instruction | The only event that can add context before the first turn |
+| `PreCompact` | Indexes `memory/` | Compaction is where a long session loses the detail behind its conclusions |
+| `SessionEnd` | Indexes `memory/` and refreshes the cached count | Closes the write-to-searchable loop |
+
+Three properties are deliberate and worth knowing before you edit them:
+
+- **`SessionStart` touches no database.** It reads a count cached by the other two hooks, so the
+  digest still appears when your database is not running, and it adds about 66 ms to a session
+  start rather than the ~1.2 s a database round trip and an embedder import would cost.
+- **`PreCompact` never blocks.** Exit code 2 on that event *blocks compaction*, so every path
+  returns 0 and the handler runs `async`. A memory tool must not be able to wedge a session whose
+  context window is already full.
+- **They run out of `recall_hooks`, not `recall`.** Importing the `recall` package costs about a
+  second, and a session-start hook pays that on every launch.
+
+The hooks are removable exactly, without disturbing anything else in the file:
+
+```bash
+python -c "from recall.claude_code import uninstall; uninstall()"
+```
 
 ## 5. Configure your project's memory files
 
