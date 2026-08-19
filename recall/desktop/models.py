@@ -62,12 +62,28 @@ class RuntimeProfile:
         )
 
 
+#: Which corpus kind each category belongs in. The wizard's own vocabulary
+#: (`recall.wizard.corpora.CorpusKind`) is docs/code/memory, and this is the desktop's half of that
+#: agreement; `tests/test_desktop.py` pins the two together so a fourth kind cannot drift in on one
+#: side only.
+_KIND_BY_CATEGORY = {
+    SourceCategory.DOCUMENTS: "docs",
+    SourceCategory.CODE: "code",
+    SourceCategory.MEMORY: "memory",
+}
+
+
 @dataclass(frozen=True)
 class SourceSelection:
     category: SourceCategory
     paths: tuple[Path, ...]
     tenant: str
     shared: bool = False
+    #: The scope the "all projects" choice maps to. Carried rather than hardcoded, because
+    #: `RuntimeProfile.shared_profile` is configurable and everything ELSE in the UI already reads
+    #: it from there; a literal here silently ingested into `user-*` for a profile that named a
+    #: different shared scope, so display and calibration used one tenant while ingest used another.
+    shared_profile: str = "user"
 
     def __post_init__(self) -> None:
         if not self.paths:
@@ -77,8 +93,18 @@ class SourceSelection:
 
     @property
     def physical_tenant(self) -> str:
-        suffix = "code" if self.category is SourceCategory.CODE else "docs"
-        base = "user" if self.shared else self.tenant
+        """`{scope}-{kind}`, matching `recall.wizard.corpora.tenant_for`.
+
+        ⚠️ **MEMORY used to map to `-docs`, and that sent the user's memory into the wrong corpus.**
+        The wizard builds THREE corpora per project — docs, code and memory — and the memory one is
+        the writable, never-calibrated scope that memory notes belong in. Mapping MEMORY onto
+        `-docs` put them in the corpus that is production-routed, strict-trust and calibrated, which
+        is both the wrong destination and the one place a stray write does the most harm.
+
+        The wizard has always provisioned `<project>-memory`; nothing addressed it.
+        """
+        suffix = _KIND_BY_CATEGORY[self.category]
+        base = self.shared_profile if self.shared else self.tenant
         return f"{base}-{suffix}"
 
 
