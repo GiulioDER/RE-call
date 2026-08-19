@@ -172,10 +172,13 @@ def expand_retrieval_by_structure(
         scoped = search(result.query, policy.chunks_per_source, source)
         reranking_ran = reranking_ran or scoped.diagnostics.reranking_ran
         candidates = list(scoped.hits)
+        # Walrus, so the `isinstance` guard narrows the value that is KEPT. Testing a second
+        # `.get("ord")` left the element type `Any | None`, which `max` cannot order: the guard
+        # proved nothing about the item in the list, only about a separate lookup of the same key.
         ordinals = [
-            hit.chunk.metadata.get("ord")
+            ordinal
             for hit in candidates
-            if isinstance(hit.chunk.metadata.get("ord"), int)
+            if isinstance(ordinal := hit.chunk.metadata.get("ord"), int)
         ]
         terminal = max(ordinals) if ordinals else None
         seeds = seed_ordinals.get(source, [])

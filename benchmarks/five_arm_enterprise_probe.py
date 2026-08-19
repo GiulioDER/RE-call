@@ -13,11 +13,13 @@ import os
 import re
 import time
 from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
 
 from benchmarks.enterprise_rag import (
+    EnterpriseDoc,
     _doc_from_text_file,
     index_documents,
     load_documents,
@@ -81,7 +83,9 @@ def _load_labels(path: Path | None) -> dict[str, dict[str, Any]]:
     return labels
 
 
-def _load_documents(path: Path, questions: list[Any], gold_doc_filter: bool):
+def _load_documents(
+    path: Path, questions: list[Any], gold_doc_filter: bool
+) -> Iterator[EnterpriseDoc]:
     if not gold_doc_filter:
         yield from load_documents([path])
         return

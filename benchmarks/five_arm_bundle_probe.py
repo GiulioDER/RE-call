@@ -16,7 +16,16 @@ from recall.retriever import (
     expand_retrieval_by_structure,
 )
 from recall.trust import evaluate
-from recall.types import Chunk, RetrievalDiagnostics, RetrievalResult, ScoredChunk, StalenessReport
+from typing import cast
+
+from recall.types import (
+    Chunk,
+    RetrievalDiagnostics,
+    RetrievalResult,
+    ScoredChunk,
+    StalenessReport,
+    TrustedResult,
+)
 
 NOW = datetime(2026, 8, 18, tzinfo=timezone.utc)
 CALIBRATION = Calibration(embedder="fixture", threshold=0.70)
@@ -52,7 +61,7 @@ def _raw(query: str, hits: tuple[ScoredChunk, ...] | list[ScoredChunk]) -> Retri
     )
 
 
-def _trusted(result: RetrievalResult):
+def _trusted(result: RetrievalResult) -> TrustedResult:
     return evaluate(result, {}, CALIBRATION, NOW)
 
 
@@ -146,18 +155,22 @@ def _cases() -> tuple[Case, ...]:
 def main() -> None:
     arms = ("current_retrieval", "document_grouping", "structural_expansion", "answer_slots", "bundle_beam")
     rows = [_run(case, arm) for case in _cases() for arm in arms]
-    report: dict[str, object] = {"cases": len(_cases()), "arms": {}}
+    # `arms` is built in its own typed dict rather than through `report["arms"]`: a
+    # `dict[str, object]` makes every lookup an `object`, which cannot be indexed or assigned into.
+    # The emitted JSON is unchanged.
+    arms_report: dict[str, dict[str, float]] = {}
     for arm in arms:
         subset = [row for row in rows if row["arm"] == arm]
-        timings = [float(row["elapsed_ms"]) for row in subset]
-        report["arms"][arm] = {
+        timings = [cast(float, row["elapsed_ms"]) for row in subset]
+        arms_report[arm] = {
             "complete_id_recall": sum(bool(row["complete_ids"]) for row in subset),
             "complete_slot_recall": sum(bool(row["complete_slots"]) for row in subset),
-            "forbidden_selected": sum(int(row["forbidden_selected"]) for row in subset),
+            "forbidden_selected": sum(cast(int, row["forbidden_selected"]) for row in subset),
             "false_positives": sum(bool(row["false_positive"]) for row in subset),
             "mean_selection_ms": sum(timings) / len(timings),
             "p95_selection_ms": _p95(timings),
         }
+    report: dict[str, object] = {"cases": len(_cases()), "arms": arms_report}
     report["details"] = rows
     print(json.dumps(report, indent=2, sort_keys=True))
 
