@@ -56,12 +56,12 @@ authors who have never seen this repository.
 
 | Claim, and who makes it | RE-call today | Verified |
 |---|---|---|
-| Separate "when a fact was true" from "when we learned it" (A1, citing SQL:2011 bitemporal) | Implemented, and taken further: `first_indexed_at` is the transaction-time axis and `not_yet_known` is its own verdict, distinct from `not_yet_valid` | `recall/types.py:22`, `recall/trust.py` |
-| Close a fact instead of replacing it; replacing is the destructive operation (A1) | This is what `supersedes` plus a retained predecessor row is. The superseded memory stays retrievable with its successor named | `recall/frontmatter.py`, `recall/trust.py:437` |
-| The provenance tag must survive retrieval into the prompt, because the read path silently strips out-of-band metadata (A6 Rule 5, the thread's deepest cut) | Implemented, with the same reasoning arrived at independently: `marked_text` puts an in-band warning in front of the text precisely because LangChain and LlamaIndex render content and drop metadata | `recall/trust.py:390` |
-| A third state for "the verifier was down", because binary admit and reject collapses exactly when the checker fails (A6 Rule 2) | `unverified` is exactly this verdict, and its docstring makes the same argument for why it must not be folded into `low_confidence` | `recall/types.py:22` |
+| Separate "when a fact was true" from "when we learned it" (A1, citing SQL:2011 bitemporal) | Implemented, and taken further: `first_indexed_at` is the transaction-time axis and `not_yet_known` is its own verdict, distinct from `not_yet_valid` | `recall/types.py` (`Verdict`), `recall/trust.py` |
+| Close a fact instead of replacing it; replacing is the destructive operation (A1) | This is what `supersedes` plus a retained predecessor row is. The superseded memory stays retrievable with its successor named | `recall/frontmatter.py`, `recall/trust.py` (`abstain_reason`) |
+| The provenance tag must survive retrieval into the prompt, because the read path silently strips out-of-band metadata (A6 Rule 5, the thread's deepest cut) | Implemented, with the same reasoning arrived at independently: `marked_text` puts an in-band warning in front of the text precisely because LangChain and LlamaIndex render content and drop metadata | `recall/trust.py` (`marked_text`) |
+| A third state for "the verifier was down", because binary admit and reject collapses exactly when the checker fails (A6 Rule 2) | `unverified` is exactly this verdict, and its docstring makes the same argument for why it must not be folded into `low_confidence` | `recall/types.py` (`Verdict`) |
 | The unverified path fails closed (A6 Rule 3) | Strict mode raises `TrustRefusal` and produces no result object at all | `recall/types.py`, `recall/trust.py` |
-| Cap what retrieval injects; five facts, not fifty (A2, A3) | `k` defaults to 5 and is clamped down by the process profile, never raised per request | `recall_mcp/server.py:867` |
+| Cap what retrieval injects; five facts, not fifty (A2, A3) | `k` defaults to 5 and is clamped down by the process profile, never raised per request | `recall_mcp/server.py` (`recall_search`) |
 | Connecting a memory tool does not make an agent use it; the fix is a standing instruction in the project rules (A1, presented as the single most valuable takeaway in that article) | `recall setup` scaffolds a `CLAUDE.md` section and a starter `memory/MEMORY.md`, then indexes it | `docs/CLAUDE_MD_MEMORY_SCAFFOLD_DESIGN.md`, status implemented 2026-08-12 |
 | Keep the store human-inspectable as a plain list, because reading the memories is the only reliable way anyone has found to catch poisoning (A2) | Memories are files. Reading them is `cat` | by construction |
 
@@ -85,7 +85,7 @@ been put side by side:
 - The conclusion recorded there is that the bar is *excluded* rather than merely unproven, because
   every alternative measured worse.
 
-Source: `docs/EVIDENCE.md:58` and `results/FINDINGS.md` sections 9 and 10, as of this checkout.
+Source: `docs/EVIDENCE.md` and `results/FINDINGS.md` sections 9 and 10, as of this checkout.
 
 Read together, these say the same thing twice. A scalar score, whether a model's self-reported
 confidence or a calibrated cosine, cannot separate a near-miss from a hit, and tuning it harder is
@@ -291,7 +291,7 @@ distance is backwards.
 **Today:** partially done, and split between surfaces. The MCP `recall_search` result carries every
 hit with its verdict, `superseded_by` and validity window, so the caller can see both sides. The
 LangChain and LlamaIndex adapters do the opposite: `servable_hits` filters to trusted hits unless
-the caller opts in (`recall/trust.py:425`). And `abstain_reason` already names the successor when
+the caller opts in (`recall/trust.py` (`servable_hits`)). And `abstain_reason` already names the successor when
 the best candidate is superseded, which is the single most useful half of this.
 
 **Pro.** An explicit `contradictions` block (current claim, superseded claim, both windows) turns

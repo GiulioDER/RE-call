@@ -55,7 +55,7 @@ files are created or modified, no indexing happens.
 ### CLAUDE.md handling
 
 Reuses the `.env` block pattern (`SETUP_BEGIN`/`SETUP_END`, `_update_env_block` in
-`recall/setup.py:961-977`) but adapted to Markdown, since HTML comments are inert in
+`recall/setup.py`) but adapted to Markdown, since HTML comments are inert in
 rendered Markdown and won't corrupt the file's structure:
 
 ```
