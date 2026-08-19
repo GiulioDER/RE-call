@@ -25,6 +25,7 @@ from pathlib import Path
 
 from recall.wizard.corpora import CorpusKind, DEFAULT_PROJECT, tenant_for
 from recall.wizard.stack import (
+    COMPOSE_NAME,
     add_tenant_services,
     container_dsn,
     existing_port,
@@ -60,7 +61,18 @@ class ProjectRefusal(ValueError):
 
 
 def compose_path_for(data_root: Path) -> Path:
-    return data_root / "docker-compose.yml"
+    """Where the installer put this location's stack.
+
+    ⚠️ **This returned `docker-compose.yml` and the installer writes `docker-compose.recall.yml`**,
+    so `add_project` never found a stack and refused every add with "no recall stack at
+    {data_root} ... Run the installer for this location before adding a project to it" — addressed
+    to somebody who had just run it. The name now comes from `stack.COMPOSE_NAME`, the constant the
+    writer itself uses, so the two cannot drift again.
+
+    Prefer passing `add_project` the compose path you already have (the desktop profile records the
+    absolute one). This helper is for callers that genuinely only know the data root.
+    """
+    return data_root / COMPOSE_NAME
 
 
 def add_project(
@@ -69,6 +81,7 @@ def add_project(
     *,
     embedder: str | None = None,
     image: str | None = None,
+    compose_path: Path | None = None,
 ) -> AddedProject:
     """Provision `project`'s three tenants in the stack at `data_root`.
 
@@ -88,7 +101,10 @@ def add_project(
     except ValueError as exc:
         raise ProjectRefusal(str(exc)) from exc
 
-    compose_path = compose_path_for(data_root)
+    # The caller's own path when it has one. The desktop records the installer's ABSOLUTE compose
+    # path in its profile, so re-deriving it from a directory threw away the reliable answer and
+    # substituted a guess; that guess was wrong for two years' worth of one character.
+    compose_path = compose_path or compose_path_for(data_root)
     port = existing_port(compose_path)
     if port is None:
         raise ProjectRefusal(
@@ -150,7 +166,7 @@ def stack_embedder(compose_path: Path) -> str | None:
     try:
         document = json.loads(compose_path.read_text(encoding="utf-8"))
         services = document["services"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError):
         return None
     if not isinstance(services, dict):
         return None

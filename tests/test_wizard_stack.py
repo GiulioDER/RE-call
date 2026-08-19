@@ -65,7 +65,13 @@ def test_the_database_publishes_a_host_port(tmp_path: Path) -> None:
     document = compose_document(_spec(tmp_path))
     db = document["services"]["db"]  # type: ignore[index]
 
-    assert db["ports"] == [f"5487:{DB_INTERNAL_PORT}"]
+    # 🔁 Was `f"5487:{DB_INTERNAL_PORT}"`, and that omission was an exposure rather than a style
+    # choice: Compose's short form with no host IP binds 0.0.0.0, so Docker Desktop published this
+    # database — with the `recall:recall` credentials this project's README publishes — on every
+    # interface of the Windows host. The comment justifying `RECALL_ALLOW_INSECURE_DSN` asserted
+    # "the port that IS published is bound to loopback"; this is what makes that true.
+    assert db["ports"] == [f"127.0.0.1:5487:{DB_INTERNAL_PORT}"]
+    assert db["ports"][0].startswith("127.0.0.1:"), "the database must never bind every interface"
 
 
 def test_the_database_lives_on_a_named_volume_not_the_users_directory(tmp_path: Path) -> None:
@@ -258,8 +264,14 @@ def test_run_headless_provisions_from_data_root_and_reuses_the_port(
     repointing the store out from under the UI.
     """
     import recall.wizard.headless as H
+    from recall.desktop.profiles import profile_path as _default_profile_path
     from recall.wizard.stack import existing_port
     from tests.test_wizard_state import _CountingSpy, _config
+
+    # Snapshot BEFORE anything runs, so the guard below compares against reality rather than
+    # assuming the machine is pristine.
+    _real = _default_profile_path()
+    _real_profile_before = (_real.exists(), _real.stat().st_mtime_ns if _real.exists() else 0)
 
     started: list[tuple[Path, tuple[str, ...]]] = []
     waited: list[str] = []
@@ -294,7 +306,14 @@ def test_run_headless_provisions_from_data_root_and_reuses_the_port(
 
     from recall.desktop.profiles import profile_path as default_profile_path
 
-    assert not default_profile_path().exists(), (
+    # 🔁 This asserted the real profile does not EXIST. That is a claim about the machine, not
+    # about the test: anyone who has run the installer once has one, and the test then failed for a
+    # reason unrelated to the code — which is exactly how it failed here, on a profile written by
+    # this project's own clean-install run. Asserting it is UNCHANGED is strictly stronger: it
+    # still catches this test writing the file, and it no longer fails when something else did.
+    # The same defect was found in `tests/test_desktop.py` by four auditors and fixed the same way.
+    real = default_profile_path()
+    assert (real.exists(), real.stat().st_mtime_ns if real.exists() else 0) == _real_profile_before, (
         "a test must never write the real user profile; this one did, pointing it at a "
         "pytest temp directory"
     )

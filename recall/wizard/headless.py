@@ -59,6 +59,7 @@ from recall.wizard.corpora import (
 )
 from recall.wizard.pipeline import CorpusOutcome, PipelineRefusal, run_corpus
 from recall.wizard.stack import (
+    COMPOSE_NAME as _COMPOSE_NAME,
     StackSpec,
     bring_up,
     choose_port,
@@ -823,10 +824,9 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
             ) from exc
 
 
-#: The generated stack's file name, under the user's chosen `data_root`. Beside their data rather
-#: than in the package, because it is theirs: they chose the location, and `docker compose -f` on
-#: it is how they inspect or stop their own install.
-COMPOSE_NAME = "docker-compose.recall.yml"
+#: Re-exported from `stack`, which owns it now. Two definitions of this name is what made
+#: "+ Add project" refuse on every real install; see `recall.wizard.stack.COMPOSE_NAME`.
+COMPOSE_NAME = _COMPOSE_NAME
 
 
 def compose_project_for(data_root: Path, project: str) -> str:

@@ -216,6 +216,24 @@ _SERVICE_TENANTS = {service: tenant for tenant, service in _LEGACY_SERVICES.item
 _STACK_MUTATING_VERBS = frozenset({"up", "down", "pull"})
 """Compose verbs after which the running stack may no longer match what the caches describe."""
 
+_SLOW_VERBS = frozenset({"up", "pull", "build"})
+"""Verbs that can legitimately take minutes, so they must not share the quick budget.
+
+⚠️ **One 120s timeout governed every verb, and it could not cover the work this stack now does.**
+Two independent reasons, either sufficient: the generated compose gives each tenant service a
+`build:` stanza and nothing in the install path ever builds it, so the desktop's first `up` builds
+LibreOffice plus a PyPI install; and the database healthcheck carries `start_period: 180s`, already
+longer than the old cap, so `up --wait` was killed while Compose was still legitimately waiting.
+Five auditors reached this from five directions.
+"""
+
+#: Sized above `start_period` (180s) + `interval x retries` (60s) with room for a cold image build.
+#: `stack.bring_up` uses 300s for the database alone; this has to cover a build as well.
+_SLOW_VERB_TIMEOUT = 1800
+
+#: `config`, `ps`, `exec` — a read or a command inside a running container.
+_QUICK_VERB_TIMEOUT = 120
+
 _CORPUS_SUFFIXES = ("-docs", "-code", "-memory")
 """The corpus kinds a tenant scope can end in.
 
@@ -329,10 +347,31 @@ class DockerRuntime(RuntimeManager):
         if self.profile.compose_project:
             command.extend(["-p", self.profile.compose_project])
         command.extend(args)
-        if args and args[0] in _STACK_MUTATING_VERBS:
+        verb = args[0] if args else ""
+        if verb in _STACK_MUTATING_VERBS:
             self._invalidate_topology()
+        timeout = _SLOW_VERB_TIMEOUT if verb in _SLOW_VERBS else _QUICK_VERB_TIMEOUT
         try:
-            return subprocess.run(command, check=True, capture_output=True, text=True, timeout=120)
+            return subprocess.run(
+                command, check=True, capture_output=True, text=True, timeout=timeout
+            )
+        except subprocess.TimeoutExpired as exc:
+            # Named separately, because "timed out" and "failed" need different answers from the
+            # user and the old message could not tell them apart.
+            raise RuntimeErrorBase(
+                f"`docker compose {verb}` did not finish within {timeout}s. A first start builds "
+                f"the recall image, which takes minutes; it may still be running in Docker."
+            ) from exc
+        except subprocess.CalledProcessError as exc:
+            # ⚠️ **Include the stderr we already captured.** `str(CalledProcessError)` is only
+            # "Command '[...]' returned non-zero exit status 1", so a failed image build, a pull
+            # denial, a port collision and "dependency failed to start: container is unhealthy"
+            # all reached the user as one identical sentence — on exactly the paths that now build
+            # images and provision projects. `stack.bring_up` already extracts it; this copies it.
+            detail = (exc.stderr or exc.stdout or "").strip()
+            raise RuntimeErrorBase(
+                f"`docker compose {verb}` failed: {detail[-400:] or exc}"
+            ) from exc
         except (OSError, subprocess.SubprocessError) as exc:
             raise RuntimeErrorBase(f"Docker runtime failed: {exc}") from exc
 
