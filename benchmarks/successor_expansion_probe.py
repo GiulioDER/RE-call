@@ -69,7 +69,13 @@ from recall.retriever import HybridRetriever, SuccessorExpansionPolicy  # noqa: 
 from recall.store import PgVectorStore  # noqa: E402
 from recall.types import TrustedResult  # noqa: E402
 
-from benchmarks.successor_fixture import PAIRS, UNANSWERABLE, documents  # noqa: E402
+from benchmarks.successor_fixture import (  # noqa: E402
+    CALIBRATION_ANSWERABLE,
+    CALIBRATION_UNANSWERABLE,
+    PAIRS,
+    UNANSWERABLE,
+    documents,
+)
 
 #: The caller-facing depth. The library default, so the measurement describes the shipped shape.
 K = 5
@@ -116,8 +122,18 @@ def main() -> int:
         return 2
 
     embedder = FastEmbedEmbedder()
-    calib_queries = [{"query": p.query, "answerable": True} for p in PAIRS]
-    calib_queries += [{"query": q, "answerable": False} for q in UNANSWERABLE]
+    # Disjoint from everything scored below. The first run fitted this from the ten
+    # `Pair.query` strings and the six controls, which was both too small and a leak: it
+    # calibrated on the evaluation set. See the 2026-08-20 record.
+    calib_queries = [{"query": q, "answerable": True} for q in CALIBRATION_ANSWERABLE]
+    calib_queries += [{"query": q, "answerable": False} for q in CALIBRATION_UNANSWERABLE]
+    leak = ({p.query for p in PAIRS} | set(UNANSWERABLE)) & (
+        set(CALIBRATION_ANSWERABLE) | set(CALIBRATION_UNANSWERABLE)
+    )
+    if leak:
+        # Asserted rather than trusted. Disjointness is the whole point of this rerun, and it
+        # is one careless paste away from silently not holding.
+        raise SystemExit(f"calibration set overlaps the measured queries: {sorted(leak)}")
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

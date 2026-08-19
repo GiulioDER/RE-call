@@ -217,6 +217,73 @@ UNANSWERABLE: tuple[str, ...] = (
 )
 
 
+#: The labelled set the in-run calibration is fitted from. Added for the second measurement,
+#: registered in `docs/preregistrations/2026-08-20-successor-expansion-recalibrated.md`.
+#:
+#: The first run fitted its threshold from the ten `Pair.query` strings and the six controls below.
+#: That was wrong twice: 10 and 6 against a stated minimum of 20 per class
+#: (`recall/calibration.py:44`), and, worse, it fitted on the very queries being scored. Those are
+#: worded from v1 and match v1 strongly, so the answerable distribution was the top of the study's
+#: own score range and the threshold inherited it.
+#:
+#: Both sets below are therefore DISJOINT from everything the probe measures: no `Pair.query`, and
+#: none of the six `UNANSWERABLE` controls.
+CALIBRATION_ANSWERABLE: tuple[str, ...] = (
+    "how does RE-call authenticate its MCP HTTP transports",
+    "what is a generation bound calibration",
+    "how are database migrations versioned and verified",
+    "what does the installation wizard ask for",
+    "how is row level security tested against a superuser",
+    "what does the MTRAG benchmark measure",
+    "how does the reasoning graph projection work",
+    "what is an immutable index generation",
+    "what licences do the bundled models carry",
+    "how does the extraction cache persist parsed documents",
+    "what is the security model for tenant isolation",
+    "how does document expansion build an evidence bundle",
+    "what does the environment reference say about configuration variables",
+    "what is the dependency policy for this project",
+    "how does as of retrieval use a reference time",
+    "what does the case study say about where RE-call came from",
+    "how do I serve a corpus that has no calibration yet",
+    "what does the repository map list",
+    "how is truth extraction reviewed before a rewrite",
+    "what is the research protocol for this project",
+    "what operating modes does RE-call support",
+    "how does the inference proposal protocol work",
+    "what does the production posture say is not shipped",
+    "how do I use RE-call with Claude over MCP",
+)
+
+#: Genuinely off topic, and off topic in the same register as a real question. NOT an answerable
+#: query with a nonsense token appended, which is the defect `results/FINDINGS.md:370` records as
+#: leaving the two classes not separable at all.
+CALIBRATION_UNANSWERABLE: tuple[str, ...] = (
+    "how do I claim mileage for a client visit",
+    "what time does the canteen stop serving breakfast",
+    "who is the first aider on the second floor",
+    "what is the dress code for the summer party",
+    "which airline do we have a corporate account with",
+    "how many days of carry over holiday are allowed",
+    "what is the procedure for booking a meeting room",
+    "who maintains the coffee machine",
+    "what is the guest wifi network called",
+    "how do I report a broken chair",
+    "which bank do we use for expenses",
+    "what is the notice period for a desk move",
+    "who organises the christmas party",
+    "what is the postcode of the registered office",
+    "how do I get a replacement door badge",
+    "what is the recycling collection day",
+    "which gym does the corporate membership cover",
+    "what is the phone number for the reception desk",
+    "what is the process for ordering business cards",
+    "how do I book the electric car charging bay",
+    "which shredding company collects confidential waste",
+    "what is the visitor sign in procedure",
+)
+
+
 def documents() -> dict[str, str]:
     """`{filename: markdown}` for the authored corpus, successors carrying their edge."""
     out: dict[str, str] = {}
