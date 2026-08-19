@@ -49,11 +49,13 @@ def _codex_home(source_home: Path, root: Path, name: str, *, with_recall: bool) 
         "",
     ]
     if with_recall:
+        ssh_executable = _ssh_executable()
+        ssh_config = str(Path.home() / ".ssh" / "config").replace("\\", "/")
         config.extend(
             [
                 "[mcp_servers.recall-memory]",
-                'command = "ssh"',
-                'args = ["-T", "vps2", "cd ~/recall-repos && set -a && . ./.env && set +a && RECALL_TENANT=memory RECALL_EMBEDDER=voyage:voyage-4 RECALL_INDEX_ROOT=/home/sentiment/recall-repos/memory exec .venv/bin/python -m recall_mcp.server"]',
+                f'command = "{ssh_executable.replace(chr(92), "/")}"',
+                f'args = ["-T", "-o", "BatchMode=yes", "-F", "{ssh_config}", "vps2", "cd ~/recall-repos && set -a && . ./.env && set +a && RECALL_TENANT=memory RECALL_EMBEDDER=voyage:voyage-4 RECALL_INDEX_ROOT=/home/sentiment/recall-repos/memory exec .venv/bin/python -m recall_mcp.server"]',
                 "enabled = true",
                 "startup_timeout_sec = 30",
                 "",
@@ -80,6 +82,19 @@ def _codex_executable() -> str:
     if discovered:
         return discovered
     raise RuntimeError("Codex CLI executable was not found")
+
+
+def _ssh_executable() -> str:
+    configured = os.environ.get("RECALL_SSH_EXECUTABLE")
+    if configured:
+        return configured
+    candidate = Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "OpenSSH" / "ssh.exe"
+    if candidate.exists():
+        return str(candidate)
+    discovered = shutil.which("ssh")
+    if discovered:
+        return discovered
+    raise RuntimeError("OpenSSH executable was not found")
 
 
 async def _run() -> dict[str, object]:
