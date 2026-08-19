@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import json
 import threading
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypeVar
@@ -51,6 +51,7 @@ from recall_mcp.oidc import (
 from recall_mcp.service import (
     evidence_memory,
     forget_memory,
+    IndexResult,
     generation_ingest,
     index_memory,
     calibration_status,
@@ -761,6 +762,13 @@ def _make_lifespan(
                 "store": store,
                 "stores": registry,
                 "embedder": embedder,
+                # Which store this server READS from, so a write can be routed to the same place.
+                # `recall_ingest` used to build a generation unconditionally, including on a server
+                # serving the legacy `chunks` table, so an upload succeeded and then could not be
+                # found. Recorded here rather than re-derived in the tool, because two readings of
+                # `RECALL_ENV` are two chances to disagree, and the whole defect was a disagreement
+                # about which store was in play.
+                "generation_mode": generation_mode and not enterprise,
                 "limiter": limiter,
                 "translation_provider": translation_provider,
                 "shadow_embedders": {},
@@ -773,6 +781,34 @@ def _make_lifespan(
                 registry.close()
 
     return _lifespan
+
+
+def ingest_into_serving_store(
+    state: Mapping[str, object], store: object, staged_root: str, category: str
+) -> IndexResult:
+    """Index a staged upload into the store this server SERVES FROM.
+
+    ⚠️ **`recall_ingest` used to call `generation_ingest` unconditionally**, so a server serving the
+    legacy `chunks` table accepted an upload, built and activated a generation, and then could not
+    find it. Measured on a project added after install:
+
+        ingest  -> 'Built and activated generation gen_21a9... with 3 chunk(s) from 3 file(s)'
+        stats   -> {'chunks': 0, 'stale': True}
+        search  -> 0 hits, abstained: false
+
+    Nothing errored. The two ends were reading different tables, and each was telling the truth
+    about its own. After this, the same sequence on the same tenant reports 3 chunks and 3 hits.
+
+    The branch is not a preference: the two paths each REFUSE the other's mode, so exactly one is
+    legal for a given server. `index_memory` raises under `RECALL_ENV=production` ("local
+    filesystem indexing is development-only"), and a production generation build requires an
+    immutable embedder revision or artifact digest. Calling the wrong one is therefore either an
+    error or, as here, a silent write to a table nobody reads.
+    """
+    embedder = state["embedder"]
+    if state.get("generation_mode"):
+        return generation_ingest(store, embedder, staged_root, category)  # type: ignore[arg-type]
+    return index_memory(store, embedder, staged_root)  # type: ignore[arg-type]
 
 
 def build_server() -> MCPServer:
@@ -1270,12 +1306,7 @@ def build_server() -> MCPServer:
         job_id, root = stage_uploads(store.tenant, files)
         with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
             result = await _to_thread(
-                lambda: generation_ingest(
-                    store,
-                    state["embedder"],
-                    str(root),
-                    category,
-                )
+                lambda: ingest_into_serving_store(state, store, str(root), category)
             )
         payload = json.loads(result.model_dump_json())
         payload.update({"job_id": job_id, "state": "completed", "category": category})
