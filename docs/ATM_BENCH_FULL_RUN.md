@@ -16,10 +16,11 @@ C:\Users\gde00\Documents\atm-bench-official\data\raw_memory\email\emails.json
 The latest source bundle is:
 
 ```text
-.tmp_atm_vps2_bundle\recall-source-53ff668a.tar.gz
+.tmp_atm_vps2_bundle\recall-source-43d8223c.tar.gz
 ```
 
 Its SHA256 is recorded by the transfer step and must be checked on VPS2 before extraction.
+The current bundle SHA256 is `B553C0538AB36D3464E84DEFDB10D17197E2C44A9A1BDB56909A8C29FFF41A66`.
 
 ## RE call configuration
 
@@ -48,8 +49,8 @@ Run these commands from the local repository. They transfer only the source bund
 benchmark data. They do not transfer environment files or credentials.
 
 ```powershell
-$bundle = Resolve-Path .tmp_atm_vps2_bundle\recall-source-53ff668a.tar.gz
-scp $bundle vps2:/home/sentiment/atm-bench-run/recall-source-53ff668a.tar.gz
+$bundle = Resolve-Path .tmp_atm_vps2_bundle\recall-source-43d8223c.tar.gz
+scp $bundle vps2:/home/sentiment/atm-bench-run/recall-source-43d8223c.tar.gz
 scp C:\Users\gde00\Documents\atm-bench-official\data\atm-bench\atm-bench.json vps2:/home/sentiment/atm-bench-run/data/atm-bench/atm-bench.json
 scp C:\Users\gde00\Documents\atm-bench-official\output\image\qwen3vl2b\batch_results.json vps2:/home/sentiment/atm-bench-run/data/image/batch_results.json
 scp C:\Users\gde00\Documents\atm-bench-official\output\video\qwen3vl2b\batch_results.json vps2:/home/sentiment/atm-bench-run/data/video/batch_results.json
@@ -60,10 +61,10 @@ On VPS2, verify the bundle digest and extract it into the isolated source direct
 
 ```bash
 cd /home/sentiment/atm-bench-run
-sha256sum recall-source-53ff668a.tar.gz
+sha256sum recall-source-43d8223c.tar.gz
 rm -rf source
 mkdir source
-tar -xzf recall-source-53ff668a.tar.gz -C source
+tar -xzf recall-source-43d8223c.tar.gz -C source
 ```
 
 The `rm` above targets only the explicitly named isolated source directory under the benchmark
