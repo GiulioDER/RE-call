@@ -123,7 +123,7 @@ this repository is not always true.
 
 ⚠️ Citations **above** this rule are left exactly as registered, because a prediction is a
 historical record and must not be edited. One of them has since moved: `recall/index.py` line 707, cited
-in "What I already know" for the metadata stamp, is `recall/index.py:856` at the time of writing.
+in "What I already know" for the metadata stamp, is `recall/index.py:861` at the time of writing.
 
 ## Reproducing any of this
 
@@ -146,12 +146,12 @@ throughout, which is *why* embedding was kept local, not evidence that it was.
 
 ### Verification census
 
-Every source read exactly as `recall/index.py:717` reads a markdown source
+Every source read exactly as `recall/index.py:722` reads a markdown source
 (`read_text(encoding="utf-8-sig")`, universal newlines, then `_strip_nul`, then
-`sha256(text.encode("utf-8"))` at `recall/index.py:736`). A `sha256sum` over raw bytes would have
+`sha256(text.encode("utf-8"))` at `recall/index.py:741`). A `sha256sum` over raw bytes would have
 been wrong for any file with CRLF or a BOM. **Every source in this corpus is markdown**, which
 matters because `bd582316` made the derivation media type dependent: a non markdown source is
-hashed as raw bytes instead (`recall/index.py:738`).
+hashed as raw bytes instead (`recall/index.py:743`).
 
 | Bucket | Sources | Chunks |
 |---|---:|---:|

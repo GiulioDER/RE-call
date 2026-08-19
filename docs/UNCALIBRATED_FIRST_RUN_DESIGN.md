@@ -45,7 +45,7 @@ property this system has. `promote()`'s message says the refusal stands "until c
 land", which is accurate: it is a placeholder, not a safety property.
 
 **F3. The legacy `chunks` table records enough to establish a binding, not merely assert one.**
-It has no `source_sha256` column, but `recall/index.py:856` stamps into every chunk's metadata:
+It has no `source_sha256` column, but `recall/index.py:861` stamps into every chunk's metadata:
 `content_hash`, `index_fingerprint`, `embedding_profile`, `context_mode`, `context_version`, `ord`
 and `file`, all written **at embed time**, so checking them is verification rather than
 reconstruction.
@@ -68,7 +68,7 @@ already written. Only `content_hash` is load bearing here, and the accessor that
 (`:2075`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
 
 ⚠️ **`content_hash` is media type dependent since `bd582316`.** A markdown source is hashed as
-decoded, newline normalised, NUL stripped text re encoded as UTF-8 (`recall/index.py:717` and
+decoded, newline normalised, NUL stripped text re encoded as UTF-8 (`recall/index.py:722` and
 `:716`); any other media type is hashed as **raw bytes** (`:718`). Any adoption path must branch the
 same way, or it will refuse every markdown file with CRLF or a BOM.
 
@@ -235,8 +235,8 @@ is that the legacy metadata was written at embed time and can be checked against
 1. Read `metadata->>'content_hash'` via `source_raw_hashes`. Absent means **not adoptable**.
 2. Read the file at `metadata->>'file'`. Missing or unreadable means not adoptable.
 3. Re derive the hash **exactly as the indexer does for that media type**: decoded, newline
-   normalised, NUL stripped text for markdown (`recall/index.py:717`, `:716`), raw bytes otherwise
-   (`:718`). Not equal means the file changed since indexing: not adoptable.
+   normalised, NUL stripped text for markdown (`recall/index.py:722`, `:721`), raw bytes otherwise
+   (`:723`). Not equal means the file changed since indexing: not adoptable.
 4. 🔁 **Corrected 2026-08-18 by measurement.** This step originally compared
    `metadata->>'embedding_profile'` to the configured embedder's profile id. **That check does not
    work** (F3), and `index_fingerprint` inherits the defect because `_index_fingerprint` hashes the
@@ -559,7 +559,7 @@ wrong.** This used to read "`_index_fingerprint` has no chunker term either". #3
 fingerprint to hash the whole `EmbeddingProfile`, which covers `chunker_version`
 (`recall/embeddings.py:412`), so a field of that name is now in the hash. It is inert: it belongs to
 the EMBEDDING profile, is defaulted to `chunk-text-v1` at both definitions and set by nothing else,
-and the `Indexer`'s actual chunker (`recall/index.py:540`) never reaches it. Measured against
+and the `Indexer`'s actual chunker (`recall/index.py:545`) never reaches it. Measured against
 `79a0d6ed`, one file and one embedder, varying only the chunker: `chunk_text(800, 80)` gives one
 chunk, `chunk_text(60, 10)` gives four, `chunk_code` gives one, and **all three produce the
 identical index fingerprint**. So the conclusion below is untouched and only the sentence needed
@@ -687,7 +687,7 @@ Markdown body derivation is pure Python inside this repository, so a chunker mis
 diagnosable: the code that would differ is versioned by the repo. Extraction is not.
 `extract_document` (`recall/extraction.py:168`) dispatches to **six third party libraries** and, for
 five suffixes, to an **external LibreOffice binary** (`_extract_with_libreoffice`,
-`recall/extraction.py:721`). Those libraries
+`recall/extraction.py:726`). Those libraries
 are declared with open lower bounds in an optional extra (`pdfplumber>=0.11` and friends), and
 LibreOffice is not a Python dependency at all.
 
