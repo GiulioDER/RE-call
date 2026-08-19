@@ -14,9 +14,9 @@ from typing import Callable, Literal, Sequence
 
 from recall.calibration import Calibration, from_samples, save
 from recall.claude_code import claude_code_detected, install_hooks, register_mcp_server
-from recall.seed import plan_seed, seed_corpus
 from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
+from recall.seed import plan_seed, seed_corpus
 
 SETUP_BEGIN = "# recall setup begin"
 SETUP_END = "# recall setup end"
@@ -1291,7 +1291,11 @@ def run_setup_wizard(
 
     # Computed before asking, so the question names what would actually be ingested rather than
     # asking the user to agree to an unspecified amount of their own project.
-    seed_plan = plan_seed(Path.cwd())
+    # One notion of "this project" for both steps below. Seeding reads from it, and the MCP
+    # registration is keyed by it: a local-scope entry lives under `projects[<dir>]`, so the
+    # path recorded here is the path the client will later look the server up by.
+    project_root = Path.cwd().resolve()
+    seed_plan = plan_seed(project_root)
     seed_requested = False
     if not seed_plan.is_empty:
         seed_requested = _ask_yes_no(
@@ -1344,7 +1348,7 @@ def run_setup_wizard(
         just completed. Everything above this point is already persisted in `.env`.
         """
         try:
-            register_mcp_server(dsn=dsn, print_fn=print_fn)
+            register_mcp_server(dsn=dsn, project_root=project_root, print_fn=print_fn)
             install_hooks(dsn=dsn, embedder=embedder.value, print_fn=print_fn)
             print_fn(
                 "Claude Code is wired up. The tools appear in the NEXT session, not this one: "

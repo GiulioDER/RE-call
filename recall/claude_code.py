@@ -8,23 +8,32 @@ tools. It does not give Claude the tools. Everything between "the user installed
 Two decisions here are load-bearing and were verified against the Claude Code documentation and
 the 2.1.220 CLI rather than assumed:
 
-**User scope, never project scope.** A project-scoped server lives in `.mcp.json` and, quoting the
-docs, "Claude Code prompts for approval in interactive sessions before using project-scoped servers
-from `.mcp.json` files." A user-scoped server has no approval step, is the only scope that loads in
-every project rather than one, and keeps the DSN out of the user's repository.
+**Local scope, and the reason is the corpus boundary rather than the approval gate.** A recall
+server carries one `RECALL_TENANT` and one DSN. Registered at user scope it would load in every
+project on the machine, so opening any unrelated checkout would put a server there that answers
+about a corpus belonging to somewhere else. This project documents that as the worst failure
+available here, precisely because it is not an error: it is a confident, well-formed answer about
+the wrong repository. Local scope lives in the same `~/.claude.json` under
+``projects[<dir>].mcpServers``, loads only in the project it was added to, and so matches the
+boundary the tenant already implies.
 
-⚠️ **What that approval actually gates is not settled, and nothing here depends on it.** An earlier
-version of this docstring asserted that a server stays silently absent until the approval is
-recorded under ``projects[<dir>].enabledMcpjsonServers``. `docs/preregistrations/
-2026-08-16-sessionstart-hook-mcp-ordering.md` (#429) then measured the opposite on this machine:
-two sessions holding both the file and a recorded approval received no recall tools, while a
-session in a never-approved project received the full set. What separates every row in that corpus
-is `resume` versus fresh `startup`, confounded with date. Since v2.1.196 there is also a workspace
-trust gate, because "a cloned repository can't approve its own servers".
+Project scope is the one to avoid. It lives in `.mcp.json` inside the repository, which puts a DSN
+somewhere it can be committed, and it is the only scope the approval prompt covers: "Claude Code
+prompts for approval in interactive sessions before using project-scoped servers from `.mcp.json`
+files."
 
-So the case for user scope is that it has no approval step to reason about, not that project scope
-is known to be blocked by one. It avoids a question this repository has not yet answered rather
-than betting on a particular answer.
+⚠️ **Two things here are documentary rather than measured, and are recorded as such.** That local
+scope sits outside the approval gate follows from the gate being about `.mcp.json` specifically,
+and from the keys being named ``enabledMcpjsonServers``; no project on this machine carried a
+local-scope entry to watch it work. And what approval gates at all is unsettled:
+`docs/preregistrations/2026-08-16-sessionstart-hook-mcp-ordering.md` (#429) measured two sessions
+holding both a `.mcp.json` and a recorded approval that received no recall tools, and one in a
+never-approved project that received the full set. What separated every row there was `resume`
+versus fresh `startup`, confounded with date. Nothing in this module depends on either question
+having an answer, which is the point of choosing the scope that does not raise them.
+
+⚠️ A local entry is keyed by the project's path, so moving or renaming the project orphans it in
+silence. Same shape as the memory store this project has already lost once to a directory rename.
 
 **The hooks are what make it used rather than merely available.** Registering tools makes them
 callable; a `SessionStart` hook that injects context makes them present in the first turn without
@@ -117,7 +126,16 @@ def claude_code_detected() -> bool:
     return _claude_cli() is not None or claude_config_home().is_dir()
 
 
-def _run_claude(args: list[str], *, timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
+def _run_claude(
+    args: list[str], *, cwd: Path | None = None, timeout: float = 30.0
+) -> subprocess.CompletedProcess[str]:
+    """Run the CLI, optionally from a given directory.
+
+    `cwd` is not a convenience. `--scope local` and `mcp get` both resolve which project they mean
+    from the working directory, so a call made from wherever the wizard happened to be started
+    would register under the wrong project key. That is a silent miss: the command succeeds, the
+    entry exists, and it belongs to a directory nobody will open.
+    """
     executable = _claude_cli()
     if executable is None:  # pragma: no cover - guarded by the caller
         raise FileNotFoundError("claude")
@@ -127,6 +145,7 @@ def _run_claude(args: list[str], *, timeout: float = 30.0) -> subprocess.Complet
         text=True,
         timeout=timeout,
         check=False,
+        cwd=str(cwd) if cwd is not None else None,
     )
 
 
@@ -153,28 +172,56 @@ def register_mcp_server(
     dsn: str,
     tenant: str = "default",
     trust_mode: str = "development",
+    scope: str = "local",
+    project_root: Path | None = None,
     python_executable: str | None = None,
     replace: bool = False,
     print_fn: Callable[..., None] = print,
 ) -> str:
-    """Register the recall MCP server at user scope. Returns a short status for the caller to log.
+    """Register the recall MCP server. Returns a short status for the caller to log.
+
+    **Local scope by default, and the reason is the corpus boundary rather than the approval
+    gate.** A recall server carries one `RECALL_TENANT` and one DSN, so a server registered at user
+    scope follows the user into every unrelated checkout they open and answers about a corpus that
+    is not the repository they are in. This project documents that as the worst failure available
+    here, because it is not an error: it is a confident, well-formed answer about the wrong
+    repository. Local scope is stored in the same file under `projects[<dir>].mcpServers` and loads
+    only in the project it was added to, which is the boundary the tenant already implies.
+
+    Local scope also sits outside the approval gate, which covers "project-scoped servers from
+    `.mcp.json` files" specifically. ⚠️ That part is documentary rather than measured: no project
+    on this machine carried a local-scope entry to observe, so it is the one step in this argument
+    nobody has watched work.
+
+    ⚠️ A local entry is keyed by the project's path, so moving or renaming the project orphans it
+    silently, with no error and no tools. The registered path is printed for that reason.
 
     Prefers the CLI, because `~/.claude.json` is a large file whose schema the client owns and
     whose other keys are none of our business. Falls back to an atomic merge when `claude` is not
     on PATH, which on Windows is common enough to be the normal case rather than the edge one.
     """
+    if scope not in {"local", "user"}:
+        raise ValueError(f"scope must be 'local' or 'user', not {scope!r}")
     python_executable = python_executable or sys.executable
+    root = Path(project_root or Path.cwd()).resolve()
     env = server_env(dsn=dsn, tenant=tenant, trust_mode=trust_mode)
+    where = f"project {root}" if scope == "local" else "every project on this machine"
 
     if _claude_cli() is None:
-        _write_user_scope_server(env=env, python_executable=python_executable)
+        _write_server_entry(
+            env=env, python_executable=python_executable, scope=scope, project_root=root
+        )
         print_fn(
-            f"Registered MCP server '{SERVER_NAME}' by writing {user_config_file()} "
+            f"Registered MCP server '{SERVER_NAME}' for {where} by writing {user_config_file()} "
             "directly: the `claude` CLI is not on PATH."
         )
         return "written-directly"
 
-    existing = _run_claude(["mcp", "get", SERVER_NAME])
+    # `claude mcp get` and `--scope local` both resolve the project from the working directory,
+    # so every CLI call is made FROM the project root rather than from wherever the wizard was
+    # started. Without this a local registration would land under the wrong project key, which is
+    # a silent miss rather than an error.
+    existing = _run_claude(["mcp", "get", SERVER_NAME], cwd=root)
     if existing.returncode == 0:
         if not replace:
             print_fn(
@@ -184,29 +231,36 @@ def register_mcp_server(
             return "already-registered"
         # `claude mcp add` refuses a duplicate name at the same scope with "already exists in
         # local config", so a replace is a remove followed by an add rather than an overwrite.
-        _run_claude(["mcp", "remove", "--scope", "user", SERVER_NAME])
+        _run_claude(["mcp", "remove", "--scope", scope, SERVER_NAME], cwd=root)
 
-    args = ["mcp", "add", "--scope", "user", SERVER_NAME]
+    args = ["mcp", "add", "--scope", scope, SERVER_NAME]
     for key, value in env.items():
         args.extend(["-e", f"{key}={value}"])
     # Everything after `--` is passed to the server untouched, which is what keeps a Windows
     # interpreter path containing spaces from being re-split by the client.
     args.extend(["--", python_executable, "-m", "recall_mcp.server"])
 
-    result = _run_claude(args)
+    result = _run_claude(args, cwd=root)
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(f"claude mcp add failed: {message}")
 
-    print_fn(f"Registered MCP server '{SERVER_NAME}' at user scope, DSN {_redacted(dsn)}.")
+    print_fn(
+        f"Registered MCP server '{SERVER_NAME}' at {scope} scope for {where}, "
+        f"DSN {_redacted(dsn)}."
+    )
     return "registered"
 
 
-def _write_user_scope_server(*, env: dict[str, str], python_executable: str) -> None:
-    """Fallback path: user scope lives at the top level of `~/.claude.json` under `mcpServers`.
+def _write_server_entry(
+    *, env: dict[str, str], python_executable: str, scope: str, project_root: Path
+) -> None:
+    """Fallback path, used when `claude` is not on PATH. Both scopes live in `~/.claude.json`.
 
-    Distinct from local scope, which the same file holds under `projects[<dir>].mcpServers` and
-    which loads in one project only.
+    User scope is the top-level `mcpServers`. Local scope is `projects[<dir>].mcpServers`, keyed by
+    the project's absolute path in the platform's own form, which is what the client writes and
+    therefore what it looks up. Getting the key shape wrong produces an entry that parses, reads
+    correctly to a human, and is never matched.
     """
     config_file = user_config_file()
     document: dict[str, Any] = {}
@@ -214,13 +268,18 @@ def _write_user_scope_server(*, env: dict[str, str], python_executable: str) -> 
         raw = config_file.read_text(encoding="utf-8")
         document = json.loads(raw) if raw.strip() else {}
         _backup(config_file)
-    servers = document.setdefault("mcpServers", {})
-    servers[SERVER_NAME] = {
+    entry = {
         "type": "stdio",
         "command": python_executable,
         "args": ["-m", "recall_mcp.server"],
         "env": dict(env),
     }
+    if scope == "user":
+        document.setdefault("mcpServers", {})[SERVER_NAME] = entry
+    else:
+        projects = document.setdefault("projects", {})
+        project = projects.setdefault(str(project_root), {})
+        project.setdefault("mcpServers", {})[SERVER_NAME] = entry
     _write_json(config_file, document)
 
 

@@ -185,25 +185,88 @@ def test_the_user_scope_file_follows_an_overridden_config_home(
     assert claude_code.user_config_file() == tmp_path / ".claude.json"
 
 
-def test_the_fallback_writes_a_user_scope_server_where_the_client_reads_it(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    """Top level `mcpServers` is user scope. Under `projects[dir]` it would be local scope."""
+def _fallback_register(tmp_path: Path, monkeypatch: Any, **kwargs: Any) -> dict[str, Any]:
+    """Drive the no-CLI fallback and return the resulting `.claude.json`."""
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     config = tmp_path / ".claude.json"
     config.write_text(json.dumps({"projects": {"C:/somewhere": {"allowedTools": []}}}), "utf-8")
     monkeypatch.setattr(claude_code, "_claude_cli", lambda: None)
-
     claude_code.register_mcp_server(
-        dsn="postgresql://u:p@127.0.0.1:5432/recall", print_fn=lambda *a, **k: None
+        dsn="postgresql://u:p@127.0.0.1:5432/recall", print_fn=lambda *a, **k: None, **kwargs
     )
+    return json.loads(config.read_text(encoding="utf-8"))
 
-    written = json.loads(config.read_text(encoding="utf-8"))
-    server = written["mcpServers"]["recall"]
+
+def test_the_fallback_defaults_to_local_scope_under_the_project_key(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Local scope is `projects[<dir>].mcpServers`, keyed by the project's own absolute path.
+
+    The corpus boundary is why this is the default: a recall server carries one tenant and one
+    DSN, so at user scope it would follow the user into every unrelated checkout and answer about
+    somewhere else's corpus, confidently and without erroring.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    written = _fallback_register(tmp_path, monkeypatch, project_root=project)
+
+    server = written["projects"][str(project.resolve())]["mcpServers"]["recall"]
     assert server["args"] == ["-m", "recall_mcp.server"]
     assert server["env"]["RECALL_TRUST_MODE"] == "development"
-    # The user's other keys are not ours to drop.
-    assert written["projects"] == {"C:/somewhere": {"allowedTools": []}}
+    assert "mcpServers" not in written, "local scope must not write the user-scope key"
+    # The user's other projects are not ours to touch.
+    assert written["projects"]["C:/somewhere"] == {"allowedTools": []}
+
+
+def test_user_scope_is_still_available_and_writes_the_top_level_key(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    written = _fallback_register(tmp_path, monkeypatch, scope="user")
+    assert written["mcpServers"]["recall"]["args"] == ["-m", "recall_mcp.server"]
+    assert "mcpServers" not in written["projects"]["C:/somewhere"]
+
+
+def test_an_unknown_scope_is_refused_rather_than_guessed(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr(claude_code, "_claude_cli", lambda: None)
+    try:
+        claude_code.register_mcp_server(dsn="postgresql://h/db", scope="project")
+    except ValueError as exc:
+        assert "local" in str(exc) and "user" in str(exc)
+    else:  # pragma: no cover - the assertion below is the failure message
+        raise AssertionError("an unrecognised scope must raise rather than silently pick one")
+
+
+def test_every_cli_call_is_made_from_the_project_root(tmp_path: Path, monkeypatch: Any) -> None:
+    """`--scope local` and `mcp get` resolve the project from the working directory.
+
+    Called from wherever the wizard was started, the entry lands under a directory nobody will
+    open: the command succeeds, the entry exists, and the tools never appear.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    calls: list[tuple[list[str], Any]] = []
+
+    def fake_run(args: list[str], *, cwd: Any = None, timeout: float = 30.0) -> Any:
+        calls.append((args, cwd))
+
+        class Result:
+            returncode = 1 if args[:2] == ["mcp", "get"] else 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(claude_code, "_claude_cli", lambda: "claude")
+    monkeypatch.setattr(claude_code, "_run_claude", fake_run)
+
+    claude_code.register_mcp_server(
+        dsn="postgresql://h/db", project_root=project, print_fn=lambda *a, **k: None
+    )
+
+    assert calls, "the CLI path must have been taken"
+    assert all(cwd == project.resolve() for _args, cwd in calls)
+    add = next(args for args, _ in calls if args[:2] == ["mcp", "add"])
+    assert add[:4] == ["mcp", "add", "--scope", "local"]
 
 
 def test_a_password_never_reaches_a_log_line() -> None:
