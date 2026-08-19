@@ -148,6 +148,12 @@ The fixed development and test split contained 97 and 42 questions respectively.
 
 The preregistered prediction failed. The question only nearest neighbor selector was worse than fixed top one on the held out test set. I will not promote this selector or tune its threshold against this test result.
 
+## Preregistration for confidence controlled answer selection
+
+I will test one fixed serving rule on the same held out full split list questions. The rule will emit the first retrieved ID when the top dense cosine score is at least `0.50`, and the first five retrieved IDs otherwise. The threshold is the existing RE call `DEFAULT_GAP_THRESHOLD`, selected before this test and not tuned on ATM results. The rule will use the dense score reported by both dense and hybrid arms, including when a hybrid result entered through the lexical leg.
+
+The primary outcome is official list Jaccard on the same test partition used by the failed cardinality selector. Secondary outcomes are containment, answer hit rate, selected cutoff counts, and comparison with fixed top one and fixed top five. I predict that confidence controlled selection will improve Jaccard over fixed top one by using top five only for lower confidence questions, without reducing containment.
+
 ## Preregistration for question only cardinality selection
 
 I will evaluate a no credit cardinality selector on the full split's 139 `list_recall` questions. The split is deterministic: sort by question ID, then assign a question to development when the integer value of SHA256(question ID) modulo 10 is below 7, and assign it to test otherwise. The development set is used only to train the selector; the test set is used only for final scoring.
