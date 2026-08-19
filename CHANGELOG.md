@@ -8,6 +8,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.9.6]
+
+### Added
+
+* **The `documents` extra is now published.** It has existed in `pyproject.toml` for some time but
+  no release ever carried it, so `pip install "recall-rag[documents]"` installed nothing and said
+  so only in a warning:
+
+      WARNING: recall-rag 0.9.5 does not provide the extra 'documents'
+      --- pip exit: 0 ---
+
+  pip exits **zero** for an extra a release does not provide, so every install of it succeeded and
+  silently omitted `pypdf`, `pdfplumber`, `python-docx`, `openpyxl`, `python-pptx`, `xlrd`,
+  `beautifulsoup4` and `python-oxmsg`. Anyone who installed it got a recall that accepted `.pdf`,
+  `.docx`, `.xlsx` and `.pptx` files and extracted nothing from them, which reads as recall being
+  bad at documents rather than as a missing dependency.
+
+  Found while giving the Windows wizard's generated Docker stack an image it could build: the
+  Dockerfile pins the running version, and a post-install import check turned the silent omission
+  into a build failure.
+
 ### Changed
 
 * ⚠️ **BREAKING, and it costs one full re-index: the incremental skip guard now keys on the whole

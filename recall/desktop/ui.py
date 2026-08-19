@@ -8,7 +8,8 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from recall.desktop.models import RuntimeProfile, SourceCategory, SourceSelection
-from recall.desktop.runtime import RuntimeManager, RuntimeErrorBase, create_runtime
+from recall.desktop.profiles import load_pipelines, save_pipelines
+from recall.desktop.runtime import DockerRuntime, RuntimeManager, RuntimeErrorBase, create_runtime
 from recall.desktop.sources import (
     CLAUDE_MEMORY_FILENAMES,
     CODE_EXTENSIONS,
@@ -302,6 +303,12 @@ if QApplication is not None:
                 }
                 for source_type in ("Documents", "Memory", "Code")
             }
+            # Saved choices layered OVER the defaults, key by key. A wholesale replacement would
+            # drop any setting added after the file was written, so an upgrade would silently lose
+            # a control's value rather than keep the new default for it.
+            for source_type, saved in load_pipelines().items():
+                if source_type in self._pipeline_configs:
+                    self._pipeline_configs[source_type].update(saved)
             self.setWindowTitle("RE-call")
             self.resize(980, 760)
             self._build_ui()
@@ -539,6 +546,11 @@ if QApplication is not None:
 
             footer = QHBoxLayout()
             self.status = QLabel("Connect to a runtime to begin.")
+            # PlainText, not Qt's default AutoText: this label reports user-supplied names (a
+            # project typed into "+ Add project") and error text, and AutoText renders anything
+            # that looks like markup AS markup. A status line that can be visually rewritten by
+            # its own subject is worth nothing, and this is the line that says "not provisioned".
+            self.status.setTextFormat(Qt.TextFormat.PlainText)
             self.status.setObjectName("status")
             footer.addWidget(self.status, 1)
             self.reconnect_button = QPushButton("Reconnect")
@@ -825,14 +837,31 @@ if QApplication is not None:
             controls = self._config_controls()
             for control in controls:
                 control.blockSignals(True)
-            self.embedder_combo.setCurrentText(str(values["embedder"]))
-            self.reranker_combo.setCurrentText(str(values["reranker"]))
+            # `setCurrentText` is a NO-OP on a non-editable combo when the text is not an item, so
+            # a saved value that no longer exists would leave the widget on its first entry while
+            # `_pipeline_configs` still held the stale string — and the next Save would write that
+            # stale string straight back. Restoring only what the combo can actually show, and
+            # writing the fallback back into the config, keeps memory and screen saying one thing.
+            for combo, key in (
+                (self.embedder_combo, "embedder"),
+                (self.reranker_combo, "reranker"),
+                (self.judge_combo, "judge"),
+                (self.reasoning_combo, "reasoning"),
+                (self.arm_combo, "arm"),
+            ):
+                wanted = str(values[key])
+                if combo.findText(wanted) >= 0:
+                    combo.setCurrentText(wanted)
+                else:
+                    values[key] = combo.currentText()
+            # SPLADE is restored only when this machine can actually run it. The probe DISABLES the
+            # checkbox without unticking it, and `_save_configuration` refuses while it is ticked,
+            # so a config saved on a CUDA machine (or one that hit a transient probe failure) would
+            # restore a ticked, disabled box the user cannot clear: Save wedged permanently.
+            values["splade"] = bool(values["splade"]) and self.splade_check.isEnabled()
             self.splade_check.setChecked(bool(values["splade"]))
-            self.judge_combo.setCurrentText(str(values["judge"]))
-            self.reasoning_combo.setCurrentText(str(values["reasoning"]))
             self.model_edit.setText(str(values["model"]))
             self.reranker_model_edit.setText(str(values["reranker_model"]))
-            self.arm_combo.setCurrentText(str(values["arm"]))
             for control in controls:
                 control.blockSignals(False)
 
@@ -1050,6 +1079,21 @@ if QApplication is not None:
                 self.status.setText("BGE and Voyage models are not available in this RE-call configuration.")
                 return
             self._pipeline_configs[self._active_config_type] = self._capture_config()
+            # ⚠️ Actually WRITE it. Until this line the button set an in-memory dict and then told
+            # the user "Configuration saved", so reopening the app restored the defaults and the
+            # status line was a false claim. Demonstrated before fixing: set the embedder model,
+            # save, close, reopen, and the field read `hashing-64` again.
+            try:
+                save_pipelines(self._pipeline_configs)
+            except OSError as exc:
+                # Say so rather than claim success. The choices are still live in this session, so
+                # the user can keep working; what they cannot do is rely on them surviving.
+                self.status.setText(
+                    f"Configuration applied for this session but NOT saved: {exc.strerror or exc}"
+                )
+                self._config_dirty = False
+                self._calibration_required = True
+                return
             self._config_dirty = False
             self._calibration_required = True
             self.configuration_warning.setText(
@@ -1364,18 +1408,112 @@ if QApplication is not None:
             self._last_scope_index = self.scope.currentIndex()
             self.scope.blockSignals(False)
 
+        def _provision_project(self, name: str) -> None:
+            """Actually create the project, rather than only offering its name.
+
+            "+ Add project" used to append a string to this combo box and stop. The scope then
+            pointed at a tenant with no compose service, no MCP server block and no corpus, so it
+            did not survive a restart and anything reaching the runtime with it was refused — a
+            failure that arrived later, worded as a problem with a "tenant scope".
+
+            The corpora are NOT built or calibrated here. That takes minutes and the user has asked
+            for somewhere to put files, not for an index of files they have not chosen yet; the
+            queue page fills it and the calibration page certifies it. So the project arrives real
+            but empty and uncalibrated, and this says so instead of implying it is ready.
+
+            Docker only. `RuntimeManager._call_for` discards the tenant argument, so in VPS mode the
+            scope is a field sent to a remote server and provisioning it is that server's business,
+            not something this process can do or should claim to have done.
+            """
+            if not isinstance(self.runtime, DockerRuntime):
+                self.status.setText(
+                    f"Project {name!r} is selected. This app provisions projects only for the "
+                    f"managed local stack; on a remote server the scope has to exist there."
+                )
+                return
+
+            compose_file = self.profile.compose_file
+            if not compose_file:
+                self.status.setText(
+                    f"Cannot create {name!r}: this profile names no compose file, so there is no "
+                    f"stack to add it to."
+                )
+                return
+
+            from recall.wizard.projects import ProjectRefusal, add_project
+
+            try:
+                # The stack's own directory. `compose_path_for` puts the file at the data root, so
+                # the parent of the configured file is that root by construction.
+                added = add_project(Path(compose_file).resolve().parent, name)
+            except ProjectRefusal as refusal:
+                # The wizard's own reason, at the point of typing. The dialog used to accept names
+                # the wizard refuses and then tell the user to go and run it.
+                self.status.setText(f"Cannot create {name!r}: {refusal}")
+                self._forget_project(name)
+                return
+            except (OSError, ValueError) as exc:
+                self.status.setText(f"Cannot create {name!r}: {exc}")
+                self._forget_project(name)
+                return
+
+            if not added.created_anything:
+                self.status.setText(
+                    f"Project {name!r} already exists in this stack; selected it."
+                )
+                return
+
+            # `start()` re-reads the topology and applies the schema, so the new services become
+            # reachable without restarting the app. It is also what makes the claim below true.
+            try:
+                self.runtime.start()
+            except RuntimeErrorBase as exc:
+                self.status.setText(
+                    f"Created {name!r} in {added.compose_path.name}, but the stack did not come "
+                    f"back up: {exc}. The project exists and will be there on the next connect."
+                )
+                return
+
+            self.status.setText(
+                f"Created project {name!r} ({len(added.tenants)} corpora). It is empty and not yet "
+                f"calibrated: add files on the Queue page, then calibrate it before trusting search."
+            )
+
+        def _forget_project(self, name: str) -> None:
+            """Drop a name that was added to the combo box but could not be provisioned."""
+            if name in self._project_names:
+                self._project_names.remove(name)
+            self._populate_scopes(self._project_names)
+
         def _scope_changed(self, index: int) -> None:
             data = self.scope.itemData(index)
             if isinstance(data, dict) and data.get("action") == "add":
                 name, accepted = QInputDialog.getText(self, "Add project", "Project name")
                 clean_name = _project_name(name) if accepted else ""
                 if clean_name:
-                    if clean_name not in self._project_names:
+                    provisioned = clean_name in self._project_names
+                    if not provisioned:
                         self._project_names.append(clean_name)
                         self._populate_scopes(self._project_names)
                     selected = self.scope.findText(clean_name)
                     if selected >= 0:
                         self.scope.setCurrentIndex(selected)
+                    else:
+                        # The name was REFUSED by `_populate_scopes`, which drops anything equal to
+                        # the shared profile and then resets the index to the default project. So
+                        # the user is now on a scope they did not choose. Saying "is selected" here
+                        # would be an affirmative false claim about the live write target, and the
+                        # next drop would ingest into the default corpus.
+                        self.scope.blockSignals(True)
+                        self.scope.setCurrentIndex(self._last_scope_index)
+                        self.scope.blockSignals(False)
+                        self.status.setText(
+                            f"{clean_name!r} is reserved for the shared scope, which is already "
+                            f"listed as 'All projects (shared memory)'. Selection unchanged."
+                        )
+                        return
+                    if not provisioned:
+                        self._provision_project(clean_name)
                 else:
                     self.scope.blockSignals(True)
                     self.scope.setCurrentIndex(self._last_scope_index)
