@@ -90,8 +90,21 @@ Consequences that follow from the rule:
 
 ## MCP servers
 
-`scripts/session-mcp.sh` generates `.mcp.json`. Run it once per checkout, since every worktree is
-a separate project root to the MCP client.
+`scripts/session-mcp.sh` generates `.mcp.json` **and records the client's approval for it**. Run it
+once per checkout, since every worktree is a separate project root to the MCP client.
+
+⛔ **Writing the file is only half of it, and the other half is silent.** A project-scoped server
+stays *pending approval* until the client records it under
+`projects[<dir>].enabledMcpjsonServers` in `~/.claude.json`, and a non-interactive session can
+never answer that prompt. Measured 2026-08-17: **306 tracked projects on this machine, zero with
+an approved server**, while `claude mcp list` reported both recall servers as `⏸ Pending approval`
+with the file on disk in front of it. The symptom is a session with no `recall` tools, which is
+also the symptom of a missing file, a dead corpus and a broken server, so it was misdiagnosed as a
+write-ordering race for a day (`docs/preregistrations/2026-08-16-sessionstart-hook-mcp-ordering.md`).
+
+**Diagnose with `claude mcp list` before touching anything else.** It names the state directly.
+`scripts/session_mcp_approve.py` does the approval, carries only server names into the client
+config (never a URL or a token), and will not reverse a server you have explicitly disabled.
 
 - **`recall`** serves recall's own `docs/` and **`recall-memory`** serves this project's memory
   store, both out of the `recall-dogfood` corpus on port 5433 (tenants `default` and `memory`,
@@ -143,6 +156,29 @@ scripts/session-db.sh down
 - Lint is `python -m ruff check .`. Bare `ruff` on this machine is an old 0.6.9; `python -m ruff`
   is the pinned 0.16.x. **Never run `ruff format`**: 348 of 406 files fail it and CI only ever runs
   `ruff check`.
+
+## Guards that will interrupt you, and why
+
+Sources live in `scripts/`, deployed copies in `~/.claude/hooks/`. Each has a `*_tests.py` beside
+it, and each test file has been mutation-tested: the guard was broken on purpose and the named
+test watched to go red. A guard nobody has watched fail has not been tested.
+
+⚠️ **The source and the deployed copy drift.** `session_start_hook.py` and its deployed twin
+already differ by 57 lines, and nothing reports it. The newer test files assert that the deployed
+copy matches the source, so a forgotten redeploy fails a test instead of silently disabling a
+guard. Add that assertion to any hook you write.
+
+- **`preregistration_guard.py`** denies a measurement command while anything under
+  `docs/preregistrations/` or `benchmarks/PREREGISTRATION.md` is uncommitted. An uncommitted
+  prediction has no timestamp anyone can trust. It matches at **command position** only, so
+  reading, grepping or committing a message about a benchmark is untouched, and it enforces only
+  "nothing is uncommitted"; it cannot verify a record exists for your specific question, and says
+  so rather than implying otherwise. Escape: the bare word `ALLOW_UNREGISTERED_MEASUREMENT`.
+- **`test_receipt.py`** records what each test run in this session actually reported, and prints
+  it back at `git push` time: counts, age, and the command. It does not block. It exists because
+  "I ran the tests" and "the tests ran" have been different things here, and because a run with
+  several hundred skips is the documented false-green signature (roughly 22 skips is healthy).
+  A receipt is per session id: another session's run is not your evidence.
 
 ## Git
 
