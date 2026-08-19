@@ -90,6 +90,71 @@ eval "$(scripts/session-db.sh up)"
 python -m benchmarks.successor_expansion_probe
 ```
 
-## Result
+## Result (2026-08-20)
 
-Not yet measured.
+**Status: measured. The ranking hypothesis is CONFIRMED, on every column, and the measurement
+retracts the central finding of BOTH earlier records.**
+
+| Claim | Predicted | Measured |
+|---|---|---|
+| Successor present | 5 of 5 | **6 of 6** |
+| Successor verdict `ok` | at least 3 of 5 | **6 of 6** |
+| Rank among `ok` where not recovered | 2 or worse, never 1 | **5, 5, 5, 5, 2** |
+| What outranks it | a repository distractor, never the stale v1 | **repository distractors, every time** |
+| Recovery, score order | no better than pool order | **0.17, exactly equal** |
+| Recovery, promoted first | 0.67 to 1.00 | **1.00 [0.61, 1.00] n=6** |
+
+Reproduction held on everything the record named: recovery 0.17, `str_trust` 0.00, stratum A 0.75,
+coverage 0.90 and 1.00, six stratum B queries in the per-query listing. ⚠️ The by-pool stratum size
+of 3 was truncated out of the captured output by a `tail`, so it was **not** re-verified; every other
+reproduction value matched exactly.
+
+### The retraction
+
+**Every fetched successor was promoted. 6 of 6, in the run whose headline recovery is 1 of 6.**
+
+The first record concluded that promotion was the bottleneck, from a line reading "6 fetched a
+successor, 2 of those were then promoted". **That line was mislabelled in my own probe.** It printed
+`treat_recovered`, which is top-1 recovery, under the word "promoted". Promotion was never measured
+by it at all.
+
+So both earlier conclusions are withdrawn:
+
+- The first record's "every miss is the promotion rule refusing" was wrong. Promotion refused
+  nothing.
+- The second record's inference that a lower threshold produced fewer promotions was wrong for the
+  same reason. Promotions did not move between runs. What moved was how many distractors the lower
+  threshold newly admitted as `ok`, each of which sits ahead of the appended successor.
+
+Neither record is edited. The predictions and results in both stand as written, including the
+mistaken diagnoses, because the mistake is the informative part: a wrong label on one print
+statement survived two full measurement cycles and produced two confidently wrong causal stories.
+The numbers in those records were all correct. Only the word "promoted" was false, and it was
+enough.
+
+### The counterintuitive prediction held, and it matters for the fix
+
+Ordering `ok` hits by cosine scores **0.17, identical to pool order, not better**. Promotion exists
+for a successor whose own wording scores low, so the obvious fix moves exactly those hits back down.
+Anyone reaching for "sort by score" would have shipped a change with no effect and a plausible
+rationale.
+
+**Placing promoted successors first scores 1.00 on stratum B**, and it is the only one of the three
+orderings that does anything.
+
+### What follows, per the decision rule fixed in advance
+
+"At least 3 of 5 `ok` at rank 2 or worse, and promoted-first recovery at or above 0.67: the ranking
+hypothesis is supported. Open a SEPARATE record proposing an ordering change; do not ship one off
+this measurement."
+
+That is the outcome, and the separation matters more than usual here. A 1.00 on six queries from one
+authored fixture is not evidence that reordering `ok` hits is safe in general: it changes what every
+caller reads first, on every query with a supersession edge, and this fixture cannot see the
+regression that would cause elsewhere. The ordering change gets its own record, its own prediction,
+and its own falsifiers.
+
+### Carried forward, still not fixed
+
+The latency comparison is still invalid as ordered, now reading 1.81x and 1.27x against 0.90x in the
+first run for the same code. Neither arm ran a reranker.
