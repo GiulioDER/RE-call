@@ -212,3 +212,26 @@ produces a result about code nobody runs.
 
 Order: land the wizard's mechanism, swap this branch's registration to call it, then run the check
 against the merged code. Agreed with the wizard session, which owns the mechanism.
+
+### State after the cleanup (2026-08-19), so this is not read as a clean machine
+
+Only finding 1 above was removed. Re-measured after the removal, and independently re-measured by
+the wizard session, which took it as its user's configuration rather than accepting a report:
+
+```
+projects tracked                : 314   (was 315; exactly one key removed)
+LOCAL scope servers             : 0     (was 1)
+USER scope (top-level)          : 0     (unchanged)
+recorded .mcp.json approvals    : 3     (unchanged, the same three)
+~/.claude/recall-hook.json      : present
+recall_hooks in settings.json   : present
+```
+
+**"No prior recall state" is still false on this machine**, and the past tense above should not be
+read as saying otherwise. Findings 2 and 3 remain and are nobody's to remove: the hook state is a
+working installation, and the three approvals belong to earlier sessions.
+
+The consequence for precondition 2 is unchanged and worth restating in the present tense: the
+known-answer control needs a project absent from **all** of the lists above, and this machine cannot
+supply one without removing state that is legitimately in use. That is a reason to run the check
+elsewhere, not a reason to relax the precondition.
