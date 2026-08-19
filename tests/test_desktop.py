@@ -1013,4 +1013,8 @@ def test_saving_the_pipeline_configuration_actually_persists_it(
     assert (tmp_path / "pipeline.json").exists()
     for path, state in before.items():
         now = (path.exists(), path.stat().st_mtime_ns if path.exists() else 0)
-        assert now == state, f"a test must never write the user's real {path.name}"
+        # The ABSOLUTE path, not just the filename: a guard on a real user location has to say
+        # WHICH file, or diagnosing it means searching for a path the message withheld. This
+        # compares existence and mtime before and after, so it fires on a change made by this
+        # test, never on a machine that merely has a profile.
+        assert now == state, f"a test must never write the user's real profile at {path}"

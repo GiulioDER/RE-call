@@ -314,8 +314,10 @@ def test_run_headless_provisions_from_data_root_and_reuses_the_port(
     # The same defect was found in `tests/test_desktop.py` by four auditors and fixed the same way.
     real = default_profile_path()
     assert (real.exists(), real.stat().st_mtime_ns if real.exists() else 0) == _real_profile_before, (
-        "a test must never write the real user profile; this one did, pointing it at a "
-        "pytest temp directory"
+        f"a test must never write the real user profile; this one changed {real}, pointing it at "
+        f"a pytest temp directory. If you are diagnosing this, that ABSOLUTE PATH is the thing to "
+        f"look at: the assertion compares its existence and mtime before and after, so it fires "
+        f"only on a change made by this test, not on a machine that merely has a profile."
     )
 
     first_port = existing_port(compose)
