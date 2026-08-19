@@ -617,14 +617,51 @@ def test_the_command_refuses_to_run_unattended_without_being_asked(
     assert "headless" in str(exit_info.value)
 
 
-def test_the_wizard_subcommand_is_registered_and_documented() -> None:
-    """`--config` is required, so a bare invocation cannot start guessing at paths."""
+def test_a_bare_invocation_asks_rather_than_guessing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """🔁 Was: argparse refused a bare `recall wizard`, because `--config` was required.
+
+    The reason given was that a bare invocation must not "start guessing at paths", and that reason
+    still holds. It is now met by ASKING rather than by refusing: `recall wizard` with no arguments
+    runs the interview, which guesses nothing and writes down every answer.
+
+    What must not change is that it never runs unattended by accident. With no terminal there is
+    nobody to ask, so it refuses — and names the flag that does work — rather than hanging on a
+    line that never arrives or reading EOF and accepting every default. Both of those look like a
+    successful install from the outside.
+    """
+    import sys
+
     from recall.cli import main as cli_main
+
+    class _NotATty:
+        def isatty(self) -> bool:
+            return False
+
+    monkeypatch.setattr(sys, "stdin", _NotATty())
 
     with pytest.raises(SystemExit) as exit_info:
         cli_main(["wizard"])
 
-    assert exit_info.value.code == 2, "argparse must refuse a missing --config at parse time"
+    message = str(exit_info.value)
+    assert "terminal" in message, f"the refusal must name the cause, got {message!r}"
+    assert "--headless" in message, "and the way forward"
+    assert exit_info.value.code != 0, "a refusal that exits 0 reads as a successful install"
+
+
+def test_a_config_on_the_command_line_still_requires_headless(tmp_path: Path) -> None:
+    """⛔ The guard I removed once by accident while adding the interview.
+
+    `recall wizard --config x` builds, calibrates and PROMOTES. Doing that without the word
+    "headless" anywhere is the wrong surprise for an installer, which is why the flag was made
+    explicit in the first place. Implying it from `--config` looked like a convenience and quietly
+    overturned a decision that already had a test guarding it; this is that test, kept.
+    """
+    from recall.cli import main as cli_main
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli_main(["wizard", "--config", str(_write(tmp_path, _config(tmp_path)))])
+
+    assert "headless" in str(exit_info.value)
 
 
 # ----------------------------------------------------------------------------------------------

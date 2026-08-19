@@ -158,9 +158,59 @@ guess which project these servers belong to.
 **Docker autostart is not configured.** Making a container start on login is a change to the machine
 rather than the project; on Windows it is a Docker Desktop setting.
 
+## Choosing a database
+
+Two shapes of install, and the wizard asks which one you want:
+
+| | What it does | When |
+|---|---|---|
+| **Docker** | provisions a PostgreSQL container at a location you choose | you have no PostgreSQL, or want this install isolated from one you do have |
+| **Existing** | uses a PostgreSQL you already run | you already have one with pgvector, and would rather not run Docker at all |
+
+With an existing database, nothing about Docker is touched: `provision_stack` returns before any
+compose file is written.
+
+**An existing database is checked before it is accepted**, in one read-only connection, because
+every way it can be wrong otherwise fails minutes later and names something else. Reachable;
+pgvector present, or available and merely not created; a role that may create objects; and an
+existing `chunks.embedding` whose dimension matches the embedder you chose. That last one is the
+expensive one: a mismatch does not fail during setup at all, it fails on the first insert, well into
+a build, with a driver error naming neither side of the disagreement.
+
+### A database behind SSH
+
+Open a tunnel first, and give the wizard the local end:
+
+```bash
+ssh -L 5433:localhost:5432 user@your-host
+```
+
+Then the connection string is an ordinary local one, `postgresql://user:password@127.0.0.1:5433/recall`,
+and everything above applies unchanged.
+
+**The wizard deliberately does not manage the tunnel.** Doing so would mean owning key handling,
+host-key verification, reconnection and process lifetime, which is a large surface and a class of
+failure that is hard to report clearly to somebody installing their first index. One documented
+command does the same job and fails in ways its own documentation already covers.
+
+## Running it
+
+```bash
+recall wizard                                  # asks, writes a config, then runs it
+recall wizard --headless --config wizard.json  # runs a saved config, asks nothing
+```
+
+The interactive flow **writes the config file and then runs that file**, rather than installing
+from the answers directly. So there is one engine rather than two that drift, and you keep an
+artefact you can re-run, hand to somebody else, or commit to CI.
+
+It refuses, before asking anything, in a session with no terminal. Piping into it would otherwise
+either hang on a line that never arrives or read EOF and accept every default, and both of those
+look like a successful install from the outside.
+
 ## What is not built yet
 
-- The interactive and GUI front ends. `--headless` is required for that reason.
+- The GUI front end for installation. The desktop app manages an install; it does not yet create one.
 - An end-to-end smoke search per server after wiring. The configuration is written from what
   actually happened, and a tenant that cannot answer gets no server, but the wizard does not yet
   issue a query to prove each server answers.

@@ -918,19 +918,21 @@ def main(argv: list[str] | None = None) -> None:
     # is what CI drives against a throwaway container.
     p_wizard = sub.add_parser(
         "wizard",
-        help="build and calibrate the configured corpora from a JSON config, without prompting",
+        help="install recall: ask what is needed and build it, or run a saved JSON config",
     )
     p_wizard.set_defaults(_opens_db=True)
     p_wizard.add_argument(
         "--headless",
         action="store_true",
-        help="required today, and named rather than implied: the interactive and GUI front ends "
-        "are not built yet, so a bare `recall wizard` must not look like it will prompt.",
+        help="do not ask anything; run --config unattended. Required whenever --config is given, "
+        "because that path builds, calibrates and promotes without prompting.",
     )
     p_wizard.add_argument(
         "--config",
-        required=True,
-        help="JSON config. Required keys: dsn, migration_dsn, embedder, corpus_version, "
+        required=False,
+        help="JSON config to run. Omit it to be asked the questions instead, in which case the "
+        "answers are WRITTEN to a config file and that file is what runs, so the install is "
+        "repeatable. Required keys: dsn, migration_dsn, embedder, corpus_version, "
         "docs_root, code_root, memory_root (roots must be absolute). Optional: project, and "
         "serving_role, which is required when dsn and migration_dsn authenticate as different "
         "roles, because no migration emits a GRANT.",
@@ -1537,11 +1539,61 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "wizard":
         from recall.wizard.headless import PipelineRefusal, load_config, run_headless
 
+        # ⚠️ The interactive path WRITES a config and then runs that file, rather than running the
+        # answers directly. One engine, and the user keeps an artefact they can re-run, hand to
+        # somebody else, or put in CI. An interactive flow that installed from memory would be a
+        # second installer that drifts from the first.
+        if args.config is None:
+            from recall.wizard.interactive import (
+                InteractiveRefusal,
+                ask_config,
+                stdin_prompter,
+                write_config,
+            )
+
+            if args.headless:
+                raise SystemExit(
+                    "`--headless` needs `--config <file>`: there is nothing to run unattended "
+                    "without one. Omit --headless to be asked the questions."
+                )
+            default_root = Path.home() / ".recall"
+            try:
+                prompter = stdin_prompter()
+                document = ask_config(prompter, default_root=default_root)
+                target = Path(
+                    prompter.ask(
+                        "\nWhere should this configuration be saved?",
+                        default=str(default_root / "wizard.json"),
+                    )
+                ).expanduser()
+                # `config_written`, not `written`: `main()` is one long function and a plain
+                # `written` is already an int counter hundreds of lines below, so the two unify and
+                # mypy rejects both. Same trap the `wizard_report` comment below records.
+                config_written = write_config(document, target)
+            except InteractiveRefusal as exc:
+                raise SystemExit(str(exc)) from exc
+            except (KeyboardInterrupt, EOFError):
+                # Ctrl-C during an interview is a person changing their mind, not a crash. Nothing
+                # has been built at this point, so say so rather than printing a traceback.
+                raise SystemExit("\ncancelled; nothing was installed") from None
+            print(f"\nsaved {config_written}\nrunning it now; re-run with:")
+            print(f"  recall wizard --headless --config {config_written}\n")
+            args.config = str(config_written)
+            # The person just answered every question, so running is precisely what they asked for.
+            # Setting it here rather than relaxing the guard below keeps that guard meaning exactly
+            # what it always meant: a config supplied on the command line still needs `--headless`.
+            args.headless = True
+
+        # ⚠️ **Preserved deliberately, and I removed it once by accident.** A `--config` the user
+        # typed still requires `--headless`, because `recall wizard --config x` builds, calibrates
+        # and PROMOTES, and doing that without the word "headless" anywhere is the wrong surprise
+        # for an installer. Implying it from `--config` looked like a convenience and quietly
+        # overturned a decision that had a test guarding it.
         if not args.headless:
             raise SystemExit(
-                "recall wizard currently runs headless only: pass --headless. The interactive and "
-                "GUI front ends are not built yet, and a command that silently ran unattended "
-                "would be the wrong surprise for an installer."
+                "`recall wizard --config <file>` runs unattended: it builds, calibrates and "
+                "promotes. Say so with `--headless`, or run `recall wizard` with no arguments to "
+                "be asked the questions instead."
             )
         # Accepted and silently discarded before. The tenants come from the plan and the table from
         # the migrator's default, so `recall --tenant myproject --table probe wizard ...` promoted
