@@ -314,6 +314,36 @@ def test_trusted_search_without_the_policy_still_abstains(monkeypatch) -> None:
     assert "successor_expansion_sources" not in result.diagnostics.stage_ms
 
 
+def test_enabling_it_on_a_corpus_with_no_edges_costs_no_extra_query(monkeypatch) -> None:
+    """The common case. A corpus that declares no supersession must pay nothing for the feature."""
+    calls: list[str | None] = []
+
+    class _NoEdges(_Store):
+        def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
+            return {}, frozenset()
+
+    class _Counting(_Retriever):
+        def search(self, query: str, k: int = 5, source: str | None = None) -> RetrievalResult:
+            calls.append(source)
+            return _retrieval(_scored("c1", "ttl_v1.md", 0.91))
+
+    monkeypatch.setattr("recall.trust.HybridRetriever", _Counting)
+    result = trusted_search(
+        _NoEdges(),
+        object(),
+        "what is the current cache ttl",
+        k=5,
+        calibration=CALIBRATION,
+        policy=TrustPolicy.development(),
+        now=NOW,
+        successor_expansion=SuccessorExpansionPolicy(enabled=True),
+    )
+
+    assert calls == [None]
+    assert not result.abstained
+    assert "successor_expansion" not in result.diagnostics.stage_ms
+
+
 def test_trusted_search_fetches_the_successor_and_stops_abstaining(monkeypatch) -> None:
     result = _search(
         monkeypatch,
