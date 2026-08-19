@@ -89,3 +89,13 @@ The saved artifact is `results/atm_bench_hard_retrieval_20260819_fastembed.json`
 | Hybrid | 0.3352 | 0.7097 | 0.0645 | 300.8 ms | 432.4 ms |
 
 The result supports hybrid retrieval for this corpus, with a gain of 6.45 percentage points in question Recall@10 and 3.23 percentage points in complete evidence Recall@10GT. Complete evidence recall remains low, confirming that answer selection must be evaluated as candidate retention after retrieval, not as a substitute for retrieving missing evidence.
+
+## Preregistration for deterministic list answer retention
+
+I will now measure the ATM list answer path without an LLM. I will select the first `k` retrieved evidence IDs as the predicted answer, preserving retrieval order. I will not filter those IDs using the gold answer or gold evidence IDs.
+
+The scored subset is the 12 `list_recall` questions in ATM Bench Hard. The gold list comes from each row's official `answer` field, split on commas and newlines, with surrounding whitespace and terminal punctuation removed. The `evidence_ids` field is retained only for the separate retrieval metrics because it can contain more items than the answer list.
+
+The primary metrics are mean Jaccard answer score and mean gold answer containment at `k=5` and `k=10`. Secondary metrics are question level answer hit rate, the fraction of questions with at least one gold answer ID in the selected output, and scores at `k=1`, `25`, `50`, and `100`. The dense and hybrid retrieval outputs from the committed result artifact are the only arms. No answer model, judge, or gold conditioned filtering is allowed.
+
+I predict that hybrid will improve mean Jaccard and gold answer containment relative to dense retrieval, but that top five output will remain incomplete on the long list questions. This test measures the retrieval to final ID list path directly; it does not claim to test AnswerSlot policy selection, which ATM does not annotate.
