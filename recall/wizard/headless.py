@@ -71,14 +71,12 @@ from recall.wizard.stack import (
 )
 from recall.wizard.state import WizardState, config_digest, load_state, save_state
 from recall.wizard.wiring import (
-    ClientApproval,
     ServerBlock,
-    approve_mcp_servers,
     SmokeResult,
     UnservableTenant,
-    mcp_config,
+    UserScopeRegistration,
+    register_user_scope,
     server_blocks,
-    write_mcp_config,
     write_project_files,
     write_runtime_profile,
 )
@@ -134,11 +132,11 @@ class HeadlessConfig:
     #: No migration emits a GRANT, because the role name is a deployment decision the packaged SQL
     #: cannot know, so a two-role install has to be told the name or it will not work.
     serving_role: str | None = None
-    #: Optional: where `.mcp.json` is written, and the `cwd` each server is launched from.
-    #: Optional rather than derived from the config's own directory, because writing an MCP
-    #: configuration into a guessed location is a side effect an operator cannot predict, and a
-    #: config may well live somewhere temporary. When absent the report says the wiring was skipped
-    #: and names the key, which is better than putting files where nobody will look for them.
+    #: Optional: the project this install belongs to. It is the `cwd` every registered server is
+    #: launched from, and where `.env`, the `CLAUDE.md` block and `MEMORY.md` are written. Optional
+    #: rather than derived from the config's own directory, because editing an operator's project
+    #: files in a guessed location is a side effect they cannot predict, and a config may well live
+    #: somewhere temporary. When absent the report says the wiring was skipped and names the key.
     project_root: Path | None = None
 
     @property
@@ -236,19 +234,17 @@ class HeadlessReport:
     #: "this took four seconds" and "this took eleven minutes" should not look identical, and an
     #: operator who expected a rebuild needs to see that they did not get one.
     reused: tuple[str, ...] = ()
-    #: What was done about Claude Code's approval gate for the `.mcp.json` just written. None when
-    #: no wiring ran at all. Carried on the report because "the servers are configured" and "the
-    #: servers will load" are different claims, and only the second one is what the user wanted.
-    approval: ClientApproval | None = None
-    #: MCP servers written to `.mcp.json`, and the tenants deliberately left without one.
+    #: What was done about registering these servers with Claude Code. None when no wiring ran at
+    #: all. Carried on the report because "the servers are configured" and "the servers will load"
+    #: are different claims, and only the second one is what the user wanted.
+    registration: UserScopeRegistration | None = None
+    #: MCP servers the wizard registered, and the tenants deliberately left without one.
     servers: tuple[ServerBlock, ...] = ()
     unservable: tuple[UnservableTenant, ...] = ()
     #: One query put through each configured server. This is the difference between "a config was
     #: written" and "the install answers", and it checks `server_blocks`'s reasoning against the
     #: database rather than trusting it.
     smoke: tuple[SmokeResult, ...] = ()
-    #: Where `.mcp.json` was written, or None when `project_root` was absent from the config.
-    mcp_path: Path | None = None
     #: Every file the wiring step created or edited. Named because these are edits to files the
     #: operator owns, made block-scoped so they merge rather than replace, and a block-scoped edit
     #: is invisible in a directory listing.
@@ -272,9 +268,16 @@ class HeadlessReport:
         A server whose smoke query RAISED is also not ok, whatever the corpora did. That is the
         whole point of running one: the corpora can all be built and promoted correctly and the
         configuration still be unable to reach them.
+
+        **And an install nothing was registered with is not ok either.** The servers go into Claude
+        Code's own config at user scope, and when that write is skipped there is no other place a
+        client will find them: not now, and not after a restart. The corpora would be perfect and
+        the user would meet an assistant with no recall tools and nothing naming the cause, which is
+        this project's recurring failure and the reason the exit code has to carry it.
         """
         raised = any(s.error for s in self.smoke)
-        return not (self.refused or self.failures or self.unserved or raised)
+        unregistered = self.registration is not None and not self.registration.recorded
+        return not (self.refused or self.failures or self.unserved or raised or unregistered)
 
     @property
     def degraded(self) -> tuple[str, ...]:
@@ -386,26 +389,40 @@ class HeadlessReport:
                 )
         for written in self.files_written:
             lines.append(f"{' ' * _GUTTER}wrote {written}")
-        # ⚠️ Reported ALWAYS, both ways. A project-scoped `.mcp.json` the client has not been told
-        # to trust loads no tools and explains nothing, so "approved" is the line that says the
-        # install is actually usable, and the skip line is the one that stops a user concluding
-        # recall is broken when the client is merely waiting to ask them.
-        if self.approval is not None:
-            if self.approval.recorded:
+        # ⚠️ Reported ALWAYS, both ways. Servers the client has not been told about load no tools
+        # and explain nothing, so the "registered" line is the one that says the install is actually
+        # usable, and the skip line is the one that stops a user concluding recall is broken when
+        # the client simply never heard of it.
+        if self.registration is not None:
+            if self.registration.recorded:
                 lines.append(
-                    f"{' ' * _GUTTER}approved {', '.join(self.approval.approved)} for this project "
-                    f"in {self.approval.config_path}"
+                    f"{' ' * _GUTTER}registered {', '.join(self.registration.registered)} at user "
+                    f"scope in {self.registration.config_path}"
+                )
+                lines.append(
+                    f"{' ' * _GUTTER}these load in EVERY project and need no approval; restart "
+                    f"Claude Code to pick them up"
                 )
             else:
                 lines.append(
                     detail(
-                        f"the MCP servers are NOT yet approved: {self.approval.skipped_reason}. "
-                        "Claude Code gates project-scoped servers, so the recall tools will be "
-                        "absent until you approve them — it asks on the first interactive session "
-                        "in this directory. Nothing is wrong with the install."
+                        f"the MCP servers were NOT registered: {self.registration.skipped_reason}. "
+                        "The corpora are built and reachable, but no client is configured to "
+                        "reach them yet."
                     )
                 )
-        if self.mcp_path is None and (self.outcomes or self.indexed):
+            # A refused name is the one thing here a user must act on, so it is never folded into
+            # the success line: their first install keeps working and their second one has no
+            # servers, which looks like the second install silently failing.
+            for name, where in self.registration.conflicts:
+                lines.append(
+                    detail(
+                        f"{name} already belongs to another install (cwd {where}) and was left "
+                        f"alone. Server names are `{{project}}-{{kind}}`, so re-run with a "
+                        f"different `project` in the config to give this install its own."
+                    )
+                )
+        if self.registration is None and (self.outcomes or self.indexed):
             lines.append(
                 detail(
                     "no MCP configuration was written: the config has no `project_root`, so nothing "
@@ -416,6 +433,17 @@ class HeadlessReport:
 
         if self.ok:
             head = "install complete"
+        elif (
+            self.registration is not None
+            and not self.registration.recorded
+            and not (self.refused or self.failures or self.unserved)
+        ):
+            # Named separately because every corpus succeeded: blaming one of them would send the
+            # operator to rebuild an index that is already correct.
+            head = (
+                "install incomplete: the corpora are built, but no client was registered, so no "
+                "recall tools will appear"
+            )
         elif self.unserved and not (self.refused or self.failures):
             head = (
                 "install incomplete: "
@@ -514,7 +542,7 @@ class _RealServices:
     def smoke(self, block: ServerBlock) -> SmokeResult:
         """Put one real query through one configured server, exactly as that server would.
 
-        The store is chosen from the BLOCK's own `RECALL_ENV`, mirroring `recall_mcp/server.py:627`,
+        The store is chosen from the BLOCK's own `RECALL_ENV`, mirroring `recall_mcp/server.py:629`,
         because the point is to exercise the configuration that was just written rather than a
         second guess at it. If `server_blocks` is ever wrong about which tenants can be served, this
         is where it surfaces: as an exception, from the same code path the client will take.
@@ -980,7 +1008,7 @@ def run_headless(
     state_path: Path | None = None,
     fresh: bool = False,
     profile_path: Path | None = None,
-    #: Claude Code's own config, where the approval for the generated `.mcp.json` is recorded.
+    #: Claude Code's own config, where the user-scope servers are recorded.
     #: ⚠️ Threaded rather than defaulted deep inside, for the same reason `profile_path` is: the
     #: default is a USER-GLOBAL file, and the first test run that reached it wrote five junk
     #: entries into the real one. A caller that does not want to touch the user's client — every
@@ -1132,7 +1160,6 @@ def run_headless(
     blocks, unservable = server_blocks(
         plan, dsn=config.resolved_dsn, promoted=promoted, serving=serving
     )
-    mcp_path: Path | None = None
     files: tuple[Path, ...] = ()
 
     # Rewrite the stack with the REAL trust posture, now that it is known, and hand the desktop UI
@@ -1181,38 +1208,39 @@ def run_headless(
     # Bound before the branch, not inside the `try`: the failure path and the no-`project_root`
     # path both reach the report, and an unbound name there would turn a written install into a
     # NameError at the moment it reports success.
-    approval: ClientApproval | None = None
+    registration: UserScopeRegistration | None = None
     if config.project_root is not None:
         if progress:
-            progress("wiring: .mcp.json")
-        mcp_path = config.project_root / ".mcp.json"
+            progress("wiring: MCP servers (user scope)")
+        # ⚠️ **USER scope, and deliberately no `.mcp.json`.** Project-scoped servers are gated: the
+        # client asks for approval in an interactive session and the tools are silently absent
+        # until it is answered — measured, 2 of 310 tracked projects had any approval recorded.
+        # This installer exists for people who are not Claude Code experts, so an invisible gate
+        # between "the installer said it worked" and "the tools are there" is the product failing.
+        #
+        # Writing BOTH would be worse than either: precedence is local, then project, then user,
+        # and entries are not merged, so a project-scoped file would win in this very directory and
         try:
-            write_mcp_config(mcp_path, mcp_config(blocks, project_root=config.project_root))
+            registration = register_user_scope(
+                blocks,
+                project_root=config.project_root,
+                config_path=claude_config_path,
+            )
             wrote = write_project_files(
                 project_root=config.project_root,
                 dsn=config.resolved_dsn,
                 embedder=config.embedder,
                 memory_dir=config.memory_root,
             )
-            files = (mcp_path, *wrote)
-            # A `.mcp.json` the client has not been told to trust yields NO TOOLS and says nothing.
-            # Recording the approval is what makes the file the wizard just wrote actually load;
-            # the outcome is reported either way, because a silent approval of somebody else's
-            # config would be worse than the gate it opens.
-            approval = approve_mcp_servers(
-                config.project_root,
-                tuple(block.name for block in blocks),
-                config_path=claude_config_path,
-            )
+            files = tuple(wrote)
         except OSError as exc:
             # Reported, not raised. Every corpus is already built and promoted by now; throwing that
             # away because a directory is read-only would be the expensive half of the trade.
             #
             # The FAILING FILE is named from the exception rather than assumed. This block covers
-            # `.mcp.json`, `.env`, `CLAUDE.md` and `MEMORY.md`, and an earlier version of this
-            # message blamed `.mcp.json` for all four, which would have sent an operator to check a
-            # file that was written correctly.
-            mcp_path = None
+            # `~/.claude.json`, `.env`, `CLAUDE.md` and `MEMORY.md`, and an earlier version of
+            # this message blamed one of them for all four, which would have sent an operator to
+            # check a file that was written correctly.
             blamed = exc.filename or "the project files"
             failures.append(
                 Failure(
@@ -1223,10 +1251,12 @@ def run_headless(
     else:
         blocks = ()
 
-    # The verification half. Run against the blocks that were WRITTEN, so a config nobody wrote is
-    # not credited with answering, and after the wiring so it exercises the file on disk's semantics.
+    # The verification half. Run for every block the wiring produced, and deliberately NOT gated on
+    # the registration: whether a client has been told about a server is a different question from
+    # whether the corpus behind it answers, and the moment registration is refused is exactly when
+    # the operator most needs to know which half failed.
     smoke: tuple[SmokeResult, ...] = ()
-    if blocks and mcp_path is not None:
+    if blocks:
         results: list[SmokeResult] = []
         for block in blocks:
             if progress:
@@ -1258,9 +1288,8 @@ def run_headless(
         indexed=tuple(indexed),
         reused=tuple(reused),
         servers=blocks,
-        approval=approval,
+        registration=registration,
         unservable=unservable,
-        mcp_path=mcp_path,
         files_written=files,
         smoke=smoke,
     )

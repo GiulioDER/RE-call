@@ -19,7 +19,7 @@ a **tenant**.
 
 | Claim | Site | Verdict |
 |---|---|---|
-| Server builds `GenerationStore` only in production | `recall_mcp/server.py:628` | confirmed |
+| Server builds `GenerationStore` only in production | `recall_mcp/server.py:629` | confirmed |
 | Missing `generation_id` degrades to `"legacy"` | `recall_mcp/service.py:973` | confirmed. A second site uses the same default but maps it to `None` immediately after, so the two do not behave identically |
 | `promote()` refuses in production, needs a flag otherwise | `recall/generations.py:847` | confirmed |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
@@ -86,7 +86,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:1836`, `recall/cli.py:2097`).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:366`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
-   `recall_mcp/server.py:628`, `recall/cli.py:2136`, and the `generation_mode` parameter threaded
+   `recall_mcp/server.py:629`, `recall/cli.py:2136`, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`recall_mcp/stores.py:154`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:357`).

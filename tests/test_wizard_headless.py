@@ -818,7 +818,7 @@ def test_the_wizard_refuses_flags_it_would_otherwise_discard(tmp_path: Path) -> 
 
 
 def test_the_smoke_query_uses_the_servers_own_trust_mode() -> None:
-    """The smoke must run under the trust mode it is about to WRITE into `.mcp.json`.
+    """The smoke must run under the trust mode it is about to WRITE into the server block.
 
     `trusted_search` resolves its policy from `TrustPolicy.from_env()` when none is passed, which
     reads the WIZARD's environment — and the wizard sets no `RECALL_TRUST_MODE`, so every smoke ran

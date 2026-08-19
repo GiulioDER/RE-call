@@ -231,7 +231,7 @@ def test_the_port_is_read_back_rather_than_rechosen(tmp_path: Path) -> None:
     """A re-install must not repoint the database out from under the UI and the agent.
 
     `runtime.json` names a compose file and the desktop UI connects through whatever that file
-    publishes; `.mcp.json` carries the host address directly. Re-choosing a free port on every run
+    publishes; the registered server block carries the host address directly. Re-choosing a free port on every run
     would silently break both, and the symptom is a UI showing an empty corpus rather than an error.
     """
     from recall.wizard.stack import existing_port

@@ -1,8 +1,13 @@
-"""`.mcp.json`: the artifact that decides whether any of the install is reachable.
+"""MCP registration: the artifact that decides whether any of the install is reachable.
 
 Each property below is a way this could produce a configuration that looks complete and answers
 nothing, which is the worst outcome available here: the operator has no reason to doubt a file the
 installer wrote.
+
+The servers are registered at **user scope**, in Claude Code's own `~/.claude.json`, and the wizard
+deliberately writes no project-scoped `.mcp.json`. Project scope is gated behind an approval prompt
+that a non-interactive install can never answer, and precedence is local, then project, then user
+with no merging, so writing both would let the project file win and put the gate back.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from recall.wizard.corpora import default_plan
-from recall.wizard.wiring import mcp_config, server_blocks, write_mcp_config
+from recall.wizard.wiring import mcp_config, register_user_scope, server_blocks
 
 
 def _plan(tmp_path: Path):
@@ -24,6 +29,18 @@ def _plan(tmp_path: Path):
         code_root=tmp_path / "repo",
         memory_root=tmp_path / "memory",
     )
+
+
+def _client(tmp_path: Path) -> Path:
+    """A `~/.claude.json` that already exists, which is the ordinary case: Claude Code has run.
+
+    The wizard refuses to CREATE another application's config, so a test that wants a successful
+    registration has to stand one up. Written here rather than inline so the tests below assert
+    about smoke and trust rather than about JSON.
+    """
+    client = tmp_path / ".claude.json"
+    client.write_text(json.dumps({"projects": {}}), encoding="utf-8")
+    return client
 
 
 def _by_name(blocks):
@@ -36,7 +53,7 @@ def _by_name(blocks):
 
 
 def test_a_promoted_tenant_is_served_from_its_generation_under_strict_trust(tmp_path: Path) -> None:
-    """`RECALL_ENV=production` is what selects `GenerationStore` (`recall_mcp/server.py:627`).
+    """`RECALL_ENV=production` is what selects `GenerationStore` (`recall_mcp/server.py:629`).
 
     Without it the server reads the legacy `chunks` table, which a generation build never wrote to,
     so the tenant answers nothing while looking configured. That is the failure this asserts against,
@@ -132,39 +149,47 @@ def test_every_block_sets_trust_in_its_own_env_rather_than_relying_on_the_shell(
 
 
 # ----------------------------------------------------------------------------------------------
-# Writing the file
+# Registering at user scope
 # ----------------------------------------------------------------------------------------------
 
 
-def test_writing_preserves_servers_this_wizard_knows_nothing_about(tmp_path: Path) -> None:
-    """An operator's `.mcp.json` almost certainly holds other servers, and losing them is silent.
+def _blocks(tmp_path: Path, *, promoted=("default-docs", "default-code")):
+    blocks, _ = server_blocks(
+        _plan(tmp_path),
+        dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
+        promoted=frozenset(promoted),
+        serving=frozenset({"default-docs", "default-code", "default-memory"}),
+    )
+    return blocks
 
-    Replacing the file would delete a working configuration and the operator would discover it the
-    next time they reached for a tool that had vanished.
+
+def test_registering_preserves_servers_this_wizard_knows_nothing_about(tmp_path: Path) -> None:
+    """`~/.claude.json` is CLAUDE CODE's file and holds every server the user has.
+
+    Replacing it, or its `mcpServers` key, would delete a working configuration and the operator
+    would discover it the next time they reached for a tool that had vanished.
     """
-    path = tmp_path / ".mcp.json"
-    path.write_text(
+    client = tmp_path / ".claude.json"
+    client.write_text(
         json.dumps(
             {
+                "someOtherSetting": {"kept": True},
                 "mcpServers": {
                     "someone-elses": {"type": "http", "url": "https://example.invalid/mcp"},
                     "default-docs": {"type": "stdio", "command": "old"},
-                }
+                },
             }
         ),
         encoding="utf-8",
     )
 
-    blocks, _ = server_blocks(
-        _plan(tmp_path),
-        dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
-        promoted=frozenset({"default-docs", "default-code"}),
-        serving=frozenset({"default-docs", "default-code", "default-memory"}),
-    )
-    write_mcp_config(path, mcp_config(blocks, project_root=tmp_path))
+    result = register_user_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
 
-    written = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+    assert result.recorded
+    document = json.loads(client.read_text(encoding="utf-8"))
+    written = document["mcpServers"]
     assert written["someone-elses"]["url"] == "https://example.invalid/mcp", "must survive"
+    assert document["someOtherSetting"] == {"kept": True}, "unrelated settings must survive"
     # 🔁 Was `== "python"`. A bare `python` resolves against the CLIENT's PATH, not the environment
     # recall is installed into; on Windows that is routinely the Microsoft Store stub, which opens
     # the Store rather than running anything, and the user sees a server that will not start with
@@ -176,40 +201,46 @@ def test_writing_preserves_servers_this_wizard_knows_nothing_about(tmp_path: Pat
         "a bare name would be resolved by whatever PATH the client happens to have"
     )
     assert set(written) == {"someone-elses", "default-docs", "default-code", "default-memory"}
-
-
-def test_writing_over_a_corrupt_file_does_not_lose_the_install(tmp_path: Path) -> None:
-    """A file that cannot be parsed is replaced. There is nothing in it to preserve."""
-    path = tmp_path / ".mcp.json"
-    path.write_text("{ this is not json", encoding="utf-8")
-
-    blocks, _ = server_blocks(
-        _plan(tmp_path),
-        dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
-        promoted=frozenset({"default-docs", "default-code"}),
-        serving=frozenset({"default-docs", "default-code", "default-memory"}),
+    assert (client.with_name(client.name + ".recall-backup")).exists(), (
+        "a write into another application's config must leave a way back"
     )
-    write_mcp_config(path, mcp_config(blocks, project_root=tmp_path))
 
-    assert set(json.loads(path.read_text(encoding="utf-8"))["mcpServers"]) == {
-        "default-docs",
-        "default-code",
-        "default-memory",
-    }
+
+def test_a_name_belonging_to_another_install_is_refused_not_repointed(tmp_path: Path) -> None:
+    """Server names are `{project}-{kind}`, so two installs sharing a project name collide.
+
+    Overwriting would repoint the FIRST install's servers at a different corpus: its user would
+    keep asking the same questions and quietly get another project's answers. The name is left
+    alone, reported, and the remedy (a distinct `project`) is named.
+    """
+    client = tmp_path / ".claude.json"
+    elsewhere = str(tmp_path / "some-other-install")
+    client.write_text(
+        json.dumps(
+            {"mcpServers": {"default-docs": {"type": "stdio", "cwd": elsewhere}}}
+        ),
+        encoding="utf-8",
+    )
+
+    result = register_user_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
+
+    assert result.conflicts == (("default-docs", elsewhere),)
+    assert "default-docs" not in result.registered
+    assert set(result.registered) == {"default-code", "default-memory"}, (
+        "the names that do NOT collide must still be registered"
+    )
+    written = json.loads(client.read_text(encoding="utf-8"))["mcpServers"]
+    assert written["default-docs"]["cwd"] == elsewhere, "the other install must be untouched"
 
 
 def test_the_written_file_has_no_temporary_left_behind_and_lf_endings(tmp_path: Path) -> None:
-    path = tmp_path / "nested" / ".mcp.json"
-    blocks, _ = server_blocks(
-        _plan(tmp_path),
-        dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
-        promoted=frozenset({"default-docs"}),
-        serving=frozenset({"default-docs", "default-memory"}),
-    )
-    write_mcp_config(path, mcp_config(blocks, project_root=tmp_path))
+    client = tmp_path / ".claude.json"
+    client.write_text("{}", encoding="utf-8")
 
-    assert not list(path.parent.glob("*.tmp"))
-    assert b"\r\n" not in path.read_bytes(), "CRLF would rewrite every line on every platform"
+    register_user_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
+
+    assert not list(tmp_path.glob("*.recall-tmp"))
+    assert b"\r\n" not in client.read_bytes(), "CRLF would rewrite every line on every platform"
 
 
 def test_the_server_command_launches_the_real_module_from_the_project_root(tmp_path: Path) -> None:
@@ -304,36 +335,52 @@ def test_no_project_root_writes_nothing_and_says_so(tmp_path: Path) -> None:
 
     report = run_headless(_config(tmp_path), services=_CountingSpy())
 
-    assert report.mcp_path is None
+    assert report.registration is None
     assert report.servers == ()
     assert not list(tmp_path.glob(".mcp.json"))
 
 
-def test_a_project_root_writes_the_configuration(tmp_path: Path) -> None:
+def test_a_project_root_registers_the_servers_at_user_scope(tmp_path: Path) -> None:
+    """⚠️ **And writes NO `.mcp.json`.** Both would be worse than either.
+
+    Precedence is local, then project, then user, and entries are not merged: a project-scoped file
+    would win in this very directory and reintroduce the approval prompt that user scope exists to
+    avoid. The wizard's audience cannot be expected to know that prompt is what is standing between
+    "the installer said it worked" and an assistant with no tools.
+    """
     from recall.wizard.headless import run_headless
     from tests.test_wizard_state import _CountingSpy, _config
 
     root = tmp_path / "project"
     root.mkdir()
+    client = tmp_path / ".claude.json"
+    client.write_text(json.dumps({"projects": {}}), encoding="utf-8")
     config = _config(tmp_path, project_root=str(root))
 
-    report = run_headless(config, services=_CountingSpy())
+    report = run_headless(config, services=_CountingSpy(), claude_config_path=client)
 
-    assert report.mcp_path == root / ".mcp.json"
+    assert report.registration is not None
+    assert report.registration.recorded
     assert {b.name for b in report.servers} == {"default-docs", "default-code", "default-memory"}
-    written = json.loads((root / ".mcp.json").read_text(encoding="utf-8"))
-    assert set(written["mcpServers"]) == {"default-docs", "default-code", "default-memory"}
-    assert "wrote" in report.render()
+    written = json.loads(client.read_text(encoding="utf-8"))["mcpServers"]
+    assert set(written) == {"default-docs", "default-code", "default-memory"}
+    assert written["default-docs"]["cwd"] == str(root), "the server must run from the project"
+    assert not (root / ".mcp.json").exists(), (
+        "a project-scoped file would take precedence over the user-scoped one and put the "
+        "approval gate back"
+    )
+    rendered = report.render()
+    assert "user scope" in rendered
+    assert "restart" in rendered, "a registration nobody restarts into is not yet loaded"
 
     # `.env` and `CLAUDE.md` too, and every file touched must be NAMED: these are block-scoped
     # edits to files the operator owns, and a block-scoped edit is invisible in a listing.
     assert (root / ".env").exists()
     assert (root / "CLAUDE.md").exists()
     assert "RECALL_DSN" in (root / ".env").read_text(encoding="utf-8")
-    named = report.render()
     for path in report.files_written:
-        assert str(path) in named, f"{path} was written and not reported"
-    assert {p.name for p in report.files_written} >= {".mcp.json", ".env", "CLAUDE.md"}
+        assert str(path) in rendered, f"{path} was written and not reported"
+    assert {p.name for p in report.files_written} >= {".env", "CLAUDE.md"}
 
 
 def test_an_operators_existing_claude_md_and_env_survive(tmp_path: Path) -> None:
@@ -378,7 +425,9 @@ def test_every_written_server_is_smoke_tested(tmp_path: Path) -> None:
     root.mkdir()
     spy = _Spy()
     report = run_headless(
-        load_config(_write(tmp_path, _config(tmp_path, project_root=str(root)))), services=spy
+        load_config(_write(tmp_path, _config(tmp_path, project_root=str(root)))),
+        services=spy,
+        claude_config_path=_client(tmp_path),
     )
 
     assert spy.smoked == ["default-docs", "default-code", "default-memory"], "every written server must be queried"
@@ -440,6 +489,7 @@ def test_an_abstention_is_not_a_smoke_failure(tmp_path: Path) -> None:
     report = run_headless(
         load_config(_write(tmp_path, _config(tmp_path, project_root=str(root)))),
         services=_Abstaining(),
+        claude_config_path=_client(tmp_path),
     )
 
     assert all(s.answered for s in report.smoke), "reaching the gate IS answering"
@@ -459,10 +509,10 @@ def test_an_unwritable_project_root_reports_rather_than_discarding_the_install(
     import recall.wizard.headless as H
     from tests.test_wizard_state import _CountingSpy, _config
 
-    def _boom(path: Path, document: dict) -> None:
+    def _boom(**kwargs: object) -> tuple[Path, ...]:
         raise OSError(13, "Permission denied")
 
-    monkeypatch.setattr(H, "write_mcp_config", _boom)
+    monkeypatch.setattr(H, "write_project_files", _boom)
 
     root = tmp_path / "project"
     root.mkdir()
@@ -470,76 +520,64 @@ def test_an_unwritable_project_root_reports_rather_than_discarding_the_install(
 
     assert [o.tenant for o in report.outcomes] == ["default-docs", "default-code"], "the builds must survive"
     assert [f.tenant for f in report.failures] == ["wiring"]
-    assert report.mcp_path is None
+    assert report.files_written == ()
     assert report.ok is False, "an install nobody can reach is not complete"
 
 
-def test_the_written_servers_are_recorded_as_approved(tmp_path: Path) -> None:
-    """A `.mcp.json` the client has not been told to trust loads NO tools and explains nothing.
-
-    Claude Code gates project-scoped servers: it asks in an interactive session, and until the user
-    answers, `mcp__recall__*` is simply absent. A first-run user meets an assistant that cannot
-    search their corpus, with no error naming the cause — the silent-nothing failure this project
-    keeps meeting. Recording the approval is what makes the file the wizard just wrote actually
-    load.
-
-    Defensible precisely because of what the gate is for: it exists so a CLONED REPOSITORY cannot
-    approve its own servers, and this is the opposite — the person at the keyboard ran an installer
-    against their own machine. It is reported rather than silent, and it writes one key.
-    """
-    from recall.wizard.wiring import approve_mcp_servers
-
-    client = tmp_path / ".claude.json"
-    existing = {
-        "someOtherSetting": {"kept": True},
-        "projects": {"C:\\elsewhere": {"enabledMcpjsonServers": ["someone-elses"]}},
-    }
-    client.write_text(json.dumps(existing), encoding="utf-8")
-    project_root = tmp_path / "project"
-    project_root.mkdir()
-
-    result = approve_mcp_servers(
-        project_root, ("default-docs", "default-code"), config_path=client
-    )
-
-    assert result.recorded
-    document = json.loads(client.read_text(encoding="utf-8"))
-    entry = document["projects"][str(project_root.resolve())]
-    assert entry["enabledMcpjsonServers"] == ["default-docs", "default-code"]
-
-    # ⚠️ This is CLAUDE CODE's file, not ours: it holds every project the user has.
-    assert document["someOtherSetting"] == {"kept": True}, "unrelated settings must survive"
-    assert document["projects"]["C:\\elsewhere"] == {"enabledMcpjsonServers": ["someone-elses"]}, (
-        "another project's approvals must survive"
-    )
-    assert (client.with_name(client.name + ".recall-backup")).exists(), (
-        "a write into another application's config must leave a way back"
-    )
-
-
-def test_approval_refuses_rather_than_inventing_a_client_config(tmp_path: Path) -> None:
+def test_registration_refuses_rather_than_inventing_a_client_config(tmp_path: Path) -> None:
     """No client config means Claude Code has not run here; writing one would invent its file.
 
     An unreadable one is left strictly alone. In both cases the report has to SAY the servers are
-    not approved, because that is the difference between "recall is broken" and "your client is
-    waiting to ask you".
+    not registered, because that is the difference between "recall is broken" and "your client has
+    never been started".
     """
-    from recall.wizard.wiring import approve_mcp_servers
+    blocks = _blocks(tmp_path)
 
-    project_root = tmp_path / "project"
-    project_root.mkdir()
-
-    absent = approve_mcp_servers(project_root, ("default-docs",), config_path=tmp_path / "none.json")
+    absent = register_user_scope(
+        blocks, project_root=tmp_path, config_path=tmp_path / "none.json"
+    )
     assert not absent.recorded
     assert "no Claude Code config" in absent.skipped_reason
     assert not (tmp_path / "none.json").exists(), "the wizard must not create another app's config"
 
     corrupt = tmp_path / "broken.json"
     corrupt.write_text("{not json", encoding="utf-8")
-    refused = approve_mcp_servers(project_root, ("default-docs",), config_path=corrupt)
+    refused = register_user_scope(blocks, project_root=tmp_path, config_path=corrupt)
     assert not refused.recorded
     assert "left untouched" in refused.skipped_reason
     assert corrupt.read_text(encoding="utf-8") == "{not json", "an unreadable client config is kept"
+
+
+def test_a_registration_that_was_skipped_is_reported_not_swallowed(tmp_path: Path) -> None:
+    """The silent-nothing failure, stated as a test.
+
+    An install whose corpora built and whose servers reached no client looks identical, from the
+    user's side, to one that is simply broken. The report is the only thing that can tell them
+    apart, so a skip must never render as a success.
+    """
+    from recall.wizard.headless import run_headless
+    from tests.test_wizard_state import _CountingSpy, _config
+
+    root = tmp_path / "project"
+    root.mkdir()
+    config = _config(tmp_path, project_root=str(root))
+
+    report = run_headless(
+        config, services=_CountingSpy(), claude_config_path=tmp_path / "absent.json"
+    )
+
+    assert report.registration is not None
+    assert not report.registration.recorded
+    rendered = report.render()
+    assert "NOT registered" in rendered
+    assert "no Claude Code config" in rendered
+    assert report.ok is False, "an install no client can reach is not complete"
+    assert "no client was registered" in rendered, (
+        "the head line must name the registration, not blame a corpus that built correctly"
+    )
+    assert [o.tenant for o in report.outcomes] == ["default-docs", "default-code"], (
+        "and the corpora that DID build must keep their outcomes"
+    )
 
 
 def test_the_suite_never_touches_the_real_client_config() -> None:

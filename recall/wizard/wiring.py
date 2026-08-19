@@ -1,6 +1,7 @@
 """Turn a finished install into the three MCP servers that serve it, and refuse to lie about them.
 
-`.mcp.json` is the artifact that decides whether any of the preceding work is reachable. Every
+The MCP registration is the artifact that decides whether any of the preceding work is
+reachable. Every
 variable below is set in the server's OWN `env` block rather than left to the operator's shell,
 because a stdio server launched with an explicit `env` inherits nothing: a corpus that searches
 correctly from the terminal answered `INDEX_NOT_READY` through the client for exactly that reason.
@@ -11,7 +12,7 @@ in development mode at the same time.
 actually answer.** Three cases, and they are not interchangeable:
 
 * **Certified and promoted** → `RECALL_ENV=production` with strict trust. `RECALL_ENV` is what
-  selects `GenerationStore` (`recall_mcp/server.py:627`), so a calibrated generation is only reached
+  selects `GenerationStore` (`recall_mcp/server.py:629`), so a calibrated generation is only reached
   through it, and the published calibration is what makes strict trust answerable.
 
 * **Degraded with a predecessor still serving** → production, but development trust, and the block
@@ -50,9 +51,11 @@ __all__ = [
     "ServerBlock",
     "SmokeResult",
     "UnservableTenant",
+    "UserScopeRegistration",
+    "claude_config_path",
     "mcp_config",
+    "register_user_scope",
     "server_blocks",
-    "write_mcp_config",
     "write_project_files",
     "write_runtime_profile",
 ]
@@ -321,134 +324,112 @@ def write_runtime_profile(
     return save_profile(profile, path)
 
 
-@dataclass(frozen=True)
-class ClientApproval:
-    """What was done about the client's approval gate, so the report can say rather than assume."""
-
-    #: Absolute path of the client config, or None when there is none to write.
-    config_path: Path | None
-    #: Server names now recorded as approved for this project root.
-    approved: tuple[str, ...]
-    #: Why nothing was written, when nothing was. Empty on success.
-    skipped_reason: str = ""
-
-    @property
-    def recorded(self) -> bool:
-        return bool(self.approved)
-
-
 def claude_config_path() -> Path:
     """Claude Code's own configuration. Not recall's, which is why it is touched so carefully."""
     return Path.home() / ".claude.json"
 
 
-def approve_mcp_servers(
-    project_root: Path, names: tuple[str, ...], *, config_path: Path | None = None
-) -> ClientApproval:
-    """Record the wizard's servers as approved for `project_root`, so they load without a prompt.
+@dataclass(frozen=True)
+class UserScopeRegistration:
+    """What was written into the client's USER-scope server list, and what was refused."""
 
-    ⚠️ **A `.mcp.json` the client has not been told to trust yields NO TOOLS, and says nothing.**
-    Project-scoped servers are gated: the client asks for approval in an interactive session, and
-    until it is given, `mcp__recall__*` simply is not there. A first-run user sees an assistant that
-    cannot search their corpus and no error explaining why — the silent-nothing failure this
-    project keeps meeting. Verified against Claude Code's documented scope table: `local` and
-    `project` scope load only in the current project and `project` scope prompts for approval;
-    `user` scope loads everywhere without one.
+    config_path: Path | None
+    registered: tuple[str, ...] = ()
+    #: Names already present that this install did NOT overwrite, with what they point at. A second
+    #: install under the same project name is the reachable case, and silently replacing the first
+    #: one's servers would repoint a working install at another corpus.
+    conflicts: tuple[tuple[str, str], ...] = ()
+    skipped_reason: str = ""
 
-    Recording it here is defensible for one specific reason: the gate exists so that **a cloned
-    repository cannot approve its own servers**, and this is the opposite situation — the person at
-    the keyboard just ran an installer against their own machine, naming their own database. The
-    consent the gate is asking for is the consent they already gave. It is still reported rather
-    than done silently, and it writes exactly one key.
+    @property
+    def recorded(self) -> bool:
+        return bool(self.registered)
 
-    Written with a backup and atomically, because `~/.claude.json` is CLAUDE CODE's file, not ours:
-    it holds every project the user has, and the client owns its schema. Nothing else in it is
-    touched, an unreadable or absent file is a refusal rather than an overwrite, and the backup is
-    what makes a bad write recoverable.
+
+def register_user_scope(
+    blocks: tuple[ServerBlock, ...],
+    *,
+    project_root: Path,
+    config_path: Path | None = None,
+    interpreter: str | None = None,
+) -> UserScopeRegistration:
+    """Register the servers at USER scope, where they load in every project without approval.
+
+    **Why not project scope, which is what this wrote before.** Claude Code gates project-scoped
+    `.mcp.json`: it prompts for approval in an interactive session, and until the user answers, the
+    tools are silently absent — no error, nothing naming the cause. Measured on this machine, 2 of
+    310 tracked projects had any approval recorded, neither created by the wizard. For the audience
+    this installer exists for, a first-run user who is not a Claude Code expert, an invisible gate
+    between "the installer said it worked" and "the tools are there" is the whole product failing.
+    User scope has no approval step and loads everywhere.
+
+    ⚠️ **The wizard must therefore NOT also write `.mcp.json`.** Precedence is local, then project,
+    then user, and entries are NOT merged: a project-scoped file would win in that directory and
+    reintroduce exactly the gate this removes.
+
+    **Collisions are refused, not overwritten.** Server names are `{project}-{kind}`, so a second
+    install using the same project name would silently repoint the first install's servers at a
+    different corpus. That is a data-visibility change the user never asked for, so a name already
+    present and not ours is reported and left alone; the remedy is a distinct `project` in the
+    config.
+
+    Written by merging directly rather than shelling out to `claude mcp add`. The CLI is the
+    schema's owner and would be preferable, but it is frequently absent from PATH on Windows (the
+    app installs without it), and its output does not decode under the console's default codec
+    there — measured: `UnicodeDecodeError: 'charmap' codec can't decode byte 0x8f`. Depending on it
+    would make the install fail on the platform this wizard is for. The merge touches one key, backs
+    up first, and writes atomically.
     """
     target = config_path or claude_config_path()
-    if not names:
-        return ClientApproval(config_path=target, approved=(), skipped_reason="no servers to approve")
+    if not blocks:
+        return UserScopeRegistration(config_path=target, skipped_reason="no servers to register")
 
     try:
         raw = target.read_text(encoding="utf-8")
+        document = json.loads(raw)
     except OSError as exc:
-        # No client config means Claude Code has not run here. Creating one would be inventing a
-        # file for another application; the client writes it on first run and reads `.mcp.json`
-        # then, prompting normally.
-        return ClientApproval(
+        return UserScopeRegistration(
             config_path=target,
-            approved=(),
             skipped_reason=f"no Claude Code config at {target} ({exc.strerror or exc})",
         )
-
-    try:
-        document = json.loads(raw)
     except ValueError as exc:
-        return ClientApproval(
+        return UserScopeRegistration(
             config_path=target,
-            approved=(),
             skipped_reason=f"{target} is not readable JSON ({exc}); left untouched",
         )
     if not isinstance(document, dict):
-        return ClientApproval(
-            config_path=target, approved=(), skipped_reason=f"{target} is not a JSON object"
+        return UserScopeRegistration(
+            config_path=target, skipped_reason=f"{target} is not a JSON object"
         )
 
-    projects = document.get("projects")
-    if not isinstance(projects, dict):
-        projects = {}
-        document["projects"] = projects
+    servers = document.get("mcpServers")
+    merged = dict(servers) if isinstance(servers, dict) else {}
+    incoming = mcp_config(blocks, project_root=project_root, interpreter=interpreter)["mcpServers"]
+    assert isinstance(incoming, dict)
 
-    # The client keys projects by the absolute path it was launched from.
-    key = str(project_root.resolve())
-    entry = projects.get(key)
-    if not isinstance(entry, dict):
-        entry = {}
-        projects[key] = entry
+    registered: list[str] = []
+    conflicts: list[tuple[str, str]] = []
+    for name, definition in incoming.items():
+        existing = merged.get(name)
+        if isinstance(existing, dict) and existing.get("cwd") not in (None, str(project_root)):
+            conflicts.append((name, str(existing.get("cwd"))))
+            continue
+        merged[name] = definition
+        registered.append(name)
 
-    enabled = entry.get("enabledMcpjsonServers")
-    merged = list(enabled) if isinstance(enabled, list) else []
-    for name in names:
-        if name not in merged:
-            merged.append(name)
-    entry["enabledMcpjsonServers"] = merged
+    if not registered:
+        return UserScopeRegistration(
+            config_path=target,
+            conflicts=tuple(conflicts),
+            skipped_reason="every server name is already taken by another install",
+        )
 
+    document["mcpServers"] = merged
     backup = target.with_name(target.name + ".recall-backup")
     backup.write_text(raw, encoding="utf-8", newline="\n")
     temporary = target.with_name(target.name + ".recall-tmp")
     temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
     temporary.replace(target)
-    return ClientApproval(config_path=target, approved=tuple(names))
-
-
-def write_mcp_config(path: Path, config: dict[str, object]) -> None:
-    """Write `.mcp.json`, merging into any existing `mcpServers` rather than replacing the file.
-
-    An operator's `.mcp.json` is very likely to hold servers this wizard knows nothing about, and
-    replacing the file would silently delete them. Only the keys this install owns are overwritten.
-
-    `newline="\\n"` because Python would otherwise write CRLF on Windows, and a JSON file that
-    changes every line on every platform is a diff nobody can read.
-    """
-    existing: dict[str, object] = {}
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            existing = loaded
-    except (OSError, json.JSONDecodeError):
-        existing = {}
-
-    servers = existing.get("mcpServers")
-    merged = dict(servers) if isinstance(servers, dict) else {}
-    incoming = config.get("mcpServers")
-    if isinstance(incoming, dict):
-        merged.update(incoming)
-    existing["mcpServers"] = merged
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(
-        json.dumps(existing, indent=2) + "\n", encoding="utf-8", newline="\n"
+    return UserScopeRegistration(
+        config_path=target, registered=tuple(registered), conflicts=tuple(conflicts)
     )
-    temporary.replace(path)

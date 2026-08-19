@@ -2,7 +2,7 @@
 
 Until this existed there were two. `docker-compose.desktop.yml` published no ports at all, so its
 Postgres was reachable only inside the compose network at the hostname `db`, while the wizard and
-every MCP server it writes into `.mcp.json` are HOST processes reaching a host address. Two stores,
+every MCP server it registers are HOST processes reaching a host address. Two stores,
 one user, and the failure is silent: files added through the UI build generations the agent cannot
 see, corpora the wizard builds never appear on the UI's calibration page, and both surfaces report
 themselves healthy because each is telling the truth about a different world.
@@ -164,7 +164,7 @@ class StackSpec:
 
 
 def host_dsn(port: int, *, user: str = "recall", password: str = "recall") -> str:
-    """The address a HOST process uses: the wizard, and every server in `.mcp.json`."""
+    """The address a HOST process uses: the wizard, and every MCP server it registers."""
     return f"postgresql://{user}:{password}@127.0.0.1:{port}/recall"
 
 
@@ -236,7 +236,7 @@ def existing_port(compose_path: Path) -> int | None:
     """The published port a previous run already chose, or None if there is no stack yet.
 
     **The port must be STABLE across runs.** `runtime.json` names a compose file, and the desktop
-    UI connects through whatever that file publishes; the `.mcp.json` the agent uses carries the
+    UI connects through whatever that file publishes; the server block the agent uses carries the
     host address directly. Re-choosing a free port on every install would silently repoint the
     database out from under both, and the symptom is a UI that shows an empty corpus rather than an
     error. So a re-run reads the port back rather than picking again.

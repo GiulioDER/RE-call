@@ -176,6 +176,13 @@ jobs:
           echo "a durable fact about widget alignment tolerances" \
             > "$RUNNER_TEMP/install/memory/notes.md"
 
+      # ⚠️ The wizard registers its servers in Claude Code's OWN config and refuses to CREATE that
+      # file, because inventing another application's configuration is not an installer's business.
+      # A runner has never started Claude Code, so without this the install would correctly report
+      # that nothing was registered and this job would test the refusal rather than the install.
+      - name: A client config the wizard can register into
+        run: echo '{}' > "$HOME/.claude.json"
+
       - name: Install recall
         run: python -m recall.cli wizard --headless --config "$RUNNER_TEMP/install/wizard.json"
 
@@ -183,9 +190,15 @@ jobs:
       # can still exit 0 and print a report, and this repository has shipped a report claiming
       # "install complete" for a tenant that could answer nothing.
       #
-      # `.mcp.json` is the sharp check: `wiring.server_blocks` omits a tenant it cannot serve, so a
-      # block for `default-docs` existing IS the assertion that the corpus built, validated,
-      # calibrated and promoted. A corpus that failed any of those silently loses its block.
+      # The registered servers are the sharp check: `wiring.server_blocks` omits a tenant it cannot
+      # serve, so a block for `default-docs` existing IS the assertion that the corpus built,
+      # validated, calibrated and promoted. A corpus that failed any of those silently loses its
+      # block.
+      #
+      # They are asserted in `~/.claude.json` at USER scope, and the absence of a project-scoped
+      # `.mcp.json` is asserted too: precedence is local, then project, then user with no merging,
+      # so a project file would win in that directory and reinstate the approval prompt that user
+      # scope exists to avoid. Writing both is worse than writing either.
       - name: The install produced a servable stack
         run: |
           set -euo pipefail
@@ -193,12 +206,14 @@ jobs:
           for f in docker-compose.recall.yml Dockerfile wizard.state.json; do
             test -f "$root/$f" || { echo "missing $f"; exit 1; }
           done
-          mcp="$root/project/.mcp.json"
-          test -f "$mcp" || { echo "no .mcp.json: nothing was wired"; exit 1; }
-          python - "$mcp" <<'PY'
+          if [ -f "$root/project/.mcp.json" ]; then
+            echo "a project-scoped .mcp.json was written; it takes precedence over user scope"
+            exit 1
+          fi
+          python - "$HOME/.claude.json" <<'PY'
           import json, sys
-          servers = json.loads(open(sys.argv[1], encoding="utf-8").read())["mcpServers"]
-          print("wired servers:", sorted(servers))
+          servers = json.loads(open(sys.argv[1], encoding="utf-8").read()).get("mcpServers", {})
+          print("registered servers:", sorted(servers))
           missing = [t for t in ("default-docs", "default-code") if t not in servers]
           if missing:
               raise SystemExit(

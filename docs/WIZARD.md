@@ -38,7 +38,7 @@ an installer.
 | `embedder` | yes | the vector dimension, which is welded to the table |
 | `corpus_version` | yes | stamped on every chunk; the convention is an ISO date |
 | `docs_root`, `code_root`, `memory_root` | yes | the three corpora. **Absolute paths only** |
-| `project_root` | no | where `.mcp.json`, `.env` and `CLAUDE.md` are written |
+| `project_root` | no | the `cwd` each MCP server runs from, and where `.env` and `CLAUDE.md` are written |
 | `project` | no | a label stamped on every chunk, so a hit can say where it came from |
 | `serving_role` | conditionally | see the two-role case below |
 
@@ -115,15 +115,33 @@ Three things worth knowing:
 
 With `project_root` set:
 
-- **`.mcp.json`** — one server per servable tenant. Merged into any existing `mcpServers`, so servers
-  the wizard knows nothing about survive.
+- **MCP servers in `~/.claude.json`** — one per servable tenant, registered at **user scope**, which
+  is Claude Code's own configuration file. Merged into any existing `mcpServers`, backed up first and
+  written atomically, so servers the wizard knows nothing about survive.
+
+  ⚠️ **User scope, and deliberately no project-scoped `.mcp.json`.** Claude Code gates project-scoped
+  servers behind an approval prompt, and until it is answered the tools are silently absent: no
+  error, nothing naming the cause. Measured on one machine, 2 of 310 tracked projects had any
+  approval recorded. User scope has no prompt and loads in every project. Writing both files would be
+  worse than either, because precedence is local, then project, then user with no merging, so the
+  project file would win in that directory and put the gate back.
+
+  Two consequences worth stating. **A server name already registered by another install is refused,
+  not repointed**: names are `{project}-{kind}`, so a second install under the same `project` would
+  silently aim the first one's servers at a different corpus. Use a distinct `project`. And **the
+  wizard will not create `~/.claude.json` if it is absent**, because inventing another application's
+  configuration file is not an installer's business; start Claude Code once and re-run. In both cases
+  the report says so and the install is reported as incomplete, since servers no client can see are
+  the whole failure this step exists to prevent.
+
+  Restart Claude Code afterwards. It reads this file at startup.
 - **`.env`** — the serving DSN and embedder, for the CLI. **Not** for the MCP servers: a stdio server
   launched with an explicit `env` block inherits nothing, so each server carries its own variables.
 - **`CLAUDE.md`** and **`memory/MEMORY.md`** — block-scoped edits between markers, so your own file
   content is preserved.
 
-Without `project_root` nothing is written and the report says so. The wizard will not guess a
-location to put an MCP configuration in.
+Without `project_root` nothing is written or registered and the report says so. The wizard will not
+guess which project these servers belong to.
 
 **Docker autostart is not configured.** Making a container start on login is a change to the machine
 rather than the project; on Windows it is a Docker Desktop setting.
