@@ -131,3 +131,5 @@ Corrected full split results:
 | Hybrid | 0.2716 | 0.1550 | 0.5263 | 0.1060 | 0.8582 |
 
 The corrected values match the official ATM Bench scorer. Hybrid improves retrieval and list containment, but the best Jaccard cutoff is one item, while containment continues increasing through 100 items. This confirms that a final answer selector must optimize precision and recall jointly.
+
+The cutoff difference is explained by answer cardinality. The 12 hard split list answers average 7.58 IDs, while the 139 full split list answers average 1.69 IDs. I will not promote one fixed cutoff from these results. The next selection experiment must test a serving time cardinality policy derived from the question, with no access to the gold answer.
