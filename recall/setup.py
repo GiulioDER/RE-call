@@ -14,6 +14,7 @@ from typing import Callable, Literal, Sequence
 
 from recall.calibration import Calibration, from_samples, save
 from recall.claude_code import claude_code_detected, install_hooks, register_mcp_server
+from recall.seed import plan_seed, seed_corpus
 from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 
@@ -1288,6 +1289,18 @@ def run_setup_wizard(
         default=True,
     )
 
+    # Computed before asking, so the question names what would actually be ingested rather than
+    # asking the user to agree to an unspecified amount of their own project.
+    seed_plan = plan_seed(Path.cwd())
+    seed_requested = False
+    if not seed_plan.is_empty:
+        seed_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            f"Seed the corpus now from this project ({seed_plan.describe()})?",
+            default=True,
+        )
+
     # Scaffolding tells Claude HOW to use recall; this step is what gives it the tools at all.
     # Only offered when there is a client on this machine to wire up: asking someone to register
     # an MCP server with a program they do not have is noise dressed up as a choice.
@@ -1343,9 +1356,30 @@ def run_setup_wizard(
                 "Register it by hand with the block in docs/USING_WITH_CLAUDE.md."
             )
 
+    def _run_seed() -> None:
+        seed_corpus(
+            dsn=dsn,
+            embedder_name=embedder.value,
+            plan=seed_plan,
+            env=cloud_keys,
+            print_fn=print_fn,
+        )
+
     def _run_post_setup() -> None:
+        # Order is the point, not an accident. Seeding runs before the hooks, because a first
+        # session that searches an empty corpus teaches the user that recall finds nothing, and
+        # the session-start digest correctly stays silent when there is nothing to report. The
+        # wiring goes last, so the tools arrive pointed at a corpus that already answers.
+        #
+        # Scaffolding first is NOT so that seeding picks up the `memory/MEMORY.md` it writes: the
+        # seed plan was computed before the interview finished, so a file created here cannot be
+        # in it. It does not need to be. `_run_scaffold` indexes `memory/` itself, and the plan
+        # covers a `memory/` that already existed, which is the case where scaffolding is
+        # declined. Recomputing the plan here instead would index a set the user never agreed to.
         if scaffold_requested:
             _run_scaffold()
+        if seed_requested:
+            _run_seed()
         if claude_wiring_requested:
             _run_claude_wiring()
 
