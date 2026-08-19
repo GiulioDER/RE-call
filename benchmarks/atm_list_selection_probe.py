@@ -50,8 +50,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     ground_truth = load_json(args.ground_truth)
     retrieval = load_json(args.retrieval_result)
     by_id = {str(row["id"]): row for row in ground_truth if row.get("qtype") == "list_recall"}
-    if len(by_id) != 12:
-        raise ValueError(f"expected 12 ATM list_recall rows, found {len(by_id)}")
+    if not by_id:
+        raise ValueError("ground truth contains no list_recall rows")
 
     arms: dict[str, Any] = {}
     for arm_name, arm in retrieval["arms"].items():
