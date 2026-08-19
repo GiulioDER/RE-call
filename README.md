@@ -59,7 +59,7 @@ result that is not trustworthy enough to answer from.
 
 The vocabulary that carries that validity, `supersedes`, `valid_from` and `valid_until` in a
 document's frontmatter, is published separately as
-[Validity Frontmatter 1.0](https://github.com/GiulioDER/validity-frontmatter): MIT licensed, with a
+[Validity Frontmatter](https://github.com/GiulioDER/validity-frontmatter): MIT licensed, with a
 zero-dependency TypeScript implementation beside it. RE-call is its Python implementation, not its
 owner. The specification is deliberately licensed more permissively than this repository, so
 adopting the vocabulary carries no obligation to adopt the engine.

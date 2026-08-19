@@ -33,8 +33,9 @@ from recall.retriever import (
     StructuralExpansionPolicy,
 )
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
 from recall.trust_policy import TrustPolicy
+
+from benchmarks._trust import bench_search
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA = ROOT / ".benchdata" / "enterprise-rag-v1.0.0"
@@ -146,7 +147,7 @@ def _run_case(
     elif arm in {"answer_slots", "bundle_beam"}:
         expansion = DocumentExpansionPolicy(enabled=True, max_sources=2, chunks_per_source=8)
 
-    result = trusted_search(
+    result = bench_search(
         store,
         embedder,
         question.question,
