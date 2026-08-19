@@ -1223,8 +1223,15 @@ def run_headless(
         # This installer exists for people who are not Claude Code experts, so an invisible gate
         # between "the installer said it worked" and "the tools are there" is the product failing.
         #
-        # Writing BOTH would be worse than either: precedence is local, then project, then user,
-        # and entries are not merged, so a project-scoped file would win in this very directory and
+        # Writing BOTH would be worse than either. Precedence is local, then project, then user,
+        # ordered HIGHEST FIRST, and entries are not merged, so the local entry written here already
+        # beats a `.mcp.json` of the same name: that file would be inert weight that still has to be
+        # trusted, explained and kept in step, and whoever later found the tools missing would delete
+        # it and see nothing change.
+        #
+        # 🔁 This comment said the opposite until the local-scope switch was audited. It was written
+        # for USER scope, where a project file genuinely does win (2 beats 3), and stayed behind when
+        # the code moved to local (1). Correct sentence, wrong scope, and nothing failed.
         try:
             registration = register_local_scope(
                 blocks,

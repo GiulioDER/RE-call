@@ -49,9 +49,19 @@ Both clients use the same `mcpServers` block; only the entry point differs.
   ⚠️ **Saving the block as `.mcp.json` in the project root also works, and is the worse option.**
   Claude Code gates project-scoped servers from that file behind an approval prompt, and until you
   answer it in an interactive session the tools are simply absent — no error, nothing naming the
-  cause. Precedence is local, then project, then user, with no merging, so an `.mcp.json` also wins
-  over the local entry in that directory. If you have both and the tools do not appear, that file is
-  why. `docs/WIZARD.md` has the full reasoning, and the installer does this for you.
+  cause. It also puts a DSN in the repository, which the credentials note below says not to do.
+
+  When one server name is defined in more than one scope, Claude Code uses **one** definition and
+  does not merge fields across scopes. The order, **highest precedence first**, is:
+
+  1. **local** — `~/.claude.json` under this project's entry
+  2. **project** — `.mcp.json` in the repository
+  3. **user** — `~/.claude.json` at the top level
+
+  So a local entry **beats** an `.mcp.json` of the same name rather than losing to it. If the tools
+  do not appear, read that order before deleting anything: a `.mcp.json` sitting under a local entry
+  of the same name is already inert, and removing it changes nothing. `docs/WIZARD.md` has the full
+  reasoning, and the installer does all of this for you.
 - **Claude Desktop** — add the block to `claude_desktop_config.json`
   (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`), then restart.
 
