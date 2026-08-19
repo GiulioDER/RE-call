@@ -302,8 +302,14 @@ def main() -> int:
     # not be reported as one number.
     fetched_b = [r for r in strat_b if r["fetched"]]
     print()
+    # ⚠️ This line said "were then promoted" and printed `treat_recovered`, which is top-1
+    # RECOVERY. Promotion was never measured by it. That one wrong word survived two full
+    # measurement cycles and produced two confidently wrong causal stories, both retracted in
+    # docs/preregistrations/2026-08-20-successor-rank-hypothesis.md. Promotion is now read from
+    # the verdict, and recovery is named as recovery.
     print(f"  of {len(strat_b)} stratum B queries: {len(fetched_b)} fetched a successor, "
-          f"{sum(r['treat_recovered'] for r in fetched_b)} of those were then promoted")
+          f"{sum(r['succ_verdict'] == 'ok' for r in fetched_b)} were promoted to ok, "
+          f"{sum(r['treat_recovered'] for r in fetched_b)} then ranked FIRST among ok hits")
     print(f"  never fetched: {len(strat_b) - len(fetched_b)}  "
           "(the fetch did not fire, which is not the same as the fetch not helping)")
 
