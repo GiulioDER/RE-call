@@ -25,12 +25,18 @@ files."
 ⚠️ **Two things here are documentary rather than measured, and are recorded as such.** That local
 scope sits outside the approval gate follows from the gate being about `.mcp.json` specifically,
 and from the keys being named ``enabledMcpjsonServers``; no project on this machine carried a
-local-scope entry to watch it work. And what approval gates at all is unsettled:
-`docs/preregistrations/2026-08-16-sessionstart-hook-mcp-ordering.md` (#429) measured two sessions
-holding both a `.mcp.json` and a recorded approval that received no recall tools, and one in a
-never-approved project that received the full set. What separated every row there was `resume`
-versus fresh `startup`, confounded with date. Nothing in this module depends on either question
-having an answer, which is the point of choosing the scope that does not raise them.
+local-scope entry to watch it work.
+
+And what approval gates at all is unsettled. `docs/preregistrations/
+2026-08-16-sessionstart-hook-mcp-ordering.md` established (#429, narrowed by #432) that **approval
+is not necessary**: a session in a never-approved project received a full recall tool set. The
+companion claim, that `resume` versus fresh `startup` is what separates the outcome, was
+**withdrawn** by #432 once its two supporting rows turned out to be sessions that died on a 401
+with empty tool deltas, which is an uninterpretable null rather than a measurement. So the state of
+the art is one positive observation and an open question.
+
+Nothing in this module depends on any of it having an answer, which is the point of choosing the
+scope that raises neither question.
 
 ⚠️ A local entry is keyed by the project's path, so moving or renaming the project orphans it in
 silence. Same shape as the memory store this project has already lost once to a directory rename.
