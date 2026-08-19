@@ -96,6 +96,53 @@ def _all_files(result: TrustedResult) -> set[str]:
     return {h.provenance.file or "" for h in result.hits}
 
 
+# --- rank instrumentation, registered in 2026-08-20-successor-rank-hypothesis.md ----------------
+#
+# Recovery is top-1, so it collapses two different failures into one number: the successor was not
+# promoted, and the successor was promoted but something else came first. Two records guessed
+# between them in prose. These read it off instead.
+
+
+def _verdict_of(result: TrustedResult, file: str) -> str:
+    for hit in result.hits:
+        if hit.provenance.file == file:
+            return hit.verdict
+    return "absent"
+
+
+def _rank_among_ok(result: TrustedResult, file: str) -> int | None:
+    """1-based position among verdict-`ok` hits, or None when the file is not `ok`."""
+    ok = _ok_files(result)
+    return ok.index(file) + 1 if file in ok else None
+
+
+def _top_by_score(result: TrustedResult) -> str:
+    """Which file would answer if `ok` hits were ordered by cosine instead of pool position.
+
+    The record predicts this is NOT an improvement. Promotion exists for a successor whose own
+    wording scores low, so ordering by cosine pushes exactly those back down.
+    """
+    ok = [h for h in result.hits if h.verdict == "ok"]
+    if not ok:
+        return ""
+    return max(ok, key=lambda h: h.cosine).provenance.file or ""
+
+
+def _top_promoted_first(result: TrustedResult) -> str:
+    """Which file would answer if promoted successors were placed ahead of other `ok` hits.
+
+    A promoted successor is identified as an `ok` hit whose file some OTHER hit names as its
+    `superseded_by`, which is exactly the condition `evaluate` uses to promote it. `sorted` is
+    stable, so pool order survives inside each group.
+    """
+    ok = [h for h in result.hits if h.verdict == "ok"]
+    if not ok:
+        return ""
+    named = {h.validity.superseded_by for h in result.hits if h.validity.superseded_by}
+    ranked = sorted(ok, key=lambda h: 0 if h.provenance.file in named else 1)
+    return ranked[0].provenance.file or ""
+
+
 def _rate(flags: list[bool]) -> str:
     if not flags:
         return "n/a (n=0)"
@@ -182,6 +229,11 @@ def main() -> int:
                         "base_cov": bool(base_ok),
                         "treat_cov": bool(treat_ok),
                         "fetched": treat.diagnostics.stage_ms.get("successor_expansion_sources", 0.0) > 0,
+                        "succ_verdict": _verdict_of(treat, successor),
+                        "succ_rank": _rank_among_ok(treat, successor),
+                        "outranked_by": (treat_ok[0] if treat_ok else ""),
+                        "score_recovered": _top_by_score(treat) == successor,
+                        "promoted_recovered": _top_promoted_first(treat) == successor,
                         "base_ms": base_ms,
                         "treat_ms": treat_ms,
                     }
@@ -267,6 +319,25 @@ def main() -> int:
             statistics.median([r["base_ms"] for r in quiet]), 1e-9
         )
         print(f"  p50 latency ratio, non triggering        : {ratio:.2f}x  n={len(quiet)}")
+
+    print()
+    print("  rank instrumentation, stratum B, treatment arm")
+    print(f"    successor present            : "
+          f"{sum(r['succ_verdict'] != 'absent' for r in strat_b)} of {len(strat_b)}")
+    print(f"    successor verdict ok         : "
+          f"{sum(r['succ_verdict'] == 'ok' for r in strat_b)} of {len(strat_b)}")
+    missed = [r for r in strat_b if not r["treat_recovered"]]
+    print(f"    of the {len(missed)} that did NOT recover:")
+    for r in missed:
+        rank = r["succ_rank"]
+        print(f"      {r['slug']:<20} verdict={r['succ_verdict']:<16} "
+              f"rank_among_ok={rank if rank is not None else '-'}  "
+              f"outranked_by={r['outranked_by'] or '(nothing ok)'}")
+    print()
+    print("  counterfactual orderings, computed from the same result, nothing shipped changed")
+    print(f"    recovery, pool order (as shipped) : {_rate([r['treat_recovered'] for r in strat_b])}")
+    print(f"    recovery, score order             : {_rate([r['score_recovered'] for r in strat_b])}")
+    print(f"    recovery, promoted first          : {_rate([r['promoted_recovered'] for r in strat_b])}")
 
     print()
     print("  per query")
