@@ -124,6 +124,96 @@ jobs:
   # for code paths that never execute in practice, which is the failure mode the
   # suites themselves are written against. The repository is public, so Windows
   # runner minutes are free.
+  # The installer, on a machine that has never run recall.
+  #
+  # Every wizard defect found so far was found by RUNNING the install, never by reading it or by a
+  # unit test: a database that died on a bind mount, a first `up` that always failed, an image that
+  # was silently the wrong one, an upload written to a table nothing reads. A runner is the only
+  # clean machine available on demand — no image cache, no volumes, no `wizard.state.json` — so this
+  # is the one place that condition can be reproduced on every change instead of once.
+  #
+  # **It deliberately does NOT build the recall image.** `run_headless` starts `db` only (see the
+  # `services=("db",)` call it makes), and the generated Dockerfile pins the RUNNING version from
+  # PyPI. Building here would make every PR between a version bump and its release fail on a
+  # missing wheel — a red build caused by the release calendar rather than the change. Whether the
+  # image builds and the MCP services start is a separate question, and belongs in a job that can
+  # be pinned to a published version.
+  #
+  # ⚠️ Blind to Windows filesystem semantics, which is where the sharpest defect so far came from
+  # (PostgreSQL taking EINTR on a bind-mounted WAL and dying). The database now lives on a named
+  # volume, so that surface is much smaller, but this job cannot speak for it.
+  clean-install:
+    name: Clean install (wizard)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev,fastembed,documents]"
+
+      # A real config, with the shape a first-run user writes: a data root and no DSN, so the
+      # wizard provisions its own database rather than being handed one.
+      - name: Write the wizard config
+        run: |
+          mkdir -p "$RUNNER_TEMP/install/memory"
+          cat > "$RUNNER_TEMP/install/wizard.json" <<JSON
+          {
+            "embedder": "fastembed",
+            "corpus_version": "ci-clean-install",
+            "data_root": "$RUNNER_TEMP/install",
+            "project": "default",
+            "docs_root": "$GITHUB_WORKSPACE/docs",
+            "code_root": "$GITHUB_WORKSPACE/recall",
+            "memory_root": "$RUNNER_TEMP/install/memory",
+            "project_root": "$RUNNER_TEMP/install/project"
+          }
+          JSON
+          echo "a durable fact about widget alignment tolerances" \
+            > "$RUNNER_TEMP/install/memory/notes.md"
+
+      - name: Install recall
+        run: python -m recall.cli wizard --headless --config "$RUNNER_TEMP/install/wizard.json"
+
+      # ⚠️ Asserting the ARTIFACTS, not the report's wording. An install that refused or degraded
+      # can still exit 0 and print a report, and this repository has shipped a report claiming
+      # "install complete" for a tenant that could answer nothing.
+      #
+      # `.mcp.json` is the sharp check: `wiring.server_blocks` omits a tenant it cannot serve, so a
+      # block for `default-docs` existing IS the assertion that the corpus built, validated,
+      # calibrated and promoted. A corpus that failed any of those silently loses its block.
+      - name: The install produced a servable stack
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/install"
+          for f in docker-compose.recall.yml Dockerfile wizard.state.json; do
+            test -f "$root/$f" || { echo "missing $f"; exit 1; }
+          done
+          mcp="$root/project/.mcp.json"
+          test -f "$mcp" || { echo "no .mcp.json: nothing was wired"; exit 1; }
+          python - "$mcp" <<'PY'
+          import json, sys
+          servers = json.loads(open(sys.argv[1], encoding="utf-8").read())["mcpServers"]
+          print("wired servers:", sorted(servers))
+          missing = [t for t in ("default-docs", "default-code") if t not in servers]
+          if missing:
+              raise SystemExit(
+                  f"no server block for {missing}. server_blocks omits a tenant it cannot serve, "
+                  "so this means the corpus did not certify - the install reported success and "
+                  "left nothing able to answer."
+              )
+          PY
+
+      - name: Remove the stack this job started
+        if: always()
+        run: |
+          compose="$RUNNER_TEMP/install/docker-compose.recall.yml"
+          test -f "$compose" && docker compose -f "$compose" down -v || true
+
   # The desktop UI, which until now was tested only on a maintainer's machine.
   #
   # ⚠️ **No job installed the `desktop` extra, so every test guarding the UI silently SKIPPED on

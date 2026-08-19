@@ -502,6 +502,7 @@ class _RealServices:
         from recall.generation_store import GenerationStore
         from recall.store import DEFAULT_TABLE, PgVectorStore
         from recall.trust import trusted_search
+        from recall.trust_policy import TrustPolicy
 
         production = block.env.get("RECALL_ENV") == "production"
         table = "recall_chunks_v1" if production else DEFAULT_TABLE
@@ -553,7 +554,20 @@ class _RealServices:
                     self.config.resolved_dsn, dim=embedder.dim, table=table, tenant=block.tenant
                 )
             with store:
-                result = trusted_search(store, embedder, query, k=5)
+                # ⚠️ **The BLOCK's trust mode, not this process's.** `trusted_search` resolves its
+                # policy from `TrustPolicy.from_env()` when none is passed, which reads the WIZARD's
+                # environment — and the wizard sets no `RECALL_TRUST_MODE`, so every smoke ran
+                # strict regardless of what the server being smoke-tested was configured with.
+                #
+                # Measured on a clean install: `default-memory` is written with
+                # `RECALL_TRUST_MODE=development` and its smoke reported
+                # `TrustRefusal: INDEX_NOT_READY: refused in strict trust mode`, then the run
+                # concluded "install incomplete". The corpus was fine and the server as configured
+                # would have answered it; the check was testing a configuration nobody runs, while
+                # its own message says "a query through this server's own configuration".
+                result = trusted_search(
+                    store, embedder, query, k=5, policy=TrustPolicy.from_env(block.env)
+                )
         except Exception as exc:  # noqa: BLE001 - THIS is the failure the smoke test exists for
             return SmokeResult(
                 tenant=block.tenant,
