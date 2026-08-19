@@ -99,3 +99,14 @@ The scored subset is the 12 `list_recall` questions in ATM Bench Hard. The gold 
 The primary metrics are mean Jaccard answer score and mean gold answer containment at `k=5` and `k=10`. Secondary metrics are question level answer hit rate, the fraction of questions with at least one gold answer ID in the selected output, and scores at `k=1`, `25`, `50`, and `100`. The dense and hybrid retrieval outputs from the committed result artifact are the only arms. No answer model, judge, or gold conditioned filtering is allowed.
 
 I predict that hybrid will improve mean Jaccard and gold answer containment relative to dense retrieval, but that top five output will remain incomplete on the long list questions. This test measures the retrieval to final ID list path directly; it does not claim to test AnswerSlot policy selection, which ATM does not annotate.
+
+## List answer retention results appended after measurement
+
+Measured on 2026-08-19 with `python -m benchmarks.atm_list_selection_probe --ground-truth C:\Users\gde00\Documents\atm-bench-official\data\atm-bench\atm-bench-hard.json --retrieval-result results/atm_bench_hard_retrieval_20260819_fastembed.json --out results/atm_bench_hard_list_selection_20260819.json`.
+
+| Arm | Jaccard at 5 | Containment at 5 | Jaccard at 10 | Containment at 10 | Containment at 100 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Dense | 0.1661 | 0.2013 | 0.1527 | 0.2669 | 0.5895 |
+| Hybrid | 0.2472 | 0.2913 | 0.2050 | 0.3381 | 0.6592 |
+
+Hybrid improves both top five Jaccard and containment over dense retrieval. Increasing the output from five to ten improves containment from 0.2913 to 0.3381 but reduces Jaccard from 0.2472 to 0.2050. At 100 items, containment reaches 0.6592 while Jaccard falls to 0.0481. This is direct evidence that answer selection needs a precision aware stopping or selection rule. Retrieval depth alone is not a valid final answer policy.
