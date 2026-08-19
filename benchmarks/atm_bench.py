@@ -246,11 +246,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     tenant = args.tenant
     dsn = args.dsn or os.environ.get("RECALL_DSN") or DEFAULT_DSN
     index_started = time.perf_counter()
-    embeddings = embed_passages(embedder, [chunk.text for chunk in chunks])
+    embeddings: list[list[float]] = []
+    if not args.reuse_index:
+        embeddings = embed_passages(embedder, [chunk.text for chunk in chunks])
     with PgVectorStore(dsn, dim=embedder.dim, table=table, tenant=tenant) as store:
         store.ensure_schema()
-        store.upsert(chunks, embeddings)
-        store.analyze()
+        if args.reuse_index:
+            facts = store.readiness_facts()
+            if int(facts["rows"]) != len(chunks):
+                raise ValueError(
+                    f"reused ATM index has {facts['rows']} rows, expected {len(chunks)}"
+                )
+        else:
+            store.upsert(chunks, embeddings)
+            store.analyze()
         index_ms = (time.perf_counter() - index_started) * 1000.0
         arms = {
             "dense": HybridRetriever(
@@ -358,6 +367,11 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--tenant", default="atm-bench-20260819")
     ap.add_argument("--embedder", default="st:sentence-transformers/all-MiniLM-L6-v2")
     ap.add_argument("--candidate-k", type=int, default=200)
+    ap.add_argument(
+        "--reuse-index",
+        action="store_true",
+        help="reuse the existing tenant index after verifying its row count",
+    )
     ap.add_argument("--arms", nargs="+", choices=("dense", "hybrid"), default=["dense", "hybrid"])
     return ap
 
