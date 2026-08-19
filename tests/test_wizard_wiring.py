@@ -297,18 +297,36 @@ def test_every_spelling_the_client_already_uses_for_this_project_is_registered(
     resolves to this directory is written, rather than one invented one.
     """
     client = tmp_path / ".claude.json"
-    native = str(tmp_path)
-    posix = tmp_path.as_posix()
-    assert native != posix, "this test needs two spellings of one path to be meaningful"
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    # ⚠️ THREE spellings, not two, and the third is what makes this test run at all on Linux.
+    # `str(p)` and `p.as_posix()` are the SAME string on POSIX, because the separator already is a
+    # slash, so the original two collapsed into one key and the test had nothing left to assert. It
+    # passed on Windows, where they genuinely differ, and failed in CI. A `.` component survives as
+    # a distinct string on every platform and resolves away everywhere.
+    spellings = {
+        str(project),
+        project.as_posix(),
+        os.path.join(str(tmp_path), ".", "proj"),
+    }
+    # The fixture guard comes FIRST and is not optional. The count below is derived from this set,
+    # and a derived count alone would let a degenerate fixture pass in silence: one spelling,
+    # one key, one match, green. Measured: 3 distinct spellings on Windows, 2 on POSIX.
+    assert len(spellings) >= 2, (
+        f"the fixture must offer more than one spelling on every platform, got {spellings}"
+    )
     client.write_text(
-        json.dumps({"projects": {native: {}, posix: {}}}), encoding="utf-8"
+        json.dumps({"projects": {spelling: {} for spelling in spellings}}), encoding="utf-8"
     )
 
-    result = register_local_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
+    result = register_local_scope(_blocks(tmp_path), project_root=project, config_path=client)
 
-    assert set(result.project_keys) == {native, posix}
+    # Derived from the fixture rather than hardcoded, so the number cannot drift away from the set
+    # it is meant to describe.
+    assert set(result.project_keys) == spellings
     projects = json.loads(client.read_text(encoding="utf-8"))["projects"]
-    for key in (native, posix):
+    for key in spellings:
         assert set(projects[key]["mcpServers"]) == {
             "default-docs",
             "default-code",
