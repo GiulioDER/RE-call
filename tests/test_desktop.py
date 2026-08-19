@@ -51,7 +51,21 @@ def test_source_categories_and_physical_tenants(tmp_path: Path) -> None:
     assert classify(code) is SourceCategory.CODE
     assert classify(memory) is SourceCategory.DOCUMENTS
     assert SourceSelection(SourceCategory.CODE, (code,), "acme").physical_tenant == "acme-code"
-    assert SourceSelection(SourceCategory.MEMORY, (memory,), "user", True).physical_tenant == "user-docs"
+    # 🔁 This asserted `user-docs` until 2026-08-19, and the assertion was the bug.
+    # The wizard builds THREE corpora per project and memory belongs in the writable, never
+    # calibrated one; mapping MEMORY onto `-docs` sent the user's memory into the corpus that is
+    # production-routed, strict-trust and calibrated — the wrong destination, and the one place a
+    # stray write does the most damage.
+    assert (
+        SourceSelection(SourceCategory.MEMORY, (memory,), "acme").physical_tenant == "acme-memory"
+    )
+    # The shared scope comes from the profile now, not a literal "user". A profile naming a
+    # different shared scope used to ingest into `user-*` while display and calibration used the
+    # configured one, so the two halves silently disagreed about which corpus was being filled.
+    shared = SourceSelection(
+        SourceCategory.DOCUMENTS, (memory,), "acme", True, shared_profile="everyone"
+    )
+    assert shared.physical_tenant == "everyone-docs"
     assert classify(tmp_path / "report.pdf") is SourceCategory.DOCUMENTS
     assert classify(tmp_path / "report.docx") is SourceCategory.DOCUMENTS
     assert classify(tmp_path / "metrics.xlsx") is SourceCategory.DOCUMENTS
@@ -107,7 +121,9 @@ def test_vps_runtime_uses_mcp_contract(tmp_path: Path) -> None:
     assert job.job_id == "job-1"
     name, arguments = gateway.calls[-1]
     assert name == "recall_ingest"
-    assert arguments["tenant"] == "default-docs"
+    # 🔁 Was `default-docs`. A MEMORY selection must reach the memory corpus; see
+    # `test_source_categories_and_physical_tenants` for why the old value was the defect.
+    assert arguments["tenant"] == "default-memory"
     assert base64.b64decode(arguments["files"][0]["content_b64"]) == b"memory"
     assert runtime.job_status(job.job_id).state == "completed"
 
@@ -163,6 +179,135 @@ def test_runtime_factory_and_calibration_status() -> None:
 def test_docker_profile_requires_compose_file() -> None:
     with pytest.raises(ValueError, match="compose file"):
         RuntimeProfile(mode=RuntimeMode.DOCKER)
+
+
+def test_the_desktop_and_the_wizard_agree_on_corpus_kinds() -> None:
+    """The desktop's category-to-kind map must cover exactly the wizard's `CorpusKind`.
+
+    These are two halves of one agreement written in two packages. The half that was wrong sent
+    MEMORY to `-docs`, and nothing failed because nothing compared them. Pinned here so a fourth
+    kind cannot be added on one side alone.
+    """
+    from typing import get_args
+
+    from recall.desktop.models import _KIND_BY_CATEGORY
+    from recall.wizard.corpora import CorpusKind
+
+    assert set(_KIND_BY_CATEGORY.values()) == set(get_args(CorpusKind))
+    assert set(_KIND_BY_CATEGORY) == set(SourceCategory), "every category must map to a corpus"
+
+
+def test_the_shared_scope_is_offered_only_when_it_can_be_served(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"All projects (shared memory)" pointed at a tenant no wizard install provisions.
+
+    The wizard builds `<project>-docs/code/memory` and never a `user-*` scope, so this permanent
+    menu entry resolved to a service that does not exist and refused whenever anyone chose it. The
+    legacy `docker-compose.desktop.yml` DOES define `recall-user-docs`, which is why the entry
+    looked fine there and only broke on the installs the wizard produces.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+
+    class UiRuntime:
+        def __init__(self, servable: set[str]) -> None:
+            self._servable = servable
+
+        def start(self) -> None: ...
+        def stop(self) -> None: ...
+        def health(self) -> dict[str, str]:
+            return {"status": "ready"}
+        def list_tenants(self) -> list[str]:
+            return ["default"]
+
+        def _service_for_tenant(self, scope: str) -> str:
+            if scope not in self._servable:
+                raise RuntimeErrorBase(f"no service for {scope}")
+            return f"recall-{scope}"
+
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    app = QApplication.instance() or QApplication([])
+
+    wizard_stack = MainWindow(profile, runtime=UiRuntime({"default-docs", "default-memory"}))
+    try:
+        labels = [wizard_stack.scope.itemText(i) for i in range(wizard_stack.scope.count())]
+        assert "All projects (shared memory)" not in labels, (
+            "a scope the stack cannot serve must not be offered"
+        )
+    finally:
+        wizard_stack.close()
+        app.processEvents()
+
+    legacy = MainWindow(profile, runtime=UiRuntime({"default-docs", "user-docs", "user-code"}))
+    try:
+        labels = [legacy.scope.itemText(i) for i in range(legacy.scope.count())]
+        assert "All projects (shared memory)" in labels, "a legacy install must keep the entry"
+    finally:
+        legacy.close()
+        app.processEvents()
+
+
+def test_the_calibration_page_reports_on_the_corpus_it_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Memory row used to display the DOCS tenant's calibration.
+
+    `("Memory", "docs")` meant two rows read the same corpus under different names, so the Memory
+    row showed a certification belonging to something else — and it read as reassuring, because the
+    docs corpus is the one that certifies. The memory corpus is deliberately never calibrated, so
+    "missing" is its honest status.
+
+    ⚠️ This test exists because a mutation run caught the gap: reverting the Memory row and
+    reverting the shared-scope guard both stayed GREEN across the whole suite, since nothing
+    exercised `_calibration_targets` at all.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+
+    class UiRuntime:
+        def __init__(self, servable: set[str]) -> None:
+            self._servable = servable
+
+        def start(self) -> None: ...
+        def stop(self) -> None: ...
+        def health(self) -> dict[str, str]:
+            return {"status": "ready"}
+        def list_tenants(self) -> list[str]:
+            return ["default"]
+
+        def _service_for_tenant(self, scope: str) -> str:
+            if scope not in self._servable:
+                raise RuntimeErrorBase(f"no service for {scope}")
+            return f"recall-{scope}"
+
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    app = QApplication.instance() or QApplication([])
+
+    window = MainWindow(profile, runtime=UiRuntime({"default-docs", "default-memory"}))
+    try:
+        targets = window._calibration_targets()
+        by_corpus = {corpus: tenant for _label, corpus, tenant in targets}
+
+        assert by_corpus["Memory"] == "default-memory", "the Memory row must read the memory corpus"
+        assert by_corpus["Documents"] == "default-docs"
+        assert by_corpus["Code"] == "default-code"
+        assert len({t for _l, _c, t in targets}) == len(targets), (
+            "each row must name a distinct tenant; two rows on one corpus is how the Memory row "
+            "came to report another corpus's certification"
+        )
+        assert not any(label == "All projects" for label, _c, _t in targets), (
+            "a scope the stack cannot serve must not get calibration rows either"
+        )
+    finally:
+        window.close()
+        app.processEvents()
 
 
 def test_the_corpus_suffixes_match_the_wizards_kinds() -> None:

@@ -1128,11 +1128,28 @@ if QApplication is not None:
             self.splade_status.setText(f"Hardware check failed: {message}")
 
         def _calibration_targets(self) -> list[tuple[str, str, str]]:
+            """One row per corpus that exists, naming the tenant it actually reports on.
+
+            ⚠️ **The Memory row used to read the DOCS tenant.** `("Memory", "docs")` meant two rows
+            showed the same corpus under different names, so the Memory row reported a calibration
+            belonging to something else — and it read as reassuring, because the docs corpus is the
+            one that certifies. The memory corpus is deliberately never calibrated, so its honest
+            status is "missing"; showing another corpus's certification in its place is worse than
+            showing nothing.
+
+            "All projects" appears only when the runtime can serve that scope, for the same reason
+            the scope selector hides it: the wizard provisions no `user-*` tenant.
+            """
             projects = [(name, name) for name in self._project_names]
-            projects.append(("All projects", self.profile.shared_profile))
+            if self._can_serve_shared():
+                projects.append(("All projects", self.profile.shared_profile))
             targets: list[tuple[str, str, str]] = []
             for label, project in projects:
-                for corpus, suffix in (("Documents", "docs"), ("Memory", "docs"), ("Code", "code")):
+                for corpus, suffix in (
+                    ("Documents", "docs"),
+                    ("Code", "code"),
+                    ("Memory", "memory"),
+                ):
                     targets.append((label, corpus, f"{project}-{suffix}"))
             return targets
 
@@ -1386,6 +1403,29 @@ if QApplication is not None:
                 return data
             return {"tenant": self.profile.default_tenant, "shared": bool(data)}
 
+        def _can_serve_shared(self) -> bool:
+            """Whether the shared "all projects" scope actually exists in this stack.
+
+            Asked of the runtime rather than assumed, because the answer differs by install: the
+            legacy compose defines `recall-user-docs`/`recall-user-code`, and a wizard-generated
+            stack defines neither. Offering a scope nothing can serve is the same defect class as a
+            status line claiming a save that did not happen — the menu asserts a capability.
+
+            Any runtime that cannot answer the question keeps the entry. A VPS server resolves the
+            scope remotely and this process cannot know what it holds, so hiding on ignorance would
+            remove a working choice; only a definite "no service for this scope" hides it.
+            """
+            resolve = getattr(self.runtime, "_service_for_tenant", None)
+            if resolve is None:
+                return True
+            for kind in ("docs", "code", "memory"):
+                try:
+                    resolve(f"{self.profile.shared_profile}-{kind}")
+                except Exception:  # noqa: BLE001 - any refusal means "not servable", not a crash
+                    continue
+                return True
+            return False
+
         def _populate_scopes(self, tenants: list[str]) -> None:
             names: list[str] = []
             for raw in tenants:
@@ -1401,7 +1441,16 @@ if QApplication is not None:
             self.scope.clear()
             for name in names:
                 self.scope.addItem(name, {"tenant": name, "shared": False})
-            self.scope.addItem("All projects (shared memory)", {"tenant": self.profile.shared_profile, "shared": True})
+            # ⚠️ Offered only when the runtime can actually serve it. The wizard provisions
+            # `<project>-*` and never a `user-*` scope, so on every wizard install this entry
+            # resolved to a tenant with no MCP service: a permanent menu item that refused whenever
+            # anyone picked it. The legacy `docker-compose.desktop.yml` DOES define
+            # `recall-user-docs` and `recall-user-code`, which is why it looked fine there.
+            if self._can_serve_shared():
+                self.scope.addItem(
+                    "All projects (shared memory)",
+                    {"tenant": self.profile.shared_profile, "shared": True},
+                )
             self.scope.addItem("+ Add project", {"action": "add"})
             preferred = self.scope.findText(self.profile.default_tenant)
             self.scope.setCurrentIndex(preferred if preferred >= 0 else 0)
@@ -1887,7 +1936,15 @@ if QApplication is not None:
             self.status.setText("Indexing is running…")
             self._run(
                 lambda: [
-                    self.runtime.start_ingest(SourceSelection(category, tuple(paths), tenant, shared))
+                    self.runtime.start_ingest(
+                        SourceSelection(
+                            category,
+                            tuple(paths),
+                            tenant,
+                            shared,
+                            shared_profile=self.profile.shared_profile,
+                        )
+                    )
                     for (category, tenant, shared), paths in groups.items()
                 ],
                 self._job_done,
