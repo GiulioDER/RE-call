@@ -253,6 +253,86 @@ def test_user_scope_is_still_available_and_writes_the_top_level_key(
     assert "mcpServers" not in written["projects"]["C:/somewhere"]
 
 
+def test_every_spelling_of_the_project_directory_is_registered(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The client keeps several keys for one directory and normalises none of them.
+
+    Measured on a real config: 313 project keys, 7 directories carrying two spellings each, one
+    from a native launch and one from Git Bash. An entry under one spelling is invisible to a
+    session launched the other way, with no error, which looks exactly like a failed install.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    native = str(project)
+    posix = project.as_posix()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    config = tmp_path / ".claude.json"
+    config.write_text(
+        json.dumps({"projects": {native: {"allowedTools": []}, posix: {"allowedTools": []}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(claude_code, "_claude_cli", lambda: None)
+
+    claude_code.register_mcp_server(
+        dsn="postgresql://h/db", project_root=project, print_fn=lambda *a, **k: None
+    )
+
+    written = json.loads(config.read_text(encoding="utf-8"))
+    registered = [k for k, v in written["projects"].items() if "mcpServers" in v]
+    assert len(registered) == 2, f"both spellings must be registered, got {registered}"
+    # And neither spelling lost the keys it already had.
+    assert all(written["projects"][k]["allowedTools"] == [] for k in (native, posix))
+
+
+def test_a_project_the_client_has_never_seen_gets_exactly_one_key(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Inventing a key is right when there is none; inventing a second one is not."""
+    project = tmp_path / "fresh"
+    project.mkdir()
+    written = _fallback_register(tmp_path, monkeypatch, project_root=project)
+    registered = [k for k, v in written["projects"].items() if "mcpServers" in v]
+    assert registered == [str(project.resolve())]
+
+
+def test_the_cli_is_never_decoded_with_the_console_codec() -> None:
+    """`text=True` decodes with cp1252 on Windows and this CLI emits bytes it cannot represent.
+
+    Measured here: `UnicodeDecodeError: 'charmap' codec can't decode byte 0x8f`. The failure is
+    worse than a raise, because it happens in a `subprocess` reader thread: nothing propagates,
+    `stdout` arrives as None, and an error path reporting `stderr or stdout or ""` reports an
+    empty reason for a real failure.
+    """
+    captured: dict[str, Any] = {}
+
+    def fake_run(argv: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    import subprocess as subprocess_module
+
+    import pytest
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(claude_code, "_claude_cli", lambda: "claude")
+        monkeypatch.setattr(subprocess_module, "run", fake_run)
+        claude_code._run_claude(["mcp", "list"])
+    finally:
+        monkeypatch.undo()
+
+    assert captured.get("encoding") == "utf-8"
+    assert captured.get("errors") == "replace"
+    assert "text" not in captured, "text=True would decode with the console codec"
+
+
 def test_an_unknown_scope_is_refused_rather_than_guessed(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setattr(claude_code, "_claude_cli", lambda: None)
     try:
@@ -287,7 +367,10 @@ def test_every_cli_call_is_made_from_the_project_root(tmp_path: Path, monkeypatc
     monkeypatch.setattr(claude_code, "_run_claude", fake_run)
 
     claude_code.register_mcp_server(
-        dsn="postgresql://h/db", project_root=project, print_fn=lambda *a, **k: None
+        dsn="postgresql://h/db",
+        project_root=project,
+        prefer_cli=True,
+        print_fn=lambda *a, **k: None,
     )
 
     assert calls, "the CLI path must have been taken"

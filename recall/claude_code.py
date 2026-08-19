@@ -148,7 +148,14 @@ def _run_claude(
     return subprocess.run(
         [executable, *args],
         capture_output=True,
-        text=True,
+        # NOT `text=True`. That decodes with the console's preferred codec, which on Windows is
+        # cp1252, and this CLI emits bytes it cannot represent. Measured on this machine:
+        # `UnicodeDecodeError: 'charmap' codec can't decode byte 0x8f`. The failure is nastier
+        # than a raise, because it happens inside `subprocess`'s reader THREAD: the exception
+        # never reaches the caller, `stdout` arrives as None, and an error path that reports
+        # `result.stderr or result.stdout or ""` reports an empty reason for a real failure.
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         check=False,
         cwd=str(cwd) if cwd is not None else None,
@@ -182,29 +189,27 @@ def register_mcp_server(
     project_root: Path | None = None,
     python_executable: str | None = None,
     replace: bool = False,
+    prefer_cli: bool = False,
     print_fn: Callable[..., None] = print,
 ) -> str:
     """Register the recall MCP server. Returns a short status for the caller to log.
 
     **Local scope by default, and the reason is the corpus boundary rather than the approval
-    gate.** A recall server carries one `RECALL_TENANT` and one DSN, so a server registered at user
-    scope follows the user into every unrelated checkout they open and answers about a corpus that
-    is not the repository they are in. This project documents that as the worst failure available
-    here, because it is not an error: it is a confident, well-formed answer about the wrong
-    repository. Local scope is stored in the same file under `projects[<dir>].mcpServers` and loads
+    gate.** A recall server carries one `RECALL_TENANT` and one DSN, so at user scope it follows
+    the user into every unrelated checkout and answers about a corpus that is not the repository
+    they are in. Local scope lives in the same file under `projects[<dir>].mcpServers` and loads
     only in the project it was added to, which is the boundary the tenant already implies.
 
-    Local scope also sits outside the approval gate, which covers "project-scoped servers from
-    `.mcp.json` files" specifically. ⚠️ That part is documentary rather than measured: no project
-    on this machine carried a local-scope entry to observe, so it is the one step in this argument
-    nobody has watched work.
+    **The direct merge is the primary path and `claude mcp add` is the option**, which reverses
+    what this function did first. Deferring to the client's own writer is the better instinct and
+    it loses here on two measurements. Its output is undecodable under the console codec on
+    Windows, the platform this feature exists for, and the failure is silent rather than loud (see
+    `_run_claude`). And it writes only the single project key matching its working directory, while
+    the client itself keeps several spellings of one directory (see `_project_keys`). Pass
+    `prefer_cli=True` to use it anyway.
 
     ⚠️ A local entry is keyed by the project's path, so moving or renaming the project orphans it
-    silently, with no error and no tools. The registered path is printed for that reason.
-
-    Prefers the CLI, because `~/.claude.json` is a large file whose schema the client owns and
-    whose other keys are none of our business. Falls back to an atomic merge when `claude` is not
-    on PATH, which on Windows is common enough to be the normal case rather than the edge one.
+    in silence. The keys written are printed for that reason.
     """
     if scope not in {"local", "user"}:
         raise ValueError(f"scope must be 'local' or 'user', not {scope!r}")
@@ -213,20 +218,45 @@ def register_mcp_server(
     env = server_env(dsn=dsn, tenant=tenant, trust_mode=trust_mode)
     where = f"project {root}" if scope == "local" else "every project on this machine"
 
-    if _claude_cli() is None:
-        _write_server_entry(
-            env=env, python_executable=python_executable, scope=scope, project_root=root
+    if prefer_cli and _claude_cli() is not None:
+        return _register_via_cli(
+            env=env,
+            python_executable=python_executable,
+            scope=scope,
+            root=root,
+            where=where,
+            dsn=dsn,
+            replace=replace,
+            print_fn=print_fn,
         )
-        print_fn(
-            f"Registered MCP server '{SERVER_NAME}' for {where} by writing {user_config_file()} "
-            "directly: the `claude` CLI is not on PATH."
-        )
-        return "written-directly"
 
-    # `claude mcp get` and `--scope local` both resolve the project from the working directory,
-    # so every CLI call is made FROM the project root rather than from wherever the wizard was
-    # started. Without this a local registration would land under the wrong project key, which is
-    # a silent miss rather than an error.
+    keys = _write_server_entry(
+        env=env, python_executable=python_executable, scope=scope, project_root=root
+    )
+    print_fn(
+        f"Registered MCP server '{SERVER_NAME}' for {where}, DSN {_redacted(dsn)}, "
+        f"in {user_config_file()} under {len(keys)} key(s): {', '.join(keys)}"
+    )
+    return "registered"
+
+
+def _register_via_cli(
+    *,
+    env: dict[str, str],
+    python_executable: str,
+    scope: str,
+    root: Path,
+    where: str,
+    dsn: str,
+    replace: bool,
+    print_fn: Callable[..., None],
+) -> str:
+    """Opt-in path that lets the client write its own configuration.
+
+    Every call is made FROM the project root, because `--scope local` and `mcp get` both resolve
+    which project they mean from the working directory. Called from wherever the wizard was
+    started, the entry lands under a directory nobody opens.
+    """
     existing = _run_claude(["mcp", "get", SERVER_NAME], cwd=root)
     if existing.returncode == 0:
         if not replace:
@@ -249,24 +279,63 @@ def register_mcp_server(
     result = _run_claude(args, cwd=root)
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(f"claude mcp add failed: {message}")
+        raise RuntimeError(f"claude mcp add failed: {message or 'no output was readable'}")
 
     print_fn(
         f"Registered MCP server '{SERVER_NAME}' at {scope} scope for {where}, "
-        f"DSN {_redacted(dsn)}."
+        f"DSN {_redacted(dsn)}, via the CLI."
     )
     return "registered"
 
 
+def _project_keys(document: dict[str, Any], project_root: Path) -> list[str]:
+    """Every key under `projects` that means this directory, or one new key when none do.
+
+    **The client does not normalise these keys, and one directory routinely has several.**
+    Measured on this machine: 313 project keys, 7 directories carrying two spellings each, one
+    backslash-separated from a native launch and one forward-slash-separated from Git Bash. An
+    entry written under one spelling is invisible to a session launched the other way, with no
+    error and no tools, which is indistinguishable from the install having done nothing.
+
+    Re-measure with:
+
+    ```bash
+    python -c "import json,os,collections;from pathlib import Path;d=json.load(open(os.path.expanduser('~/.claude.json')));g=collections.defaultdict(list);[g[str(Path(k).resolve()).casefold()].append(k) for k in d.get('projects',{})];print(sum(1 for v in g.values() if len(v)>1))"
+    ```
+
+    Found by the wizard session while landing the same change on its side. Writing every matching
+    spelling is strictly safer than picking one, because the cost of an extra key is a duplicate
+    entry and the cost of a missing one is silence.
+    """
+    try:
+        target = str(project_root.resolve()).casefold()
+    except OSError:  # pragma: no cover - an unresolvable root cannot be matched, only invented
+        return [str(project_root)]
+    matches: list[str] = []
+    for key in document.get("projects", {}):
+        try:
+            if str(Path(key).resolve()).casefold() == target:
+                matches.append(key)
+        except (OSError, ValueError):
+            # A stored key this platform cannot even parse is not this project.
+            continue
+    return matches or [str(project_root)]
+
+
 def _write_server_entry(
     *, env: dict[str, str], python_executable: str, scope: str, project_root: Path
-) -> None:
-    """Fallback path, used when `claude` is not on PATH. Both scopes live in `~/.claude.json`.
+) -> list[str]:
+    """Write the server into `~/.claude.json`. Returns the project keys written, for reporting.
 
-    User scope is the top-level `mcpServers`. Local scope is `projects[<dir>].mcpServers`, keyed by
-    the project's absolute path in the platform's own form, which is what the client writes and
-    therefore what it looks up. Getting the key shape wrong produces an entry that parses, reads
-    correctly to a human, and is never matched.
+    This is the PRIMARY path rather than the fallback it started as. Shelling out to `claude mcp
+    add` was preferred on the reasoning that the client owns its own schema, and that still holds,
+    but the CLI's output is undecodable under the console codec on the platform this feature
+    exists for (see `_run_claude`), and it writes only the single project key matching its working
+    directory. A direct merge avoids both, and the schema it writes is small enough to pin with a
+    test.
+
+    User scope is the top-level `mcpServers`. Local scope is `projects[<dir>].mcpServers`, under
+    every spelling of that directory the client already knows.
     """
     config_file = user_config_file()
     document: dict[str, Any] = {}
@@ -282,11 +351,15 @@ def _write_server_entry(
     }
     if scope == "user":
         document.setdefault("mcpServers", {})[SERVER_NAME] = entry
+        written = ["<user scope>"]
     else:
+        keys = _project_keys(document, project_root)
         projects = document.setdefault("projects", {})
-        project = projects.setdefault(str(project_root), {})
-        project.setdefault("mcpServers", {})[SERVER_NAME] = entry
+        for key in keys:
+            projects.setdefault(key, {}).setdefault("mcpServers", {})[SERVER_NAME] = dict(entry)
+        written = keys
     _write_json(config_file, document)
+    return written
 
 
 # --------------------------------------------------------------------------------------------
