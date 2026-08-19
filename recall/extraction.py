@@ -705,6 +705,11 @@ def _run_libreoffice(
                 check=True,
                 capture_output=True,
                 text=True,
+                # LibreOffice reports in the system locale, so this is the call site most likely to
+                # emit a byte the platform codec cannot read. See `recall/desktop/runtime.py` for
+                # what that costs: rc=0, `stdout=None`, and no exception.
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
             )
     except FileNotFoundError as exc:

@@ -512,6 +512,11 @@ def head_commit(path: str | Path) -> str | None:
             ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
             capture_output=True,
             text=True,
+            # A short SHA is ASCII, so this is belt and braces rather than a fix. It is here so the
+            # rule reads the same at every call site: `text=True` without an explicit codec decodes
+            # with the platform default, and on Windows that fails silently rather than loudly.
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError):

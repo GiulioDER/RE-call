@@ -353,7 +353,20 @@ class DockerRuntime(RuntimeManager):
         timeout = _SLOW_VERB_TIMEOUT if verb in _SLOW_VERBS else _QUICK_VERB_TIMEOUT
         try:
             return subprocess.run(
-                command, check=True, capture_output=True, text=True, timeout=timeout
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                # ⚠️ NOT the platform default. `text=True` alone decodes with
+                # `locale.getpreferredencoding()`, cp1252 on a Western Windows install, where a
+                # byte like 0x8f has no mapping. Verified 2026-08-19 on this machine: the
+                # `UnicodeDecodeError` is raised inside subprocess's reader THREAD and never
+                # reaches the caller, so `run` returns rc=0 with `stdout=None`. The handler below
+                # reports `exc.stderr or exc.stdout or ""`, which would then print an empty reason
+                # for a real Docker failure — the silent-nothing failure, from a codec.
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
             # Named separately, because "timed out" and "failed" need different answers from the

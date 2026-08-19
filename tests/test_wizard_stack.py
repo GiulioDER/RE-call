@@ -372,3 +372,46 @@ def test_every_generated_service_can_pass_the_insecure_dsn_guard(tmp_path: Path)
         assert environment["RECALL_ALLOW_INSECURE_DSN"] == "1", (
             f"service {name} would refuse to start against {environment['RECALL_DSN']}"
         )
+
+
+def test_no_subprocess_call_decodes_with_the_platform_codec() -> None:
+    """⛔ `text=True` without an explicit `encoding` fails SILENTLY on Windows.
+
+    Verified 2026-08-19 on this machine, preferred encoding cp1252, feeding `b"ok\x8fend"` through
+    `subprocess.run(..., capture_output=True, text=True)`:
+
+        returned. rc = 0 | stdout = None | stderr = ''
+
+    The `UnicodeDecodeError` is raised inside subprocess's reader THREAD and never reaches the
+    caller. So a command that failed reports `exc.stderr or exc.stdout or ""` as an empty string and
+    names no cause, and a command that succeeded reads as having produced no output at all — which
+    is how `existing_port` and `existing_tenants` would decide a stack does not exist and provision
+    a second one.
+
+    0x8f is not exotic: it is a byte UTF-8 continuation sequences produce routinely, and Docker,
+    git and LibreOffice all emit UTF-8. Asserted across the whole package rather than per call site,
+    because the failure is in what a call site FORGETS, and a new one will forget it too.
+    """
+    import ast
+
+    package = Path(__file__).resolve().parent.parent / "recall"
+    offenders: list[str] = []
+    for source in package.rglob("*.py"):
+        tree = ast.parse(source.read_text(encoding="utf-8"), str(source))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            target = node.func
+            if not (isinstance(target, ast.Attribute) and target.attr in {"run", "Popen", "check_output", "check_call"}):
+                continue
+            if not (isinstance(target.value, ast.Name) and target.value.id == "subprocess"):
+                continue
+            keywords = {k.arg for k in node.keywords}
+            wants_text = "text" in keywords or "universal_newlines" in keywords
+            if wants_text and "encoding" not in keywords:
+                offenders.append(f"{source.relative_to(package.parent)}:{node.lineno}")
+
+    assert not offenders, (
+        "these subprocess calls decode with the platform codec, which on Windows returns "
+        "rc=0 with stdout=None instead of raising: " + ", ".join(offenders)
+    )

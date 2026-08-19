@@ -570,7 +570,18 @@ def bring_up(
         *services,
     ]
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout)
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            # ⚠️ See `recall/desktop/runtime.py`: `text=True` alone decodes Docker's output with
+            # the platform codec, and an undecodable byte silently yields rc=0 and `stdout=None`
+            # rather than an exception. The message below would then name no cause at all.
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
             f"could not start the recall stack: {(exc.stderr or exc.stdout or '').strip()[:400]}"
