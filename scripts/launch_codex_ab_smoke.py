@@ -22,7 +22,7 @@ from benchmarks.codex_ab import (
     write_jsonl,
 )
 
-RUN_ID = "smoke-2026-08-19-rerun-01"
+RUN_ID = "smoke-2026-08-19-rerun-02"
 PROMPT = """Inspect the repository at the current working directory.
 Do not modify files or use web search. If RE-call memory is available, first make exactly one
 RE-call search for the phrase `paired Codex benchmark adapter`. Do not quote or reproduce any
@@ -103,12 +103,14 @@ async def _run() -> dict[str, object]:
                 executable=executable,
                 cwd=worktree,
                 env={"CODEX_HOME": str(on_home)},
+                sandbox="danger-full-access",
                 timeout_s=600,
             ),
             RECALL_OFF: CodexExecConfig(
                 executable=executable,
                 cwd=worktree,
                 env={"CODEX_HOME": str(off_home)},
+                sandbox="danger-full-access",
                 timeout_s=600,
             ),
         }
