@@ -184,6 +184,38 @@ Written against `origin/master` at `5c621cab`, in a worktree created off it, so 
 citation above was verified against the tree the measurement will run on. Both citation gates were
 run before this record was committed.
 
+## Implementation note (2026-08-19, written BEFORE any measurement)
+
+The prediction above is unchanged and stays unchanged. This records one deviation from the
+**treatment as described**, written down now rather than alongside the number, so that it cannot
+read as a story fitted to a result.
+
+**The record says "after the first trust evaluation ... and re evaluate". The implementation does
+it in one pass, before `evaluate`.** The trigger needs only the supersession map, and
+`trusted_search` already reads that map before it verdicts anything, so the expansion sits between
+those two steps. A second evaluation was never necessary.
+
+Consequences, all in the safe direction:
+
+- The invariant "the re evaluation does not re enter expansion, one round only" is now trivially
+  true rather than enforced by a flag: there is no second evaluation to re enter.
+- Every hit, fetched or original, is verdicted exactly once by the same `evaluate` call. That is a
+  stronger form of the invariant that each fetched chunk carries its own verdict.
+- `resolve` is injected into the expander rather than imported, because `recall.trust` already
+  imports `recall.retriever` and the reverse would be a cycle. The closure `trusted_search` passes
+  mirrors `_verdict`: a file in `unresolved` resolves to nothing, so an ambiguous edge fetches
+  nothing.
+- It deliberately does **not** mirror `not_yet_known`, which outranks `superseded` per hit. A hit
+  replayed before its own write time can therefore cost one scoped search whose chunks cannot
+  change any verdict. Wasted work, never a wrong answer, and the alternative needs the hit dates at
+  a point that does not otherwise have them.
+
+Shipped off by default, as `successor_expansion=` on `trusted_search`. Invariant tests are in
+`tests/test_successor_expansion.py`: 14 of them, covering the falsifiers that need no corpus. The
+superseded hit is never promoted, an already present successor is never refetched, the disabled
+path returns the identical object, the fetch is bounded, and a cycle terminates. They pin the
+mechanism only, and say nothing about the rate, which is what the record above is for.
+
 ## Result
 
 Not yet measured.

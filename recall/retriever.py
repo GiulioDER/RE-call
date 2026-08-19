@@ -75,6 +75,28 @@ class StructuralExpansionPolicy:
             raise ValueError("radius must not be negative")
 
 
+@dataclass(frozen=True)
+class SuccessorExpansionPolicy:
+    """Bounded, opt in retrieval of a declared successor the candidate pool did not already hold.
+
+    Unlike the two policies above there is deliberately no `relational_query_only` gate. Those
+    expand on a guess about the QUERY: a relational question probably wants more of the same
+    document. This one fires on a fact about the CORPUS: a retrieved memory declares itself
+    superseded. A query-shape filter could only drop cases the edge has already proved worth
+    expanding.
+    """
+
+    enabled: bool = False
+    max_sources: int = 2
+    chunks_per_source: int = 3
+
+    def __post_init__(self) -> None:
+        if self.max_sources < 1:
+            raise ValueError("max_sources must be positive")
+        if self.chunks_per_source < 1:
+            raise ValueError("chunks_per_source must be positive")
+
+
 _RELATIONAL_QUERY = re.compile(
     r"\b(?:why|how|when|before|after|compare|comparison|difference|changed|change|"
     r"decision|decided|status|result|outcome|outcomes|happened|led|caused|consequence|following|"
@@ -202,6 +224,82 @@ def expand_retrieval_by_structure(
     timings = dict(result.diagnostics.stage_ms)
     timings["structural_expansion"] = round((time.perf_counter() - started) * 1000.0, 3)
     timings["structural_expansion_sources"] = float(len(sources))
+    diagnostics = replace(
+        result.diagnostics,
+        reranking_ran=reranking_ran,
+        stage_ms=timings,
+    )
+    return replace(result, hits=merged, diagnostics=diagnostics)
+
+
+def expand_retrieval_by_successor(
+    result: RetrievalResult,
+    search: Callable[[str, int, str | None], RetrievalResult],
+    resolve: Callable[[str], str | None],
+    policy: SuccessorExpansionPolicy,
+) -> RetrievalResult:
+    """Fetch the declared successor of a superseded hit that the pool did not already contain.
+
+    `recall.trust` resolves a successor's filename and then promotes it to verdict ``ok`` only if
+    a chunk from that file is ALREADY in the pool. Nothing fetched it, so validity was enforced as
+    a post-filter over a pool selected without regard to validity: the stale hit was demoted, no
+    hit earned ``ok``, and the search abstained while naming a successor sitting in the index.
+    Pre-registered in `docs/preregistrations/2026-08-19-successor-directed-expansion.md`.
+
+    `resolve` is INJECTED rather than imported because `recall.trust` already imports this module.
+    It must apply the same rules `_verdict` does, so that this fetches for exactly the hits about
+    to be called ``superseded`` and for no others.
+
+    Keyed on ``metadata['file']``, matching `_verdict`: supersession edges name files, and a row
+    carrying no such metadata can be neither superseded nor promoted, so fetching for it would add
+    material the trust layer cannot use.
+    """
+    if not policy.enabled or not result.hits:
+        return result
+
+    present: set[str] = set()
+    for hit in result.hits:
+        file = hit.chunk.metadata.get("file")
+        if isinstance(file, str) and file:
+            present.add(file)
+
+    targets: list[str] = []
+    for hit in result.hits:
+        file = hit.chunk.metadata.get("file")
+        if not isinstance(file, str) or not file:
+            continue
+        successor = resolve(file)
+        # `present` absorbs both cases that need no fetch: the successor is already in the pool
+        # (which must stay byte-identical, since that is the arm the change must not disturb), and
+        # a second stale hit resolving to a successor already queued. Adding each target to it as
+        # it is queued is what keeps this at one scoped search per DISTINCT file.
+        if successor is None or successor in present:
+            continue
+        present.add(successor)
+        targets.append(successor)
+        if len(targets) >= policy.max_sources:
+            break
+    if not targets:
+        return result
+
+    started = time.perf_counter()
+    expanded: list[ScoredChunk] = []
+    reranking_ran = result.diagnostics.reranking_ran
+    for successor in targets:
+        scoped = search(result.query, policy.chunks_per_source, successor)
+        expanded.extend(scoped.hits)
+        reranking_ran = reranking_ran or scoped.diagnostics.reranking_ran
+
+    by_id = {hit.chunk.id: hit for hit in result.hits}
+    merged = list(result.hits)
+    for hit in expanded:
+        if hit.chunk.id not in by_id:
+            by_id[hit.chunk.id] = hit
+            merged.append(hit)
+
+    timings = dict(result.diagnostics.stage_ms)
+    timings["successor_expansion"] = round((time.perf_counter() - started) * 1000.0, 3)
+    timings["successor_expansion_sources"] = float(len(targets))
     diagnostics = replace(
         result.diagnostics,
         reranking_ran=reranking_ran,

@@ -39,8 +39,10 @@ from recall.retriever import (
     DocumentExpansionPolicy,
     HybridRetriever,
     StructuralExpansionPolicy,
+    SuccessorExpansionPolicy,
     expand_retrieval_by_source,
     expand_retrieval_by_structure,
+    expand_retrieval_by_successor,
 )
 from recall.store import EdgeCandidates, PgVectorStore
 from recall.trust_policy import (
@@ -622,6 +624,7 @@ def trusted_search(
     policy: TrustPolicy | None = None,
     document_expansion: DocumentExpansionPolicy | None = None,
     structural_expansion: StructuralExpansionPolicy | None = None,
+    successor_expansion: SuccessorExpansionPolicy | None = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
@@ -657,6 +660,7 @@ def trusted_search(
                 policy=policy,
                 document_expansion=document_expansion,
                 structural_expansion=structural_expansion,
+                successor_expansion=successor_expansion,
                 _generation_snapshot=False,
             )
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
@@ -757,6 +761,26 @@ def trusted_search(
             if known_as_of is not None:
                 _warn_no_edge_dates(type(store).__name__)
             supersession, unresolved = store.supersession()
+    if successor_expansion is not None:
+        # AFTER the edges are read and BEFORE `evaluate`, which is the only window where both
+        # facts are in hand: the supersession map already says which hits are about to be demoted,
+        # and nothing has been verdicted yet, so a single `evaluate` still sees the whole pool.
+        # Expanding after `evaluate` would mean verdicting twice and reconciling two results.
+        def _resolve(file: str) -> str | None:
+            """The successor `_verdict` is about to find, or None where it will find none."""
+            # An ambiguous edge resolves to `ambiguous_supersession` there rather than to a
+            # successor, so fetching for it here would pull in a document the trust layer is
+            # about to refuse to use. `not_yet_known` is deliberately NOT mirrored: it wins over
+            # `superseded` per-hit, so this may fetch for a hit replayed before its own write.
+            # That costs one scoped search and cannot change a verdict, which is the right side
+            # to err on while the cheaper check is the one that would need the hit dates.
+            if file in unresolved:
+                return None
+            return resolve_successor(file, supersession, edge_candidates, known_as_of)
+
+        result = expand_retrieval_by_successor(
+            result, retriever.search, _resolve, successor_expansion
+        )
     trust_started = time.perf_counter()
     trusted = evaluate(
         result,
