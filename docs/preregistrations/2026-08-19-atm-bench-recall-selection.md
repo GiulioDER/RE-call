@@ -134,6 +134,20 @@ The corrected values match the official ATM Bench scorer. Hybrid improves retrie
 
 The cutoff difference is explained by answer cardinality. The 12 hard split list answers average 7.58 IDs, while the 139 full split list answers average 1.69 IDs. I will not promote one fixed cutoff from these results. The next selection experiment must test a serving time cardinality policy derived from the question, with no access to the gold answer.
 
+## Cardinality selector results appended after measurement
+
+Measured on 2026-08-19 with `python -m benchmarks.atm_cardinality_selector_probe --ground-truth C:\Users\gde00\Documents\atm-bench-official\data\atm-bench\atm-bench.json --retrieval-result results/atm_bench_full_retrieval_20260819_fastembed.json --out results/atm_bench_full_cardinality_selector_20260819.json`.
+
+The fixed development and test split contained 97 and 42 questions respectively. The test set contained 33 singleton and 9 multi item answers. The nearest development question policy selected top one for 26 test questions and top five for 16.
+
+| Hybrid policy | Jaccard | Gold containment | Answer hit |
+| --- | ---: | ---: | ---: |
+| Fixed top one | 0.3897 | 0.3897 | 0.4524 |
+| Fixed top five | 0.1588 | 0.6452 | 0.6905 |
+| Nearest question cardinality | 0.3173 | 0.4944 | 0.5238 |
+
+The preregistered prediction failed. The question only nearest neighbor selector was worse than fixed top one on the held out test set. I will not promote this selector or tune its threshold against this test result.
+
 ## Preregistration for question only cardinality selection
 
 I will evaluate a no credit cardinality selector on the full split's 139 `list_recall` questions. The split is deterministic: sort by question ID, then assign a question to development when the integer value of SHA256(question ID) modulo 10 is below 7, and assign it to test otherwise. The development set is used only to train the selector; the test set is used only for final scoring.
