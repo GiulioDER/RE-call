@@ -29,6 +29,7 @@ from recall.index import (
 )
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
+from recall.retriever import DocumentExpansionPolicy
 from recall.store import (
     DEFAULT_TABLE,
     DEFAULT_TENANT,
@@ -235,7 +236,9 @@ def _print_localized_result(result: TrustedResult, locale: str) -> None:
         print(f"  chunk_id={terminal_safe(hit.chunk.id)!r}  {terminal_safe(value)!r}")
 
 
-def _print_evidence(result: TrustedResult, max_items: int) -> None:
+def _print_evidence(
+    result: TrustedResult, max_items: int, *, document_mode: bool = False
+) -> None:
     """Print the generator-neutral evidence bundle and the exact prompt it renders to.
 
     JSON, not prose, and that is a safety property rather than a formatting preference. Every
@@ -253,7 +256,13 @@ def _print_evidence(result: TrustedResult, max_items: int) -> None:
     # `max(1, ...)`: `-k` has no lower bound, and `EvidencePolicy` refuses `max_items < 1`, so
     # `recall search q -k 0 --evidence` raised an uncaught ValueError out of a dataclass
     # constructor. A CLI flag combination must not produce a traceback.
-    bundle = build_evidence_bundle(result, EvidencePolicy(max_items=max(1, max_items)))
+    bundle = build_evidence_bundle(
+        result,
+        EvidencePolicy(
+            max_items=max(1, max_items),
+            bundle_mode="document" if document_mode else "retrieval",
+        ),
+    )
     system, user = render_evidence_prompt(bundle)
     payload = {
         "bundle": asdict(bundle),
@@ -1127,8 +1136,15 @@ def main(argv: list[str] | None = None) -> None:
         "--evidence",
         action="store_true",
         help="also print the generator-neutral evidence bundle and the exact prompt it renders "
-        "to, as JSON. Only verdict-ok hits enter the bundle, in retrieval order; an abstention "
-        "produces an empty bundle. Additive: the normal listing is printed either way.",
+        "to, as JSON. Only verdict-ok hits enter the bundle; document expansion groups them "
+        "in document order. An abstention produces an empty bundle. Additive: the normal "
+        "listing is printed either way.",
+    )
+    p_search.add_argument(
+        "--expand-documents",
+        action="store_true",
+        help="for relational queries, rerun calibrated retrieval inside the top source documents "
+        "and assemble evidence in document order",
     )
     p_search.add_argument(
         "--locale",
@@ -2361,12 +2377,19 @@ def main(argv: list[str] | None = None) -> None:
                 calibration=_search_calibration,
                 entailment=entail_judge,
                 policy=_search_policy,
+                document_expansion=(
+                    DocumentExpansionPolicy(enabled=True) if args.expand_documents else None
+                ),
             )
             _print_result(_search_result)
             if args.locale:
                 _print_localized_result(_search_result, args.locale)
             if args.evidence:
-                _print_evidence(_search_result, max_items=args.k)
+                _print_evidence(
+                    _search_result,
+                    max_items=args.k,
+                    document_mode=args.expand_documents,
+                )
     elif args.cmd == "demo":
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
             raise SystemExit("the filesystem demo is unavailable in production")

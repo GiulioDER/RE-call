@@ -28,6 +28,7 @@ want to audit a claim or reproduce a benchmark.
 | Document | Use it for |
 |---|---|
 | [WRITEUP.md](WRITEUP.md) | Architecture, trust semantics, and evaluation summary. |
+| [Validity Frontmatter 1.0](https://github.com/GiulioDER/validity-frontmatter) | The open vocabulary RE-call implements (`valid_from`, `valid_until`, `supersedes`), its resolution rules and its verdict algorithm. MIT licensed and maintained in its own repository, so it stays implementable without RE-call. RE-call is the Python implementation; a zero-dependency TypeScript one ships alongside the spec. |
 | [CASE_STUDY.md](CASE_STUDY.md) | Origin story, redacted production context, and public/private boundary. |
 | [REASONING_CONTRACT.md](REASONING_CONTRACT.md) | Reasoning vocabulary, invariants, Session 1 baseline fixture, and Session 6 evaluation controls. |
 | [REASONING_API.md](REASONING_API.md) | Typed reasoning request and response surface, provider ports, serialization, and validation rules. |

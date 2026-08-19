@@ -33,9 +33,9 @@
 </p>
 
 <p align="center">
-  <a href="https://giulioder.github.io/RE-call/readme.html">README with language menu</a>
-  &nbsp;·&nbsp;
   <a href="https://giulioder.github.io/RE-call/">Setup guide: install, configure and run RE-call</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/GiulioDER/validity-frontmatter">Validity Frontmatter: the open spec RE-call implements</a>
 </p>
 
 ## Why RE-call
@@ -56,6 +56,13 @@ It is for teams putting agent memory behind real applications, where a stale or 
 is worse than no memory: keep the memory layer local by default, attach policy to every hit,
 calibrate the refusal threshold on your corpus, and let the application decide what to do with a
 result that is not trustworthy enough to answer from.
+
+The vocabulary that carries that validity, `supersedes`, `valid_from` and `valid_until` in a
+document's frontmatter, is published separately as
+[Validity Frontmatter](https://github.com/GiulioDER/validity-frontmatter): MIT licensed, with a
+zero-dependency TypeScript implementation beside it. RE-call is its Python implementation, not its
+owner. The specification is deliberately licensed more permissively than this repository, so
+adopting the vocabulary carries no obligation to adopt the engine.
 
 | Capability | What it means in practice |
 |---|---|

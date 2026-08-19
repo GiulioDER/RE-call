@@ -41,6 +41,7 @@ from recall.evidence import (
 )
 from recall.integrations import result_trust_metadata, trust_metadata
 from recall.rerank import Reranker
+from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
 from recall.store import PgVectorStore
 from recall.trust import marked_text, servable_hits, trusted_search
 from recall.trust_policy import TrustPolicy
@@ -113,6 +114,8 @@ class RecallRetriever(BaseRetriever):
         return_abstention_reason: bool = False,
         include_untrusted: bool = False,
         policy: TrustPolicy | None = None,
+        document_expansion: DocumentExpansionPolicy | None = None,
+        structural_expansion: StructuralExpansionPolicy | None = None,
     ) -> RecallRetriever:
         """Build a retriever that calls :func:`recall.trust.trusted_search` on each query.
 
@@ -122,6 +125,9 @@ class RecallRetriever(BaseRetriever):
         adapter does not pull in the ``entail`` extra. ``include_untrusted`` opts a live-store
         retriever into serving trust-refused hits (with an in-band warning) — the same escape hatch
         the constructor exposes, reachable through the documented factory.
+        ``document_expansion`` opts relational queries into source-scoped retrieval before the
+        trust layer evaluates the complete candidate set.
+        ``structural_expansion`` adds bounded ordinal neighbors and the terminal section.
         """
 
         def _search(query: str) -> TrustedResult:
@@ -135,6 +141,8 @@ class RecallRetriever(BaseRetriever):
                 reranker=reranker,
                 entailment=entailment,
                 policy=policy,
+                document_expansion=document_expansion,
+                structural_expansion=structural_expansion,
             )
 
         return cls(

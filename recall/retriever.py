@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, is_dataclass, replace
 from datetime import datetime, timedelta, timezone
 import os
@@ -38,6 +38,176 @@ def _rescored(hit: ScoredChunk, score: float) -> ScoredChunk:
 #: chunks before truncation to k, so hit@k stops rising once k reaches the pool. A curve run past it
 #: measures the pool, not the depth, so the eval must use exactly this default.
 DEFAULT_CANDIDATE_K = 20
+
+
+@dataclass(frozen=True)
+class DocumentExpansionPolicy:
+    """Bounded, opt in retrieval inside documents already found by the query."""
+
+    enabled: bool = False
+    max_sources: int = 2
+    chunks_per_source: int = 3
+    relational_query_only: bool = True
+
+    def __post_init__(self) -> None:
+        if self.max_sources < 1:
+            raise ValueError("max_sources must be positive")
+        if self.chunks_per_source < 1:
+            raise ValueError("chunks_per_source must be positive")
+
+
+@dataclass(frozen=True)
+class StructuralExpansionPolicy:
+    """Bounded expansion around retrieved sections and each document conclusion."""
+
+    enabled: bool = False
+    max_sources: int = 2
+    chunks_per_source: int = 8
+    radius: int = 2
+    relational_query_only: bool = True
+
+    def __post_init__(self) -> None:
+        if self.max_sources < 1:
+            raise ValueError("max_sources must be positive")
+        if self.chunks_per_source < 1:
+            raise ValueError("chunks_per_source must be positive")
+        if self.radius < 0:
+            raise ValueError("radius must not be negative")
+
+
+_RELATIONAL_QUERY = re.compile(
+    r"\b(?:why|how|when|before|after|compare|comparison|difference|changed|change|"
+    r"decision|decided|status|result|outcome|outcomes|happened|led|caused|consequence|following|"
+    r"subsequent|entity|entities|each|per)\b"
+    r"|\b(?:this|that|it|they|them)\b",
+    re.IGNORECASE,
+)
+
+
+def _document_key(hit: ScoredChunk) -> str:
+    value = hit.chunk.metadata.get("file")
+    return value if isinstance(value, str) and value else hit.chunk.source
+
+
+def _needs_document_expansion(query: str) -> bool:
+    return _RELATIONAL_QUERY.search(query) is not None
+
+
+def expand_retrieval_by_source(
+    result: RetrievalResult,
+    search: Callable[[str, int, str | None], RetrievalResult],
+    policy: DocumentExpansionPolicy,
+) -> RetrievalResult:
+    """Add same document candidates before the normal trust evaluation."""
+    if not policy.enabled or not result.hits:
+        return result
+    if policy.relational_query_only and not _needs_document_expansion(result.query):
+        return result
+
+    sources: list[str] = []
+    seen_sources: set[str] = set()
+    for hit in result.hits:
+        source = _document_key(hit)
+        if source not in seen_sources:
+            seen_sources.add(source)
+            sources.append(source)
+        if len(sources) >= policy.max_sources:
+            break
+
+    started = time.perf_counter()
+    expanded: list[ScoredChunk] = []
+    reranking_ran = result.diagnostics.reranking_ran
+    for source in sources:
+        scoped = search(result.query, policy.chunks_per_source, source)
+        expanded.extend(scoped.hits)
+        reranking_ran = reranking_ran or scoped.diagnostics.reranking_ran
+
+    by_id = {hit.chunk.id: hit for hit in result.hits}
+    merged = list(result.hits)
+    for hit in expanded:
+        if hit.chunk.id not in by_id:
+            by_id[hit.chunk.id] = hit
+            merged.append(hit)
+
+    timings = dict(result.diagnostics.stage_ms)
+    timings["document_expansion"] = round((time.perf_counter() - started) * 1000.0, 3)
+    timings["document_expansion_sources"] = float(len(sources))
+    diagnostics = replace(
+        result.diagnostics,
+        reranking_ran=reranking_ran,
+        stage_ms=timings,
+    )
+    return replace(result, hits=merged, diagnostics=diagnostics)
+
+
+def expand_retrieval_by_structure(
+    result: RetrievalResult,
+    search: Callable[[str, int, str | None], RetrievalResult],
+    policy: StructuralExpansionPolicy,
+) -> RetrievalResult:
+    """Add bounded ordinal neighbors and the terminal section of retrieved documents."""
+    if not policy.enabled or not result.hits:
+        return result
+    if policy.relational_query_only and not _needs_document_expansion(result.query):
+        return result
+
+    sources: list[str] = []
+    seen_sources: set[str] = set()
+    seed_ordinals: dict[str, list[int]] = {}
+    for hit in result.hits:
+        source = _document_key(hit)
+        if source not in seen_sources:
+            seen_sources.add(source)
+            sources.append(source)
+        ordinal = hit.chunk.metadata.get("ord")
+        if isinstance(ordinal, int):
+            seed_ordinals.setdefault(source, []).append(ordinal)
+        if len(sources) >= policy.max_sources:
+            break
+
+    started = time.perf_counter()
+    expanded: list[ScoredChunk] = []
+    reranking_ran = result.diagnostics.reranking_ran
+    for source in sources:
+        scoped = search(result.query, policy.chunks_per_source, source)
+        reranking_ran = reranking_ran or scoped.diagnostics.reranking_ran
+        candidates = list(scoped.hits)
+        # Walrus, so the `isinstance` guard narrows the value that is KEPT. Testing a second
+        # `.get("ord")` left the element type `Any | None`, which `max` cannot order: the guard
+        # proved nothing about the item in the list, only about a separate lookup of the same key.
+        ordinals = [
+            ordinal
+            for hit in candidates
+            if isinstance(ordinal := hit.chunk.metadata.get("ord"), int)
+        ]
+        terminal = max(ordinals) if ordinals else None
+        seeds = seed_ordinals.get(source, [])
+        for hit in candidates:
+            ordinal = hit.chunk.metadata.get("ord")
+            near_seed = (
+                isinstance(ordinal, int)
+                and any(abs(ordinal - seed) <= policy.radius for seed in seeds)
+            )
+            is_terminal = terminal is not None and ordinal == terminal
+            if near_seed or is_terminal or not seeds:
+                expanded.append(hit)
+
+    by_id = {hit.chunk.id: hit for hit in result.hits}
+    merged = list(result.hits)
+    for hit in expanded:
+        if hit.chunk.id not in by_id:
+            by_id[hit.chunk.id] = hit
+            merged.append(hit)
+
+    timings = dict(result.diagnostics.stage_ms)
+    timings["structural_expansion"] = round((time.perf_counter() - started) * 1000.0, 3)
+    timings["structural_expansion_sources"] = float(len(sources))
+    diagnostics = replace(
+        result.diagnostics,
+        reranking_ran=reranking_ran,
+        stage_ms=timings,
+    )
+    return replace(result, hits=merged, diagnostics=diagnostics)
 
 #: Which retriever fills the sparse leg.
 #:

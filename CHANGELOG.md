@@ -145,6 +145,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   own words, not the shipped memo set, be measured without every such claim being refused at a
   batch rung. It does not widen what `recall rewrite` may write: the write path still extracts
   under the shipped vocabulary and `route_relation` still refuses anything outside it.
+* Promoted deterministic answer slot selection to a supported optional evidence path. Public
+  `AnswerSlot` and `EvidencePolicy` exports, plus the LangChain and LlamaIndex evidence adapters,
+  can require multiple answer components and abstain with `answer_slot_gap` when one is absent.
+  Existing retrieval ordering remains the default. Beam selection and reasoning remain opt in.
 
 ## [0.9.5] (2026-08-15)
 

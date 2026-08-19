@@ -9,6 +9,7 @@ from recall.calibration_v2 import CalibrationArtifactV2, CalibrationStatus
 # and no import-time work to the package.
 from recall.evidence import (
     AnswerEnvelope,
+    AnswerSlot,
     EvidenceBundle,
     EvidenceItem,
     EvidencePolicy,
@@ -38,6 +39,7 @@ from recall.reasoning_graph import (
     build_reasoning_graph,
     project_store_graph,
 )
+from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
 from recall.reasoning_planner import (
     EvidenceDecision,
     ExpansionStep,
@@ -85,6 +87,7 @@ __version__ = "0.9.6"
 
 __all__ = [
     "AnswerEnvelope",
+    "AnswerSlot",
     "CalibrationArtifactV2",
     "CalibrationStatus",
     "ChunkerIdentity",
@@ -92,6 +95,7 @@ __all__ = [
     "ClaimExtractor",
     "Contradiction",
     "ContradictionDetector",
+    "DocumentExpansionPolicy",
     "EmbedderIdentity",
     "EntityResolution",
     "EntityResolver",
@@ -129,6 +133,7 @@ __all__ = [
     "ReasoningTrace",
     "ReasoningValidationError",
     "RelationProposer",
+    "StructuralExpansionPolicy",
     "Tokenizer",
     "UnresolvedGap",
     "ValidationResult",
