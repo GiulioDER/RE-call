@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -1070,3 +1071,77 @@ def test_saving_the_pipeline_configuration_actually_persists_it(
         # compares existence and mtime before and after, so it fires on a change made by this
         # test, never on a machine that merely has a profile.
         assert now == state, f"a test must never write the user's real profile at {path}"
+
+
+def test_closing_the_window_never_waits_on_a_long_running_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ `waitForDone()` with no argument waits FOREVER, and the window used to call it that way.
+
+    A provisioning worker sits inside `docker compose up`, whose timeout is 1800 seconds. So
+    closing the window during a first install froze the entire application for up to half an hour,
+    unresponsive and silent — the state Windows offers to kill for you, and killing it mid-provision
+    is how a stack ends up half-created.
+
+    It surfaced as FLAKINESS rather than a failure:
+    `test_provisioning_is_dispatched_to_the_pool_not_the_gui_thread` hung only when Docker was busy
+    enough to make the wait exceed the test timeout. It passed on a quiet machine and hung on a
+    loaded one, which is why it survived several green full-suite runs.
+
+    Asserted two ways, because either alone is weak. The elapsed bound is the property that matters
+    but is a timing assertion; the structural check is that a bound was passed AT ALL, which is what
+    actually regressed and cannot pass by luck.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(profile, runtime=DockerRuntime(profile))
+
+    waits: list[object] = []
+    real_wait = window.pool.waitForDone
+
+    def _record(*args: object) -> bool:
+        waits.append(args[0] if args else None)
+        return bool(real_wait(*args))
+
+    monkeypatch.setattr(window.pool, "waitForDone", _record)
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def _long_job() -> str:
+        started.set()
+        # Stands in for `docker compose up`. Released in `finally` so a failing assertion cannot
+        # leave a thread parked in the pool for the rest of the session.
+        release.wait(timeout=60)
+        return "done"
+
+    try:
+        window._run(_long_job, lambda _result: None)
+        assert started.wait(timeout=10), "the worker never started, so this proves nothing"
+
+        began = time.monotonic()
+        window.close()
+        elapsed = time.monotonic() - began
+
+        assert waits, "closeEvent must call waitForDone"
+        assert waits[0] is not None, (
+            "waitForDone was called with NO argument, which waits forever; that is the defect"
+        )
+        assert isinstance(waits[0], int) and 0 < waits[0] <= 10_000, (
+            f"the close wait must be bounded and short, got {waits[0]!r}"
+        )
+        assert elapsed < 30, (
+            f"closing took {elapsed:.1f}s with a job still running; it must not wait for the job"
+        )
+    finally:
+        release.set()
+        window.pool.waitForDone(30_000)
+        app.processEvents()

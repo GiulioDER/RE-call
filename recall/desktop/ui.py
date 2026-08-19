@@ -269,6 +269,15 @@ if QApplication is not None:
         failed = Signal(str)
 
 
+    #: How long `closeEvent` waits for background work before closing anyway, in milliseconds.
+    #:
+    #: Two seconds is chosen against what it is racing: a quick worker finishing normally, not a
+    #: `docker compose up`. Anything long enough to be worth waiting for is long enough to look
+    #: frozen, and the window closing while work continues is both true and better than a window
+    #: that will not close.
+    _CLOSE_WAIT_MS = 2000
+
+
     class _Worker(QRunnable):
         def __init__(self, fn: Any) -> None:
             super().__init__()
@@ -2141,8 +2150,35 @@ if QApplication is not None:
             QMessageBox.warning(self, "RE-call", message)
 
         def closeEvent(self, event: Any) -> None:
+            """Close, always, and never wait longer than a person will.
+
+            ⛔ **`waitForDone()` with no argument waits FOREVER.** A provisioning worker sits inside
+            `docker compose up`, whose timeout is `_SLOW_VERB_TIMEOUT` — 1800 seconds. So closing
+            the window during a first install froze the whole application for up to half an hour,
+            unresponsive, with no indication that anything was happening. On Windows that is the
+            state the OS offers to kill for you, and killing it mid-provision is how a stack ends up
+            half-created.
+
+            It also made `test_provisioning_is_dispatched_to_the_pool_not_the_gui_thread` flaky
+            rather than failing: the wait only exceeds the test timeout when Docker happens to be
+            busy, so it passed on a quiet machine and hung on a loaded one. Found while running the
+            suite against a database for the first time, which is not where the defect was.
+
+            **Bounded, and closing regardless.** The work is in subprocesses with their own
+            timeouts; abandoning the wait does not abandon the install, and Docker finishes what it
+            started. The workers are retained in `self._workers` with `setAutoDelete(False)`, so a
+            still-running one cannot be destroyed underneath its own signals — the same retention
+            that fixed the garbage-collection race documented in `_run`.
+            """
             try:
-                self.pool.waitForDone()
+                finished = self.pool.waitForDone(_CLOSE_WAIT_MS)
+                if not finished:
+                    # Reported rather than silent. Something is still running and the user is
+                    # entitled to know that closing the window did not stop it.
+                    print(
+                        f"recall: closing while {self.pool.activeThreadCount()} background task(s) "
+                        "are still running; they continue in Docker and will finish on their own."
+                    )
                 self.runtime.stop()
             finally:
                 event.accept()
