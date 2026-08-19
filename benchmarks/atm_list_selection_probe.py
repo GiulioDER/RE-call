@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 K_VALUES = (1, 5, 10, 25, 50, 100)
+LIST_SPLIT_PATTERN = re.compile(r"\s*(?:,|;|\band\b|/)\s*", re.IGNORECASE)
 
 
 def load_json(path: Path) -> Any:
@@ -23,11 +24,16 @@ def load_json(path: Path) -> Any:
 def parse_answer(value: Any) -> list[str]:
     if not isinstance(value, str):
         raise ValueError("list_recall answer must be a string")
-    parts = re.split(r"[,\n]", value)
+    parts = LIST_SPLIT_PATTERN.split(value)
     answer: list[str] = []
     seen: set[str] = set()
     for part in parts:
-        token = re.sub(r"[.;:]+$", "", part.strip())
+        token = re.sub(r"\s+", " ", part.strip().lower())
+        token = re.sub(r"\b(\d+)(st|nd|rd|th)\b", r"\1", token)
+        token = re.sub(r"\([^)]+\)", "", token)
+        token = re.sub(r"\s+", " ", token)
+        token = re.sub(r"(\d),(\d)", r"\1\2", token)
+        token = token.strip("\t\n\r \\\"'`.,;:!?()[]{}")
         if token and token not in seen:
             seen.add(token)
             answer.append(token)
