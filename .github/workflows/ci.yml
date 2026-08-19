@@ -156,28 +156,56 @@ jobs:
       - name: Install
         run: pip install -e ".[dev,fastembed,documents]"
 
-      # A real config, with the shape a first-run user writes: a data root and no DSN, so the
-      # wizard provisions its own database rather than being handed one.
+      # A BOUNDED corpus, copied rather than pointed at `docs/` and `recall/` whole.
+      #
+      # Runtime scales close to linearly with corpus bytes, measured: 3.83 MB took 33 minutes on a
+      # runner, and 386 KB takes 137 seconds locally — a 10x cut in bytes bought a 10x cut in time,
+      # and BOTH corpora still certify 40 answerable / 40 unanswerable. The point of this job is
+      # that the install path works on a clean machine, and that is answered as well by a small
+      # corpus as by a large one.
+      #
+      # Bounded by CONSTRUCTION, not by naming two directories, because the repository grows: an
+      # unbounded corpus makes this job slower every quarter for no added coverage, and nothing
+      # would report the drift until somebody noticed CI had become slow.
+      #
+      # ⚠️ The floor is not arbitrary. Calibration needs 40 answerable queries drawn from the
+      # corpus's own text; cut this far enough and certification fails, which fails the job for a
+      # reason that has nothing to do with the change under test. If you shrink it further, verify
+      # the report still says `40 answerable / 40 unanswerable` rather than assuming.
+      - name: Assemble a bounded corpus
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/install/memory" "$RUNNER_TEMP/corpus/docs"
+          find docs -maxdepth 1 -name '*.md' | sort | head -12 \
+            | xargs -I{} cp {} "$RUNNER_TEMP/corpus/docs/"
+          cp -r recall/wizard "$RUNNER_TEMP/corpus/code"
+          echo "a durable fact about widget alignment tolerances" \
+            > "$RUNNER_TEMP/install/memory/notes.md"
+          echo "docs bytes: $(cat "$RUNNER_TEMP"/corpus/docs/*.md | wc -c)"
+          echo "code bytes: $(find "$RUNNER_TEMP/corpus/code" -name '*.py' -exec cat {} + | wc -c)"
+
+      # The shape a first-run user writes: a data root and no DSN, so the wizard provisions its own
+      # database rather than being handed one.
       - name: Write the wizard config
         run: |
-          mkdir -p "$RUNNER_TEMP/install/memory"
           cat > "$RUNNER_TEMP/install/wizard.json" <<JSON
           {
             "embedder": "fastembed",
             "corpus_version": "ci-clean-install",
             "data_root": "$RUNNER_TEMP/install",
             "project": "default",
-            "docs_root": "$GITHUB_WORKSPACE/docs",
-            "code_root": "$GITHUB_WORKSPACE/recall",
+            "docs_root": "$RUNNER_TEMP/corpus/docs",
+            "code_root": "$RUNNER_TEMP/corpus/code",
             "memory_root": "$RUNNER_TEMP/install/memory",
             "project_root": "$RUNNER_TEMP/install/project"
           }
           JSON
-          echo "a durable fact about widget alignment tolerances" \
-            > "$RUNNER_TEMP/install/memory/notes.md"
 
       - name: Install recall
-        run: python -m recall.cli wizard --headless --config "$RUNNER_TEMP/install/wizard.json"
+        run: |
+          set -o pipefail
+          python -m recall.cli wizard --headless \
+            --config "$RUNNER_TEMP/install/wizard.json" | tee "$RUNNER_TEMP/install.log"
 
       # ⚠️ Asserting the ARTIFACTS, not the report's wording. An install that refused or degraded
       # can still exit 0 and print a report, and this repository has shipped a report claiming
@@ -189,6 +217,15 @@ jobs:
       - name: The install produced a servable stack
         run: |
           set -euo pipefail
+          # The corpus is deliberately small, and "too small" fails as a DROP in certification
+          # rather than as an error. Asserted here so shrinking it further cannot quietly leave
+          # this job green while testing an install that no longer certifies anything.
+          certified=$(grep -c "40 answerable / 40 unanswerable" "$RUNNER_TEMP/install.log" || true)
+          test "$certified" -eq 2 || {
+            echo "expected docs and code to certify 40/40; matched $certified line(s)"
+            grep -E "certified|degraded|refused|failed" "$RUNNER_TEMP/install.log" || true
+            exit 1
+          }
           root="$RUNNER_TEMP/install"
           for f in docker-compose.recall.yml Dockerfile wizard.state.json; do
             test -f "$root/$f" || { echo "missing $f"; exit 1; }
