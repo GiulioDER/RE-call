@@ -603,8 +603,26 @@ def _confine_claude_client_config(tmp_path_factory, monkeypatch) -> None:
 
     `Path.home` rather than the HOME variable, because that is what the writer calls and because
     `Path.home()` on Windows reads USERPROFILE, so patching one environment name would miss it.
+
+    ⚠️ **The environment is redirected AS WELL, and that is not redundancy.** A patched `Path.home`
+    lives in this process and does not survive into a subprocess: anything that shells out resolves
+    the real home itself and writes to the developer's own config. That is not hypothetical — a peer
+    session hit exactly it, and the way it happened is the part worth keeping. Their test was safe
+    when written, because it exercised a faked CLI arm that wrote no file; a later change flipped
+    the primary path, the test stopped taking that branch, fell through to a direct writer, and
+    started leaking. **The test did not change. The code beneath it changed branches**, which is
+    invisible in a diff and which no per-test opt-in can cover, because the opt-in was a decision
+    made against the code as it was.
+
+    Nothing under `recall/wizard/` spawns a process today, so the `Path.home` patch alone is
+    currently sufficient. That is a property of the implementation, not of this guard, and it is
+    exactly the kind of property that stops being true without anyone noticing. Both names are set
+    because `Path.home()` reads USERPROFILE on Windows and HOME elsewhere, and a subprocess may
+    consult either.
     """
     from pathlib import Path as _Path
 
     home = tmp_path_factory.mktemp("fake-home")
     monkeypatch.setattr(_Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
