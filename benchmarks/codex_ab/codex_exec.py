@@ -297,7 +297,7 @@ async def run_codex_case(
         error_messages.insert(0, f"Codex timed out after {config.timeout_s:g} seconds")
     if returncode:
         error_messages.insert(0, f"Codex exited with status {returncode}")
-    if stderr and not error_messages:
+    if stderr and returncode and not error_messages:
         error_messages.append("Codex wrote diagnostics to stderr")
     error = "; ".join(error_messages) or None
     metadata = dict(row.get("metadata", {})) if isinstance(row.get("metadata"), Mapping) else {}
