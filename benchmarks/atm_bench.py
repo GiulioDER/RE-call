@@ -256,6 +256,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     tenant = args.tenant
     dsn = args.dsn or os.environ.get("RECALL_DSN") or DEFAULT_DSN
     reranker = None if args.reranker == "none" else reranker_from_name(args.reranker)
+    sparse_encoder = None
+    sparse_profile_id = None
+    sparse_attribution = None
+    if args.sparse_backend in ("splade", "both"):
+        from recall.sparse import SpladeEncoder, attribution_notice
+
+        sparse_encoder = SpladeEncoder.from_pretrained(
+            args.sparse_model,
+            accept_noncommercial_license=True,
+            device=args.sparse_device,
+        )
+        sparse_profile_id = sparse_encoder.profile.profile_id
+        sparse_attribution = attribution_notice(args.sparse_model)
     index_started = time.perf_counter()
     embeddings: list[list[float]] = []
     if not args.reuse_index:
@@ -271,6 +284,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         else:
             store.upsert(chunks, embeddings)
             store.analyze()
+        if sparse_encoder is not None:
+            from recall.sparse import backfill_learned_sparse
+
+            if args.reuse_index and store.sparse_row_count(sparse_profile_id) == len(chunks):
+                pass
+            else:
+                backfill_learned_sparse(store, sparse_encoder, batch_size=args.sparse_batch_size)
         index_ms = (time.perf_counter() - index_started) * 1000.0
         arms = {
             "dense": HybridRetriever(
@@ -291,9 +311,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 candidate_k=args.candidate_k,
                 gap_threshold=args.gap_threshold,
                 use_dense=True,
-                use_sparse=True,
-                sparse_backend="lexical",
-                retrieval_profile="atm_hybrid",
+                use_sparse=args.sparse_backend != "none",
+                sparse_backend="lexical" if args.sparse_backend == "none" else args.sparse_backend,
+                sparse_encoder=sparse_encoder,
+                retrieval_profile=f"atm_{args.sparse_backend}",
                 index_generation="atm_2026_08_19",
             ),
         }
@@ -363,6 +384,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "embedder": args.embedder,
         "embedding_profile": embedding_profile_id(embedder),
         "reranker": args.reranker,
+        "sparse_backend": args.sparse_backend,
+        "sparse_model": args.sparse_model if sparse_encoder is not None else None,
+        "sparse_profile_id": sparse_profile_id,
+        "sparse_attribution": sparse_attribution,
         "corpus_items": len(chunks),
         "index_ms": round(index_ms, 3),
         "table": table,
@@ -388,6 +413,10 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--candidate-k", type=int, default=200)
     ap.add_argument("--gap-threshold", type=float, default=0.50)
     ap.add_argument("--reranker", default="none")
+    ap.add_argument("--sparse-backend", choices=("none", "lexical", "splade", "both"), default="lexical")
+    ap.add_argument("--sparse-model", default="prithivida/Splade_PP_en_v1")
+    ap.add_argument("--sparse-device", choices=("cpu", "cuda"), default=None)
+    ap.add_argument("--sparse-batch-size", type=int, default=32)
     ap.add_argument("--question-split", choices=("all", "development", "holdout"), default="all")
     ap.add_argument(
         "--reuse-index",
