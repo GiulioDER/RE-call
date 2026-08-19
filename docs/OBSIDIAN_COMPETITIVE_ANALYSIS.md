@@ -186,7 +186,7 @@ Facts from this repository at `fa6fe04a`:
 | Verdicts | Ten, in `recall/types.py:22`: `ok`, `superseded`, `expired`, `not_yet_valid`, `not_yet_known`, `low_confidence`, `invalid_metadata`, `ambiguous_supersession`, `not_entailed`, `unverified` |
 | Validity model | `valid_from`, `valid_until`, `supersedes` in frontmatter (`recall/frontmatter.py:17`), with wikilink tolerant key normalisation |
 | Temporal model | Bi-temporal: validity time from frontmatter, transaction time from `first_indexed_at` and `indexed_at`, so `known_as_of` answers "what did we hold on Tuesday" |
-| Ingestion | Markdown, text, HTML, plus PDF, DOCX, XLSX, PPTX, MSG and legacy Office (`recall/extraction.py:94`) |
+| Ingestion | Markdown, text, HTML, plus PDF, DOCX, XLSX, PPTX, MSG and legacy Office, the set `DOCUMENT_EXTENSIONS` names (`recall/extraction.py:98`) |
 | Lifecycle | Immutable generations: build, validate, calibrate, promote, rollback, gc |
 | Multi tenancy | Tenant IDs, row level security, serving and migration DSN split, scoped bearer tokens, quotas, erasure |
 | Agent surface | MCP server with `recall_search`, `recall_evidence`, `recall_index`, `recall_ingest`, `recall_forget`, `recall_stats`, `recall_tenants`, `recall_job_status`, plus calibration and reasoning tools |
