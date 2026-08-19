@@ -389,27 +389,49 @@ def test_no_subprocess_call_decodes_with_the_platform_codec() -> None:
     a second one.
 
     0x8f is not exotic: it is a byte UTF-8 continuation sequences produce routinely, and Docker,
-    git and LibreOffice all emit UTF-8. Asserted across the whole package rather than per call site,
-    because the failure is in what a call site FORGETS, and a new one will forget it too.
+    git and LibreOffice all emit UTF-8. Asserted across the whole distribution rather than per call
+    site, because the failure is in what a call site FORGETS, and a new one will forget it too.
+
+    ⚠️ **The roots come from the wheel's own `packages` list, not from a literal here.** The first
+    version walked `recall/` alone, which left `recall_mcp/` — shipped in the same wheel — outside a
+    guard whose entire argument is that a NEW call site will forget the codec. A hardcoded root
+    cannot notice a package being added; reading the manifest means the guard covers whatever is
+    actually distributed. Same reasoning as `CLAUDE_CONFIG_SUBPATHS`, where two consumers read one
+    list so they cannot drift apart. Gap reported by a peer session reviewing this check.
     """
     import ast
+    import tomllib
 
-    package = Path(__file__).resolve().parent.parent / "recall"
+    repository = Path(__file__).resolve().parent.parent
+    manifest = tomllib.loads((repository / "pyproject.toml").read_text(encoding="utf-8"))
+    names = manifest["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+    assert names, "the wheel declares no packages, so this guard would silently check nothing"
+
+    sources: list[Path] = []
+    for name in names:
+        root = repository / name
+        assert root.is_dir(), f"the wheel ships {name}, which is not in the tree"
+        sources.extend(root.rglob("*.py"))
+    assert sources, "no Python files found to check"
+
     offenders: list[str] = []
-    for source in package.rglob("*.py"):
+    for source in sources:
         tree = ast.parse(source.read_text(encoding="utf-8"), str(source))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             target = node.func
-            if not (isinstance(target, ast.Attribute) and target.attr in {"run", "Popen", "check_output", "check_call"}):
+            if not (
+                isinstance(target, ast.Attribute)
+                and target.attr in {"run", "Popen", "call", "check_output", "check_call"}
+            ):
                 continue
             if not (isinstance(target.value, ast.Name) and target.value.id == "subprocess"):
                 continue
             keywords = {k.arg for k in node.keywords}
             wants_text = "text" in keywords or "universal_newlines" in keywords
             if wants_text and "encoding" not in keywords:
-                offenders.append(f"{source.relative_to(package.parent)}:{node.lineno}")
+                offenders.append(f"{source.relative_to(repository)}:{node.lineno}")
 
     assert not offenders, (
         "these subprocess calls decode with the platform codec, which on Windows returns "

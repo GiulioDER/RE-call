@@ -14,6 +14,7 @@ the one that skips the prompt without answering about the wrong repository.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -745,3 +746,42 @@ def test_the_suite_never_touches_the_real_client_config() -> None:
         f"the client config resolves to {resolved}, which looks like the real one; "
         "tests/conftest.py::_confine_claude_client_config is meant to redirect Path.home"
     )
+
+
+def test_project_keys_follow_each_platform_s_own_case_rule(tmp_path: Path) -> None:
+    """⛔ Do NOT casefold this comparison, on either platform.
+
+    `_same_directory` compares `Path(key).resolve() == project_root.resolve()`, and `PurePath.__eq__`
+    is case-insensitive on Windows and case-sensitive on POSIX. That is each platform's own rule
+    about what a directory IS, and it is the rule this has to follow.
+
+    Forcing case-insensitivity everywhere — the obvious way to write this, and the way a peer
+    session first wrote it — would match `/home/me/Proj` against `/home/me/proj` on Linux. Those are
+    two different directories, so a recall server would be registered under an unrelated project and
+    answer about the wrong corpus: the exact corpus-boundary failure local scope exists to prevent,
+    reintroduced by a fix for a different bug.
+
+    ⚠️ **This is invisible from a Windows machine**, where both implementations agree on every
+    input, which is why it needs a test that asserts the two behaviours SEPARATELY rather than
+    asserting whichever one the machine running the suite happens to have. CI runs on Linux and
+    development happens on Windows, so both branches are exercised somewhere.
+    """
+    from recall.wizard.wiring import _same_directory
+
+    # ⚠️ Deliberately NOT created. On Windows `resolve()` asks the filesystem for the canonical
+    # casing of a path that EXISTS, so two spellings of one real directory collapse to the same
+    # string and a plain `==` on the strings would pass too. That hides the rule being tested here.
+    # An absent path keeps the casing it was given, so the comparison itself is what answers.
+    lowered = tmp_path / "proj"
+    shouted = str(tmp_path / "PROJ")
+
+    if os.name == "nt":
+        assert _same_directory(shouted, lowered), (
+            "on Windows these name one directory, and refusing to match would report the user's "
+            "own project as a stranger"
+        )
+    else:
+        assert not _same_directory(shouted, lowered), (
+            "on POSIX these are two directories, and matching them would register this project's "
+            "servers under an unrelated one"
+        )
