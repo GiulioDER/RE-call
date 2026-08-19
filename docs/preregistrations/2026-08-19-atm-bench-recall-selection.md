@@ -133,3 +133,11 @@ Corrected full split results:
 The corrected values match the official ATM Bench scorer. Hybrid improves retrieval and list containment, but the best Jaccard cutoff is one item, while containment continues increasing through 100 items. This confirms that a final answer selector must optimize precision and recall jointly.
 
 The cutoff difference is explained by answer cardinality. The 12 hard split list answers average 7.58 IDs, while the 139 full split list answers average 1.69 IDs. I will not promote one fixed cutoff from these results. The next selection experiment must test a serving time cardinality policy derived from the question, with no access to the gold answer.
+
+## Preregistration for question only cardinality selection
+
+I will evaluate a no credit cardinality selector on the full split's 139 `list_recall` questions. The split is deterministic: sort by question ID, then assign a question to development when the integer value of SHA256(question ID) modulo 10 is below 7, and assign it to test otherwise. The development set is used only to train the selector; the test set is used only for final scoring.
+
+The selector will embed each question with the same local MiniLM backbone used by the retrieval run. For each test question, it will find the nearest development question by cosine similarity and copy only its singleton or multi item label. A singleton prediction selects the first retrieved ID. A multi item prediction selects the first five retrieved IDs. The selector never reads the test answer, test evidence IDs, or answer text.
+
+The primary outcome is test set mean official list Jaccard. Secondary outcomes are test containment, answer hit rate, development versus test label balance, and the selected cutoff distribution. The fixed top one and fixed top five policies on the same test questions are preregistered comparators. I predict that the question only policy will improve test Jaccard over at least one fixed cutoff without materially reducing containment.
