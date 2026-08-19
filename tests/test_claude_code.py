@@ -262,15 +262,25 @@ def test_every_spelling_of_the_project_directory_is_registered(
     from a native launch and one from Git Bash. An entry under one spelling is invisible to a
     session launched the other way, with no error, which looks exactly like a failed install.
     """
+    import os
+
     project = tmp_path / "proj"
     project.mkdir()
-    native = str(project)
-    posix = project.as_posix()
+    # Distinct STRINGS that denote one directory. `as_posix()` is the real-world Windows case, a
+    # native launch versus a Git Bash one, and it collapses into `str()` on POSIX where the
+    # separator is already a slash. The `.` component is the portable stand-in, so this test asserts
+    # something on every platform rather than degenerating into a single key on Linux.
+    #
+    # It degenerated exactly that way in its first version, which asserted a hardcoded 2 and passed
+    # on Windows while asserting nothing on POSIX. Deriving the expected count from the set is what
+    # stops that recurring: the number cannot drift away from the fixture.
+    spellings = {str(project), project.as_posix(), os.path.join(str(tmp_path), ".", "proj")}
+    assert len(spellings) >= 2, "the fixture must offer more than one spelling on every platform"
+
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     config = tmp_path / ".claude.json"
     config.write_text(
-        json.dumps({"projects": {native: {"allowedTools": []}, posix: {"allowedTools": []}}}),
-        encoding="utf-8",
+        json.dumps({"projects": {s: {"allowedTools": []} for s in spellings}}), encoding="utf-8"
     )
     monkeypatch.setattr(claude_code, "_claude_cli", lambda: None)
 
@@ -280,9 +290,11 @@ def test_every_spelling_of_the_project_directory_is_registered(
 
     written = json.loads(config.read_text(encoding="utf-8"))
     registered = [k for k, v in written["projects"].items() if "mcpServers" in v]
-    assert len(registered) == 2, f"both spellings must be registered, got {registered}"
-    # And neither spelling lost the keys it already had.
-    assert all(written["projects"][k]["allowedTools"] == [] for k in (native, posix))
+    assert len(registered) == len(spellings), (
+        f"every spelling must be registered, got {registered} for {sorted(spellings)}"
+    )
+    # And no spelling lost the keys it already had.
+    assert all(written["projects"][s]["allowedTools"] == [] for s in spellings)
 
 
 def test_key_matching_follows_the_platform_rather_than_casefolding(tmp_path: Path) -> None:
