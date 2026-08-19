@@ -8,6 +8,7 @@ installer wrote.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -164,7 +165,16 @@ def test_writing_preserves_servers_this_wizard_knows_nothing_about(tmp_path: Pat
 
     written = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
     assert written["someone-elses"]["url"] == "https://example.invalid/mcp", "must survive"
-    assert written["default-docs"]["command"] == "python", "and ours must be replaced, not merged into"
+    # 🔁 Was `== "python"`. A bare `python` resolves against the CLIENT's PATH, not the environment
+    # recall is installed into; on Windows that is routinely the Microsoft Store stub, which opens
+    # the Store rather than running anything, and the user sees a server that will not start with
+    # no cause named. The absolute interpreter is the fix, so the assertion moves with it.
+    assert written["default-docs"]["command"] == sys.executable, (
+        "ours must be replaced, not merged into, and must name an absolute interpreter"
+    )
+    assert Path(written["default-docs"]["command"]).is_absolute(), (
+        "a bare name would be resolved by whatever PATH the client happens to have"
+    )
     assert set(written) == {"someone-elses", "default-docs", "default-code", "default-memory"}
 
 

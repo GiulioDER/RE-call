@@ -40,6 +40,7 @@ names the container instead.
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -214,13 +215,26 @@ def _legacy_block(spec: CorpusSpec, *, dsn: str, embedder: str) -> ServerBlock:
     )
 
 
-def mcp_config(blocks: tuple[ServerBlock, ...], *, project_root: Path) -> dict[str, object]:
-    """The `.mcp.json` document, in the shape a working configuration already uses."""
+def mcp_config(
+    blocks: tuple[ServerBlock, ...], *, project_root: Path, interpreter: str | None = None
+) -> dict[str, object]:
+    """The `.mcp.json` document, in the shape a working configuration already uses.
+
+    ⚠️ **The interpreter is an ABSOLUTE path, not the word `python`.** A bare `python` resolves
+    against whatever PATH the CLIENT has, which is not the environment recall was installed into.
+    On Windows it routinely resolves to the Microsoft Store stub, which opens the Store instead of
+    running anything, and the user sees a server that will not start with no cause named. Captured
+    from `sys.executable` at install time, which is by construction the interpreter that has
+    `recall_mcp` importable, since it is the one running this code.
+
+    `args` stays a list so a path containing spaces — `C:\\Program Files\\...` — is never re-split
+    by a shell.
+    """
     return {
         "mcpServers": {
             block.name: {
                 "type": "stdio",
-                "command": "python",
+                "command": interpreter or sys.executable,
                 "args": ["-m", "recall_mcp.server"],
                 "cwd": str(project_root),
                 "env": dict(block.env),
