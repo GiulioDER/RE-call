@@ -149,6 +149,48 @@ is a deliberate act), and leaves `valid_until` unset by default rather than invi
 **Cost:** 1 to 2 days, plus a re-measurement of the table above 30 days later, which is the only
 part that proves anything.
 
+### Item 0: done 2026-08-19, and what the measurement showed
+
+Implemented in `recall/setup.py` (`_claude_md_block`, `_memory_md_starter`, `scaffold_memory_index`),
+with tests in `tests/test_setup.py`. The scaffolded `CLAUDE.md` section now tells the agent to stamp
+`valid_from`, to leave `valid_until` unset unless a real end date is known, and never to edit or
+delete a memo whose fact has changed but to write a successor carrying `supersedes:`. The starter
+`memory/MEMORY.md` teaches the same shape, with the example date injected rather than left as a
+placeholder, because `recall/index.py` calls `validity_bounds` and fails fast: an unfilled
+`<YYYY-MM-DD>` would break `recall_index` on the directory the wizard indexes seconds later.
+
+**Verified against a live pgvector store, not asserted.** Two memos written from the template, the
+second closing the first, indexed with the offline hashing embedder and evaluated through
+`recall.trust.evaluate`:
+
+| Template | Edges read back from the store | Verdicts |
+|---|---|---|
+| Before (`name`, `description`, `metadata`) | none | both memos `ok`, and the **stale one ranked first** |
+| After | `{package-manager-npm.md: package-manager-pnpm.md}` | current memo `ok` and first, old memo **`superseded`** with its successor named |
+
+That is the inert case and the working case, side by side, on the same query. `recall lint` returns
+0 errors and 0 warnings over the whole scaffolded directory including the supersession edge.
+
+**One defect found and fixed on the way.** Teaching the `supersedes` key put the word into
+`MEMORY.md`, and `closure-marker-unlinked` fired on the file the tool had just written: `recall
+setup` produced a corpus that `recall lint` complained about. Two changes came out of that, one
+accepted and one rejected after measuring:
+
+- **Accepted.** `recall/lint.py` now excludes fenced code blocks before searching for closure
+  markers, via `prose_only`. The diagnostic says "body prose", and a fenced block is a sample, not
+  an assertion. Blast radius measured over both corpora to hand: **zero** of 152 memos in the memory
+  store lose a warning, and exactly one file in `docs/` does (`ENVIRONMENT.md`, whose marker is the
+  comment `# deprecated serving fallback` inside a shell fence), which is the false positive.
+- **Rejected.** Extending the same exclusion to inline code spans would have silenced **4 of 6**
+  warnings in the memory store and **10 of 26** in `docs/`. A memo writing "this `supersedes` the
+  old approach" is asserting a relation, so that suppression is a real loss rather than a false
+  positive, and the measurement is what separated the two cases. The starter was reworded instead:
+  the mechanism is explained in `CLAUDE.md`, which is where instructions belong, and `MEMORY.md`
+  keeps a fenced example and stays an index rather than becoming a manual.
+
+**Still unmeasured, and this is the part that proves the item.** Whether authors and agents actually
+fill the fields. Re-run the Part 2b count in 30 days (2026-09-18); the number to beat is zero.
+
 ## Part 3: candidate work items, ranked
 
 Each item states the source, what exists today, the honest case against, and a test that could
