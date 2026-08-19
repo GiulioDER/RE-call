@@ -70,3 +70,22 @@ After the runner is implemented, the exact command will be recorded in the appen
 ## Protocol clarification recorded before measurement
 
 The official metrics document describes `Recall@k` as a question level hit metric. The official MMRag implementation currently writes `retrieval_recall` as the fraction of gold evidence items found at each `k`, and the official comprehensive evaluator also computes the mean item level recall. I will preserve both interpretations in the result: the official implementation compatible item level recall, question level hit rate, and complete evidence recall. I will not silently rename one into another.
+
+## Results appended after measurement
+
+Measured on 2026-08-19. The exact command was:
+
+```text
+python -m benchmarks.atm_bench --qa-file C:\Users\gde00\Documents\atm-bench-official\data\atm-bench\atm-bench-hard.json --image-file C:\Users\gde00\Documents\atm-bench-official\output\image\qwen3vl2b\batch_results.json --video-file C:\Users\gde00\Documents\atm-bench-official\output\video\qwen3vl2b\batch_results.json --email-file C:\Users\gde00\Documents\atm-bench-official\data\raw_memory\email\emails.json --out results/atm_bench_hard_retrieval_20260819_fastembed.json --embedder fastembed:sentence-transformers/all-MiniLM-L6-v2 --arms dense hybrid
+```
+
+The run used 11,034 memory items and 31 ATM Bench Hard questions. It used the local FastEmbed ONNX conversion of the official `sentence-transformers/all-MiniLM-L6-v2` backbone because the native sentence transformers wrapper could not import on this Windows runtime. No answer model, judge, or API credit was used. This is a local engineering result, not an official leaderboard claim for the native MMRag implementation.
+
+The saved artifact is `results/atm_bench_hard_retrieval_20260819_fastembed.json`. The official comprehensive evaluator was also run on both saved retrieval detail files.
+
+| Arm | Official item R@10 | Question Recall@10 | Complete Recall@10GT | Mean latency | P95 latency |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Dense | 0.2904 | 0.6452 | 0.0323 | 243.5 ms | 519.3 ms |
+| Hybrid | 0.3352 | 0.7097 | 0.0645 | 300.8 ms | 432.4 ms |
+
+The result supports hybrid retrieval for this corpus, with a gain of 6.45 percentage points in question Recall@10 and 3.23 percentage points in complete evidence Recall@10GT. Complete evidence recall remains low, confirming that answer selection must be evaluated as candidate retention after retrieval, not as a substitute for retrieving missing evidence.
