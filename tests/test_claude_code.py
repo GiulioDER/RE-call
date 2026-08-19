@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from recall import claude_code
 from recall.claude_code import (
     _is_recall_handler,
@@ -23,6 +25,29 @@ from recall.claude_code import (
 )
 
 PYTHON = "C:/Program Files/Python311/python.exe"
+
+
+@pytest.fixture(autouse=True)
+def never_touch_the_real_client_config(tmp_path, monkeypatch):
+    """Pin the client config somewhere disposable for EVERY test in this module.
+
+    Not a precaution. `test_every_cli_call_is_made_from_the_project_root` wrote a real local-scope
+    `recall` entry into the developer's own `~/.claude.json`, pointing at a pytest temp directory,
+    and it survived there until another session's snapshot found it.
+
+    The mechanism is worth stating because no individual test looks wrong. That test pinned nothing
+    because it exercised the CLI arm, which is faked and writes no file. Flipping the primary path
+    to the direct merge meant it stopped taking that arm, fell through to `_write_server_entry`,
+    and `user_config_file()` resolved to the real home. A test that had been safe became unsafe
+    because the code under it changed branches, which is exactly the case a per-test opt-in cannot
+    cover.
+
+    `CLAUDE_CONFIG_DIR` rather than a patched `Path.home`, because a patched `Path.home` does not
+    survive into a subprocess: anything that actually shells out to `claude` resolves the real home
+    itself. An environment variable is inherited. Raised by the wizard session, whose own conftest
+    guard has the same limit.
+    """
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "client-config"))
 
 
 def _user_settings() -> dict[str, Any]:
