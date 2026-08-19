@@ -11,10 +11,15 @@ import argparse
 from contextlib import contextmanager
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from collections.abc import Iterator
 from typing import Any
+
+_SOURCE_ROOT = str(Path(__file__).resolve().parents[1])
+if _SOURCE_ROOT not in sys.path:
+    sys.path.insert(0, _SOURCE_ROOT)
 
 import requests
 
