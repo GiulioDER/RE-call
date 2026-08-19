@@ -576,3 +576,29 @@ def dev_search_uncalibrated(*args: Any, **kwargs: Any) -> TrustedResult:
 
     kwargs.setdefault("policy", TrustPolicy.development())
     return trusted_search(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _confine_claude_client_config(tmp_path_factory, monkeypatch) -> None:
+    """Keep every test away from the user's REAL `~/.claude.json`.
+
+    ⚠️ **Written after a test run put five junk entries into the developer's own client config.**
+    `wiring.approve_mcp_servers` records the wizard's servers as approved so the `.mcp.json` it
+    just wrote actually loads, and its default target is `Path.home() / ".claude.json"` — a
+    user-global file holding every project the user has. Five `run_headless` tests reached it with
+    a `project_root` under `pytest-of-.../`, and each one appended a project entry pointing at a
+    temp directory that no longer exists.
+
+    Nothing was corrupted (the writer is atomic and backs up first, and no existing project was
+    modified), which is precisely why it went unnoticed: the suite was green and the damage was
+    additive. `run_headless` now takes an explicit `claude_config_path`, but a parameter only
+    protects the callers that remember it, and remembering is the thing that failed. This makes
+    forgetting harmless.
+
+    `Path.home` rather than the HOME variable, because that is what the writer calls and because
+    `Path.home()` on Windows reads USERPROFILE, so patching one environment name would miss it.
+    """
+    from pathlib import Path as _Path
+
+    home = tmp_path_factory.mktemp("fake-home")
+    monkeypatch.setattr(_Path, "home", classmethod(lambda cls: home))

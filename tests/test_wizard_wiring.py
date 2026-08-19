@@ -462,3 +462,89 @@ def test_an_unwritable_project_root_reports_rather_than_discarding_the_install(
     assert [f.tenant for f in report.failures] == ["wiring"]
     assert report.mcp_path is None
     assert report.ok is False, "an install nobody can reach is not complete"
+
+
+def test_the_written_servers_are_recorded_as_approved(tmp_path: Path) -> None:
+    """A `.mcp.json` the client has not been told to trust loads NO tools and explains nothing.
+
+    Claude Code gates project-scoped servers: it asks in an interactive session, and until the user
+    answers, `mcp__recall__*` is simply absent. A first-run user meets an assistant that cannot
+    search their corpus, with no error naming the cause — the silent-nothing failure this project
+    keeps meeting. Recording the approval is what makes the file the wizard just wrote actually
+    load.
+
+    Defensible precisely because of what the gate is for: it exists so a CLONED REPOSITORY cannot
+    approve its own servers, and this is the opposite — the person at the keyboard ran an installer
+    against their own machine. It is reported rather than silent, and it writes one key.
+    """
+    from recall.wizard.wiring import approve_mcp_servers
+
+    client = tmp_path / ".claude.json"
+    existing = {
+        "someOtherSetting": {"kept": True},
+        "projects": {"C:\\elsewhere": {"enabledMcpjsonServers": ["someone-elses"]}},
+    }
+    client.write_text(json.dumps(existing), encoding="utf-8")
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    result = approve_mcp_servers(
+        project_root, ("default-docs", "default-code"), config_path=client
+    )
+
+    assert result.recorded
+    document = json.loads(client.read_text(encoding="utf-8"))
+    entry = document["projects"][str(project_root.resolve())]
+    assert entry["enabledMcpjsonServers"] == ["default-docs", "default-code"]
+
+    # ⚠️ This is CLAUDE CODE's file, not ours: it holds every project the user has.
+    assert document["someOtherSetting"] == {"kept": True}, "unrelated settings must survive"
+    assert document["projects"]["C:\\elsewhere"] == {"enabledMcpjsonServers": ["someone-elses"]}, (
+        "another project's approvals must survive"
+    )
+    assert (client.with_name(client.name + ".recall-backup")).exists(), (
+        "a write into another application's config must leave a way back"
+    )
+
+
+def test_approval_refuses_rather_than_inventing_a_client_config(tmp_path: Path) -> None:
+    """No client config means Claude Code has not run here; writing one would invent its file.
+
+    An unreadable one is left strictly alone. In both cases the report has to SAY the servers are
+    not approved, because that is the difference between "recall is broken" and "your client is
+    waiting to ask you".
+    """
+    from recall.wizard.wiring import approve_mcp_servers
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    absent = approve_mcp_servers(project_root, ("default-docs",), config_path=tmp_path / "none.json")
+    assert not absent.recorded
+    assert "no Claude Code config" in absent.skipped_reason
+    assert not (tmp_path / "none.json").exists(), "the wizard must not create another app's config"
+
+    corrupt = tmp_path / "broken.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    refused = approve_mcp_servers(project_root, ("default-docs",), config_path=corrupt)
+    assert not refused.recorded
+    assert "left untouched" in refused.skipped_reason
+    assert corrupt.read_text(encoding="utf-8") == "{not json", "an unreadable client config is kept"
+
+
+def test_the_suite_never_touches_the_real_client_config() -> None:
+    """The guard for the fixture that keeps the rest of this honest.
+
+    ⚠️ Written after a run of these very tests appended FIVE entries to the developer's own
+    `~/.claude.json`, each pointing at a `pytest-of-.../` directory. Nothing was corrupted, which is
+    why it passed unnoticed: the writer is atomic, it backs up first, and no existing project was
+    modified. `tests/conftest.py::_confine_claude_client_config` now redirects `Path.home` for every
+    test; an autouse fixture that stops working breaks nothing and fails nothing, so this asserts it.
+    """
+    from recall.wizard.wiring import claude_config_path
+
+    resolved = claude_config_path()
+    assert "fake-home" in str(resolved) or "pytest" in str(resolved).lower(), (
+        f"the client config resolves to {resolved}, which looks like the real one; "
+        "tests/conftest.py::_confine_claude_client_config is meant to redirect Path.home"
+    )

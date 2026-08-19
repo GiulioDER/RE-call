@@ -71,7 +71,9 @@ from recall.wizard.stack import (
 )
 from recall.wizard.state import WizardState, config_digest, load_state, save_state
 from recall.wizard.wiring import (
+    ClientApproval,
     ServerBlock,
+    approve_mcp_servers,
     SmokeResult,
     UnservableTenant,
     mcp_config,
@@ -234,6 +236,10 @@ class HeadlessReport:
     #: "this took four seconds" and "this took eleven minutes" should not look identical, and an
     #: operator who expected a rebuild needs to see that they did not get one.
     reused: tuple[str, ...] = ()
+    #: What was done about Claude Code's approval gate for the `.mcp.json` just written. None when
+    #: no wiring ran at all. Carried on the report because "the servers are configured" and "the
+    #: servers will load" are different claims, and only the second one is what the user wanted.
+    approval: ClientApproval | None = None
     #: MCP servers written to `.mcp.json`, and the tenants deliberately left without one.
     servers: tuple[ServerBlock, ...] = ()
     unservable: tuple[UnservableTenant, ...] = ()
@@ -380,6 +386,25 @@ class HeadlessReport:
                 )
         for written in self.files_written:
             lines.append(f"{' ' * _GUTTER}wrote {written}")
+        # ⚠️ Reported ALWAYS, both ways. A project-scoped `.mcp.json` the client has not been told
+        # to trust loads no tools and explains nothing, so "approved" is the line that says the
+        # install is actually usable, and the skip line is the one that stops a user concluding
+        # recall is broken when the client is merely waiting to ask them.
+        if self.approval is not None:
+            if self.approval.recorded:
+                lines.append(
+                    f"{' ' * _GUTTER}approved {', '.join(self.approval.approved)} for this project "
+                    f"in {self.approval.config_path}"
+                )
+            else:
+                lines.append(
+                    detail(
+                        f"the MCP servers are NOT yet approved: {self.approval.skipped_reason}. "
+                        "Claude Code gates project-scoped servers, so the recall tools will be "
+                        "absent until you approve them — it asks on the first interactive session "
+                        "in this directory. Nothing is wrong with the install."
+                    )
+                )
         if self.mcp_path is None and (self.outcomes or self.indexed):
             lines.append(
                 detail(
@@ -955,6 +980,12 @@ def run_headless(
     state_path: Path | None = None,
     fresh: bool = False,
     profile_path: Path | None = None,
+    #: Claude Code's own config, where the approval for the generated `.mcp.json` is recorded.
+    #: ⚠️ Threaded rather than defaulted deep inside, for the same reason `profile_path` is: the
+    #: default is a USER-GLOBAL file, and the first test run that reached it wrote five junk
+    #: entries into the real one. A caller that does not want to touch the user's client — every
+    #: test — passes a path of its own.
+    claude_config_path: Path | None = None,
 ) -> HeadlessReport:
     """Apply the schema, then drive every calibrated corpus, reporting rather than aborting.
 
@@ -1147,6 +1178,10 @@ def run_headless(
                 )
             )
 
+    # Bound before the branch, not inside the `try`: the failure path and the no-`project_root`
+    # path both reach the report, and an unbound name there would turn a written install into a
+    # NameError at the moment it reports success.
+    approval: ClientApproval | None = None
     if config.project_root is not None:
         if progress:
             progress("wiring: .mcp.json")
@@ -1160,6 +1195,15 @@ def run_headless(
                 memory_dir=config.memory_root,
             )
             files = (mcp_path, *wrote)
+            # A `.mcp.json` the client has not been told to trust yields NO TOOLS and says nothing.
+            # Recording the approval is what makes the file the wizard just wrote actually load;
+            # the outcome is reported either way, because a silent approval of somebody else's
+            # config would be worse than the gate it opens.
+            approval = approve_mcp_servers(
+                config.project_root,
+                tuple(block.name for block in blocks),
+                config_path=claude_config_path,
+            )
         except OSError as exc:
             # Reported, not raised. Every corpus is already built and promoted by now; throwing that
             # away because a directory is read-only would be the expensive half of the trade.
@@ -1214,6 +1258,7 @@ def run_headless(
         indexed=tuple(indexed),
         reused=tuple(reused),
         servers=blocks,
+        approval=approval,
         unservable=unservable,
         mcp_path=mcp_path,
         files_written=files,

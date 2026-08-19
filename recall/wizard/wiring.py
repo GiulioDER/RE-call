@@ -307,6 +307,107 @@ def write_runtime_profile(
     return save_profile(profile, path)
 
 
+@dataclass(frozen=True)
+class ClientApproval:
+    """What was done about the client's approval gate, so the report can say rather than assume."""
+
+    #: Absolute path of the client config, or None when there is none to write.
+    config_path: Path | None
+    #: Server names now recorded as approved for this project root.
+    approved: tuple[str, ...]
+    #: Why nothing was written, when nothing was. Empty on success.
+    skipped_reason: str = ""
+
+    @property
+    def recorded(self) -> bool:
+        return bool(self.approved)
+
+
+def claude_config_path() -> Path:
+    """Claude Code's own configuration. Not recall's, which is why it is touched so carefully."""
+    return Path.home() / ".claude.json"
+
+
+def approve_mcp_servers(
+    project_root: Path, names: tuple[str, ...], *, config_path: Path | None = None
+) -> ClientApproval:
+    """Record the wizard's servers as approved for `project_root`, so they load without a prompt.
+
+    ⚠️ **A `.mcp.json` the client has not been told to trust yields NO TOOLS, and says nothing.**
+    Project-scoped servers are gated: the client asks for approval in an interactive session, and
+    until it is given, `mcp__recall__*` simply is not there. A first-run user sees an assistant that
+    cannot search their corpus and no error explaining why — the silent-nothing failure this
+    project keeps meeting. Verified against Claude Code's documented scope table: `local` and
+    `project` scope load only in the current project and `project` scope prompts for approval;
+    `user` scope loads everywhere without one.
+
+    Recording it here is defensible for one specific reason: the gate exists so that **a cloned
+    repository cannot approve its own servers**, and this is the opposite situation — the person at
+    the keyboard just ran an installer against their own machine, naming their own database. The
+    consent the gate is asking for is the consent they already gave. It is still reported rather
+    than done silently, and it writes exactly one key.
+
+    Written with a backup and atomically, because `~/.claude.json` is CLAUDE CODE's file, not ours:
+    it holds every project the user has, and the client owns its schema. Nothing else in it is
+    touched, an unreadable or absent file is a refusal rather than an overwrite, and the backup is
+    what makes a bad write recoverable.
+    """
+    target = config_path or claude_config_path()
+    if not names:
+        return ClientApproval(config_path=target, approved=(), skipped_reason="no servers to approve")
+
+    try:
+        raw = target.read_text(encoding="utf-8")
+    except OSError as exc:
+        # No client config means Claude Code has not run here. Creating one would be inventing a
+        # file for another application; the client writes it on first run and reads `.mcp.json`
+        # then, prompting normally.
+        return ClientApproval(
+            config_path=target,
+            approved=(),
+            skipped_reason=f"no Claude Code config at {target} ({exc.strerror or exc})",
+        )
+
+    try:
+        document = json.loads(raw)
+    except ValueError as exc:
+        return ClientApproval(
+            config_path=target,
+            approved=(),
+            skipped_reason=f"{target} is not readable JSON ({exc}); left untouched",
+        )
+    if not isinstance(document, dict):
+        return ClientApproval(
+            config_path=target, approved=(), skipped_reason=f"{target} is not a JSON object"
+        )
+
+    projects = document.get("projects")
+    if not isinstance(projects, dict):
+        projects = {}
+        document["projects"] = projects
+
+    # The client keys projects by the absolute path it was launched from.
+    key = str(project_root.resolve())
+    entry = projects.get(key)
+    if not isinstance(entry, dict):
+        entry = {}
+        projects[key] = entry
+
+    enabled = entry.get("enabledMcpjsonServers")
+    merged = list(enabled) if isinstance(enabled, list) else []
+    for name in names:
+        if name not in merged:
+            merged.append(name)
+    entry["enabledMcpjsonServers"] = merged
+
+    backup = target.with_name(target.name + ".recall-backup")
+    backup.write_text(raw, encoding="utf-8", newline="\n")
+    temporary = target.with_name(target.name + ".recall-tmp")
+    temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
+    temporary.replace(target)
+    return ClientApproval(config_path=target, approved=tuple(names))
+
+
 def write_mcp_config(path: Path, config: dict[str, object]) -> None:
     """Write `.mcp.json`, merging into any existing `mcpServers` rather than replacing the file.
 
