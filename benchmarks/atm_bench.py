@@ -374,6 +374,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             }
 
     manifest_paths = [args.qa_file, args.image_file, args.video_file, args.email_file]
+    reasoning_enabled = os.environ.get("RECALL_REASONING", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
     return {
         "benchmark": "ATM-Bench",
         "split": args.question_split,
@@ -394,6 +397,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "tenant": tenant,
         "git_revision": git_revision(),
         "judge": {"used": False, "model": None, "reasoning_effort": None},
+        "reasoning": {
+            "enabled": reasoning_enabled,
+            "model": os.environ.get("RECALL_REASONING_MODEL") if reasoning_enabled else None,
+            "base_url": os.environ.get("RECALL_REASONING_BASE_URL") if reasoning_enabled else None,
+            "wired_into_runner": False,
+        },
         "data_sha256": {str(path): sha256(path) for path in manifest_paths},
         "arms": arm_results,
     }
