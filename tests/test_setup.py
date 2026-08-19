@@ -22,6 +22,20 @@ from recall.setup import (
 from tests.conftest import requires_openai
 
 
+@pytest.fixture(autouse=True)
+def no_claude_code_on_this_machine(monkeypatch):
+    """Pin the Claude Code wiring prompt off for every wizard test in this module.
+
+    The wizard asks whether to register the MCP server only when a client is detected, so without
+    this the answer scripts below shift by one on a developer's machine and hold on CI: the same
+    test passes or hangs depending on whether the person running it uses Claude Code. Which is the
+    kind of environment dependency that gets diagnosed as a flake rather than as a dependency.
+
+    Tests that exercise the wiring prompt itself turn it back on explicitly.
+    """
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: False)
+
+
 def test_embedder_choices_hide_cloud_when_security_is_required():
     probe = HardwareProbe(
         cpu_count=8,
@@ -1528,6 +1542,74 @@ def test_declining_the_reasoning_arm_writes_only_the_off_flag(tmp_path, monkeypa
     )
     assert "RECALL_REASONING=0" in env
     assert "RECALL_REASONING_MODEL" not in env
+
+
+def test_accepting_the_wiring_prompt_registers_the_server_and_installs_the_hooks(
+    tmp_path, monkeypatch
+):
+    """The step that decides whether Claude uses recall at all in the session after this one."""
+    calls = {}
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr(
+        "recall.setup.register_mcp_server", lambda **kw: calls.setdefault("register", kw)
+    )
+    monkeypatch.setattr("recall.setup.install_hooks", lambda **kw: calls.setdefault("hooks", kw))
+
+    env, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",   # security required
+            "2",   # embedder: fastembed
+            "1",   # reranker: none
+            "1",   # sparse: fts
+            "n",   # reasoning arm declined
+            "n",   # scaffold declined
+            "y",   # wire up Claude Code
+            "n",   # calibrate declined
+        ],
+    )
+
+    assert calls["register"]["dsn"] == "postgresql://example/recall"
+    assert calls["hooks"]["embedder"] == "fastembed"
+    # The tools land in the NEXT session, and a user who does not know that reads a working
+    # install as a broken one when the current session shows no recall tools.
+    assert "NEXT session" in output
+    assert "RECALL_EMBEDDER=fastembed" in env
+
+
+def test_declining_the_wiring_prompt_touches_no_client_configuration(tmp_path, monkeypatch):
+    def fail(**kwargs):
+        raise AssertionError("declined wiring must not write to the client's configuration")
+
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr("recall.setup.register_mcp_server", fail)
+    monkeypatch.setattr("recall.setup.install_hooks", fail)
+
+    _run_wizard(
+        tmp_path,
+        monkeypatch,
+        ["y", "2", "1", "1", "n", "n", "n", "n"],  # ...scaffold n, wiring n, calibrate n
+    )
+
+
+def test_a_failed_wiring_step_does_not_lose_the_completed_interview(tmp_path, monkeypatch):
+    """`.env` is written before this runs, so a client whose config has moved costs a line."""
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr(
+        "recall.setup.register_mcp_server",
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("claude mcp add failed: nope")),
+    )
+
+    env, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        ["y", "2", "1", "1", "n", "n", "y", "n"],
+    )
+
+    assert "RECALL_EMBEDDER=fastembed" in env
+    assert "Could not wire up Claude Code" in output
+    assert "USING_WITH_CLAUDE.md" in output
 
 
 def test_choosing_openrouter_and_deepseek_writes_all_four_keys(tmp_path, monkeypatch):

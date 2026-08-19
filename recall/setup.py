@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable, Literal, Sequence
 
 from recall.calibration import Calibration, from_samples, save
+from recall.claude_code import claude_code_detected, install_hooks, register_mcp_server
 from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 
@@ -1287,6 +1288,18 @@ def run_setup_wizard(
         default=True,
     )
 
+    # Scaffolding tells Claude HOW to use recall; this step is what gives it the tools at all.
+    # Only offered when there is a client on this machine to wire up: asking someone to register
+    # an MCP server with a program they do not have is noise dressed up as a choice.
+    claude_wiring_requested = False
+    if claude_code_detected():
+        claude_wiring_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            "Register the recall MCP server with Claude Code and install session hooks?",
+            default=True,
+        )
+
     # Deferred to right before each return, after `.env` is written: `scaffold_claude_md` and
     # `index_memory_directory` can resolve/download an embedder model and open a DB connection,
     # and running that BEFORE the answers just gathered are persisted means an interruption
@@ -1308,6 +1321,33 @@ def run_setup_wizard(
             )
         except Exception as exc:
             print_fn(f"Could not scaffold CLAUDE.md/memory: {exc}")
+
+    def _run_claude_wiring() -> None:
+        """Register the MCP server and install the hooks, best effort.
+
+        Best effort deliberately: this writes into files the Claude Code client owns and shares
+        with every project on the machine, so a client version that has moved a key, or a config
+        somebody is mid-edit on, must cost the user a printed line rather than the setup run they
+        just completed. Everything above this point is already persisted in `.env`.
+        """
+        try:
+            register_mcp_server(dsn=dsn, print_fn=print_fn)
+            install_hooks(dsn=dsn, embedder=embedder.value, print_fn=print_fn)
+            print_fn(
+                "Claude Code is wired up. The tools appear in the NEXT session, not this one: "
+                "the client reads its server list at startup."
+            )
+        except Exception as exc:
+            print_fn(
+                f"Could not wire up Claude Code: {exc}\n"
+                "Register it by hand with the block in docs/USING_WITH_CLAUDE.md."
+            )
+
+    def _run_post_setup() -> None:
+        if scaffold_requested:
+            _run_scaffold()
+        if claude_wiring_requested:
+            _run_claude_wiring()
 
     values: dict[str, str] = {
         "RECALL_DSN": dsn,
@@ -1361,8 +1401,7 @@ def run_setup_wizard(
             )
             _update_env_block(env_path, values)
             print_fn(f"Wrote {env_path}")
-            if scaffold_requested:
-                _run_scaffold()
+            _run_post_setup()
             return values
         queries = _require_local_path(queries_raw, label="Path to labeled queries JSON")
         corpus = _require_local_path(corpus_raw, label="Path to your corpus")
@@ -1386,8 +1425,7 @@ def run_setup_wizard(
             # bad calibration path aborts the whole wizard. But scaffolding was requested
             # independently of calibration succeeding, so still attempt it best-effort on the
             # way out rather than silently dropping a completed part of the interview.
-            if scaffold_requested:
-                _run_scaffold()
+            _run_post_setup()
             raise SystemExit(2) from exc
         values["RECALL_CALIBRATION"] = str(result.path)
         print_fn(
@@ -1401,6 +1439,5 @@ def run_setup_wizard(
 
     _update_env_block(env_path, values)
     print_fn(f"Wrote {env_path}")
-    if scaffold_requested:
-        _run_scaffold()
+    _run_post_setup()
     return values
