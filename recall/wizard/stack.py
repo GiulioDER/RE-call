@@ -52,10 +52,30 @@ __all__ = [
 #: chosen to keep possible.
 DB_IMAGE = "pgvector/pgvector:pg18"
 
-#: The tag the generated stack builds and runs. It is a LOCAL tag by design: nothing publishes it,
-#: and the `build:` stanza beside it is what brings it into existence. Changing this to a registry
-#: reference means dropping the build stanza and `write_dockerfile` with it.
-_DEFAULT_IMAGE = "recall-desktop-recall:local"
+#: Where the database lives. A named volume inside the Docker VM; see `compose_document` for the
+#: measured reason it is not a bind mount into the user's chosen directory.
+DB_VOLUME = "pgdata"
+
+
+def _default_image() -> str:
+    """The tag the generated stack builds and runs, scoped to the recall version.
+
+    ⚠️ **It used to be the fixed tag `recall-desktop-recall:local`, and that silently ran the wrong
+    image.** `image:` alongside `build:` makes Compose REUSE an existing tag rather than build it,
+    so on any machine that had ever built the hand-written `docker-compose.desktop.yml` the
+    generated stack started that image instead. Measured: a container running an image built two
+    days earlier, on Python 3.14 where this Dockerfile pins 3.13, with no `documents` extra and
+    with the post-install assertion never executed. Nothing errored.
+
+    Scoping the tag to the version fixes both halves: a machine carrying the legacy tag no longer
+    matches, and an upgrade rebuilds instead of silently serving the previous version's image.
+    """
+    from recall import __version__
+
+    return f"recall-wizard:{__version__}"
+
+
+_DEFAULT_IMAGE = _default_image()
 
 #: Written beside the compose file, and referenced by every tenant service's `build:` stanza.
 DOCKERFILE_NAME = "Dockerfile"
@@ -213,7 +233,6 @@ def existing_port(compose_path: Path) -> int | None:
 
 def compose_document(spec: StackSpec) -> dict[str, object]:
     """The compose document: one database, one MCP service per tenant."""
-    database_dir = spec.data_root / "database"
     services: dict[str, object] = {
         "db": {
             "image": DB_IMAGE,
@@ -225,12 +244,38 @@ def compose_document(spec: StackSpec) -> dict[str, object]:
             # PUBLISHED. Without this line the wizard and the agent cannot reach the database the
             # UI is filling, which is the entire defect this module exists to remove.
             "ports": [f"{spec.port}:{DB_INTERNAL_PORT}"],
-            "volumes": [f"{database_dir.as_posix()}:{DB_MOUNT}"],
+            # ⚠️ **A NAMED VOLUME, not a bind mount into `data_root`, and this was measured the
+            # hard way.** Bind-mounting the user's chosen directory is what the wizard promises
+            # everywhere else, but PostgreSQL cannot survive it on Windows: Docker Desktop's
+            # filesystem passthrough returns EINTR on writes, and postgres treats that as fatal.
+            #
+            #     FATAL:  could not write to file "pg_wal/xlogtemp.1218": Interrupted system call
+            #     LOG:  startup process (PID 1218) exited with exit code 1
+            #     LOG:  shutting down due to startup process failure
+            #
+            # It is INTERMITTENT, which is worse than a clean failure: an earlier full install on
+            # the same design built, calibrated and certified both corpora, and the next run died
+            # mid-flight. An intermittent WAL write failure is a corruption risk, not just an
+            # availability one, so the index cannot live on that mount.
+            #
+            # The named volume lives inside the Docker VM. `data_root` still holds everything the
+            # user needs to see and back up — the compose file, the Dockerfile, `.env` — and the
+            # database is reached through the published loopback port. `docker compose down -v`
+            # destroys it, which is why the wizard never runs that.
+            "volumes": [f"{DB_VOLUME}:{DB_MOUNT}"],
             "healthcheck": {
                 "test": ["CMD-SHELL", "pg_isready -U recall"],
                 "interval": "2s",
                 "timeout": "3s",
                 "retries": 30,
+                # `initdb` runs before the first successful check, and on a first install it can
+                # take longer than interval x retries. Without this the FIRST `up --wait` of every
+                # new install reports "dependency failed to start: container is unhealthy" and
+                # leaves every MCP service at `created`, then a second `up` works — which reads to
+                # a user as the installer being broken and then mysteriously fixing itself.
+                # Measured on a bind mount; a named volume is far faster, and this is the margin
+                # that stops the difference being a failed install.
+                "start_period": "180s",
             },
         }
     }
@@ -240,7 +285,10 @@ def compose_document(spec: StackSpec) -> dict[str, object]:
             spec.env[tenant], image=spec.recall_image
         )
 
-    return {"name": spec.project_name, "services": services}
+    # Compose namespaces a named volume under the project, so this becomes
+    # `<project_name>_pgdata` and two installs at different data roots cannot collide:
+    # `compose_project_for` already hashes the data root into the project name.
+    return {"name": spec.project_name, "services": services, "volumes": {DB_VOLUME: None}}
 
 
 def tenant_service(base_env: dict[str, str], *, image: str) -> dict[str, object]:
