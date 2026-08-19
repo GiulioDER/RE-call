@@ -292,11 +292,21 @@ def test_key_matching_follows_the_platform_rather_than_casefolding(tmp_path: Pat
     rule. Registering under a key that merely differs in case would put a recall server in an
     unrelated project on Linux, which is the corpus-boundary failure this change exists to
     prevent.
+
+    ⚠️ **The directories must NOT exist**, and the first version of this test created one, which
+    made it a false receipt: both mutations below survived it. On Windows `resolve()` asks the
+    filesystem for a real directory's canonical casing, so resolving `proj` when `Proj` exists
+    returns `Proj`, the two strings become identical, and a naive `str(a) == str(b)` passes for a
+    reason that has nothing to do with the rule under test. With absent paths the comparison itself
+    is what answers. Caught by the wizard session, and confirmed here by mutation.
+
+    Honest limit: on Windows only the string-equality mutation is caught, because casefolding and
+    `PurePath.__eq__` agree on every Windows input. The casefold mutation is caught on POSIX, which
+    this machine cannot execute, so that half rests on CI.
     """
     import os
 
     project = tmp_path / "Proj"
-    project.mkdir()
     document = {"projects": {str(tmp_path / "proj"): {}, str(project): {}}}
 
     keys = claude_code._project_keys(document, project)
