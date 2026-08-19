@@ -95,6 +95,73 @@ changed and no comparison between the two runs is legitimate.
 | `str_trust` rises, or abstention falls below 0.67 | Reject regardless of recovery |
 | Calibration still uncertified, or stratum sizes move | Apparatus failure. Do not interpret the quality result |
 
-## Result
+## Result (2026-08-20)
 
-Not yet measured.
+**Status: measured. The prediction is FALSIFIED, and so is the diagnosis it rested on. Recovery did
+not rise from 0.33 to 0.50 or better. It FELL, to 0.17.**
+
+Apparatus passed, including the invariant that makes the two runs comparable. Corpus identical at
+1064 chunks from 71 files. Stratum sizes **unchanged at 6 by hits and 3 by pool**, so ranking did
+not move and the comparison is legitimate. Baseline recovery on stratum B still 0.00. No
+uncertified-calibration warning was emitted, unlike the first run, which logged one; both classes
+are above the minimum at 24 and 22.
+
+| Metric | Predicted | First run | This run |
+|---|---|---|---|
+| Calibrated threshold | falls below 0.7110 | 0.7110 | **0.7070** |
+| Successor recovery, stratum B | **0.50 to 0.85** | 0.33 | **0.17 [0.03, 0.56] n=6** |
+| Fetched / promoted, stratum B | n/a | 6 / 2 | **6 / 1** |
+| Successor recovery, stratum A | unchanged | 0.75 | 0.75, unchanged |
+| Superseded trust rate | 0.00 | 0.00 | 0.00 [0.00, 0.28] n=10 |
+| Trust coverage, baseline | n/a | 0.80 | 0.90 |
+| Abstention accuracy | **falls, not below 0.67** | 1.00 | **1.00, did not fall** |
+| Stratum sizes | unchanged | 6 / 3 | 6 / 3 |
+| p50 latency, triggering | no more than 2x | 0.90x, invalid | 1.66x, same ordering flaw |
+
+**Two of six predictions held. The threshold did fall, by 0.004, which is directionally right and
+materially nothing: removing ten high-scoring queries from the answerable side moved the operating
+point by less than half a percent. Abstention accuracy did not fall at all.**
+
+### Why this falsifies the diagnosis and not merely the number
+
+The first record concluded that promotion is threshold-bound, because 6 of 6 fetched and only 2
+were promoted. This run lowered the threshold and got **fewer** promotions, 1 instead of 2. A lower
+threshold can only make the promotion test easier, so if promotion were threshold-bound, recovery
+could not fall. It fell. The stated mechanism is wrong.
+
+### The leading explanation, stated as a hypothesis and NOT as a result
+
+Recovery is a **top-1** metric: it asks whether the first verdict-`ok` hit is the successor. The
+expander appends fetched chunks to the END of the merged pool, and `evaluate` returns `ok + rest`
+preserving pool order, so a fetched successor wins top-1 only when nothing ahead of it is `ok`.
+
+Lowering the threshold admits more hits as `ok`. Baseline coverage rose 0.80 to 0.90 in exactly
+this run, which is that effect visible on the baseline arm. So the likely story is that the
+successor is still being fetched and still being promoted, and is now being **outranked by a
+distractor that the lower threshold newly admitted**, because position in the pool decides the
+order and the fetched chunk is last by construction.
+
+That is consistent with every number here, and it is not measured. What would test it: report the
+successor's RANK among `ok` hits rather than only whether it is first, and separately, order `ok`
+hits by score instead of by pool position. Neither is done, and no claim above depends on the
+hypothesis being right.
+
+### What follows, per the decision rule fixed in advance
+
+"Recovery at or below 0.33: the threshold diagnosis is wrong. Say so plainly and reopen the question
+of why promotion refuses." That is the outcome. Both records now stand as nulls. The feature stays
+opt in, off by default, and unpromoted.
+
+Two things survive both runs and are worth keeping separate from the failed claims:
+
+- **The fetch works.** 6 of 6 in both runs, 0 failures to fetch. Whatever is wrong is downstream of
+  retrieval, which is the half this feature actually changed.
+- **The invariants never moved.** `str_trust` 0.00 in all four arms, abstention accuracy 1.00 in all
+  four, stratum A identical at 0.75 throughout. Nothing here was bought by serving stale memory or
+  by answering unanswerable questions.
+
+### Carried forward, still not fixed
+
+The latency comparison remains invalid as ordered: treatment still runs second in the same process.
+It reads 1.66x here against 0.90x in the first run, which is a spread wide enough to show the
+measurement is describing cache state rather than work. Neither arm ran a reranker.
