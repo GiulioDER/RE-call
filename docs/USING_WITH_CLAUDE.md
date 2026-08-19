@@ -42,8 +42,16 @@ Both clients use the same `mcpServers` block; only the entry point differs.
 }
 ```
 
-- **Claude Code** — save this as `.mcp.json` in your project root, or run
-  `claude mcp add recall -- python -m recall_mcp.server`.
+- **Claude Code** — register it at **local scope**, which is what
+  `claude mcp add recall -- python -m recall_mcp.server` does by default. It writes the block into
+  Claude Code's own `~/.claude.json` under this project, and loads only here.
+
+  ⚠️ **Saving the block as `.mcp.json` in the project root also works, and is the worse option.**
+  Claude Code gates project-scoped servers from that file behind an approval prompt, and until you
+  answer it in an interactive session the tools are simply absent — no error, nothing naming the
+  cause. Precedence is local, then project, then user, with no merging, so an `.mcp.json` also wins
+  over the local entry in that directory. If you have both and the tools do not appear, that file is
+  why. `docs/WIZARD.md` has the full reasoning, and the installer does this for you.
 - **Claude Desktop** — add the block to `claude_desktop_config.json`
   (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`), then restart.
 
