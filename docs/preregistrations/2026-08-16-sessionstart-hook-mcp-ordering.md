@@ -438,3 +438,72 @@ python -c "import json,os;d=json.load(open(os.path.expanduser('~/.claude.json'))
 grep -h mcp_action ~/.claude/session-start.log | tail -20
 grep -rl "deferred_tools_delta" ~/.claude/projects/*/ | head
 ```
+
+## 🔁 SECOND CORRECTION (2026-08-19): the control was attempted, returned no number, and two rows of the correction above are dead
+
+**Status: the prediction is untouched. This corrects the CORRECTION above, which is mine, and it
+corrects it against me.**
+
+### The control was run, and a 401 ate it
+
+The registered control, a **fresh** session in a checkout that already has `.mcp.json`, was
+attempted in `xenodochial-dhawan-18932a`, a worktree holding both the file and
+`enabledMcpjsonServers: ['recall', 'recall-memory']`. The hook logged the exact control condition:
+
+```json
+{"at": "2026-08-19T17:55:15Z", "session": "f7d4f235", "source": "startup",
+ "mcp_json_existed_before_hook": true, "mcp_action": "already-present"}
+```
+
+That session is `claude -p`, and it died on `401 OAuth access token has been revoked` after one
+turn. Its only `deferred_tools_delta` lists **0 MCP tools of any kind**, not merely 0 recall tools.
+**An empty delta is an absent measurement, not a zero**, so the control still has not produced a
+number. This is the third time this question has been approached and the third time the apparatus,
+not the phenomenon, decided the outcome.
+
+### Two rows of the correction above are the same failure, and I scored them as data
+
+`b03972ae` and `2b8b37ba` were used above as the load-bearing evidence that a fresh startup with
+both the file and the approval receives nothing. Re-checked with the same filter:
+
+| transcript | lines | 401 errors | MCP tools in first delta |
+|---|---|---|---|
+| `b03972ae` | 12 | 1 | **0 of any kind** |
+| `2b8b37ba` | 10 | 1 | **0 of any kind** |
+| `24e3e1cc` (for contrast) | 2255 | 0 | 65 |
+
+Both were `claude -p` probes that never authenticated. They are not sessions that had the file and
+the approval and got nothing; they are sessions that never got far enough to have a tool inventory.
+**I read two uninterpretable nulls as measurements, which is exactly the error "Treatment run 1"
+above was written to warn against.**
+
+### What survives, and what does not
+
+- **Finding 1 stands, untouched.** Approval is not necessary: `ba35479a` received 32 recall tools
+  on a **67-tool inventory** while its project held `enabledMcpjsonServers: []`. A positive
+  observation with a real inventory behind it, and no timing inference.
+- **Finding 2's mechanism stands; its conclusion does not.** Approval times really are recoverable
+  from transcripts, and those two projects really were approved first. But since both sessions died
+  on a 401, they say nothing about what an authenticated session would have loaded.
+- **Finding 3 is withdrawn as stated.** "No fresh `startup` in this corpus ever received the tools,
+  including two that had both the file and the approval" is false: those two rows are dead. Across
+  the entire hook log there are exactly **2 usable fresh-startup-with-file sessions** (`24e3e1cc`,
+  `e4752479`), both on 2026-08-16, both in `claude-md-gitignore-19cedd`, both unapproved, both 0
+  recall tools. The date confound is therefore **not** broken, and `resume` versus `startup` rests
+  on far less than "all twelve rows".
+- **The ordering prediction is unaffected** and still supported by the two within-project pairings
+  (`e0aa68bb`, `ba35479a`), each of which is a generated-file startup at 0 followed hours later by a
+  file-present resume at 32.
+
+### The instrument rule this establishes
+
+**Count a session only if its first `deferred_tools_delta` lists at least one MCP tool of any
+kind.** A delta with none is an absent inventory, and a transcript under about 20 lines carrying an
+`apiErrorStatus` is an apparatus failure wearing the costume of a null result. Scan:
+
+```bash
+grep -c '"isApiErrorMessage":true' <transcript>   # non-zero means the session never ran
+```
+
+**Next step is unchanged and now has a prerequisite: `claude login` first.** Every route to this
+number goes through an authenticated session, and three attempts have now died before reaching one.
