@@ -26,7 +26,8 @@ errors (break the trust layer's correctness):
 
 warnings (smells that usually mean a missing or ambiguous edge):
 - ``version-sibling-unlinked``     — ``x_v1.md`` / ``x_v2.md`` naming with no edge into the older one
-- ``closure-marker-unlinked``      — body prose says superseded/replaced/deprecated but the
+- ``closure-marker-unlinked``      — body prose (fenced code blocks excluded, see `prose_only`)
+  says superseded/replaced/deprecated but the
   frontmatter declares no relation and no validity window (the relation lives only in prose,
   where retrieval cannot act on it)
 """
@@ -46,9 +47,61 @@ from recall.frontmatter import supersedes_key, validity_bounds
 CLOSURE_MARKERS = re.compile(
     r"\b(superseded by|supersedes|replaced by|replaces|deprecated|obsolete)\b", re.IGNORECASE
 )
+
+#: An opening fence: three or more backticks or tildes, indented no more than three spaces (past
+#: that it is an indented code block), with an optional info string. A closing fence is the same
+#: character, at least as long, and carries nothing else.
+_FENCE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 _VERSION_STEM = re.compile(r"^(?P<stem>.+)_v(?P<num>\d+)$")
 
 Level = Literal["error", "warning"]
+
+
+def prose_only(body: str) -> str:
+    """`body` with fenced code blocks removed, for heuristics that judge what the AUTHOR asserts.
+
+    `closure-marker-unlinked` reads a body for words like "supersedes" and reports that the
+    relation "exists only in prose". A fenced block is not prose: it is a sample. The two cases
+    this separates are both real and both in this repository as of 2026-08-19:
+
+    - `docs/ENVIRONMENT.md` carries ``# RECALL_DSN=...  # deprecated serving fallback`` inside a
+      shell fence. Nothing is being superseded; a commented-out variable is being shown.
+    - `recall/setup.py`'s scaffolded `memory/MEMORY.md` shows a frontmatter template that TEACHES
+      the ``supersedes:`` key. Without this, `recall setup` writes a file that `recall lint`
+      immediately warns about, which is the fastest way to teach a user to ignore the linter.
+
+    Blast radius, measured 2026-08-19 over both corpora this repository has to hand: of 152 memos
+    in recall's own memory store, **zero** carry a marker only inside a fence, so no existing
+    warning there is silenced. Of 60 files in `docs/`, exactly one does, and it is the false
+    positive above. (`recall/setup.py` cites 59 for the same tree: its count was taken earlier the
+    same day, before this change's own document was added. Neither is stale.) Re-measure by
+    diffing `recall lint` output across this change.
+
+    An UNCLOSED fence runs to the end of the document, which is what CommonMark specifies and
+    therefore what a reader renders. The consequence is a real if narrow coverage loss: a stray
+    fence suppresses every marker below it. That is accepted rather than worked around, because
+    the alternative (treating an unclosed fence as literal text) disagrees with every renderer the
+    author sees, and a warning is advisory while a wrong one is corrosive.
+    """
+    out: list[str] = []
+    opener: str | None = None
+    for line in body.split("\n"):
+        m = _FENCE.match(line)
+        if opener is None:
+            if m is not None:
+                opener = m["fence"]
+            else:
+                out.append(line)
+            continue
+        # A closing fence: same character, at least as long, and nothing after it.
+        if (
+            m is not None
+            and m["fence"][0] == opener[0]
+            and len(m["fence"]) >= len(opener)
+            and not m["info"].strip()
+        ):
+            opener = None
+    return "\n".join(out)
 
 
 @dataclass(frozen=True)
@@ -205,7 +258,7 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
         )
         if declares_relation:
             continue
-        hit = CLOSURE_MARKERS.search(bodies[rel[f]])
+        hit = CLOSURE_MARKERS.search(prose_only(bodies[rel[f]]))
         if hit:
             issues.append(
                 LintIssue(rel[f], "warning", "closure-marker-unlinked",
