@@ -111,6 +111,73 @@ eval "$(scripts/session-db.sh up)"
 python -m benchmarks.successor_expansion_probe
 ```
 
-## Result
+## Result (2026-08-20)
 
-Not yet measured.
+**Status: measured, and PARTLY UNINTERPRETABLE. The regression apparatus check failed. Recovery is
+readable; displacement is not, and the decision this record exists to make cannot be made.**
+
+### Apparatus
+
+Corpus 1114 chunks / 121 files. Threshold 0.7070 from 24 and 22, disjoint from every measured
+query. 30 pairs, stratum B **16**, stratum A 14, baseline recovery on B **0.00** as it must be.
+Those are the checks the recovery column needs and they passed.
+
+**The regression set did not.** Of 10 authored queries, **only 4 are usable**. Six never retrieved
+the superseded document they were written to drag in, so they cannot show a displacement:
+`api_pagination`, `backup_encryption`, `deploy_notification`, `test_parallelism`, `review_sla`,
+`queue_metrics`. None were excluded for the other reason; gold was top at baseline in all four
+survivors.
+
+The record fixed the rule in advance: *"Regression apparatus check fails: do not interpret the
+displacement column at all."* The probe printed the failure itself and said the column is not
+interpretable.
+
+### Recovery, which IS interpretable
+
+| Arm | Recovery, stratum B, n=16 | Predicted |
+|---|---|---|
+| baseline, no expansion | 0.00 [0.00, 0.19] | 0.00 |
+| A: pool order, as shipped | **0.25 [0.10, 0.49]** | 0.10 to 0.30 ✓ |
+| B: promoted first | **0.94 [0.72, 0.99]** | 0.70 to 0.95 ✓ |
+| C: inherit position | **1.00 [0.81, 1.00]** | 0.65 to 0.90 ✗, above the band |
+
+`str_trust` **0.00 [0.00, 0.11] n=30** in every arm. Abstention accuracy **1.00** in every arm.
+Stratum A rose 0.93 to 1.00 under both orderings, which is a gain rather than the regression the
+record was watching for, and it is not something the record predicted either way.
+
+Two of the three recovery predictions landed inside their bands. **C beat its band**, and C beating
+B was not predicted at all: I said B would lead by at most 0.10, and C leads by 0.06. The
+prediction that the two would be close held; the direction did not.
+
+### The uncomfortable part, stated rather than quietly used
+
+The displacement column came out **exactly as predicted**: `promoted_first` displaces 0.75 of gold
+answers over its four usable cases (`store_timeout`, `log_shipping`, `flag_naming`), `inherit`
+displaces 0.00, against a prediction of 0.15 to 0.40 and at most 0.10. That is the result the record
+was designed to produce and the argument for C in one line.
+
+**It is still not interpretable, and I am not going to treat it as though it were.** The rule was
+fixed before the fixture was authored, precisely so that a pleasing number could not be the thing
+that decides whether the rule applies. Four cases is not the denominator this record promised, the
+six exclusions are an authoring failure of mine rather than a property of the mechanism, and a
+0.75 point estimate on n=4 carries a Wilson interval of [0.30, 0.95].
+
+What can be said honestly: the four surviving cases are valid tests, not noise, and they point the
+way the prediction did. What cannot be said is a rate.
+
+### What follows, per the decision rule fixed in advance
+
+Apparatus failure on the regression set means **no ordering ships from this run**. C is not adopted,
+B is not rejected, and the feature stays opt in with `ordering="pool"` as its default.
+
+The fix is mine and it is specific: the six failed regression queries did not share enough
+vocabulary with their intended predecessor to pull it into the pool. Authoring them against the
+measured retrieval, rather than against my expectation of it, is the repair. **That must not be done
+by tuning the queries until the displacement number improves.** The apparatus criterion is whether
+the stale document is retrieved, which is checkable without looking at the displacement column at
+all, and the repair should be made and re-run under a new record with the outcome still unseen.
+
+### Carried forward, still not fixed
+
+No reranker in any arm. Latency is not reported at all this run, which is better than reporting the
+invalid comparison the previous two runs printed.
