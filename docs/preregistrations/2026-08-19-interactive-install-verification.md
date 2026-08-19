@@ -156,3 +156,59 @@ available here is either the wrong session type (`claude -p`, SDK) or unable to 
 inventory (the hook log records the treatment condition and never the outcome, which is why 18 of
 19 historical treatment opportunities on the original machine are unrecoverable). A human opening a
 session and reading what is in front of them is the instrument.
+
+## Recorded preconditions (2026-08-19, before any treatment run)
+
+**Status: still predicted, not yet measured.** Nothing above this line is edited. This section
+records the state of the machine the procedure was written on, taken read-only by the wizard
+session before anyone runs the check, because approval and registration are timestamped nowhere and
+a snapshot taken afterwards proves nothing.
+
+**The machine was not clean, and none of the three findings were expected.**
+
+1. **A local-scope `recall` server was already registered**, and one of this branch's own tests put
+   it there:
+
+   ```
+   projects carrying LOCAL scope servers: 1
+     ...\pytest-of-gde00\pytest-12211\test_every_cli_call_is_made_fr0\proj -> ['recall']
+   ```
+
+   `test_every_cli_call_is_made_from_the_project_root` stopped taking the faked CLI arm when the
+   primary path became the direct merge, fell through to `user_config_file()`, and wrote to the
+   real home because it pinned no config directory. Removed, with a backup, and the module now
+   carries an autouse fixture pinning `CLAUDE_CONFIG_DIR` for every test in it.
+
+2. **Hook state was already installed**: `~/.claude/recall-hook.json` present, and a `recall_hooks`
+   block already in `~/.claude/settings.json`.
+
+3. **Three projects carried recorded `.mcp.json` approvals** for `recall` and `recall-memory`, from
+   earlier sessions running `session_mcp_approve.py`.
+
+### What this changes about the procedure
+
+Nothing in the method, and everything about where it may be run. An interactive session opened on
+this machine today could list recall tools for at least three reasons that have nothing to do with
+`register_local_scope`, and a naive run would have scored one of them as a pass. Precondition 2 of
+"How it will be measured" is therefore not a formality: it is the step that decides whether the
+result means anything.
+
+**The known-answer control needs a project absent from all three lists above**, not merely a
+project nobody has registered by hand.
+
+### One thing the snapshot cost, which is the argument for taking it
+
+Finding 1 was a defect in the code under test's own test suite, discovered by a step whose stated
+purpose was to characterise the environment. It would otherwise have been discovered as a passing
+measurement.
+
+## Scheduling constraint added 2026-08-19
+
+**This check must not run until the mechanism it measures is the one that will ship.** Registration
+currently exists twice: `recall.claude_code` on the branch this document is on, and
+`recall.wizard.wiring.register_local_scope` on the wizard's, which is the one that survives. The
+second replaces the first on merge. Measuring the temporary implementation and then deleting it
+produces a result about code nobody runs.
+
+Order: land the wizard's mechanism, swap this branch's registration to call it, then run the check
+against the merged code. Agreed with the wizard session, which owns the mechanism.
