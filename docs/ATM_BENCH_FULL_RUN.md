@@ -123,7 +123,6 @@ PYTHONPATH=. python memqa/utils/evaluator/evaluate_qa.py \
   --output-dir /home/sentiment/atm-bench-run/results/voyage4-deepseek-full/official_eval \
   --judge-provider openai \
   --judge-model gpt-5-mini \
-  --judge-reasoning-effort minimal \
   --judge-fallback-model gpt-4o-mini \
   --judge-fallback-after-retries 3 \
   --request-delay 1 \
