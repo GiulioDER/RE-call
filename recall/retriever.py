@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import os
 import re
 import time
+from typing import Literal
 
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.guards import DEFAULT_GAP_THRESHOLD, gap_warning, staleness
@@ -89,12 +90,34 @@ class SuccessorExpansionPolicy:
     enabled: bool = False
     max_sources: int = 2
     chunks_per_source: int = 3
+    #: How verdict-`ok` hits are ordered once a successor has been promoted. Fetching alone is not
+    #: enough: measured, the successor is promoted and then lands at rank 5 behind distractors,
+    #: because `evaluate` preserves pool position and a fetched chunk is appended last.
+    #:
+    #: - ``pool``: as shipped. Pool position decides, so a fetched successor is effectively last.
+    #: - ``promoted_first``: every promoted successor ahead of other `ok` hits, unconditionally.
+    #: - ``inherit``: a promoted successor takes the pool position its DEMOTED PREDECESSOR held.
+    #:
+    #: `inherit` is the principled one and the reason the other two are worth naming next to it.
+    #: The supersession edge transfers the topical relevance the stale memory proved, and the stale
+    #: memory proved it AT ITS OWN RANK. A predecessor that was third best for this query is not
+    #: evidence that its successor is first best, which is what `promoted_first` asserts on every
+    #: query where any retrieved document happens to carry an edge.
+    ordering: Literal["pool", "promoted_first", "inherit"] = "pool"
 
     def __post_init__(self) -> None:
         if self.max_sources < 1:
             raise ValueError("max_sources must be positive")
         if self.chunks_per_source < 1:
             raise ValueError("chunks_per_source must be positive")
+        if self.ordering not in ORDERINGS:
+            raise ValueError(f"ordering must be one of {sorted(ORDERINGS)}")
+
+
+#: The vocabulary `SuccessorExpansionPolicy.ordering` accepts, named once so a caller building the
+#: value at runtime (a benchmark sweeping arms, a config file) validates against the same set the
+#: type annotation declares, rather than discovering a typo as a silent fall-through to pool order.
+ORDERINGS = frozenset({"pool", "promoted_first", "inherit"})
 
 
 _RELATIONAL_QUERY = re.compile(

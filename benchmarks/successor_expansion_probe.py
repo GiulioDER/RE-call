@@ -1,21 +1,19 @@
-"""Pre-registered probe: does fetching an absent successor recover the answer?
+"""Pre-registered probe for successor directed expansion and the ordering of promoted successors.
 
-Record: `docs/preregistrations/2026-08-19-successor-directed-expansion.md`, committed at `af8c2abc`
-before the implementation existed. Read it before reading any number this prints.
+Records, in order, each committed before the run it describes:
 
-The design decision that makes the result readable is that the fixture is NOT tuned to make the
-successor fall outside the pool. The baseline runs first, the supersession queries are partitioned
-by whether the successor reached the pool at all, and the headline rate is reported over the absent
-stratum only. Fixture difficulty therefore sets that stratum's SIZE, which is printed, instead of
-silently setting the rate.
+1. `docs/preregistrations/2026-08-19-successor-directed-expansion.md` - does fetching help? Null.
+2. `docs/preregistrations/2026-08-20-successor-expansion-recalibrated.md` - was it the threshold?
+   No, and the null deepened.
+3. `docs/preregistrations/2026-08-20-successor-rank-hypothesis.md` - successors are promoted 6 of 6
+   and then outranked. Confirmed, and it retracted the diagnoses in 1 and 2.
+4. `docs/preregistrations/2026-08-20-successor-ordering-regression.md` - THIS one. Three orderings
+   over 30 pairs, plus the regression set that can say no.
 
-Two stratifications are printed, on purpose. The record says "absent from the baseline fused pool";
-the implementation acts on `result.hits`, the top-k the caller actually receives, which is a subset
-of that pool. Reporting both removes the judgement call about which one the record meant, and the
-`hits` one is the operative definition because it is what the code can see.
-
-Apparatus checks run BEFORE any quality number is read, and a failure of any of them means the
-quality result must not be interpreted. See the four in the record.
+The fourth record is the reason for the regression set. The first three ran on a fixture containing
+only queries the successor was supposed to win, so they could not report the cost of promoting it.
+A fixture that cannot produce a regression cannot report one, and a displacement rate of 0.00 from
+such a fixture reads exactly like good news.
 
     eval "$(scripts/session-db.sh up)"
     python -m benchmarks.successor_expansion_probe
@@ -26,19 +24,17 @@ the worktree root does not. `import recall` then falls through to whatever is in
 this machine is the MAIN CHECKOUT: the first run of this probe imported
 `C:/Users/gde00/Documents/recall/recall/retriever.py` and died on a symbol that exists only here.
 That failure was loud. The dangerous version is silent, a benchmark that runs happily and scores
-the main checkout while reporting a number against your branch. The guard below the imports
-turns the silent case back into a loud one.
+the main checkout while reporting a number against your branch. The guard below the imports turns
+the silent case back into a loud one.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import os
-import shutil
-import statistics
 import sys
+import shutil
 import tempfile
-import time
 import uuid
 from pathlib import Path
 
@@ -65,7 +61,7 @@ from recall.eval._research_trust import research_search  # noqa: E402
 from recall.eval.calibrate import measure_top_cosines  # noqa: E402
 from recall.eval.metrics import wilson_ci  # noqa: E402
 from recall.index import Indexer  # noqa: E402
-from recall.retriever import HybridRetriever, SuccessorExpansionPolicy  # noqa: E402
+from recall.retriever import SuccessorExpansionPolicy  # noqa: E402
 from recall.store import PgVectorStore  # noqa: E402
 from recall.types import TrustedResult  # noqa: E402
 
@@ -73,18 +69,21 @@ from benchmarks.successor_fixture import (  # noqa: E402
     CALIBRATION_ANSWERABLE,
     CALIBRATION_UNANSWERABLE,
     PAIRS,
+    REGRESSIONS,
     UNANSWERABLE,
     documents,
 )
 
 #: The caller-facing depth. The library default, so the measurement describes the shipped shape.
 K = 5
-#: Enabled arm. `max_sources=2` is the policy default; a query rarely surfaces more than one
-#: superseded document, so this is a ceiling rather than a working value.
-TREATMENT = SuccessorExpansionPolicy(enabled=True, max_sources=2, chunks_per_source=3)
-#: Repository prose indexed alongside the authored pairs, so the fused pool cannot hold the corpus.
-#: Real text of the same register, which is what apparatus check 4 requires and what authoring
-#: hundreds of distractors would have failed.
+#: The three orderings, run as REAL behaviour selected by policy rather than as counterfactuals
+#: computed after the fact. The third record's 1.00 was a counterfactual, which cannot exercise the
+#: code path that would ship and so cannot be evidence for shipping it.
+ARMS: dict[str, SuccessorExpansionPolicy] = {
+    "pool": SuccessorExpansionPolicy(enabled=True, ordering="pool"),
+    "promoted_first": SuccessorExpansionPolicy(enabled=True, ordering="promoted_first"),
+    "inherit": SuccessorExpansionPolicy(enabled=True, ordering="inherit"),
+}
 DISTRACTOR_DIR = Path(__file__).resolve().parent.parent / "docs"
 
 
@@ -92,55 +91,13 @@ def _ok_files(result: TrustedResult) -> list[str]:
     return [h.provenance.file or "" for h in result.hits if h.verdict == "ok"]
 
 
+def _top_ok(result: TrustedResult) -> str:
+    ok = _ok_files(result)
+    return ok[0] if ok else ""
+
+
 def _all_files(result: TrustedResult) -> set[str]:
     return {h.provenance.file or "" for h in result.hits}
-
-
-# --- rank instrumentation, registered in 2026-08-20-successor-rank-hypothesis.md ----------------
-#
-# Recovery is top-1, so it collapses two different failures into one number: the successor was not
-# promoted, and the successor was promoted but something else came first. Two records guessed
-# between them in prose. These read it off instead.
-
-
-def _verdict_of(result: TrustedResult, file: str) -> str:
-    for hit in result.hits:
-        if hit.provenance.file == file:
-            return hit.verdict
-    return "absent"
-
-
-def _rank_among_ok(result: TrustedResult, file: str) -> int | None:
-    """1-based position among verdict-`ok` hits, or None when the file is not `ok`."""
-    ok = _ok_files(result)
-    return ok.index(file) + 1 if file in ok else None
-
-
-def _top_by_score(result: TrustedResult) -> str:
-    """Which file would answer if `ok` hits were ordered by cosine instead of pool position.
-
-    The record predicts this is NOT an improvement. Promotion exists for a successor whose own
-    wording scores low, so ordering by cosine pushes exactly those back down.
-    """
-    ok = [h for h in result.hits if h.verdict == "ok"]
-    if not ok:
-        return ""
-    return max(ok, key=lambda h: h.cosine).provenance.file or ""
-
-
-def _top_promoted_first(result: TrustedResult) -> str:
-    """Which file would answer if promoted successors were placed ahead of other `ok` hits.
-
-    A promoted successor is identified as an `ok` hit whose file some OTHER hit names as its
-    `superseded_by`, which is exactly the condition `evaluate` uses to promote it. `sorted` is
-    stable, so pool order survives inside each group.
-    """
-    ok = [h for h in result.hits if h.verdict == "ok"]
-    if not ok:
-        return ""
-    named = {h.validity.superseded_by for h in result.hits if h.validity.superseded_by}
-    ranked = sorted(ok, key=lambda h: 0 if h.provenance.file in named else 1)
-    return ranked[0].provenance.file or ""
 
 
 def _rate(flags: list[bool]) -> str:
@@ -165,195 +122,149 @@ def main() -> int:
     if not dsn:
         # Same rule as `tests/conftest.py`: no default DSN, ever. A fallback to 5432 is what made
         # two checkouts drop each other's tables mid-run.
-        print("RECALL_TEST_DSN is unset. Run: eval \"$(scripts/session-db.sh up)\"", file=sys.stderr)
+        print('RECALL_TEST_DSN is unset. Run: eval "$(scripts/session-db.sh up)"', file=sys.stderr)
         return 2
 
     embedder = FastEmbedEmbedder()
-    # Disjoint from everything scored below. The first run fitted this from the ten
-    # `Pair.query` strings and the six controls, which was both too small and a leak: it
-    # calibrated on the evaluation set. See the 2026-08-20 record.
-    calib_queries = [{"query": q, "answerable": True} for q in CALIBRATION_ANSWERABLE]
-    calib_queries += [{"query": q, "answerable": False} for q in CALIBRATION_UNANSWERABLE]
-    leak = ({p.query for p in PAIRS} | set(UNANSWERABLE)) & (
-        set(CALIBRATION_ANSWERABLE) | set(CALIBRATION_UNANSWERABLE)
-    )
+    calib = [{"query": q, "answerable": True} for q in CALIBRATION_ANSWERABLE]
+    calib += [{"query": q, "answerable": False} for q in CALIBRATION_UNANSWERABLE]
+    measured = {p.query for p in PAIRS} | set(UNANSWERABLE) | {r.query for r in REGRESSIONS}
+    leak = measured & (set(CALIBRATION_ANSWERABLE) | set(CALIBRATION_UNANSWERABLE))
     if leak:
-        # Asserted rather than trusted. Disjointness is the whole point of this rerun, and it
-        # is one careless paste away from silently not holding.
+        # Asserted rather than trusted. Disjointness is one careless paste away from silently not
+        # holding, and the second record exists because it silently did not.
         raise SystemExit(f"calibration set overlaps the measured queries: {sorted(leak)}")
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         distractors = _build_corpus(root)
-        store = PgVectorStore(dsn, dim=embedder.dim, table="successor_probe_" + uuid.uuid4().hex[:8])
+        table = "successor_probe_" + uuid.uuid4().hex[:8]
+        store = PgVectorStore(dsn, dim=embedder.dim, table=table)
         try:
             store.ensure_schema()
             stats = Indexer(store, embedder).index_path(root)
             cal = from_samples(
-                embedding_profile_id(embedder), *measure_top_cosines(store, embedder, calib_queries)
+                embedding_profile_id(embedder), *measure_top_cosines(store, embedder, calib)
             )
-            retriever = HybridRetriever(store, embedder, gap_threshold=cal.threshold)
 
-            rows = []
+            def search(query: str, policy: SuccessorExpansionPolicy | None) -> TrustedResult:
+                return research_search(
+                    store, embedder, query, k=K, calibration=cal, successor_expansion=policy
+                )
+
+            pairs = []
             for pair in PAIRS:
-                successor = f"{pair.slug}_v2.md"
-                stale = f"{pair.slug}_v1.md"
+                successor, stale = f"{pair.slug}_v2.md", f"{pair.slug}_v1.md"
+                base = search(pair.query, None)
+                row = {
+                    "slug": pair.slug,
+                    "in_hits": successor in _all_files(base),
+                    "base_recovered": _top_ok(base) == successor,
+                    "base_str": stale in _ok_files(base),
+                }
+                for name, policy in ARMS.items():
+                    result = search(pair.query, policy)
+                    row[f"{name}_recovered"] = _top_ok(result) == successor
+                    row[f"{name}_str"] = stale in _ok_files(result)
+                pairs.append(row)
 
-                started = time.perf_counter()
-                base = research_search(store, embedder, pair.query, k=K, calibration=cal)
-                base_ms = (time.perf_counter() - started) * 1000.0
-
-                started = time.perf_counter()
-                treat = research_search(
-                    store, embedder, pair.query, k=K, calibration=cal, successor_expansion=TREATMENT
-                )
-                treat_ms = (time.perf_counter() - started) * 1000.0
-
-                # The pre-truncation pool, for the record's own wording. Asked separately and
-                # deliberately wide: `search(k=...)` truncates AFTER fusion, so a large k returns
-                # what the pool held rather than what the caller was given.
-                pool = retriever.search(pair.query, k=100)
-                pool_files = {h.chunk.metadata.get("file") for h in pool.hits}
-
-                base_ok = _ok_files(base)
-                treat_ok = _ok_files(treat)
-                rows.append(
-                    {
-                        "slug": pair.slug,
-                        "in_hits": successor in _all_files(base),
-                        "in_pool": successor in pool_files,
-                        "base_recovered": bool(base_ok) and base_ok[0] == successor,
-                        "treat_recovered": bool(treat_ok) and treat_ok[0] == successor,
-                        "base_str": stale in base_ok,
-                        "treat_str": stale in treat_ok,
-                        "base_cov": bool(base_ok),
-                        "treat_cov": bool(treat_ok),
-                        "fetched": treat.diagnostics.stage_ms.get("successor_expansion_sources", 0.0) > 0,
-                        "succ_verdict": _verdict_of(treat, successor),
-                        "succ_rank": _rank_among_ok(treat, successor),
-                        "outranked_by": (treat_ok[0] if treat_ok else ""),
-                        "score_recovered": _top_by_score(treat) == successor,
-                        "promoted_recovered": _top_promoted_first(treat) == successor,
-                        "base_ms": base_ms,
-                        "treat_ms": treat_ms,
-                    }
-                )
+            regressions = []
+            for reg in REGRESSIONS:
+                gold = f"{reg.slug}.md"
+                base = search(reg.query, None)
+                row = {
+                    "slug": reg.slug,
+                    # APPARATUS. A regression query tests nothing unless a superseded document is
+                    # actually retrieved, and that is a property of the embedder, not of intent.
+                    "pulled_stale": reg.expects_stale in _all_files(base),
+                    "base_gold_top": _top_ok(base) == gold,
+                }
+                for name, policy in ARMS.items():
+                    row[f"{name}_gold_top"] = _top_ok(search(reg.query, policy)) == gold
+                regressions.append(row)
 
             controls = []
             for query in UNANSWERABLE:
-                base = research_search(store, embedder, query, k=K, calibration=cal)
-                treat = research_search(
-                    store, embedder, query, k=K, calibration=cal, successor_expansion=TREATMENT
-                )
-                controls.append({"base": base.abstained, "treat": treat.abstained})
+                row = {"base": search(query, None).abstained}
+                for name, policy in ARMS.items():
+                    row[name] = search(query, policy).abstained
+                controls.append(row)
         finally:
             try:
                 store.drop_table()
             finally:
                 store.close()
 
-    strat_b = [r for r in rows if not r["in_hits"]]
-    strat_a = [r for r in rows if r["in_hits"]]
-    pool_b = [r for r in rows if not r["in_pool"]]
+    strat_b = [r for r in pairs if not r["in_hits"]]
+    strat_a = [r for r in pairs if r["in_hits"]]
+    # Only a regression query that BOTH drags in a superseded document AND gets the gold answer
+    # right under shipped ordering can show a displacement. The other two counts are printed rather
+    # than folded away, because a small denominator here is the difference between "no cost" and
+    # "no measurement".
+    usable = [r for r in regressions if r["pulled_stale"] and r["base_gold_top"]]
+    no_stale = [r for r in regressions if not r["pulled_stale"]]
+    no_gold = [r for r in regressions if r["pulled_stale"] and not r["base_gold_top"]]
 
     print("=" * 78)
     print("APPARATUS (checked before any quality number is read)")
     print("=" * 78)
-    print(f"  corpus indexed          : {stats.chunks} chunks from {stats.files} files")
-    print(f"                            ({len(documents())} authored, {distractors} repository docs)")
-    print(f"  calibrated threshold    : {cal.threshold:.4f}")
-    print(f"  1. stratum B (by hits)  : {len(strat_b)} of {len(rows)} supersession queries")
-    print(f"     stratum B (by pool)  : {len(pool_b)} of {len(rows)}   <- the wording in the record")
-    print(f"  2. baseline recovery on B: {_rate([r['base_recovered'] for r in strat_b])}")
-    print(f"  3. known answer case    : stratum A holds {len(strat_a)}, "
-          f"baseline correct on {sum(r['base_recovered'] for r in strat_a)}")
-    print("  4. corpus defect        : authored prose, each successor reframed rather than "
-          "renumbered")
+    print(f"  corpus                  : {stats.chunks} chunks / {stats.files} files "
+          f"({len(documents())} authored, {distractors} repository docs)")
+    print(f"  calibration             : threshold {cal.threshold:.4f}, "
+          f"{len(CALIBRATION_ANSWERABLE)} answerable / {len(CALIBRATION_UNANSWERABLE)} unanswerable")
+    print(f"  supersession pairs      : {len(pairs)}")
+    print(f"  stratum B (absent)      : {len(strat_b)}   stratum A (present): {len(strat_a)}")
+    print(f"  baseline recovery on B  : {_rate([r['base_recovered'] for r in strat_b])}")
+    print(f"  regression set          : {len(regressions)} authored")
+    print(f"    usable                : {len(usable)}")
+    print(f"    excluded, no stale doc retrieved : {len(no_stale)} "
+          f"{[r['slug'] for r in no_stale] or ''}")
+    print(f"    excluded, gold not top at baseline: {len(no_gold)} "
+          f"{[r['slug'] for r in no_gold] or ''}")
 
     failed = []
     if not strat_b:
         failed.append("stratum B is empty: the fixture cannot exhibit the condition")
     if any(r["base_recovered"] for r in strat_b):
-        failed.append("baseline recovered on stratum B: the stratification is reading the wrong pool")
-    if not strat_a:
-        failed.append("stratum A is empty: no known answer case to check the apparatus against")
+        failed.append("baseline recovered on stratum B: stratification is reading the wrong pool")
+    if len(usable) < len(regressions) / 2:
+        failed.append(
+            f"only {len(usable)} of {len(regressions)} regression queries are usable: the "
+            "displacement column measured almost nothing and 0.00 there is not good news"
+        )
     if failed:
         print()
         for line in failed:
             print(f"  APPARATUS FAILURE: {line}")
-        print("\n  The quality result below is NOT interpretable. Fix the fixture and re-run.")
+        print("\n  The displacement column below is NOT interpretable.")
 
     print()
     print("=" * 78)
     print("RESULT")
     print("=" * 78)
-    print(f"  successor recovery, stratum B, treatment : {_rate([r['treat_recovered'] for r in strat_b])}")
-    print(f"  successor recovery, stratum B, baseline  : {_rate([r['base_recovered'] for r in strat_b])}")
-    print(f"  successor recovery, stratum A, treatment : {_rate([r['treat_recovered'] for r in strat_a])}")
-    print(f"  successor recovery, stratum A, baseline  : {_rate([r['base_recovered'] for r in strat_a])}")
-    print(f"  superseded trust rate, baseline          : {_rate([r['base_str'] for r in rows])}")
-    print(f"  superseded trust rate, treatment         : {_rate([r['treat_str'] for r in rows])}")
-    print(f"  trust coverage, baseline                 : {_rate([r['base_cov'] for r in rows])}")
-    print(f"  trust coverage, treatment                : {_rate([r['treat_cov'] for r in rows])}")
-    print(f"  abstention accuracy, baseline            : {_rate([c['base'] for c in controls])}")
-    print(f"  abstention accuracy, treatment           : {_rate([c['treat'] for c in controls])}")
-
-    # The confound the record names: a low recovery has two very different causes and they must
-    # not be reported as one number.
-    fetched_b = [r for r in strat_b if r["fetched"]]
-    print()
-    # ⚠️ This line said "were then promoted" and printed `treat_recovered`, which is top-1
-    # RECOVERY. Promotion was never measured by it. That one wrong word survived two full
-    # measurement cycles and produced two confidently wrong causal stories, both retracted in
-    # docs/preregistrations/2026-08-20-successor-rank-hypothesis.md. Promotion is now read from
-    # the verdict, and recovery is named as recovery.
-    print(f"  of {len(strat_b)} stratum B queries: {len(fetched_b)} fetched a successor, "
-          f"{sum(r['succ_verdict'] == 'ok' for r in fetched_b)} were promoted to ok, "
-          f"{sum(r['treat_recovered'] for r in fetched_b)} then ranked FIRST among ok hits")
-    print(f"  never fetched: {len(strat_b) - len(fetched_b)}  "
-          "(the fetch did not fire, which is not the same as the fetch not helping)")
-
-    triggering = [r for r in rows if r["fetched"]]
-    quiet = [r for r in rows if not r["fetched"]]
-    if triggering:
-        ratio = statistics.median([r["treat_ms"] for r in triggering]) / max(
-            statistics.median([r["base_ms"] for r in triggering]), 1e-9
-        )
-        print(f"  p50 latency ratio, triggering queries    : {ratio:.2f}x  n={len(triggering)}")
-    if quiet:
-        ratio = statistics.median([r["treat_ms"] for r in quiet]) / max(
-            statistics.median([r["base_ms"] for r in quiet]), 1e-9
-        )
-        print(f"  p50 latency ratio, non triggering        : {ratio:.2f}x  n={len(quiet)}")
+    print(f"  {'arm':<16} {'recovery (stratum B)':<26} {'gold kept (regression)':<26} str_trust")
+    print(f"  {'baseline':<16} {_rate([r['base_recovered'] for r in strat_b]):<26} "
+          f"{_rate([r['base_gold_top'] for r in usable]):<26} "
+          f"{_rate([r['base_str'] for r in pairs])}")
+    for name in ARMS:
+        print(f"  {name:<16} {_rate([r[f'{name}_recovered'] for r in strat_b]):<26} "
+              f"{_rate([r[f'{name}_gold_top'] for r in usable]):<26} "
+              f"{_rate([r[f'{name}_str'] for r in pairs])}")
 
     print()
-    print("  rank instrumentation, stratum B, treatment arm")
-    print(f"    successor present            : "
-          f"{sum(r['succ_verdict'] != 'absent' for r in strat_b)} of {len(strat_b)}")
-    print(f"    successor verdict ok         : "
-          f"{sum(r['succ_verdict'] == 'ok' for r in strat_b)} of {len(strat_b)}")
-    missed = [r for r in strat_b if not r["treat_recovered"]]
-    print(f"    of the {len(missed)} that did NOT recover:")
-    for r in missed:
-        rank = r["succ_rank"]
-        print(f"      {r['slug']:<20} verdict={r['succ_verdict']:<16} "
-              f"rank_among_ok={rank if rank is not None else '-'}  "
-              f"outranked_by={r['outranked_by'] or '(nothing ok)'}")
-    print()
-    print("  counterfactual orderings, computed from the same result, nothing shipped changed")
-    print(f"    recovery, pool order (as shipped) : {_rate([r['treat_recovered'] for r in strat_b])}")
-    print(f"    recovery, score order             : {_rate([r['score_recovered'] for r in strat_b])}")
-    print(f"    recovery, promoted first          : {_rate([r['promoted_recovered'] for r in strat_b])}")
+    print("  displacement: gold was top under shipped ordering and is NOT top under the arm")
+    for name in ARMS:
+        displaced = [r for r in usable if not r[f"{name}_gold_top"]]
+        print(f"    {name:<16} {_rate([not r[f'{name}_gold_top'] for r in usable])}   "
+              f"{[r['slug'] for r in displaced] or ''}")
 
     print()
-    print("  per query")
-    for r in rows:
-        stratum = "A" if r["in_hits"] else "B"
-        print(
-            f"    [{stratum}] {r['slug']:<20} baseline={'ok' if r['base_recovered'] else '--'} "
-            f"treatment={'ok' if r['treat_recovered'] else '--'} "
-            f"fetched={'y' if r['fetched'] else 'n'}"
-        )
+    print("  stratum A recovery (must not move) and abstention accuracy (must not fall)")
+    print(f"    {'baseline':<16} A={_rate([r['base_recovered'] for r in strat_a]):<26} "
+          f"abstain={_rate([c['base'] for c in controls])}")
+    for name in ARMS:
+        print(f"    {name:<16} A={_rate([r[f'{name}_recovered'] for r in strat_a]):<26} "
+              f"abstain={_rate([c[name] for c in controls])}")
     return 1 if failed else 0
 
 

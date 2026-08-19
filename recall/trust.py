@@ -607,6 +607,52 @@ def evaluate(
     )
 
 
+def order_promoted(
+    trusted: TrustedResult, pool_index: dict[str, int], ordering: str
+) -> TrustedResult:
+    """Reorder the verdict-`ok` hits according to `SuccessorExpansionPolicy.ordering`.
+
+    `evaluate` returns ``ok + rest`` with pool position preserved inside each group, so a fetched
+    successor, appended last by the expander, is last among `ok` however relevant it is. Measured
+    over 6 absent-successor queries: promoted 6 of 6, then ranked 5, 5, 5, 5 and 2.
+
+    `pool_index` must be built from the RetrievalResult BEFORE `evaluate`, because ``ok + rest``
+    has already destroyed the interleaving this needs: the predecessor sits in `rest` and its
+    position relative to the `ok` hits is not recoverable afterwards.
+
+    A successor inherits the LOWEST pool index among the superseded hits naming it. A document is
+    several chunks, and the rank it earned is the best one any of them reached, not the last.
+
+    `rest` is never reordered. It is the demoted material, and its order is not a claim.
+    """
+    if ordering == "pool":
+        return trusted
+    ok = [hit for hit in trusted.hits if hit.verdict == "ok"]
+    rest = [hit for hit in trusted.hits if hit.verdict != "ok"]
+    if not ok:
+        return trusted
+    inherited: dict[str, int] = {}
+    for hit in trusted.hits:
+        target = hit.validity.superseded_by
+        index = pool_index.get(hit.chunk.id)
+        if not target or index is None:
+            continue
+        if index < inherited.get(target, index + 1):
+            inherited[target] = index
+    # A hit the pool never saw sorts last rather than first. Reachable only if a caller hands in a
+    # partial index, and defaulting to 0 there would silently promote an unknown to the top.
+    last = len(pool_index) + 1
+
+    def _own(hit: TrustedHit) -> int:
+        return pool_index.get(hit.chunk.id, last)
+
+    if ordering == "promoted_first":
+        ok.sort(key=lambda hit: (0 if hit.provenance.file in inherited else 1, _own(hit)))
+    else:  # "inherit"
+        ok.sort(key=lambda hit: inherited.get(hit.provenance.file or "", _own(hit)))
+    return replace(trusted, hits=ok + rest)
+
+
 def trusted_search(
     store: PgVectorStore,
     embedder: Embedder,
@@ -801,6 +847,14 @@ def trusted_search(
         trusted,
         diagnostics=replace(trusted.diagnostics, stage_ms=stage_ms),
     )
+    if successor_expansion is not None and successor_expansion.ordering != "pool":
+        # `result` is the POST-expansion pool and is still in pool order here, which is exactly
+        # what `order_promoted` needs and what `trusted.hits` no longer carries.
+        trusted = order_promoted(
+            trusted,
+            {hit.chunk.id: index for index, hit in enumerate(result.hits)},
+            successor_expansion.ordering,
+        )
     if failure_code is not None:
         # Development degradation. Reached only when the policy explicitly allows it, since
         # strict already raised above. The result is ALWAYS marked degraded and is never

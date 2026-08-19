@@ -11,9 +11,11 @@ whose successor ranked outside the pool abstained while naming a successor that 
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from recall.calibration import Calibration
 from recall.retriever import SuccessorExpansionPolicy, expand_retrieval_by_successor
-from recall.trust import evaluate, trusted_search
+from recall.trust import evaluate, order_promoted, trusted_search
 from recall.trust_policy import TrustPolicy
 from recall.types import (
     Chunk,
@@ -342,6 +344,79 @@ def test_enabling_it_on_a_corpus_with_no_edges_costs_no_extra_query(monkeypatch)
     assert calls == [None]
     assert not result.abstained
     assert "successor_expansion" not in result.diagnostics.stage_ms
+
+
+# --- ordering of promoted successors ------------------------------------------------------------
+#
+# Registered in docs/preregistrations/2026-08-20-successor-ordering-regression.md. Fetching alone is
+# not enough: measured, the successor is promoted and then lands at rank 5 behind distractors,
+# because `evaluate` preserves pool position and the fetched chunk is appended last.
+
+
+def _ordering_case(ordering: str, predecessor_rank: int) -> list[str]:
+    """One `ok` distractor, a superseded predecessor, and its fetched successor appended last.
+
+    `predecessor_rank` is the predecessor's pool position. At 0 it outranks the distractor; at 2 it
+    does not, which is the case that separates the two orderings.
+    """
+    distractor = _scored("d1", "distractor.md", 0.88)
+    stale = _scored("s1", "ttl_v1.md", 0.86)
+    successor = _scored("c2", "ttl_v2.md", 0.64)
+    pool = [stale, distractor, successor] if predecessor_rank == 0 else [distractor, stale, successor]
+    trusted = evaluate(_retrieval(*pool), {"ttl_v1.md": "ttl_v2.md"}, CALIBRATION, NOW)
+    ordered = order_promoted(
+        trusted, {hit.chunk.id: i for i, hit in enumerate(pool)}, ordering
+    )
+    return [h.provenance.file or "" for h in ordered.hits if h.verdict == "ok"]
+
+
+def test_pool_ordering_leaves_the_successor_behind_the_distractor() -> None:
+    """The shipped behaviour, and the reason this record exists."""
+    assert _ordering_case("pool", predecessor_rank=0) == ["distractor.md", "ttl_v2.md"]
+
+
+def test_promoted_first_puts_the_successor_ahead_even_when_its_predecessor_did_not_lead() -> None:
+    """The unconditional ordering. Note it wins rank 1 from a predecessor that was only second."""
+    assert _ordering_case("promoted_first", predecessor_rank=2) == ["ttl_v2.md", "distractor.md"]
+
+
+def test_inherit_gives_the_successor_the_rank_its_predecessor_actually_held() -> None:
+    """The distinguishing case, and the whole argument for `inherit`.
+
+    The predecessor was SECOND for this query, so it is no evidence that its successor is first.
+    `promoted_first` asserts that anyway and displaces the distractor; `inherit` does not.
+    """
+    assert _ordering_case("inherit", predecessor_rank=2) == ["distractor.md", "ttl_v2.md"]
+
+
+def test_inherit_does_promote_when_the_predecessor_led() -> None:
+    """`inherit` is not a no-op: where the stale memory WAS best, its successor becomes best."""
+    assert _ordering_case("inherit", predecessor_rank=0) == ["ttl_v2.md", "distractor.md"]
+
+
+def test_ordering_never_touches_the_demoted_hits() -> None:
+    """`rest` is demoted material and its order is not a claim about anything."""
+    pool = [
+        _scored("d1", "distractor.md", 0.88),
+        _scored("s1", "ttl_v1.md", 0.86),
+        _scored("c2", "ttl_v2.md", 0.64),
+        _scored("w1", "weak.md", 0.10),
+    ]
+    trusted = evaluate(_retrieval(*pool), {"ttl_v1.md": "ttl_v2.md"}, CALIBRATION, NOW)
+    index = {hit.chunk.id: i for i, hit in enumerate(pool)}
+    before = [h.provenance.file for h in trusted.hits if h.verdict != "ok"]
+    after = [
+        h.provenance.file
+        for h in order_promoted(trusted, index, "promoted_first").hits
+        if h.verdict != "ok"
+    ]
+
+    assert before == after
+
+
+def test_an_unknown_ordering_is_refused_at_construction() -> None:
+    with pytest.raises(ValueError, match="ordering must be one of"):
+        SuccessorExpansionPolicy(enabled=True, ordering="best")  # type: ignore[arg-type]
 
 
 def test_trusted_search_fetches_the_successor_and_stops_abstaining(monkeypatch) -> None:
