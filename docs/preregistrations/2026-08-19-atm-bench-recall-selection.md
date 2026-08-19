@@ -161,3 +161,14 @@ I will evaluate a no credit cardinality selector on the full split's 139 `list_r
 The selector will embed each question with the same local MiniLM backbone used by the retrieval run. For each test question, it will find the nearest development question by cosine similarity and copy only its singleton or multi item label. A singleton prediction selects the first retrieved ID. A multi item prediction selects the first five retrieved IDs. The selector never reads the test answer, test evidence IDs, or answer text.
 
 The primary outcome is test set mean official list Jaccard. Secondary outcomes are test containment, answer hit rate, development versus test label balance, and the selected cutoff distribution. The fixed top one and fixed top five policies on the same test questions are preregistered comparators. I predict that the question only policy will improve test Jaccard over at least one fixed cutoff without materially reducing containment.
+
+## Confidence selector results appended after measurement
+
+Measured on 2026-08-19 with `python -m benchmarks.atm_confidence_selector_probe --ground-truth C:\Users\gde00\Documents\atm-bench-official\data\atm-bench\atm-bench.json --retrieval-result results/atm_bench_full_retrieval_20260819_fastembed.json --out results/atm_bench_full_confidence_selector_20260819.json`.
+
+| Arm | Fixed top one Jaccard | Fixed top five Jaccard | Confidence Jaccard | Confidence containment | Selected top five |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Dense | 0.2310 | 0.1232 | 0.2387 | 0.2607 | 6 of 42 |
+| Hybrid | 0.3897 | 0.1588 | 0.3675 | 0.4532 | 8 of 42 |
+
+The preregistered prediction failed for the serving relevant hybrid arm. The existing `0.50` confidence threshold did not identify useful multi item answers and reduced hybrid Jaccard by 2.22 percentage points. I will not promote this rule or tune the threshold against this test partition.
