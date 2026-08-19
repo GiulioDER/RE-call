@@ -41,9 +41,29 @@ import time
 
 STATE_DIR = os.path.join(os.path.expanduser("~"), ".claude", "hooks", "state")
 
-# pytest's own summary line, e.g. "==== 411 passed, 22 skipped, 3 warnings in 705.19s ===="
+# pytest's own summary line, in BOTH forms it is printed in.
+#
+# Decorated, from a default run:   "==== 411 passed, 22 skipped, 3 warnings in 705.19s ===="
+# Bare, from `-q`:                 "411 passed, 22 skipped in 705.19s (0:11:45)"
+#
+# The bare form matters more than it looks. Matching only the decorated one made this hook
+# blind to `python -m pytest tests/ -q`, which is the command recall's own CLAUDE.md
+# prescribes, so `parse_counts` returned {} on every documented run. The reporter returns
+# early on empty counts, which put BOTH real detections below an unreachable line: the
+# "It was NOT green" warning, and the SKIP_ALARM that exists to catch the DB tests silently
+# not running. The guard degraded to a nag that fires on every green run and stays silent on
+# the false green it was written for. Measured 2026-08-18: 3 spurious nags in one session.
+#
+# The anchor on the bare form is the trailing "in <float>s", which is what separates a real
+# summary from prose that happens to contain "3 passed". Adversarial cases that must NOT
+# match are covered in the self-test below.
 COUNT = re.compile(r"(\d+)\s+(passed|failed|skipped|error|errors|xfailed|xpassed|deselected)")
-SUMMARY_LINE = re.compile(r"^=+.*\b(passed|failed|error|no tests ran)\b.*=+$", re.MULTILINE)
+SUMMARY_LINE = re.compile(
+    r"^(?:=+.*\b(?:passed|failed|error|no tests ran)\b.*=+"
+    r"|(?:\d+\s+(?:passed|failed|skipped|errors?|xfailed|xpassed|deselected),?\s+)+in\s+[\d.]+s.*"
+    r"|no tests ran in\s+[\d.]+s.*)$",
+    re.MULTILINE,
+)
 # Skips at or above this are the documented false-green signature: the DB tests never ran.
 SKIP_ALARM = 100
 
@@ -226,7 +246,48 @@ def describe(rows: list[dict], now: float) -> str:
     return msg
 
 
+# Cases the summary matcher must get right. Kept next to the regex because the regex is the whole
+# guard: if it stops matching a real summary the hook reports "no verdict" on a green run, and if
+# it starts matching prose it reports a verdict that nobody measured. Run with --selftest.
+SELFTEST_MATCH = [
+    ("decorated", "==== 411 passed, 22 skipped, 3 warnings in 705.19s ====",
+     {"passed": 411, "skipped": 22}),
+    ("-q simple", "141 passed in 98.12s (0:01:38)", {"passed": 141}),
+    ("-q skips", "5455 passed, 22 skipped in 705.19s (0:11:45)", {"passed": 5455, "skipped": 22}),
+    ("-q failing", "2 failed, 139 passed in 98.12s", {"failed": 2, "passed": 139}),
+    ("-q false green", "120 passed, 340 skipped in 61.00s", {"passed": 120, "skipped": 340}),
+    ("-q errors", "1 error in 2.10s", {"error": 1}),
+    ("-q no tests", "no tests ran in 0.03s", {}),
+]
+SELFTEST_REJECT = [
+    ("prose", "the log says 3 passed and moved on"),
+    ("echoed counter", "staging dirs before=15 after=15"),
+    ("progress dots", "........................ [ 51%]"),
+    ("assertion text", "AssertionError: 5 passed checks expected"),
+    ("coverage row", "recall/index.py   282   14   95%"),
+]
+
+
+def selftest() -> int:
+    bad = 0
+    for name, text, want in SELFTEST_MATCH:
+        got = parse_counts(text)
+        if not SUMMARY_LINE.search(text) or got != want:
+            bad += 1
+            print(f"FAIL match  {name}: want {want}, got {got}")
+    for name, text in SELFTEST_REJECT:
+        if SUMMARY_LINE.search(text):
+            bad += 1
+            print(f"FAIL reject {name}: matched a line that is not a summary")
+    print(f"selftest: {len(SELFTEST_MATCH)} match cases, {len(SELFTEST_REJECT)} reject cases, "
+          f"{bad} failed")
+    return 1 if bad else 0
+
+
 def main() -> int:
+    if "--selftest" in sys.argv[1:]:
+        # Before the stdin read, which would otherwise block when run by hand.
+        return selftest()
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
