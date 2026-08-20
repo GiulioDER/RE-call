@@ -565,8 +565,34 @@ def embed_passages(embedder: Embedder, texts: list[str]) -> list[list[float]]:
     return [[float(x) for x in vector] for vector in raw]
 
 
-def artifact_tree_sha256(path: str | Path) -> str:
-    """Hash a provisioned file or directory without following directory symlinks."""
+def artifact_tree_sha256(path: str | Path, *, follow_file_symlinks: bool = False) -> str:
+    """Hash a provisioned file or directory without following directory symlinks.
+
+    ⛔ **`follow_file_symlinks` defaults to False, and that default is deliberate.** The strict
+    behaviour is what `verify_artifact` compares against a pinned, declared SHA, where a file
+    symlinked in from outside the tree would let unpinned bytes into a verified digest. Nothing that
+    checks against a declared expectation should follow links, so the default does not.
+
+    ⚠️ **It is True for provenance, because the strict rule made the digest unobtainable on Linux.**
+    `huggingface_hub` stores weights once under `<cache>/models--org--repo/blobs/<etag>` and makes
+    `snapshots/<rev>/<file>` a SYMLINK to it. `blobs/` is a sibling of `snapshots/`, so every weight
+    file resolves outside the snapshot root and the escape check refuses the entire tree — meaning
+    `embedder_artifact_digest` returned None, the identity stayed unverified, and a production
+    upload was refused exactly as before. Three auditors reached this independently; the generated
+    stack is `python:3.13-slim` and CI is Linux, so that is the deploy target, not an edge case.
+
+    It went unnoticed here because Windows without developer privileges cannot create symlinks at
+    all (`WinError 1314`), so the hub copies real files and the strict path succeeds. The measured
+    "5 files, 67 MB, 0.95s" in `embedder_artifact_digest` is a Windows measurement.
+
+    Following a FILE symlink is safe for provenance and is in fact the point: the bytes behind the
+    link are the bytes the model loaded, and the digest still changes when they change. DIRECTORY
+    symlinks are not followed in either mode, because `rglob` does not descend them.
+
+    The recorded name comes from the UNRESOLVED path in this mode, so the digest describes the
+    snapshot's own layout rather than the blob store's content-addressed filenames — otherwise two
+    identical trees laid out differently would hash differently.
+    """
     root = Path(path).resolve(strict=True)
     digest = hashlib.sha256()
     files = [root] if root.is_file() else sorted(p for p in root.rglob("*") if p.is_file())
@@ -574,9 +600,16 @@ def artifact_tree_sha256(path: str | Path) -> str:
         raise ValueError(f"model artifact has no files: {root}")
     for file in files:
         resolved = file.resolve(strict=True)
-        if root.is_dir() and not resolved.is_relative_to(root):
+        escapes = root.is_dir() and not resolved.is_relative_to(root)
+        if escapes and not follow_file_symlinks:
             raise ValueError(f"model artifact symlink escapes its root: {file}")
-        relative = resolved.name if root.is_file() else resolved.relative_to(root).as_posix()
+        if root.is_file():
+            relative = resolved.name
+        elif escapes:
+            # Named by where it sits in the tree, not by the blob it points at.
+            relative = file.relative_to(root).as_posix()
+        else:
+            relative = resolved.relative_to(root).as_posix()
         digest.update(relative.encode("utf-8"))
         digest.update(b"\x00")
         with resolved.open("rb") as stream:
@@ -629,7 +662,11 @@ def embedder_artifact_digest(embedder: object) -> str | None:
     key = str(path)
     if key not in _ARTIFACT_DIGESTS:
         try:
-            _ARTIFACT_DIGESTS[key] = artifact_tree_sha256(path)
+            # `follow_file_symlinks=True`: a HuggingFace snapshot is a farm of symlinks into a
+            # sibling `blobs/` directory, and the strict rule refuses the whole tree. See
+            # `artifact_tree_sha256`. Without this the digest is None on every Linux install, which
+            # is the deploy target.
+            _ARTIFACT_DIGESTS[key] = artifact_tree_sha256(path, follow_file_symlinks=True)
         except (OSError, ValueError):
             return None
     return _ARTIFACT_DIGESTS[key]

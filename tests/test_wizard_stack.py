@@ -543,6 +543,81 @@ def test_a_bind_mounted_database_is_refused_rather_than_extended(tmp_path: Path)
     assert "recall-myproject-docs" not in services, "and nothing may be written"
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param(
+            "C:/Users/gde00/recall/database:/var/lib/postgresql/data", id="windows-as-posix"
+        ),
+        pytest.param("C:\\Users\\gde00\\database:/var/lib/postgresql/data", id="windows-backslash"),
+        pytest.param("D:/data:/var/lib/postgresql/data:rw", id="windows-with-access-mode"),
+        pytest.param("/home/u/recall/database:/var/lib/postgresql/data", id="posix-absolute"),
+        pytest.param("./pgdata:/var/lib/postgresql/data", id="relative"),
+        pytest.param("~/recall/db:/var/lib/postgresql/data", id="home-relative"),
+        pytest.param(
+            {"type": "bind", "source": "C:/data", "target": "/var/lib/postgresql/data"},
+            id="long-syntax-bind",
+        ),
+    ],
+)
+def test_every_host_path_shape_is_refused(tmp_path: Path, entry: object) -> None:
+    """⛔ **The Windows cases are why this is parametrised, and they were the ones that got through.**
+
+    The first version split each entry on its FIRST colon, so
+    `C:/Users/gde00/recall/database:/var/lib/postgresql/data` yielded the source `"C"` — no
+    separator, no leading dot — and was waved through as a named volume. Five auditors found it
+    independently and three executed it. Released v0.9.6 wrote exactly that string,
+    `f"{database_dir.as_posix()}:{DB_MOUNT}"` off an absolute `data_root`, so the guard was inert
+    for every real Windows install, on the one platform whose intermittent WAL corruption is the
+    entire reason it exists.
+
+    The original test used `./pgdata`, which is refused by any implementation, so the suite agreed
+    with the bug.
+
+    ⚠️ The second attempt was ALSO wrong on the same input: parsing right-to-left strips the target,
+    then strips again because `/Users/...` starts with a slash too, arriving back at `"C"`. Hence
+    the explicit drive-prefix check, and hence this case being pinned by id.
+    """
+    compose = _stack(tmp_path, db_volume="pgdata", tenants={"default-docs": "recall-wizard:1.0.0"})
+    document = json.loads(compose.read_text(encoding="utf-8"))
+    document["services"]["db"]["volumes"] = [entry]
+    write_compose(compose, document)
+
+    with pytest.raises(ValueError, match="rather than in a Docker volume|could not be determined"):
+        add_tenant_services(compose, {"myproject-docs": {"RECALL_TENANT": "myproject-docs"}})
+
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    assert "recall-myproject-docs" not in services, "nothing may be written on a refusal"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param("pgdata:/var/lib/postgresql/data", id="named"),
+        pytest.param("pgdata:/var/lib/postgresql/data:rw", id="named-with-mode"),
+        pytest.param("recall_pg-data.1:/var/lib/postgresql/data", id="named-with-punctuation"),
+        pytest.param(
+            {"type": "volume", "source": "pgdata", "target": "/var/lib/postgresql/data"},
+            id="long-syntax-volume",
+        ),
+    ],
+)
+def test_a_named_volume_is_never_refused(tmp_path: Path, entry: object) -> None:
+    """The other half: a guard that refuses everything is not a guard, it is an outage.
+
+    The allowlist is positive — only a Docker named volume passes — so this is what stops the
+    fail-closed direction from breaking every current install.
+    """
+    compose = _stack(tmp_path, db_volume="pgdata", tenants={"default-docs": "recall-wizard:1.0.0"})
+    document = json.loads(compose.read_text(encoding="utf-8"))
+    document["services"]["db"]["volumes"] = [entry]
+    write_compose(compose, document)
+
+    assert add_tenant_services(
+        compose, {"myproject-docs": {"RECALL_TENANT": "myproject-docs"}}
+    ) == ("myproject-docs",)
+
+
 def test_a_named_volume_is_not_mistaken_for_a_host_path(tmp_path: Path) -> None:
     """The guard must not refuse the layout it exists to protect."""
     compose = _stack(

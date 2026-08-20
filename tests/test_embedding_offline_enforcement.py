@@ -344,6 +344,100 @@ def test_a_digest_is_over_the_model_directory_not_the_shared_cache(tmp_path: Pat
     )
 
 
+def _symlinks_available(tmp_path: Path) -> bool:
+    """Whether this host can create a file symlink at all.
+
+    Windows refuses without developer mode or elevation (`WinError 1314`), which is exactly why
+    HuggingFace copies files there and why the defect below was invisible on this machine.
+    """
+    target = tmp_path / "_probe_target"
+    target.write_bytes(b"x")
+    try:
+        (tmp_path / "_probe_link").symlink_to(target)
+    except (OSError, NotImplementedError):
+        return False
+    return True
+
+
+def test_a_huggingface_snapshot_of_symlinks_still_digests(tmp_path: Path) -> None:
+    """⛔ **The layout every Linux and macOS install actually has.**
+
+    `huggingface_hub` stores each weight once under `<cache>/models--org--repo/blobs/<etag>` and
+    makes `snapshots/<rev>/<file>` a symlink to it. `blobs/` is a SIBLING of `snapshots/`, so under
+    the strict rule every file resolved outside the snapshot root, `artifact_tree_sha256` refused
+    the whole tree, `embedder_artifact_digest` caught the `ValueError` and returned None — and a
+    production upload was refused for an unverified identity, which is the exact failure the digest
+    was added to remove. Three auditors found this independently.
+
+    ⚠️ **This test cannot run on the machine where the code was written.** Windows without
+    elevation cannot create a symlink, so the hub copies real files there and the strict path
+    succeeds. That is why the original tests, which built a directory of regular files, passed
+    everywhere while proving nothing about the deploy target. CI is Linux and runs this for real.
+    """
+    if not _symlinks_available(tmp_path):
+        pytest.skip("this host cannot create symlinks; CI (Linux) covers this case")
+
+    from recall.embeddings import artifact_tree_sha256, embedder_artifact_digest
+
+    cache = tmp_path / "models--qdrant--bge-small-en-v1.5-onnx-q"
+    blobs = cache / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / "e3b0c442").write_bytes(b"the actual onnx weights")
+    (blobs / "9f86d081").write_text("{}", encoding="utf-8")
+
+    snapshot = cache / "snapshots" / "52398278842ec682c6f32300af41344b1c0b0bb2"
+    snapshot.mkdir(parents=True)
+    (snapshot / "model_optimized.onnx").symlink_to(blobs / "e3b0c442")
+    (snapshot / "config.json").symlink_to(blobs / "9f86d081")
+
+    with pytest.raises(ValueError, match="escapes its root"):
+        artifact_tree_sha256(snapshot)
+
+    digest = artifact_tree_sha256(snapshot, follow_file_symlinks=True)
+    assert len(digest) == 64
+
+    class _Inner:
+        cache_dir = str(cache)
+        _model_dir = snapshot
+
+    class _Model:
+        model = _Inner()
+
+    class _Embedder:
+        _model = _Model()
+
+    assert embedder_artifact_digest(_Embedder()) == digest, (
+        "a real HuggingFace layout must produce a digest, or production refuses every upload"
+    )
+
+
+def test_following_a_symlink_still_tracks_the_bytes_behind_it(tmp_path: Path) -> None:
+    """Following links must not cost the property the digest exists for.
+
+    A provenance digest is worthless if it does not move when the weights move. This pins that the
+    permissive mode is still content-sensitive, and that it names files by their place in the
+    snapshot rather than by the blob's content-addressed filename — otherwise two identical trees
+    laid out differently would disagree.
+    """
+    if not _symlinks_available(tmp_path):
+        pytest.skip("this host cannot create symlinks; CI (Linux) covers this case")
+
+    from recall.embeddings import artifact_tree_sha256
+
+    blobs = tmp_path / "blobs"
+    blobs.mkdir()
+    (blobs / "aaa").write_bytes(b"weights v1")
+    snapshot = tmp_path / "snapshots" / "rev"
+    snapshot.mkdir(parents=True)
+    (snapshot / "model.onnx").symlink_to(blobs / "aaa")
+
+    before = artifact_tree_sha256(snapshot, follow_file_symlinks=True)
+    (blobs / "aaa").write_bytes(b"weights v2 -- different bytes entirely")
+    after = artifact_tree_sha256(snapshot, follow_file_symlinks=True)
+
+    assert before != after, "the digest must change when the bytes behind the link change"
+
+
 def test_an_unreachable_artifact_path_yields_none_rather_than_raising() -> None:
     """This reaches into another library's internals, which change between versions.
 

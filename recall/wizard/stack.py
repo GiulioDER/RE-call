@@ -45,6 +45,7 @@ environment but is NOT a declared dependency of this project and so cannot be re
 from __future__ import annotations
 
 import json
+import re
 import socket
 import subprocess
 from dataclasses import dataclass
@@ -461,6 +462,75 @@ def _stack_image(services: dict[str, object]) -> str | None:
     return None
 
 
+#: A Docker NAMED volume: the shape `docker volume create` accepts. Anything else in the source
+#: position of a mount is a host path.
+#:
+#: ⛔ **Matched positively, so the guard fails CLOSED.** The first version enumerated host paths
+#: instead — "contains a separator, or starts with a dot" — after splitting the entry on its FIRST
+#: colon. On Windows that splits `C:/Users/me/db:/var/lib/postgresql/data` into the source `"C"`,
+#: which has no separator and no leading dot, so the guard passed the exact layout it exists to
+#: refuse. Five auditors found it independently and three executed it. The released v0.9.6 wizard
+#: wrote precisely that string, `f"{database_dir.as_posix()}:{DB_MOUNT}"` off an absolute
+#: `data_root`, so the miss covered every real Windows install on the one platform whose
+#: intermittent WAL corruption motivated the guard.
+#:
+#: Enumerating the unsafe shapes means a shape nobody enumerated is treated as safe. Enumerating the
+#: ONE safe shape means a shape nobody anticipated is refused, which is the direction a guard
+#: protecting against data loss should fail in.
+_NAMED_VOLUME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+
+#: A Windows absolute path, `C:/…` or `C:\…`. Recognised before the source is parsed, because the
+#: drive colon is indistinguishable from the separator between a mount's source and target.
+_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _is_named_volume(source: str) -> bool:
+    return bool(_NAMED_VOLUME.match(source))
+
+
+def _volume_source(entry: object) -> str | None:
+    """The host-or-volume side of one compose volume entry, or None when there is nothing to judge.
+
+    Handles both syntaxes, because `add_tenant_services` is documented to accept a stack "somebody
+    else provisioned" and a hand-written or tool-generated file may use either:
+
+    * short — `SOURCE:TARGET[:MODE]`. Parsed from the RIGHT, so a Windows drive letter in the source
+      survives. `recall/wizard/stack.py`'s `existing_port` learned the same lesson in the other
+      direction when a published port gained a host IP.
+    * long — `{"type": "bind", "source": ..., "target": ...}`. The short-syntax-only version skipped
+      these silently, so a bind mount declared the long way read as "no bind mount at all".
+    """
+    if isinstance(entry, dict):
+        source = entry.get("source")
+        if entry.get("type") == "bind":
+            # A bind is a bind whatever its source looks like; return something that cannot be a
+            # named volume so the caller refuses.
+            return str(source) if isinstance(source, str) else "<bind mount>"
+        return str(source) if isinstance(source, str) else None
+    if not isinstance(entry, str) or ":" not in entry:
+        return None
+    # ⛔ **The drive prefix is decided BEFORE any splitting, and that ordering is the fix.**
+    # Stripping right-to-left is not enough on its own: `C:/Users/me/db:/var/lib/postgresql/data`
+    # strips the target, leaving `C:/Users/me/db`, and then strips AGAIN because `/Users/me/db`
+    # also starts with a slash — yielding the source `"C"`, which is a valid named volume. That is
+    # the same wrong answer the original first-colon split gave, reached by a longer route, and it
+    # survived the first attempt at this fix. A drive-lettered entry is a host path, full stop.
+    if _DRIVE_PREFIX.match(entry):
+        return entry
+    # The container target is an absolute POSIX path, and an optional access mode follows it. Strip
+    # from the right until what remains is the source.
+    remainder = entry
+    for _ in range(2):
+        head, _sep, tail = remainder.rpartition(":")
+        if not head:
+            break
+        if tail.startswith("/") or tail in {"ro", "rw", "z", "Z", "cached", "delegated"}:
+            remainder = head
+            continue
+        break
+    return remainder
+
+
 def _refuse_bind_mounted_database(compose_path: Path, db: object) -> None:
     """Refuse to extend a stack whose database still lives on a host bind mount.
 
@@ -481,15 +551,19 @@ def _refuse_bind_mounted_database(compose_path: Path, db: object) -> None:
     if not isinstance(db, dict):
         return
     volumes = db.get("volumes")
-    if not isinstance(volumes, list):
+    if volumes is None:
         return
+    if not isinstance(volumes, list):
+        raise ValueError(
+            f"the stack at {compose_path} declares its database volumes as "
+            f"{type(volumes).__name__}, which this cannot read. Refusing rather than adding a "
+            "corpus to a database whose storage layout could not be determined."
+        )
     for entry in volumes:
-        if not isinstance(entry, str) or ":" not in entry:
+        source = _volume_source(entry)
+        if source is None or _is_named_volume(source):
             continue
-        source = entry.split(":", 1)[0]
-        # A named volume is a bare name; anything with a separator or a leading dot is a host path.
-        if "/" in source or "\\" in source or source.startswith("."):
-            raise ValueError(
+        raise ValueError(
                 f"the stack at {compose_path} keeps its database on the host directory {source!r} "
                 "rather than in a Docker volume. That layout loses PostgreSQL WAL writes "
                 "intermittently on Windows, which is why newer installs use a named volume, and "
