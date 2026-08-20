@@ -762,3 +762,113 @@ def test_development_promotion_is_unchanged_by_the_gate(calibration_tenant) -> N
     assert CalibrationRepository(TEST_DSN, tenant, actor="pytest").resolve(
         generation_id
     ).status == CalibrationStatus.MISSING, "promoted with no calibration at all, as before"
+
+
+@requires_db
+def test_the_gate_resolves_on_the_promoting_transaction(calibration_tenant, monkeypatch) -> None:
+    """⛔ The verdict and the activation it authorises must be ONE decision.
+
+    `require_certified_for_production` used to open its own connection, which made the gate read a
+    different snapshot than the transaction that commits the promotion. Two things followed, and
+    only one of them is the one that looks alarming:
+
+    * **Not a deadlock**, though it reads like one. Measured: a plain `SELECT` does not wait on
+      `FOR UPDATE` under MVCC, so the nested read completed. The hazard is subtler than a hang.
+    * **A verdict about a state that could already be gone.** Between CERTIFIED and COMMIT, a
+      concurrent `forget()` can rewrite the generation's `corpus_fingerprint` and make the
+      calibration STALE.
+    * **A connection acquired under a tenant lock.** Measured: +1 backend for the width of the lock
+      window against `max_connections=100`; exhaustion stalls the lock, not just the caller.
+
+    Reading on the promoting connection closes it, because a fingerprint rewrite must take the same
+    row lock `promote` already holds. Measured with a competing `FOR UPDATE`: it waited 1.503s, the
+    exact duration of the hold, rather than proceeding.
+
+    This test asserts the mechanism the measurement explains: the resolution runs on a connection
+    that is INSIDE a transaction, and the self-opening path is not taken.
+    """
+    from recall.calibration_v2 import CalibrationRepository as _Repository
+
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+    repository.publish(repository.calibrate(generation_id, _labels(), embedder).calibration_id)
+
+    seen: list[str] = []
+    real_within = _Repository.resolve_within
+
+    def _watch(self, conn, generation):  # noqa: ANN001, ANN202
+        seen.append(conn.info.transaction_status.name)
+        return real_within(self, conn, generation)
+
+    def _forbidden(self, generation):  # noqa: ANN001, ANN202
+        raise AssertionError(
+            "the gate opened its OWN connection while `promote` held a tenant lock; the verdict "
+            "and the activation are then two decisions, not one"
+        )
+
+    monkeypatch.setattr(_Repository, "resolve_within", _watch)
+    monkeypatch.setattr(_Repository, "resolve", _forbidden)
+
+    _production(manager).promote(generation_id)
+
+    assert seen, "the gate must have run at all"
+    assert seen == ["INTRANS"], (
+        f"the gate must resolve inside the promoting transaction, saw {seen}. IDLE means it ran on "
+        "a connection with no open transaction, which is the defect wearing the fixed signature"
+    )
+
+
+@requires_db
+def test_rollback_reads_its_recorded_status_on_its_own_transaction(
+    calibration_tenant, monkeypatch
+) -> None:
+    """The same connection rule, on the path where the read only REPORTS.
+
+    ⚠️ **This test exists because its mutation survived.** Reverting `promote` to a self-opened
+    connection failed a test; reverting `rollback` failed nothing, so half the fix was unpinned and
+    would have rotted back silently.
+
+    The atomicity argument is weaker here, because the status is recorded rather than enforced. The
+    other two are not. A rollback holds the tenant row `FOR UPDATE` exactly as a promotion does, so
+    a self-opened connection acquires a backend under that lock; and the status written into
+    `generation_rolled_back` should be the one that was true for the transaction that did the
+    activating, not one read beside it. An audit record is the artefact that outlives everyone who
+    remembers the code, and "approximately what was true" is not what it should say.
+    """
+    from recall.calibration_v2 import CalibrationRepository as _Repository
+
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+
+    first = _ready(manager, embedder, b"answer corpus", "v1")
+    repository.publish(repository.calibrate(first, _labels(), embedder).calibration_id)
+    production = _production(manager)
+    production.promote(first)
+    second = _ready(manager, embedder, b"answer corpus two", "v2")
+    repository.publish(repository.calibrate(second, _labels(), embedder).calibration_id)
+    production.promote(second)
+
+    seen: list[str] = []
+    real_within = _Repository.resolve_within
+
+    def _watch(self, conn, generation):  # noqa: ANN001, ANN202
+        seen.append(conn.info.transaction_status.name)
+        return real_within(self, conn, generation)
+
+    def _forbidden(self, generation):  # noqa: ANN001, ANN202
+        raise AssertionError(
+            "the rollback opened its OWN connection while holding the tenant lock, and recorded a "
+            "status read outside the transaction that did the activating"
+        )
+
+    monkeypatch.setattr(_Repository, "resolve_within", _watch)
+    monkeypatch.setattr(_Repository, "resolve", _forbidden)
+
+    assert production.rollback() == first
+
+    assert seen == ["INTRANS"], (
+        f"the status must be read inside the rolling-back transaction, saw {seen}"
+    )

@@ -877,25 +877,36 @@ class GenerationManager:
                 pass
             raise
 
-    def calibration_status_for(self, generation_id: str) -> str:
+    def calibration_status_for(
+        self, generation_id: str, *, conn: psycopg.Connection | None = None
+    ) -> str:
         """The generation's calibration status as a plain string, for reporting rather than gating.
 
         `rollback` records this instead of refusing on it, per decision 2. Never raises: a status
         that cannot be determined must not be the thing that stops an incident recovery, so an
         unreadable calibration reads as `"unknown"` and the rollback proceeds and says so.
+
+        Pass `conn` from inside an open transaction to read on it rather than opening a second
+        connection; see `CalibrationRepository.resolve_within` for why that matters under a lock.
+        Rollback passes its own, so the status it RECORDS is the one that was true for the
+        transaction that did the activating, rather than one read beside it.
         """
         from recall.calibration_v2 import CalibrationRepository
 
+        repository = CalibrationRepository(self._dsn, self.tenant_id, actor=self.actor)
         try:
-            return str(
-                CalibrationRepository(self._dsn, self.tenant_id, actor=self.actor)
-                .resolve(generation_id)
-                .status.value
+            resolution = (
+                repository.resolve_within(conn, generation_id)
+                if conn is not None
+                else repository.resolve(generation_id)
             )
+            return str(resolution.status.value)
         except Exception:  # noqa: BLE001 - reporting must not be able to block recovery
             return "unknown"
 
-    def require_certified_for_production(self, generation_id: str) -> None:
+    def require_certified_for_production(
+        self, generation_id: str, *, conn: psycopg.Connection | None = None
+    ) -> None:
         """Refuse unless `generation_id` is backed by a PUBLISHED, CERTIFIED, still-bound calibration.
 
         This is the gate `promote`'s old message promised — "unavailable in production until
@@ -911,6 +922,14 @@ class GenerationManager:
         STALE need four different actions from whoever hit this — calibrate, publish, re-calibrate,
         re-calibrate against the current corpus — and a gate that says only "no" sends them to guess.
 
+        ⛔ **`conn` is not an optimisation.** Passed, the resolution runs on the caller's OPEN
+        transaction, so the verdict and the activation it authorises are one decision. Omitted, it
+        opens its own connection, and the gate then approves a snapshot that a concurrent `forget()`
+        can invalidate before the promotion commits — approving a state that no longer exists. It
+        also acquires that connection while the caller holds a tenant lock, which stalls the lock
+        rather than the caller under exhaustion. `promote` always passes it; the parameter is
+        optional only so a caller outside a transaction can still ask the question.
+
         Imported lazily. `recall.calibration_v2` does not import this module today, so a top-level
         import would work, but the calibration layer is the higher one and making the generation
         layer depend on it at import time invites the cycle later.
@@ -919,10 +938,13 @@ class GenerationManager:
 
         from recall.calibration_v2 import CalibrationBindingError
 
+        repository = CalibrationRepository(self._dsn, self.tenant_id, actor=self.actor)
         try:
-            resolution = CalibrationRepository(
-                self._dsn, self.tenant_id, actor=self.actor
-            ).resolve(generation_id)
+            resolution = (
+                repository.resolve_within(conn, generation_id)
+                if conn is not None
+                else repository.resolve(generation_id)
+            )
         except CalibrationBindingError as exc:
             # Translated rather than propagated. Callers of `promote` and `rollback` handle
             # `UnsafePromotion`; a binding error escaping from two layers down is a different
@@ -983,7 +1005,10 @@ class GenerationManager:
             # exception type. Measured before this was moved. Ordering the cheap, specific checks
             # first keeps each failure named by the thing that actually failed.
             if self.certification_required:
-                self.require_certified_for_production(generation_id)
+                # On THIS connection, inside THIS transaction. See the method's docstring: the
+                # generation row is already locked here, so the check and the activation cannot be
+                # separated by a concurrent fingerprint rewrite.
+                self.require_certified_for_production(generation_id, conn=conn)
             active = str(state[0]) if state and state[0] else None
             if active:
                 conn.execute(
@@ -1069,7 +1094,7 @@ class GenerationManager:
                 )
             # ⛔ Deliberately NOT gated. See the docstring: this is the incident path, and the
             # status is reported into the audit event below rather than used to refuse.
-            status = self.calibration_status_for(previous)
+            status = self.calibration_status_for(previous, conn=conn)
             if active:
                 conn.execute(
                     "UPDATE recall_generations SET state = 'ready', retired_at = NULL "
