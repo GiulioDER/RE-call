@@ -147,7 +147,16 @@ def line_map(path: str, base: str) -> dict[int, int | None] | None:
     a move: whatever was cited may no longer be there at all. A None RETURN means the file did not
     change, so every citation into it is still good.
     """
-    diff = git("diff", "--unified=0", "--no-color", f"{base}..HEAD", "--", path)
+    # `base`, NOT `base..HEAD`. This diffs the base against the WORKING TREE, which is the file
+    # `check_citation` reads into `body` and the file whoever repairs the citation will open.
+    #
+    # ⚠️ It used to be `f"{base}..HEAD"`, and the docstring above already said "the working tree",
+    # so the intent was recorded correctly and only the code disagreed. With uncommitted changes to
+    # a cited source file the two states differ by the uncommitted delta, and the checker then
+    # named a destination line its own `body` did not have at that content. Twice in consecutive
+    # runs that pointed at unrelated code, a comment fragment and a `ValueError`, each off by a
+    # plausible small number and each authoritative enough to copy without checking.
+    diff = git("diff", "--unified=0", "--no-color", base, "--", path)
     if not diff.strip():
         return None
 
