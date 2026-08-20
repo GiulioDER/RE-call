@@ -7,6 +7,10 @@ column of numbers.
 
 from __future__ import annotations
 
+import json
+from collections import Counter
+from pathlib import Path
+
 import pytest
 
 from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON, SessionRecord
@@ -263,6 +267,37 @@ def test_a_memo_that_exists_but_never_retrieves_does_not_count_as_memory() -> No
 
 
 # --------------------------------------------------------------------------- scoring
+
+
+def test_the_task_manifest_agrees_with_the_measured_qualification() -> None:
+    """The manifest may not claim a locus the corpus did not actually produce.
+
+    Both files are committed before the run, so this is the check that keeps them from drifting
+    apart afterwards. A task labelled `memory_only` whose fact turns out to be in CLAUDE.md is a
+    result attributed to the wrong arm.
+    """
+    root = Path(__file__).resolve().parents[1] / "benchmarks" / "agent_ab"
+    rows = [
+        json.loads(line)
+        for line in (root / "tasks" / "traps.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    qualification = json.loads((root / "trap-qualification.json").read_text(encoding="utf-8"))
+    loci = {q["trap_id"]: q["locus"] for q in qualification["qualifications"]}
+
+    assert len(rows) == len({row["task_id"] for row in rows}), "duplicate task_id"
+    for row in rows:
+        assert row["trap_id"] in TRAPS_BY_ID, row["trap_id"]
+        assert row["user_input"].strip() and row["reference"].strip(), row["task_id"]
+        assert row["locus"] == loci[row["trap_id"]], (
+            f"{row['task_id']} claims {row['locus']}, measured {loci[row['trap_id']]}"
+        )
+    assert {row["trap_id"] for row in rows} == set(TRAPS_BY_ID)
+
+    counts = Counter(row["locus"] for row in rows)
+    # The design needs all three: winnable, tied, and expected-to-lose. Losing any category
+    # turns the trap score from a comparison into an advertisement.
+    assert counts[MEMORY_ONLY] >= 1 and counts[BOTH] >= 1 and counts[CLAUDE_MD_ONLY] >= 1
 
 
 def test_score_record_reports_hits_and_the_weaker_process_counters_separately() -> None:
