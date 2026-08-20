@@ -326,6 +326,65 @@ def test_a_rename_records_both_of_its_names(
 
     assert "docs/renamed.md" in dirty, f"the new name is missing from {sorted(dirty)}"
     assert "docs/d0.md" in dirty, f"the original name is missing from {sorted(dirty)}"
+def test_the_suggested_line_accounts_for_uncommitted_changes_to_the_cited_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The suggestion must describe the file on disk, because that is the file it validates against.
+
+    ⚠️ Regression test for a defect found by USING the checker, not by reading it. `line_map`
+    diffed `base..HEAD`, the committed state, while `check_citation` reads `body` from the working
+    tree. With uncommitted changes to a cited source file the two disagree by exactly the
+    uncommitted delta, so the checker names a line that is confidently wrong.
+
+    It is a nasty shape of wrong. The suggestion looks authoritative, it is off by a plausible
+    small number, and the obvious repair is to copy it. Twice in consecutive runs it pointed at
+    unrelated code: once at a comment fragment for a claim about a `gap_warning` call, once at a
+    `ValueError` for a claim about a production gate. Copying either would have replaced a stale
+    but honest pointer with a confident lie.
+
+    Here the cited line moves +2 in a commit and a further +3 in the working tree. The answer is
+    +5, and the pre-fix code says +2.
+    """
+    repo = tmp_path / "repo"
+    (repo / "recall").mkdir(parents=True)
+    (repo / "docs").mkdir(parents=True)
+
+    (repo / "recall" / "thing.py").write_text(
+        "import os\n\nTARGET = 1\n", encoding="utf-8", newline="\n"
+    )
+    (repo / "docs" / "d.md").write_text(
+        "# D\n\nthe value lives at `recall/thing.py:3`\n", encoding="utf-8", newline="\n"
+    )
+    (repo / "docs" / "citation-policy.toml").write_text("", encoding="utf-8", newline="\n")
+
+    _init_repo(repo)
+    _commit(repo, "base")
+
+    # Committed drift: +2.
+    (repo / "recall" / "thing.py").write_text(
+        "import os\nimport sys\nimport json\n\nTARGET = 1\n", encoding="utf-8", newline="\n"
+    )
+    _commit(repo, "shift by two", "recall/thing.py")
+
+    # Uncommitted drift: +3 more. The DOCUMENT is untouched, so it is not skipped.
+    (repo / "recall" / "thing.py").write_text(
+        "import os\nimport sys\nimport json\nimport re\nimport io\nimport abc\n\nTARGET = 1\n",
+        encoding="utf-8", newline="\n",
+    )
+
+    monkeypatch.setattr(citations, "REPO", repo)
+    monkeypatch.setattr(citations, "POLICY", repo / "docs" / "citation-policy.toml")
+
+    findings, skipped = citations.check()
+
+    assert len(findings) == 1, [(f.doc_line, f.detail) for f in findings]
+    detail = findings[0].detail
+    assert "moved +5" in detail, (
+        f"expected the working-tree delta of +5, got: {detail}. A +2 here is the committed-only "
+        "delta, which is the defect: the suggestion names a line whose content is not there in the "
+        "file the checker itself just read."
+    )
+    assert "recall/thing.py:8" in detail, detail
 
 
 def test_a_declared_live_zone_is_still_checked_under_a_frozen_prefix(
