@@ -954,6 +954,12 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="do not read or write a state file at all.",
     )
+    p_wizard.add_argument(
+        "--gui",
+        action="store_true",
+        help="ask the questions in a window instead of the terminal. Same questions, same config "
+        "file, same engine; needs the desktop extra. `recall-install` opens it directly.",
+    )
 
     p_schema = sub.add_parser("schema", help="inspect or apply versioned database migrations")
 
@@ -1543,6 +1549,20 @@ def main(argv: list[str] | None = None) -> None:
         # answers directly. One engine, and the user keeps an artefact they can re-run, hand to
         # somebody else, or put in CI. An interactive flow that installed from memory would be a
         # second installer that drifts from the first.
+        if args.gui:
+            # ⚠️ Returns rather than falling through. The graphical installer asks the questions,
+            # writes the config AND runs it, so continuing into the terminal flow below would ask
+            # every question a second time and install twice.
+            if args.config is not None:
+                raise SystemExit(
+                    "`--gui` asks the questions itself, so there is nothing for `--config` to do. "
+                    "Run `recall wizard --headless --config <file>` to replay a saved config, or "
+                    "`recall wizard --gui` to be asked."
+                )
+            from recall.desktop.main import install_main
+
+            return install_main([])
+
         if args.config is None:
             from recall.wizard.interactive import (
                 InteractiveRefusal,

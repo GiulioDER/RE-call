@@ -115,6 +115,9 @@ recall = "recall.cli:main"
 recall-enterprise = "recall.enterprise_cli:main"
 recall-mcp = "recall_mcp.server:main"
 recall-desktop = "recall.desktop.main:main"
+# The graphical installer. A separate script rather than a flag on `recall-desktop`, because the
+# person who needs it does not have an install yet and therefore has nothing for that app to open.
+recall-install = "recall.desktop.main:install_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["recall", "recall_hooks", "recall_mcp"]

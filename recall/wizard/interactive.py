@@ -30,8 +30,14 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from recall.wizard.corpora import DEFAULT_PROJECT
 from recall.wizard.database import probe_database
+from recall.wizard.questions import (
+    Question,
+    build_config,
+    default_for,
+    question_plan,
+    visible_questions,
+)
 
 __all__ = [
     "InteractiveRefusal",
@@ -139,75 +145,51 @@ def ask_config(
     `probe` is injected for the same reason `Prompter` is. The database question is the only one
     with a side effect — it opens a connection — and a test of the question flow must not need a
     PostgreSQL to run.
+
+    ⛔ **The questions come from `recall.wizard.questions`, not from this function.** They used to
+    live here, and then the graphical installer needed the same set: the same defaults, the same
+    branch between a provisioned database and an existing one, the same rule that all three corpus
+    roots are mandatory. Re-typing any of that would have made a second installer that drifts, which
+    is the exact shape of three separate defects fixed in this repository already. This function is
+    now one RENDERER of that plan; `recall/desktop/install_ui.py` is the other.
     """
     prompter.write("recall install\n")
 
-    project = prompter.ask("project name (names the tenants and stamps every chunk)", default=DEFAULT_PROJECT)
-    embedder = prompter.choose(
-        "\nWhich embedder?",
-        [
-            ("fastembed", "local, 384 dimensions, downloads a small model once (recommended)"),
-            ("hashing", "fully offline, no download, lower quality"),
-        ],
-        default="fastembed",
-    )
+    plan = question_plan(default_root=default_root)
+    answers: dict[str, str] = {}
 
-    where = prompter.choose(
-        "\nWhere should the database live?",
-        [
-            ("docker", "create one for me in Docker (recommended if you have no PostgreSQL)"),
-            ("existing", "I already have a PostgreSQL with pgvector"),
-        ],
-        default="docker",
-    )
+    for question in plan:
+        if not _applies(question, answers):
+            continue
+        if question.help:
+            prompter.write(f"\n{question.help}")
+        if question.kind == "choice":
+            answers[question.key] = prompter.choose(
+                f"\n{question.prompt}",
+                [(choice.key, choice.label) for choice in question.choices],
+                default=default_for(question, answers),
+            )
+        elif question.kind == "dsn":
+            answers[question.key] = _ask_working_dsn(
+                prompter, embedder=answers.get("embedder", "fastembed"), probe=probe
+            )
+        else:
+            answers[question.key] = prompter.ask(
+                f"\n{question.prompt}", default=default_for(question, answers)
+            )
 
-    config: dict[str, object] = {
-        "project": project,
-        "embedder": embedder,
-        "corpus_version": _today(),
-    }
+    return build_config(answers)
 
-    if where == "docker":
-        data_root = Path(
-            prompter.ask("\nWhere should recall keep its data?", default=str(default_root))
-        ).expanduser()
-        config["data_root"] = str(data_root)
-        base = data_root
-    else:
-        config["dsn"] = _ask_working_dsn(prompter, embedder=embedder, probe=probe)
-        base = default_root
 
-    # ⚠️ **All three roots are REQUIRED, and offering to skip one produced a config the engine
-    # refuses.** `load_config` names `docs_root`, `code_root` and `memory_root` as mandatory, so a
-    # blank answer here wrote a file that failed to load one step later, with a message about JSON
-    # keys — an interactive installer handing the user a validation error about its own artefact.
-    #
-    # Found by round-tripping a written config through `load_config`, not by the ten tests of the
-    # question flow, every one of which passed. The questions were right; the artefact was not.
-    #
-    # So each root defaults to a directory under the install rather than to nothing. An empty or
-    # absent one is a state the pipeline already handles and reports as normal on a first install,
-    # which makes "I have nothing for this yet" expressible without an invalid config.
-    prompter.write(
-        "\nWhich folders should recall index? Press Enter to accept the suggestion; an empty "
-        "folder is fine and can be filled later."
-    )
-    for key, question, leaf in (
-        ("docs_root", "documents (notes, markdown, PDFs)", "docs"),
-        ("code_root", "code", "code"),
-        ("memory_root", "agent memory", "memory"),
-    ):
-        answer = prompter.ask(f"  {question}", default=str(base / leaf))
-        config[key] = str(Path(answer).expanduser().resolve())
+def _applies(question: Question, answers: dict[str, str]) -> bool:
+    """Whether `question` is reachable given the answers so far.
 
-    project_root = prompter.ask(
-        "\nWhich project should the MCP servers be registered for? (blank to skip wiring)",
-        default="",
-    )
-    if project_root:
-        config["project_root"] = str(Path(project_root).expanduser().resolve())
-
-    return config
+    Delegates to `visible_questions` rather than re-reading `depends_on`, so a change to how a
+    dependency is expressed cannot make the terminal and the graphical front end disagree about
+    which questions exist. That disagreement is not a cosmetic one: it is asking for a DSN on the
+    Docker path, or failing to ask for one on the other.
+    """
+    return question in visible_questions((question,), answers)
 
 
 def _ask_working_dsn(
@@ -253,13 +235,6 @@ def _dimension_for(embedder: str) -> int | None:
         # will refuse by name later, with a better message than this function could produce. The
         # dimension check simply degrades to "not compared", which the report states explicitly.
         return None
-
-
-def _today() -> str:
-    """The corpus version, stamped on every chunk. An ISO date by convention."""
-    from datetime import date
-
-    return date.today().isoformat()
 
 
 def write_config(document: dict[str, object], path: Path) -> Path:
