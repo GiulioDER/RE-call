@@ -41,6 +41,7 @@ names the container instead.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -344,8 +345,36 @@ def write_runtime_profile(
     return save_profile(profile, path)
 
 
+#: The environment variable Claude Code uses to relocate the directory it writes config into.
+#:
+#: ⚠️ **Undocumented, and real.** It appears in neither `code.claude.com/docs/en/settings` nor the
+#: CLI reference (both checked 2026-08-20), but the installed client binary contains it, next to its
+#: own advice: "Use `CLAUDE_CONFIG_DIR=/tmp` for ephemeral local writes with external mirroring".
+CLAUDE_CONFIG_DIR = "CLAUDE_CONFIG_DIR"
+
+
 def claude_config_path() -> Path:
-    """Claude Code's own configuration. Not recall's, which is why it is touched so carefully."""
+    """Claude Code's own configuration. Not recall's, which is why it is touched so carefully.
+
+    ⛔ **This used to be `Path.home() / ".claude.json"` unconditionally**, which on a machine where
+    the user has relocated the config names a file the client never reads. Registration would write
+    it, return a populated `LocalScopeRegistration`, and report success, while nothing the client
+    loads had changed — the silent-nothing failure this whole change exists to remove, reintroduced
+    at its own default. Reported by the user-acquisition session, which hit it end to end after
+    swapping onto this function; six of their tests passed through the bug, because every one of
+    them substitutes this collaborator and so can only assert that it was called, not that it was
+    called correctly.
+
+    ⚠️ **Where `.claude.json` lands under that variable is INFERRED, not documented.** The docs say
+    it lives at `~/.claude.json`, a sibling of `~/.claude/`, and say nothing about relocation. Two
+    readings were possible; this takes the one the binary's own example implies, where the variable
+    names the directory config is written INTO. If that turns out to be wrong, the symptom is the
+    same silent one, so it is worth re-checking against a real relocated install rather than trusting
+    this note.
+    """
+    configured = os.environ.get(CLAUDE_CONFIG_DIR, "").strip()
+    if configured:
+        return Path(configured).expanduser() / ".claude.json"
     return Path.home() / ".claude.json"
 
 

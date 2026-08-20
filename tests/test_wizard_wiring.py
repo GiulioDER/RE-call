@@ -884,3 +884,61 @@ def test_the_tree_above_a_project_root_is_never_manufactured(tmp_path: Path) -> 
         )
 
     assert not (tmp_path / "nowhere").exists(), "no directory the user did not name"
+
+
+def test_the_default_config_path_follows_a_relocated_config_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⛔ Writing to a file the client does not read reports success and changes nothing.
+
+    `claude_config_path` returned `Path.home() / ".claude.json"` unconditionally. On a machine where
+    the user has set `CLAUDE_CONFIG_DIR`, that names a file the client never loads: registration
+    would write it, return a populated `LocalScopeRegistration`, and report success, while nothing
+    the client reads had changed. The exact silent-nothing failure this change exists to remove,
+    reintroduced at its own default.
+
+    ⚠️ The variable is UNDOCUMENTED — absent from `code.claude.com/docs/en/settings` and the CLI
+    reference, both checked 2026-08-20 — and real: the installed client binary contains it beside
+    its own example, "Use `CLAUDE_CONFIG_DIR=/tmp` for ephemeral local writes". Where `.claude.json`
+    lands under it is INFERRED from that example, not documented, which is why this test pins the
+    behaviour rather than leaving it to a reading.
+
+    Found by the user-acquisition session end to end, past six of their own passing tests: every one
+    substitutes this collaborator, so they can assert it was called and not that it was called
+    correctly.
+    """
+    from recall.wizard.wiring import claude_config_path
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    assert claude_config_path() == Path.home() / ".claude.json", "the usual place is unchanged"
+
+    relocated = tmp_path / "elsewhere"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(relocated))
+    assert claude_config_path() == relocated / ".claude.json"
+
+    # Whitespace only is not a relocation. Treating it as one would send the write to a path named
+    # by the empty string, which is worse than ignoring it.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "   ")
+    assert claude_config_path() == Path.home() / ".claude.json"
+
+
+def test_registration_lands_where_a_relocated_client_would_look(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The end-to-end half: no `config_path` passed, and it still reaches the right file.
+
+    This is the shape the bug actually took — a caller relying on the default — so asserting the
+    helper alone would not have caught it.
+    """
+    relocated = tmp_path / "relocated"
+    relocated.mkdir()
+    client = relocated / ".claude.json"
+    client.write_text(json.dumps({"projects": {}}), encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(relocated))
+
+    result = register_local_scope(_blocks(tmp_path), project_root=tmp_path)
+
+    assert result.recorded
+    assert result.config_path == client
+    written = _registered(client, tmp_path)
+    assert set(written) == {"default-docs", "default-code", "default-memory"}
