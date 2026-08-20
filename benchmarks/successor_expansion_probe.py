@@ -236,13 +236,13 @@ def main() -> int:
           f"{len(CALIBRATION_ANSWERABLE)} answerable / {len(CALIBRATION_UNANSWERABLE)} unanswerable")
     print(f"  supersession pairs      : {len(pairs)}")
     print(f"  stratum B (absent)      : {len(strat_b)}   stratum A (present): {len(strat_a)}")
-    print(f"  baseline recovery on B  : {_rate([r['base_recovered'] for r in strat_b])}")
+    print(f"  baseline recovery on B  : {_rate([bool(r['base_recovered']) for r in strat_b])}")
     print(f"  regression set          : {len(regressions)} authored")
     print(f"    usable                : {len(usable)}")
     print(f"    excluded, no stale doc retrieved : {len(no_stale)} "
-          f"{[r['slug'] for r in no_stale] or ''}")
+          f"{[str(r['slug']) for r in no_stale] or ''}")
     print(f"    excluded, gold not top at baseline: {len(no_gold)} "
-          f"{[r['slug'] for r in no_gold] or ''}")
+          f"{[str(r['slug']) for r in no_gold] or ''}")
 
     failed = []
     if not strat_b:
@@ -265,20 +265,20 @@ def main() -> int:
     print("RESULT")
     print("=" * 78)
     print(f"  {'arm':<16} {'recovery (stratum B)':<26} {'gold kept (regression)':<26} str_trust")
-    print(f"  {'baseline':<16} {_rate([r['base_recovered'] for r in strat_b]):<26} "
-          f"{_rate([r['base_gold_top'] for r in usable]):<26} "
-          f"{_rate([r['base_str'] for r in pairs])}")
+    print(f"  {'baseline':<16} {_rate([bool(r['base_recovered']) for r in strat_b]):<26} "
+          f"{_rate([bool(r['base_gold_top']) for r in usable]):<26} "
+          f"{_rate([bool(r['base_str']) for r in pairs])}")
     for name in ARMS:
-        print(f"  {name:<16} {_rate([r[f'{name}_recovered'] for r in strat_b]):<26} "
-              f"{_rate([r[f'{name}_gold_top'] for r in usable]):<26} "
-              f"{_rate([r[f'{name}_str'] for r in pairs])}")
+        print(f"  {name:<16} {_rate([bool(r[f'{name}_recovered']) for r in strat_b]):<26} "
+              f"{_rate([bool(r[f'{name}_gold_top']) for r in usable]):<26} "
+              f"{_rate([bool(r[f'{name}_str']) for r in pairs])}")
 
     print()
     print("  BUNDLE MEMBERSHIP: what build_evidence_bundle(EvidencePolicy()) actually delivers")
     print(f"    {'arm':<16} {'successor in bundle':<28} gold in bundle")
     for name in ARMS:
-        print(f"    {name:<16} {_rate([r[f'{name}_bundled'] for r in strat_b]):<28} "
-              f"{_rate([r[f'{name}_gold_bundled'] for r in usable])}")
+        print(f"    {name:<16} {_rate([bool(r[f'{name}_bundled']) for r in strat_b]):<28} "
+              f"{_rate([bool(r[f'{name}_gold_bundled']) for r in usable])}")
     print("    (compare against the top-1 rows above: if these are all high, the ordering is")
     print("     near-irrelevant to the consumer that ships, and top-1 was the wrong metric)")
 
@@ -287,15 +287,15 @@ def main() -> int:
     for name in ARMS:
         displaced = [r for r in usable if not r[f"{name}_gold_top"]]
         print(f"    {name:<16} {_rate([not r[f'{name}_gold_top'] for r in usable])}   "
-              f"{[r['slug'] for r in displaced] or ''}")
+              f"{[str(r['slug']) for r in displaced] or ''}")
 
     print()
     print("  stratum A recovery (must not move) and abstention accuracy (must not fall)")
-    print(f"    {'baseline':<16} A={_rate([r['base_recovered'] for r in strat_a]):<26} "
-          f"abstain={_rate([c['base'] for c in controls])}")
+    print(f"    {'baseline':<16} A={_rate([bool(r['base_recovered']) for r in strat_a]):<26} "
+          f"abstain={_rate([bool(c['base']) for c in controls])}")
     for name in ARMS:
-        print(f"    {name:<16} A={_rate([r[f'{name}_recovered'] for r in strat_a]):<26} "
-              f"abstain={_rate([c[name] for c in controls])}")
+        print(f"    {name:<16} A={_rate([bool(r[f'{name}_recovered']) for r in strat_a]):<26} "
+              f"abstain={_rate([bool(c[name]) for c in controls])}")
     return 1 if failed else 0
 
 
