@@ -104,7 +104,19 @@ class SuccessorExpansionPolicy:
     #: evidence that its successor is first best, which is what `promoted_first` asserts on every
     #: query where any retrieved document happens to carry an edge.
     #:
-    #: **Default `pool`, which is the conservative option and NOT the best measured one.**
+    #: ⚠️ **Before tuning this, check whether it can matter to you. For most callers it cannot.**
+    #: `build_evidence_bundle` ships `EvidencePolicy(max_items=5)` with prefix selection, so a
+    #: generator receives the first FIVE `ok` hits. Measured over 16 absent-successor queries and
+    #: 10 regression cases, the fetched successor reaches that bundle **1.00 under every ordering**,
+    #: and the regression gold answer stays in it **1.00 under every ordering**, including the arm
+    #: that displaces gold from rank 1 in 8 of 10 cases
+    #: (`docs/preregistrations/2026-08-20-successor-bundle-membership.md`).
+    #:
+    #: So this setting changes which document is FIRST and changes nothing about what is delivered.
+    #: It is load-bearing only for a caller reading `hits[0]` and ignoring the rest. Five
+    #: pre-registered records were spent on a top-1 metric before anybody checked that.
+    #:
+    #: **Default `pool`, which is the conservative option and NOT the best measured one at top-1.**
     #: On the 30-pair fixture (`docs/preregistrations/2026-08-20-successor-ordering-displacement.md`,
     #: 10 of 10 regression cases usable):
     #:

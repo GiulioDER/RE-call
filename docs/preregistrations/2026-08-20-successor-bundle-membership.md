@@ -81,6 +81,61 @@ eval "$(scripts/session-db.sh up)"
 python -m benchmarks.successor_expansion_probe
 ```
 
-## Result
+## Result (2026-08-20)
 
-Not yet measured.
+**Status: measured. All six predictions held exactly. The ordering is irrelevant to the consumer
+that ships, and the first two records were nulls about the wrong metric.**
+
+Apparatus unchanged and clean: 10 of 10 usable, stratum B 16, baseline recovery 0.00.
+
+| Metric | `pool` | `promoted_first` | `inherit` |
+|---|---|---|---|
+| **Successor in bundle** | **1.00 [0.81, 1.00]** | **1.00** | **1.00** |
+| Successor is top-1 | 0.25 | 0.94 | 1.00 |
+| **Gold in bundle** | **1.00 [0.72, 1.00]** | **1.00** | **1.00** |
+| Gold is top-1 | 1.00 | 0.20 | 0.90 |
+
+Predicted 0.85 to 1.00, 0.90 to 1.00, 1.00, 1.00, 0.90 to 1.00 and 1.00. Every one landed.
+
+### What this says about the previous five records
+
+**The fetch was the whole value. The ordering was noise.**
+
+Under every ordering, including the shipped `pool`, the fetched successor reaches the evidence
+bundle **every time**. `promoted_first` displaces gold from rank 1 in 8 of 10 cases and gold still
+reaches the bundle every time, because rank 2 is inside a five-item prefix. The dramatic top-1
+spreads, 0.25 against 1.00 for recovery and 1.00 against 0.20 for gold, are entirely invisible to
+`build_evidence_bundle` with its default policy.
+
+The uncomfortable consequence, stated plainly: **the first record's 0.33 and the second record's
+0.17 were nulls about a metric no default consumer reads.** Both measured whether the successor was
+the FIRST `ok` hit. Neither asked whether it was delivered. The behaviour they scored as a failure
+is `pool` ordering, which measures 1.00 bundle membership on today's fixture. I cannot retroactively
+claim a number those runs did not compute, and the fixture has changed since, so this is an
+implication rather than a re-measurement. But it is a strong one, and the direction is not in doubt.
+
+Three further records then went looking for an ordering fix to a problem that only existed at
+top-1. The mechanism work in them stands: the fetch, the promotion, the rank diagnosis and the
+characterised displacement condition are all real findings. What does not stand is the framing that
+made ordering look load-bearing.
+
+### What follows, per the decision rule fixed in advance
+
+"Every arm at or above 0.90 on both quantities: the ordering is near-irrelevant to the shipped
+consumer. **Keep `pool`**, the simplest and the only one that cannot displace, and document that
+`ordering` matters only for callers reading `hits[0]`."
+
+That is the outcome. `pool` stays the default. It is the only ordering with a sound structural
+guarantee, since appending to the end of the pool cannot reorder anything already there, and this
+run says nothing is paid for that guarantee at the bundle.
+
+`inherit` remains selectable and is the right choice for a caller that reads `hits[0]` and only
+`hits[0]`. That caller exists in principle and this measurement does not cover them.
+
+### The lesson worth keeping, since it cost five records
+
+**Check what the consumer reads before choosing what to optimise.** `EvidencePolicy.max_items = 5`
+has been in the codebase throughout. Nothing prevented reading it in the first record except that a
+top-1 metric was the obvious one to write, and once written it was never questioned. Four
+subsequent records inherited it without asking, including two that reopened the diagnosis from
+scratch.
