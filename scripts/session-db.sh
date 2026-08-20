@@ -12,13 +12,13 @@
 #
 # The container is named and labelled after the checkout it belongs to, so `down` can never
 # remove a container belonging to a different session, and `orphans` can find containers whose
-# checkout has since been deleted.
+# checkout has since been deleted or reduced to an empty directory.
 #
 # Usage:
 #   eval "$(scripts/session-db.sh up)"   # start + export RECALL_TEST_DSN into this shell
 #   scripts/session-db.sh status
 #   scripts/session-db.sh down
-#   scripts/session-db.sh orphans        # list session containers with no checkout left
+#   scripts/session-db.sh orphans        # list containers whose checkout is gone or a remnant
 #
 # `up` prints an `export` line on stdout and all human-facing text on stderr, so `eval` gets
 # exactly the assignment and nothing else.
@@ -194,34 +194,127 @@ cmd_status() {
 # because that session is gone. The checkout path is recorded on the container itself, which is
 # the only reliable way to find these after the fact.
 #
-# Two kinds are reported, because both have actually happened here:
+# Three kinds are reported, because all three have actually happened here:
 #   - containers this script started, labelled `recall.checkout`
 #   - containers `docker compose up` started from a worktree, which Compose labels with
 #     `com.docker.compose.project.working_dir`. Deleting the worktree leaves these running, and
 #     nothing else ever looks for them.
-_report_orphan() {
-    local id checkout
-    id="$1"; checkout="$2"
+#   - either of those whose directory still exists but is no longer a checkout.
+#
+# The third kind is why `[ -d ]` is not the test. Measured 2026-08-20: five containers from
+# `interesting-cannon-7e684c` sat exited for ten hours while this command printed "no orphaned
+# containers", because the worktree had been removed and its empty directory left behind. A
+# directory alone cannot be told apart from a live checkout; the presence of a `.git` entry can,
+# and it is the same test in the main checkout (where `.git` is a directory) and in a linked
+# worktree (where it is a file).
+#
+# The same measurement found 30 of 33 containers on the machine were compose stacks rather than
+# session containers, so the compose half of this command is the half that does the work.
+#
+# ⚠️ Do NOT reach for `git -C "$dir" rev-parse` as the remnant test. Git walks UPWARD, so inside
+# `<main>/.claude/worktrees/<remnant>` it finds the parent repository and answers `true` for a
+# directory that is empty. Verified against the remnant above.
+_norm_path() {
+    printf '%s' "$1" | tr '\\' '/' | tr '[:upper:]' '[:lower:]' | sed 's|/\{1,\}$||'
+}
+
+# The main checkout of this repository: the parent of the shared git directory, which resolves to
+# the same path from a linked worktree as from the main checkout itself.
+_main_checkout() {
+    local common
+    common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+    [ -n "$common" ] || return 1
+    dirname "$common"
+}
+
+# Scope matters more here than the remnant test does, and it fails in the dangerous direction.
+# `com.docker.compose.project.working_dir` matches EVERY compose container on the machine,
+# including projects that have nothing to do with recall, and an ORPHAN line reads as an
+# instruction to `docker rm -f` something. A live stack belonging to another project must never
+# earn one, so the remnant test runs only on paths this repository can vouch for: its own session
+# containers, anything under the main checkout, and the `.claude/worktrees/` convention, which
+# covers worktrees made outside the main checkout as `Documents/.claude/worktrees/` was.
+#
+# A checkout that is simply GONE is still reported whatever its path, because a directory that is
+# not there belongs to nobody.
+_is_ours() {
+    local norm main
+    [ "${2:-}" = "session" ] && return 0
+    norm="$(_norm_path "$1")"
+    case "$norm" in */.claude/worktrees/*) return 0 ;; esac
+    main="$(_main_checkout)" || return 1
+    [ -n "$main" ] || return 1
+    main="$(_norm_path "$main")"
+    [ "$norm" = "$main" ] && return 0
+    case "$norm" in "$main"/*) return 0 ;; esac
+    return 1
+}
+
+#: Windows resolves no path longer than 260 characters, and `[ -d ]` cannot distinguish "not
+#: there" from "too long to look at". Found while writing these tests: a fixture repository under a
+#: deep temp directory made every LIVE worktree report `checkout gone`, which is the dangerous
+#: direction, since an ORPHAN line invites `docker rm -f` on a checkout somebody is using. Anything
+#: near the limit is reported as unverifiable instead, and the caller is told to look itself.
+PATH_LIMIT=240
+
+# Prints why this container is an orphan, or returns 1 if it is not one. A reason beginning with
+# `unverifiable` is a question rather than a verdict, and the caller prints it differently.
+_orphan_reason() {
+    local checkout="$1" labelled="${2:-}"
     [ -z "$checkout" ] && return 1
-    [ -d "$checkout" ] && return 1
-    printf 'ORPHAN %-32s (checkout gone: %s)\n' \
-        "$(docker inspect "$id" --format '{{.Name}}' | sed 's|^/||')" "$checkout"
-    return 0
+    if [ ! -d "$checkout" ]; then
+        if [ "${#checkout}" -gt "$PATH_LIMIT" ]; then
+            printf 'unverifiable: %s characters, past what Windows can resolve' "${#checkout}"
+            return 0
+        fi
+        printf 'checkout gone'
+        return 0
+    fi
+    _is_ours "$checkout" "$labelled" || return 1
+    if [ ! -e "$checkout/.git" ]; then
+        printf 'worktree removed, directory left behind'
+        return 0
+    fi
+    return 1
+}
+
+# `{{index .Config.Labels "x"}}` prints the literal `<no value>` for a label that is not set, and
+# that string is truthy to every test below. It has to be spelled out of existence once, here.
+_field() {
+    case "$1" in '<no value>'|'<nil>') printf '' ;; *) printf '%s' "$1" ;; esac
 }
 
 cmd_orphans() {
-    local found=0 id checkout seen=""
+    local found=0 unsure=0 id record checkout compose_dir labelled reason name seen=""
     for filter in "label=${LABEL_KEY}" "label=com.docker.compose.project.working_dir"; do
         while read -r id; do
             [ -z "$id" ] && continue
             case " $seen " in *" $id "*) continue ;; esac
             seen="$seen $id"
-            checkout="$(docker inspect "$id" --format \
-                '{{with index .Config.Labels "recall.checkout"}}{{.}}{{else}}{{index .Config.Labels "com.docker.compose.project.working_dir"}}{{end}}' \
+            record="$(docker inspect "$id" --format \
+                '{{index .Config.Labels "recall.checkout"}}|{{index .Config.Labels "com.docker.compose.project.working_dir"}}|{{.Name}}' \
                 2>/dev/null || true)"
-            if _report_orphan "$id" "$checkout"; then
-                found=1
+            [ -z "$record" ] && continue
+            checkout="$(_field "${record%%|*}")"
+            compose_dir="$(_field "$(printf '%s' "$record" | cut -d'|' -f2)")"
+            name="$(printf '%s' "$record" | cut -d'|' -f3- | sed 's|^/||')"
+            if [ -n "$checkout" ]; then
+                labelled=session
+            else
+                labelled=compose
+                checkout="$compose_dir"
             fi
+            reason="$(_orphan_reason "$checkout" "$labelled")" || continue
+            case "$reason" in
+                unverifiable*)
+                    printf 'CHECK  %-40s (%s: %s)\n' "${name:-$id}" "$reason" "$checkout"
+                    unsure=1
+                    ;;
+                *)
+                    printf 'ORPHAN %-40s (%s: %s)\n' "${name:-$id}" "$reason" "$checkout"
+                    found=1
+                    ;;
+            esac
         done < <(docker ps -aq --filter "$filter")
     done
     if [ "$found" -eq 0 ]; then
@@ -229,6 +322,11 @@ cmd_orphans() {
     else
         echo
         echo "Remove them with: docker rm -f <name>"
+        echo "A compose stack is five containers; the whole project goes at once with:"
+        echo "  docker rm -f \$(docker ps -aq --filter label=com.docker.compose.project=<project>)"
+    fi
+    if [ "$unsure" -ne 0 ]; then
+        echo "session-db: a CHECK line is not a verdict. Look at the path yourself before removing."
     fi
 }
 
@@ -247,7 +345,8 @@ usage: scripts/session-db.sh {up|down|status|orphans}
   up       start (or reuse) this checkout's container; prints an export line for `eval`
   down     remove this checkout's container; never touches another session's
   status   show whether this checkout's container is running
-  orphans  list session containers whose checkout has been deleted
+  orphans  list session AND compose containers whose checkout is gone, or whose
+           directory survives without a .git entry (a removed worktree's remnant)
   id       print this checkout's session id (used by session-close.sh)
 
 Typical use:
