@@ -21,8 +21,8 @@ such a fixture reads exactly like good news.
 ⚠️ `-m`, from the worktree root, NOT `python benchmarks/successor_expansion_probe.py`. Run as a
 script, Python puts the SCRIPT's directory on `sys.path[0]`, so `benchmarks/` goes on the path and
 the worktree root does not. `import recall` then falls through to whatever is installed, which on
-this machine is the MAIN CHECKOUT: the first run of this probe imported
-`C:/Users/gde00/Documents/recall/recall/retriever.py` and died on a symbol that exists only here.
+a developer machine that is the MAIN CHECKOUT: the first run of this probe imported the main
+checkout's `recall/retriever.py` and died on a symbol that exists only on the branch under test.
 That failure was loud. The dangerous version is silent, a benchmark that runs happily and scores
 the main checkout while reporting a number against your branch. The guard below the imports turns
 the silent case back into a loud one.
