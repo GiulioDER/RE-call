@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import importlib
+from dataclasses import replace
 from pathlib import Path
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from recall.desktop.models import RuntimeProfile, SourceCategory, SourceSelection
-from recall.desktop.profiles import load_pipelines, save_pipelines
+from recall.desktop.models import RuntimeMode, RuntimeProfile, SourceCategory, SourceSelection
+from recall.desktop.profiles import load_pipelines, save_pipelines, save_profile
 from recall.desktop.runtime import (
     _CORPUS_SUFFIXES,
     DockerRuntime,
@@ -27,6 +28,7 @@ from recall.desktop.sources import (
     display_type,
 )
 from recall.desktop.github import GithubImport, download_repository
+from recall.wizard.database import probe_database
 
 
 _qt_widgets: Any = None
@@ -285,10 +287,36 @@ if QApplication is not None:
             self.signals = _WorkerSignals()
 
         def run(self) -> None:
+            """Run the job and report it, without ever raising out of the pool.
+
+            ⚠️ **The emit itself can fail, and it does so at shutdown.** Since `closeEvent` stopped
+            waiting for the pool, a worker outlives the window: it finishes, Qt has already deleted
+            the signal source, and `emit` raises `RuntimeError: Signal source has been deleted`.
+            The old shape then tried to report that on `failed`, which raised the same way from
+            inside the handler, and PySide printed
+            `Error calling Python override of QRunnable::run()` with a traceback — indistinguishable
+            from a crash, at the exact moment the user is closing the app. Observed live, not
+            theorised.
+
+            Also separates the JOB failing from the REPORT failing. The old form wrapped both in one
+            `try`, so anything that went wrong while emitting `done` was reported to the user as the
+            job having failed.
+            """
             try:
-                self.signals.done.emit(self.fn())
-            except Exception as exc:  # noqa: BLE001
-                self.signals.failed.emit(str(exc))
+                result = self.fn()
+            except Exception as exc:  # noqa: BLE001 - a worker must never raise into the pool.
+                self._emit(self.signals.failed, str(exc))
+                return
+            self._emit(self.signals.done, result)
+
+        @staticmethod
+        def _emit(signal: Any, payload: Any) -> None:
+            try:
+                signal.emit(payload)
+            except RuntimeError:
+                # The window closed and Qt deleted the signal source before this finished. Nothing
+                # is listening any more, so there is nowhere to report and nothing to report to.
+                pass
 
 
     class MainWindow(QMainWindow):
@@ -1051,6 +1079,8 @@ if QApplication is not None:
             update_layout.addLayout(update_info, 1)
             layout.addWidget(updates)
 
+            layout.addWidget(self._build_database_group())
+
             info = QGroupBox("Runtime information")
             info.setObjectName("watermarkGroup")
             info_layout = QHBoxLayout(info)
@@ -1077,6 +1107,172 @@ if QApplication is not None:
             layout.addStretch()
             self._add_page_watermark(page)
             return page
+
+        #: Display text for each runtime, in the order the settings page offers them. The stored
+        #: value is the enum; this is only what a person reads.
+        _MODE_LABELS = {
+            RuntimeMode.DOCKER: "Managed Docker stack (RE-call installs and runs PostgreSQL)",
+            RuntimeMode.LOCAL_DATABASE: "A PostgreSQL I already run (no Docker)",
+            RuntimeMode.VPS_MCP: "A remote RE-call server (MCP endpoint)",
+        }
+
+        def _build_database_group(self) -> QWidget:
+            """Where the install options that already existed become selectable.
+
+            The engine has always accepted a database somebody else runs — `HeadlessConfig` takes
+            `dsn` as the alternative to `data_root`, and with it set no compose file is written at
+            all. Nothing in this window could say so, so Docker was the only reachable choice.
+            """
+            box = QGroupBox("Database")
+            box.setObjectName("watermarkGroup")
+            outer = QVBoxLayout(box)
+            form = QFormLayout()
+
+            self.mode_combo = QComboBox()
+            for mode, label in self._MODE_LABELS.items():
+                self.mode_combo.addItem(label, mode)
+            current = self.mode_combo.findData(self.profile.mode)
+            if current >= 0:
+                self.mode_combo.setCurrentIndex(current)
+            self.mode_combo.currentIndexChanged.connect(self._database_mode_changed)
+            form.addRow("Runtime", self.mode_combo)
+
+            self.dsn_edit = QLineEdit(self.profile.dsn or "")
+            self.dsn_edit.setPlaceholderText("postgresql://user:password@127.0.0.1:5432/recall")
+            form.addRow("Connection", self.dsn_edit)
+            outer.addLayout(form)
+
+            actions = QHBoxLayout()
+            self.test_database_button = QPushButton("Test connection")
+            self.test_database_button.clicked.connect(self._test_database)
+            self.save_database_button = QPushButton("Save")
+            self.save_database_button.clicked.connect(self._save_database)
+            actions.addWidget(self.test_database_button)
+            actions.addWidget(self.save_database_button)
+            actions.addStretch()
+            outer.addLayout(actions)
+
+            self.database_status = QLabel(
+                "Not tested. `Test connection` checks the server, the pgvector extension, "
+                "permission to create tables, and whether an existing index matches this embedder."
+            )
+            self.database_status.setObjectName("mutedLabel")
+            self.database_status.setWordWrap(True)
+            outer.addWidget(self.database_status)
+
+            self._database_mode_changed()
+            return box
+
+        def _selected_mode(self) -> RuntimeMode:
+            """The chosen runtime, as the ENUM rather than whatever Qt handed back.
+
+            ⛔ **Qt stores a `StrEnum` as a plain `str`.** Measured: `addItem(label,
+            RuntimeMode.DOCKER)` then `itemData(0)` returns `'docker'`, type `str`. So
+            `currentData() is RuntimeMode.DOCKER` is permanently False while
+            `currentData() == RuntimeMode.DOCKER` is True, and identity is the comparison this file
+            uses everywhere else for enums.
+
+            Three call sites read that as "not the local-database mode", so the connection field
+            never enabled, the test button never enabled, and Save took the branch that stores no
+            DSN. Every one of them looked right. Converting once here means the rest of the class
+            can keep comparing with `is`, which is what the reader expects.
+            """
+            return RuntimeMode(self.mode_combo.currentData())
+
+        def _database_mode_changed(self) -> None:
+            """Only one runtime takes a connection string, so only that one offers the field."""
+            mode = self._selected_mode()
+            needs_dsn = mode is RuntimeMode.LOCAL_DATABASE
+            self.dsn_edit.setEnabled(needs_dsn)
+            self.test_database_button.setEnabled(needs_dsn)
+            if not needs_dsn:
+                self.database_status.setText(
+                    f"{self._MODE_LABELS[mode]} does not use a connection string."
+                )
+
+        def _database_settings(self) -> tuple[RuntimeMode, str] | None:
+            """The chosen mode and a non-empty DSN, or None after reporting why not."""
+            mode = self._selected_mode()
+            dsn = self.dsn_edit.text().strip()
+            if mode is RuntimeMode.LOCAL_DATABASE and not dsn:
+                self.database_status.setText("Enter a connection string first.")
+                return None
+            return mode, dsn
+
+        def _test_database(self) -> None:
+            settings = self._database_settings()
+            if settings is None:
+                return
+            _mode, dsn = settings
+            self.test_database_button.setEnabled(False)
+            self.database_status.setText("Testing...")
+            # ⚠️ On the pool, never inline. `probe_database` opens a network connection, and a
+            # database that is merely unreachable takes its whole timeout to say so — on the GUI
+            # thread that is the window freezing with no way to tell it apart from a crash.
+            self._run(
+                lambda: probe_database(dsn),
+                self._database_tested,
+                self._database_test_failed,
+            )
+
+        def _database_tested(self, report: Any) -> None:
+            self.test_database_button.setEnabled(True)
+            self.database_status.setText(report.render())
+
+        def _database_test_failed(self, message: str) -> None:
+            self.test_database_button.setEnabled(True)
+            # ⚠️ Redacted. A DSN carries a password, and this label is on screen, in screenshots,
+            # and in whatever a user pastes into an issue.
+            self.database_status.setText(f"Could not test the connection: {message}")
+
+        def _save_database(self) -> None:
+            settings = self._database_settings()
+            if settings is None:
+                return
+            mode, dsn = settings
+            self.save_database_button.setEnabled(False)
+            if mode is not RuntimeMode.LOCAL_DATABASE:
+                self._persist_profile(mode, None)
+                return
+            self.database_status.setText("Checking the database before saving...")
+            # Tested before it is written, deliberately. A profile that names a database nothing can
+            # serve from is the silent-nothing failure with an extra step: the app restarts, the
+            # runtime fails, and the setting that caused it looks like the one the user chose.
+            self._run(
+                lambda: probe_database(dsn),
+                lambda report: self._save_checked(report, mode, dsn),
+                self._database_save_failed,
+            )
+
+        def _save_checked(self, report: Any, mode: RuntimeMode, dsn: str) -> None:
+            if not report.usable:
+                self.save_database_button.setEnabled(True)
+                self.database_status.setText(
+                    "Not saved, because this database cannot serve RE-call yet.\n" + report.render()
+                )
+                return
+            self._persist_profile(mode, dsn)
+
+        def _persist_profile(self, mode: RuntimeMode, dsn: str | None) -> None:
+            try:
+                updated = replace(self.profile, mode=mode, dsn=dsn)
+                save_profile(updated)
+            except (OSError, ValueError) as exc:
+                self.save_database_button.setEnabled(True)
+                self.database_status.setText(f"Could not save: {exc}")
+                return
+            self.profile = updated
+            self.save_database_button.setEnabled(True)
+            # ⚠️ Says RESTART, because this window built its runtime at startup and does not rebuild
+            # it. Reporting "saved" alone would leave the user watching the old runtime and
+            # concluding the setting did nothing.
+            self.database_status.setText(
+                f"Saved. {self._MODE_LABELS[mode]}.\nRestart RE-call for it to take effect."
+            )
+
+        def _database_save_failed(self, message: str) -> None:
+            self.save_database_button.setEnabled(True)
+            self.database_status.setText(f"Could not save: {message}")
 
         def _save_api_keys(self) -> None:
             self._api_keys = {

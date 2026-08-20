@@ -4,6 +4,7 @@ import base64
 import os
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1326,3 +1327,200 @@ def test_an_untargeted_call_reaches_the_default_projects_server() -> None:
     assert calls == [("recall_tenants", {"tenant": "myproject"})], (
         "the call must be routed to the default project's server, not to a gateway that is None"
     )
+
+
+# ----------------------------------------------------------------------------------------------
+# The settings page: choosing a database
+# ----------------------------------------------------------------------------------------------
+
+
+def _settings_window(monkeypatch: pytest.MonkeyPatch, profile: RuntimeProfile) -> Any:
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+
+    QApplication.instance() or QApplication([])
+    return MainWindow(profile, runtime=DockerRuntime(profile))
+
+
+def test_the_settings_page_offers_every_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mode the engine supports and the window does not offer is a mode nobody can choose.
+
+    This is the whole point of the page: `HeadlessConfig` has always taken a `dsn` as the
+    alternative to `data_root`, and until now no surface could say so.
+    """
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    )
+    try:
+        # ⚠️ Converted back through `RuntimeMode`, because Qt stores a StrEnum as a plain `str`
+        # and a set of strings never equals a set of enum members.
+        offered = {
+            RuntimeMode(window.mode_combo.itemData(i)) for i in range(window.mode_combo.count())
+        }
+        assert offered == set(RuntimeMode), (
+            f"the settings page offers {offered}, the engine supports {set(RuntimeMode)}"
+        )
+        assert window._selected_mode() is RuntimeMode.DOCKER, "it must open on the real mode"
+    finally:
+        window.close()
+
+
+def test_the_connection_field_is_offered_only_where_it_means_something(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DSN box beside "managed Docker stack" invites a value that would be silently ignored."""
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    )
+    try:
+        assert window.dsn_edit.isEnabled() is False
+
+        window.mode_combo.setCurrentIndex(window.mode_combo.findData(RuntimeMode.LOCAL_DATABASE))
+        assert window.dsn_edit.isEnabled() is True
+        assert window.test_database_button.isEnabled() is True
+
+        window.mode_combo.setCurrentIndex(window.mode_combo.findData(RuntimeMode.VPS_MCP))
+        assert window.dsn_edit.isEnabled() is False
+    finally:
+        window.close()
+
+
+def test_testing_a_connection_never_runs_on_the_gui_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ `probe_database` opens a network connection.
+
+    An unreachable host takes its whole timeout to say so, and on the GUI thread that is the window
+    frozen with nothing to distinguish it from a crash. The same reasoning, and the same defect,
+    as provisioning.
+    """
+    window = _settings_window(
+        monkeypatch,
+        RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@127.0.0.1:1/r"),
+    )
+    try:
+        def _never(*args: object, **kwargs: object) -> object:
+            raise AssertionError("probe_database ran on the GUI thread; it must go through the pool")
+
+        monkeypatch.setattr("recall.desktop.ui.probe_database", _never)
+        dispatched: list[tuple[object, ...]] = []
+        window._run = lambda fn, done, failed=None: dispatched.append((fn, done, failed))  # type: ignore[method-assign]
+
+        window._test_database()
+
+        assert dispatched, "the probe must be handed to the worker pool"
+        assert window.test_database_button.isEnabled() is False, "and the button disabled meanwhile"
+    finally:
+        window.close()
+
+
+def test_an_empty_connection_string_is_refused_before_any_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cheapest possible check, and it must not reach the pool at all."""
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@h/r")
+    )
+    try:
+        window.dsn_edit.setText("   ")
+        dispatched: list[object] = []
+        window._run = lambda fn, done, failed=None: dispatched.append(fn)  # type: ignore[method-assign]
+
+        window._test_database()
+
+        assert dispatched == [], "nothing should have been dispatched"
+        assert "Enter a connection string" in window.database_status.text()
+    finally:
+        window.close()
+
+
+def test_a_database_that_cannot_serve_is_not_saved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⛔ Saving an unusable database is the silent-nothing failure with an extra step.
+
+    The app restarts, the runtime fails, and the setting that caused it looks like the one the user
+    deliberately chose. So the probe runs BEFORE the write, and a blocked report is reported rather
+    than persisted.
+    """
+    from recall.wizard.database import DatabaseReport, Finding
+
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@h/r")
+    )
+    try:
+        saved: list[object] = []
+        monkeypatch.setattr("recall.desktop.ui.save_profile", lambda profile: saved.append(profile))
+        report = DatabaseReport(
+            dsn="postgresql://u:p@h/r",
+            findings=(
+                Finding(
+                    name="pgvector",
+                    ok=False,
+                    detail="the vector extension is not installed",
+                    blocking=True,
+                    advice="run CREATE EXTENSION vector",
+                ),
+            ),
+        )
+
+        window._save_checked(report, RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@h/r")
+
+        assert saved == [], "an unusable database must not be written to the profile"
+        assert "Not saved" in window.database_status.text()
+        assert "CREATE EXTENSION vector" in window.database_status.text(), (
+            "the advice is the actionable half and must survive into the status"
+        )
+    finally:
+        window.close()
+
+
+def test_a_saved_profile_says_a_restart_is_needed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The window built its runtime at startup and does not rebuild it.
+
+    Reporting "saved" alone would leave the user watching the old runtime and concluding the
+    setting did nothing.
+    """
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@h/r")
+    )
+    try:
+        saved: list[Any] = []
+        monkeypatch.setattr("recall.desktop.ui.save_profile", lambda profile: saved.append(profile))
+
+        window._persist_profile(RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@newhost/r")
+
+        assert len(saved) == 1
+        assert saved[0].dsn == "postgresql://u:p@newhost/r"
+        assert saved[0].mode is RuntimeMode.LOCAL_DATABASE
+        assert window.profile.dsn == "postgresql://u:p@newhost/r", "the window must hold the new one"
+        assert "Restart" in window.database_status.text()
+    finally:
+        window.close()
+
+
+def test_a_profile_that_cannot_be_written_is_reported_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read-only config directory must not leave the window claiming it saved."""
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@h/r")
+    )
+    try:
+        def _boom(profile: object) -> None:
+            raise OSError(13, "Permission denied")
+
+        monkeypatch.setattr("recall.desktop.ui.save_profile", _boom)
+
+        window._persist_profile(RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@newhost/r")
+
+        assert "Could not save" in window.database_status.text()
+        assert window.profile.dsn == "postgresql://u:p@h/r", "the window must keep the old profile"
+        assert window.save_database_button.isEnabled() is True, "and offer another attempt"
+    finally:
+        window.close()
