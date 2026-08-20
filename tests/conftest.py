@@ -328,18 +328,41 @@ def unprivileged_dsn() -> str:
     return dsn
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _bootstrap_default_test_schema() -> Iterator[None]:
-    """Provision the default MCP table explicitly for subprocess/server integration tests."""
-    if not _db_available():
-        yield
-        return
+def restore_default_chunks_table() -> None:
+    """Put the shared `chunks` table back exactly as the session bootstrap leaves it.
+
+    ⚠️ **Any test that replaces `chunks` MUST call this afterwards.** This file already documents
+    the same lesson thirty lines below, for the CLI tests, and it was reintroduced anyway. `chunks`
+    is SHARED: the session fixture creates it once at dim 64 and a dozen integration tests assume
+    it. A test that drops it to build its own leaves everything that runs later failing with
+    `relation "chunks" does not exist` — and only when the random order puts it first, so it passes
+    locally, passes on a re-run, and fails in CI.
+
+    Measured: `tests/test_wizard_database.py` did exactly that and took three
+    `tests/test_wizard_pipeline.py` tests down with it.
+
+    **Prefer a uuid-named table wherever the code under test allows it** — see `cli_table`. This
+    exists for the case that cannot: `wizard.database.probe_database` inspects `chunks` by name, so
+    a test of the dimension check has to use that name and put it back.
+
+    Clearing the ledger row matters as much as the drop: `apply_migrations` is idempotent by
+    consulting it, so re-applying over a stale row would skip the work and leave no table at all.
+    """
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute("DROP TABLE IF EXISTS chunks CASCADE")
         ledger = conn.execute("SELECT to_regclass(%s)", (LEDGER_TABLE,)).fetchone()
         if ledger is not None and ledger[0]:
             conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = 'chunks'")
     apply_migrations(TEST_DSN, table="chunks", dim=64)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _bootstrap_default_test_schema() -> Iterator[None]:
+    """Provision the default MCP table explicitly for subprocess/server integration tests."""
+    if not _db_available():
+        yield
+        return
+    restore_default_chunks_table()
     yield
 
 
@@ -603,8 +626,26 @@ def _confine_claude_client_config(tmp_path_factory, monkeypatch) -> None:
 
     `Path.home` rather than the HOME variable, because that is what the writer calls and because
     `Path.home()` on Windows reads USERPROFILE, so patching one environment name would miss it.
+
+    ⚠️ **The environment is redirected AS WELL, and that is not redundancy.** A patched `Path.home`
+    lives in this process and does not survive into a subprocess: anything that shells out resolves
+    the real home itself and writes to the developer's own config. That is not hypothetical — a peer
+    session hit exactly it, and the way it happened is the part worth keeping. Their test was safe
+    when written, because it exercised a faked CLI arm that wrote no file; a later change flipped
+    the primary path, the test stopped taking that branch, fell through to a direct writer, and
+    started leaking. **The test did not change. The code beneath it changed branches**, which is
+    invisible in a diff and which no per-test opt-in can cover, because the opt-in was a decision
+    made against the code as it was.
+
+    Nothing under `recall/wizard/` spawns a process today, so the `Path.home` patch alone is
+    currently sufficient. That is a property of the implementation, not of this guard, and it is
+    exactly the kind of property that stops being true without anyone noticing. Both names are set
+    because `Path.home()` reads USERPROFILE on Windows and HOME elsewhere, and a subprocess may
+    consult either.
     """
     from pathlib import Path as _Path
 
     home = tmp_path_factory.mktemp("fake-home")
     monkeypatch.setattr(_Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))

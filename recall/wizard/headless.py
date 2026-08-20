@@ -49,7 +49,7 @@ from urllib.parse import urlsplit
 from recall.calibration_v2 import CalibrationRepository
 from recall.embeddings import Embedder, resolve_embedder
 from recall.generations import GenerationManager
-from recall.store import redacted_dsn
+from recall.store import redacted_dsn, scrub_dsn_secrets
 from recall.wizard.corpora import (
     DEFAULT_PROJECT,
     RELATIVE_ROOT,
@@ -587,7 +587,7 @@ class _RealServices:
                 abstained=True,
                 trust_state="unknown",
                 failure_code=None,
-                error=_scrub(f"{type(exc).__name__}: {exc}", self.config.resolved_dsn),
+                error=scrub_dsn_secrets(f"{type(exc).__name__}: {exc}", self.config.resolved_dsn),
             )
 
         if not row or not str(row[0]).strip():
@@ -638,7 +638,7 @@ class _RealServices:
                 abstained=True,
                 trust_state="unknown",
                 failure_code=None,
-                error=_scrub(f"{type(exc).__name__}: {exc}", self.config.resolved_dsn),
+                error=scrub_dsn_secrets(f"{type(exc).__name__}: {exc}", self.config.resolved_dsn),
             )
 
         return SmokeResult(
@@ -675,22 +675,6 @@ def _database_identity(dsn: str) -> tuple[str, int | None, str]:
     """Host, port and database name — what decides whether two DSNs reach the same database."""
     parts = urlsplit(dsn)
     return (parts.hostname or "", parts.port, parts.path)
-
-
-def _scrub(text: str, *dsns: str) -> str:
-    """Remove any of these DSNs' passwords from `text`.
-
-    `redacted_dsn` is not enough on its own, and assuming it was left the leak open. The password
-    can be inside the EXCEPTION rather than inside a DSN we format: measured, a password containing
-    `%` produced `psycopg.ProgrammingError: invalid percent-encoded token: "S3cr%tPw"`, so wrapping
-    the error with a redacted DSN beside it still printed the secret verbatim. Anything derived
-    from a connection attempt goes through here.
-    """
-    for dsn in dsns:
-        password = urlsplit(dsn).password
-        if password:
-            text = text.replace(password, "***")
-    return text
 
 
 def load_config(path: str | Path) -> HeadlessConfig:
@@ -896,7 +880,7 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
         raise
     except Exception as exc:
         raise ConfigRefusal(
-            _scrub(
+            scrub_dsn_secrets(
                 f"cannot prepare the schema at {redacted_dsn(config.resolved_migration_dsn)} for embedder "
                 f"{config.embedder!r} (vector width {dim}): {type(exc).__name__}: {exc}",
                 config.resolved_migration_dsn,
@@ -912,7 +896,7 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
             raise
         except Exception as exc:
             raise ConfigRefusal(
-                _scrub(
+                scrub_dsn_secrets(
                     f"cannot grant the serving role {config.serving_role!r} at "
                     f"{redacted_dsn(config.resolved_migration_dsn)}: {type(exc).__name__}: {exc}",
                     config.resolved_migration_dsn,
@@ -1140,7 +1124,7 @@ def run_headless(
             # Reported, not raised. The remaining corpora are independent and a user with one
             # working corpus is better off than a user with a traceback.
             refused.append(
-                Refusal(tenant=spec.tenant, reason=_scrub(str(exc), config.resolved_dsn, config.resolved_migration_dsn))
+                Refusal(tenant=spec.tenant, reason=scrub_dsn_secrets(str(exc), config.resolved_dsn, config.resolved_migration_dsn))
             )
         except Exception as exc:  # noqa: BLE001 - see below
             # Everything else, for the same reason and one more: `promote` is irreversible and
@@ -1153,7 +1137,7 @@ def run_headless(
             failures.append(
                 Failure(
                     tenant=spec.tenant,
-                    error=_scrub(
+                    error=scrub_dsn_secrets(
                         f"{type(exc).__name__}: {exc}", config.resolved_dsn, config.resolved_migration_dsn
                     ),
                 )
@@ -1182,14 +1166,14 @@ def run_headless(
             refused.append(
                 Refusal(
                     tenant=spec.tenant,
-                    reason=_scrub(str(exc), config.resolved_dsn, config.resolved_migration_dsn),
+                    reason=scrub_dsn_secrets(str(exc), config.resolved_dsn, config.resolved_migration_dsn),
                 )
             )
         except Exception as exc:  # noqa: BLE001 - same reasoning as the calibrated loop above
             failures.append(
                 Failure(
                     tenant=spec.tenant,
-                    error=_scrub(
+                    error=scrub_dsn_secrets(
                         f"{type(exc).__name__}: {exc}", config.resolved_dsn, config.resolved_migration_dsn
                     ),
                 )
@@ -1337,7 +1321,7 @@ def run_headless(
                         abstained=True,
                         trust_state="unknown",
                         failure_code=None,
-                        error=_scrub(
+                        error=scrub_dsn_secrets(
                             f"{type(exc).__name__}: {exc}", config.resolved_dsn, config.resolved_migration_dsn
                         ),
                     )

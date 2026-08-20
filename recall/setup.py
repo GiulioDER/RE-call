@@ -17,6 +17,7 @@ from recall.claude_code import claude_code_detected, install_hooks, register_mcp
 from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 from recall.seed import plan_seed, seed_corpus
+from recall.store import scrub_dsn_secrets
 
 SETUP_BEGIN = "# recall setup begin"
 SETUP_END = "# recall setup end"
@@ -381,7 +382,8 @@ def _prepare_schema_for_embedder(
             raise SystemExit(
                 "The wizard could not prepare the schema automatically. Pass --migration-dsn if "
                 "the serving DSN is read only, and verify that the chosen role can create tables "
-                f"and indexes. Original error: {type(exc).__name__}: {exc}"
+                f"and indexes. Original error: "
+                f"{scrub_dsn_secrets(f'{type(exc).__name__}: {exc}', ddl_dsn)}"
             ) from exc
         if applied:
             print_fn(f"Prepared {target_table!r} for {embedder.dim} dimensions.")
@@ -426,7 +428,8 @@ def _prepare_schema_for_embedder(
             raise SystemExit(
                 "The wizard could not rebuild the default schema automatically. Verify that the "
                 "chosen role can drop and create the RE-call tables, or pass --migration-dsn with "
-                f"the owner role. Original error: {type(exc).__name__}: {exc}"
+                f"the owner role. Original error: "
+                f"{scrub_dsn_secrets(f'{type(exc).__name__}: {exc}', ddl_dsn)}"
             ) from exc
         if applied:
             print_fn(f"Prepared {target_table!r} for {embedder.dim} dimensions.")
@@ -459,7 +462,8 @@ def _prepare_schema_for_embedder(
         raise SystemExit(
             "The wizard could not rebuild the selected table automatically. Verify that the "
             "chosen role can drop and create the RE-call table, or pass --migration-dsn with the "
-            f"owner role. Original error: {type(exc).__name__}: {exc}"
+            f"owner role. Original error: "
+            f"{scrub_dsn_secrets(f'{type(exc).__name__}: {exc}', ddl_dsn)}"
         ) from exc
     if applied:
         print_fn(f"Prepared {target_table!r} for {embedder.dim} dimensions.")

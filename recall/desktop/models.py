@@ -11,6 +11,10 @@ from typing import Any
 class RuntimeMode(StrEnum):
     VPS_MCP = "vps_mcp"
     DOCKER = "docker"
+    #: A PostgreSQL the user already runs, with no container anywhere. The MCP servers are ordinary
+    #: local processes pointed at that database, which is what the wizard already registers for
+    #: Claude Code — the desktop simply had no way to say it.
+    LOCAL_DATABASE = "local_database"
 
 
 class SourceCategory(StrEnum):
@@ -25,6 +29,10 @@ class RuntimeProfile:
     endpoint: str | None = None
     compose_file: str | None = None
     compose_project: str | None = None
+    #: The database for `LOCAL_DATABASE`. Held here rather than read from the environment so the
+    #: UI shows what it will actually connect to, and so two profiles on one machine cannot end up
+    #: fighting over one `RECALL_DSN`.
+    dsn: str | None = None
     default_tenant: str = "default"
     shared_profile: str = "user"
     pinned_version: str | None = None
@@ -37,6 +45,8 @@ class RuntimeProfile:
             raise ValueError("a VPS MCP profile needs an endpoint")
         if self.mode is RuntimeMode.DOCKER and not self.compose_file:
             raise ValueError("a Docker profile needs a compose file")
+        if self.mode is RuntimeMode.LOCAL_DATABASE and not self.dsn:
+            raise ValueError("a local database profile needs a dsn")
         if not self.default_tenant.strip():
             raise ValueError("default_tenant must be non empty")
 
@@ -53,6 +63,7 @@ class RuntimeProfile:
             endpoint=value.get("endpoint"),
             compose_file=value.get("compose_file"),
             compose_project=value.get("compose_project"),
+            dsn=value.get("dsn"),
             default_tenant=str(value.get("default_tenant", "default")),
             shared_profile=str(value.get("shared_profile", "user")),
             pinned_version=value.get("pinned_version"),

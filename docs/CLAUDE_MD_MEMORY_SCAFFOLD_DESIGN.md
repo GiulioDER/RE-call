@@ -55,7 +55,7 @@ files are created or modified, no indexing happens.
 ### CLAUDE.md handling
 
 Reuses the `.env` block pattern (`SETUP_BEGIN`/`SETUP_END`, `_update_env_block` in
-`recall/setup.py:957-973`) but adapted to Markdown, since HTML comments are inert in
+`recall/setup.py:961-977`) but adapted to Markdown, since HTML comments are inert in
 rendered Markdown and won't corrupt the file's structure:
 
 ```
@@ -111,7 +111,7 @@ reusable as a template instead of one-off prose.
 ### Auto-index
 
 After scaffolding, the wizard indexes `memory/` into the DB immediately, using the
-same `Indexer`/`PgVectorStore` path `recall index` uses (`recall/cli.py:2218-2233`),
+same `Indexer`/`PgVectorStore` path `recall index` uses (`recall/cli.py:2270-2285`),
 so `recall_search` can find the new memory files without the user needing to run
 `recall index` by hand first.
 

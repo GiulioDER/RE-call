@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import os
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1070,3 +1072,492 @@ def test_saving_the_pipeline_configuration_actually_persists_it(
         # compares existence and mtime before and after, so it fires on a change made by this
         # test, never on a machine that merely has a profile.
         assert now == state, f"a test must never write the user's real profile at {path}"
+
+
+def test_closing_the_window_never_waits_on_a_long_running_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ `waitForDone()` with no argument waits FOREVER, and the window used to call it that way.
+
+    A provisioning worker sits inside `docker compose up`, whose timeout is 1800 seconds. So
+    closing the window during a first install froze the entire application for up to half an hour,
+    unresponsive and silent — the state Windows offers to kill for you, and killing it mid-provision
+    is how a stack ends up half-created.
+
+    It surfaced as FLAKINESS rather than a failure:
+    `test_provisioning_is_dispatched_to_the_pool_not_the_gui_thread` hung only when Docker was busy
+    enough to make the wait exceed the test timeout. It passed on a quiet machine and hung on a
+    loaded one, which is why it survived several green full-suite runs.
+
+    Asserted two ways, because either alone is weak. The elapsed bound is the property that matters
+    but is a timing assertion; the structural check is that a bound was passed AT ALL, which is what
+    actually regressed and cannot pass by luck.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(profile, runtime=DockerRuntime(profile))
+
+    waits: list[object] = []
+    real_wait = window.pool.waitForDone
+
+    def _record(*args: object) -> bool:
+        waits.append(args[0] if args else None)
+        return bool(real_wait(*args))
+
+    monkeypatch.setattr(window.pool, "waitForDone", _record)
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def _long_job() -> str:
+        started.set()
+        # Stands in for `docker compose up`. Released in `finally` so a failing assertion cannot
+        # leave a thread parked in the pool for the rest of the session.
+        release.wait(timeout=60)
+        return "done"
+
+    try:
+        window._run(_long_job, lambda _result: None)
+        assert started.wait(timeout=10), "the worker never started, so this proves nothing"
+
+        began = time.monotonic()
+        window.close()
+        elapsed = time.monotonic() - began
+
+        assert waits, "closeEvent must call waitForDone"
+        assert waits[0] is not None, (
+            "waitForDone was called with NO argument, which waits forever; that is the defect"
+        )
+        assert isinstance(waits[0], int) and 0 < waits[0] <= 10_000, (
+            f"the close wait must be bounded and short, got {waits[0]!r}"
+        )
+        assert elapsed < 30, (
+            f"closing took {elapsed:.1f}s with a job still running; it must not wait for the job"
+        )
+    finally:
+        release.set()
+        window.pool.waitForDone(30_000)
+        app.processEvents()
+
+
+# ----------------------------------------------------------------------------------------------
+# The third runtime: a PostgreSQL the user already runs, with no container anywhere
+# ----------------------------------------------------------------------------------------------
+
+
+def test_a_local_database_profile_needs_a_dsn() -> None:
+    """Each mode's required field is checked at construction, where the answer is still cheap."""
+    with pytest.raises(ValueError, match="dsn"):
+        RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE)
+
+    profile = RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@127.0.0.1:5432/r")
+    assert profile.dsn == "postgresql://u:p@127.0.0.1:5432/r"
+
+
+def test_the_dsn_survives_a_profile_round_trip(tmp_path: Path) -> None:
+    """A field that saves but does not load is a setting the user re-enters every launch."""
+    original = RuntimeProfile(
+        mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@127.0.0.1:5432/r"
+    )
+
+    restored = RuntimeProfile.from_dict(original.to_dict())
+
+    assert restored == original
+
+
+def test_each_mode_selects_its_own_runtime() -> None:
+    """⚠️ Compared against the ENUM, not the string it used to compare against.
+
+    The old form fell through to `DockerRuntime` for anything it did not recognise, so a mode added
+    to `RuntimeMode` and forgotten here became a Docker runtime with no compose file — a confusing
+    failure some distance from its cause.
+    """
+    from recall.desktop.runtime import LocalDatabaseRuntime, VpsMcpRuntime, create_runtime
+
+    docker = create_runtime(
+        RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    )
+    vps = create_runtime(
+        RuntimeProfile(mode=RuntimeMode.VPS_MCP, endpoint="https://example.test/mcp")
+    )
+    local = create_runtime(
+        RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@127.0.0.1:5432/r")
+    )
+
+    assert isinstance(docker, DockerRuntime)
+    assert isinstance(vps, VpsMcpRuntime)
+    assert isinstance(local, LocalDatabaseRuntime)
+
+    modes = {mode for mode in RuntimeMode}
+    covered = {RuntimeMode.DOCKER, RuntimeMode.VPS_MCP, RuntimeMode.LOCAL_DATABASE}
+    assert modes == covered, (
+        f"RuntimeMode gained {modes - covered} and this test did not notice; create_runtime "
+        "silently falls back to Docker for anything it does not name"
+    )
+
+
+def test_every_tenant_gets_its_own_server_with_its_own_tenant_variable() -> None:
+    """⛔ One shared server would answer every scope from whichever tenant started it.
+
+    Not an error. A confident, well-formed answer about the wrong corpus, which is the failure this
+    project treats as the worst available. `RECALL_TENANT` is per-process, so the separation has to
+    be one process per tenant.
+    """
+    from recall.desktop.runtime import LocalDatabaseRuntime
+
+    dsn = "postgresql://u:p@127.0.0.1:5432/r"
+    runtime = LocalDatabaseRuntime(RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn=dsn))
+
+    docs = runtime._gateway_for("myproject-docs")
+    code = runtime._gateway_for("myproject-code")
+
+    assert docs is not code, "two scopes must not share one server"
+    assert docs is runtime._gateway_for("myproject-docs"), "and the same scope must be cached"
+    assert docs.env == {"RECALL_DSN": dsn, "RECALL_TENANT": "myproject-docs"}
+    assert code.env == {"RECALL_DSN": dsn, "RECALL_TENANT": "myproject-code"}
+
+
+def test_the_server_is_launched_with_an_absolute_interpreter() -> None:
+    """A bare `python` resolves against whatever PATH the desktop inherited.
+
+    On Windows that is routinely the Microsoft Store stub, which opens the Store rather than
+    running anything, and the user sees a server that will not start with no cause named. Same
+    reasoning, and the same fix, as the server blocks the wizard writes for Claude Code.
+    """
+    import sys
+
+    from recall.desktop.runtime import LocalDatabaseRuntime
+
+    runtime = LocalDatabaseRuntime(
+        RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@127.0.0.1:5432/r")
+    )
+
+    command = runtime._gateway_for("default").command
+
+    assert command is not None
+    assert command[0] == sys.executable
+    assert Path(command[0]).is_absolute()
+    assert command[1:] == ["-m", "recall_mcp.server"]
+
+
+def test_the_trust_variables_are_left_to_the_install_not_asserted_by_the_runtime() -> None:
+    """Whether a tenant is served strictly is a property of what was calibrated and promoted.
+
+    `wiring.server_blocks` decides it at install time from what actually happened. A runtime that
+    set `RECALL_ENV` or `RECALL_TRUST_MODE` from a profile would either relax a gate the corpus has
+    not earned, or refuse one it has.
+    """
+    from recall.desktop.runtime import LocalDatabaseRuntime
+
+    runtime = LocalDatabaseRuntime(
+        RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@127.0.0.1:5432/r")
+    )
+
+    env = runtime._env_for("default-docs")
+
+    assert "RECALL_ENV" not in env
+    assert "RECALL_TRUST_MODE" not in env
+
+
+def test_the_gateway_overlays_the_environment_rather_than_replacing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠️ A replaced environment has no PATH, and the child then cannot start at all.
+
+    The overlay is what lets one variable differ per tenant while everything the interpreter needs
+    survives.
+    """
+    from recall.desktop.runtime import SdkMcpGateway
+
+    monkeypatch.setenv("A_VARIABLE_THE_CHILD_NEEDS", "kept")
+    gateway = SdkMcpGateway(
+        RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@h/r"),
+        command=["python", "-m", "recall_mcp.server"],
+        env={"RECALL_TENANT": "mine"},
+    )
+
+    merged = dict(os.environ)
+    merged.update(gateway.env or {})
+
+    assert merged["A_VARIABLE_THE_CHILD_NEEDS"] == "kept"
+    assert merged["RECALL_TENANT"] == "mine"
+
+
+def test_an_untargeted_call_reaches_the_default_projects_server() -> None:
+    """⛔ `list_tenants()` raised "runtime is not started" against a runtime that had started.
+
+    The base `_call` reaches for `self.gateway`, and this runtime never sets it: it holds one
+    gateway PER TENANT, because `RECALL_TENANT` is per-process. So every inherited method that does
+    not name a tenant failed, on a runtime whose `start()` and `health()` both worked.
+
+    Found by calling `list_tenants()` against a live server, not by the six tests of what this class
+    builds — all of which passed. `DockerRuntime` avoids it for an unrelated reason: it overrides
+    `list_tenants` to read the compose file and never reaches the base implementation.
+    """
+    from recall.desktop.runtime import LocalDatabaseRuntime
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _Gateway:
+        def __init__(self, tenant: str) -> None:
+            self.tenant = tenant
+
+        def call(self, name: str, arguments: dict[str, object]) -> object:
+            calls.append((name, {"tenant": self.tenant, **arguments}))
+            return {"tenants": ["alpha", "beta"]}
+
+    runtime = LocalDatabaseRuntime(
+        RuntimeProfile(
+            mode=RuntimeMode.LOCAL_DATABASE,
+            dsn="postgresql://u:p@127.0.0.1:5432/r",
+            default_tenant="myproject",
+        )
+    )
+    runtime._gateways["myproject"] = _Gateway("myproject")  # type: ignore[assignment]
+
+    assert runtime.list_tenants() == ["alpha", "beta"]
+    assert calls == [("recall_tenants", {"tenant": "myproject"})], (
+        "the call must be routed to the default project's server, not to a gateway that is None"
+    )
+
+
+# ----------------------------------------------------------------------------------------------
+# The settings page: choosing a database
+# ----------------------------------------------------------------------------------------------
+
+
+def _settings_window(monkeypatch: pytest.MonkeyPatch, profile: RuntimeProfile) -> Any:
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+
+    QApplication.instance() or QApplication([])
+    return MainWindow(profile, runtime=DockerRuntime(profile))
+
+
+def test_the_settings_page_offers_every_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mode the engine supports and the window does not offer is a mode nobody can choose.
+
+    This is the whole point of the page: `HeadlessConfig` has always taken a `dsn` as the
+    alternative to `data_root`, and until now no surface could say so.
+    """
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    )
+    try:
+        # ⚠️ Converted back through `RuntimeMode`, because Qt stores a StrEnum as a plain `str`
+        # and a set of strings never equals a set of enum members.
+        offered = {
+            RuntimeMode(window.mode_combo.itemData(i)) for i in range(window.mode_combo.count())
+        }
+        assert offered == set(RuntimeMode), (
+            f"the settings page offers {offered}, the engine supports {set(RuntimeMode)}"
+        )
+        assert window._selected_mode() is RuntimeMode.DOCKER, "it must open on the real mode"
+    finally:
+        window.close()
+
+
+def test_the_connection_field_is_offered_only_where_it_means_something(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DSN box beside "managed Docker stack" invites a value that would be silently ignored."""
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    )
+    try:
+        assert window.dsn_edit.isEnabled() is False
+
+        window.mode_combo.setCurrentIndex(window.mode_combo.findData(RuntimeMode.LOCAL_DATABASE))
+        assert window.dsn_edit.isEnabled() is True
+        assert window.test_database_button.isEnabled() is True
+
+        window.mode_combo.setCurrentIndex(window.mode_combo.findData(RuntimeMode.VPS_MCP))
+        assert window.dsn_edit.isEnabled() is False
+    finally:
+        window.close()
+
+
+def test_testing_a_connection_never_runs_on_the_gui_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ `probe_database` opens a network connection.
+
+    An unreachable host takes its whole timeout to say so, and on the GUI thread that is the window
+    frozen with nothing to distinguish it from a crash. The same reasoning, and the same defect,
+    as provisioning.
+    """
+    window = _settings_window(
+        monkeypatch,
+        RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@127.0.0.1:1/r"),
+    )
+    try:
+        def _never(*args: object, **kwargs: object) -> object:
+            raise AssertionError("probe_database ran on the GUI thread; it must go through the pool")
+
+        monkeypatch.setattr("recall.desktop.ui.probe_database", _never)
+        dispatched: list[tuple[object, ...]] = []
+        window._run = lambda fn, done, failed=None: dispatched.append((fn, done, failed))  # type: ignore[method-assign]
+
+        window._test_database()
+
+        assert dispatched, "the probe must be handed to the worker pool"
+        assert window.test_database_button.isEnabled() is False, "and the button disabled meanwhile"
+    finally:
+        window.close()
+
+
+def test_an_empty_connection_string_is_refused_before_any_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cheapest possible check, and it must not reach the pool at all."""
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@h/r")
+    )
+    try:
+        window.dsn_edit.setText("   ")
+        dispatched: list[object] = []
+        window._run = lambda fn, done, failed=None: dispatched.append(fn)  # type: ignore[method-assign]
+
+        window._test_database()
+
+        assert dispatched == [], "nothing should have been dispatched"
+        assert "Enter a connection string" in window.database_status.text()
+    finally:
+        window.close()
+
+
+def test_a_database_that_cannot_serve_is_not_saved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⛔ Saving an unusable database is the silent-nothing failure with an extra step.
+
+    The app restarts, the runtime fails, and the setting that caused it looks like the one the user
+    deliberately chose. So the probe runs BEFORE the write, and a blocked report is reported rather
+    than persisted.
+    """
+    from recall.wizard.database import DatabaseReport, Finding
+
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@h/r")
+    )
+    try:
+        saved: list[object] = []
+        monkeypatch.setattr("recall.desktop.ui.save_profile", lambda profile: saved.append(profile))
+        report = DatabaseReport(
+            dsn="postgresql://u:p@h/r",
+            findings=(
+                Finding(
+                    name="pgvector",
+                    ok=False,
+                    detail="the vector extension is not installed",
+                    blocking=True,
+                    advice="run CREATE EXTENSION vector",
+                ),
+            ),
+        )
+
+        window._save_checked(report, RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@h/r")
+
+        assert saved == [], "an unusable database must not be written to the profile"
+        assert "Not saved" in window.database_status.text()
+        assert "CREATE EXTENSION vector" in window.database_status.text(), (
+            "the advice is the actionable half and must survive into the status"
+        )
+    finally:
+        window.close()
+
+
+def test_a_saved_profile_says_a_restart_is_needed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The window built its runtime at startup and does not rebuild it.
+
+    Reporting "saved" alone would leave the user watching the old runtime and concluding the
+    setting did nothing.
+    """
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@h/r")
+    )
+    try:
+        saved: list[Any] = []
+        monkeypatch.setattr("recall.desktop.ui.save_profile", lambda profile: saved.append(profile))
+
+        window._persist_profile(RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@newhost/r")
+
+        assert len(saved) == 1
+        assert saved[0].dsn == "postgresql://u:p@newhost/r"
+        assert saved[0].mode is RuntimeMode.LOCAL_DATABASE
+        assert window.profile.dsn == "postgresql://u:p@newhost/r", "the window must hold the new one"
+        assert "Restart" in window.database_status.text()
+    finally:
+        window.close()
+
+
+def test_a_profile_that_cannot_be_written_is_reported_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read-only config directory must not leave the window claiming it saved."""
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@h/r")
+    )
+    try:
+        def _boom(profile: object) -> None:
+            raise OSError(13, "Permission denied")
+
+        monkeypatch.setattr("recall.desktop.ui.save_profile", _boom)
+
+        window._persist_profile(RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@newhost/r")
+
+        assert "Could not save" in window.database_status.text()
+        assert window.profile.dsn == "postgresql://u:p@h/r", "the window must keep the old profile"
+        assert window.save_database_button.isEnabled() is True, "and offer another attempt"
+    finally:
+        window.close()
+
+
+def test_no_settings_failure_puts_the_password_on_the_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ These two handlers carry an EXCEPTION, not a report.
+
+    `probe_database` scrubs what it RETURNS, so the ordinary failures arrive clean. These fire when
+    the probe itself raised, and the worker hands on a bare `str(exc)`. A comment here used to
+    assert "Redacted" while nothing redacted anything, which is worse than no comment because it
+    stops the next reader looking.
+
+    The marker below is a placeholder, not a credential.
+    """
+    marker = "PLACEHOLDER-NOT-A-REAL-PASSWORD"
+    dsn = f"postgresql://recall:{marker}@127.0.0.1:5432/recall"
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn=dsn)
+    )
+    try:
+        window.dsn_edit.setText(dsn)
+
+        window._database_test_failed(f'could not parse "{dsn}"')
+        assert marker not in window.database_status.text(), window.database_status.text()
+        assert "***" in window.database_status.text()
+
+        window._database_save_failed(f'could not parse "{dsn}"')
+        assert marker not in window.database_status.text(), window.database_status.text()
+
+        def _boom(profile: object) -> None:
+            raise OSError(13, f'refusing to write "{dsn}"')
+
+        monkeypatch.setattr("recall.desktop.ui.save_profile", _boom)
+        window._persist_profile(RuntimeMode.LOCAL_DATABASE, dsn)
+        assert marker not in window.database_status.text(), window.database_status.text()
+    finally:
+        window.close()
