@@ -627,3 +627,115 @@ def test_a_named_volume_is_not_mistaken_for_a_host_path(tmp_path: Path) -> None:
     added = add_tenant_services(compose, {"myproject-docs": {"RECALL_TENANT": "myproject-docs"}})
 
     assert added == ("myproject-docs",)
+
+
+def test_the_dockerfile_follows_the_inherited_tag_not_the_running_version(tmp_path) -> None:
+    """⛔ The tag decides what runs, so the Dockerfile beside it must name the same version.
+
+    `add_tenant_services` inherits the existing stack's image tag so a new project runs the same
+    recall as its siblings. `write_compose` then regenerated the Dockerfile at whatever version the
+    WIZARD was, which put the two in disagreement.
+
+    Measured before the fix, on a 0.9.1 stack under a 0.9.6 wizard:
+
+        new service's image tag: recall-wizard:0.9.1
+        Dockerfile installs    : recall-rag==0.9.6
+
+    Compose reuses a tag it already holds rather than building, so the container starts the 0.9.1
+    image while every file on disk claims 0.9.6. That is the same silent-wrong-image failure
+    `_default_image`'s docstring records, reintroduced through the very inheritance meant to
+    prevent it.
+    """
+    import json
+
+    from recall.wizard.stack import (
+        COMPOSE_NAME,
+        DB_IMAGE,
+        DOCKERFILE_NAME,
+        add_tenant_services,
+        tenant_service,
+        write_compose,
+    )
+
+    old = "0.9.1"
+    compose = tmp_path / COMPOSE_NAME
+    write_compose(
+        compose,
+        {
+            "services": {
+                "db": {"image": DB_IMAGE, "volumes": ["recall-db:/var/lib/postgresql"]},
+                "recall-docs": tenant_service(
+                    {"RECALL_TENANT": "docs"}, image=f"recall-wizard:{old}"
+                ),
+            }
+        },
+    )
+
+    assert add_tenant_services(compose, {"newproj": {"RECALL_TENANT": "newproj"}}) == ("newproj",)
+
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    tag = services["recall-newproj"]["image"]
+    dockerfile = (tmp_path / DOCKERFILE_NAME).read_text(encoding="utf-8")
+
+    assert tag == f"recall-wizard:{old}", "the new service must join its siblings' image"
+    assert "recall-rag[" in dockerfile
+    assert f"=={old}" in dockerfile, (
+        f"the tag says {old} and the Dockerfile does not; Compose will serve the {old} image under "
+        "a file claiming otherwise"
+    )
+
+
+def test_a_foreign_image_tag_leaves_the_dockerfile_at_the_running_version(tmp_path) -> None:
+    """A tag this module did not write carries no version to pin to, and guessing one is worse.
+
+    `_image_version` recognises only `recall-wizard:<version>`. Somebody running their own
+    `myco/recall:latest` gets the running version in the Dockerfile — the previous behaviour, which
+    is right when there is nothing better to infer, rather than a version parsed out of a string
+    that was never a version.
+    """
+    import json
+
+    from recall import __version__
+    from recall.wizard.stack import (
+        COMPOSE_NAME,
+        DB_IMAGE,
+        DOCKERFILE_NAME,
+        add_tenant_services,
+        tenant_service,
+        write_compose,
+    )
+
+    compose = tmp_path / COMPOSE_NAME
+    write_compose(
+        compose,
+        {
+            "services": {
+                "db": {"image": DB_IMAGE, "volumes": ["recall-db:/var/lib/postgresql"]},
+                "recall-docs": tenant_service(
+                    {"RECALL_TENANT": "docs"}, image="myco/recall:latest"
+                ),
+            }
+        },
+    )
+
+    add_tenant_services(compose, {"newproj": {"RECALL_TENANT": "newproj"}})
+
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    assert services["recall-newproj"]["image"] == "myco/recall:latest"
+    assert f"=={__version__}" in (tmp_path / DOCKERFILE_NAME).read_text(encoding="utf-8")
+
+
+def test_image_version_reads_back_only_tags_this_module_writes() -> None:
+    """The parser is narrow on purpose: its output PINS what a Dockerfile installs."""
+    from recall.wizard.stack import _image_version
+
+    assert _image_version("recall-wizard:0.9.1") == "0.9.1"
+    assert _image_version("recall-wizard:1.0.0rc1") == "1.0.0rc1"
+    for foreign in (
+        "myco/recall:latest",
+        "recall-wizard",
+        "recall-wizard:",
+        "recall-desktop-recall:local",
+        "ghcr.io/someone/recall-wizard:0.9.1",
+    ):
+        assert _image_version(foreign) is None, f"{foreign!r} must not yield a version to pin to"

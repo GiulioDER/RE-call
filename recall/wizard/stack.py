@@ -437,6 +437,19 @@ def write_dockerfile(directory: Path, version: str | None = None) -> Path:
     return target
 
 
+def _image_version(image: str) -> str | None:
+    """The recall version a `recall-wizard:<version>` tag names, or `None` for any other tag.
+
+    Deliberately narrow. It recognises only tags this module itself writes, because the value is
+    used to PIN what a Dockerfile installs, and guessing a version out of somebody's own
+    `myco/recall:latest` would install whatever that string happened to look like.
+    """
+    prefix, separator, version = image.partition(":")
+    if prefix != "recall-wizard" or not separator or not version:
+        return None
+    return version
+
+
 def _stack_image(services: dict[str, object]) -> str | None:
     """The image the stack's existing tenant services already run, if they agree on one.
 
@@ -616,7 +629,10 @@ def add_tenant_services(
         added.append(tenant)
 
     if added:
-        write_compose(compose_path, document)
+        # The Dockerfile follows the tag, not the running wizard. See `write_compose`: regenerating
+        # it at the running version left a 0.9.1 stack carrying a 0.9.6 Dockerfile, and Compose
+        # would have served the 0.9.1 image under it without a word.
+        write_compose(compose_path, document, dockerfile_version=_image_version(inherited))
     return tuple(sorted(added))
 
 
@@ -625,7 +641,9 @@ def _service_name(tenant: str) -> str:
     return f"recall-{tenant}"
 
 
-def write_compose(path: Path, document: dict[str, object]) -> None:
+def write_compose(
+    path: Path, document: dict[str, object], *, dockerfile_version: str | None = None
+) -> None:
     """Write the compose file atomically, as JSON, with LF endings.
 
     JSON because it is valid YAML and `json.dumps` quotes a Windows path containing spaces
@@ -636,12 +654,23 @@ def write_compose(path: Path, document: dict[str, object]) -> None:
     compose document pointing at a file that is not there is broken by construction. Coupling them
     here means no caller can produce half a stack: the failure would be a `docker compose up` that
     cannot find the Dockerfile, at the moment the user is trying to start their index.
+
+    ⛔ **`dockerfile_version` exists because writing the RUNNING version here made the stack lie.**
+    `add_tenant_services` inherits the existing stack's image tag so a new project runs the same
+    recall as its siblings; this then regenerated the Dockerfile at whatever version the wizard
+    happened to be. Measured on a 0.9.1 stack under a 0.9.6 wizard: the new service's tag said
+    `recall-wizard:0.9.1` and the Dockerfile beside it installed `recall-rag==0.9.6`. Compose reuses
+    a tag it already holds rather than building, so the container would start the 0.9.1 image while
+    every file on disk claimed 0.9.6 — the same silent-wrong-image failure `_default_image`'s
+    docstring records, reintroduced through the inheritance that was meant to prevent it.
+
+    The tag is the thing that decides what actually runs, so the Dockerfile follows the tag.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
     temporary.replace(path)
-    write_dockerfile(path.parent)
+    write_dockerfile(path.parent, dockerfile_version)
 
 
 def wait_for_database(dsn: str, *, timeout: float = 120.0, interval: float = 2.0) -> None:
