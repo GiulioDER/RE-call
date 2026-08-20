@@ -618,9 +618,52 @@ def artifact_tree_sha256(path: str | Path, *, follow_file_symlinks: bool = False
     return digest.hexdigest()
 
 
-#: Digests already computed, keyed by resolved artifact directory. Hashing a model costs ~1s for a
-#: 67 MB snapshot, which is cheap once and wasteful per upload.
-_ARTIFACT_DIGESTS: dict[str, str] = {}
+#: Digests already computed, keyed by resolved artifact directory, each stored WITH the cheap
+#: directory signature it was computed from. Hashing a model costs ~1s for a 67 MB snapshot, which
+#: is cheap once and wasteful per upload.
+#:
+#: ⛔ **Keyed by path alone, this cached a claim about bytes that may have changed.** The digest
+#: exists to say "these are the weights that produced this index"; a cache with no invalidation
+#: says it about whatever was there the first time the process looked. A re-download, a partial
+#: write, or an edited model file kept the old answer for the life of the process, and a
+#: long-running MCP server is exactly the process this matters in.
+_ARTIFACT_DIGESTS: dict[str, tuple[tuple[int, int, int], str]] = {}
+
+#: Cleared wholesale past this many entries. A process sees a handful of model directories at most,
+#: so this is a runaway guard rather than a policy; clearing costs one re-hash and bounds nothing
+#: that matters.
+_ARTIFACT_DIGEST_LIMIT = 32
+
+
+def _artifact_signature(path: Path) -> tuple[int, int, int] | None:
+    """File count, total size and newest mtime of an artifact directory. `None` if unreadable.
+
+    Follows symlinks, because `artifact_tree_sha256(..., follow_file_symlinks=True)` does: a
+    HuggingFace snapshot is a farm of links into a sibling `blobs/`, and a signature that stopped at
+    the link would not see the bytes the digest actually covers.
+
+    ⚠️ **This detects staleness, not tampering, and the difference is worth stating.** Someone able
+    to write into the model directory can also set mtimes, so a same-size same-mtime replacement
+    keeps the cached digest. The defence against that is recomputing the digest, which is what a
+    fresh process does; this only stops the cache from confidently reporting a value it can no
+    longer justify. `None` is returned rather than a partial signature when anything cannot be
+    stat'd, and an unsignable directory is never cached — recomputing is the safe answer when the
+    question "has this changed?" cannot be answered.
+    """
+    count = 0
+    total = 0
+    newest = 0
+    try:
+        for file in sorted(path.rglob("*")):
+            if not file.is_file():
+                continue
+            stat = file.stat()
+            count += 1
+            total += stat.st_size
+            newest = max(newest, stat.st_mtime_ns)
+    except OSError:
+        return None
+    return (count, total, newest)
 
 
 def embedder_artifact_path(embedder: object) -> Path | None:
@@ -660,16 +703,25 @@ def embedder_artifact_digest(embedder: object) -> str | None:
     if path is None:
         return None
     key = str(path)
-    if key not in _ARTIFACT_DIGESTS:
-        try:
-            # `follow_file_symlinks=True`: a HuggingFace snapshot is a farm of symlinks into a
-            # sibling `blobs/` directory, and the strict rule refuses the whole tree. See
-            # `artifact_tree_sha256`. Without this the digest is None on every Linux install, which
-            # is the deploy target.
-            _ARTIFACT_DIGESTS[key] = artifact_tree_sha256(path, follow_file_symlinks=True)
-        except (OSError, ValueError):
-            return None
-    return _ARTIFACT_DIGESTS[key]
+    signature = _artifact_signature(path)
+    cached = _ARTIFACT_DIGESTS.get(key)
+    if cached is not None and signature is not None and cached[0] == signature:
+        return cached[1]
+    try:
+        # `follow_file_symlinks=True`: a HuggingFace snapshot is a farm of symlinks into a
+        # sibling `blobs/` directory, and the strict rule refuses the whole tree. See
+        # `artifact_tree_sha256`. Without this the digest is None on every Linux install, which
+        # is the deploy target.
+        digest = artifact_tree_sha256(path, follow_file_symlinks=True)
+    except (OSError, ValueError):
+        return None
+    if signature is not None:
+        # Not cached when the directory could not be signed: without a signature there is no way to
+        # notice the next change, and a value that cannot be invalidated should not be stored.
+        if len(_ARTIFACT_DIGESTS) >= _ARTIFACT_DIGEST_LIMIT:
+            _ARTIFACT_DIGESTS.clear()
+        _ARTIFACT_DIGESTS[key] = (signature, digest)
+    return digest
 
 
 def verify_artifact(path: str | Path, expected_sha256: str) -> Path:
