@@ -55,6 +55,7 @@ re-measure command are in `recall_hooks/__init__.py`.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import time
@@ -77,6 +78,25 @@ HOOK_MODULE = "recall_hooks"
 #: Claude opens. The documented default timeout is 600 seconds, which for this event is a way to
 #: make a broken database look like a hung client.
 SESSION_START_TIMEOUT_SECONDS = 15
+
+
+def client_config_path() -> Path:
+    """Where Claude Code keeps `.claude.json`, honouring `CLAUDE_CONFIG_DIR`.
+
+    ⚠️ `recall.wizard.wiring.claude_config_path` returns `Path.home() / ".claude.json"`
+    unconditionally, so on a machine where the user has set `CLAUDE_CONFIG_DIR` it names a file the
+    client does not read. Registration would report success and write somewhere nothing looks.
+    Reported to the wizard session, which owns that function; until it moves, the path is resolved
+    here and passed in explicitly rather than left to the default.
+
+    The unset case delegates, so there is still one definition of "the usual place".
+    """
+    raw = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser() / ".claude.json"
+    from recall.wizard.wiring import claude_config_path
+
+    return claude_config_path()
 
 
 def settings_path() -> Path:
@@ -180,6 +200,7 @@ def register_mcp_server(
     result = register_local_scope(
         blocks,
         project_root=root,
+        config_path=client_config_path(),
         interpreter=python_executable or sys.executable,
     )
 
@@ -377,8 +398,6 @@ def uninstall(
     located the same way it was written. It has no inverse operation to call, which is why this one
     is written out rather than delegated.
     """
-    from recall.wizard.wiring import claude_config_path
-
     target = path or settings_path()
     if target.exists():
         raw = target.read_text(encoding="utf-8")
@@ -398,7 +417,7 @@ def uninstall(
 
     hook_config_path().unlink(missing_ok=True)
 
-    config_file = claude_config_path()
+    config_file = client_config_path()
     if not config_file.exists():
         return
     raw = config_file.read_text(encoding="utf-8")

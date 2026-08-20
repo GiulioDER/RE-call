@@ -324,3 +324,49 @@ def test_the_dsn_password_never_reaches_the_report(monkeypatch: Any) -> None:
     _, printed = _capture(monkeypatch, result)
     assert printed, "the success path must report something"
     assert not any("hunter2" in line for line in printed)
+
+
+def test_registration_actually_reaches_the_config_file(tmp_path: Path, monkeypatch: Any) -> None:
+    """The one test here that does NOT fake the mechanism, and the only one that catches this.
+
+    Every other test in this section substitutes `register_local_scope`, which means none of them
+    can tell whether it was called correctly, only that it was called. The first version of the
+    delegation passed all of them while writing nothing: `wiring.claude_config_path` hardcodes
+    `Path.home()`, so with `CLAUDE_CONFIG_DIR` set the entry went somewhere the client does not
+    read, and `register_mcp_server` reported success.
+
+    Faking the collaborator is right for asserting what this layer decides. It cannot substitute
+    for one path that goes all the way to the file.
+    """
+    config_dir = tmp_path / "cfg"
+    project = tmp_path / "proj"
+    config_dir.mkdir()
+    project.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    (config_dir / ".claude.json").write_text(json.dumps({"projects": {}}), encoding="utf-8")
+
+    printed: list[str] = []
+    status = claude_code.register_mcp_server(
+        dsn="postgresql://recall:hunter2@127.0.0.1:5432/recall",
+        project_root=project,
+        print_fn=lambda *a, **k: printed.append(" ".join(str(x) for x in a)),
+    )
+
+    document = json.loads((config_dir / ".claude.json").read_text(encoding="utf-8"))
+    registered = {
+        key: list(entry.get("mcpServers", {}))
+        for key, entry in document["projects"].items()
+        if entry.get("mcpServers")
+    }
+    assert status == "registered"
+    assert registered, "reported success while writing nothing, which is the bug this test exists for"
+    server = document["projects"][next(iter(registered))]["mcpServers"]["recall"]
+    assert server["args"] == ["-m", "recall_mcp.server"]
+    assert server["env"]["RECALL_TRUST_MODE"] == "development"
+    assert not any("hunter2" in line for line in printed)
+
+    claude_code.uninstall(
+        path=tmp_path / "settings.json", project_root=project, print_fn=lambda *a, **k: None
+    )
+    after = json.loads((config_dir / ".claude.json").read_text(encoding="utf-8"))
+    assert not any(e.get("mcpServers") for e in after["projects"].values())
