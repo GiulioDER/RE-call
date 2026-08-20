@@ -17,7 +17,7 @@ pieces are the two with the least to sell.
 | A2 | Short-term, long-term and what's just a database | Multigrid | multigrid.ai, commercial | 2026-08-07 | 0, 0 | The best schema and compaction checklist of the set |
 | A3 | Agent memory in TypeScript | Gabriel Anhaia | book series and Hermes IDE | 2026-08-06 | 0, 0 | Implementation hygiene, little architecture |
 | A4 | Not merely storage and retrieval | Gaurav Dadhich | Maximem.ai founder, closed source | 2026-07-25 | 1, 2 | Abstract of the paper below |
-| P1 | Agentic Context Management (arXiv 2607.21503) | Gaurav Dadhich | same | 2026-07 | n/a | A vocabulary, and two headline numbers that cannot be checked |
+| P1 | Agentic Context Management (arXiv 2607.21503) | Gaurav Dadhich | same | 2026-07 | n/a | A vocabulary, and two headline numbers whose configuration is fully stated and whose system is not runnable by anyone else. See the correction at the head of Part 5 |
 | A5 | Agent memory architecture | Amar Dhillon | none apparent | 2026-04-23 | 0, 0 | A taxonomy tutorial. Lowest information density of the set |
 | A6 | Agent memory v2, seven rules after the poisoning | israelhen153 | none apparent | 2026-06-23 | 2, 2 | The most useful piece here, and the only one honest that nothing is built yet |
 
@@ -423,7 +423,9 @@ only part of the compaction story I would spend anything on.
 guesses about the next turn. RE-call's entire thesis is that not guessing is the feature. I would
 state that tension in public rather than build the primitive.
 
-**Chasing 92% and 93.2%.** See Part 5. Beyond comparability, the memory index records the current
+**Chasing 92% and 93.2%.** Still declined, but on narrower grounds than I first gave: see the
+corrected Part 5. Their LoCoMo figure excludes the adversarial class, so it is a different quantity
+rather than an unchecked one. Beyond comparability, the memory index records the current
 lane as EnterpriseRAG-Bench, where the top-five threshold is 61.03 against a shaped RE-call
 baseline of 46.16. Opening a LongMemEval headline chase would be a second front, and the recent
 screens on that lane were measured and rejected rather than parked, which is the wrong moment to
@@ -436,30 +438,65 @@ stored as memory, which overlaps item 5 and is better taken from A1.
 
 ## Part 5: what P1's headline numbers are, and are not
 
-P1 reports 92% on LongMemEval and 93.2% on LoCoMo for a reference implementation called Maximem
-Synap, under a configuration described in its section 6. Both benchmarks already have harnesses
-here: `recall/eval/longmemeval.py` and `recall/eval/locomo.py`.
+> 🔁 **Corrected 2026-08-20, and the correction goes against me.** Everything below the marker
+> was written from the arXiv abstract page, because I never read the paper body, and it was unfair
+> in a specific and checkable way. The original text said "the paper states the reference
+> implementation is closed source". **The paper says no such thing.** It says the *mechanism
+> internals* are proprietary, which is a narrower claim about components, and its evaluation
+> harness is **public and open** (`maximem-ai/memory_and_context_eval_harness`), with the
+> methodology and per-category counts published too. The original also said the configuration was
+> "described in prose": it is Table 2, which specifies dataset, split, answer model, judge,
+> retrieval configuration, harness, artifacts and run tag per benchmark. I sourced the closed
+> source claim from the author's dev.to comment and attributed it to the paper, which is exactly
+> the sourcing error the rest of this document is fussy about. What follows replaces it.
 
-Before those numbers go into any comparison table, apply the discipline `results/FINDINGS.md`
-sections 9e and 9f already applied to Mem0's 92.5 and 94.4, where reading the competitor's harness
-changed what a comparable reply had to look like. On that precedent the questions are:
+P1 reports **92.0% on LongMemEval** (460/500, full official 500-question set, all six categories)
+and **93.2% on LoCoMo** (categories 1 to 4), for a reference implementation called Maximem Synap.
+Both benchmarks already have harnesses here: `recall/eval/longmemeval.py` and `recall/eval/locomo.py`.
 
-1. Which categories were evaluated, and which were excluded. Mem0's published LoCoMo run excluded
-   category 5 entirely, which is the axis abstention lives on.
-2. Whether abstention was permitted. Mem0's answerer prompt forbids it outright, and a benchmark
-   that forbids refusing is not measuring the same system property RE-call optimises.
-3. Which answerer and which judge, and how lenient the judge is. A score is a property of the
-   retrieval, answerer and judge triple.
-4. How many memories the answerer was given, since a 200-memory chronological dump and a k of 10
-   are not the same protocol.
-5. Whether the implementation is reproducible at all. It is not: the paper states the reference
-   implementation is closed source, and the author confirms in the A4 comment thread that mechanisms
-   were omitted deliberately for that reason.
+**The paper answers, unprompted, four of the five questions `results/FINDINGS.md` sections 9e and 9f
+had to reverse-engineer from Mem0's harness.** Its Table 2 states the answer model (`gpt-5-mini`),
+the judge (`gpt-5-mini`, binary CORRECT/WRONG against gold), the official distributions with no
+custom subsets and no relabeling, the harness repository, and the run tag. Section 6.3 reports the
+weak categories as plainly as the strong ones, and the residual errors concentrate in LongMemEval's
+multi-session category at 75.2%.
 
-Point 5 settles it. A number from a system nobody can run, under a configuration described in prose,
-is a marketing figure. It should be cited as a claim by its authors, never placed in a column beside
-a figure this repository has an artifact for. The vocabulary in that paper is still worth borrowing;
-the numbers are not worth answering.
+**On LoCoMo category 5 it is more explicit than Mem0 ever was, and it corroborates our own finding.**
+The paper excludes category 5, says so in the setup rather than in a footnote, states that inclusion
+or exclusion "moves the headline score by ten points or more", calls that the most common source of
+incomparable LoCoMo numbers, and names the convention it is following: the original paper, Mem0 and
+Zep. That is independent third-party confirmation of what §9f established by reading Mem0's code.
+
+**It also adopts the comparability discipline this repository argues for.** It refuses head-to-head
+presentation outright, and its Table 3 lists each vendor's self-reported figure beside the answer
+model that produced it, labelled as the published landscape and explicitly "not a controlled
+comparison". Appendix C is a reproducibility statement committing to state dataset, split, question
+counts, answer and judge models, retrieval configuration, harness commit SHA and run date for every
+result, and to say directly when a result cannot be re-run by a third party.
+
+### What still holds, stated narrowly
+
+1. **The harness is reproducible; the result is not.** The evaluation code is open and the datasets
+   are public, but the system under test is not runnable by anyone else, so a third party can
+   re-run the harness and cannot reproduce 92.0. The paper concedes the adjacent half itself: per-run
+   artifacts (answers, retrieved context, judge verdicts) are "available on request rather than
+   published".
+2. **The categories differ from ours, so the numbers still are not ours to sit beside.** Their
+   LoCoMo figure excludes the adversarial class by convention. Category 5 is the axis RE-call exists
+   to measure, so 93.2% and our 0.444 remain different quantities, for the reason §9f already gives.
+3. **The answer model is part of the result.** The paper says this plainly and uses it as an
+   argument in its own favour: 92.0 came from a *smaller* answer model than the strongest competitor
+   configurations, which it reads as evidence the gain sits in the context layer.
+
+### What this changes for RE-call
+
+The useful conclusion is the opposite of the one I first wrote. This is not a marketing figure to
+wave away; it is a competitor publishing its configuration to roughly the standard this repository
+holds itself to, and independently confirming the category-5 problem that §9f documents. Two
+consequences worth acting on. Their reported weakness, multi-session reasoning at 75.2%, is the
+regime our own LongMemEval work already lives in. And their exclusion of the abstention class is
+the clearest available argument for RE-call's positioning: the headline numbers the field compares
+on are computed with the axis RE-call optimises removed from the denominator.
 
 ## Part 6: three positioning notes that cost nothing
 
