@@ -279,3 +279,86 @@ def test_the_shadow_path_reads_the_shadow_artifact_variables(
     active_built = make_profile_embedder("bge-small-asymmetric-v1", env=env)
     assert active_built.profile.artifact_digest == active_digest
     assert active_built.profile.fingerprint() != built.profile.fingerprint()
+
+
+# ----------------------------------------------------------------------------------------------
+# Artifact digests: the provenance a production ingest now rests on
+# ----------------------------------------------------------------------------------------------
+
+
+def test_an_embedder_with_no_weights_has_no_digest_and_says_so() -> None:
+    """⛔ **None is a real answer and must stay one.**
+
+    `HashingEmbedder` is defined by code, not weights: there is nothing on disk to hash.
+    Manufacturing a digest for it — over the model name, say — would turn an honest "unverified"
+    into a claim of provenance that no bytes back, which is worse than the refusal it bypasses. A
+    production ingest with this embedder is SUPPOSED to be refused.
+    """
+    from recall.embeddings import HashingEmbedder, embedder_artifact_digest, embedder_artifact_path
+
+    embedder = HashingEmbedder(dim=64)
+
+    assert embedder_artifact_path(embedder) is None
+    assert embedder_artifact_digest(embedder) is None
+
+
+def test_a_digest_is_over_the_model_directory_not_the_shared_cache(tmp_path: Path) -> None:
+    """⚠️ The scope is what makes the digest mean anything.
+
+    Measured on this machine: the fastembed `cache_dir` held 45 files and 1.5 GB across SEVERAL
+    models, so a digest over it would change whenever an unrelated model was downloaded, and would
+    identify nothing. `_model_dir` is one model's own snapshot — 5 files, 67 MB.
+
+    Stubbed rather than downloaded, so this runs offline and pins the SHAPE reached for rather than
+    one vendor's directory layout.
+    """
+    from recall.embeddings import artifact_tree_sha256, embedder_artifact_digest
+
+    model_dir = tmp_path / "snapshots" / "abc123"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model.onnx").write_bytes(b"weights")
+    (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+    sibling = tmp_path / "snapshots" / "other-model"
+    sibling.mkdir()
+    (sibling / "model.onnx").write_bytes(b"a different model entirely")
+
+    # ⚠️ **The stub carries BOTH attributes, because the real object does.** A first version
+    # defined only `_model_dir`, so a mutation that preferred `cache_dir` was invisible: the stub
+    # had no `cache_dir` to prefer, `getattr` fell through, and the test passed against code that
+    # would hash 1.5 GB of unrelated models on a real machine. Caught by mutation, not by reading.
+    class _Inner:
+        cache_dir = str(tmp_path / "snapshots")
+        _model_dir = model_dir
+
+    class _Model:
+        model = _Inner()
+
+    class _Embedder:
+        _model = _Model()
+
+    digest = embedder_artifact_digest(_Embedder())
+
+    assert digest == artifact_tree_sha256(model_dir)
+    assert digest != artifact_tree_sha256(tmp_path / "snapshots"), (
+        "hashing the whole cache would change when an unrelated model appears"
+    )
+
+
+def test_an_unreachable_artifact_path_yields_none_rather_than_raising() -> None:
+    """This reaches into another library's internals, which change between versions.
+
+    A wrong answer is worse than no answer, because it feeds an identity claiming to be verified.
+    So every failure mode resolves to None and the caller falls back to an honest unverified
+    identity.
+    """
+    from recall.embeddings import embedder_artifact_digest
+
+    class _Model:
+        class model:  # noqa: N801 - mimicking an attribute chain, not naming a class
+            _model_dir = "/a/path/that/does/not/exist/anywhere"
+
+    class _Gone:
+        _model = _Model()
+
+    assert embedder_artifact_digest(_Gone()) is None
+    assert embedder_artifact_digest(object()) is None, "an embedder of another shape must not raise"

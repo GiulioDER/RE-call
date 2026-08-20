@@ -26,6 +26,7 @@ from recall.embeddings import (
     FastEmbedEmbedder,
     HashingEmbedder,
     REMOTE_MODEL_CODE_OPT_IN,
+    embedder_artifact_digest,
     embedding_profile_id,
     resolve_embedder,
 )
@@ -35,7 +36,7 @@ from recall.control_plane import ControlPlane
 from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_code, chunk_text
 from recall.lineage import ChunkerIdentity, EmbedderIdentity, IndexManifestV1, ManifestObjectV1, PipelineIdentity
 from recall.manifest import ExtractingLocalObjectReader
-from recall.generations import GenerationManager, NoActiveGeneration
+from recall.generations import GenerationManager, NoActiveGeneration, UnsafePromotion
 from recall.observability import METRICS, get_logger
 from recall.profiles import (
     RetrievalAdmission,
@@ -2131,12 +2132,24 @@ def generation_ingest(
         objects=tuple(objects),
     )
     chunker = chunk_code if category == "code" else chunk_text
+    # ⚠️ **Verified when the weights can be hashed, honestly unverified when they cannot.**
+    # A desktop upload used to declare `unverified_reason` unconditionally, so `create` refused it
+    # under `RECALL_ENV=production` and no upload to a production tenant could ever succeed. Hashing
+    # the model's own snapshot directory is a real provenance claim: those are the bytes that
+    # produced these vectors. `HashingEmbedder` has no weights on disk, so it still gets the
+    # unverified identity — the alternative would be inventing a digest to pass a gate, which is
+    # the one outcome worse than the refusal.
+    # ⚠️ NOT `digest`: that name is already bound in this function to each uploaded FILE's sha256,
+    # a few lines above. Two different digests under one name in one function is how the wrong one
+    # gets used later.
+    embedder_digest = embedder_artifact_digest(embedder)
     pipeline = PipelineIdentity(
         EmbedderIdentity(
             provider="fastembed",
             model=embedder.name,
             dimension=embedder.dim,
-            unverified_reason="desktop local development build",
+            artifact_digest=embedder_digest,
+            unverified_reason=None if embedder_digest else "desktop local development build",
         ),
         ChunkerIdentity(
             "recall.chunk_code" if category == "code" else "recall.chunk_text",
@@ -2144,7 +2157,11 @@ def generation_ingest(
             {},
         ),
     )
-    generation = manager.create(manifest, pipeline, allow_unverified=True)
+    # ⚠️ Ask for the exemption only when it is actually needed. Passed unconditionally, a
+    # VERIFIED identity still requested `allow_unverified`, which production refuses outright —
+    # so hashing the weights above bought nothing and the upload failed one gate later with a
+    # message about a flag rather than about provenance. Measured end to end.
+    generation = manager.create(manifest, pipeline, allow_unverified=not pipeline.verified)
     try:
         stats = manager.build(
             generation.generation_id,
@@ -2156,10 +2173,29 @@ def generation_ingest(
         # ⚠️ Development-only flag; see `GenerationManager.promote`. A desktop upload to a
         # production tenant now reaches the certification gate rather than being refused for
         # carrying a flag, which is the whole point of the gate existing.
-        manager.promote(
-            generation.generation_id,
-            unsafe_development=manager.environment != "production",
-        )
+        try:
+            manager.promote(
+                generation.generation_id,
+                unsafe_development=manager.environment != "production",
+            )
+        except UnsafePromotion as exc:
+            # ⚠️ **Reported as an outcome, not raised as a failure.** The upload WORKED: every file
+            # was read, chunked, embedded and written into a generation that validated. What did
+            # not happen is activation, because a production tenant serves only a certified
+            # generation — the gate doing its job, not the ingest failing.
+            #
+            # Raising here told the user their upload failed and invited them to retry it,
+            # rebuilding the same generation for the same refusal. Saying what is true, and what
+            # remains to be done, is the difference between a gate and a wall.
+            return IndexResult(
+                files=stats.objects,
+                chunks=stats.chunks,
+                message=(
+                    f"Indexed {stats.chunks} chunk(s) from {stats.objects} file(s) into generation "
+                    f"{generation.generation_id}, which is built and validated but NOT yet live. "
+                    f"{exc}"
+                ),
+            )
     except Exception:
         raise
     return IndexResult(

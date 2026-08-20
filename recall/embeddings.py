@@ -585,6 +585,56 @@ def artifact_tree_sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+#: Digests already computed, keyed by resolved artifact directory. Hashing a model costs ~1s for a
+#: 67 MB snapshot, which is cheap once and wasteful per upload.
+_ARTIFACT_DIGESTS: dict[str, str] = {}
+
+
+def embedder_artifact_path(embedder: object) -> Path | None:
+    """The directory holding the weights this embedder actually loaded, or None.
+
+    ⚠️ **The model's OWN snapshot directory, never the shared cache.** Measured on this machine:
+    `cache_dir` held 45 files and 1.5 GB across several models, so its digest would change whenever
+    an unrelated model was downloaded and would not identify anything. `_model_dir` is 5 files and
+    67 MB — `model_optimized.onnx`, the tokenizer and the configs — and its directory name is the
+    upstream revision hash.
+
+    Returns None rather than guessing when the path cannot be recovered. This reaches into
+    fastembed's internals, which are free to change between versions, and a wrong answer here would
+    be worse than no answer: it feeds an identity that claims to be verified.
+    """
+    model = getattr(embedder, "_model", None)
+    inner = getattr(model, "model", None)
+    raw = getattr(inner, "_model_dir", None)
+    if raw is None:
+        return None
+    try:
+        path = Path(str(raw)).resolve(strict=True)
+    except (OSError, ValueError):
+        return None
+    return path if path.is_dir() else None
+
+
+def embedder_artifact_digest(embedder: object) -> str | None:
+    """A SHA256 over the weights this embedder loaded, or None when they cannot be located.
+
+    ⛔ **None is a real answer and must stay one.** `HashingEmbedder` has no artifacts at all: it is
+    defined by code, not weights, and there is nothing on disk to hash. Manufacturing a digest for
+    it — over the model name, say — would turn an honest "unverified" into a claim of provenance
+    that no bytes back, which is worse than the refusal it would bypass.
+    """
+    path = embedder_artifact_path(embedder)
+    if path is None:
+        return None
+    key = str(path)
+    if key not in _ARTIFACT_DIGESTS:
+        try:
+            _ARTIFACT_DIGESTS[key] = artifact_tree_sha256(path)
+        except (OSError, ValueError):
+            return None
+    return _ARTIFACT_DIGESTS[key]
+
+
 def verify_artifact(path: str | Path, expected_sha256: str) -> Path:
     """Resolve and checksum a local model artifact before a runtime loads it."""
     if len(expected_sha256) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected_sha256):
