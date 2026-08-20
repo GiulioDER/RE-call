@@ -436,6 +436,68 @@ def write_dockerfile(directory: Path, version: str | None = None) -> Path:
     return target
 
 
+def _stack_image(services: dict[str, object]) -> str | None:
+    """The image the stack's existing tenant services already run, if they agree on one.
+
+    ⚠️ **Defaulting to THIS version's tag adds a service that runs a different recall from its
+    siblings.** `_default_image` is scoped to `recall.__version__`, so a stack provisioned by an
+    older install carries an older tag, and adding a project after an upgrade would give that one
+    project a different image while every existing corpus kept the old one. Compose reuses a tag
+    rather than rebuilding it, so both would start and neither would complain: one project answering
+    from a different recall than the rest, with nothing on screen to say so.
+
+    Returns None when the services disagree or there are none yet, and the caller then falls back to
+    the current version. Disagreement is left alone deliberately: this function exists to keep an
+    add consistent with what is there, not to reconcile a stack somebody has already hand-edited.
+    """
+    tags = {
+        service.get("image")
+        for name, service in services.items()
+        if name != "db" and isinstance(service, dict) and isinstance(service.get("image"), str)
+    }
+    if len(tags) == 1:
+        only = tags.pop()
+        return only if isinstance(only, str) else None
+    return None
+
+
+def _refuse_bind_mounted_database(compose_path: Path, db: object) -> None:
+    """Refuse to extend a stack whose database still lives on a host bind mount.
+
+    ⛔ **The bind mount is the layout that corrupted a database**, which is why `DB_VOLUME` exists:
+    PostgreSQL's WAL writes fail intermittently with EINTR on a Windows bind mount, and an
+    intermittent WAL write failure is a corruption risk rather than an availability one. See the
+    comment on the `db` service in `compose_document`.
+
+    A stack provisioned before that change still has the old mount. Adding a project to it would put
+    a new corpus onto that database — more data on the layout the wizard stopped using precisely
+    because it loses data. So this refuses and says what to do, rather than quietly making the
+    exposure larger.
+
+    Refusing is safe in a way that migrating is not: moving the volume means moving a live database
+    the user may be serving from, which is not something an "add a project" action should attempt
+    without being asked.
+    """
+    if not isinstance(db, dict):
+        return
+    volumes = db.get("volumes")
+    if not isinstance(volumes, list):
+        return
+    for entry in volumes:
+        if not isinstance(entry, str) or ":" not in entry:
+            continue
+        source = entry.split(":", 1)[0]
+        # A named volume is a bare name; anything with a separator or a leading dot is a host path.
+        if "/" in source or "\\" in source or source.startswith("."):
+            raise ValueError(
+                f"the stack at {compose_path} keeps its database on the host directory {source!r} "
+                "rather than in a Docker volume. That layout loses PostgreSQL WAL writes "
+                "intermittently on Windows, which is why newer installs use a named volume, and "
+                "adding a project would put another corpus onto it. Back up the data you care "
+                "about, then re-provision the stack with a current install."
+            )
+
+
 def add_tenant_services(
     compose_path: Path, env: dict[str, dict[str, str]], *, image: str = _DEFAULT_IMAGE
 ) -> tuple[str, ...]:
@@ -468,13 +530,15 @@ def add_tenant_services(
         raise ValueError(
             f"{compose_path} defines no `db` service, so it is not a recall stack to add to"
         )
+    _refuse_bind_mounted_database(compose_path, services["db"])
 
+    inherited = _stack_image(services) or image
     added: list[str] = []
     for tenant, base_env in env.items():
         name = _service_name(tenant)
         if name in services:
             continue
-        services[name] = tenant_service(base_env, image=image)
+        services[name] = tenant_service(base_env, image=inherited)
         added.append(tenant)
 
     if added:

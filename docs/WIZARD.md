@@ -216,10 +216,12 @@ It refuses, before asking anything, in a session with no terminal. Piping into i
 either hang on a line that never arrives or read EOF and accept every default, and both of those
 look like a successful install from the outside.
 
+- **A smoke search per server.** After wiring, one real query goes through each configured server,
+  drawn from that tenant's own indexed text and using the store its own `RECALL_ENV` selects. The
+  report shows hits, trust state and any failure code, so "a config was written" and "the install
+  answers" are separate lines rather than one assumption.
+
 ## What is not built yet
 
 - The GUI front end for installation. The desktop app manages an install; it does not yet create one.
-- An end-to-end smoke search per server after wiring. The configuration is written from what
-  actually happened, and a tenant that cannot answer gets no server, but the wizard does not yet
-  issue a query to prove each server answers.
 - The Windows installer (`.exe`), winget prerequisites and reboot-resume.

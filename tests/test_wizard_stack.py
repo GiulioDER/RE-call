@@ -18,6 +18,7 @@ from recall.wizard.stack import (
     DB_INTERNAL_PORT,
     DB_MOUNT,
     StackSpec,
+    add_tenant_services,
     choose_port,
     compose_document,
     container_dsn,
@@ -437,3 +438,117 @@ def test_no_subprocess_call_decodes_with_the_platform_codec() -> None:
         "these subprocess calls decode with the platform codec, which on Windows returns "
         "rc=0 with stdout=None instead of raising: " + ", ".join(offenders)
     )
+
+
+# ----------------------------------------------------------------------------------------------
+# Adding a project to a stack somebody else provisioned
+# ----------------------------------------------------------------------------------------------
+
+
+def _stack(tmp_path: Path, *, db_volume: str, tenants: dict[str, str]) -> Path:
+    """A compose file with a chosen db mount and chosen tenant images."""
+    document = {
+        "name": "recall-test",
+        "services": {
+            "db": {"image": "pgvector/pgvector:pg16", "volumes": [f"{db_volume}:/var/lib/postgresql/data"]},
+            **{
+                f"recall-{tenant}": {"image": image, "environment": {"RECALL_TENANT": tenant}}
+                for tenant, image in tenants.items()
+            },
+        },
+        "volumes": {"pgdata": None},
+    }
+    path = tmp_path / "docker-compose.recall.yml"
+    write_compose(path, document)
+    return path
+
+
+def test_a_new_project_inherits_the_image_its_siblings_already_run(tmp_path: Path) -> None:
+    """⚠️ Defaulting to THIS version's tag gives one project a different recall from the rest.
+
+    `_default_image` is scoped to `recall.__version__`, so a stack provisioned by an older install
+    carries an older tag. Adding a project after an upgrade would tag that one service with the new
+    version while every existing corpus kept the old one — and Compose REUSES a tag rather than
+    rebuilding it, so both start and neither complains. One project answering from a different
+    recall than its siblings, with nothing on screen to say so.
+    """
+    compose = _stack(
+        tmp_path, db_volume="pgdata", tenants={"default-docs": "recall-wizard:0.9.1"}
+    )
+
+    added = add_tenant_services(compose, {"myproject-docs": {"RECALL_TENANT": "myproject-docs"}})
+
+    assert added == ("myproject-docs",)
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    assert services["recall-myproject-docs"]["image"] == "recall-wizard:0.9.1", (
+        "the new service must run what the stack already runs, not what this build happens to be"
+    )
+
+
+def test_a_stack_with_no_tenants_yet_takes_the_current_image(tmp_path: Path) -> None:
+    """Nothing to inherit from, so the caller's default is the only answer available."""
+    compose = _stack(tmp_path, db_volume="pgdata", tenants={})
+
+    add_tenant_services(
+        compose, {"first-docs": {"RECALL_TENANT": "first-docs"}}, image="recall-wizard:9.9.9"
+    )
+
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    assert services["recall-first-docs"]["image"] == "recall-wizard:9.9.9"
+
+
+def test_disagreeing_images_are_left_alone_rather_than_reconciled(tmp_path: Path) -> None:
+    """A hand-edited stack is not this function's to normalise.
+
+    Inheriting from an ambiguous set would mean picking one of a user's deliberate choices at
+    random. Falling back to the caller's default is at least a stated rule.
+    """
+    compose = _stack(
+        tmp_path,
+        db_volume="pgdata",
+        tenants={"a-docs": "recall-wizard:0.9.1", "b-docs": "recall-wizard:0.9.2"},
+    )
+
+    add_tenant_services(
+        compose, {"c-docs": {"RECALL_TENANT": "c-docs"}}, image="recall-wizard:9.9.9"
+    )
+
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    assert services["recall-c-docs"]["image"] == "recall-wizard:9.9.9"
+
+
+def test_a_bind_mounted_database_is_refused_rather_than_extended(tmp_path: Path) -> None:
+    """⛔ The bind mount is the layout that loses PostgreSQL WAL writes on Windows.
+
+    That is why `DB_VOLUME` exists, and an intermittent WAL write failure is a corruption risk
+    rather than an availability one. A stack provisioned before that change still has the old mount;
+    adding a project would put another corpus onto it. Refusing keeps the exposure from growing,
+    and says what to do instead.
+
+    Refusing rather than migrating is deliberate: moving the volume means moving a live database the
+    user may be serving from, which is not something "add a project" should attempt unasked.
+    """
+    compose = _stack(
+        tmp_path, db_volume="./pgdata", tenants={"default-docs": "recall-wizard:1.0.0"}
+    )
+
+    with pytest.raises(ValueError) as caught:
+        add_tenant_services(compose, {"myproject-docs": {"RECALL_TENANT": "myproject-docs"}})
+
+    message = str(caught.value)
+    assert "./pgdata" in message, "the offending path must be named"
+    assert "re-provision" in message, "a refusal without a remedy is only half the report"
+
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    assert "recall-myproject-docs" not in services, "and nothing may be written"
+
+
+def test_a_named_volume_is_not_mistaken_for_a_host_path(tmp_path: Path) -> None:
+    """The guard must not refuse the layout it exists to protect."""
+    compose = _stack(
+        tmp_path, db_volume="pgdata", tenants={"default-docs": "recall-wizard:1.0.0"}
+    )
+
+    added = add_tenant_services(compose, {"myproject-docs": {"RECALL_TENANT": "myproject-docs"}})
+
+    assert added == ("myproject-docs",)
