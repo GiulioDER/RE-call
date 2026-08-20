@@ -42,10 +42,18 @@ mkdir -p "$BASE/bin"
 cat > "$BASE/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
+[ -n "${FAKE_DOCKER_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
 _line() { sed -n "${2}p" "$FAKE_DOCKER_STATE/$1"; }
 _val()  { local v; v="$(_line "$1" "$2")"; [ -z "$v" ] && printf '<no value>' || printf '%s' "$v"; }
 case "${1:-}" in
     ps)
+        # FAKE_DOCKER_VANISHED is listed here and unknown to `inspect`, which is a container
+        # removed between the two calls. It is emitted FIRST so that a caller reading the reply by
+        # position would misattribute every line after it.
+        case "$*" in
+            *label=com.docker.compose.project.working_dir*)
+                [ -n "${FAKE_DOCKER_VANISHED:-}" ] && echo "$FAKE_DOCKER_VANISHED" ;;
+        esac
         for f in "$FAKE_DOCKER_STATE"/*; do
             [ -e "$f" ] || continue
             id="$(basename "$f")"
@@ -58,9 +66,43 @@ case "${1:-}" in
         done
         ;;
     inspect)
-        id="$2"
-        [ -e "$FAKE_DOCKER_STATE/$id" ] || exit 1
-        printf '%s|%s|/%s\n' "$(_val "$id" 1)" "$(_val "$id" 2)" "$(_line "$id" 3)"
+        # Batched: docker takes many ids and prints one line each, in argument order, SKIPPING the
+        # ones it cannot find and reporting those on stderr with a nonzero exit. The stub copies
+        # that behaviour exactly, because "the reply is shorter than the request" is the thing the
+        # caller must not be confused by.
+        #
+        # ⚠️ The FORMAT is honoured, field by field, and that is not decoration. The first version
+        # of this stub printed its own three fields and ignored `--format` entirely, so deleting
+        # `{{.Name}}` from the caller's template left all 15 tests green: the suite was asserting
+        # what the stub chose to return. Substitution is done with bash parameter expansion rather
+        # than sed, because a Windows path is full of backslashes and `\U` is a GNU sed operator.
+        shift
+        fmt=""
+        ids=()
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --format)   fmt="$2"; shift 2 ;;
+                --format=*) fmt="${1#--format=}"; shift ;;
+                *)          ids+=("$1"); shift ;;
+            esac
+        done
+        p1='{{index .Config.Labels "recall.checkout"}}'
+        p2='{{index .Config.Labels "com.docker.compose.project.working_dir"}}'
+        p3='{{.Name}}'
+        rc=0
+        for id in ${ids[@]+"${ids[@]}"}; do
+            if [ ! -e "$FAKE_DOCKER_STATE/$id" ]; then
+                echo "Error: No such object: $id" >&2
+                rc=1
+                continue
+            fi
+            out="$fmt"
+            out="${out//"$p1"/"$(_val "$id" 1)"}"
+            out="${out//"$p2"/"$(_val "$id" 2)"}"
+            out="${out//"$p3"//"$(_line "$id" 3)"}"
+            printf '%s\n' "$out"
+        done
+        exit "$rc"
         ;;
     *)
         echo "stub: unexpected docker call: $*" >&2
@@ -245,6 +287,39 @@ case "$(uname -s 2>/dev/null)" in
         fi
         ;;
 esac
+
+# --- 14. a container removed between `ps` and `inspect` ---------------------
+# Batching one `docker inspect` over many ids trades N round trips for one, and buys the risk that
+# the reply is shorter than the request. If anything were read by position, the vanished id would
+# shift every line after it and the report would name the wrong container, which is worse than the
+# slowness the batch replaced.
+rm -f "$FAKE_DOCKER_STATE"/*
+container c14 "" "$REMNANT" batched-remnant-db-1
+container c15 "" "$LIVE" batched-live-db-1
+out="$(FAKE_DOCKER_VANISHED=deadbeef1234 run)"
+if saw "$out" "batched-remnant-db-1" && ! saw "$out" "batched-live-db-1"; then
+    ok "an id that vanishes mid-run does not shift the others"
+else
+    no "an id that vanishes mid-run does not shift the others" "$out"
+fi
+
+# --- 15. one inspect call, not one per container ----------------------------
+# The point of the batch. Counted by making the stub log its own invocations, because "it felt
+# faster" is not a measurement and the call count is the thing that changed.
+rm -f "$FAKE_DOCKER_STATE"/*
+container c16 "" "$LIVE" b1-db-1
+container c17 "" "$REMNANT" b2-db-1
+container c18 "$LIVE" "" b3-sess
+export FAKE_DOCKER_LOG="$BASE/calls.log"
+: > "$FAKE_DOCKER_LOG"
+out="$(run)"
+inspects="$(grep -c '^inspect' "$FAKE_DOCKER_LOG" 2>/dev/null || echo 0)"
+unset FAKE_DOCKER_LOG
+if [ "$inspects" -eq 1 ]; then
+    ok "three containers cost ONE inspect call"
+else
+    no "three containers cost ONE inspect call" "inspect calls: $inspects"
+fi
 
 printf '\n%d/%d passed\n' "$pass" "$((pass+fail))"
 [ "$fail" -eq 0 ]

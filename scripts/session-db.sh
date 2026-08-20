@@ -312,8 +312,51 @@ _field() {
     case "$1" in '<no value>'|'<nil>') printf '' ;; *) printf '%s' "$1" ;; esac
 }
 
+#: One line per container, `recall.checkout|compose working_dir|name`. Named once because the
+#: batching below and the parsing above have to agree about it, and a template that drifts between
+#: them fails as a field that is silently always empty.
+INSPECT_FORMAT='{{index .Config.Labels "recall.checkout"}}|{{index .Config.Labels "com.docker.compose.project.working_dir"}}|{{.Name}}'
+
+#: How many ids go into one `docker inspect`. The round trips are what made this command slow: one
+#: per container, measured at roughly 2.5s each against a loaded daemon, so about 45 seconds for
+#: 17 containers, and `session-close.sh` runs it on every close. Chunked rather than unbounded
+#: because a command line has a length limit, and a machine with hundreds of containers is exactly
+#: where this matters.
+INSPECT_BATCH=100
+
+# ⚠️ The NAME is inside each line on purpose, and nothing here reads by position. A container can
+# be removed between the `ps` that listed it and the `inspect` that reads it; docker then writes an
+# error for that id and omits its line, so the reply is shorter than the argument list and every
+# later id would be misattributed by an index. That is a rename of somebody else's container in the
+# report, which is worse than the slowness this replaced.
+_inspect_batch() {
+    local -a batch=()
+    local id
+    for id in "$@"; do
+        batch+=("$id")
+        if [ "${#batch[@]}" -ge "$INSPECT_BATCH" ]; then
+            docker inspect "${batch[@]}" --format "$INSPECT_FORMAT" 2>/dev/null || true
+            batch=()
+        fi
+    done
+    if [ "${#batch[@]}" -gt 0 ]; then
+        docker inspect "${batch[@]}" --format "$INSPECT_FORMAT" 2>/dev/null || true
+    fi
+}
+
+# Every candidate id, both populations, deduplicated. A container carrying both labels is this
+# script's own container inside a checkout that also runs a compose stack, which is the normal
+# case here, not an edge one.
+_orphan_candidates() {
+    local filter
+    for filter in "label=${LABEL_KEY}" "label=com.docker.compose.project.working_dir"; do
+        docker ps -aq --filter "$filter" 2>/dev/null || true
+    done | awk 'NF && !seen[$0]++'
+}
+
 cmd_orphans() {
-    local found=0 unsure=0 id record checkout compose_dir labelled reason name seen=""
+    local found=0 unsure=0 record line checkout compose_dir labelled reason name
+    local -a ids=()
 
     # A daemon that does not answer produces an empty container list, and an empty list is
     # indistinguishable from a clean machine once it has been printed. That is the same false
@@ -328,14 +371,13 @@ cmd_orphans() {
         echo "session-db: the docker daemon is not answering; refusing to report a clean machine" >&2
         return 2
     fi
-    for filter in "label=${LABEL_KEY}" "label=com.docker.compose.project.working_dir"; do
-        while read -r id; do
-            [ -z "$id" ] && continue
-            case " $seen " in *" $id "*) continue ;; esac
-            seen="$seen $id"
-            record="$(docker inspect "$id" --format \
-                '{{index .Config.Labels "recall.checkout"}}|{{index .Config.Labels "com.docker.compose.project.working_dir"}}|{{.Name}}' \
-                2>/dev/null || true)"
+
+    while read -r line; do
+        [ -n "$line" ] && ids+=("$line")
+    done < <(_orphan_candidates)
+
+    if [ "${#ids[@]}" -gt 0 ]; then
+        while read -r record; do
             [ -z "$record" ] && continue
             checkout="$(_field "${record%%|*}")"
             compose_dir="$(_field "$(printf '%s' "$record" | cut -d'|' -f2)")"
@@ -349,16 +391,17 @@ cmd_orphans() {
             reason="$(_orphan_reason "$checkout" "$labelled")" || continue
             case "$reason" in
                 unverifiable*)
-                    printf 'CHECK  %-40s (%s: %s)\n' "${name:-$id}" "$reason" "$checkout"
+                    printf 'CHECK  %-40s (%s: %s)\n' "${name:-?}" "$reason" "$checkout"
                     unsure=1
                     ;;
                 *)
-                    printf 'ORPHAN %-40s (%s: %s)\n' "${name:-$id}" "$reason" "$checkout"
+                    printf 'ORPHAN %-40s (%s: %s)\n' "${name:-?}" "$reason" "$checkout"
                     found=1
                     ;;
             esac
-        done < <(docker ps -aq --filter "$filter")
-    done
+        done < <(_inspect_batch "${ids[@]}")
+    fi
+
     if [ "$found" -eq 0 ]; then
         echo "session-db: no orphaned containers"
     else
