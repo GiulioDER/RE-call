@@ -38,8 +38,8 @@ before the user's first real turn with Claude.
 A new step inside `run_setup_wizard` (`recall/setup.py`), placed after the existing
 embedder/reranker/sparse/entailment prompts and before the calibration question. It
 must run on every path through the wizard, including the early-return path taken when
-calibration is skipped (`recall/setup.py:1435-1440`), since that branch currently
-`return`s before reaching the shared tail at the bottom of the function. Concretely,
+calibration is skipped (the `if not queries_raw or not corpus_raw:` branch), since that
+branch currently `return`s before reaching the shared tail at the bottom of the function. Concretely,
 this means moving the new step above that `if _ask_yes_no(...)` calibration block, not
 adding it after, so both exit paths pass through it.
 
