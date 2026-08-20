@@ -843,6 +843,24 @@ class GenerationManager:
                 pass
             raise
 
+    def calibration_status_for(self, generation_id: str) -> str:
+        """The generation's calibration status as a plain string, for reporting rather than gating.
+
+        `rollback` records this instead of refusing on it, per decision 2. Never raises: a status
+        that cannot be determined must not be the thing that stops an incident recovery, so an
+        unreadable calibration reads as `"unknown"` and the rollback proceeds and says so.
+        """
+        from recall.calibration_v2 import CalibrationRepository
+
+        try:
+            return str(
+                CalibrationRepository(self._dsn, self.tenant_id, actor=self.actor)
+                .resolve(generation_id)
+                .status.value
+            )
+        except Exception:  # noqa: BLE001 - reporting must not be able to block recovery
+            return "unknown"
+
     def require_certified_for_production(self, generation_id: str) -> None:
         """Refuse unless `generation_id` is backed by a PUBLISHED, CERTIFIED, still-bound calibration.
 
@@ -959,20 +977,38 @@ class GenerationManager:
                 payload={"previous_generation_id": active},
             )
 
-    def rollback(self) -> str:
-        """Return the tenant to its previous generation, under the same gate as promotion.
+    def rollback(self, *, provisional_reason: str | None = None) -> str:
+        """Return the tenant to its previous generation. **Never refuses on certification grounds.**
 
-        ⛔ **This used to have no environment check and no flag at all**, while `promote` refused
-        production outright — so "no ungated generation becomes active in production" was not a
-        property this system had. `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md` records it as finding F2:
-        rollback writes the same `active_generation_id` column, and its target may be in state
-        `ready`, meaning a generation that never passed a gate could be made live by rolling
-        "back" to it.
+        ⛔ **This refused in production for one release, and that was wrong.**
+        `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md` section 6 decision 2 had already settled the
+        question, in bold: "`rollback(*, provisional_reason: str | None = None)`, and it never
+        refuses on certification grounds ... Rollback is the incident path. A gate that blocks
+        recovery precisely when recovery is needed is worse than serving a `provisional` answer
+        that says so on the wire, and an operator facing a bad generation will route around a
+        refusal in a way nobody audits. **Refusing here would trade a visible degradation for an
+        invisible workaround.**" The gate was added without reading that section.
 
-        Building the certification gate into `promote` alone would have left that window open
-        beside the new door, so the same check applies here. Rollback is the safety valve and must
-        stay usable, which is why the gate is the same one rather than a stricter one: a generation
-        that was certified and is still bound can be returned to.
+        Three ways the refusal bit, each found independently in the audit that caught this:
+
+        * **`forget()` bricked it permanently.** It rewrites `corpus_fingerprint` on every
+          generation of the tenant, so after one erasure request every calibration resolves STALE
+          and there was no target left to return to — ever.
+        * **Upgrading bricked it.** Production `promote` refused outright before this release, so
+          every generation an existing install is serving was promoted under `development` and has
+          no published calibration. Upgrading would have removed rollback from every one of them.
+        * There is no override to reach for, which is exactly the "invisible workaround" the
+          decision predicted: the remaining routes are a mid-incident recalibration that must
+          certify, or flipping `RECALL_ENV`, which silently changes five other policies.
+
+        **The invariant F2 is about survives**, because it was never "only certified generations go
+        live". It was "no generation becomes active without the operator being told what they are
+        activating". A rollback to an uncertified target is recorded as such: the audit event
+        carries the resolved calibration status and the reason, so the downgrade is visible rather
+        than prevented. `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md`: "Prevented, no; hidden, never."
+
+        `promote` keeps its gate. Promotion is the planned path and has somewhere to go back to;
+        rollback is what you reach for when it does not.
         """
         with self._connect() as conn, conn.transaction():
             state = conn.execute(
@@ -989,8 +1025,9 @@ class GenerationManager:
                 raise InvalidGenerationTransition(
                     f"rollback target is {target.state.value}, expected retired or ready"
                 )
-            if self.environment == "production":
-                self.require_certified_for_production(previous)
+            # ⛔ Deliberately NOT gated. See the docstring: this is the incident path, and the
+            # status is reported into the audit event below rather than used to refuse.
+            status = self.calibration_status_for(previous)
             if active:
                 conn.execute(
                     "UPDATE recall_generations SET state = 'ready', retired_at = NULL "
@@ -1013,7 +1050,18 @@ class GenerationManager:
                 conn,
                 "generation_rolled_back",
                 generation_id=previous,
-                payload={"replaced_generation_id": active},
+                payload={
+                    "replaced_generation_id": active,
+                    # ⚠️ The downgrade is REPORTED, which is the whole of decision 2's bargain:
+                    # "Prevented, no; hidden, never." A rollback onto an uncertified target is
+                    # allowed and leaves a record saying exactly what was activated and why.
+                    "calibration_status": status,
+                    "provisional_reason": (
+                        provisional_reason or "rollback: incident recovery"
+                        if status != "certified"
+                        else None
+                    ),
+                },
             )
             return previous
 

@@ -655,13 +655,17 @@ def test_the_unsafe_development_flag_does_not_open_the_production_door(
 
 
 @requires_db
-def test_rollback_in_production_is_gated_by_the_same_certification(calibration_tenant) -> None:
-    """⛔ **F2: rollback wrote the same column with no environment check and no flag.**
+def test_rollback_never_refuses_and_records_what_it_activated(calibration_tenant) -> None:
+    """⛔ **Decision 2: rollback is the incident path and never refuses on certification grounds.**
 
-    `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md` records this as the reason "no ungated generation
-    becomes active in production" was not a property this system had: rollback's target may be in
-    state `ready`, so a generation that never passed a gate could be made live by rolling "back" to
-    it. Building the gate into `promote` alone would have left that window open beside the new door.
+    This test previously asserted the opposite, because the gate was written without reading
+    `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md` section 6, which had already settled the question in
+    bold: "A gate that blocks recovery precisely when recovery is needed is worse than serving a
+    `provisional` answer that says so on the wire ... Refusing here would trade a visible
+    degradation for an invisible workaround."
+
+    The bargain is not "anything goes". It is **"Prevented, no; hidden, never."** So the assertion
+    is that the rollback SUCCEEDS and that the audit event says what was activated.
     """
     tenant, manager = calibration_tenant
     embedder = _CalibrationEmbedder()
@@ -673,25 +677,70 @@ def test_rollback_in_production_is_gated_by_the_same_certification(calibration_t
     production = _production(manager)
     production.promote(first)
 
-    # A second generation, certified, so it can legitimately take over.
     second = _ready(manager, embedder, b"answer corpus two", "v2")
     second_artifact = repository.calibrate(second, _labels(), embedder)
     repository.publish(second_artifact.calibration_id)
     production.promote(second)
 
-    # Rolling back to the first is allowed: it certified and is still bound.
-    assert production.rollback() == first
-
-    # Now break the first one's binding by rejecting its calibration, and rollback must refuse.
+    # Break the target's binding, which is what `forget()` does to EVERY generation of a tenant.
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
         conn.execute(
             "UPDATE recall_calibrations SET lifecycle_state = 'superseded' "
             "WHERE tenant_id = %s AND generation_id = %s",
-            (tenant, second),
+            (tenant, first),
         )
-    with pytest.raises(UnsafePromotion):
-        production.rollback()
+
+    assert production.rollback(provisional_reason="incident 4171") == first, (
+        "an uncertified target must NOT block recovery"
+    )
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        row = conn.execute(
+            "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
+            "AND event_type = 'generation_rolled_back' ORDER BY created_at DESC LIMIT 1",
+            (tenant,),
+        ).fetchone()
+
+    assert row is not None, "the rollback must be audited"
+    payload = row[0]
+    assert payload["calibration_status"] != "certified", "the fixture must actually be degraded"
+    assert payload["provisional_reason"] == "incident 4171", (
+        "the operator's reason must survive into the record; that is the whole of the bargain"
+    )
+
+
+@requires_db
+def test_a_rollback_onto_a_certified_target_records_no_provisional_reason(
+    calibration_tenant,
+) -> None:
+    """The undegraded case must not look degraded, or the marker stops meaning anything."""
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+
+    first = _ready(manager, embedder, b"answer corpus", "v1")
+    repository.publish(repository.calibrate(first, _labels(), embedder).calibration_id)
+    production = _production(manager)
+    production.promote(first)
+    second = _ready(manager, embedder, b"answer corpus two", "v2")
+    repository.publish(repository.calibrate(second, _labels(), embedder).calibration_id)
+    production.promote(second)
+
+    production.rollback()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        row = conn.execute(
+            "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
+            "AND event_type = 'generation_rolled_back' ORDER BY created_at DESC LIMIT 1",
+            (tenant,),
+        ).fetchone()
+
+    assert row is not None
+    assert row[0]["calibration_status"] == "certified"
+    assert row[0]["provisional_reason"] is None
 
 
 @requires_db
