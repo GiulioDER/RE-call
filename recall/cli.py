@@ -1452,6 +1452,47 @@ def main(argv: list[str] | None = None) -> None:
     p_cal_measure.add_argument("--generation", required=True)
     p_cal_measure.add_argument("--queries", dest="query_file", required=True)
     p_cal_measure.add_argument("--publish", action="store_true")
+    # Local to match how the rest of this file reaches `recall.calibration_v2`, NOT to defer a
+    # cost: `recall.store` is imported at module level and already pulls in psycopg and pgvector,
+    # so nothing is saved here and an earlier version of this comment claiming otherwise was
+    # wrong. The names bind for the whole of `main`, which is why the dispatch branch below does
+    # not import them again.
+    from recall.calibration_v2 import (
+        DEFAULT_MAX_CARRY_FORWARD_ERROR,
+        DEFAULT_MAX_CORPUS_DELTA,
+    )
+
+    p_cal_carry = calibration_sub.add_parser(
+        "carry-forward",
+        help="re-verify a published threshold against a rebuilt generation, without refitting it",
+    )
+    p_cal_carry.add_argument(
+        "--generation", required=True, help="the NEW generation to bind the threshold to"
+    )
+    p_cal_carry.add_argument(
+        "--from",
+        dest="parent_calibration_id",
+        default=None,
+        help="calibration to carry forward (default: this tenant's most recently published one "
+        "on another generation)",
+    )
+    p_cal_carry.add_argument(
+        "--max-corpus-delta",
+        type=float,
+        default=None,
+        help=f"refuse if more than this fraction of sources changed (default "
+        f"{DEFAULT_MAX_CORPUS_DELTA}). Lower it per tenant; the default is a ceiling on the "
+        f"mechanism, not a measured safe distance",
+    )
+    p_cal_carry.add_argument(
+        "--max-error",
+        type=float,
+        default=None,
+        help=f"reject if the inherited threshold misclassifies more than this fraction of either "
+        f"labelled class on the new generation (default {DEFAULT_MAX_CARRY_FORWARD_ERROR}). This "
+        f"is the check separability cannot make",
+    )
+    p_cal_carry.add_argument("--publish", action="store_true")
     calibration_sub.add_parser("list")
     p_cal_show = calibration_sub.add_parser("show")
     p_cal_show.add_argument("calibration_id")
@@ -2193,6 +2234,66 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"pipeline: {artifact.pipeline_fingerprint}")
                 print(f"corpus: {artifact.corpus_fingerprint}")
                 print(f"queries: {artifact.query_set_digest}")
+            elif args.calibration_cmd == "carry-forward":
+                bound = (
+                    DEFAULT_MAX_CORPUS_DELTA
+                    if args.max_corpus_delta is None
+                    else args.max_corpus_delta
+                )
+                error_bound = (
+                    DEFAULT_MAX_CARRY_FORWARD_ERROR
+                    if args.max_error is None
+                    else args.max_error
+                )
+                artifact = repository.carry_forward(
+                    args.generation,
+                    _make_embedder(args.embedder),
+                    parent_calibration_id=args.parent_calibration_id,
+                    max_corpus_delta=bound,
+                    max_error=error_bound,
+                )
+                provenance = dict(artifact.carry_forward or {})
+                print(f"calibration: {artifact.calibration_id}")
+                print(f"status: {artifact.status.value}")
+                print(f"generation: {artifact.generation_id}")
+                print(f"carried forward from: {provenance.get('parent_calibration_id')}")
+                print(
+                    f"corpus delta: {provenance.get('corpus_delta'):.4f} "
+                    f"(+{provenance.get('sources_added')} "
+                    f"-{provenance.get('sources_removed')} "
+                    f"~{provenance.get('sources_modified')} "
+                    f"of {provenance.get('sources_union')} sources, bound {bound})"
+                )
+                print(f"inherited threshold: {artifact.threshold}")
+                # Printed next to the inherited number precisely because it is NOT applied. An
+                # operator watching these two diverge over a chain of rebuilds has the warning
+                # that the next carry-forward is the one that will fail.
+                print(f"a refit here would have chosen: {provenance.get('refit_threshold')}")
+                print(
+                    f"separability on this generation: {artifact.separability:.4f} "
+                    f"CI [{artifact.separability_ci[0]:.4f}, {artifact.separability_ci[1]:.4f}] "
+                    f"over {artifact.n_answerable} answerable / "
+                    f"{artifact.n_unanswerable} unanswerable"
+                )
+                # Printed beside separability because they answer a different question and can
+                # disagree with it: an ordering can stay perfect while the fixed cut stops
+                # deciding anything. Reading only the AUC is how that gets missed.
+                print(
+                    f"at the inherited threshold: false abstain "
+                    f"{provenance.get('false_abstain_rate', 0.0):.1%} of {artifact.n_answerable}, "
+                    f"false confirm {provenance.get('false_confirm_rate', 0.0):.1%} of "
+                    f"{artifact.n_unanswerable} (bound {error_bound:.1%})"
+                )
+                if not artifact.certified:
+                    print(f"NOT certified: {artifact.certification_reason}")
+                    raise SystemExit(
+                        "the inherited threshold no longer certifies on this generation; "
+                        "the evidence is retained as a rejected artifact. Recalibrate with "
+                        "`recall calibration calibrate`."
+                    )
+                if args.publish:
+                    artifact = repository.publish(artifact.calibration_id)
+                    print(f"published: {artifact.calibration_id}")
             else:  # unreachable while argparse constrains the choices, but never guess a default
                 raise SystemExit(f"unknown calibration subcommand: {args.calibration_cmd}")
         except CalibrationError as exc:
