@@ -114,3 +114,5 @@ docs/_*_2x.png
 # `git add`. The fix is to point RECALL_INDEX_ROOT somewhere outside the tree; see
 # docs/SECURITY_MODEL.md.
 uploads/
+
+.deploy-vps2/
