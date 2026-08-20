@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Callable, Literal, Sequence
 
 from recall.calibration import Calibration, from_samples, save
+from recall.claude_code import claude_code_detected, install_hooks, register_mcp_server
 from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
+from recall.seed import plan_seed, seed_corpus
 
 SETUP_BEGIN = "# recall setup begin"
 SETUP_END = "# recall setup end"
@@ -1040,6 +1042,22 @@ def scaffold_memory_index(memory_dir: Path = DEFAULT_MEMORY_DIR) -> bool:
     return True
 
 
+def _safe_error(exc: Exception, dsn: str) -> str:
+    """An exception rendered without echoing the DSN's password back at the user.
+
+    A MALFORMED dsn makes psycopg quote the whole connection string in its message: `missing "="
+    after "postgresql://user:PASSWORD@host" in connection info string`. Every WELL-FORMED failure
+    (unreachable port, bad host, wrong password) is clean, which is what makes this easy to miss.
+    Found by the wizard session in its own preflight.
+
+    Replacing the known DSN covers the echo, which is the observed leak. It is not a general
+    scrubber; `recall.store.scrub_dsn_secrets` is that, and this should call it once #434 lands.
+    """
+    from recall.store import redacted_dsn
+
+    return str(exc).replace(dsn, redacted_dsn(dsn))
+
+
 def index_memory_directory(
     *,
     dsn: str,
@@ -1079,7 +1097,7 @@ def index_memory_directory(
             stats = indexer.index_path(memory_dir, glob="**/*.md")
     except Exception as exc:  # best effort: scaffolded files must survive even if this fails
         print_fn(
-            f"Could not auto-index {memory_dir}: {exc} — run "
+            f"Could not auto-index {memory_dir}: {_safe_error(exc, dsn)} — run "
             f"'python -m recall.cli index {memory_dir}' once the schema is applied for this "
             "embedder's dimension."
         )
@@ -1287,6 +1305,34 @@ def run_setup_wizard(
         default=True,
     )
 
+    # Computed before asking, so the question names what would actually be ingested rather than
+    # asking the user to agree to an unspecified amount of their own project.
+    # One notion of "this project" for both steps below. Seeding reads from it, and the MCP
+    # registration is keyed by it: a local-scope entry lives under `projects[<dir>]`, so the
+    # path recorded here is the path the client will later look the server up by.
+    project_root = Path.cwd().resolve()
+    seed_plan = plan_seed(project_root)
+    seed_requested = False
+    if not seed_plan.is_empty:
+        seed_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            f"Seed the corpus now from this project ({seed_plan.describe()})?",
+            default=True,
+        )
+
+    # Scaffolding tells Claude HOW to use recall; this step is what gives it the tools at all.
+    # Only offered when there is a client on this machine to wire up: asking someone to register
+    # an MCP server with a program they do not have is noise dressed up as a choice.
+    claude_wiring_requested = False
+    if claude_code_detected():
+        claude_wiring_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            "Register the recall MCP server with Claude Code and install session hooks?",
+            default=True,
+        )
+
     # Deferred to right before each return, after `.env` is written: `scaffold_claude_md` and
     # `index_memory_directory` can resolve/download an embedder model and open a DB connection,
     # and running that BEFORE the answers just gathered are persisted means an interruption
@@ -1308,6 +1354,54 @@ def run_setup_wizard(
             )
         except Exception as exc:
             print_fn(f"Could not scaffold CLAUDE.md/memory: {exc}")
+
+    def _run_claude_wiring() -> None:
+        """Register the MCP server and install the hooks, best effort.
+
+        Best effort deliberately: this writes into files the Claude Code client owns and shares
+        with every project on the machine, so a client version that has moved a key, or a config
+        somebody is mid-edit on, must cost the user a printed line rather than the setup run they
+        just completed. Everything above this point is already persisted in `.env`.
+        """
+        try:
+            register_mcp_server(dsn=dsn, project_root=project_root, print_fn=print_fn)
+            install_hooks(dsn=dsn, embedder=embedder.value, print_fn=print_fn)
+            print_fn(
+                "Claude Code is wired up. The tools appear in the NEXT session, not this one: "
+                "the client reads its server list at startup."
+            )
+        except Exception as exc:
+            print_fn(
+                f"Could not wire up Claude Code: {_safe_error(exc, dsn)}\n"
+                "Register it by hand with the block in docs/USING_WITH_CLAUDE.md."
+            )
+
+    def _run_seed() -> None:
+        seed_corpus(
+            dsn=dsn,
+            embedder_name=embedder.value,
+            plan=seed_plan,
+            env=cloud_keys,
+            print_fn=print_fn,
+        )
+
+    def _run_post_setup() -> None:
+        # Order is the point, not an accident. Seeding runs before the hooks, because a first
+        # session that searches an empty corpus teaches the user that recall finds nothing, and
+        # the session-start digest correctly stays silent when there is nothing to report. The
+        # wiring goes last, so the tools arrive pointed at a corpus that already answers.
+        #
+        # Scaffolding first is NOT so that seeding picks up the `memory/MEMORY.md` it writes: the
+        # seed plan was computed before the interview finished, so a file created here cannot be
+        # in it. It does not need to be. `_run_scaffold` indexes `memory/` itself, and the plan
+        # covers a `memory/` that already existed, which is the case where scaffolding is
+        # declined. Recomputing the plan here instead would index a set the user never agreed to.
+        if scaffold_requested:
+            _run_scaffold()
+        if seed_requested:
+            _run_seed()
+        if claude_wiring_requested:
+            _run_claude_wiring()
 
     values: dict[str, str] = {
         "RECALL_DSN": dsn,
@@ -1361,8 +1455,7 @@ def run_setup_wizard(
             )
             _update_env_block(env_path, values)
             print_fn(f"Wrote {env_path}")
-            if scaffold_requested:
-                _run_scaffold()
+            _run_post_setup()
             return values
         queries = _require_local_path(queries_raw, label="Path to labeled queries JSON")
         corpus = _require_local_path(corpus_raw, label="Path to your corpus")
@@ -1386,8 +1479,7 @@ def run_setup_wizard(
             # bad calibration path aborts the whole wizard. But scaffolding was requested
             # independently of calibration succeeding, so still attempt it best-effort on the
             # way out rather than silently dropping a completed part of the interview.
-            if scaffold_requested:
-                _run_scaffold()
+            _run_post_setup()
             raise SystemExit(2) from exc
         values["RECALL_CALIBRATION"] = str(result.path)
         print_fn(
@@ -1401,6 +1493,5 @@ def run_setup_wizard(
 
     _update_env_block(env_path, values)
     print_fn(f"Wrote {env_path}")
-    if scaffold_requested:
-        _run_scaffold()
+    _run_post_setup()
     return values

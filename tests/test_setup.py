@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -19,7 +20,29 @@ from recall.setup import (
     reasoning_provider_choices,
     run_setup_wizard,
 )
+import recall.setup as recall_setup
+from recall.seed import SeedPlan
 from tests.conftest import requires_openai
+
+
+@pytest.fixture(autouse=True)
+def no_machine_dependent_prompts(monkeypatch):
+    """Pin the two conditional prompts off for every wizard test in this module.
+
+    Both appear only when the machine happens to be in a particular state: the Claude Code wiring
+    prompt when a client is detected, the seeding prompt when the current directory has documents
+    worth seeding. The answer scripts below are positional, so an unpinned conditional prompt
+    shifts every later answer by one and the test hangs on an exhausted iterator. That failure
+    reads as a flake, and it would appear or vanish depending on whether the person running the
+    suite uses Claude Code, or on which directory they ran pytest from.
+
+    Tests that exercise either prompt turn it back on explicitly.
+    """
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: False)
+    monkeypatch.setattr(
+        "recall.setup.plan_seed",
+        lambda root, **kw: SeedPlan(root=Path(root), files=(), total_bytes=0),
+    )
 
 
 def test_embedder_choices_hide_cloud_when_security_is_required():
@@ -1528,6 +1551,149 @@ def test_declining_the_reasoning_arm_writes_only_the_off_flag(tmp_path, monkeypa
     )
     assert "RECALL_REASONING=0" in env
     assert "RECALL_REASONING_MODEL" not in env
+
+
+def test_seeding_runs_before_the_hooks_are_installed(tmp_path, monkeypatch):
+    """Order is the feature. A first session searching an empty corpus teaches the wrong lesson."""
+    order = []
+    plan = SeedPlan(root=tmp_path, files=(tmp_path / "CLAUDE.md",), total_bytes=12)
+    monkeypatch.setattr("recall.setup.plan_seed", lambda root, **kw: plan)
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr(
+        "recall.setup.scaffold_claude_md", lambda *a, **k: order.append("scaffold")
+    )
+    monkeypatch.setattr("recall.setup.scaffold_memory_index", lambda *a, **k: False)
+    monkeypatch.setattr("recall.setup.index_memory_directory", lambda **kw: None)
+    monkeypatch.setattr("recall.setup.seed_corpus", lambda **kw: order.append("seed") or 3)
+    monkeypatch.setattr(
+        "recall.setup.register_mcp_server", lambda **kw: order.append("register")
+    )
+    monkeypatch.setattr("recall.setup.install_hooks", lambda **kw: order.append("hooks"))
+
+    _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",   # security required
+            "2",   # embedder: fastembed
+            "1",   # reranker: none
+            "1",   # sparse: fts
+            "n",   # reasoning arm declined
+            "y",   # scaffold
+            "y",   # seed
+            "y",   # wire up Claude Code
+            "n",   # calibrate declined
+        ],
+    )
+
+    assert order == ["scaffold", "seed", "register", "hooks"]
+
+
+def test_the_seed_prompt_names_what_it_would_ingest(tmp_path, monkeypatch):
+    """Consent to an unspecified amount of your own project is not consent."""
+    prompts = []
+    plan = SeedPlan(root=tmp_path, files=(tmp_path / "a.md", tmp_path / "b.md"), total_bytes=4096)
+    monkeypatch.setattr("recall.setup.plan_seed", lambda root, **kw: plan)
+    monkeypatch.setattr("recall.setup.seed_corpus", lambda **kw: 0)
+
+    real_prompt = recall_setup._prompt
+
+    def spy(input_fn, print_fn, text, *a, **k):
+        prompts.append(text)
+        return real_prompt(input_fn, print_fn, text, *a, **k)
+
+    monkeypatch.setattr("recall.setup._prompt", spy)
+    _run_wizard(tmp_path, monkeypatch, ["y", "2", "1", "1", "n", "n", "n", "n"])
+
+    seed_prompt = next(p for p in prompts if "Seed the corpus" in p)
+    assert "2 files" in seed_prompt and "4 KB" in seed_prompt
+
+
+def test_no_seed_prompt_when_there_is_nothing_to_seed(tmp_path, monkeypatch):
+    """The answer script below has no answer for it, so an unwanted prompt exhausts the iterator."""
+    monkeypatch.setattr("recall.setup.seed_corpus", lambda **kw: 0)
+    # The autouse fixture already pins an empty plan; this asserts the wizard honours it.
+    env, _ = _run_wizard(tmp_path, monkeypatch, ["y", "2", "1", "1", "n", "n", "n"])
+    assert "RECALL_EMBEDDER=fastembed" in env
+
+
+def test_declining_the_seed_prompt_indexes_nothing(tmp_path, monkeypatch):
+    def fail(**kwargs):
+        raise AssertionError("a declined seed must not read or index the project")
+
+    plan = SeedPlan(root=tmp_path, files=(tmp_path / "CLAUDE.md",), total_bytes=12)
+    monkeypatch.setattr("recall.setup.plan_seed", lambda root, **kw: plan)
+    monkeypatch.setattr("recall.setup.seed_corpus", fail)
+
+    _run_wizard(tmp_path, monkeypatch, ["y", "2", "1", "1", "n", "n", "n", "n"])
+
+
+def test_accepting_the_wiring_prompt_registers_the_server_and_installs_the_hooks(
+    tmp_path, monkeypatch
+):
+    """The step that decides whether Claude uses recall at all in the session after this one."""
+    calls = {}
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr(
+        "recall.setup.register_mcp_server", lambda **kw: calls.setdefault("register", kw)
+    )
+    monkeypatch.setattr("recall.setup.install_hooks", lambda **kw: calls.setdefault("hooks", kw))
+
+    env, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",   # security required
+            "2",   # embedder: fastembed
+            "1",   # reranker: none
+            "1",   # sparse: fts
+            "n",   # reasoning arm declined
+            "n",   # scaffold declined
+            "y",   # wire up Claude Code
+            "n",   # calibrate declined
+        ],
+    )
+
+    assert calls["register"]["dsn"] == "postgresql://example/recall"
+    assert calls["hooks"]["embedder"] == "fastembed"
+    # The tools land in the NEXT session, and a user who does not know that reads a working
+    # install as a broken one when the current session shows no recall tools.
+    assert "NEXT session" in output
+    assert "RECALL_EMBEDDER=fastembed" in env
+
+
+def test_declining_the_wiring_prompt_touches_no_client_configuration(tmp_path, monkeypatch):
+    def fail(**kwargs):
+        raise AssertionError("declined wiring must not write to the client's configuration")
+
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr("recall.setup.register_mcp_server", fail)
+    monkeypatch.setattr("recall.setup.install_hooks", fail)
+
+    _run_wizard(
+        tmp_path,
+        monkeypatch,
+        ["y", "2", "1", "1", "n", "n", "n", "n"],  # ...scaffold n, wiring n, calibrate n
+    )
+
+
+def test_a_failed_wiring_step_does_not_lose_the_completed_interview(tmp_path, monkeypatch):
+    """`.env` is written before this runs, so a client whose config has moved costs a line."""
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr(
+        "recall.setup.register_mcp_server",
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("claude mcp add failed: nope")),
+    )
+
+    env, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        ["y", "2", "1", "1", "n", "n", "y", "n"],
+    )
+
+    assert "RECALL_EMBEDDER=fastembed" in env
+    assert "Could not wire up Claude Code" in output
+    assert "USING_WITH_CLAUDE.md" in output
 
 
 def test_choosing_openrouter_and_deepseek_writes_all_four_keys(tmp_path, monkeypatch):

@@ -105,7 +105,7 @@ recall-mcp = "recall_mcp.server:main"
 recall-desktop = "recall.desktop.main:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["recall", "recall_mcp"]
+packages = ["recall", "recall_hooks", "recall_mcp"]
 artifacts = ["recall/py.typed", "recall_mcp/py.typed"]
 
 [tool.pytest.ini_options]
