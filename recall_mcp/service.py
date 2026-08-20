@@ -33,8 +33,8 @@ from recall.embeddings import (
 from recall.guards import staleness
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
-from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_code, chunk_text
-from recall.lineage import ChunkerIdentity, EmbedderIdentity, IndexManifestV1, ManifestObjectV1, PipelineIdentity
+from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_text
+from recall.lineage import IndexManifestV1, ManifestObjectV1
 from recall.manifest import ExtractingLocalObjectReader
 from recall.generations import (
     GenerationError,
@@ -2146,30 +2146,37 @@ def generation_ingest(
         corpus_version=f"desktop-{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
         objects=tuple(objects),
     )
-    chunker = chunk_code if category == "code" else chunk_text
     # ⚠️ **Verified when the weights can be hashed, honestly unverified when they cannot.**
     # A desktop upload used to declare `unverified_reason` unconditionally, so `create` refused it
     # under `RECALL_ENV=production` and no upload to a production tenant could ever succeed. Hashing
     # the model's own snapshot directory is a real provenance claim: those are the bytes that
-    # produced these vectors. `HashingEmbedder` has no weights on disk, so it still gets the
-    # unverified identity — the alternative would be inventing a digest to pass a gate, which is
-    # the one outcome worse than the refusal.
+    # produced these vectors. An embedder with no weights on disk still gets an unverified identity
+    # — the alternative would be inventing a digest to pass a gate, which is the one outcome worse
+    # than the refusal.
     # ⚠️ NOT `digest`: that name is already bound in this function to each uploaded FILE's sha256,
     # a few lines above. Two different digests under one name in one function is how the wrong one
     # gets used later.
+    from recall.generation_build import BuildRequest, pipeline_for
+
     embedder_digest = embedder_artifact_digest(embedder)
-    pipeline = PipelineIdentity(
-        EmbedderIdentity(
-            provider="fastembed",
-            model=embedder.name,
-            dimension=embedder.dim,
+    # ⛔ **Built through `pipeline_for`, not assembled here.** This function used to hardcode
+    # `provider="fastembed"` for every embedder and spell out its own `ChunkerIdentity`. Both were
+    # copies of rules that already exist in `recall/generation_build.py`, and the provider copy was
+    # wrong: `HashingEmbedder` is shipped in this repository and identifies itself as provider
+    # `recall` at revision `hashing-md5-bow-v1`, so a desktop upload recorded it as a fastembed
+    # artifact — false provenance written into an immutable lineage record, which is the one place
+    # a wrong value cannot later be corrected.
+    #
+    # It also silently disagreed about the CHUNKER's identity: this spelled `recall.chunk_text`
+    # with version 1 and empty params, while `chunker_for` records the real parameters. A generation
+    # built here and one built by `recall index` therefore carried different pipeline fingerprints
+    # for the same pipeline, which is exactly what makes a calibration resolve STALE.
+    chunker, pipeline = pipeline_for(
+        embedder,
+        BuildRequest(
+            chunker="code" if category == "code" else "text",
             artifact_digest=embedder_digest,
-            unverified_reason=None if embedder_digest else "desktop local development build",
-        ),
-        ChunkerIdentity(
-            "recall.chunk_code" if category == "code" else "recall.chunk_text",
-            1,
-            {},
+            unverified=not embedder_digest,
         ),
     )
     # ⚠️ Ask for the exemption only when it is actually needed. Passed unconditionally, a

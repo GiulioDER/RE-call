@@ -275,3 +275,92 @@ def test_an_uncertified_upload_is_reported_rather_than_raised() -> None:
     assert "Exception" not in handled, (
         "`CalibrationError`, not `Exception`: a domain failure is a reason, a bug is still a bug"
     )
+
+
+# ----------------------------------------------------------------------------------------------
+# One definition of what a pipeline IS
+# ----------------------------------------------------------------------------------------------
+
+
+def test_the_upload_records_the_same_pipeline_identity_the_cli_would() -> None:
+    """⛔ A hand-assembled identity wrote a different fingerprint for the same pipeline.
+
+    `generation_ingest` used to construct its own `EmbedderIdentity` and `ChunkerIdentity` instead
+    of calling `pipeline_for`. Both were copies of rules that already existed, and both were wrong:
+
+    * `provider="fastembed"` was hardcoded. `HashingEmbedder` is shipped in this repository and
+      identifies itself as provider `recall` at revision `hashing-md5-bow-v1`, so an upload recorded
+      it as a fastembed artifact — false provenance in an IMMUTABLE lineage record, the one place a
+      wrong value cannot later be corrected.
+    * The chunker identity was spelled `ChunkerIdentity("recall.chunk_text", 1, {})`, with empty
+      configuration. `chunker_for` records the real parameters.
+
+    The second is the bigger half, because it bites EVERY upload rather than only the hashing one.
+    Measured before the fix, on `HashingEmbedder(dim=64)`:
+
+        documents: old chunker config {}   new {'document_blocks': 'table-row-groups-v1',
+                                                'max_chars': 800, 'overlap': 80}
+                   fingerprint a7ab8ced8b2e754d... vs 895236ceca0112df...
+        code:      old chunker config {}   new {'max_chars': 800}
+                   fingerprint 327a84f9b078a30c... vs d25473cebd6a10c1...
+
+    A generation built by the wizard and one built by a desktop upload therefore carried different
+    pipeline fingerprints for the same pipeline, and a fingerprint mismatch is exactly what makes a
+    published calibration resolve STALE.
+    """
+    import ast
+    import inspect
+
+    import recall_mcp.service as service
+
+    # ⚠️ **Parsed, not grepped.** A substring test failed on the COMMENT that explains the removal,
+    # which is the second time in this file that a check unable to tell code from prose went red on
+    # its own documentation. A check like that gets deleted the first time it is inconvenient.
+    tree = ast.parse(textwrap.dedent(inspect.getsource(service.generation_ingest)))
+    called = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "pipeline_for" in called, "the identity must come from the shared builder"
+    assert "EmbedderIdentity" not in called, (
+        "hardcoding the provider records a fastembed artifact for an embedder that is not one"
+    )
+    assert "ChunkerIdentity" not in called, (
+        "spelling the chunker identity by hand disagrees with `chunker_for` about its configuration"
+    )
+
+
+def test_the_shared_builder_disagrees_with_the_hand_written_identity() -> None:
+    """The claim above is only worth pinning if the two really differ. Assert that they do.
+
+    Guards against a future change that makes `pipeline_for` produce the old empty configuration,
+    which would leave the test above passing while the defect returned.
+    """
+    from recall.embeddings import HashingEmbedder
+    from recall.generation_build import BuildRequest, pipeline_for
+    from recall.lineage import ChunkerIdentity, EmbedderIdentity, PipelineIdentity
+
+    embedder = HashingEmbedder(dim=64)
+    hand_written = PipelineIdentity(
+        EmbedderIdentity(
+            provider="fastembed",
+            model=embedder.name,
+            dimension=embedder.dim,
+            unverified_reason="desktop local development build",
+        ),
+        ChunkerIdentity("recall.chunk_text", 1, {}),
+    )
+    shared = pipeline_for(embedder, BuildRequest(chunker="text", unverified=True))[1]
+
+    assert shared.embedder.provider == "recall", (
+        "a HashingEmbedder is shipped here and identifies itself; recording it as fastembed is a "
+        "provenance claim about somebody else's weights"
+    )
+    assert dict(shared.chunker.configuration), (
+        "the shared builder must record the chunker's real parameters, not an empty mapping"
+    )
+    assert shared.fingerprint != hand_written.fingerprint, (
+        "if these agree the hand-written identity was harmless and this whole change is noise; "
+        "they did not agree when measured"
+    )
