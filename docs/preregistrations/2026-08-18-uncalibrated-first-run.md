@@ -244,8 +244,8 @@ supplementary evidence the design called it. Its cost was not measured; what was
 20 chunk sample runs in seconds.
 
 🔁 **Fixed upstream the same day by #370**, which this measurement prompted: `_fallback_profile_id`
-(`recall/embeddings.py:752`) now derives `unregistered__{model}__{dimension}__{kind}`
-(`recall/embeddings.py:803`). The measurement above stands as a dated record of the tree it ran
+(`recall/embeddings.py:802`) now derives `unregistered__{model}__{dimension}__{kind}`
+(`recall/embeddings.py:853`). The measurement above stands as a dated record of the tree it ran
 against, and **the conclusion is unchanged**: every corpus indexed before #370 still carries the old
 literal, and those are precisely the rows an adoption path reads. Fixing a writer does not repair
 rows already written.
