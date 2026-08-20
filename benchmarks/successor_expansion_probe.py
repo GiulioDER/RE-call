@@ -58,6 +58,7 @@ if _ORIGIN is None or _HERE not in _ORIGIN.parents:
 from recall.calibration import from_samples  # noqa: E402
 from recall.embeddings import FastEmbedEmbedder, embedding_profile_id  # noqa: E402
 from recall.eval._research_trust import research_search  # noqa: E402
+from recall.evidence import EvidencePolicy, build_evidence_bundle  # noqa: E402
 from recall.eval.calibrate import measure_top_cosines  # noqa: E402
 from recall.eval.metrics import wilson_ci  # noqa: E402
 from recall.index import Indexer  # noqa: E402
@@ -98,6 +99,24 @@ def _top_ok(result: TrustedResult) -> str:
 
 def _all_files(result: TrustedResult) -> set[str]:
     return {h.provenance.file or "" for h in result.hits}
+
+
+#: The DEFAULT policy, deliberately. The question this measures is what the shipped consumer gets,
+#: so any tuning here would answer a different question well.
+BUNDLE_POLICY = EvidencePolicy()
+
+
+def _in_bundle(result: TrustedResult, filename: str) -> bool:
+    """Does `filename` reach the evidence bundle a generator would actually receive?
+
+    Calls the real `build_evidence_bundle` rather than comparing a rank against `max_items`. The
+    two agree today, and reimplementing the selection rule here is precisely the counterfactual
+    mistake the third record made: a model of the code cannot exercise the code.
+
+    Matches on the basename of `source`, because `EvidenceItem` carries `source` and not `file`.
+    """
+    bundle = build_evidence_bundle(result, BUNDLE_POLICY)
+    return any(Path(item.source).name == filename for item in bundle.items)
 
 
 def _rate(flags: list[bool]) -> str:
@@ -165,6 +184,7 @@ def main() -> int:
                 for name, policy in ARMS.items():
                     result = search(pair.query, policy)
                     row[f"{name}_recovered"] = _top_ok(result) == successor
+                    row[f"{name}_bundled"] = _in_bundle(result, successor)
                     row[f"{name}_str"] = stale in _ok_files(result)
                 pairs.append(row)
 
@@ -180,7 +200,9 @@ def main() -> int:
                     "base_gold_top": _top_ok(base) == gold,
                 }
                 for name, policy in ARMS.items():
-                    row[f"{name}_gold_top"] = _top_ok(search(reg.query, policy)) == gold
+                    result = search(reg.query, policy)
+                    row[f"{name}_gold_top"] = _top_ok(result) == gold
+                    row[f"{name}_gold_bundled"] = _in_bundle(result, gold)
                 regressions.append(row)
 
             controls = []
@@ -250,6 +272,15 @@ def main() -> int:
         print(f"  {name:<16} {_rate([r[f'{name}_recovered'] for r in strat_b]):<26} "
               f"{_rate([r[f'{name}_gold_top'] for r in usable]):<26} "
               f"{_rate([r[f'{name}_str'] for r in pairs])}")
+
+    print()
+    print("  BUNDLE MEMBERSHIP: what build_evidence_bundle(EvidencePolicy()) actually delivers")
+    print(f"    {'arm':<16} {'successor in bundle':<28} gold in bundle")
+    for name in ARMS:
+        print(f"    {name:<16} {_rate([r[f'{name}_bundled'] for r in strat_b]):<28} "
+              f"{_rate([r[f'{name}_gold_bundled'] for r in usable])}")
+    print("    (compare against the top-1 rows above: if these are all high, the ordering is")
+    print("     near-irrelevant to the consumer that ships, and top-1 was the wrong metric)")
 
     print()
     print("  displacement: gold was top under shipped ordering and is NOT top under the arm")
