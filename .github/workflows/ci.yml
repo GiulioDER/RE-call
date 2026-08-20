@@ -361,6 +361,13 @@ jobs:
       # Git Bash, which windows-latest ships. This suite covers session-space.sh,
       # the shell half of the same guard, including the claim-lock atomicity that
       # `set -C` silently failed to provide.
+      # Docker is stubbed in this one, so it runs on a runner with no daemon. It covers the
+      # orphan classifier, which reported a clean machine while five containers from a removed
+      # worktree sat exited on it.
+      - name: session-db.sh
+        shell: bash
+        run: bash scripts/session_db_tests.sh
+
       - name: session-space.sh
         shell: bash
         run: bash scripts/session_space_tests.sh

@@ -85,6 +85,13 @@ Consequences that follow from the rule:
   worktree leaves it running with nothing left that knows to remove it. Use
   `scripts/session-db.sh`, which labels the container with its checkout path, so
   `scripts/session-db.sh orphans` can find these afterwards. It currently finds real ones.
+- **A directory that still exists is not a checkout.** Measured 2026-08-20: 30 of 33 containers on
+  this machine were compose stacks rather than session containers, and five of them belonged to a
+  worktree that had been removed leaving its empty directory behind. `orphans` called that machine
+  clean, because its test was `[ -d ]`. It now asks for a `.git` entry, reports a remnant as such,
+  and prints `CHECK` rather than `ORPHAN` for a path too long for Windows to resolve, since a false
+  `ORPHAN` line invites `docker rm -f` on a checkout somebody is using. Re-measure with
+  `bash scripts/session_db_tests.sh`, which stubs docker and needs no daemon.
 - A second `docker compose up` cannot work anyway: `docker-compose.yml` binds host port 5432, so
   only one such stack can exist at a time.
 
