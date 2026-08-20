@@ -143,3 +143,49 @@ property is narrower than I said" and "the sort key is broken", which are differ
 that it is worse. It is a claim that the reason it was made the default was wrong, and that a
 default resting on a disproved impossibility claim should go back to the conservative option until
 somebody chooses the trade-off knowingly. That choice is the author's and is not made here.
+
+## Follow up (2026-08-20): the hypothesis was right, and the sort key is not at fault
+
+The section above named one number as deciding between two repairs. Here it is, for all ten
+regression queries rather than only the displaced one, because a single case cannot separate "this
+is how the mechanism works" from "this case is odd".
+
+| query | gold rank | predecessor rank | |
+|---|---|---|---|
+| store_timeout | 1 | 4 | gold above |
+| log_shipping | 1 | 3 | gold above |
+| flag_naming | 1 | 3 | gold above |
+| api_pagination | 1 | 2 | gold above |
+| backup_encryption | 1 | 2 | gold above |
+| deploy_notification | 1 | 2 | gold above |
+| slo_dashboard | 1 | 3 | gold above |
+| test_parallelism | 1 | 2 | gold above |
+| review_sla | 1 | 2 | gold above |
+| **queue_metrics** | **2** | **1** | **PREDECESSOR ABOVE GOLD** |
+
+**`inherit` displaces gold in exactly the cases where the predecessor outranked gold, and in no
+others.** Nine of ten, gold was rank 1 and the predecessor rank 2 to 4, so the successor inherited
+a rank below gold and gold survived. In the tenth the predecessor was rank 1, the successor
+inherited rank 1, and gold at rank 2 lost it. One rule accounts for all ten rows with no residue.
+
+So the repair is to the claim and not to the code. `order_promoted` has the property proved of it,
+`test_inherit_cannot_displace_a_hit_that_outranked_the_predecessor` passes for the right reason, and
+the invalid step was mine: inferring "gold is safe" from "anything that outranked the predecessor is
+safe". Gold at rank 2 behind a rank-1 predecessor was never covered by that guarantee.
+
+### What this changes about the trade
+
+`inherit`'s cost is not a rate to be sampled. It is a **characterised condition**: the successor
+takes gold's place precisely when retrieval ranked the superseded document above gold. Whether that
+is even an error is a further question this fixture cannot settle. For `queue_metrics` the query is
+"what is reported about the work queue during a burst", retrieval judged
+`queue_backpressure_v1.md` the best match for it, and a reader might reasonably say the successor
+of the best match is the right answer and my gold label is the thing that is wrong.
+
+That is speculation and is not scored here. What is established: `inherit` fails only where the
+stale document was already winning, and `promoted_first` fails wherever anything carries an edge,
+which is why they measure 0.10 and 0.80 on the same ten queries.
+
+**The default is unchanged by this follow up.** It stays `pool`. The decision rule fired on a
+falsified prediction and the revert stands; what the follow up supplies is a correct basis on which
+the trade could be chosen deliberately, which the original adoption did not have.
