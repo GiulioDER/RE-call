@@ -755,9 +755,59 @@ def trusted_search(
     # guarantee: a refusal raised before any `query_dense` call cannot leak corpus bytes, because
     # none were ever fetched. Placing it after retrieval and filtering the payload would have
     # left a sanitiser that someone eventually forgets to call.
+    #
+    # THE MODEL CHECK COMES FIRST, and outranks every calibration verdict, because a cosine
+    # between vectors from two different models is not a small error to be flagged: it is not a
+    # similarity at all. A threshold certified for one model says nothing about the other's
+    # numbers, so reporting `certified` beside them would be the gate asserting precisely what it
+    # cannot know.
+    #
+    # ⛔ Measured 2026-08-20 on VPS2 before this existed: a server running `voyage:voyage-4`
+    # against a `bge-large` generation returned `trust_state: trusted`, `failure_code: null`, and
+    # bound a certified calibration — because both models emit 1024 dimensions, so the only check
+    # that ran was the dimension one. `check_enterprise_readiness` compares these two, but only
+    # `if control_plane is not None`, and a stdio server has none; its sibling check on the
+    # calibration's identity is documented in `recall_mcp/server.py` as unreachable from startup.
+    # Nothing on that path compared the model at all.
+    binding = generation_binding or {}
+    expected_model = binding.get("embedder_model")
+    expected_dim = binding.get("embedder_dimension")
+    model_mismatch = (
+        expected_model is not None and str(getattr(embedder, "name", "")) != expected_model
+    ) or (expected_dim is not None and str(getattr(embedder, "dim", "")) != expected_dim)
+    if model_mismatch:
+        # `embedder.name` against the manifest's `model`, which is the SAME comparison
+        # `CalibrationRepository.calibrate` makes before it will fit a threshold at all. Using
+        # `embedding_profile_id` here would be wrong: it returns a registered profile id when one
+        # exists and the bare name otherwise, so it does not spell what the manifest stores.
+        #
+        # Deliberately NOT raising or counting here: the existing block below already does both,
+        # and doing it twice would double-count `recall_degraded_searches_total` and give the
+        # refusal two exit points to keep in step.
+        _log.warning(
+            "runtime embedder %r does not match generation %r, which was built with %r at "
+            "dimension %s; cosines from two models are not comparable and no threshold applies",
+            getattr(embedder, "name", "?"),
+            binding.get("generation_id"),
+            expected_model,
+            expected_dim,
+        )
+        # Degraded mode still answers, but it must not APPLY a threshold fitted for another
+        # model, nor name the artifact as if it had. `calibration_status` is deliberately left as
+        # the repository reported it: "certified" beside `LINEAGE_MISMATCH` is the honest pair of
+        # facts, i.e. a certified artifact does exist for this generation and the runtime embedder
+        # is not the one it was fitted for. `TrustedResult.calibrated` stays False regardless,
+        # because it requires a non-null `calibration_id` AND `trust_state == "trusted"`, and this
+        # path clears the first and degrades the second.
+        calibration = None
+        calibration_id = None
+
     failure_code = code_for_status(calibration_status)
+    if model_mismatch:
+        failure_code = TrustFailureCode.LINEAGE_MISMATCH
     if failure_code is not None:
-        binding = generation_binding or {}
+        # `binding` is the one hoisted above for the model check; it is the same expression this
+        # line used to recompute.
         # No active generation outranks any calibration verdict, and for the same reason
         # `tenant_readiness` checks it first: telling an operator to recalibrate against a
         # generation that does not exist is useless advice. The two call sites must agree, or the
