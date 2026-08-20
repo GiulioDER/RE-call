@@ -400,6 +400,139 @@ def test_scaffold_memory_index_creates_directory_and_file(tmp_path):
     assert "type: user | feedback | project | reference" in text
 
 
+def _template_block(starter: str) -> str:
+    """The fenced memo template out of the starter index, as an author would copy it."""
+    _, _, rest = starter.partition("```markdown\n")
+    block, _, _ = rest.partition("```")
+    return block
+
+
+def test_starter_template_is_a_memo_recall_can_actually_read(tmp_path):
+    """The taught format must round-trip through the reader that indexing fails fast on.
+
+    This is the apparatus check, not a copy assertion. `recall/index.py` calls `validity_bounds`
+    and raises, so a template teaching a shape the parser rejects would break `recall_index` on
+    the very directory the wizard indexes moments later.
+    """
+    from datetime import date, datetime, timezone
+
+    from recall.frontmatter import parse_frontmatter, validity_bounds
+    from recall.setup import _memory_md_starter
+
+    memo = _template_block(_memory_md_starter(date(2026, 8, 19)))
+    memo = memo.replace("<short-kebab-case-slug>", "prefers-pnpm")
+    memo = memo.replace("<one-line summary, used to judge relevance>", "package manager")
+    memo = memo.replace("<the fact>", "This project installs with pnpm, never npm.")
+
+    meta, body = parse_frontmatter(memo)
+
+    assert meta["valid_from"] == "2026-08-19"
+    assert "This project installs with pnpm" in body
+    assert "valid_from" not in body  # the block was consumed, not left in the prose
+    start, end = validity_bounds(meta)
+    assert start == datetime(2026, 8, 19, tzinfo=timezone.utc)
+    assert end is None  # valid_until is deliberately absent from the template
+
+
+def test_starter_teaches_the_three_validity_keys_and_supersession(tmp_path):
+    from datetime import date
+
+    from recall.frontmatter import VALIDITY_KEYS
+    from recall.setup import scaffold_memory_index
+
+    memory_dir = tmp_path / "memory"
+    scaffold_memory_index(memory_dir, today=date(2026, 8, 19))
+
+    text = (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
+    for key in VALIDITY_KEYS:
+        assert key in text, f"the starter must name {key}, the trust layer reads it"
+    assert "valid_from: 2026-08-19" in text
+    assert "Leave it out unless you know a real end date" in text
+    assert "supersedes: <old-file>.md" in text
+
+
+def test_starter_index_is_not_itself_frontmatter(tmp_path):
+    """The fenced `---` lines inside the template must not pair into a block on MEMORY.md.
+
+    If they did, the whole example would be stripped out of the indexed body and the file that
+    teaches the format would stop containing it.
+    """
+    from datetime import date
+
+    from recall.frontmatter import frontmatter_span, parse_frontmatter
+    from recall.setup import _memory_md_starter
+
+    starter = _memory_md_starter(date(2026, 8, 19))
+    meta, body = parse_frontmatter(starter)
+
+    assert frontmatter_span(starter) is None
+    assert meta == {}
+    assert body == starter
+    assert "supersedes" in body
+
+
+def test_scaffolded_memory_dir_lints_clean_including_a_real_supersession_edge(tmp_path):
+    """`recall setup` must not write a corpus that `recall lint` then complains about.
+
+    The first version of this scaffold did exactly that: teaching the `supersedes` key put the
+    word in MEMORY.md's prose, and `closure-marker-unlinked` fired on the file the tool had just
+    written. A linter that warns about its own tool's output teaches users to ignore the linter,
+    so this asserts the whole scaffold-then-author path is clean, edge and all.
+    """
+    from datetime import date
+
+    from recall.lint import lint_corpus
+    from recall.setup import _memory_md_starter, scaffold_memory_index
+
+    memory_dir = tmp_path / "memory"
+    scaffold_memory_index(memory_dir, today=date(2026, 8, 19))
+    template = _template_block(_memory_md_starter(date(2026, 8, 19)))
+
+    def memo(slug: str, fact: str, extra: str = "") -> str:
+        text = template.replace("<short-kebab-case-slug>", slug).replace("<the fact>", fact)
+        text = text.replace("<one-line summary, used to judge relevance>", "package manager")
+        return text.replace("valid_from: 2026-08-19", f"valid_from: 2026-08-19{extra}")
+
+    (memory_dir / "pm-npm.md").write_text(memo("pm-npm", "Installs with npm."), encoding="utf-8")
+    (memory_dir / "pm-pnpm.md").write_text(
+        memo("pm-pnpm", "Installs with pnpm.", extra="\nsupersedes: pm-npm.md"), encoding="utf-8"
+    )
+
+    issues = lint_corpus(memory_dir)
+
+    assert issues == [], [f"{i.file}: {i.code} {i.message}" for i in issues]
+
+
+def test_prose_only_ignores_fenced_samples_but_not_real_prose():
+    from recall.lint import CLOSURE_MARKERS, prose_only
+
+    fenced = "A memo.\n\n```markdown\nsupersedes: old.md\n```\n\nNothing else.\n"
+    assert CLOSURE_MARKERS.search(prose_only(fenced)) is None
+
+    prose = "A memo.\n\nThis supersedes the old approach.\n"
+    assert CLOSURE_MARKERS.search(prose_only(prose)) is not None
+
+    # an unclosed fence runs to the end of the document, as CommonMark specifies
+    unclosed = "A memo.\n\n```\nThis supersedes the old approach.\n"
+    assert CLOSURE_MARKERS.search(prose_only(unclosed)) is None
+
+    # a longer closing fence closes a shorter opener; an info string does not close anything
+    tricky = "```\ncode\n````\n\nThis supersedes the old approach.\n"
+    assert CLOSURE_MARKERS.search(prose_only(tricky)) is not None
+
+
+def test_claude_md_block_teaches_closing_a_fact_rather_than_overwriting(tmp_path):
+    from recall.setup import scaffold_claude_md
+
+    path = tmp_path / "CLAUDE.md"
+    scaffold_claude_md(path)
+
+    text = path.read_text(encoding="utf-8")
+    assert "valid_from" in text
+    assert "supersedes" in text
+    assert "do not edit or delete" in text
+
+
 def test_scaffold_memory_index_leaves_existing_file_untouched(tmp_path):
     from recall.setup import scaffold_memory_index
 
