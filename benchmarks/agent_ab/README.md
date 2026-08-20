@@ -1,12 +1,51 @@
-# Codex paired benchmark
+# Paired agent benchmark
 
 This package is the application level benchmark seam for comparing an agent with RE-call enabled
-and disabled. It does not run a performance measurement by itself. A future measurement must be
+and disabled. It does not run a performance measurement by itself. A measurement must be
 pre-registered and committed before the runner is invoked.
 
-Start from [PREREGISTRATION.md](PREREGISTRATION.md) when defining a run.
-The current transport finding and the next execution gates are recorded in
+Start from [PREREGISTRATION.md](PREREGISTRATION.md) when defining a run. The Codex transport
+finding that produced the admission gate is recorded in
 [CONTINUATION_PLAN.md](CONTINUATION_PLAN.md).
+
+| Module | What it does |
+|---|---|
+| `schema.py` | the canonical `SessionRecord`; a missing measurement stays `null`, never 0 |
+| `runner.py` | paired execution, both arms of a task started together |
+| `claude_exec.py` | Claude Code adapter over `claude -p --output-format stream-json` |
+| `codex_exec.py` | Codex CLI adapter over `codex exec --json` |
+| `arms.py` | the three arm profiles, and the only place they may differ |
+| `recall_server.py` | one pre-warmed authenticated RE-call server for the whole run |
+| `gate.py` | refuses any pair that cannot prove the treatment was applied |
+| `traps.py` | deterministic hazard checks, and where each hazard's fact lives |
+| `summarize.py` | paired deltas, dependency free |
+| `ragas_adapter.py` | optional conversion to Ragas samples |
+
+## Run order
+
+```bash
+python scripts/agent_ab_gate.py       # prove the on arm has RE-call and the off arm does not
+python scripts/agent_ab_qualify.py    # classify each trap, and COMMIT the result
+# commit the preregistration, then run the measurement
+```
+
+Both scripts need a gateway credential in the environment (`ANTHROPIC_BASE_URL` and
+`ANTHROPIC_AUTH_TOKEN`) and the corpus container running.
+
+## The two rules this package exists to enforce
+
+**Prove the treatment reached the arm.** A `recall_on` session whose MCP server was still
+`pending` runs with no RE-call tool and reports `"subtype": "success"`, `"is_error": false`, zero
+denials. Averaged in, that is a null result manufactured by a wiring fault. `gate.py` requires a
+`mcp__recall*` name in the session's own `system/init` tool list and discards the whole **pair**
+otherwise, reporting the task id. A tool that was *available and never called* is admitted and
+counted: that is a behavioural result, not a fault, and conflating the two is the original mistake.
+
+**Decide what counts before you look.** `traps.py` classifies every hazard by where its fact is
+actually reachable, from the live corpus and the static prompt, and the result is committed before
+any session runs. The first trap set written here scored zero `memory_only` traps, because the
+hazards anyone bothers to write into `CLAUDE.md` are the ones that fit in `CLAUDE.md`. Traps the
+memory layer is expected to **lose** stay in the set on purpose.
 
 ## Codex CLI adapter
 
