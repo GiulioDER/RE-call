@@ -21,7 +21,12 @@ from pathlib import Path
 import pytest
 
 from recall.wizard.corpora import default_plan
-from recall.wizard.wiring import mcp_config, register_local_scope, server_blocks
+from recall.wizard.wiring import (
+    mcp_config,
+    register_local_scope,
+    server_blocks,
+    write_project_files,
+)
 
 
 def _plan(tmp_path: Path):
@@ -803,3 +808,79 @@ def test_project_keys_follow_each_platform_s_own_case_rule(tmp_path: Path) -> No
             "on POSIX these are two directories, and matching them would register this project's "
             "servers under an unrelated one"
         )
+
+
+def test_the_project_root_is_created_when_only_the_last_directory_is_missing(
+    tmp_path: Path,
+) -> None:
+    """The regression `03456359` left behind, and the reason it went unnoticed for a release.
+
+    Nothing creates `project_root`. It used to appear as a side effect of `write_mcp_config`, whose
+    `path.parent.mkdir(parents=True, exist_ok=True)` ran on the way to writing
+    `project_root/.mcp.json`; when registration moved to local scope in `~/.claude.json` that
+    function was deleted and the mkdir went with it. Every existing test passed, because every one
+    of them creates the directory first — which is exactly what a real first install does not do.
+
+    ⚠️ **The assertion that matters is `.env` existing, not `.is_dir()`.** A guard that created the
+    directory and then failed to write into it would satisfy a directory check and still leave the
+    user with the CI failure this fixes. The files are the deliverable.
+    """
+    project_root = tmp_path / "project"
+    assert not project_root.exists(), "the point of this test is that nothing has created it"
+
+    written = write_project_files(
+        project_root=project_root,
+        dsn="postgresql://recall:recall@127.0.0.1:1/recall",
+        embedder="hashing",
+        memory_dir=tmp_path / "memory",
+    )
+
+    assert (project_root / ".env").is_file(), "the .env this install exists to write"
+    assert (project_root / "CLAUDE.md").is_file()
+    assert project_root / ".env" in written, "what was written must be what is reported"
+
+
+def test_a_project_root_that_is_a_file_is_not_written_into(tmp_path: Path) -> None:
+    """`exist_ok=True` must not read a FILE at that path as "already there".
+
+    `Path.mkdir` suppresses `FileExistsError` only for a directory, so this raises rather than
+    proceeding to open `afile/.env`. Asserted because the suppression is the sort of thing a later
+    edit widens to `parents=True, exist_ok=True` without noticing it changes this case.
+
+    It raises rather than refusing because `run_headless` catches `OSError` around this call and
+    reports a `wiring` failure with the offending filename. `load_config` is what refuses this by
+    name, before any corpus is built.
+    """
+    project_root = tmp_path / "afile"
+    project_root.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(OSError):
+        write_project_files(
+            project_root=project_root,
+            dsn="postgresql://recall:recall@127.0.0.1:1/recall",
+            embedder="hashing",
+            memory_dir=tmp_path / "memory",
+        )
+
+    assert project_root.read_text(encoding="utf-8") == "not a directory", "left alone"
+
+
+def test_the_tree_above_a_project_root_is_never_manufactured(tmp_path: Path) -> None:
+    """`parents=False`, deliberately: a missing PARENT is a typo, and this is not where it is caught.
+
+    Creating the whole tree here would silently produce directories the user never named, at the end
+    of a thirty-minute install, on the basis of a path they mistyped. `load_config` refuses that
+    case by name before anything is built; see
+    `tests/test_wizard_headless.py::test_a_project_root_whose_parent_is_absent_is_refused`.
+    """
+    project_root = tmp_path / "nowhere" / "project"
+
+    with pytest.raises(OSError):
+        write_project_files(
+            project_root=project_root,
+            dsn="postgresql://recall:recall@127.0.0.1:1/recall",
+            embedder="hashing",
+            memory_dir=tmp_path / "memory",
+        )
+
+    assert not (tmp_path / "nowhere").exists(), "no directory the user did not name"

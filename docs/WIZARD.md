@@ -45,6 +45,14 @@ an installer.
 Every root must be absolute. A relative root resolves against the wizard's own working directory, so
 the commit stamped on each chunk would be the wizard's rather than the corpus's.
 
+**`project_root` is the one root the wizard creates, and only its last directory.** A project
+directory that does not exist yet is an ordinary first install, so it is made before `.env` and
+`CLAUDE.md` are written. A `project_root` whose *parent* is also missing is refused by name before
+anything is built, because that is a mistyped path rather than a place you meant to put a project,
+and so is one that exists and is a file. Both refusals happen at config-reading time on purpose:
+the wiring is the last step of the run, so a bad value discovered there costs the whole install
+after every corpus has been built, calibrated and promoted.
+
 **On Windows, write paths with doubled backslashes or forward slashes.** A single backslash is a JSON
 escape, and the refusal names the problem when it happens.
 

@@ -207,6 +207,13 @@ jobs:
           for f in docker-compose.recall.yml Dockerfile wizard.state.json; do
             test -f "$root/$f" || { echo "missing $f"; exit 1; }
           done
+          # The wizard CREATES `project_root` when only its last directory is missing, which is
+          # what a first install looks like and what this config asks for. Asserted as files
+          # rather than as a directory: a run that made the directory and then wrote nothing into
+          # it would satisfy a `test -d` and leave the user exactly where the regression did.
+          for f in .env CLAUDE.md; do
+            test -f "$root/project/$f" || { echo "missing project/$f"; exit 1; }
+          done
           if [ -f "$root/project/.mcp.json" ]; then
             echo "a project-scoped .mcp.json was written; that file is what the prompt guards"
             exit 1

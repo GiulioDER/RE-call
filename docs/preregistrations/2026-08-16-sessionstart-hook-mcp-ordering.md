@@ -305,3 +305,205 @@ is also approved.** Since `scripts/session_mcp_approve.py` is absent from `origi
 (`git merge-base --is-ancestor 49ac9c5f origin/master` fails), a fresh worktree on master satisfies
 neither condition on its first session and only the ordering condition on its second. Landing that
 commit is what makes the second session work.
+
+## 🔁 CORRECTION (2026-08-19): "jointly necessary" is falsified, and the two rows carrying it were mislabelled
+
+**Status: the prediction is untouched, and nothing above this line is edited.** The ordering
+reading survives; the approval half of the verdict does not.
+
+Raised by another session, which saw a full recall tool set in a worktree with no approval. I
+checked it against the transcripts rather than accept the report, and the check went further than
+the report did.
+
+### 1. Approval is not necessary. Measured, and no inference is involved
+
+Session `ba35479a`, worktree `compassionate-ishizaka-7ab24d`:
+
+| hook row | condition | recall tools entering |
+|---|---|---|
+| `2026-08-19T14:56:40Z` startup | `existed_before: false`, `generated` | **0** (delta at 14:56:41.652Z) |
+| `2026-08-19T16:05:30Z` resume | `existed_before: true`, `already-present` | **32** (delta at 16:05:46.316Z) |
+
+That project holds `enabledMcpjsonServers: []` and has never been on the approved list: 3 of 311
+tracked projects carry any approval today and it is not one of them. Every other way those tools
+could have arrived was checked on the same read and excluded:
+
+| candidate source | state |
+|---|---|
+| user scope, top-level `mcpServers` | `{}` |
+| local scope, `projects[dir].mcpServers` | key absent |
+| `enableAllProjectMcpServers` | unset |
+| approval committed to a repo `.claude/settings.json` | no such file |
+
+**So "File-present and approved are jointly necessary" is false as stated.** 32 tools arrived in a
+project that was never approved.
+
+### 2. The two rows supplying the "not yet approved" leg were in fact approved
+
+The verdict above says approval "is timestamped nowhere" and the check "cannot be run
+retrospectively". That is true of `~/.claude.json` and false of the transcripts:
+`scripts/session_mcp_approve.py` prints the project it approved, so the event is timestamped
+wherever it ran. Recovered:
+
+| approval written | by session | project |
+|---|---|---|
+| `2026-08-16T22:22:14.671Z` | `30a93f4d` | `musing-dewdney-f0b28b` |
+| `2026-08-16T23:06:34.254Z` | `9b366ea4` | `session-startup-audit-518fcd` |
+
+Against the two rows the table classified as unapproved:
+
+| transcript | started | project | approved before it started? |
+|---|---|---|---|
+| `b03972ae` | `2026-08-16T22:22:47Z` | `musing-dewdney-f0b28b` | **yes, by 33 seconds** |
+| `2b8b37ba` | `2026-08-16T23:08:03Z` | `session-startup-audit-518fcd` | **yes, by 89 seconds** |
+
+Both had the file **and** the approval, and both received 0 recall tools. They cannot support joint
+necessity, and they refute the pair being sufficient.
+
+⚠️ One alternative I cannot exclude for these two: a running client owns `~/.claude.json` and
+rewrites it on its own schedule, so an approval written seconds earlier could have been overwritten
+before the session read it. Both approvals survive on disk today, so no permanent clobber happened.
+This caveat does not reach finding 1, which rests on no timing inference at all.
+
+### 3. What every row is consistent with is resume, not fresh start
+
+| hook row | source | file present | approved | recall tools |
+|---|---|---|---|---|
+| `d8bded1a` 21:18 (08-16) | startup | no | no | 0 |
+| `d8bded1a` 21:50 | startup | yes | no | 0 (no delta at all) |
+| `30a93f4d` 22:09 | startup | no | no | 0 |
+| `b03972ae` 22:22 | startup | yes | **yes** | 0 |
+| `9b366ea4` 22:42 | startup | no | no | 0 |
+| `2b8b37ba` 23:08 | startup | yes | **yes** | 0 |
+| `e0aa68bb` 09:21 (08-18) | startup | no | yes | 0 |
+| `e0aa68bb` 12:08 | **resume** | yes | yes | **32** |
+| `e0aa68bb` 15:17 | **resume** | yes | yes | **32** |
+| `ba35479a` 14:56 (08-19) | startup | no | **no** | 0 |
+| `ba35479a` 16:05 | **resume** | yes | **no** | **32** |
+| `9b366ea4` 16:30 (08-19) | resume | no | yes | 0 |
+
+No fresh `startup` in this corpus ever received the tools, including two that had both the file and
+the approval. Every row that received them was a `resume` with the file already present. Approval
+does not separate the outcome anywhere in the table; `resume` separates it everywhere.
+
+⚠️ **Confounded with date.** Every 0-tool startup-with-file row is from 08-16 and both 32-tool
+resume rows are from 08-18 and 08-19, so "resume versus startup" and "before versus after some
+change in the client" are not separated by this data.
+
+⚠️ A `deferred_tools_delta` lists tools **entering** an inventory, so a later delta carrying 0
+recall tools does not mean the session lost them. Only the first delta of a session reads as an
+initial inventory. `ba35479a` has a third delta at 16:13:20.266Z carrying 0, and that session still
+had its tools.
+
+**The decisive control is now cheap, and it is not the one "Next step" 1 asks for.** Start a
+**fresh** session, not a resume, in a checkout that already has `.mcp.json`. If it gets the tools,
+the resume reading dies and the practical rule stands as written. If it does not, then "a fresh
+worktree gets them on the next session" is wrong, and the rule in "Consequence for the repository"
+needs replacing rather than annotating.
+
+### 4. Session type was never recorded, and it is the variable the docs say matters
+
+Per `https://code.claude.com/docs/en/mcp`, fetched 2026-08-19 against CLI 2.1.220: `claude -p`, Agent
+SDK sessions and cloud sessions cannot show the approval prompt, so they **load project-scoped
+servers without asking**. Approval gates interactive sessions only.
+
+I could not find a session-type field in any of these transcripts, so I cannot label the rows above,
+and I am not going to guess. That is the gap: **every future run must record session type**, because
+if these rows are SDK sessions then the approval leg was never under test in any of them, and the
+verdict's approval column was measuring nothing.
+
+### 5. Consequence for the repository, and for the product
+
+- **"Next step" 2 overstates the dependency.** Landing `49ac9c5f` still helps an interactive
+  first-run user, but it is not a prerequisite for this experiment, because approval did not gate
+  any row here.
+- **User scope has no approval step at all** and is the only scope loading in every project
+  (top-level `mcpServers` in `~/.claude.json`; local scope is the same file under
+  `projects[dir].mcpServers`). Precedence is local, then project, then user, and entries are **not
+  merged**.
+- **Since CLI v2.1.196 there is a second gate**: an approval committed to a repository's
+  `.claude/settings.json` is ignored until the workspace is trusted, so a cloned repository cannot
+  approve its own servers.
+- **The product has the interactive half of this bug today.** `recall/wizard/wiring.py:217`
+  `mcp_config()` emits a project-scoped document that `recall/wizard/headless.py:1153` writes to
+  `project_root/.mcp.json`, and nothing under `recall/` records an approval. So a first-run user
+  finishes `recall wizard --headless`, sees success, opens Claude **interactively**, and meets the
+  approval gate. No headless verification can reproduce that, which is exactly the asymmetry
+  finding 4 describes.
+
+Re-measure the whole of this section:
+
+```bash
+python -c "import json,os;d=json.load(open(os.path.expanduser('~/.claude.json')));print(len(d['projects']),{k.split(os.sep)[-1]:v.get('enabledMcpjsonServers') for k,v in d['projects'].items() if v.get('enabledMcpjsonServers')})"
+grep -h mcp_action ~/.claude/session-start.log | tail -20
+grep -rl "deferred_tools_delta" ~/.claude/projects/*/ | head
+```
+
+## 🔁 SECOND CORRECTION (2026-08-19): the control was attempted, returned no number, and two rows of the correction above are dead
+
+**Status: the prediction is untouched. This corrects the CORRECTION above, which is mine, and it
+corrects it against me.**
+
+### The control was run, and a 401 ate it
+
+The registered control, a **fresh** session in a checkout that already has `.mcp.json`, was
+attempted in `xenodochial-dhawan-18932a`, a worktree holding both the file and
+`enabledMcpjsonServers: ['recall', 'recall-memory']`. The hook logged the exact control condition:
+
+```json
+{"at": "2026-08-19T17:55:15Z", "session": "f7d4f235", "source": "startup",
+ "mcp_json_existed_before_hook": true, "mcp_action": "already-present"}
+```
+
+That session is `claude -p`, and it died on `401 OAuth access token has been revoked` after one
+turn. Its only `deferred_tools_delta` lists **0 MCP tools of any kind**, not merely 0 recall tools.
+**An empty delta is an absent measurement, not a zero**, so the control still has not produced a
+number. This is the third time this question has been approached and the third time the apparatus,
+not the phenomenon, decided the outcome.
+
+### Two rows of the correction above are the same failure, and I scored them as data
+
+`b03972ae` and `2b8b37ba` were used above as the load-bearing evidence that a fresh startup with
+both the file and the approval receives nothing. Re-checked with the same filter:
+
+| transcript | lines | 401 errors | MCP tools in first delta |
+|---|---|---|---|
+| `b03972ae` | 12 | 1 | **0 of any kind** |
+| `2b8b37ba` | 10 | 1 | **0 of any kind** |
+| `24e3e1cc` (for contrast) | 2255 | 0 | 65 |
+
+Both were `claude -p` probes that never authenticated. They are not sessions that had the file and
+the approval and got nothing; they are sessions that never got far enough to have a tool inventory.
+**I read two uninterpretable nulls as measurements, which is exactly the error "Treatment run 1"
+above was written to warn against.**
+
+### What survives, and what does not
+
+- **Finding 1 stands, untouched.** Approval is not necessary: `ba35479a` received 32 recall tools
+  on a **67-tool inventory** while its project held `enabledMcpjsonServers: []`. A positive
+  observation with a real inventory behind it, and no timing inference.
+- **Finding 2's mechanism stands; its conclusion does not.** Approval times really are recoverable
+  from transcripts, and those two projects really were approved first. But since both sessions died
+  on a 401, they say nothing about what an authenticated session would have loaded.
+- **Finding 3 is withdrawn as stated.** "No fresh `startup` in this corpus ever received the tools,
+  including two that had both the file and the approval" is false: those two rows are dead. Across
+  the entire hook log there are exactly **2 usable fresh-startup-with-file sessions** (`24e3e1cc`,
+  `e4752479`), both on 2026-08-16, both in `claude-md-gitignore-19cedd`, both unapproved, both 0
+  recall tools. The date confound is therefore **not** broken, and `resume` versus `startup` rests
+  on far less than "all twelve rows".
+- **The ordering prediction is unaffected** and still supported by the two within-project pairings
+  (`e0aa68bb`, `ba35479a`), each of which is a generated-file startup at 0 followed hours later by a
+  file-present resume at 32.
+
+### The instrument rule this establishes
+
+**Count a session only if its first `deferred_tools_delta` lists at least one MCP tool of any
+kind.** A delta with none is an absent inventory, and a transcript under about 20 lines carrying an
+`apiErrorStatus` is an apparatus failure wearing the costume of a null result. Scan:
+
+```bash
+grep -c '"isApiErrorMessage":true' <transcript>   # non-zero means the session never ran
+```
+
+**Next step is unchanged and now has a prerequisite: `claude login` first.** Every route to this
+number goes through an authenticated session, and three attempts have now died before reaching one.

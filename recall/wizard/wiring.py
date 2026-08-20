@@ -264,8 +264,28 @@ def write_project_files(
     `.env` carries the serving DSN and embedder for the CLI, not for the MCP servers. The servers get
     their variables in their own `env` blocks, because a stdio server launched with an explicit `env`
     inherits nothing, so `.env` alone would leave them on defaults.
+
+    **`project_root` is created if it is absent, and exactly one level of it.** Nothing else creates
+    it: the directory used to appear as a side effect of the deleted `write_mcp_config`, which did
+    `path.parent.mkdir(parents=True, exist_ok=True)` on its way to writing `project_root/.mcp.json`,
+    and when `03456359` moved registration to local scope in `~/.claude.json` that incidental mkdir
+    went with it. What was left is this function opening `.env` for writing inside a directory that
+    may not exist, at the END of an install, after every corpus is built, calibrated, promoted and
+    registered. In CI that read as `could not write .../project/.env: No such file or directory`
+    with the whole install already paid for.
+
+    `parents=False` is the deliberate half. A missing LEAF is an ordinary first install: the user
+    named a project directory and this is the thing that makes it. A missing PARENT is a mistyped
+    path, and `recall.wizard.headless.load_config` refuses that by name before anything is built,
+    which is where a cheap check belongs. Passing `parents=True` here would quietly manufacture the
+    tree the reader already decided not to, and would do it thirty minutes too late to be useful.
     """
     from recall.setup import _update_env_block, scaffold_claude_md, scaffold_memory_index
+
+    # `exist_ok=True` covers the re-run and the ordinary case of an existing project. It does NOT
+    # swallow a file sitting at this path: `mkdir` only suppresses `FileExistsError` for a
+    # directory, so a root that is a file still raises here rather than being written into.
+    project_root.mkdir(exist_ok=True)
 
     written: list[Path] = []
 

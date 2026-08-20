@@ -766,6 +766,43 @@ def load_config(path: str | Path) -> HeadlessConfig:
                 (optional_root,),
             )
 
+    # `project_root` is the one root the wizard WRITES into, and it is checked HERE because the
+    # writing happens last. Every corpus is built, calibrated, promoted and registered before
+    # `write_project_files` is reached, so a bad value discovered there costs the whole install:
+    # measured in CI, thirty minutes of work followed by `could not write .../project/.env: No such
+    # file or directory` and `install incomplete`. The cheap check has to run before the expensive
+    # work, not after it.
+    #
+    # Two conditions, deliberately answered differently, because they are different mistakes:
+    #
+    # * **The path exists and is not a directory.** Refused by name, like every other root, and the
+    #   module docstring already calls this out as one of the three likeliest first-run conditions.
+    #
+    # * **The path is absent and so is its PARENT.** That is a typo, not an intent. Somebody who
+    #   means `C:/Users/me/myapp` does not have `C:/Users/me` missing, so creating the whole tree
+    #   would manufacture directories nobody named. A missing LEAF is the ordinary first install
+    #   and is created by `write_project_files`, which is why only the parent is required here.
+    project_root_raw = raw.get("project_root")
+    if project_root_raw:
+        candidate = Path(project_root_raw)
+        if candidate.exists():
+            if not candidate.is_dir():
+                raise ConfigRefusal(
+                    f"project_root {project_root_raw!r} exists and is not a directory. The wizard "
+                    "writes .env, a CLAUDE.md block and memory/MEMORY.md inside it, and none of "
+                    "those can be written underneath a file.",
+                    ("project_root",),
+                )
+        elif not candidate.parent.is_dir():
+            raise ConfigRefusal(
+                f"project_root {project_root_raw!r} does not exist and neither does its parent "
+                f"{str(candidate.parent)!r}. The wizard creates the last directory of a project "
+                "root, because that is an ordinary first install; it does not create the tree "
+                "above it, because a missing parent is a mistyped path rather than a place you "
+                "meant to put a project. Create the parent, or correct the path.",
+                ("project_root",),
+            )
+
     # `dsn` and `data_root` are ALTERNATIVES, and the refusal names both keys.
     #
     # Accepting both would mean silently ignoring one, which is the exact defect already fixed
