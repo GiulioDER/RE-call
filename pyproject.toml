@@ -37,7 +37,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-fastembed = ["fastembed>=0.3"]
+# <1 rather than unbounded, and the reason is narrower than "majors can break".
+# `recall.embeddings.embedder_artifact_path` reaches `embedder._model.model._model_dir`, a PRIVATE
+# attribute chain, because a model's own snapshot directory is the only thing worth hashing: the
+# shared cache holds every model ever downloaded and its digest would identify nothing. That
+# function is deliberately defensive and returns `None` when the chain cannot be walked, so a
+# fastembed release that renames it does NOT raise. It makes `embedder_artifact_digest` return
+# `None`, which makes the pipeline identity unverified, which makes production generation builds
+# refuse — an install that silently stops being able to accept uploads, with nothing pointing at
+# the dependency that changed.
+# Verified reachable on fastembed 0.8.0 (2026-08-20): digest dcc52dedc73755de..., production
+# upload possible. Re-check with `recall.embeddings.embedder_artifact_digest(resolve_embedder(
+# "fastembed"))` before raising this bound.
+fastembed = ["fastembed>=0.3,<1"]
 # Native extraction for PDF, Office, spreadsheets, presentations, HTML, and tables.
 documents = [
     "pypdf>=5.0",
