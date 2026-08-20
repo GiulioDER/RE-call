@@ -94,8 +94,10 @@ same tombstone-derived fingerprint into replacement generations built from the o
 Strict refusal before returning **corpus text** is still deferred: a missing or stale artifact
 produces a result marked uncalibrated rather than an error.
 
-Refusal at **promotion** time has landed. Under `RECALL_ENV=production`, `generation promote`
-resolves the generation's calibration and raises `UnsafePromotion` unless the status is CERTIFIED,
+Refusal at **promotion** time has landed. For a tenant served under production (see
+`GenerationManager.certification_required`, which reads the serving environment rather than the
+build one), `generation promote` resolves the generation's calibration and raises `UnsafePromotion`
+unless the status is CERTIFIED,
 so an absent, stale, mismatched, rejected or superseded artifact cannot be made active. The check
 runs inside the promotion transaction, after the generation's existence and state are established,
 and a calibration that cannot be resolved fails closed.

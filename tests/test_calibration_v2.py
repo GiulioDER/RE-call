@@ -650,7 +650,10 @@ def test_the_unsafe_development_flag_does_not_open_the_production_door(
     artifact = repository.calibrate(generation_id, _labels(), embedder)
     repository.publish(artifact.calibration_id)
 
-    with pytest.raises(UnsafePromotion, match="unsafe_development is unavailable in production"):
+    with pytest.raises(
+        UnsafePromotion,
+        match="unsafe_development is unavailable for a tenant served under production",
+    ):
         _production(manager).promote(generation_id, unsafe_development=True)
 
 

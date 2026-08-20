@@ -36,6 +36,7 @@ from typing import Any
 
 import pytest
 
+from recall.generations import UnsafePromotion
 from recall.wizard.corpora import docs_corpus, memory_corpus
 from tests.conftest import TEST_DSN, requires_db
 from recall.wizard.queryset import MIN_PER_CLASS
@@ -59,11 +60,18 @@ class _FakeManager:
         recorder: _Recorder,
         *,
         environment: str = "development",
+        serving_environment: str | None = None,
         tenant_id: str = "default-docs",
         serving: str | None = None,
     ) -> None:
         self._recorder = recorder
         self.environment = environment
+        #: ⚠️ **Defaults to `production`, not to `environment`, unlike the real class.** The real
+        #: default is "same as the build", but the only corpus the pipeline will build is a
+        #: `calibrated` one, and `CorpusSpec` refuses to serve those anywhere but production. So
+        #: development-serving is unreachable through this module, and a fake defaulting to it would
+        #: exercise a combination the pipeline cannot produce while leaving the real one untested.
+        self.serving_environment = serving_environment or "production"
         self.tenant_id = tenant_id
         #: What this tenant is serving before the run. `None` is a FIRST INSTALL, which is the
         #: default because it is the state a wizard actually meets, and the one whose degraded
@@ -75,6 +83,12 @@ class _FakeManager:
         #: Tracked because the real manager's transitions key on it, and a fake that ignores state
         #: cannot reproduce a refusal. See `fail` below.
         self.state = "building"
+
+    @property
+    def certification_required(self) -> bool:
+        """Mirrors the real property. Keyed on SERVING, which for a wizard corpus is production
+        while the build runs under development — the case the whole parameter exists for."""
+        return self.serving_environment == "production"
 
     def fail(self, generation_id: str, reason: str) -> None:
         """REFUSES a READY generation, exactly as `GenerationManager.fail` does.
@@ -133,6 +147,19 @@ class _FakeManager:
         return self.serving
 
     def promote(self, generation_id: str, *, unsafe_development: bool = False) -> None:
+        """⚠️ **Enforces the flag rule, because a fake that ignores it cannot catch the call site.**
+
+        This used to accept `unsafe_development` and discard it, so `pipeline.py` could have passed
+        any value and every test here would still pass. The real class refuses BOTH directions, and
+        the pipeline picks the value from `certification_required`, so discarding it left the one
+        expression that decides whether an install is gated unasserted.
+        """
+        if self.certification_required and unsafe_development:
+            raise UnsafePromotion(
+                "unsafe_development is unavailable for a tenant served under production"
+            )
+        if not self.certification_required and not unsafe_development:
+            raise UnsafePromotion("development promotion requires unsafe_development=True")
         self._recorder.note("promote")
         self.state = "active"
         self.serving = generation_id

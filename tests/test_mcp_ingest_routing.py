@@ -21,6 +21,8 @@ meeting, and the only defence is asserting that ONE decision drives both.
 
 from __future__ import annotations
 
+import textwrap
+
 import pytest
 
 import recall_mcp.server as server
@@ -183,3 +185,93 @@ def test_a_refused_upload_releases_the_builds_it_supersedes() -> None:
         "the refusal path must release the builds this one supersedes"
     )
     assert "manager.abandon(" in source, "released means abandoned, so gc can reclaim the rows"
+
+
+# ----------------------------------------------------------------------------------------------
+# A production tenant must have a reachable route to CERTIFIED
+# ----------------------------------------------------------------------------------------------
+
+
+def test_a_production_upload_calibrates_before_it_promotes() -> None:
+    """⛔ The certification gate had no reachable way through on the desktop path.
+
+    `promote` requires a published, certified calibration when the tenant is served under
+    production, and nothing in `generation_ingest` produced one. Every upload therefore ended
+    READY-and-never-live, with the only route to a live corpus being the CLI. A gate with no door
+    is a wall.
+
+    Measured end to end after the fix, against a real 384-dimension database with
+    `RECALL_ENV=production`: a ten-file corpus reported "Built and activated generation
+    gen_84411e27... with 25 chunk(s) from 10 file(s)" and `active_generation_id()` returned it. A
+    one-file corpus reported "no certifiable query set could be generated from 1 chunk(s)" and
+    stayed READY — the corpus reason, not the gate's generic refusal.
+
+    Asserted on the source so it runs offline; the live proof is quoted above.
+    """
+    import inspect
+
+    import recall_mcp.service as service
+
+    source = inspect.getsource(service.generation_ingest)
+    assert "if manager.certification_required:" in source, (
+        "the calibration must run exactly when the gate will demand it, on the same switch"
+    )
+    assert "_certify_upload(" in source
+    assert source.index("_certify_upload(") < source.index("manager.promote("), (
+        "calibrating after promoting certifies nothing that was promoted"
+    )
+    assert "{uncertified or exc}" in source, (
+        "the refusal message must carry the CORPUS reason when there is one: `promote` can only say "
+        "the calibration is missing, which is true and useless"
+    )
+
+
+def test_the_upload_uses_the_installers_query_set_generator() -> None:
+    """One generator, or the desktop's corpora are judged by different evidence than the wizard's.
+
+    `_generated_calibration_queries` is the other candidate and is deliberately NOT used: its
+    negatives are a hardcoded list never checked against the corpus, and its positives are
+    500-character chunk bodies rather than questions. `recall/wizard/queryset.py` exists because a
+    measurement showed a non-disjoint gap class is not separable at all.
+    """
+    import inspect
+
+    import recall_mcp.service as service
+
+    source = inspect.getsource(service._certify_upload)
+    assert "from recall.wizard.queryset import" in source
+    assert "generate_offline" in source and "canonicalize" in source
+    # The NAME appears, in the docstring explaining why it is not used. The CALL must not.
+    assert "_generated_calibration_queries(" not in source
+
+
+def test_an_uncertified_upload_is_reported_rather_than_raised() -> None:
+    """The upload SUCCEEDED; only activation did not. Raising invites a rebuild for the same refusal."""
+    import inspect
+
+    import recall_mcp.service as service
+
+    source = inspect.getsource(service._certify_upload)
+    assert "return f\"calibration" in source, "a refusal to certify returns a reason"
+    assert "return f\"no certifiable query set" in source
+
+    # Parsed, not grepped. The first version of this assertion tested for the SUBSTRING "raise" and
+    # went red on the docstring's own word "raises" — a check that cannot tell a statement from
+    # prose is a check that gets deleted the first time it is inconvenient.
+    import ast
+
+    body = ast.parse(textwrap.dedent(source)).body[0]
+    raises = [node for node in ast.walk(body) if isinstance(node, ast.Raise)]
+    assert not raises, (
+        "no domain failure here may raise past the caller: `generation_ingest`'s outer handler "
+        "re-raises, so an escape leaves the generation READY and unreclaimable — the leak the "
+        "refusal path was fixed to prevent, one step earlier"
+    )
+    handled = {
+        node.type.id if isinstance(node.type, ast.Name) else None
+        for node in ast.walk(body)
+        if isinstance(node, ast.ExceptHandler)
+    }
+    assert "Exception" not in handled, (
+        "`CalibrationError`, not `Exception`: a domain failure is a reason, a bug is still a bug"
+    )

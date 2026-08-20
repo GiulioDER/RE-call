@@ -384,13 +384,18 @@ def run_corpus(
     if certified:
         announce("promote")
         try:
-            # ⚠️ The flag is a DEVELOPMENT requirement and a PRODUCTION refusal, so it cannot be
-            # passed unconditionally. In production the certification gate decides instead, and
-            # passing the flag there raises before the gate is ever consulted. This branch is only
-            # reached when the corpus certified, which is the same thing the gate checks.
+            # ⚠️ The flag is a DEVELOPMENT requirement and a refusal wherever certification is
+            # required, so it cannot be passed unconditionally. `certification_required` is the one
+            # switch both sides read, so this cannot disagree with what `promote` will do.
+            #
+            # It reads the SERVING environment, which for every wizard corpus is production while
+            # the build runs under development. Before that distinction existed this expression was
+            # `manager.environment != "production"` and was therefore ALWAYS true here, so the gate
+            # never ran on an install and the `certified` check below was the only thing enforcing
+            # it. Two implementations of one rule, one of them untested.
             manager.promote(
                 generation_id,
-                unsafe_development=manager.environment != "production",
+                unsafe_development=not manager.certification_required,
             )
         except BaseException as exc:
             _fail("promote", exc)

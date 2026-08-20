@@ -208,7 +208,26 @@ class GenerationManager:
         *,
         actor: str = "recall-cli",
         environment: str | None = None,
+        serving_environment: str | None = None,
     ) -> None:
+        """`environment` is where the BUILD runs; `serving_environment` is where the tenant is READ.
+
+        ⚠️ **They are the same value almost everywhere and different on the path that matters.** The
+        certification gate keys on the serving one, because certification is a claim about what a
+        query will get back, not about which process built it.
+
+        The wizard is the case that forced this apart, and it is the ordinary install rather than a
+        corner: it builds every corpus under `environment="development"`, because a production build
+        demands a verifiable embedder identity that a bundled FastEmbed model does not have, and
+        then writes `RECALL_ENV=production` into the MCP server block that serves those same
+        tenants. So before this parameter existed, the gate ran on **no tenant the wizard
+        creates** — every real first install took the ungated branch and was then served as
+        production. The wizard's own pipeline refuses to promote an uncertified generation, so
+        nothing shipped uncertified; but the gate and the pipeline check were two independent
+        implementations of one rule, and only one of them was tested as the thing that holds it.
+
+        `serving_environment` defaults to `environment`, so every existing caller is unchanged.
+        """
         if not tenant_id.strip():
             raise ValueError("tenant_id must be non-empty")
         self._dsn = dsn
@@ -217,6 +236,21 @@ class GenerationManager:
         self.environment = (environment or os.environ.get("RECALL_ENV", "development")).lower()
         if self.environment not in {"development", "test", "production"}:
             raise ValueError("environment must be development, test, or production")
+        self.serving_environment = (serving_environment or self.environment).lower()
+        if self.serving_environment not in {"development", "test", "production"}:
+            raise ValueError(
+                "serving_environment must be development, test, or production"
+            )
+
+    @property
+    def certification_required(self) -> bool:
+        """Whether promotion here must present a CERTIFIED calibration.
+
+        Reads the SERVING environment, not the build one. `promote` and every caller that decides
+        whether to pass `unsafe_development` consult this rather than comparing environments
+        themselves, so the two cannot drift apart.
+        """
+        return self.serving_environment == "production"
 
     @contextmanager
     def _connect(self) -> Iterator[psycopg.Connection]:
@@ -907,14 +941,22 @@ class GenerationManager:
         )
 
     def promote(self, generation_id: str, *, unsafe_development: bool = False) -> None:
-        if self.environment == "production":
+        """Make one ready generation live, gated on how the tenant is SERVED.
+
+        See `certification_required`: the gate follows the serving environment, so a build that runs
+        under `development` in order to use an unverifiable embedder is still gated when its output
+        will be read under `RECALL_ENV=production`. That is the wizard, which is to say every
+        install this project ships.
+        """
+        if self.certification_required:
             # ⛔ **`unsafe_development` does not open this door.** Refused here rather than after
             # the certification check, so a caller cannot learn that the flag would otherwise have
             # worked. The production path has exactly one way through: a certified calibration.
             if unsafe_development:
                 raise UnsafePromotion(
-                    "unsafe_development is unavailable in production; promotion there requires a "
-                    "published, certified calibration bound to this generation"
+                    "unsafe_development is unavailable for a tenant served under production; "
+                    "promotion there requires a published, certified calibration bound to this "
+                    "generation"
                 )
         elif not unsafe_development:
             raise UnsafePromotion("development promotion requires unsafe_development=True")
@@ -940,7 +982,7 @@ class GenerationManager:
             # `InvalidGenerationTransition` — three different problems arriving as one unrelated
             # exception type. Measured before this was moved. Ordering the cheap, specific checks
             # first keeps each failure named by the thing that actually failed.
-            if self.environment == "production":
+            if self.certification_required:
                 self.require_certified_for_production(generation_id)
             active = str(state[0]) if state and state[0] else None
             if active:
@@ -970,7 +1012,7 @@ class GenerationManager:
                 conn,
                 (
                     "generation_promoted_certified"
-                    if self.environment == "production"
+                    if self.certification_required
                     else "generation_promoted_unsafe_development"
                 ),
                 generation_id=generation_id,

@@ -2185,13 +2185,23 @@ def generation_ingest(
             chunker,
         )
         manager.validate(generation.generation_id)
+        # A production-served tenant promotes only a CERTIFIED generation, so produce the
+        # certification rather than leaving the gate unreachable. See `_certify_upload`. The reason
+        # is threaded into the refusal message below rather than raised: `promote` will refuse for
+        # the same underlying fact a moment later, and the caller wants ONE message that says both
+        # what happened and what is left to do.
+        uncertified: str | None = None
+        if manager.certification_required:
+            uncertified = _certify_upload(
+                store._dsn, store.tenant, generation.generation_id, embedder
+            )
         # ⚠️ Development-only flag; see `GenerationManager.promote`. A desktop upload to a
         # production tenant now reaches the certification gate rather than being refused for
         # carrying a flag, which is the whole point of the gate existing.
         try:
             manager.promote(
                 generation.generation_id,
-                unsafe_development=manager.environment != "production",
+                unsafe_development=not manager.certification_required,
             )
         except UnsafePromotion as exc:
             # ⚠️ **Reported as an outcome, not raised as a failure.** The upload WORKED: every file
@@ -2227,7 +2237,7 @@ def generation_ingest(
                     f"{generation.generation_id}, which is built and validated but NOT yet live. "
                     f"It carries forward everything previously uploaded"
                     + (f"; {reclaimed} superseded build(s) released" if reclaimed else "")
-                    + f". {exc}"
+                    + f". {uncertified or exc}"
                 ),
             )
     except Exception:
@@ -2240,6 +2250,84 @@ def generation_ingest(
             f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
         ),
     )
+
+
+def _certify_upload(
+    dsn: str,
+    tenant: str,
+    generation_id: str,
+    embedder: Embedder,
+) -> str | None:
+    """Calibrate and publish a freshly built desktop upload. Returns why it could not, or `None`.
+
+    ⛔ **Without this step a production tenant could never accept an upload at all.** The gate on
+    `promote` requires a published, certified calibration, and nothing on the desktop path produced
+    one, so every upload ended READY-and-never-live and the only route to a live corpus was the CLI.
+    A gate with no reachable way through is a wall.
+
+    The query set comes from `recall.wizard.queryset.generate_offline`, the same generator the
+    installer uses, rather than from `_generated_calibration_queries` below. That helper's negatives
+    are a hardcoded list never checked against the corpus, and its positives are 500-character chunk
+    bodies rather than questions; `queryset` exists because a measurement
+    (`recall/eval/synthetic.py`) showed that unanswerable queries which are not genuinely off-topic
+    produce a set that is not separable at all. Two generators for one job would mean the installer's
+    corpora and the desktop's are judged by different evidence.
+
+    Failure is a RETURNED REASON, not an exception: an upload whose calibration does not certify has
+    still been built and validated, and the caller reports that state rather than losing the work.
+    """
+    from recall.calibration_v2 import (
+        CalibrationError,
+        CalibrationRepository,
+        CalibrationUncertified,
+    )
+    from recall.wizard.queryset import (
+        MIN_PER_CLASS,
+        QuerySetError,
+        canonicalize,
+        generate_offline,
+    )
+
+    with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        rows = conn.execute(
+            # ⚠️ **No LIMIT, deliberately.** `generate_offline` picks its answerable chunks from
+            # this list, which a cap would only narrow harmlessly; but it also derives the gap class
+            # by asking which off-topic subjects are ABSENT from the corpus, and a truncated view
+            # would call a subject absent because it was cut off. That silently produces a
+            # non-disjoint gap class, which `recall/wizard/queryset.py` records as the one design
+            # constraint that is not negotiable: a non-disjoint set measured as not separable at all.
+            "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+            "ORDER BY chunk_id",
+            (tenant, generation_id),
+        ).fetchall()
+    chunks = [str(row[0]) for row in rows if str(row[0]).strip()]
+
+    try:
+        entries = canonicalize(generate_offline(chunks, per_class=MIN_PER_CLASS))
+    except QuerySetError as exc:
+        # The commonest case by far, and it is about the CORPUS, not about the upload: a handful of
+        # files cannot produce MIN_PER_CLASS distinct answerable questions. Say the number.
+        return f"no certifiable query set could be generated from {len(chunks)} chunk(s): {exc}"
+
+    repository = CalibrationRepository(dsn, tenant, actor="recall-desktop")
+    try:
+        artifact = repository.calibrate(generation_id, entries, embedder)
+    except CalibrationError as exc:
+        # ⛔ **A raise here loses the upload.** `generation_ingest`'s outer handler re-raises, so a
+        # binding failure would escape leaving the generation READY and unreclaimable — the exact
+        # leak the refusal path was fixed to prevent, reintroduced one step before it. `CalibrationError`
+        # and not `Exception`: a domain failure is a reason, a bug is still a bug.
+        return f"calibration could not be measured: {type(exc).__name__}: {exc}"
+    try:
+        repository.publish(artifact.calibration_id)
+    except CalibrationUncertified as exc:
+        # Kept, not deleted: the artifact is the evidence of WHY it did not certify, and it is what
+        # an operator reads before deciding whether to promote deliberately.
+        return f"calibration {artifact.calibration_id} did not certify: {exc}"
+    except CalibrationError as exc:
+        return f"calibration {artifact.calibration_id} could not be published: {exc}"
+    return None
 
 
 def _generated_calibration_queries(store: PgVectorStore, generation_id: str) -> list[dict[str, object]]:
