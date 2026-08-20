@@ -1524,3 +1524,40 @@ def test_a_profile_that_cannot_be_written_is_reported_not_swallowed(
         assert window.save_database_button.isEnabled() is True, "and offer another attempt"
     finally:
         window.close()
+
+
+def test_no_settings_failure_puts_the_password_on_the_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ These two handlers carry an EXCEPTION, not a report.
+
+    `probe_database` scrubs what it RETURNS, so the ordinary failures arrive clean. These fire when
+    the probe itself raised, and the worker hands on a bare `str(exc)`. A comment here used to
+    assert "Redacted" while nothing redacted anything, which is worse than no comment because it
+    stops the next reader looking.
+
+    The marker below is a placeholder, not a credential.
+    """
+    marker = "PLACEHOLDER-NOT-A-REAL-PASSWORD"
+    dsn = f"postgresql://recall:{marker}@127.0.0.1:5432/recall"
+    window = _settings_window(
+        monkeypatch, RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn=dsn)
+    )
+    try:
+        window.dsn_edit.setText(dsn)
+
+        window._database_test_failed(f'could not parse "{dsn}"')
+        assert marker not in window.database_status.text(), window.database_status.text()
+        assert "***" in window.database_status.text()
+
+        window._database_save_failed(f'could not parse "{dsn}"')
+        assert marker not in window.database_status.text(), window.database_status.text()
+
+        def _boom(profile: object) -> None:
+            raise OSError(13, f'refusing to write "{dsn}"')
+
+        monkeypatch.setattr("recall.desktop.ui.save_profile", _boom)
+        window._persist_profile(RuntimeMode.LOCAL_DATABASE, dsn)
+        assert marker not in window.database_status.text(), window.database_status.text()
+    finally:
+        window.close()

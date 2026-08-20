@@ -28,6 +28,7 @@ from recall.desktop.sources import (
     display_type,
 )
 from recall.desktop.github import GithubImport, download_repository
+from recall.store import scrub_dsn_secrets
 from recall.wizard.database import probe_database
 
 
@@ -1221,9 +1222,7 @@ if QApplication is not None:
 
         def _database_test_failed(self, message: str) -> None:
             self.test_database_button.setEnabled(True)
-            # ⚠️ Redacted. A DSN carries a password, and this label is on screen, in screenshots,
-            # and in whatever a user pastes into an issue.
-            self.database_status.setText(f"Could not test the connection: {message}")
+            self.database_status.setText(f"Could not test the connection: {self._safe(message)}")
 
         def _save_database(self) -> None:
             settings = self._database_settings()
@@ -1259,7 +1258,7 @@ if QApplication is not None:
                 save_profile(updated)
             except (OSError, ValueError) as exc:
                 self.save_database_button.setEnabled(True)
-                self.database_status.setText(f"Could not save: {exc}")
+                self.database_status.setText(f"Could not save: {self._safe(str(exc))}")
                 return
             self.profile = updated
             self.save_database_button.setEnabled(True)
@@ -1272,7 +1271,20 @@ if QApplication is not None:
 
         def _database_save_failed(self, message: str) -> None:
             self.save_database_button.setEnabled(True)
-            self.database_status.setText(f"Could not save: {message}")
+            self.database_status.setText(f"Could not save: {self._safe(message)}")
+
+        def _safe(self, message: str) -> str:
+            """Anything derived from a connection attempt, with this DSN's password removed.
+
+            ⚠️ **These two paths carry an EXCEPTION, not a report.** `probe_database` scrubs what it
+            returns, so the ordinary failures arrive clean; these handlers fire when the probe
+            itself raised, and `_Worker` hands on a bare `str(exc)`. The label is on screen, in
+            screenshots, and in whatever a user pastes into an issue.
+
+            The comment that used to sit here simply asserted "Redacted" and nothing did any
+            redacting. That is worse than no comment, because it stops the next reader looking.
+            """
+            return scrub_dsn_secrets(message, self.dsn_edit.text().strip())
 
         def _save_api_keys(self) -> None:
             self._api_keys = {
