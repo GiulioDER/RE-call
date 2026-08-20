@@ -1,6 +1,6 @@
 # Pre-registration: does an offline-generated query set certify `re-call-docs` under voyage-4?
 
-**Date:** 2026-08-20   **Status:** predicted, not yet measured
+**Date:** 2026-08-20   **Status:** measured 2026-08-20, both arms; every prediction below is unedited
 
 Tenant `re-call-docs` on VPS2 (`recall_repos`, port 55432), embedder `voyage:voyage-4`, corpus
 `~/recall-repos/src/RE-call/**/*.md` (155 files, 1,624 KB).
