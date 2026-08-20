@@ -1,0 +1,37 @@
+--- a/memqa/utils/evaluator/evaluate_qa.py	2026-08-20 17:13:28.565731600 +0200
++++ b/memqa/utils/evaluator/evaluate_qa.py	2026-08-20 17:13:48.633872700 +0200
+@@ -5,6 +5,7 @@
+ 
+ import argparse
+ import json
++import os
+ import re
+ import threading
+ import time
+@@ -457,7 +458,25 @@
+                 raise RuntimeError(
+                     "openai package is required for --judge-provider openai."
+                 ) from exc
+-            self.openai_client = OpenAI(api_key=self.config.get("api_key"))
++            # DISCLOSED DEVIATION from the official evaluator: transport only.
++            #
++            # With neither environment variable set this line is exactly the original, so the
++            # default behaviour is unchanged and an unpatched invocation cannot be affected.
++            # ATM_JUDGE_BASE_URL routes the SAME judge model through an OpenAI compatible
++            # endpoint; nothing about the prompt, the temperature, the retry policy or the
++            # parsing is touched, and no scoring code is modified anywhere in this file.
++            #
++            # Why it exists: the OpenAI account holding the official judge key ran out of credit
++            # mid comparison. Any run using it must disclose the route and the resolved model,
++            # because "gpt-5-mini through OpenRouter" is not the same evidence as "gpt-5-mini
++            # through OpenAI" until someone shows the two agree.
++            base_url = os.environ.get("ATM_JUDGE_BASE_URL", "").strip()
++            api_key = os.environ.get("ATM_JUDGE_API_KEY", "").strip() or self.config.get("api_key")
++            self.openai_client = (
++                OpenAI(api_key=api_key, base_url=base_url)
++                if base_url
++                else OpenAI(api_key=api_key)
++            )
+ 
+     def chat(self, messages: List[Dict[str, Any]]) -> str:
+         if self.provider == "openai":
