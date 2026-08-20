@@ -569,31 +569,32 @@ REGRESSIONS: tuple[Regression, ...] = (
     Regression(
         slug="api_pagination",
         doc=(
-            "# Pagination\n\n"
-            "List endpoints paginate with an opaque cursor. Page numbers are not supported, "
-            "because a page number is wrong as soon as the underlying set changes.\n"
+            "# Pagination on the public API\n\n"
+            "List endpoints on the public API return an opaque cursor rather than a page number. "
+            "Adding the cursor was not a breaking change, so it did not need a new path.\n"
         ),
-        query="how do list endpoints paginate",
+        query="does adding pagination to the public API count as a breaking change",
         expects_stale="api_versioning_v1.md",
     ),
     Regression(
         slug="backup_encryption",
         doc=(
             "# Backup encryption\n\n"
-            "Backups are encrypted at rest with a key held in a separate account, so possession "
-            "of the backup is not possession of the data.\n"
+            "The full dump is encrypted at rest with a key held in a separate account, so "
+            "possession of the dump is not possession of the data. The key is rotated whenever "
+            "the dump is taken.\n"
         ),
-        query="how are backups encrypted at rest and where is the key",
+        query="is the weekly full dump encrypted and where is its key kept",
         expects_stale="backup_schedule_v1.md",
     ),
     Regression(
         slug="deploy_notification",
         doc=(
             "# Release announcements\n\n"
-            "A release posts a summary to the release channel naming the change, the operator who "
-            "started it, and the cohort it is currently serving.\n"
+            "When a release switches traffic, a summary is posted to the release channel naming "
+            "the change and the operator who started it.\n"
         ),
-        query="who is named in the summary a release posts",
+        query="who is named when a release switches traffic",
         expects_stale="deploy_strategy_v1.md",
     ),
     Regression(
@@ -610,30 +611,31 @@ REGRESSIONS: tuple[Regression, ...] = (
         slug="test_parallelism",
         doc=(
             "# Integration suite parallelism\n\n"
-            "The integration suite runs eight workers in parallel, each against its own database, "
-            "so no two workers can see each other's rows.\n"
+            "The integration tests run eight workers in parallel, each against its own test "
+            "instance, so no two workers can see each other's rows.\n"
         ),
-        query="how many workers does the integration suite run in parallel",
+        query="how many workers do the integration tests run against the test instance",
         expects_stale="test_data_v1.md",
     ),
     Regression(
         slug="review_sla",
         doc=(
             "# Review response time\n\n"
-            "A review request is expected to receive a first response within one working day, "
-            "even if that response is only to say when a full read will happen.\n"
+            "A change waiting for approvals should get a first response within one working day, "
+            "even if that response only says when a full read will happen.\n"
         ),
-        query="how quickly should a review request get a first response",
+        query="how long should a change wait for its approvals",
         expects_stale="code_review_v1.md",
     ),
     Regression(
         slug="queue_metrics",
         doc=(
-            "# Queue observability\n\n"
-            "Queue depth and the age of the oldest item are reported every ten seconds, because "
-            "depth alone cannot distinguish a fast queue from a stalled one.\n"
+            "# Work queue observability\n\n"
+            "The depth of the work queue and the age of its oldest item are reported every ten "
+            "seconds, because depth alone cannot tell a fast queue from a stalled one during a "
+            "burst.\n"
         ),
-        query="what queue metrics are reported and how often",
+        query="what is reported about the work queue during a burst",
         expects_stale="queue_backpressure_v1.md",
     ),
 )
