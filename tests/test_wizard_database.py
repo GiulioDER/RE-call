@@ -206,3 +206,38 @@ def test_a_dimension_mismatch_blocks_the_install_before_anything_is_built() -> N
     assert "Do NOT drop" in schema.advice, (
         "the destructive fix is the obvious one and must not be the recommended one"
     )
+
+
+def test_a_malformed_dsn_does_not_put_the_password_on_screen() -> None:
+    """⛔ The driver echoes the WHOLE connection string when it cannot parse one.
+
+    Measured: `ProgrammingError: missing "=" after "not-a-dsn://user:PASSWORD@x" in connection info
+    string`. That detail is rendered onto a label in the desktop settings page, which is on screen,
+    in screenshots, and in whatever a user pastes into an issue — and a mistyped DSN is precisely
+    when somebody is staring at that label.
+
+    The three WELL-FORMED failure modes were already clean, which is what made this easy to miss:
+    unreachable port, bad host and wrong password all report without the secret. Only the parse
+    failure leaks, and only the parse failure is the one a person hits while fixing a typo.
+
+    The marker below is a placeholder, not a credential.
+    """
+    marker = "PLACEHOLDER-NOT-A-REAL-PASSWORD"
+
+    report = probe_database(f"not-a-dsn://recall:{marker}@x")
+
+    assert not report.usable
+    assert marker not in report.render(), f"the password reached the report: {report.render()}"
+    assert "***" in report.render(), "and it was redacted rather than merely dropped"
+
+
+def test_the_well_formed_failures_stay_clean_too() -> None:
+    """Asserted alongside the leak, so a later change cannot fix one and break these."""
+    marker = "PLACEHOLDER-NOT-A-REAL-PASSWORD"
+
+    for dsn in (
+        f"postgresql://recall:{marker}@127.0.0.1:1/recall",
+        f"postgresql://recall:{marker}@nonexistent.invalid:5432/recall",
+    ):
+        report = probe_database(dsn)
+        assert marker not in report.render(), "a well-formed failure leaked the password"

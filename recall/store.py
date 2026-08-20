@@ -53,6 +53,32 @@ def _is_local_host(host: str) -> bool:
         return False
 
 
+def scrub_dsn_secrets(text: str, *dsns: str) -> str:
+    """Remove any of these DSNs' passwords from `text`.
+
+    `redacted_dsn` is not enough on its own, because the password can be inside the EXCEPTION rather
+    than inside a DSN we format. Two measurements, years apart in spirit and days apart in fact:
+
+    * a password containing `%` produced
+      `psycopg.ProgrammingError: invalid percent-encoded token: "S3cr%tPw"`, so wrapping the error
+      with a redacted DSN beside it still printed the secret verbatim;
+    * a MALFORMED dsn produced
+      `ProgrammingError: missing "=" after "not-a-dsn://user:PASSWORD@x" in connection info string`,
+      echoing the entire connection string. That one reached a label in the desktop settings page,
+      which is on screen, in screenshots, and in whatever a user pastes into an issue — and a
+      mistyped DSN is exactly when a person is looking at that label.
+
+    Anything derived from a connection attempt goes through here. Lives beside `redacted_dsn`
+    rather than in one caller, because it was written twice before this: once in
+    `recall/wizard/headless.py` and once, nearly, in the preflight.
+    """
+    for dsn in dsns:
+        password = urlsplit(dsn).password
+        if password:
+            text = text.replace(password, "***")
+    return text
+
+
 def redacted_dsn(dsn: str) -> str:
     """`dsn` with any password removed — safe to print to a log or a systemd journal.
 

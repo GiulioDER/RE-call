@@ -27,6 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from recall.store import scrub_dsn_secrets
+
 __all__ = [
     "DatabaseReport",
     "Finding",
@@ -152,7 +154,12 @@ def probe_database(dsn: str, *, expected_dimension: int | None = None) -> Databa
                 Finding(
                     name="reachable",
                     ok=False,
-                    detail=f"{type(exc).__name__}: {exc}".strip(),
+                    # ⚠️ Scrubbed. A MALFORMED dsn makes the driver echo the whole connection
+                    # string back, password included, and this detail is rendered onto a label in
+                    # the desktop settings page. Measured: `ProgrammingError: missing "=" after
+                    # "not-a-dsn://user:PASSWORD@x"`. The three well-formed failure modes are clean;
+                    # the one that leaks is the one a person hits while fixing a typo.
+                    detail=scrub_dsn_secrets(f"{type(exc).__name__}: {exc}".strip(), dsn),
                     blocking=True,
                     advice=(
                         "check the host, port, database name and password. For a database behind "
