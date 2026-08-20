@@ -61,6 +61,67 @@ Publishing is explicit. Creating a certified draft does not make it active. Crea
 `--publish` first stores the measurement, then attempts publication, so failed certification still
 leaves inspectable evidence.
 
+## Carry a threshold across a rebuilt generation
+
+A calibration binds to one `generation_id`. Rebuild the generation to absorb new documents and the
+child has no artifact, so `resolve` returns `STALE`, strict policy refuses every query and
+development mode degrades every query. Without a way to re-verify, a corpus that grows at all costs
+a full manual recalibration, and the practical result is that live indexes stop being rebuilt.
+
+```bash
+recall --tenant acme --serving-dsn "$RECALL_SERVING_DSN" \
+  calibration carry-forward --generation gen_child --publish
+```
+
+**This is not a tolerance and it does not loosen the gate.** Nothing is carried because the corpus
+delta looked small. The parent's own stored labelled query set is re-scored against the child
+generation, and the inherited threshold must pass on those fresh scores. What is inherited is the
+threshold, not the certification.
+
+Two conditions must both hold, and the second exists because the first cannot see the failure that
+matters here.
+
+| Check | Question it answers |
+|---|---|
+| separability CI lower bound `>= MIN_SEPARABILITY` | are the two classes still ordered? |
+| false-abstain and false-confirm rates `<= --max-error` | is the fixed threshold still between them? |
+
+⛔ **Separability alone is not sufficient, and this is the whole reason carry-forward needs a rule
+`calibrate` does not.** Separability is threshold-free. Documents that lift every unanswerable
+score by the same amount leave the ordering perfect, so AUC stays at 1.00 and certification passes,
+while the entire unanswerable class slides above a threshold that is no longer allowed to move. A
+refit cannot be fooled that way because it puts the cut back between the classes. Carry-forward
+holds the cut still, so it has to check the cut. `tests/test_calibration_carry_forward.py` builds
+exactly that corpus and asserts the refusal.
+
+Three refusals happen before any embedding work:
+
+- **a different pipeline fingerprint**, refused outright at any delta. A threshold is a property of
+  an embedder's cosine regime: 2026-08-17 measured `voyage-4` at 0.269 to 0.413 on one corpus where
+  `voyage-code-3` returned 0.480 to 0.834 on another. No delta is small enough to make that safe.
+- **a delta above `--max-corpus-delta`** (default 0.25). Re-scoring a query set says nothing about
+  the queries nobody labelled, so past some point the labelled set describes a corpus that no
+  longer exists.
+- **an unchanged corpus fingerprint**, which means the caller named the generation the calibration
+  is already bound to.
+
+An uncertified or unpublished parent is refused too, so a draft threshold cannot acquire a
+certification by being copied forward.
+
+⚠️ **Both defaults are ceilings on the mechanism, not measured safe distances.** The only delta
+this has been measured at is recorded in
+`docs/preregistrations/2026-08-20-calibration-carry-forward.md`. Lower them per tenant; do not read
+the defaults as evidence.
+
+The artifact records where its threshold came from, inside the checksum, so provenance cannot be
+edited away afterwards. `calibration list` reports `threshold_was_measured_here`,
+`carried_forward_from` and `corpus_delta`, because after a chain of rebuilds an operator's real
+question is which of these thresholds anyone actually measured.
+
+The output also prints `refit_threshold`: what a fresh fit on these scores would have chosen. It
+**changes nothing**. It is there so that an operator watching the inherited number drift away from
+the data gets the warning before the drift is large enough to fail.
+
 ## Inspect and transfer
 
 ```bash
@@ -123,7 +184,7 @@ for the library and for the MCP service. Omitting a policy cannot open the gate.
 | `LINEAGE_MISMATCH` | Generation pipeline or corpus fingerprint is not what the artifact bound | Recalibrate against the current generation |
 | `CALIBRATION_MISSING` | No artifact bound to this tenant and generation | Calibrate against a labelled query set and publish |
 | `CALIBRATION_UNCERTIFIED` | An artifact exists but was never certified | Certify and publish a replacement; the rejected evidence is retained |
-| `CALIBRATION_STALE` | A certified artifact no longer binds to the current lineage | Recalibrate (a rebuild or privacy erasure changed the corpus fingerprint) |
+| `CALIBRATION_STALE` | A certified artifact no longer binds to the current lineage | Try `calibration carry-forward` first: after an ordinary rebuild it re-verifies the existing threshold against the new generation and needs no new labels. Recalibrate if it refuses, or after a privacy erasure |
 | `DEPENDENCY_UNAVAILABLE` | A dependency the gate needs was unreachable | Retry once healthy |
 
 These are an API. Automating on them is the intended use, so their spelling is pinned by test.
