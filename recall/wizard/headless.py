@@ -245,9 +245,12 @@ class HeadlessReport:
     #: written" and "the install answers", and it checks `server_blocks`'s reasoning against the
     #: database rather than trusting it.
     smoke: tuple[SmokeResult, ...] = ()
-    #: Every file the wiring step created or edited. Named because these are edits to files the
-    #: operator owns, made block-scoped so they merge rather than replace, and a block-scoped edit
-    #: is invisible in a directory listing.
+    #: Every file this run created or edited, from EVERY step, not just the wiring. Named because
+    #: an operator cannot find these by looking: the project edits are block-scoped so they merge
+    #: rather than replace, and a block-scoped edit is invisible in a directory listing, while
+    #: `runtime.json` is written to the user's config directory, outside both `data_root` and
+    #: `project_root`. Each step APPENDS. A step that assigns drops the steps before it, which is
+    #: how the compose file and the desktop profile went unreported on every ordinary install.
     files_written: tuple[Path, ...] = ()
 
     @property
@@ -1265,7 +1268,18 @@ def run_headless(
                 embedder=config.embedder,
                 memory_dir=config.memory_root,
             )
-            files = tuple(wrote)
+            # APPENDED, never assigned. This line read `files = tuple(wrote)` from the commit that
+            # introduced it, when the wiring was the only thing that wrote anything and replacing an
+            # empty tuple was the same as extending it. `eab977ac` then added the stack and desktop
+            # branch ABOVE it, correctly appending, and this assignment silently threw both away on
+            # every install that sets `data_root` and `project_root`, which is exactly the ordinary
+            # install the `clean-install` job drives.
+            #
+            # What was lost is the half the operator cannot recover by looking: `runtime.json` is
+            # written to `%APPDATA%/RE-call` or `~/.recall`, outside `data_root` and outside
+            # `project_root` both, so the report naming it is the ONLY thing that says where the
+            # desktop UI was pointed. A directory listing of the install does not contain it.
+            files = (*files, *wrote)
         except OSError as exc:
             # Reported, not raised. Every corpus is already built and promoted by now; throwing that
             # away because a directory is read-only would be the expensive half of the trade.

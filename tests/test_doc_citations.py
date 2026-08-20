@@ -165,6 +165,169 @@ def _commit(repo: Path, message: str, *paths: str) -> None:
                    check=True, capture_output=True)
 
 
+def _repo_with_docs(repo: Path, count: int) -> None:
+    """A throwaway repo with `count` clean, committed documents that all cite one file."""
+    (repo / "docs").mkdir(parents=True)
+    (repo / "recall").mkdir(parents=True)
+    (repo / "recall" / "thing.py").write_text(
+        "import os\n\nTARGET = 1\n", encoding="utf-8", newline="\n"
+    )
+    for index in range(count):
+        (repo / "docs" / f"d{index}.md").write_text(
+            f"# d{index}\n\ncites `recall/thing.py:3`\n", encoding="utf-8", newline="\n"
+        )
+    _init_repo(repo)
+    _commit(repo, "base", "docs", "recall")
+
+
+def _count_spawns(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record the git subcommand of every process the checker starts, in order."""
+    seen: list[str] = []
+    real_run = subprocess.run
+
+    def counting(*args, **kwargs):
+        argv = list(args[0]) if args else []
+        # ["git", "-C", <repo>, "<subcommand>", ...]
+        seen.append(argv[3] if len(argv) > 3 else "?")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(citations.subprocess, "run", counting)
+    return seen
+
+
+def test_the_status_query_is_one_spawn_for_the_whole_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One `git status` for the run, not one per document. This is a COST test, and it is load bearing.
+
+    Process creation is this checker's entire cost on Windows: measured 2026-08-20, 178 spawns at
+    141ms each with 98% of wall clock inside `subprocess.run`. The per document `status` calls were
+    61 of those. That is not merely slow, because the cost is nonlinear in machine load: under 12
+    way CPU saturation the same run took 289s rather than 25s, and the test that drives this checker
+    carries no timeout of its own, so it runs under the 120s default and a loaded machine turns a
+    passing check into a killed run.
+
+    ⚠️ Asserted as `== 1`, not `< len(docs)`. A bound that merely beats the old number would go on
+    passing if someone reintroduced a per document call for a subset of documents, which is exactly
+    how this kind of regression comes back.
+    """
+    repo = tmp_path / "repo"
+    _repo_with_docs(repo, count=6)
+    monkeypatch.setattr(citations, "REPO", repo)
+    monkeypatch.setattr(citations, "POLICY", repo / "docs" / "absent-policy.toml")
+
+    spawns = _count_spawns(monkeypatch)
+    citations.check()
+
+    assert spawns.count("status") == 1, (
+        f"expected exactly ONE `git status` for the whole tree, got {spawns.count('status')} "
+        f"across 6 documents. Spawn sequence: {spawns}"
+    )
+
+
+def test_a_dirty_document_is_still_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Batching the query must not change the ANSWER: an edited document is still not checked.
+
+    The reason is in `check`: the baseline is the last commit that touched the document, so
+    citations sitting in the working tree are newer than that baseline and would be reported as
+    drift for having just been repaired. Six hand corrected citations were all reported stale that
+    way, and all six findings vanished on commit.
+    """
+    repo = tmp_path / "repo"
+    _repo_with_docs(repo, count=3)
+    (repo / "docs" / "d1.md").write_text(
+        "# d1\n\nedited in the working tree, citing `recall/thing.py:3`\n",
+        encoding="utf-8", newline="\n",
+    )
+    monkeypatch.setattr(citations, "REPO", repo)
+    monkeypatch.setattr(citations, "POLICY", repo / "docs" / "absent-policy.toml")
+
+    _findings, skipped = citations.check()
+
+    assert skipped == ["docs/d1.md"], (
+        f"only the edited document may be skipped, got {skipped}"
+    )
+
+
+def test_a_dirty_path_containing_a_space_is_recognised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reason the query is `--porcelain -z` and not `--porcelain`.
+
+    ⚠️ Verified against git rather than assumed: plain `--porcelain` renders this path as
+    `"docs/a doc with spaces.md"`, **with the quotes**, so a membership test against the raw path
+    misses it. The document would then be checked against a baseline that no longer describes it,
+    and the findings would be reported against the wrong text. `-z` emits the path raw and
+    NUL separated, which is the only form that survives spaces, non ASCII bytes and `core.quotepath`.
+    """
+    repo = tmp_path / "repo"
+    _repo_with_docs(repo, count=1)
+    spaced = repo / "docs" / "a doc with spaces.md"
+    spaced.write_text("# spaced\n", encoding="utf-8", newline="\n")
+    _commit(repo, "add the spaced document", "docs")
+    spaced.write_text("# spaced, now edited\n", encoding="utf-8", newline="\n")
+
+    monkeypatch.setattr(citations, "REPO", repo)
+
+    assert "docs/a doc with spaces.md" in citations.dirty_paths(), (
+        "a dirty path containing a space was not recognised, which is what plain `--porcelain` "
+        "does: it quotes the path and the membership test silently misses it"
+    )
+
+
+def test_an_untracked_document_inside_an_untracked_directory_is_recognised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reason the query carries `-uall`, and the one case where batching changed the ANSWER.
+
+    ⚠️ The call this replaced passed a pathspec, and a pathspec forces git to name the file. Asked
+    about the whole tree instead, git collapses untracked directories and reports `docs/notes/`
+    rather than the documents inside it, so every one of them would fall out of the membership test.
+    Verified against git rather than reasoned about: without `-uall` the entry really is the
+    directory.
+
+    This is the only behavioural difference the batching introduced, which is why it gets its own
+    test rather than being folded into the rename one.
+    """
+    repo = tmp_path / "repo"
+    _repo_with_docs(repo, count=1)
+    (repo / "docs" / "notes").mkdir()
+    (repo / "docs" / "notes" / "fresh.md").write_text(
+        "# fresh, never committed\n", encoding="utf-8", newline="\n"
+    )
+
+    monkeypatch.setattr(citations, "REPO", repo)
+
+    assert "docs/notes/fresh.md" in citations.dirty_paths(), (
+        "an untracked document inside an untracked directory was not recognised. Without `-uall` "
+        "git reports the collapsed directory `docs/notes/` and the document is invisible here"
+    )
+
+
+def test_a_rename_records_both_of_its_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`-z` puts the ORIGINAL path in the next field, and both names have to land in the set.
+
+    Being in the set means "do not check this document". Naming both is the conservative direction:
+    the alternative is checking one of them against a baseline that no longer describes it.
+    """
+    repo = tmp_path / "repo"
+    _repo_with_docs(repo, count=2)
+    subprocess.run(
+        ["git", "-C", str(repo), "mv", "docs/d0.md", "docs/renamed.md"],
+        check=True, capture_output=True,
+    )
+
+    monkeypatch.setattr(citations, "REPO", repo)
+    dirty = citations.dirty_paths()
+
+    assert "docs/renamed.md" in dirty, f"the new name is missing from {sorted(dirty)}"
+    assert "docs/d0.md" in dirty, f"the original name is missing from {sorted(dirty)}"
+
+
 def test_a_declared_live_zone_is_still_checked_under_a_frozen_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
