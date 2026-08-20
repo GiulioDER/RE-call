@@ -9,6 +9,7 @@ against an invented fixture passes its tests and fails on the first real session
 
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 
@@ -153,6 +154,47 @@ def test_tool_latency_is_paired_by_id_not_by_position() -> None:
     # 09.305 -> 12.045 and 09.505 -> 11.971. Positional pairing would give 2666 and 2540.
     assert by_command["ls definitely-missing-dir"] == pytest.approx(2740, abs=5)
     assert by_command["echo hello-from-bash"] == pytest.approx(2466, abs=5)
+
+
+def test_the_raw_stream_is_written_before_it_is_parsed(tmp_path: Path, monkeypatch) -> None:
+    """The transcript is the evidence, so it must survive a stream the parser rejects.
+
+    Writing it after `build_record` would lose exactly the sessions worth looking at: the ones
+    whose output was malformed enough to raise.
+    """
+    import asyncio
+
+    from benchmarks.agent_ab import claude_exec
+
+    stream_dir = tmp_path / "streams"
+    config = _config(stream_dir=stream_dir)
+    row = {"task_id": "task/with:awkward chars", "user_input": "go"}
+
+    class _FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"this is not json\n", b""
+
+    async def _fake_launch(*_args, **_kwargs):
+        return _FakeProcess()
+
+    monkeypatch.setattr(claude_exec.asyncio, "create_subprocess_exec", _fake_launch)
+    with pytest.raises(ClaudeTranscriptError):
+        asyncio.run(claude_exec.run_claude_case(row, RECALL_ON, config))
+
+    written = list(stream_dir.glob("*.gz"))
+    assert len(written) == 1, "the unparseable stream must still be on disk"
+    assert "/" not in written[0].name and ":" not in written[0].name
+    with gzip.open(written[0], "rt", encoding="utf-8") as handle:
+        assert handle.read() == "this is not json\n"
+
+
+def test_build_record_does_not_claim_a_stream_file_it_did_not_write() -> None:
+    # Capture belongs to the run path. A record built from an already-saved stream must not
+    # advertise a path, or the artifact index would point at files that are not there.
+    record = _record(BARE_TOOLS, config=_config(stream_dir="/nowhere"))
+    assert "stream_path" not in record.metadata
 
 
 def test_conversation_opens_with_the_human_turn_the_stream_never_echoes() -> None:

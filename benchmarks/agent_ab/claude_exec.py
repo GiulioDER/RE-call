@@ -24,8 +24,10 @@ never involves a shell, so a task prompt cannot become a command.
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import os
+import re
 import shutil
 import time
 from collections.abc import Mapping, Sequence
@@ -114,6 +116,10 @@ class ClaudeExecConfig:
     permission_mode: str | None = None
     add_dirs: tuple[str, ...] = ()
     recall_tool_prefix: str = DEFAULT_RECALL_TOOL_PREFIX
+    #: Where to write each session's raw stream, gzipped, one file per task and arm. The raw
+    #: stream is the evidence; every number in the summary is derived from it and can be
+    #: recomputed, so it is written by the adapter itself rather than by whatever calls it.
+    stream_dir: str | Path | None = None
 
     def __post_init__(self) -> None:
         if not self.executable.strip():
@@ -534,16 +540,36 @@ async def run_claude_case(
             f"claude exceeded timeout_s={config.timeout_s} for task {row.get('task_id')!r}"
         ) from None
     wall_time_ms = (time.perf_counter() - started) * 1000.0
+    stream = stdout.decode("utf-8", errors="replace")
 
-    return build_record(
+    stream_path: Path | None = None
+    if config.stream_dir is not None:
+        # Written before parsing, so a stream that the parser rejects is still on disk to look at.
+        # A transcript that only survives a successful parse is missing exactly when it is needed.
+        directory = Path(config.stream_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        safe_task = re.sub(r"[^A-Za-z0-9._#-]", "_", str(row["task_id"]))
+        stream_path = directory / f"{safe_task}.{variant}.jsonl.gz"
+        with gzip.open(stream_path, "wt", encoding="utf-8") as handle:
+            handle.write(stream)
+
+    record = build_record(
         row,
         variant,
-        stream=stdout.decode("utf-8", errors="replace"),
+        stream=stream,
         wall_time_ms=wall_time_ms,
         config=config,
         command=command,
         exit_code=process.returncode,
         stderr=stderr.decode("utf-8", errors="replace"),
+    )
+    if stream_path is None:
+        return record
+    return record.__class__.from_mapping(
+        {
+            **record.to_dict(),
+            "metadata": {**record.metadata, "stream_path": stream_path.name},
+        }
     )
 
 
