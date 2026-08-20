@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -43,6 +44,49 @@ DEFAULT_RECALL_TOOL_PREFIX = "mcp__recall"
 
 class ClaudeTranscriptError(ValueError):
     """Raised when a Claude Code JSONL stream cannot be interpreted."""
+
+
+def resolve_claude_executable(name: str = "claude") -> str:
+    """Resolve `claude` to something `CreateProcess` can actually start.
+
+    On Windows, npm installs `claude` as a `.cmd` batch shim. `create_subprocess_exec` takes an
+    argument vector and never goes through a shell, which is the property that keeps a task prompt
+    from becoming a command, and it means a batch file cannot be started: the attempt fails with
+    ``FileNotFoundError: [WinError 2]`` naming nothing in particular. The shim's last line calls a
+    real `claude.exe` alongside it, so prefer that.
+
+    Running the shim through `cmd /c` instead would work and is rejected on purpose: it puts a
+    shell back between this harness and a prompt written by whoever authored the task file.
+    """
+
+    candidate = Path(name)
+    if candidate.exists() and candidate.is_file():
+        return str(candidate)
+
+    found = shutil.which(name)
+    if found is None:
+        raise FileNotFoundError(
+            f"{name!r} is not on PATH. Install Claude Code, or pass an absolute path as "
+            f"ClaudeExecConfig(executable=...)."
+        )
+    resolved = Path(found)
+    if resolved.suffix.lower() in {".cmd", ".bat", ".ps1"}:
+        native = (
+            resolved.parent
+            / "node_modules"
+            / "@anthropic-ai"
+            / "claude-code"
+            / "bin"
+            / "claude.exe"
+        )
+        if native.is_file():
+            return str(native)
+        raise FileNotFoundError(
+            f"{found} is a shell wrapper that cannot be started without a shell, and no "
+            f"native executable was found at {native}. Pass an absolute path to the real "
+            f"binary as ClaudeExecConfig(executable=...)."
+        )
+    return str(resolved)
 
 
 @dataclass(frozen=True)
@@ -90,7 +134,7 @@ class ClaudeExecConfig:
     def command(self, prompt: str) -> list[str]:
         """Build an argument list without invoking a shell."""
 
-        command = [self.executable]
+        command = [resolve_claude_executable(self.executable)]
         if self.bare:
             command.append("--bare")
         command.extend(("-p", prompt))

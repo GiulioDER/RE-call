@@ -65,7 +65,10 @@ def test_command_puts_prompt_after_flags_and_never_uses_a_shell() -> None:
         permission_mode="dontAsk",
     )
     command = config.command("do the thing")
-    assert command[0] == "claude"
+    # Resolved to a real binary, never left as the npm batch shim: `create_subprocess_exec` takes
+    # an argv list and starts no shell, so a `.cmd` wrapper cannot be executed at all.
+    assert Path(command[0]).stem.lower() == "claude"
+    assert Path(command[0]).suffix.lower() not in {".cmd", ".bat", ".ps1"}
     assert "--bare" in command
     assert command[command.index("-p") + 1] == "do the thing"
     assert command[command.index("--output-format") + 1] == "stream-json"
