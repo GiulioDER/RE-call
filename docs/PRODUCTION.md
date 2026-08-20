@@ -104,8 +104,8 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 
   **`generation rollback` is deliberately NOT gated**, because it is the incident path: it activates
   the previous generation whatever its calibration status, and records that status plus the
-  operator's reason in the audit event. The reasoning is in
-  `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md` section 6. Expect a rollback to be able to downgrade a
+  operator's reason in the audit event. The reasoning is under "Decisions on the eleven questions"
+  in `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md`. Expect a rollback to be able to downgrade a
   tenant from certified to provisional, visibly.
 
   What has **not** landed is strict refusal at *read* time: an uncertified generation that is
