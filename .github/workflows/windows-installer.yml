@@ -1,6 +1,6 @@
 name: Windows installer
 
-# Builds the frozen graphical installer and PROVES IT RUNS.
+# Builds the frozen graphical installer, PROVES IT RUNS, and signs it.
 #
 # ⛔ **The `--selftest` step is the reason this workflow is worth having.** A PyInstaller bundle
 # fails characteristically: it starts, draws its window, and raises `ModuleNotFoundError` the
@@ -8,11 +8,11 @@ name: Windows installer
 # codebase imports lazily nearly everywhere. A workflow that only checked the build succeeded would
 # be green for exactly that bundle. `--selftest` reaches the modules the first click reaches.
 #
-# ⚠️ **It cannot be verified on every developer machine.** Measured 2026-08-21 on the maintainer's
-# Windows 11 box: `UsermodeCodeIntegrityPolicyEnforcementStatus: 2`, WDAC enforced, and the freshly
-# built unsigned exe was refused outright with "An Application Control policy has blocked this
-# file". Not a SmartScreen warning somebody can click past — blocked. A hosted runner has no such
-# policy, which makes CI the only place the binary can currently be executed at all.
+# ⚠️ **The build cannot be run on every developer machine, and the reason is not a bug.** Measured
+# 2026-08-21 on the maintainer's Windows 11 box: Smart App Control enforced
+# (`VerifiedAndReputablePolicyState = 1`), and the freshly built unsigned exe was refused with "An
+# Application Control policy has blocked this file". Not a SmartScreen warning somebody can click
+# past — blocked. A hosted runner has no such policy, which is why the executable check lives here.
 
 on:
   workflow_dispatch:
@@ -32,6 +32,12 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: read
+      # SignPath's action reads the workflow run and the uploaded artifact to bind the signature to
+      # a specific, reproducible build rather than to whatever bytes were handed to it.
+      actions: read
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -58,14 +64,90 @@ jobs:
 
       - name: Report the bundle size
         # A number in the log, because this is a download a person waits for and nothing else in CI
-        # would notice it doubling. `collect_submodules("recall")` sweeps in whatever recall grows.
+        # would notice it doubling. `collect_submodules("recall")` sweeps in whatever recall grows,
+        # so the exclusions in the spec are load-bearing and their removal should be visible.
+        # Measured locally 2026-08-21: 786 MB before the exclusions, 457 MB after.
         shell: pwsh
         run: |
           $bytes = (Get-ChildItem -Recurse dist/recall-install | Measure-Object -Property Length -Sum).Sum
           "bundle: {0:N0} MB" -f ($bytes / 1MB)
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+      # The unsigned bundle is uploaded FIRST because that is what gets signed: SignPath fetches
+      # this artifact by id, so the signature is bound to a build this workflow produced and can be
+      # traced back to, rather than to bytes somebody handed the service.
+      - name: Upload the unsigned bundle
+        id: unsigned
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: recall-install-windows-unsigned
+          path: dist/recall-install
+          if-no-files-found: error
+
+      # ── Signing ──────────────────────────────────────────────────────────────────────────────
+      #
+      # ⛔ **Signing is what makes the binary RUNNABLE, not what makes it look professional.**
+      # Microsoft's documentation settles what Smart App Control requires:
+      # https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/overview
+      #
+      #   "If the app intelligence service is unable to make a prediction, then Smart App Control
+      #    will still allow an app to run if it is signed with a certificate issued by a
+      #    certificate authority (CA) within the Trusted Root Program."
+      #
+      # So a signature from a Trusted Root Program CA is SUFFICIENT — reputation is not additionally
+      # required, which means a first release runs rather than waiting to accumulate downloads. An
+      # OV certificate does it; EV is not needed for this.
+      #
+      # The private key never reaches this runner. SignPath holds it in an HSM and signs server
+      # side, which is also how the free programme for open source projects can offer an OV
+      # certificate at all.
+      #
+      # ⚠️ Gated on a VARIABLE rather than the secret, because `secrets` is not available in an
+      # `if:` at step level on a fork PR and would silently evaluate empty — turning "we have no
+      # credentials" and "this is a fork" into the same skip, which the release guard below then
+      # cannot tell apart.
+      - name: Sign the bundle
+        id: sign
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627  # v2.3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: recall
+          signing-policy-slug: ${{ github.event_name == 'push' && 'release-signing' || 'test-signing' }}
+          artifact-configuration-slug: windows-installer
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist-signed
+
+      # ⛔ **A tag build that produced an UNSIGNED artifact must fail, loudly.** Shipping one is
+      # worse than shipping nothing: it works for whoever built it and is blocked on the machines
+      # this bundle exists to serve, and nothing in the release says which the downloader got. A
+      # pull request build is allowed to be unsigned — that is a check, not a download.
+      - name: Refuse an unsigned release
+        if: github.event_name == 'push' && steps.sign.outcome == 'skipped'
+        run: |
+          echo "::error::tag build with no signing credentials configured: the artifact would be"
+          echo "::error::blocked by Smart App Control on the machines it targets. Set the"
+          echo "::error::SIGNPATH_ORGANIZATION_ID variable and SIGNPATH_API_TOKEN secret."
+          exit 1
+
+      - name: Verify the signature is real
+        # ⚠️ The signing step's exit code says the SERVICE accepted the request. `signtool verify
+        # /pa` asks Windows whether the file on disk now carries a chain it will actually honour,
+        # which is the question the user's machine asks and the only one that matters here.
+        if: steps.sign.outcome == 'success'
+        shell: pwsh
+        run: |
+          $tool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+          if (-not $tool) { throw "signtool.exe not found on the runner" }
+          & $tool.FullName verify /pa /v dist-signed\recall-install\recall-install.exe
+          if ($LASTEXITCODE -ne 0) { throw "the signature does not verify" }
+
+      - name: Upload the signed bundle
+        if: steps.sign.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: recall-install-windows
-          path: dist/recall-install
+          path: dist-signed/recall-install
           if-no-files-found: error
