@@ -414,22 +414,27 @@ def test_ordering_never_touches_the_demoted_hits() -> None:
     assert before == after
 
 
-def test_inherit_is_the_default_ordering() -> None:
-    """Enabling the feature gets `inherit`, not pool order.
+def test_pool_is_the_default_ordering() -> None:
+    """The conservative option, and NOT the best measured one.
 
-    The displacement evidence for that default failed its own apparatus check, so what carries it
-    is the structural property asserted in the next test, not a measured rate.
+    This was briefly `inherit`, on the argument that it could not displace a better answer. It
+    displaced one (`docs/preregistrations/2026-08-20-successor-ordering-displacement.md`), so the
+    default went back to `pool` until the trade is chosen knowingly rather than assumed away.
     """
-    assert SuccessorExpansionPolicy(enabled=True).ordering == "inherit"
+    assert SuccessorExpansionPolicy(enabled=True).ordering == "pool"
 
 
 def test_inherit_cannot_displace_a_hit_that_outranked_the_predecessor() -> None:
-    """The structural property the default rests on, asserted directly rather than sampled.
+    """The structural property, which SURVIVED the measurement that killed the claim built on it.
 
     `inherit` sorts a promoted successor by the pool index its PREDECESSOR held. So for every `ok`
     hit that sat ahead of the predecessor in the pool, that hit still sits ahead of the successor
-    afterwards. This holds for any arrangement, which is what the four usable regression cases
-    could only gesture at.
+    afterwards. That holds for any arrangement and is asserted here over every predecessor rank.
+
+    ⚠️ Read the scope, because I did not. This says nothing about a hit that sat BEHIND the
+    predecessor, and the gold answer of a regression case may well sit behind it. "Anything that
+    outranked the predecessor is safe" does not imply "the right answer is safe", and inferring the
+    second from the first is what put `inherit` in the default slot it has since lost.
     """
     for predecessor_rank in range(4):
         others = [_scored(f"o{i}", f"other{i}.md", 0.90 - i * 0.01) for i in range(3)]

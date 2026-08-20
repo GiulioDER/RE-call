@@ -82,6 +82,64 @@ eval "$(scripts/session-db.sh up)"
 python -m benchmarks.successor_expansion_probe
 ```
 
-## Result
+## Result (2026-08-20)
 
-Not yet measured.
+**Status: measured. Seven of eight predictions held. The eighth is the one this record staked
+itself on, and it is FALSIFIED. `inherit` displaced one gold answer.**
+
+Apparatus clean for the first time in the series: **10 of 10 usable**, no exclusions on either
+criterion. Stratum B 16, inside the predicted 12 to 20. Baseline recovery on B 0.00.
+
+| Metric | Predicted | Measured |
+|---|---|---|
+| Displacement, `inherit` | **exactly 0.00** | **0.10 [0.02, 0.40]**, `queue_metrics` ✗ |
+| Displacement, `promoted_first` | 0.50 to 0.90 | 0.80 [0.49, 0.94], 8 of 10 ✓ |
+| Displacement, `pool` | 0.00 | 0.00 [0.00, 0.28] ✓ |
+| Recovery, `inherit` | 0.85 to 1.00 | 1.00 [0.81, 1.00] ✓ |
+| Recovery, `promoted_first` | 0.80 to 1.00 | 0.94 [0.72, 0.99] ✓ |
+| Recovery, `pool` | 0.10 to 0.40 | 0.25 [0.10, 0.49] ✓ |
+| `str_trust` | 0.00 every arm | 0.00 [0.00, 0.11] n=30 ✓ |
+| Abstention accuracy | 1.00 every arm | 1.00 ✓ |
+
+### The claim that died, and it is the one that mattered
+
+> "`inherit` cannot displace a better-ranked answer, for any arrangement, and will therefore
+> measure exactly 0.00 rather than approximately 0.00."
+
+One displacement falsifies it, and there is one. **The shipped default rested on this and nothing
+else**, because the displacement evidence behind it was uninterpretable when the default was
+adopted. So the justification is gone, and per the decision rule fixed in advance the default is
+reverted to `pool` in the same change that records this.
+
+### What was actually wrong, stated as a hypothesis and NOT as a finding
+
+Earlier in this series a mechanism asserted confidently in prose turned out to rest on a mislabelled
+print statement and survived two records before being caught. So this is written as what it is.
+
+The sort key almost certainly does have the property proved of it. `tests/test_successor_expansion.py`
+asserts over every predecessor rank that any `ok` hit which outranked the predecessor still outranks
+the successor, and it passes. **The invalid step was my inference from that property to "gold is
+never displaced".** They are not the same statement. The guarantee is relative to the PREDECESSOR:
+if the superseded document outranked gold in the pool, then giving its successor the predecessor's
+rank places the successor above gold, and nothing in the property forbids that. Gold ranked below
+the predecessor was never protected.
+
+If that is right, the fix is not to the sort key but to the claim, and a genuinely safe ordering
+would need to know that gold is a better answer, which is a signal this design does not have.
+
+**Unverified.** What would test it: for `queue_metrics`, report whether `queue_backpressure_v1.md`
+outranked `queue_metrics.md` in the baseline pool. That is one number and it decides between "the
+property is narrower than I said" and "the sort key is broken", which are different repairs.
+
+### The trade this leaves, stated plainly rather than resolved here
+
+| Arm | Recovery, stratum B | Gold kept, regression |
+|---|---|---|
+| `pool` | 0.25 | 1.00 |
+| `promoted_first` | 0.94 | 0.20 |
+| `inherit` | 1.00 | 0.90 |
+
+`inherit` is plainly the best of the three on this fixture, and reverting the default is not a claim
+that it is worse. It is a claim that the reason it was made the default was wrong, and that a
+default resting on a disproved impossibility claim should go back to the conservative option until
+somebody chooses the trade-off knowingly. That choice is the author's and is not made here.

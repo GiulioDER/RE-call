@@ -104,19 +104,29 @@ class SuccessorExpansionPolicy:
     #: evidence that its successor is first best, which is what `promoted_first` asserts on every
     #: query where any retrieved document happens to carry an edge.
     #:
-    #: **Default `inherit`, and the evidence for that is uneven — read this before relying on it.**
-    #: Recovery is measured and interpretable: over 16 absent-successor queries, `pool` 0.25 and
-    #: `inherit` 1.00, with `str_trust` 0.00 and abstention accuracy 1.00 in every arm
-    #: (`docs/preregistrations/2026-08-20-successor-ordering-regression.md`). What is NOT
-    #: established is the displacement rate: that run's regression set failed its own apparatus
-    #: check with 4 of 10 queries usable, and the record declines to quote a number from it.
+    #: **Default `pool`, which is the conservative option and NOT the best measured one.**
+    #: On the 30-pair fixture (`docs/preregistrations/2026-08-20-successor-ordering-displacement.md`,
+    #: 10 of 10 regression cases usable):
     #:
-    #: What carries the default in place of that number is STRUCTURAL rather than empirical.
-    #: `inherit` sorts a promoted successor by the pool index its predecessor held, so any hit that
-    #: outranked the predecessor still outranks the successor. It cannot displace a better-ranked
-    #: answer, whatever a larger regression set would say. `promoted_first` has no such property,
-    #: which is why it is selectable and not the default.
-    ordering: Literal["pool", "promoted_first", "inherit"] = "inherit"
+    #:   arm              recovery (stratum B, n=16)   gold kept (regression, n=10)
+    #:   pool             0.25                          1.00
+    #:   promoted_first   0.94                          0.20
+    #:   inherit          1.00                          0.90
+    #:
+    #: `inherit` is plainly the best of the three there, and the default is `pool` anyway. This
+    #: briefly WAS `inherit`, on the argument that it "cannot displace a better-ranked answer for
+    #: any arrangement". That argument is disproved: it displaced one.
+    #:
+    #: The property itself survives and is asserted in `tests/test_successor_expansion.py` over
+    #: every predecessor rank: any `ok` hit that outranked the PREDECESSOR still outranks the
+    #: successor. What does not follow, and what I wrongly inferred, is that gold is never
+    #: displaced. Those differ exactly when the superseded document outranked gold, because then
+    #: the successor inherits a rank above gold and the property permits it.
+    #:
+    #: So the default is back to the conservative option until somebody chooses the trade knowingly,
+    #: rather than resting on an impossibility that turned out not to hold. Set `ordering` to pick
+    #: a different one; nothing here says `inherit` is a bad choice, only that it is a choice.
+    ordering: Literal["pool", "promoted_first", "inherit"] = "pool"
 
     def __post_init__(self) -> None:
         if self.max_sources < 1:
