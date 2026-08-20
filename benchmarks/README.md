@@ -12,6 +12,7 @@ Published result tables live in `results/`; benchmark code and protocols live he
 | [pipeline.py](pipeline.py) | Generator, judge, aggregation, and shared records. |
 | [latency.py](latency.py) | Isolated memory-layer latency measurement. |
 | [enterprise_rag.py](enterprise_rag.py) | EnterpriseRAG-Bench answer-file runner for public leaderboard submission. |
+| [agent_ab/](agent_ab/) | Paired application-level benchmark: one agent, RE-call on and off. |
 | [claim_gate.py](claim_gate.py) | Published-number gate for result documents. |
 | [ladder/](ladder/) | Answerability ladder benchmark. |
 | [beam/](beam/) | BEAM harness integration and related probes. |

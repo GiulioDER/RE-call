@@ -38,6 +38,8 @@ dependencies = [
 
 [project.optional-dependencies]
 fastembed = ["fastembed>=0.3"]
+# Application level scoring for the optional paired agent benchmark harness.
+ragas = ["ragas>=0.4,<1"]
 # Native extraction for PDF, Office, spreadsheets, presentations, HTML, and tables.
 documents = [
     "pypdf>=5.0",
@@ -230,6 +232,9 @@ module = [
     "PySide6.*",
     "keyring",
     "keyring.*",
+    # Optional application-level evaluator. The adapter must type-check when Ragas is absent.
+    "ragas",
+    "ragas.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
