@@ -32,7 +32,7 @@ from .claude_exec import ClaudeExecConfig
 from .schema import RECALL_OFF, RECALL_ON, VARIANTS
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .recall_server import WarmRecallServer
+    from .recall_server import StdioRecallSpec, WarmRecallServer
 
 BARE = "bare"
 CLAUDE_MD = "claude_md"
@@ -92,6 +92,34 @@ class ArmSpec:
             profile=CLAUDE_MD,
             append_system_prompt_file=prompt_file,
             metadata={"memory": "static", "prompt_file": str(prompt_file)},
+        )
+
+    @classmethod
+    def recall_stdio(
+        cls, spec: "StdioRecallSpec", config_path: str | Path, prompt_file: str | Path | None = None
+    ) -> "ArmSpec":
+        """RE-call over a per-session stdio server, which is what a CALIBRATED corpus requires.
+
+        Generations are served only under `RECALL_ENV=production`, and production refuses the
+        static bearer token the warm HTTP server uses, so a calibrated corpus and a warm socket
+        cannot be had together without OIDC. This trades the 458 ms warm connect for roughly 11 s
+        of per-session startup, and needs Claude Code 2.1.221+ so the session waits for it.
+        """
+
+        prefix = spec.tool_prefix()
+        return cls(
+            profile=RECALL,
+            mcp_config=str(spec.write_mcp_config(config_path)),
+            append_system_prompt_file=prompt_file,
+            recall_tool_prefix=prefix,
+            extra_allowed_tools=(f"{prefix}recall_search", f"{prefix}recall_evidence"),
+            metadata={
+                "memory": "retrieved",
+                "transport": "stdio",
+                "tenant": spec.tenant,
+                "tool_prefix": prefix,
+                "calibrated": True,
+            },
         )
 
     @classmethod

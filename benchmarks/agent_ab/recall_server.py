@@ -283,6 +283,161 @@ class WarmRecallServer:
         }
 
 
+#: Environment a Claude Code stdio MCP server needs before it can even import.
+#:
+#: An MCP config's `env` block **replaces** the environment rather than extending it, and the
+#: omission fails twice over, misleadingly, on Windows:
+#:
+#: - without `APPDATA`, Python cannot find the user site-packages directory and the server dies on
+#:   `ModuleNotFoundError: No module named 'anyio'`, which reads as a broken install;
+#: - with `APPDATA` but without `SystemRoot`, the import succeeds and Winsock fails instead, with
+#:   `OSError: [WinError 10106] The requested service provider could not be loaded`.
+#:
+#: Neither message mentions the environment. Both were reproduced on 2026-08-21.
+STDIO_PASSTHROUGH_ENV: tuple[str, ...] = (
+    "APPDATA",
+    "LOCALAPPDATA",
+    "SystemRoot",
+    "PATH",
+    "PATHEXT",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "SYSTEMDRIVE",
+    "COMSPEC",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "LANG",
+    "LC_ALL",
+)
+
+
+@dataclass
+class StdioRecallSpec:
+    """A per-session stdio RE-call server, which is the only way to serve a CALIBRATED corpus.
+
+    RE-call reads generations only under `RECALL_ENV=production` (`recall_mcp/server.py`), and
+    `build_auth` refuses a static bearer token under production because such a token has no
+    expiry, issuer or revocation path. Those two rules together mean the warm HTTP server above
+    **cannot** carry a calibrated generation without standing up OIDC. stdio needs no
+    authentication, because there is no remote caller to authenticate, so it can.
+
+    The cost is a cold start per session, measured at about 11 s here, almost all of it loading the
+    embedder. That is affordable only because Claude Code **2.1.221 and later wait** for a pending
+    MCP server before the first turn. Below that version the session simply runs without the tool
+    and reports success, which is the failure `gate.py` exists to catch.
+    """
+
+    dsn: str
+    cwd: str | Path
+    tenant: str = "default"
+    embedder: str = "fastembed"
+    python: str = field(default_factory=lambda: sys.executable)
+    server_name: str = DEFAULT_SERVER_NAME
+    #: Left unset so the strict trust policy applies. A calibrated corpus should satisfy the
+    #: policy rather than need it relaxed; setting this would hide a calibration that did not take.
+    trust_mode: str | None = None
+    _state_dir: Path | None = field(default=None, init=False, repr=False)
+
+    def env(self) -> dict[str, str]:
+        environment = {
+            key: os.environ[key] for key in STDIO_PASSTHROUGH_ENV if key in os.environ
+        }
+        environment.update(
+            {
+                "RECALL_ENV": "production",
+                "RECALL_TRANSPORT": "stdio",
+                "RECALL_DSN": self.dsn,
+                "RECALL_EMBEDDER": self.embedder,
+                "RECALL_TENANT": self.tenant,
+                "PYTHONUTF8": "1",
+                # The config's `cwd` is not what decides whether `python -m recall_mcp.server`
+                # can import anything: measured 2026-08-21, the same config connects when the
+                # SESSION runs from the repository root and fails when it runs from an artifact
+                # directory, so the server inherits the session's working directory rather than
+                # the one it was given. `PYTHONPATH` makes the import independent of both, which
+                # is what a benchmark that runs sessions in a scratch directory needs.
+                "PYTHONPATH": str(Path(self.cwd).resolve()),
+            }
+        )
+        if self.trust_mode:
+            environment["RECALL_TRUST_MODE"] = self.trust_mode
+        return environment
+
+    def tool_prefix(self) -> str:
+        return f"mcp__{self.server_name}__"
+
+    def write_mcp_config(self, destination: str | Path) -> Path:
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        self.server_name: {
+                            "command": self.python,
+                            "args": ["-m", "recall_mcp.server"],
+                            "cwd": str(self.cwd),
+                            "env": self.env(),
+                        }
+                    }
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self._state_dir = target.parent
+        return target
+
+    async def check(self, query: str = "how do I limit the number of CPU threads the embedder uses") -> dict[str, Any]:
+        """Drive one stdio server directly, and report what the strict trust policy decided."""
+
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
+        params = StdioServerParameters(
+            command=self.python,
+            args=["-m", "recall_mcp.server"],
+            env=self.env(),
+            cwd=str(self.cwd),
+        )
+        started = time.perf_counter()
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                handshake_ms = (time.perf_counter() - started) * 1000.0
+                listed = await session.list_tools()
+                tools = sorted(tool.name for tool in listed.tools)
+                search_started = time.perf_counter()
+                result = await session.call_tool("recall_search", {"query": query})
+                search_ms = (time.perf_counter() - search_started) * 1000.0
+
+        text = next((getattr(b, "text", "") for b in result.content if getattr(b, "text", None)), "")
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            # A refusal comes back as prose, not JSON, and it is the most informative failure
+            # this check can produce: it names the tenant, generation and calibration status.
+            raise WarmServerError(f"recall_search was refused: {text[:300]}") from None
+        if "recall_search" not in tools:
+            raise WarmServerError(f"recall_search is missing from the tool list: {tools}")
+        return {
+            "transport": "stdio",
+            "tenant": self.tenant,
+            "handshake_ms": round(handshake_ms, 1),
+            "search_ms": round(search_ms, 1),
+            "tool_count": len(tools),
+            "abstained": payload.get("abstained"),
+            "trust_state": payload.get("trust_state"),
+            "failure_code": payload.get("failure_code"),
+            "calibrated": payload.get("calibrated"),
+            "generation_id": payload.get("generation_id"),
+            "calibration_id": payload.get("calibration_id"),
+        }
+
+
 def _port_is_open(host: str, port: int, timeout: float = 1.0) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.settimeout(timeout)

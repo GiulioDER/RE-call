@@ -127,3 +127,30 @@ clean by construction rather than redacted after the fact.
 ## Result
 
 *Not yet run. Appended below when it is, without editing anything above.*
+
+---
+
+## Superseded 2026-08-21, before any paired session was run
+
+**Nothing above has been edited.** This record is superseded by
+`2026-08-21-claude-code-with-and-without-recall-calibrated.md`, and it is kept because it is
+evidence of what was predicted, and under which configuration, before the corpus changed.
+
+The reason is stated in the section above: *"The corpus is **uncalibrated**... This result is
+therefore a statement about retrieval with abstention untuned."* That is no longer the
+configuration. The corpus was calibrated on 2026-08-21, and calibration is not a neutral
+improvement to the same experiment. It changes the on arm's behaviour:
+
+- the abstention threshold moved from an uncertified demonstration constant of **0.5** to a
+  certified **0.731**;
+- at 0.5 the corpus never abstained, so abstention was invisible; at 0.731 it abstains on **two of
+  the four `memory_only` trap queries**, even though the governing memo is the top hit;
+- serving a calibrated generation requires `RECALL_ENV=production`, which refuses the static
+  bearer token the warm HTTP transport used, so the on arm moved from a 458 ms warm socket to a
+  per-session stdio server of about 9 s.
+
+Predictions 9 and 10 in particular were written against the warm transport and cannot be scored
+against the stdio one. Scoring the old predictions against the new configuration would be reading
+a record as though it had said something it did not, which is the failure this whole convention
+exists to prevent. The successor repeats the endpoints, states the calibrated configuration, and
+predicts again.
