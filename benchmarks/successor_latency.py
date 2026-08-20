@@ -35,6 +35,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 _HERE = Path(__file__).resolve().parent.parent
 _SPEC = importlib.util.find_spec("recall")
@@ -103,11 +104,11 @@ def main() -> int:
                 return (time.perf_counter() - started) * 1000.0
 
             # Population split, from the baseline exactly as the quality runs define it.
-            rows = []
+            rows: list[dict[str, Any]] = []
             for pair in PAIRS:
                 successor = f"{pair.slug}_v2.md"
-                base = research_search(store, embedder, pair.query, k=K, calibration=cal)
-                present = {h.provenance.file for h in base.hits}
+                baseline = research_search(store, embedder, pair.query, k=K, calibration=cal)
+                present = {h.provenance.file for h in baseline.hits}
                 rows.append({"slug": pair.slug, "query": pair.query,
                              "triggers": successor not in present})
 
@@ -158,13 +159,13 @@ def main() -> int:
         if not group:
             print(f"  {name:<16} n/a (n=0)")
             continue
-        ratios = sorted(r["ratio"] for r in group)
-        base = statistics.median([r["base"] for r in group])
-        treat = statistics.median([r["treat"] for r in group])
+        ratios = sorted(float(r["ratio"]) for r in group)
+        median_base = statistics.median([float(r["base"]) for r in group])
+        median_treat = statistics.median([float(r["treat"]) for r in group])
         print(f"  {name:<16} ratio {statistics.median(ratios):.2f}x  "
               f"[min {ratios[0]:.2f}, max {ratios[-1]:.2f}]  n={len(group)}")
-        print(f"  {'':<16} baseline {base:7.1f} ms   treatment {treat:7.1f} ms   "
-              f"added {treat - base:+7.1f} ms")
+        print(f"  {'':<16} baseline {median_base:7.1f} ms   treatment {median_treat:7.1f} ms   "
+              f"added {median_treat - median_base:+7.1f} ms")
     return 0
 
 
