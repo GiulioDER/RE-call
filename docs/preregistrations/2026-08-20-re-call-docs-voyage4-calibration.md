@@ -157,3 +157,75 @@ a lower bound of 0.9496, and the memory tenant under bge-**large** measured 0.98
 Falsified by: a lower bound below 0.90, a threshold outside 0.62 to 0.78, or an overlap worse than
 −0.05. If P4 fails as well, the offline generator is the common factor across two embedders and the
 honest conclusion is that this corpus needs labelled queries, not a different model.
+
+## Result, bge-large arm (2026-08-20)
+
+**Status:** measured. P4, P5 and P6 above are unedited.
+
+Generation `gen_362409d421804b7ab7a50865f4e2f362`, 155 objects, 2,703 chunks, built in **4h17m**
+under a 600% cgroup cap. **Same corpus, same `chunk_text`, same query set** (digest
+`0a7a27cc445e0a7b…`, byte-identical to the voyage-4 arm's). One variable changed.
+
+| | predicted | measured | |
+|---|---|---|---|
+| certified | **yes** | **YES** | confirmed |
+| separability | 0.95 to 1.00 | **0.9756**, CI [0.9408, 1.0000] | confirmed |
+| threshold | 0.62 to 0.78 | **0.637** | confirmed |
+| overlap no worse than −0.05 | | **−0.0802** | **falsified** |
+
+```
+answerable min/max : 0.6047 / 0.8429
+gap        min/max : 0.5074 / 0.6849
+false abstain 10.00% of 40    false confirm 10.00% of 40
+```
+
+### The A/B, which is the point of holding everything else fixed
+
+| | voyage-4 | bge-large |
+|---|---|---|
+| certified | **no** | **yes** |
+| separability | 0.8419 [0.7540, 0.9297] | **0.9756 [0.9408, 1.0000]** |
+| threshold | 0.382 | 0.637 |
+| false abstain | 25.00% | **10.00%** |
+| false confirm | 27.50% | **10.00%** |
+| overlap | −0.1941 | **−0.0802** |
+
+**The offline generator is exonerated.** Confound 1 raised the possibility that a subject list
+filtered against a corpus about software and retrieval would be insufficiently disjoint, depressing
+AUC for reasons unrelated to the embedder. The same generated set, unchanged, moves from 0.8419 to
+0.9756 when only the embedder changes. The generator was not the cause; voyage-4 was.
+
+### P6 is falsified, and by a factor that matters
+
+I predicted the overlap would shrink into the memory corpus's band, no worse than −0.05. It came in
+at **−0.0802**: 2.4x better than voyage-4's −0.1941, and still 1.7x worse than the memory corpus's
+−0.048. So bge-large orders this corpus well enough to certify, but the classes still interleave
+more than they do on memos. Both per-class errors landing on exactly 10.00% (4 of 40 each) is the
+visible consequence: the fitted cut has nowhere clean to sit.
+
+This is the fifth corpus in a row where the answerable and unanswerable distributions overlap,
+which is the standing observation from `calibrated-thresholds-and-the-overlap` — 4 of 4 at the
+time, now 5 of 5 — and the reason to read the overlap next to the AUC rather than instead of it.
+
+### Apparatus, stated honestly
+
+The binding reported `embedder_model = BAAI/bge-large-en-v1.5` at 1024, and the generation
+validated at 155 sources and 2,703 chunks, matching the voyage-4 arm exactly.
+
+**The registered control query did NOT return its expected top-1.** "what are the generation states
+and how does promotion work" returned `ARTIFACTS.md` at 0.7012, with `GENERATIONS.md` at ranks 2, 4
+and 5 (0.6408, 0.6373, 0.6348). Under voyage-4 the same query did return `GENERATIONS.md` first.
+Followed up before treating the numbers as final: "how does calibration bind to a generation"
+returns `CALIBRATION.md` at 0.7908 top-1, a clean hit. The corpus is loaded and retrieving the
+right documents; the control was a weak discriminator, not a failed ingest. Recorded because a
+control that misses is worth stating even when the follow-up clears it.
+
+### Operational consequence
+
+`re-call-docs` can now leave development mode: certified calibration at threshold 0.637, bound to
+`gen_362409d421804b7ab7a50865f4e2f362`, under the SAME embedder as `memory`. All three tenants the
+live client uses are now generation-backed and certified, two of them on bge-large and
+`re-call-code-gen` on voyage-code-3.
+
+⚠️ Both error rates sit at exactly the 10% bound. That is a working threshold, not a comfortable
+one, and the next corpus delta on this tenant should be watched rather than assumed.
