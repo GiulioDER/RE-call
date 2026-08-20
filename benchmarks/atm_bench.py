@@ -98,7 +98,7 @@ def git_revision() -> str | None:
             ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
         ).strip()
     except (OSError, subprocess.CalledProcessError):
-        return None
+        return os.environ.get("RECALL_SOURCE_COMMIT") or None
 
 
 def _value(item: dict[str, Any], key: str) -> str:
