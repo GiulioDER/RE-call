@@ -257,16 +257,44 @@ _is_ours() {
 #: near the limit is reported as unverifiable instead, and the caller is told to look itself.
 PATH_LIMIT=240
 
+# The first component of an absolute path, which is the question "can this shell see that
+# filesystem at all?" rather than "is this particular directory there?".
+#
+# A container started inside WSL records `/home/...` or `/mnt/...`, and from Git Bash neither root
+# exists, so `[ -d ]` says gone and a running stack reads as an orphan from one namespace over.
+# `session-close.sh` documents that and defends against it by refusing to remove anything without
+# recall's own label; the report should not assert it either.
+#
+# Testing the ROOT rather than the platform is what makes this safe in both directions. Git Bash
+# resolves `/c/...`, `/tmp/...` and `/usr/...` perfectly well, so a missing leaf under one of those
+# is genuinely missing and stays an ORPHAN; measured on this machine, `/home`, `/mnt`, `/var` and
+# `/opt` are absent while `/c`, `/tmp` and `/usr` are present. On Linux `/home` exists, so the same
+# code reports the same path as gone, which is the honest answer there.
+_path_root() {
+    local rest
+    rest="${1#/}"
+    printf '/%s' "${rest%%/*}"
+}
+
 # Prints why this container is an orphan, or returns 1 if it is not one. A reason beginning with
 # `unverifiable` is a question rather than a verdict, and the caller prints it differently.
 _orphan_reason() {
-    local checkout="$1" labelled="${2:-}"
+    local checkout="$1" labelled="${2:-}" root
     [ -z "$checkout" ] && return 1
     if [ ! -d "$checkout" ]; then
         if [ "${#checkout}" -gt "$PATH_LIMIT" ]; then
             printf 'unverifiable: %s characters, past what Windows can resolve' "${#checkout}"
             return 0
         fi
+        case "$checkout" in
+            /*)
+                root="$(_path_root "$checkout")"
+                if [ ! -d "$root" ]; then
+                    printf 'unverifiable: %s is not a filesystem this shell can see' "$root"
+                    return 0
+                fi
+                ;;
+        esac
         printf 'checkout gone'
         return 0
     fi
@@ -286,6 +314,20 @@ _field() {
 
 cmd_orphans() {
     local found=0 unsure=0 id record checkout compose_dir labelled reason name seen=""
+
+    # A daemon that does not answer produces an empty container list, and an empty list is
+    # indistinguishable from a clean machine once it has been printed. That is the same false
+    # green this command was fixed for, arriving by a different road, so it is refused rather
+    # than reported. `session-close.sh` captures this output with `2>&1` and does not read the
+    # exit status, so the refusal reaches its report as text either way.
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "session-db: docker is not on PATH; cannot tell an orphan from a clean machine" >&2
+        return 2
+    fi
+    if ! docker ps -q >/dev/null 2>&1; then
+        echo "session-db: the docker daemon is not answering; refusing to report a clean machine" >&2
+        return 2
+    fi
     for filter in "label=${LABEL_KEY}" "label=com.docker.compose.project.working_dir"; do
         while read -r id; do
             [ -z "$id" ] && continue

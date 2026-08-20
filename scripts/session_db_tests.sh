@@ -206,5 +206,45 @@ out="$(run)"
 if saw "$out" "short-gone-db-1"; then ok "a short missing path is still ORPHAN"
 else no "a short missing path is still ORPHAN" "$out"; fi
 
+# --- 12. a daemon that does not answer is not a clean machine ---------------
+# The bug this whole file exists for was a false "no orphaned containers". An unreachable daemon
+# produces an empty list, and an empty list prints exactly the same sentence.
+rm -f "$FAKE_DOCKER_STATE"/*
+mkdir -p "$BASE/deadbin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$BASE/deadbin/docker"
+chmod +x "$BASE/deadbin/docker"
+out="$(cd "$MAIN" && PATH="$BASE/deadbin:$PATH" bash "$DB" orphans 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -q "no orphaned containers"; then
+    ok "an unreachable daemon is refused, not reported clean"
+else
+    no "an unreachable daemon is refused, not reported clean" "rc=$rc out=$out"
+fi
+
+# --- 13. a WSL path seen from Git Bash --------------------------------------
+# A container started inside WSL records `/home/...`, which does not exist from Git Bash. On
+# Linux the same path really is missing and ORPHAN is the honest answer, so the expectation
+# flips with the shell rather than being skipped: a test that skips on the platform it matters
+# on tests nothing.
+rm -f "$FAKE_DOCKER_STATE"/*
+container c13 "" "/home/someone/project" wsl-db-1
+out="$(run)"
+case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*)
+        if printf '%s' "$out" | grep -q "CHECK.*wsl-db-1"; then
+            ok "a POSIX path from a Windows shell is CHECK, not ORPHAN"
+        else
+            no "a POSIX path from a Windows shell is CHECK, not ORPHAN" "$out"
+        fi
+        ;;
+    *)
+        if saw "$out" "wsl-db-1"; then
+            ok "a missing POSIX path on Linux is still ORPHAN"
+        else
+            no "a missing POSIX path on Linux is still ORPHAN" "$out"
+        fi
+        ;;
+esac
+
 printf '\n%d/%d passed\n' "$pass" "$((pass+fail))"
 [ "$fail" -eq 0 ]
