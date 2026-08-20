@@ -961,6 +961,34 @@ def main(argv: list[str] | None = None) -> None:
         "file, same engine; needs the desktop extra. `recall-install` opens it directly.",
     )
 
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        help="remove an install's containers, stack files and MCP registrations. Never removes the "
+        "folders it was indexing.",
+    )
+    p_uninstall.add_argument(
+        "--data-root",
+        required=True,
+        help="the data folder chosen during installation; it is recorded in that install's "
+        "wizard.json.",
+    )
+    p_uninstall.add_argument(
+        "--purge-data",
+        action="store_true",
+        help="also remove the database volume holding the built indexes. Off by default: they are "
+        "reproducible by re-indexing and expensive to rebuild.",
+    )
+    p_uninstall.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the confirmation. Without it the plan is printed and you are asked.",
+    )
+    p_uninstall.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print what would be removed and stop.",
+    )
+
     p_schema = sub.add_parser("schema", help="inspect or apply versioned database migrations")
 
     p_schema.set_defaults(_opens_db=True)
@@ -1540,6 +1568,35 @@ def main(argv: list[str] | None = None) -> None:
         # Pass the caller's table through: the wizard checks the chosen embedder's width against
         # it, and checking a different table than the one in use is worse than not checking.
         run_setup_wizard(dsn=args.dsn, migration_dsn=args.migration_dsn, table=args.table)
+        return
+
+    if args.cmd == "uninstall":
+        from recall.wizard.uninstall import UninstallRefusal, execute, plan_uninstall
+
+        try:
+            plan = plan_uninstall(
+                data_root=Path(args.data_root).expanduser(), purge_data=args.purge_data
+            )
+        except UninstallRefusal as exc:
+            raise SystemExit(str(exc)) from exc
+        print(plan.render())
+        if args.dry_run:
+            return
+        if not args.yes:
+            # ⚠️ Asked AFTER the plan is printed, never before. A confirmation offered ahead of the
+            # list is a confirmation of nothing, and this removes containers and rewrites the MCP
+            # client's config.
+            if not sys.stdin.isatty():
+                raise SystemExit(
+                    "\nrefusing to uninstall without confirmation, and this session has no "
+                    "terminal to ask in. Re-run with --yes if you meant it, or --dry-run to see "
+                    "the plan without acting on it."
+                )
+            answer = input("\nProceed? [y/N]: ").strip().lower()
+            if answer not in {"y", "yes"}:
+                raise SystemExit("cancelled; nothing was removed")
+        report = execute(plan, purge_data=args.purge_data)
+        print(report.render())
         return
 
     if args.cmd == "wizard":
