@@ -10,9 +10,21 @@ and because promoting first gives a fresh corpus fingerprint that makes the cali
 python -m recall.cli wizard --headless --config wizard.json
 ```
 
-`--headless` is required rather than implied. The interactive and GUI front ends do not exist yet, and
-a bare `recall wizard` that silently built, calibrated and promoted would be the wrong surprise for
-an installer.
+`--headless` is required rather than implied: a bare `recall wizard --config <file>` that
+silently built, calibrated and promoted would be the wrong surprise for an installer.
+
+🔁 **Corrected: there are now three front ends, and this page used to say there were none.** They
+are three RENDERERS of one question plan (`recall/wizard/questions.py`) driving one engine, not
+three installers:
+
+| | |
+|---|---|
+| `recall wizard` | asks in the terminal |
+| `recall wizard --gui`, or `recall-install` | asks in a window |
+| `recall wizard --headless --config <file>` | asks nothing |
+
+All three produce the same config document and run it from disk, so an install made in a window is
+one you can re-run in CI.
 
 ## The config
 
@@ -221,7 +233,53 @@ look like a successful install from the outside.
   report shows hits, trust state and any failure code, so "a config was written" and "the install
   answers" are separate lines rather than one assumption.
 
+## Uninstalling
+
+```bash
+recall uninstall --data-root C:/Users/me/.recall            # prints the plan, then asks
+recall uninstall --data-root C:/Users/me/.recall --dry-run  # prints the plan and stops
+recall-uninstall --data-root C:/Users/me/.recall            # the same thing in a window
+```
+
+⛔ **It never removes a folder, and that is the whole design.** The installer SUGGESTS the corpus
+roots underneath the data folder, so on a default install your notes, your source and your agent
+memory sit inside the directory being uninstalled. Removing the index is recoverable by
+re-indexing; removing what was indexed is not. So it removes the specific files the installer
+wrote, by name, and prints the corpus roots under **This will KEEP** so you can see they survived.
+
+What it removes: the stack's containers (found by the compose project label recorded in the stack
+file, never by a name pattern, so a second install on the same machine is untouched), the files the
+installer wrote into the data folder, and the MCP registrations whose `cwd` marks them as written by
+this install. An entry you wrote by hand under a name the wizard also uses is left alone.
+
+`--purge-data` additionally removes the database volume holding the built indexes. Off by default:
+they are reproducible by re-indexing and expensive to rebuild, so whoever reinstalls next week and
+whoever is reclaiming disk want opposite things.
+
+## The Windows executable
+
+`packaging/recall-install.spec` builds a frozen bundle of the graphical installer, for somebody who
+has no Python and is not going to get one.
+
+```bash
+pip install pyinstaller
+cd packaging && python -m PyInstaller recall-install.spec --noconfirm --distpath ../dist
+```
+
+Two choices in that spec are not preferences:
+
+- **`onedir`, not `onefile`.** A onefile build unpacks its whole payload to a temporary directory on
+  every launch, and this bundle carries PySide6 and the ONNX runtime. On an installer, whose entire
+  job is to reassure somebody that something is happening, that is a long unexplained pause before
+  the window appears.
+- **`collect_submodules("recall")`.** This codebase imports lazily nearly everywhere, so
+  PyInstaller's static analysis cannot see most of what an install actually needs. A bundle built
+  from the visible imports alone starts fine and dies with `ModuleNotFoundError` at the moment the
+  user presses Install.
+
 ## What is not built yet
 
-- The GUI front end for installation. The desktop app manages an install; it does not yet create one.
-- The Windows installer (`.exe`), winget prerequisites and reboot-resume.
+- winget prerequisites and reboot-resume. The bundle assumes Docker Desktop is already installed;
+  it does not install it, and it does not survive the reboot Docker Desktop asks for.
+- Code signing. An unsigned binary gets a SmartScreen warning on first run, which for this audience
+  is indistinguishable from the tool being unsafe.

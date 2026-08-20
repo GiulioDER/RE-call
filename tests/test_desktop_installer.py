@@ -449,3 +449,82 @@ def test_gui_with_a_config_is_refused_rather_than_ignored(monkeypatch: pytest.Mo
         cli.main(["wizard", "--gui", "--config", "anything.json"])
 
     assert "nothing for `--config` to do" in str(excinfo.value)
+
+
+def test_the_selftest_reaches_the_engine_a_packaged_build_would_be_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ A frozen bundle's characteristic failure is `ModuleNotFoundError` at the moment of use.
+
+    PyInstaller finds imports by static analysis. This codebase imports lazily nearly everywhere —
+    `from recall.wizard.headless import run_headless` inside a function, and so on down the whole
+    engine — so a bundle missing half of recall starts fine, draws its window, and dies the instant
+    somebody presses Install. `--help` cannot catch that: it exits at argparse.
+
+    So `--selftest` has to touch the modules the FIRST CLICK touches, not just the ones the window
+    needs to appear. Asserted on which imports it performs, because a self-test that only proves the
+    window opens is a self-test that passes on the broken bundle.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    import ast
+    import inspect
+    import textwrap
+
+    from recall.desktop.main import _selftest
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_selftest)))
+    imported = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    for engine_module in (
+        "recall.wizard.headless",
+        "recall.wizard.pipeline",
+        "recall.wizard.uninstall",
+        "recall.desktop.install_ui",
+    ):
+        assert engine_module in imported, (
+            f"{engine_module} is reached only from inside a callback in normal use, which is "
+            "exactly why a bundle can be missing it and still look healthy"
+        )
+
+
+def test_the_selftest_passes_and_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """It runs unattended in CI, so it must neither block on an event loop nor provision anything."""
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+
+    from recall.desktop.main import install_main
+
+    assert install_main(["--selftest"]) == 0
+    assert list(tmp_path.iterdir()) == [], "a self-test that writes files is not a self-test"
+
+
+def test_the_selftest_fails_loudly_when_the_engine_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure it exists to catch must produce a non-zero exit and name the module.
+
+    Simulated by making the engine import raise, which is what a bundle without it does.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _missing(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "recall.wizard.pipeline":
+            raise ModuleNotFoundError("No module named 'recall.wizard.pipeline'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _missing)
+
+    from recall.desktop.main import _selftest
+
+    assert _selftest() == 1

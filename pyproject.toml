@@ -118,6 +118,9 @@ recall-desktop = "recall.desktop.main:main"
 # The graphical installer. A separate script rather than a flag on `recall-desktop`, because the
 # person who needs it does not have an install yet and therefore has nothing for that app to open.
 recall-install = "recall.desktop.main:install_main"
+# The uninstaller has a window too, because the person who needed a graphical installer is the same
+# person a year later, and `recall uninstall --data-root ...` is not a thing they will type.
+recall-uninstall = "recall.desktop.main:uninstall_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["recall", "recall_hooks", "recall_mcp"]

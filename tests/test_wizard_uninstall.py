@@ -394,3 +394,102 @@ def test_the_plan_lists_only_registrations_this_install_wrote(tmp_path: Path) ->
     )
     kept = {item.name for item in plan.keeping()}
     assert "recall-handwritten" in kept, "and it should say why the other one survives"
+
+
+# ----------------------------------------------------------------------------------------------
+# The window, which is the surface the person who needed a graphical installer will use
+# ----------------------------------------------------------------------------------------------
+#
+# These need no Qt. `uninstall_main` takes `confirm` and `notify` as collaborators for the same
+# reason `InstallerWindow` takes a runner and a writer: the decision logic is what needs testing,
+# and requiring a dialog to exercise it is how that logic ends up untested.
+
+
+def _recorder() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Somewhere for the dialogs to go, so a test can read what they would have said."""
+    asked: list[dict[str, str]] = []
+    told: list[dict[str, str]] = []
+    return asked, told
+
+
+def test_the_window_shows_the_whole_plan_including_what_survives(tmp_path: Path) -> None:
+    """⛔ A confirmation that does not say what it is confirming is a confirmation of nothing.
+
+    This removes containers and rewrites the MCP client's configuration. The dialog carries
+    `UninstallPlan.render()` verbatim, which is the same text the terminal prints, so the two
+    surfaces cannot come to disagree about what is going — and so the person sees the line saying
+    their documents are kept, which on a default install is the fact that matters most.
+    """
+    from recall.desktop.main import uninstall_main
+
+    asked, told = _recorder()
+    data_root = _install(tmp_path)
+
+    def _confirm(title: str, text: str, detail: str) -> bool:
+        asked.append({"title": title, "text": text, "detail": detail})
+        return False
+
+    assert uninstall_main(["--data-root", str(data_root)], confirm=_confirm, notify=told.append) == 0
+
+    detail = asked[0]["detail"]
+    assert "This will remove:" in detail
+    assert "This will KEEP:" in detail
+    assert str(data_root / "docs") in detail, "the person must see their own documents survive"
+
+
+def test_answering_no_removes_nothing(tmp_path: Path) -> None:
+    """The dialog defaults to No, and No has to mean it."""
+    from recall.desktop.main import uninstall_main
+
+    data_root = _install(tmp_path)
+
+    uninstall_main(
+        ["--data-root", str(data_root)],
+        confirm=lambda *_args: False,
+        notify=lambda *_args: None,
+    )
+
+    assert (data_root / COMPOSE_NAME).exists(), "declining must leave the install intact"
+    assert (data_root / "wizard.json").exists()
+
+
+def test_answering_yes_removes_and_reports(tmp_path: Path) -> None:
+    """And Yes has to act, and then say what it did."""
+    from recall.desktop.main import uninstall_main
+
+    told: list[tuple[str, str]] = []
+    data_root = _install(tmp_path)
+
+    uninstall_main(
+        ["--data-root", str(data_root)],
+        confirm=lambda *_args: True,
+        notify=lambda title, text: told.append((title, text)),
+    )
+
+    assert not (data_root / COMPOSE_NAME).exists()
+    assert (data_root / "docs" / "mine.md").exists(), "still never the user's own content"
+    assert told and "Removed" in told[-1][1]
+
+
+def test_a_refusal_is_shown_rather_than_raised(tmp_path: Path) -> None:
+    """A frozen binary has nowhere to print a traceback that anybody will read.
+
+    Pointing the uninstaller at the wrong folder is the ordinary mistake, not an exceptional one,
+    so the reply has to be a sentence in a window rather than a stack trace on a console the user
+    never sees. The exit status still says it failed.
+    """
+    from recall.desktop.main import uninstall_main
+
+    told: list[tuple[str, str]] = []
+    empty = tmp_path / "not-an-install"
+    empty.mkdir()
+
+    status = uninstall_main(
+        ["--data-root", str(empty)],
+        confirm=lambda *_args: True,
+        notify=lambda title, text: told.append((title, text)),
+    )
+
+    assert status == 1
+    assert told, "the refusal must be shown somewhere"
+    assert COMPOSE_NAME in told[-1][1]
