@@ -8,6 +8,7 @@ evaluator can consume without transforming the predictions.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 import json
 import os
@@ -45,6 +46,15 @@ DEFAULT_EVIDENCE_CHARS = 8192
 DEFAULT_MAX_OUTPUT_TOKENS = 1024
 DEFAULT_CANDIDATE_K = 25
 DEFAULT_RETRIEVAL_K = 10
+DEFAULT_EMBEDDING_BATCH_SIZE = 32
+DEFAULT_ANSWER_WORKERS = 1
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -125,15 +135,16 @@ def generate_answer(
     max_attempts: int,
 ) -> tuple[str, dict[str, int], str | None]:
     system = (
-        "Answer the ATM Bench question using only the retrieved memory evidence. "
-        "Return the shortest complete answer that preserves every requested fact, number, date, "
-        "time, name, location, condition, and list member. Resolve conflicts by preferring the "
-        "most direct and specific evidence. If the evidence does not support an answer, say that "
-        "the available memory does not contain enough information. Do not invent facts. "
-        "Reason silently and return only the final answer, without analysis or a preamble."
+        "You are a QA assistant. Use ONLY the provided evidence to answer. "
+        "If the evidence is insufficient, answer 'Unknown'. Respond with only the answer. "
+        "If the question asks to recall or list items (photos/emails/videos), respond with the "
+        "corresponding evidence IDs only, comma-separated, with no extra text."
     )
-    type_line = f"Question type: {qtype}\n" if qtype else ""
-    user = f"{type_line}Question:\n{question}\n\nRetrieved memory:\n{evidence}"
+    user = (
+        f"Question: {question}\n\n"
+        f"Evidence:\n{evidence}\n\n"
+        "Provide the answer based solely on the evidence."
+    )
     url = base_url.rstrip("/") + "/chat/completions"
     payload = {
         "model": model,
@@ -257,6 +268,7 @@ def run(args: argparse.Namespace) -> int:
             "answer_model": args.answer_model,
             "reasoning_effort": args.reasoning_effort,
             "max_output_tokens": args.max_output_tokens,
+            "answer_workers": args.answer_workers,
             "evidence_chars": args.evidence_chars,
             "official_judge": "gpt-5-mini",
         }, indent=2))
@@ -284,6 +296,7 @@ def run(args: argparse.Namespace) -> int:
         }
         returned_models: set[str] = set(previous_manifest.get("answer_models_returned", []))
         errors: list[dict[str, str]] = []
+        pending: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
         for position, question in enumerate(questions, start=1):
             question_id = question["id"]
             if question_id in answers:
@@ -312,6 +325,12 @@ def run(args: argparse.Namespace) -> int:
                     raise RuntimeError(f"retrieval returned an unknown memory id for {question_id}")
                 _append_jsonl(retrieval_path, row)
                 retrieval_rows[question_id] = row
+            pending.append((position, question, row))
+
+        def answer_one(
+            item: tuple[int, dict[str, Any], dict[str, Any]],
+        ) -> tuple[int, str, dict[str, Any], dict[str, int], str | None]:
+            position, question, row = item
             answer, usage, returned_model = generate_answer(
                 question=question["question"],
                 qtype=question.get("qtype"),
@@ -323,15 +342,28 @@ def run(args: argparse.Namespace) -> int:
                 max_output_tokens=args.max_output_tokens,
                 max_attempts=args.max_attempts,
             )
-            answer_row = {"id": question_id, "answer": answer}
-            _append_jsonl(answers_path, answer_row)
-            answers[question_id] = answer_row
-            usage_total["calls"] += 1
-            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                usage_total[key] += usage[key]
-            if returned_model:
-                returned_models.add(returned_model)
-            print(f"answered {position}/{len(questions)}")
+            return (
+                position,
+                question["id"],
+                {"id": question["id"], "answer": answer},
+                usage,
+                returned_model,
+            )
+
+        completed = len(answers)
+        with ThreadPoolExecutor(max_workers=args.answer_workers) as executor:
+            futures = [executor.submit(answer_one, item) for item in pending]
+            for future in as_completed(futures):
+                position, question_id, answer_row, usage, returned_model = future.result()
+                _append_jsonl(answers_path, answer_row)
+                answers[question_id] = answer_row
+                usage_total["calls"] += 1
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                    usage_total[key] += usage[key]
+                if returned_model:
+                    returned_models.add(returned_model)
+                completed += 1
+                print(f"answered {completed}/{len(questions)} question_position={position}", flush=True)
 
         manifest = {
         "benchmark": "ATM-Bench",
@@ -350,6 +382,7 @@ def run(args: argparse.Namespace) -> int:
         "answer_model_requested": args.answer_model,
         "answer_models_returned": sorted(returned_models),
         "answer_base_url": args.answer_base_url,
+        "answer_workers": args.answer_workers,
         "reasoning": {
             "enabled": True,
             "requested_effort": args.reasoning_effort,
@@ -385,7 +418,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--embedder", default=DEFAULT_EMBEDDER)
     ap.add_argument("--reranker", default=DEFAULT_RERANKER)
     ap.add_argument("--candidate-k", type=int, default=DEFAULT_CANDIDATE_K)
-    ap.add_argument("--embedding-batch-size", type=int, default=64)
+    ap.add_argument("--embedding-batch-size", type=int, default=DEFAULT_EMBEDDING_BATCH_SIZE)
     ap.add_argument("--retrieval-k", type=int, default=DEFAULT_RETRIEVAL_K)
     ap.add_argument("--gap-threshold", type=float, default=0.50)
     ap.add_argument("--answer-base-url", default=DEFAULT_BASE_URL)
@@ -394,6 +427,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-output-tokens", type=int, default=DEFAULT_MAX_OUTPUT_TOKENS)
     ap.add_argument("--evidence-chars", type=int, default=DEFAULT_EVIDENCE_CHARS)
     ap.add_argument("--max-attempts", type=int, default=4)
+    ap.add_argument("--answer-workers", type=_positive_int, default=DEFAULT_ANSWER_WORKERS)
     ap.add_argument("--reuse-index", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     return ap
