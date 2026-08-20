@@ -372,23 +372,62 @@ def transcript_fields(
     )
 
 
+def _integer(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
 def _usage_fields(result: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Total tokens the session actually put through the model.
+
+    ⛔ **`usage.input_tokens` is not the session's input, and using it is off by orders of
+    magnitude.** Measured on a real paired session: `usage` read
+    `input_tokens: 34, cache_creation_input_tokens: 7320, cache_read_input_tokens: 18459`, so the
+    field named "input" was 0.1% of the input. Reported naively, the on arm looked like 26 tokens
+    against the off arm's 14, when the honest figures were about 14,353 against 6,838. The
+    comparison would have been meaningless in a way no reader could have caught from the summary.
+
+    `modelUsage` is the per-model aggregate over the whole session, and `usage` looks like the
+    final request only; the two disagreed 580 to 34 on the same run. So `modelUsage` is the source
+    and `usage` is the fallback, and **input is the sum of fresh, cache-creation and cache-read
+    tokens**, with the three components kept separately because they are not priced alike.
+    """
+
     if result is None:
         return {"input_tokens": None, "output_tokens": None, "model_turns": None}
-    usage = result.get("usage")
-    usage = usage if isinstance(usage, Mapping) else {}
 
-    def integer(value: Any) -> int | None:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
-        return int(value)
+    model_usage = result.get("modelUsage")
+    fresh = cache_read = cache_creation = output = None
+    if isinstance(model_usage, Mapping) and model_usage:
+        fresh = cache_read = cache_creation = output = 0
+        for entry in model_usage.values():
+            if not isinstance(entry, Mapping):
+                continue
+            fresh += _integer(entry.get("inputTokens")) or 0
+            cache_read += _integer(entry.get("cacheReadInputTokens")) or 0
+            cache_creation += _integer(entry.get("cacheCreationInputTokens")) or 0
+            output += _integer(entry.get("outputTokens")) or 0
+    else:
+        usage = result.get("usage")
+        if isinstance(usage, Mapping):
+            fresh = _integer(usage.get("input_tokens"))
+            cache_read = _integer(usage.get("cache_read_input_tokens"))
+            cache_creation = _integer(usage.get("cache_creation_input_tokens"))
+            output = _integer(usage.get("output_tokens"))
 
+    total_input = (
+        None
+        if fresh is None
+        else fresh + (cache_read or 0) + (cache_creation or 0)
+    )
     return {
-        "input_tokens": integer(usage.get("input_tokens")),
-        "output_tokens": integer(usage.get("output_tokens")),
-        "model_turns": integer(result.get("num_turns")),
-        "cache_read_input_tokens": integer(usage.get("cache_read_input_tokens")),
-        "cache_creation_input_tokens": integer(usage.get("cache_creation_input_tokens")),
+        "input_tokens": total_input,
+        "output_tokens": output,
+        "model_turns": _integer(result.get("num_turns")),
+        "fresh_input_tokens": fresh,
+        "cache_read_input_tokens": cache_read,
+        "cache_creation_input_tokens": cache_creation,
     }
 
 
@@ -466,6 +505,9 @@ def build_record(
         "api_retries": len(retries),
         "failed_tool_calls": fields.failed_tool_calls,
         "subagent_tool_calls": fields.subagent_tool_calls,
+        # Kept apart because they are not priced alike: a cache read is far cheaper than a fresh
+        # token and cache creation is dearer. input_tokens above is their sum.
+        "fresh_input_tokens": usage.get("fresh_input_tokens"),
         "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
         "cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
         "stop_reason": result.get("stop_reason") if result else None,

@@ -44,7 +44,10 @@ from benchmarks.agent_ab.io import write_jsonl  # noqa: E402
 from benchmarks.agent_ab.recall_server import WarmRecallServer  # noqa: E402
 from benchmarks.agent_ab.runner import run_paired  # noqa: E402
 from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON  # noqa: E402
-from benchmarks.agent_ab.summarize import summarize_pairs  # noqa: E402
+from benchmarks.agent_ab.summarize import (  # noqa: E402
+    summarize_pairs,
+    summarize_recall_overhead,
+)
 from benchmarks.agent_ab.traps import score_record  # noqa: E402
 
 DEFAULT_DSN = "postgresql://recall:recall@127.0.0.1:5433/recall"
@@ -186,6 +189,7 @@ async def main() -> int:
     write_jsonl(artifacts / "records.jsonl", records)
     for name, payload in (
         ("summary.json", summary),
+        ("recall-overhead.json", summarize_recall_overhead(list(report.admitted))),
         ("admission.json", report.summary()),
         ("trap-scores.json", trap_scores),
         ("environment.json", environment),

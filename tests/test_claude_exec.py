@@ -206,6 +206,80 @@ def test_conversation_opens_with_the_human_turn_the_stream_never_echoes() -> Non
     assert any(turn["role"] == "tool" for turn in record.conversation)
 
 
+def test_input_tokens_counts_cached_tokens_because_they_are_most_of_the_input() -> None:
+    """Real numbers from a paired smoke session on 2026-08-20.
+
+    `usage.input_tokens` was **34** while the session actually put **26,359** input tokens through
+    the model, because cache reads and cache creation are not in that field. Reported naively the
+    arms read 26 against 14; honestly they read about 26,359 against 18,189, a 45% difference. A
+    summary built on the wrong field is not noisy, it is unrelated to the quantity it names, and
+    nothing downstream could have caught it.
+    """
+    result = {
+        "type": "result",
+        "is_error": False,
+        "num_turns": 4,
+        "usage": {
+            "input_tokens": 34,
+            "cache_creation_input_tokens": 7320,
+            "cache_read_input_tokens": 18459,
+            "output_tokens": 941,
+        },
+        "modelUsage": {
+            "anthropic/claude-haiku-4.5": {
+                "inputTokens": 580,
+                "outputTokens": 957,
+                "cacheReadInputTokens": 18459,
+                "cacheCreationInputTokens": 7320,
+            }
+        },
+    }
+    stream = json.dumps({"type": "system", "subtype": "init", "tools": []}) + "\n"
+    stream += json.dumps(result) + "\n"
+    record = build_record(
+        {"task_id": "t", "user_input": "x"},
+        RECALL_ON,
+        stream=stream,
+        wall_time_ms=1.0,
+        config=_config(),
+        command=["claude"],
+    )
+    assert record.input_tokens == 580 + 18459 + 7320 == 26359
+    # modelUsage is the session aggregate; usage looks like the final request only, and the two
+    # disagreed 580 to 34 on this very run. The aggregate wins.
+    assert record.metadata["fresh_input_tokens"] == 580
+    assert record.output_tokens == 957
+    # The components survive, because a cache read and a fresh token are not priced alike.
+    assert record.metadata["cache_read_input_tokens"] == 18459
+    assert record.metadata["cache_creation_input_tokens"] == 7320
+
+
+def test_usage_is_the_fallback_when_a_stream_has_no_model_aggregate() -> None:
+    stream = json.dumps({"type": "system", "subtype": "init", "tools": []}) + "\n"
+    stream += json.dumps(
+        {
+            "type": "result",
+            "is_error": False,
+            "num_turns": 1,
+            "usage": {
+                "input_tokens": 100,
+                "cache_read_input_tokens": 900,
+                "output_tokens": 7,
+            },
+        }
+    ) + "\n"
+    record = build_record(
+        {"task_id": "t", "user_input": "x"},
+        RECALL_ON,
+        stream=stream,
+        wall_time_ms=1.0,
+        config=_config(),
+        command=["claude"],
+    )
+    assert record.input_tokens == 1000
+    assert record.output_tokens == 7
+
+
 def test_untrusted_cost_is_recorded_under_a_name_that_says_so() -> None:
     record = _record(BARE_TOOLS)
     assert "reported_cost_usd_untrusted" in record.metadata
