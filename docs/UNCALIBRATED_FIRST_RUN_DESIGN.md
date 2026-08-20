@@ -89,7 +89,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
    `recall_mcp/server.py:628`, `recall/cli.py:2136`, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`recall_mcp/stores.py:154`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
-4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:357`).
+4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:491`).
 5. **Promotion permission.** Production refuses it outright (`recall/generations.py:847`).
 6. **Generation creation.** Production requires a verified pipeline identity and refuses
    `allow_unverified` (`recall/generations.py:286`, `:288`), which an adopted generation cannot satisfy with
@@ -178,7 +178,7 @@ the same "fixed one writer, left the other" failure this design levels at `promo
 search path.** `readiness.py:110` is a different entry point that receives `generation_id` as an
 argument. On search, `GenerationStore.generation_binding()` raises `NoActiveGeneration`, which is
 swallowed by the broad `except Exception` in `trusted_search` and re raised as
-`DEPENDENCY_UNAVAILABLE` (`recall/trust.py:698`), whose advice text calls that condition "an
+`DEPENDENCY_UNAVAILABLE` (`recall/trust.py:748`), whose advice text calls that condition "an
 outage, not an empty result". Mapping `NoActiveGeneration` to `INDEX_NOT_READY` is therefore a **prerequisite** of
 this change, not a consequence of it.
 

@@ -181,3 +181,42 @@ all, and the repair should be made and re-run under a new record with the outcom
 
 No reranker in any arm. Latency is not reported at all this run, which is better than reporting the
 invalid comparison the previous two runs printed.
+
+## Decision (2026-08-20): `inherit` becomes the default ordering, opt in
+
+**This is a decision, not a measurement, and it was taken on evidence this record calls partly
+uninterpretable.** Recorded here so the basis is visible next to the result rather than only in a
+commit message. The result above is unchanged.
+
+The author was told, in these words, that four valid cases plus a mechanism argument was not
+something I would claim a rate from, and chose to adopt the ordering anyway as an opt in default.
+That is their call to make. What follows is what it does and does not rest on.
+
+**Scope.** `successor_expansion` remains **off** by default: `trusted_search` still expands nothing
+unless a caller passes a policy. What changes is the default *within* that policy, from
+`ordering="pool"` to `ordering="inherit"`. A caller who enables expansion now gets `inherit`.
+
+**What supports it.**
+
+- Recovery is measured and interpretable: 0.25 to 1.00 on stratum B, n=16, against a baseline of
+  0.00, with `str_trust` 0.00 and abstention accuracy 1.00 in every arm. That column passed its
+  apparatus checks.
+- A **structural** non-displacement property, which is the part that does not depend on the failed
+  column. `inherit` sorts a promoted successor by the pool index its predecessor held, so any hit
+  that outranked the predecessor still outranks the successor. It cannot displace a better-ranked
+  answer for any arrangement, not merely for the four that were measurable. Asserted directly in
+  `tests/test_successor_expansion.py` over every predecessor rank rather than sampled.
+
+**What does NOT support it, and is not claimed.**
+
+- Any displacement *rate*. The regression set failed its apparatus check at 4 of 10 usable, and the
+  0.00 measured for `inherit` there remains uninterpretable under the rule this record fixed in
+  advance. The structural argument above is a different kind of claim and is not a substitute for
+  that measurement.
+- Behaviour with a reranker, which no run has tested.
+- Any corpus other than this one.
+
+**What would reverse it.** A repaired regression set, authored against measured retrieval and
+verified blind, showing `inherit` displacing above 0.10. The structural argument says that should be
+impossible for hits that outranked the predecessor, so such a result would mean the property is not
+what I think it is, and it would be more informative than the default is convenient.

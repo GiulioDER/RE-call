@@ -103,7 +103,20 @@ class SuccessorExpansionPolicy:
     #: memory proved it AT ITS OWN RANK. A predecessor that was third best for this query is not
     #: evidence that its successor is first best, which is what `promoted_first` asserts on every
     #: query where any retrieved document happens to carry an edge.
-    ordering: Literal["pool", "promoted_first", "inherit"] = "pool"
+    #:
+    #: **Default `inherit`, and the evidence for that is uneven — read this before relying on it.**
+    #: Recovery is measured and interpretable: over 16 absent-successor queries, `pool` 0.25 and
+    #: `inherit` 1.00, with `str_trust` 0.00 and abstention accuracy 1.00 in every arm
+    #: (`docs/preregistrations/2026-08-20-successor-ordering-regression.md`). What is NOT
+    #: established is the displacement rate: that run's regression set failed its own apparatus
+    #: check with 4 of 10 queries usable, and the record declines to quote a number from it.
+    #:
+    #: What carries the default in place of that number is STRUCTURAL rather than empirical.
+    #: `inherit` sorts a promoted successor by the pool index its predecessor held, so any hit that
+    #: outranked the predecessor still outranks the successor. It cannot displace a better-ranked
+    #: answer, whatever a larger regression set would say. `promoted_first` has no such property,
+    #: which is why it is selectable and not the default.
+    ordering: Literal["pool", "promoted_first", "inherit"] = "inherit"
 
     def __post_init__(self) -> None:
         if self.max_sources < 1:

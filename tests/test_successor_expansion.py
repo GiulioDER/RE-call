@@ -414,6 +414,44 @@ def test_ordering_never_touches_the_demoted_hits() -> None:
     assert before == after
 
 
+def test_inherit_is_the_default_ordering() -> None:
+    """Enabling the feature gets `inherit`, not pool order.
+
+    The displacement evidence for that default failed its own apparatus check, so what carries it
+    is the structural property asserted in the next test, not a measured rate.
+    """
+    assert SuccessorExpansionPolicy(enabled=True).ordering == "inherit"
+
+
+def test_inherit_cannot_displace_a_hit_that_outranked_the_predecessor() -> None:
+    """The structural property the default rests on, asserted directly rather than sampled.
+
+    `inherit` sorts a promoted successor by the pool index its PREDECESSOR held. So for every `ok`
+    hit that sat ahead of the predecessor in the pool, that hit still sits ahead of the successor
+    afterwards. This holds for any arrangement, which is what the four usable regression cases
+    could only gesture at.
+    """
+    for predecessor_rank in range(4):
+        others = [_scored(f"o{i}", f"other{i}.md", 0.90 - i * 0.01) for i in range(3)]
+        stale = _scored("s1", "ttl_v1.md", 0.86)
+        successor = _scored("c2", "ttl_v2.md", 0.64)
+        pool = others[:predecessor_rank] + [stale] + others[predecessor_rank:] + [successor]
+        index = {hit.chunk.id: i for i, hit in enumerate(pool)}
+        trusted = evaluate(_retrieval(*pool), {"ttl_v1.md": "ttl_v2.md"}, CALIBRATION, NOW)
+        ordered = [
+            h.provenance.file
+            for h in order_promoted(trusted, index, "inherit").hits
+            if h.verdict == "ok"
+        ]
+
+        ahead = {hit.chunk.metadata["file"] for hit in pool[:predecessor_rank]}
+        position = ordered.index("ttl_v2.md")
+        assert ahead <= set(ordered[:position]), (
+            f"with the predecessor at rank {predecessor_rank}, inherit put the successor at "
+            f"{position} and displaced one of {ahead}"
+        )
+
+
 def test_an_unknown_ordering_is_refused_at_construction() -> None:
     with pytest.raises(ValueError, match="ordering must be one of"):
         SuccessorExpansionPolicy(enabled=True, ordering="best")  # type: ignore[arg-type]
