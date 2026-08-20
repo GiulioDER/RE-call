@@ -150,9 +150,41 @@ python -m pytest tests/ -q
 scripts/session-db.sh down
 ```
 
-- The full suite takes about **12 minutes** with a database and about 5 without.
-- **Read the skip count before calling a run green.** Roughly 22 skips is healthy. Several hundred
-  means the DB tests never ran, and the reason is printed in the skip text.
+- 🔁 **Corrected 2026-08-20: the full suite takes 30 to 40 minutes with a database, not 12.**
+  Three runs on this machine that day, on an otherwise idle box: **37:13, 39:20 and 29:45**, at
+  6,088 tests. The old line said "about 12 minutes" with no date and no way to re-check, which is
+  why it was still believed after tripling. It was almost certainly true when written.
+
+  **There is no hotspot to fix, and that is the useful part.** The thirty slowest tests account for
+  roughly **511s of 1785s, about 29%**, and the slowest single one is 72s of setup. The rest is 6,000
+  tests at an average of **0.29s each**. So the suite is not slow, it is large; anyone hunting for
+  the one bad test will not find it, and the lever that exists is parallelism (`pytest -n`), not
+  surgery.
+
+  Note the spread: the same suite on the same machine varied by **10 minutes** across three runs.
+  Budget for the top of that range rather than the middle.
+
+  ⚠️ **The old line's other half, "about 5 minutes without a database", is NOT re-measured here.**
+  Every run above had one. It is dropped rather than carried forward, because a figure that has been
+  wrong by 3× in its measured half has earned no trust in its unmeasured one. Treat the no-database
+  runtime as unknown until somebody runs it, rather than as five minutes.
+
+  Re-measure, and get the breakdown rather than just the number:
+
+  ```bash
+  python -m pytest tests/ -q --durations=30
+  ```
+
+- **Read the skip count before calling a run green.** Roughly 22 skips is healthy; **34 is the
+  current figure** (measured 2026-08-20, all three runs). Several hundred means the DB tests never
+  ran, and the reason is printed in the skip text.
+- ⚠️ **A green run needs the network, and one test says so only by failing.**
+  `tests/test_entailment.py::test_qnli_judge_separates_answering_from_adjacent_text` downloads
+  `cross-encoder/qnli-distilroberta-base` from HuggingFace. Measured 2026-08-20: it passed in two
+  runs and failed in a third with `[Errno 11001] getaddrinfo failed`, after retrying five times.
+  That is the whole difference between `6087 passed, 1 failed` and `6088 passed` in the same hour
+  on the same commit. **Check the failure text before assuming a regression**: a network failure
+  here looks exactly like a broken judge.
 - Lint is `python -m ruff check .`. Bare `ruff` on this machine is an old 0.6.9; `python -m ruff`
   is the pinned 0.16.x. **Never run `ruff format`**: 348 of 406 files fail it and CI only ever runs
   `ruff check`.
