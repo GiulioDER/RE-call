@@ -342,6 +342,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         "gt_evidence_ids": question["evidence_ids"],
                         "retrieval_ids": retrieved_ids,
                         "retrieval_scores": [float(hit.score) for hit in result.hits],
+                        "max_dense_score": result.diagnostics.max_dense_score,
                         "gap_warning": bool(result.gap_warning),
                         "reranking_ran": bool(result.diagnostics.reranking_ran),
                         "latency_ms": round(latency_ms, 3),

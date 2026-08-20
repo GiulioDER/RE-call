@@ -494,6 +494,7 @@ class HybridRetriever:
                 index_generation=self._index_generation,
                 candidate_pool_size=self._candidate_k,
                 reranking_ran=reranking_ran,
+                max_dense_score=max(dense_score.values(), default=None),
                 stage_ms={key: round(value, 3) for key, value in timings.items()},
             ),
         )
@@ -640,6 +641,7 @@ class HybridRetriever:
                 index_generation=self._index_generation,
                 candidate_pool_size=realised_pool,
                 reranking_ran=True,
+                max_dense_score=max(dense_score.values(), default=None),
                 stage_ms={key: round(value, 3) for key, value in timings.items()},
             ),
         )

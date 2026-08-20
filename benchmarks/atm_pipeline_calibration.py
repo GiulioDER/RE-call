@@ -98,8 +98,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if dense is None:
             raise ValueError(f"{path} has no dense arm, required for threshold fitting")
         dev_scores = [
-            max((float(value) for value in row["retrieval_scores"]), default=0.0)
+            float(row["max_dense_score"])
             for row in dense["details"]
+            if row.get("max_dense_score") is not None
             if is_dev(str(row["id"]))
         ]
         threshold = percentile(dev_scores, 0.05)

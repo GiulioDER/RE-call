@@ -72,6 +72,7 @@ class RetrievalDiagnostics:
     candidate_pool_size: int = 20
     reranking_ran: bool = False
     stage_ms: dict[str, float] = field(default_factory=dict)
+    max_dense_score: float | None = None
 
 
 @dataclass(frozen=True)

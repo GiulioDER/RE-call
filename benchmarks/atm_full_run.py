@@ -318,6 +318,7 @@ def run(args: argparse.Namespace) -> int:
                     "qtype": question.get("qtype"),
                     "retrieval_ids": [hit["id"] for hit in hits],
                     "hits": hits,
+                    "max_dense_score": result.diagnostics.max_dense_score,
                     "gap_warning": bool(result.gap_warning),
                     "reranking_ran": bool(result.diagnostics.reranking_ran),
                 }
