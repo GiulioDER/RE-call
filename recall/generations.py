@@ -1027,6 +1027,46 @@ class GenerationManager:
             raise NoActiveGeneration(f"tenant {self.tenant_id!r} has no active generation")
         return str(row[0])
 
+    def servable_manifest(self) -> IndexManifestV1:
+        """The manifest a NEW build should carry forward: the newest generation worth continuing.
+
+        ⛔ **`active_manifest` is the wrong base once a build can finish without being activated.**
+        A desktop upload whose promotion is refused leaves its generation READY, never active, so
+        `active_generation_id` does not advance. The next upload then seeds from the OLD active
+        manifest and silently contains none of the previous upload's files: two READY generations,
+        neither holding the whole corpus, and the message from the first told the user to certify
+        the one that will be superseded. Three auditors found this independently.
+
+        So the base is the newest generation in a state that can still become active — READY or
+        ACTIVE — falling back to the active one, and to an empty manifest when the tenant has
+        neither. RETIRED and FAILED are excluded: continuing from a retired corpus would resurrect
+        content that was deliberately rolled away from.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT manifest FROM recall_generations "
+                "WHERE tenant_id = %s AND state IN ('ready', 'active') "
+                "ORDER BY created_at DESC, generation_id DESC LIMIT 1",
+                (self.tenant_id,),
+            ).fetchone()
+        if row and isinstance(row[0], Mapping):
+            return IndexManifestV1.from_dict(row[0])
+        return self.active_manifest()
+
+    def superseded_ready_generations(self, keep: str) -> tuple[str, ...]:
+        """Every READY generation for this tenant other than `keep`, newest first.
+
+        The reclaim list. A READY generation holds a full copy of the corpus's chunk rows and `gc`
+        collects only `retired` and `failed`, so one left behind per refused upload grows the
+        database without bound — the leak `abandon` was written to close, documented in its own
+        docstring, and reintroduced by a path that returns success instead of raising.
+        """
+        return tuple(
+            record.generation_id
+            for record in self.list_generations()
+            if record.state is GenerationState.READY and record.generation_id != keep
+        )
+
     def active_manifest(self) -> IndexManifestV1:
         """Return the manifest for the active generation.
 

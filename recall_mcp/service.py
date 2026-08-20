@@ -36,7 +36,12 @@ from recall.control_plane import ControlPlane
 from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_code, chunk_text
 from recall.lineage import ChunkerIdentity, EmbedderIdentity, IndexManifestV1, ManifestObjectV1, PipelineIdentity
 from recall.manifest import ExtractingLocalObjectReader
-from recall.generations import GenerationManager, NoActiveGeneration, UnsafePromotion
+from recall.generations import (
+    GenerationError,
+    GenerationManager,
+    NoActiveGeneration,
+    UnsafePromotion,
+)
 from recall.observability import METRICS, get_logger
 from recall.profiles import (
     RetrievalAdmission,
@@ -2103,7 +2108,10 @@ def generation_ingest(
 
     manager = GenerationManager(store._dsn, store.tenant, actor="recall-desktop")
     try:
-        active_objects = {entry.uri: entry for entry in manager.active_manifest().objects}
+        # ⚠️ The newest SERVABLE generation, not the active one. A refused promotion leaves its
+        # generation READY and never advances `active_generation_id`, so seeding from the active
+        # manifest made each upload silently drop every previous un-promoted upload's files.
+        active_objects = {entry.uri: entry for entry in manager.servable_manifest().objects}
     except NoActiveGeneration:
         active_objects = {}
 
@@ -2187,13 +2195,32 @@ def generation_ingest(
             # Raising here told the user their upload failed and invited them to retry it,
             # rebuilding the same generation for the same refusal. Saying what is true, and what
             # remains to be done, is the difference between a gate and a wall.
+            # ⛔ **Reclaim what this one supersedes.** A READY generation holds a full copy of the
+            # corpus's chunk rows and `gc` collects only `retired` and `failed`, so one per refused
+            # upload grows the database without bound. `abandon` exists precisely for this state and
+            # says so in its own docstring; `recall/wizard/pipeline.py::_fail` does the same thing on
+            # the same shape of failure. Returning success without it made the leak per-attempt.
+            #
+            # The NEWEST is kept, not abandoned: it carries the whole corpus forward and it is the
+            # one the message below tells the user to certify.
+            reclaimed = 0
+            for stale in manager.superseded_ready_generations(generation.generation_id):
+                try:
+                    manager.abandon(stale, "superseded by a later upload that also awaits certification")
+                except GenerationError:
+                    # Best effort. Losing the reclaim must not lose the upload report, which is the
+                    # only thing telling the user what state they are in.
+                    continue
+                reclaimed += 1
             return IndexResult(
                 files=stats.objects,
                 chunks=stats.chunks,
                 message=(
                     f"Indexed {stats.chunks} chunk(s) from {stats.objects} file(s) into generation "
                     f"{generation.generation_id}, which is built and validated but NOT yet live. "
-                    f"{exc}"
+                    f"It carries forward everything previously uploaded"
+                    + (f"; {reclaimed} superseded build(s) released" if reclaimed else "")
+                    + f". {exc}"
                 ),
             )
     except Exception:

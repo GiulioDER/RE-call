@@ -131,3 +131,55 @@ def test_the_lifespan_publishes_the_flag_the_tool_reads() -> None:
         "to the legacy path on a production server"
     )
     assert 'state.get("generation_mode")' in source
+
+
+# ----------------------------------------------------------------------------------------------
+# A refused promotion must not lose files or leak corpora
+# ----------------------------------------------------------------------------------------------
+
+
+def test_a_new_build_carries_forward_from_the_newest_servable_generation() -> None:
+    """⛔ Seeding from the ACTIVE generation silently drops every un-promoted upload's files.
+
+    A desktop upload whose promotion is refused leaves its generation READY, so
+    `active_generation_id` never advances. The next upload then rebuilt its manifest from the OLD
+    active generation and contained none of the previous upload's files — two READY generations,
+    neither holding the whole corpus, while the first upload's message told the user to certify the
+    one about to be superseded. Three auditors found this independently; measured end to end against
+    a real database, upload #2 reported 1 file where it should have reported 3.
+
+    Asserted on the SOURCE rather than through a database, so it runs offline: the defect was a
+    single wrong method name, and naming the right one is the whole fix.
+    """
+    import inspect
+
+    import recall_mcp.service as service
+
+    source = inspect.getsource(service.generation_ingest)
+    assert "servable_manifest()" in source, (
+        "the new build must seed from the newest READY-or-ACTIVE generation"
+    )
+    assert "active_manifest()" not in source, (
+        "seeding from the active manifest is the defect: it drops un-promoted uploads"
+    )
+
+
+def test_a_refused_upload_releases_the_builds_it_supersedes() -> None:
+    """⛔ A READY generation holds a full copy of the corpus and `gc` collects only retired/failed.
+
+    `abandon` exists for exactly this state and says so in its own docstring; `wizard/pipeline.py`
+    does the same on the same shape of failure. The refusal branch returned success without it, so
+    every retry left another unreclaimable copy behind.
+
+    The NEWEST is deliberately kept — it carries the whole corpus forward and is the one the message
+    tells the user to certify.
+    """
+    import inspect
+
+    import recall_mcp.service as service
+
+    source = inspect.getsource(service.generation_ingest)
+    assert "superseded_ready_generations(generation.generation_id)" in source, (
+        "the refusal path must release the builds this one supersedes"
+    )
+    assert "manager.abandon(" in source, "released means abandoned, so gc can reclaim the rows"
