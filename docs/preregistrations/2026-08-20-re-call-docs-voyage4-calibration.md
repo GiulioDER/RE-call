@@ -92,3 +92,68 @@ terms even when their ORDER is preserved, and it is the fixed cut that pays for 
    corpus from the one the client has been querying, and comparisons to its behaviour are void.
 4. **One tenant, one embedder, one generator arm.** Nothing here licenses a claim about offline
    generation in general under compressed-cosine models.
+
+## Result, voyage-4 arm (2026-08-20)
+
+**Status:** measured. The predictions above are unedited.
+
+Generation `gen_2d25ad7a26284894a259365e7c5de355`, 155 objects, 2,703 chunks, built in 4m13s.
+Query set from `generate_offline(per_class=40, seed=0)` over 2,734 chunks read with `chunk_text`,
+the chunker the generation was built with.
+
+**Apparatus check passed before any calibration number was read.** The binding reported
+`embedder_model = voyage:voyage-4` at dimension 1024, and "what are the generation states and how
+does promotion work" retrieved `GENERATIONS.md`.
+
+| | predicted | measured | |
+|---|---|---|---|
+| certified | **yes** | **NO** | falsified |
+| separability | 0.95 to 1.00 | **0.8419**, CI [0.7540, 0.9297] | falsified |
+| threshold | 0.25 to 0.45 | **0.382** | confirmed |
+| per-class error above 10% | yes, at least one class | **both**: false abstain 25.00%, false confirm 27.50% | confirmed |
+
+```
+answerable min/max : 0.2895 / 0.7167
+gap        min/max : 0.2660 / 0.4836
+overlap min(a)-max(g): -0.1941
+```
+
+### P1 is falsified and the reason is the opposite of the one I argued
+
+I predicted certification on the grounds that **separability is rank-based and therefore
+scale-free**, so compressing the cosines could not hurt it. That reasoning is correct about
+separability and wrong about this corpus: the classes do not merely sit closer together, they
+**interleave**. The worst answerable query scores 0.2895 while the best gap query scores 0.4836, an
+overlap of −0.1941 — an order of magnitude worse than the −0.048 measured on the memory corpus.
+Compression was never the mechanism. voyage-4 simply does not order this corpus's answerable
+queries above its off-topic ones.
+
+P3 was right for a reason that also turns out to be wrong: I expected the ordering to hold and the
+fixed cut to pay for compression. The cut is paying for a genuine ordering failure instead.
+
+### What it does not show
+
+It does not show that the offline generator failed. Confound 1 named exactly this risk — that a
+subject list filtered against a corpus about software and retrieval would be less disjoint than for
+a generic corpus. With a gap ceiling of 0.4836 against an answerable floor of 0.2895, generator and
+embedder are not separable from each other by this run. The bge arm below is what tells them apart:
+**same corpus, same query set, same chunker, one variable changed.**
+
+## Second prediction: the bge-large arm (2026-08-20, before measuring)
+
+Operator direction after seeing the above: use bge for docs too. Registered before running it.
+
+**P4. bge-large certifies on this corpus.** Separability 95% lower bound **at or above 0.90**,
+point AUC **0.95 to 1.00**. Grounded in two prior measurements rather than hope: the 2026-08-16
+study measured the offline arm on this same corpus family at bge-**small** and got AUC 0.9806 with
+a lower bound of 0.9496, and the memory tenant under bge-**large** measured 0.9870 four days later.
+
+**P5. The threshold lands near the bge-small precedent, not near voyage-4's.** Between **0.62 and
+0.78**, against 0.7050 for bge-small on this corpus and 0.712 for bge-large on memory.
+
+**P6. The overlap shrinks by at least an order of magnitude**, from −0.1941 to no worse than
+−0.05, i.e. into the band the memory corpus showed (−0.048).
+
+Falsified by: a lower bound below 0.90, a threshold outside 0.62 to 0.78, or an overlap worse than
+−0.05. If P4 fails as well, the offline generator is the common factor across two embedders and the
+honest conclusion is that this corpus needs labelled queries, not a different model.
