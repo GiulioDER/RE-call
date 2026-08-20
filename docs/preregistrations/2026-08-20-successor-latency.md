@@ -83,6 +83,50 @@ eval "$(scripts/session-db.sh up)"
 python -m benchmarks.successor_latency
 ```
 
-## Result
+## Result (2026-08-20)
 
-Not yet measured.
+**Status: measured. The non-triggering prediction held exactly. The triggering prediction missed
+its band, narrowly and on the low side.**
+
+Apparatus passed: 16 triggering and 14 non-triggering, matching the quality runs, so these numbers
+are comparable to them.
+
+| Metric | Predicted | Measured |
+|---|---|---|
+| Median paired ratio, triggering | 1.7x to 2.3x | **1.63x** [min 1.17, max 1.84] n=16 ✗ |
+| Median paired ratio, non triggering | 1.00 to 1.05x | **1.00x** n=14 ✓ |
+| Added milliseconds, triggering | reported | **+45.4 ms**, 70.0 to 115.4 |
+| Added milliseconds, non triggering | reported | −2.8 ms, which is noise |
+
+**The band was missed by 0.07 and no stated falsifier fired.** The record's falsifier was 1.3x or
+below, meaning the fetch is far cheaper than a retrieval and my reading of the path is wrong. 1.63x
+does not reach that. The mechanism reasoning was right in kind and slightly over-stated in degree:
+a triggering query does pay a second embed and a second pair of legs, but the scoped search is
+cheaper than the unfiltered one it follows, because filtering to a single source leaves far less to
+rank and fuse. I predicted the cost of a whole extra retrieval and got roughly two thirds of one.
+
+**The non-triggering row is the important one for a default, and it is clean.** Median 1.00x with a
+−2.8 ms delta, which is noise and not a speedup. The per-query range is wide, 0.75 to 2.02, exactly
+as an unchanged code path measured against itself should look: the spread is scheduling, and the
+median is the statistic that survives it. Enabling the feature on a corpus with no supersession
+edges costs nothing, which the zero-extra-query test already required and this now confirms in wall
+clock.
+
+### What follows, per the decision rule fixed in advance
+
+"Non-triggering at or below 1.05 and triggering at or below 2.5: the cost is bounded and
+proportional to the work. **A default-on decision becomes defensible on the existing quality
+evidence, and gets its own record.**"
+
+Both conditions are met. That does **not** turn the feature on. It removes the one blocker this
+series had against considering it, and the consideration is a separate decision with its own
+record, as every default change in this series has been.
+
+The concrete trade an operator now has, and did not have an hour ago: **+45 ms on a query that
+retrieves a superseded memory whose successor is absent, and nothing at all on every other query.**
+
+### Still not measured
+
+Behaviour with a reranker. Any corpus but this one. Any embedder but `bge-small` through fastembed,
+where the embed is a large share of the 70 ms baseline and a hosted embedder would change the
+ratio in both directions at once.
