@@ -1042,6 +1042,22 @@ def scaffold_memory_index(memory_dir: Path = DEFAULT_MEMORY_DIR) -> bool:
     return True
 
 
+def _safe_error(exc: Exception, dsn: str) -> str:
+    """An exception rendered without echoing the DSN's password back at the user.
+
+    A MALFORMED dsn makes psycopg quote the whole connection string in its message: `missing "="
+    after "postgresql://user:PASSWORD@host" in connection info string`. Every WELL-FORMED failure
+    (unreachable port, bad host, wrong password) is clean, which is what makes this easy to miss.
+    Found by the wizard session in its own preflight.
+
+    Replacing the known DSN covers the echo, which is the observed leak. It is not a general
+    scrubber; `recall.store.scrub_dsn_secrets` is that, and this should call it once #434 lands.
+    """
+    from recall.store import redacted_dsn
+
+    return str(exc).replace(dsn, redacted_dsn(dsn))
+
+
 def index_memory_directory(
     *,
     dsn: str,
@@ -1081,7 +1097,7 @@ def index_memory_directory(
             stats = indexer.index_path(memory_dir, glob="**/*.md")
     except Exception as exc:  # best effort: scaffolded files must survive even if this fails
         print_fn(
-            f"Could not auto-index {memory_dir}: {exc} — run "
+            f"Could not auto-index {memory_dir}: {_safe_error(exc, dsn)} — run "
             f"'python -m recall.cli index {memory_dir}' once the schema is applied for this "
             "embedder's dimension."
         )
@@ -1356,7 +1372,7 @@ def run_setup_wizard(
             )
         except Exception as exc:
             print_fn(
-                f"Could not wire up Claude Code: {exc}\n"
+                f"Could not wire up Claude Code: {_safe_error(exc, dsn)}\n"
                 "Register it by hand with the block in docs/USING_WITH_CLAUDE.md."
             )
 

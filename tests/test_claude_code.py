@@ -215,239 +215,6 @@ def test_install_backs_up_before_editing(tmp_path: Path, monkeypatch: Any) -> No
     assert backups[0].read_text(encoding="utf-8") == original
 
 
-def test_the_user_scope_file_is_the_sibling_of_the_config_home_not_a_child(
-    monkeypatch: Any,
-) -> None:
-    """`~/.claude.json` is beside `~/.claude/`, not inside it.
-
-    Getting this wrong writes `~/.claude/.claude.json`, a file the client never reads, so the
-    no-CLI fallback would report a successful registration and register nothing. It would have
-    failed only on machines without `claude` on PATH, which is the case the fallback exists for.
-    """
-    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    assert claude_code.user_config_file() == Path.home() / ".claude.json"
-    assert claude_code.user_config_file() != claude_code.claude_config_home() / ".claude.json"
-    assert claude_code.user_config_file().parent == claude_code.claude_config_home().parent
-
-
-def test_the_user_scope_file_follows_an_overridden_config_home(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    assert claude_code.user_config_file() == tmp_path / ".claude.json"
-
-
-def _fallback_register(tmp_path: Path, monkeypatch: Any, **kwargs: Any) -> dict[str, Any]:
-    """Drive the no-CLI fallback and return the resulting `.claude.json`."""
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    config = tmp_path / ".claude.json"
-    config.write_text(json.dumps({"projects": {"C:/somewhere": {"allowedTools": []}}}), "utf-8")
-    monkeypatch.setattr(claude_code, "_claude_cli", lambda: None)
-    claude_code.register_mcp_server(
-        dsn="postgresql://u:p@127.0.0.1:5432/recall", print_fn=lambda *a, **k: None, **kwargs
-    )
-    return json.loads(config.read_text(encoding="utf-8"))
-
-
-def test_the_fallback_defaults_to_local_scope_under_the_project_key(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    """Local scope is `projects[<dir>].mcpServers`, keyed by the project's own absolute path.
-
-    The corpus boundary is why this is the default: a recall server carries one tenant and one
-    DSN, so at user scope it would follow the user into every unrelated checkout and answer about
-    somewhere else's corpus, confidently and without erroring.
-    """
-    project = tmp_path / "proj"
-    project.mkdir()
-    written = _fallback_register(tmp_path, monkeypatch, project_root=project)
-
-    server = written["projects"][str(project.resolve())]["mcpServers"]["recall"]
-    assert server["args"] == ["-m", "recall_mcp.server"]
-    assert server["env"]["RECALL_TRUST_MODE"] == "development"
-    assert "mcpServers" not in written, "local scope must not write the user-scope key"
-    # The user's other projects are not ours to touch.
-    assert written["projects"]["C:/somewhere"] == {"allowedTools": []}
-
-
-def test_user_scope_is_still_available_and_writes_the_top_level_key(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    written = _fallback_register(tmp_path, monkeypatch, scope="user")
-    assert written["mcpServers"]["recall"]["args"] == ["-m", "recall_mcp.server"]
-    assert "mcpServers" not in written["projects"]["C:/somewhere"]
-
-
-def test_every_spelling_of_the_project_directory_is_registered(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    """The client keeps several keys for one directory and normalises none of them.
-
-    Measured on a real config: 313 project keys, 7 directories carrying two spellings each, one
-    from a native launch and one from Git Bash. An entry under one spelling is invisible to a
-    session launched the other way, with no error, which looks exactly like a failed install.
-    """
-    import os
-
-    project = tmp_path / "proj"
-    project.mkdir()
-    # Distinct STRINGS that denote one directory. `as_posix()` is the real-world Windows case, a
-    # native launch versus a Git Bash one, and it collapses into `str()` on POSIX where the
-    # separator is already a slash. The `.` component is the portable stand-in, so this test asserts
-    # something on every platform rather than degenerating into a single key on Linux.
-    #
-    # It degenerated exactly that way in its first version, which asserted a hardcoded 2 and passed
-    # on Windows while asserting nothing on POSIX. Deriving the expected count from the set is what
-    # stops that recurring: the number cannot drift away from the fixture.
-    spellings = {str(project), project.as_posix(), os.path.join(str(tmp_path), ".", "proj")}
-    assert len(spellings) >= 2, "the fixture must offer more than one spelling on every platform"
-
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    config = tmp_path / ".claude.json"
-    config.write_text(
-        json.dumps({"projects": {s: {"allowedTools": []} for s in spellings}}), encoding="utf-8"
-    )
-    monkeypatch.setattr(claude_code, "_claude_cli", lambda: None)
-
-    claude_code.register_mcp_server(
-        dsn="postgresql://h/db", project_root=project, print_fn=lambda *a, **k: None
-    )
-
-    written = json.loads(config.read_text(encoding="utf-8"))
-    registered = [k for k, v in written["projects"].items() if "mcpServers" in v]
-    assert len(registered) == len(spellings), (
-        f"every spelling must be registered, got {registered} for {sorted(spellings)}"
-    )
-    # And no spelling lost the keys it already had.
-    assert all(written["projects"][s]["allowedTools"] == [] for s in spellings)
-
-
-def test_key_matching_follows_the_platform_rather_than_casefolding(tmp_path: Path) -> None:
-    """A casefolded comparison over-matches on POSIX, where case distinguishes directories.
-
-    `PurePath.__eq__` normalises case on Windows and not on POSIX, which is each platform's own
-    rule. Registering under a key that merely differs in case would put a recall server in an
-    unrelated project on Linux, which is the corpus-boundary failure this change exists to
-    prevent.
-
-    ⚠️ **The directories must NOT exist**, and the first version of this test created one, which
-    made it a false receipt: both mutations below survived it. On Windows `resolve()` asks the
-    filesystem for a real directory's canonical casing, so resolving `proj` when `Proj` exists
-    returns `Proj`, the two strings become identical, and a naive `str(a) == str(b)` passes for a
-    reason that has nothing to do with the rule under test. With absent paths the comparison itself
-    is what answers. Caught by the wizard session, and confirmed here by mutation.
-
-    Honest limit: on Windows only the string-equality mutation is caught, because casefolding and
-    `PurePath.__eq__` agree on every Windows input. The casefold mutation is caught on POSIX, which
-    this machine cannot execute, so that half rests on CI.
-    """
-    import os
-
-    project = tmp_path / "Proj"
-    document = {"projects": {str(tmp_path / "proj"): {}, str(project): {}}}
-
-    keys = claude_code._project_keys(document, project)
-
-    if os.name == "nt":
-        assert len(keys) == 2, "Windows treats the two spellings as one directory"
-    else:
-        assert keys == [str(project)], "POSIX must not match a differently-cased directory"
-
-
-def test_a_project_the_client_has_never_seen_gets_exactly_one_key(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    """Inventing a key is right when there is none; inventing a second one is not."""
-    project = tmp_path / "fresh"
-    project.mkdir()
-    written = _fallback_register(tmp_path, monkeypatch, project_root=project)
-    registered = [k for k, v in written["projects"].items() if "mcpServers" in v]
-    assert registered == [str(project.resolve())]
-
-
-def test_the_cli_is_never_decoded_with_the_console_codec() -> None:
-    """`text=True` decodes with cp1252 on Windows and this CLI emits bytes it cannot represent.
-
-    Measured here: `UnicodeDecodeError: 'charmap' codec can't decode byte 0x8f`. The failure is
-    worse than a raise, because it happens in a `subprocess` reader thread: nothing propagates,
-    `stdout` arrives as None, and an error path reporting `stderr or stdout or ""` reports an
-    empty reason for a real failure.
-    """
-    captured: dict[str, Any] = {}
-
-    def fake_run(argv: Any, **kwargs: Any) -> Any:
-        captured.update(kwargs)
-
-        class Result:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return Result()
-
-    import subprocess as subprocess_module
-
-    import pytest
-
-    monkeypatch = pytest.MonkeyPatch()
-    try:
-        monkeypatch.setattr(claude_code, "_claude_cli", lambda: "claude")
-        monkeypatch.setattr(subprocess_module, "run", fake_run)
-        claude_code._run_claude(["mcp", "list"])
-    finally:
-        monkeypatch.undo()
-
-    assert captured.get("encoding") == "utf-8"
-    assert captured.get("errors") == "replace"
-    assert "text" not in captured, "text=True would decode with the console codec"
-
-
-def test_an_unknown_scope_is_refused_rather_than_guessed(tmp_path: Path, monkeypatch: Any) -> None:
-    monkeypatch.setattr(claude_code, "_claude_cli", lambda: None)
-    try:
-        claude_code.register_mcp_server(dsn="postgresql://h/db", scope="project")
-    except ValueError as exc:
-        assert "local" in str(exc) and "user" in str(exc)
-    else:  # pragma: no cover - the assertion below is the failure message
-        raise AssertionError("an unrecognised scope must raise rather than silently pick one")
-
-
-def test_every_cli_call_is_made_from_the_project_root(tmp_path: Path, monkeypatch: Any) -> None:
-    """`--scope local` and `mcp get` resolve the project from the working directory.
-
-    Called from wherever the wizard was started, the entry lands under a directory nobody will
-    open: the command succeeds, the entry exists, and the tools never appear.
-    """
-    project = tmp_path / "proj"
-    project.mkdir()
-    calls: list[tuple[list[str], Any]] = []
-
-    def fake_run(args: list[str], *, cwd: Any = None, timeout: float = 30.0) -> Any:
-        calls.append((args, cwd))
-
-        class Result:
-            returncode = 1 if args[:2] == ["mcp", "get"] else 0
-            stdout = ""
-            stderr = ""
-
-        return Result()
-
-    monkeypatch.setattr(claude_code, "_claude_cli", lambda: "claude")
-    monkeypatch.setattr(claude_code, "_run_claude", fake_run)
-
-    claude_code.register_mcp_server(
-        dsn="postgresql://h/db",
-        project_root=project,
-        prefer_cli=True,
-        print_fn=lambda *a, **k: None,
-    )
-
-    assert calls, "the CLI path must have been taken"
-    assert all(cwd == project.resolve() for _args, cwd in calls)
-    add = next(args for args, _ in calls if args[:2] == ["mcp", "add"])
-    assert add[:4] == ["mcp", "add", "--scope", "local"]
-
-
 def test_a_password_never_reaches_a_log_line() -> None:
     assert _redacted("postgresql://recall:hunter2@127.0.0.1:5432/recall") == (
         "postgresql://recall:***@127.0.0.1:5432/recall"
@@ -461,3 +228,99 @@ def test_server_env_always_sets_the_trust_mode() -> None:
     """Omitting it is how a correct install returns INDEX_NOT_READY on the user's first search."""
     env = claude_code.server_env(dsn="postgresql://h/db", tenant="default", trust_mode="development")
     assert env["RECALL_TRUST_MODE"] == "development"
+
+
+# ------------------------------------------------------------------------------------------------
+# What this module still decides, now that `recall.wizard.wiring` owns the mechanism.
+#
+# The writer, the project-key resolution and the platform case rule are tested in
+# `tests/test_wizard_wiring.py`, against the code that performs them. Re-testing them here would
+# assert a second time that somebody else's function works. What is left is this layer's own
+# contribution: one block, the right environment on it, and a report the user can act on.
+# ------------------------------------------------------------------------------------------------
+
+
+class _Registration:
+    """Stand-in for `LocalScopeRegistration`, so these tests do not touch a config file."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.config_path = kwargs.get("config_path", Path("/somewhere/.claude.json"))
+        self.project_keys = kwargs.get("project_keys", ())
+        self.registered = kwargs.get("registered", ())
+        self.conflicts = kwargs.get("conflicts", ())
+        self.skipped_reason = kwargs.get("skipped_reason", "")
+
+
+def _capture(monkeypatch: Any, result: _Registration) -> tuple[list[Any], list[str]]:
+    """Register against a faked mechanism, returning the blocks it was given and what was printed."""
+    seen: list[Any] = []
+    printed: list[str] = []
+
+    def fake_register(blocks: Any, **kwargs: Any) -> _Registration:
+        seen.append((blocks, kwargs))
+        return result
+
+    import recall.wizard.wiring as wiring
+
+    monkeypatch.setattr(wiring, "register_local_scope", fake_register)
+    claude_code.register_mcp_server(
+        dsn="postgresql://recall:hunter2@127.0.0.1:5432/recall",
+        tenant="default",
+        project_root=Path.cwd(),
+        print_fn=lambda *a, **k: printed.append(" ".join(str(x) for x in a)),
+    )
+    return seen, printed
+
+
+def test_one_logical_server_is_passed_as_a_one_element_tuple_of_blocks(monkeypatch: Any) -> None:
+    """A scalar door into the mechanism would be a second shape kept alive for one caller."""
+    seen, _ = _capture(monkeypatch, _Registration(registered=("recall",)))
+    blocks, kwargs = seen[0]
+    assert len(blocks) == 1
+    assert blocks[0].name == "recall"
+    assert blocks[0].tenant == "default"
+    assert kwargs["project_root"] == Path.cwd()
+    assert kwargs["interpreter"], "the interpreter must be named, not left to the client's PATH"
+
+
+def test_the_block_carries_the_trust_mode(monkeypatch: Any) -> None:
+    """Omitting it is the likeliest way for a correct install to look broken on the first search.
+
+    A stdio server launched with an explicit `env` inherits nothing, and a fresh corpus is
+    uncalibrated, which a strict server correctly refuses with `INDEX_NOT_READY`.
+    """
+    seen, _ = _capture(monkeypatch, _Registration(registered=("recall",)))
+    env = seen[0][0][0].env
+    assert env["RECALL_TRUST_MODE"] == "development"
+    assert env["RECALL_TENANT"] == "default"
+    assert env["RECALL_SERVING_DSN"].endswith("/recall")
+
+
+def test_the_registered_keys_are_reported_because_the_entry_is_path_keyed(
+    monkeypatch: Any,
+) -> None:
+    """Moving or renaming the project orphans the entry silently, so the keys are printed."""
+    result = _Registration(registered=("recall",), project_keys=("C:/a/proj", "C:/A/proj"))
+    _, printed = _capture(monkeypatch, result)
+    assert any("C:/a/proj" in line and "C:/A/proj" in line for line in printed)
+
+
+def test_a_conflict_is_reported_and_not_claimed_as_a_success(monkeypatch: Any) -> None:
+    """Silently repointing an existing install at another corpus is worse than declining."""
+    result = _Registration(registered=(), conflicts=(("recall", "another corpus"),))
+    _, printed = _capture(monkeypatch, result)
+    assert any("already exists" in line and "another corpus" in line for line in printed)
+    assert not any("Registered MCP server" in line for line in printed)
+
+
+def test_a_skip_is_reported_with_its_reason(monkeypatch: Any) -> None:
+    result = _Registration(skipped_reason="no project root")
+    _, printed = _capture(monkeypatch, result)
+    assert any("not registered" in line and "no project root" in line for line in printed)
+
+
+def test_the_dsn_password_never_reaches_the_report(monkeypatch: Any) -> None:
+    result = _Registration(registered=("recall",), project_keys=("C:/a/proj",))
+    _, printed = _capture(monkeypatch, result)
+    assert printed, "the success path must report something"
+    assert not any("hunter2" in line for line in printed)

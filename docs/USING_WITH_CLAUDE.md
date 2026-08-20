@@ -71,36 +71,16 @@ Both clients use the same `mcpServers` block; only the entry point differs.
 - **Claude Desktop** — add the block to `claude_desktop_config.json`
   (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`), then restart.
 
-### Which scope, and why not `.mcp.json`
+### Two things the scope list above does not say
 
-This page previously said to save the block as `.mcp.json` in your project root. Do not. The full
-reasoning, including the three-scope comparison, is in [WIZARD.md](WIZARD.md); the short version is
-that a `.mcp.json` lives in the repository, so a DSN written there is one `git add` from being
-committed, which contradicts the credentials note below that this page has always carried. It is
-also the only scope the approval prompt covers, so the tools stay absent until an interactive
-session answers a prompt, with nothing naming the cause.
+**Do not use user scope for this**, tempting though the "works everywhere" reading is. A recall
+server carries one `RECALL_TENANT` and one DSN, so a user-scope entry follows you into every
+unrelated checkout and answers confidently about a corpus belonging to a different repository. That
+failure never raises an error, which is what makes it the expensive one.
 
-Local scope has neither problem, and user scope has a third: it loads in every project on the
-machine, and a recall server carries one `RECALL_TENANT` and one DSN, so it would answer
-confidently about a corpus belonging to a different repository, without ever raising an error.
-
-⚠️ A local entry is keyed by your project's path, so **moving or renaming the project orphans it**
-silently. Re-run the registration after a move.
-
-### If the tools do not appear and everything looks correct
-
-Check for a stale `.mcp.json` in the project, and check which entry is actually winning. Servers of
-the same name are resolved by precedence, **not merged**: the entire entry from the
-highest-precedence source is used, and the order is
-
-1. local (`~/.claude.json`, under `projects[<dir>].mcpServers`)
-2. project (`.mcp.json` in the repository)
-3. user (`~/.claude.json`, top-level `mcpServers`)
-
-So a local entry **wins over** a `.mcp.json` of the same name, and both win over a user-scope one.
-The failure this ordering produces is a stale user-scope or project-scope entry being shadowed by a
-local one you forgot about, or a `.mcp.json` shadowing a user-scope entry you expected to be live.
-Deleting the wrong one changes nothing, so read the order before deleting anything.
+⚠️ **A local entry is keyed by your project's path**, so moving or renaming the project orphans it
+silently: no error, no tools. Re-run the registration after a move. The installer prints the keys
+it registered under for this reason.
 
 > 🔒 **Credentials.** The DSN above is the **local Docker dev** default — not a secret. For any real
 > database, supply the DSN (and the optional `VOYAGE_API_KEY` for the cloud embedder) through your
