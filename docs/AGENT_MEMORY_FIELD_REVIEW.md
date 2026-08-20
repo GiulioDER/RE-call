@@ -191,6 +191,51 @@ accepted and one rejected after measuring:
 **Still unmeasured, and this is the part that proves the item.** Whether authors and agents actually
 fill the fields. Re-run the Part 2b count in 30 days (2026-09-18); the number to beat is zero.
 
+### Result, measured 2026-08-20, the day the change merged
+
+**The prediction above is left exactly as written. This is appended under it, not substituted for
+it, because the interesting part is that the success criterion was wrong rather than the number.**
+
+```
+recall memory store    172 files | valid_from 0 | valid_until 0 | supersedes 0
+recall docs/            70 files | valid_from 0 | valid_until 0 | supersedes 0
+```
+
+Zero, everywhere, as at the baseline. The denominator moved though: **152 files at baseline, 172
+now, so twenty memos were written after the change and not one carries validity metadata.** Five of
+those twenty were written by the agent that implemented the change, hours afterwards.
+
+**That is not evidence about adoption, and reading it as such would be the error this document keeps
+warning about.** Checking whether the mechanism can reach the measured corpus at all:
+
+- The store at `~/.claude/projects/<slug>/memory/` is **Claude Code's** memory directory. It carries
+  no `recall setup begin` marker, so `recall setup` has never scaffolded it and never will.
+- Its `MEMORY.md` mentions `valid_from`, `valid_until` and `supersedes` **zero** times.
+- This repository has **no** `memory/` directory and **no** scaffold block in its `CLAUDE.md`.
+
+The memo format in that store is dictated by the operator's global `CLAUDE.md` memory contract,
+which the change does not touch. So **the 2026-09-18 re-measure would have returned zero by
+construction**, and the null would have been read as "authors do not fill the fields" when the true
+cause is "the instruction never reaches them". A measurement whose result is fixed in advance by its
+own apparatus is not a test.
+
+**What the change does do is unaffected, and was verified separately.** A memo written from the new
+template carries `valid_from` into the store and earns a `superseded` verdict against a live
+pgvector index. That holds for its actual scope: a project that runs `recall setup` and gets a fresh
+`memory/MEMORY.md`. Nothing above this line is retracted; only the criterion for proving it is.
+
+**Two ways to make the claim testable, neither yet done:**
+
+1. **Point the instrument at a corpus the scaffold governs.** Run `recall setup` into a project, use
+   it for real work, and count there. Smaller and slower-moving denominator, but it measures the
+   mechanism instead of a corpus the mechanism cannot see.
+2. **Extend the mechanism to this corpus.** Add `valid_from` and the close-rather-than-replace rule
+   to the memory contract in the operator's global `CLAUDE.md`, which is what actually governs this
+   store. That is an operator decision about their own standing instructions, not a code change.
+
+Until one of those happens, item 0 is **a shipped and verified improvement with no adoption
+evidence**, and it should be described that way rather than as pending a September measurement.
+
 ## Part 3: candidate work items, ranked
 
 Each item states the source, what exists today, the honest case against, and a test that could
