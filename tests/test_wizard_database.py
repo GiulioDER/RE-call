@@ -17,7 +17,7 @@ from recall.wizard.database import (
     is_local_host,
     probe_database,
 )
-from tests.conftest import TEST_DSN, requires_db
+from tests.conftest import TEST_DSN, requires_db, restore_default_chunks_table
 
 
 # ----------------------------------------------------------------------------------------------
@@ -191,8 +191,13 @@ def test_a_dimension_mismatch_blocks_the_install_before_anything_is_built() -> N
         matching = probe_database(TEST_DSN, expected_dimension=384)
         mismatched = probe_database(TEST_DSN, expected_dimension=1536)
     finally:
-        with psycopg.connect(TEST_DSN, autocommit=True) as connection:
-            connection.execute("DROP TABLE IF EXISTS chunks CASCADE")
+        # ⚠️ RESTORED, not dropped. `chunks` is shared: the session bootstrap creates it at dim 64
+        # and a dozen integration tests assume it. The first version of this line was a bare
+        # `DROP TABLE IF EXISTS chunks CASCADE`, which left no table at all for everything that ran
+        # afterwards — three `test_wizard_pipeline.py` tests failed in CI with
+        # `relation "chunks" does not exist`, while the suite stayed green locally because only some
+        # random orders put this test first.
+        restore_default_chunks_table()
 
     assert matching.usable is True
     assert matching.existing_dimension == 384
