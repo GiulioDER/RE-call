@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import platform
 import subprocess
@@ -38,10 +39,16 @@ from benchmarks.agent_ab.arms import (  # noqa: E402
     write_claude_md_prompt,
     write_recall_prompt,
 )
-from benchmarks.agent_ab.claude_exec import run_claude_case  # noqa: E402
+from benchmarks.agent_ab.claude_exec import (  # noqa: E402
+    resolve_claude_executable,
+    run_claude_case,
+)
 from benchmarks.agent_ab.gate import admit_pairs  # noqa: E402
 from benchmarks.agent_ab.io import write_jsonl  # noqa: E402
-from benchmarks.agent_ab.recall_server import WarmRecallServer  # noqa: E402
+from benchmarks.agent_ab.recall_server import (  # noqa: E402
+    StdioRecallSpec,
+    WarmRecallServer,
+)
 from benchmarks.agent_ab.runner import run_paired  # noqa: E402
 from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON  # noqa: E402
 from benchmarks.agent_ab.summarize import (  # noqa: E402
@@ -50,7 +57,10 @@ from benchmarks.agent_ab.summarize import (  # noqa: E402
 )
 from benchmarks.agent_ab.traps import score_record  # noqa: E402
 
-DEFAULT_DSN = "postgresql://recall:recall@127.0.0.1:5433/recall"
+#: The benchmark owns its corpus. NOT the shared recall-dogfood on 5433, which serves other
+#: sessions and is uncalibrated, and not the session container's default database, which the
+#: test suite DROPs tables in. Built by scripts/agent_ab_build_corpus.py.
+DEFAULT_DSN = "postgresql://recall:recall@127.0.0.1:5406/agent_ab"
 TASKS = REPO_ROOT / "benchmarks" / "agent_ab" / "tasks" / "traps.jsonl"
 STATIC_MEMORY_SOURCES = ("CLAUDE.md",)
 
@@ -76,7 +86,7 @@ def load_tasks(path: Path, limit: int | None, reps: int) -> list[dict[str, Any]]
     return expanded
 
 
-def environment_capture(model: str, server: WarmRecallServer) -> dict[str, Any]:
+def environment_capture(model: str, source: Any, check: dict[str, Any]) -> dict[str, Any]:
     def run(*command: str) -> str:
         try:
             return subprocess.run(  # noqa: S603 - argv list, no shell
@@ -91,13 +101,22 @@ def environment_capture(model: str, server: WarmRecallServer) -> dict[str, Any]:
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "repo_revision": run("git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"),
         "repo_dirty": bool(run("git", "-C", str(REPO_ROOT), "status", "--porcelain")),
-        "claude_code_version": run("claude", "--version"),
+        # Resolved, not "claude": the npm shim is a batch file that cannot be started without a
+        # shell, so a bare name here returns an empty string and the artifact silently loses the
+        # one field that says which CLI produced the run.
+        "claude_code_version": run(resolve_claude_executable(), "--version"),
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "model": model,
-        "recall_url": server.url,
-        "recall_tenant": server.tenant,
-        "recall_handshake_ms": server.handshake_ms,
+        "recall_tenant": source.tenant,
+        # The whole trust picture, in the artifact, so a reader never has to ask
+        # whether this run was calibrated.
+        "recall_transport": check.get("transport", "http"),
+        "recall_handshake_ms": check.get("handshake_ms"),
+        "recall_trust_state": check.get("trust_state"),
+        "recall_calibrated": check.get("calibrated"),
+        "recall_generation_id": check.get("generation_id"),
+        "recall_calibration_id": check.get("calibration_id"),
     }
 
 
@@ -109,11 +128,17 @@ async def main() -> int:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--tasks", default=str(TASKS))
     parser.add_argument("--dsn", default=DEFAULT_DSN)
-    parser.add_argument("--tenant", default="memory")
+    parser.add_argument("--tenant", default="default")
     parser.add_argument("--port", type=int, default=5480)
     parser.add_argument("--model", default="anthropic/claude-haiku-4.5")
     parser.add_argument("--memory-index", default=None)
     parser.add_argument("--pair-concurrency", type=int, default=1)
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "http"),
+        default="stdio",
+        help="stdio serves a CALIBRATED generation; http is warm but development-only",
+    )
     args = parser.parse_args()
 
     artifacts = REPO_ROOT / "benchmarks" / "artifacts" / "agent_ab" / args.run_id
@@ -134,15 +159,31 @@ async def main() -> int:
     if args.memory_index and Path(args.memory_index).is_file():
         static_sources = static_sources + (args.memory_index,)
 
-    with WarmRecallServer(
-        dsn=args.dsn, cwd=REPO_ROOT, tenant=args.tenant, port=args.port
-    ) as server:
-        check = await server.check()
+    if args.transport == "stdio":
+        source: StdioRecallSpec | WarmRecallServer = StdioRecallSpec(
+            dsn=args.dsn, cwd=REPO_ROOT, tenant=args.tenant
+        )
+        context: Any = contextlib.nullcontext()
+    else:
+        source = WarmRecallServer(
+            dsn=args.dsn, cwd=REPO_ROOT, tenant=args.tenant, port=args.port
+        )
+        context = source
+
+    with context:
+        check = await source.check()
         print(
             f"RE-call ready: {check['handshake_ms']} ms handshake, {check['tool_count']} tools, "
-            f"trust_state={check['trust_state']}"
+            f"trust_state={check.get('trust_state')} calibrated={check.get('calibrated')}"
         )
-        recall_prompt = write_recall_prompt(artifacts / "recall-prompt.txt", server)
+        if check.get("calibrated") is not True:
+            # Not fatal, but it changes what the result means, so it is said once at the top of
+            # the run and recorded in the environment capture rather than discovered afterwards.
+            print(
+                "  [note] this corpus is UNCALIBRATED: abstention is untuned and the result must "
+                "say so wherever it is published."
+            )
+        recall_prompt = write_recall_prompt(artifacts / "recall-prompt.txt", source)
         if args.comparison == "headline":
             off_profile = "claude_md"
             off_spec = ArmSpec.claude_md(
@@ -154,8 +195,14 @@ async def main() -> int:
             off_profile = "bare"
             off_spec = ArmSpec.bare()
 
+        if isinstance(source, StdioRecallSpec):
+            recall_spec = ArmSpec.recall_stdio(
+                source, artifacts / "recall-mcp.json", recall_prompt
+            )
+        else:
+            recall_spec = ArmSpec.recall(source, recall_prompt)
         configs = build_configs(
-            {RECALL_ON: ArmSpec.recall(server, recall_prompt), RECALL_OFF: off_spec},
+            {RECALL_ON: recall_spec, RECALL_OFF: off_spec},
             model=args.model,
             cwd=workdir,
         )
@@ -163,7 +210,7 @@ async def main() -> int:
             variant: replace(config, stream_dir=artifacts / "streams")
             for variant, config in configs.items()
         }
-        environment = environment_capture(args.model, server)
+        environment = environment_capture(args.model, source, check)
 
         async def run_case(row: dict[str, Any], variant: str):
             record = await run_claude_case(row, variant, configs[variant])
