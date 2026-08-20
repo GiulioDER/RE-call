@@ -95,11 +95,22 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 - **No bundled HA.** Versioned, checksum-verified migrations and an unprivileged serving role now
   ship, but replication, backups, failover and managed-Postgres operations remain yours until the
   production reference deployment lands.
-- **Strict calibration enforcement has not landed yet.** Immutable lineage, atomic blue-green
-  generations, and exact tenant/generation-bound calibration artifacts ship. The next session must
-  refuse absent, stale, mismatched, and uncertified artifacts before returning corpus text.
-  Production promotion therefore remains blocked. This repository does not yet claim the
-  seven-session enterprise target is complete.
+- **Production promotion is gated on certification, not blocked.** Immutable lineage, atomic
+  blue-green generations, and exact tenant/generation-bound calibration artifacts ship, and
+  `generation promote` under `RECALL_ENV=production` now succeeds for a generation whose calibration
+  resolves CERTIFIED and refuses every other status. `--unsafe-development-promotion` is refused
+  outright there rather than ignored, so the development escape hatch cannot be carried into
+  production by habit.
+
+  **`generation rollback` is deliberately NOT gated**, because it is the incident path: it activates
+  the previous generation whatever its calibration status, and records that status plus the
+  operator's reason in the audit event. The reasoning is in
+  `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md` section 6. Expect a rollback to be able to downgrade a
+  tenant from certified to provisional, visibly.
+
+  What has **not** landed is strict refusal at *read* time: an uncertified generation that is
+  already active still returns corpus text, marked uncalibrated, rather than refusing. This
+  repository does not yet claim the seven-session enterprise target is complete.
 
 ## Upgrading
 

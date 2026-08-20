@@ -2099,7 +2099,14 @@ def generation_ingest(
     staged_root: str,
     category: str,
 ) -> IndexResult:
-    """Build, validate, and activate one local generation for a desktop upload."""
+    """Build and validate one local generation for a desktop upload, and activate it if allowed.
+
+    ⚠️ **Activation is no longer guaranteed, and the docstring said it was.** Under
+    `RECALL_ENV=production` promotion requires a CERTIFIED calibration, which a fresh upload does not
+    have, so the ordinary desktop path now ends with the generation READY and not live. That is
+    reported in the returned message rather than raised, because the upload itself succeeded: the
+    corpus is built, validated and carries forward every earlier upload's files.
+    """
     job_root = Path(staged_root)
     tenant_root = job_root.parent
     job_files = sorted(path for path in job_root.rglob("*") if path.is_file())

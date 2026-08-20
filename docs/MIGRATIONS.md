@@ -39,7 +39,12 @@ is loud in one place and mute in the rest.
 | MCP server serves generation-routed reads | serves the legacy table |
 | `recall index` / `demo` / `code` and the MCP `recall_index` tool refuse local-filesystem indexing | accepted |
 | generations require a pinned, verified embedder identity | an unverified embedder can build one |
-| `generation promote` is blocked | promotion is permitted |
+| `generation promote` requires a CERTIFIED calibration, and refuses `--unsafe-development-promotion` | promotion requires `--unsafe-development-promotion` and no calibration |
+
+`generation rollback` is **not** in that table, because it behaves the same in both: it is the
+incident path and never refuses on certification grounds. It records the target's calibration
+status and the operator's reason in the audit event instead, so a recovery onto an uncertified
+generation is visible rather than prevented (`docs/UNCALIBRATED_FIRST_RUN_DESIGN.md`, section 6).
 
 ```bash
 recall --serving-dsn "$RECALL_SERVING_DSN" --table chunks schema --dim 384 status

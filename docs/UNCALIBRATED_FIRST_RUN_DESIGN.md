@@ -1,6 +1,19 @@
 # Serving a corpus before it has a calibration
 
-**Status:** design, 2026-08-18. **Nothing here is implemented.** It is a proposal with measured
+**Status:** design, 2026-08-18; **partly implemented, 2026-08-20.** This used to say "Nothing here
+is implemented", and that line survived one commit past the point where it stopped being true, which
+is how the certification gate came to contradict section 6 decision 2 without anybody noticing.
+
+What has landed, and where:
+
+| From this document | Landed as |
+|---|---|
+| F2, the ungated activation window | `promote` requires CERTIFIED in production (`recall/generations.py`, `require_certified_for_production`) |
+| Section 6, decision 2 | `rollback(*, provisional_reason=...)` never refuses, and records the target's status |
+| The artifact attestation of 6c | `embedder_artifact_digest` / `artifact_tree_sha256` in `recall/embeddings.py` |
+
+What has **not**: the per-tenant `serving_mode` this document argues for, and strict refusal at read
+time. Everything below is otherwise unchanged, and remains a proposal with measured
 support for two of its claims. Section 6 answers the eleven questions an audit found it had left
 open; two of those answers change the design and one dissolves a question that rested on a
 falsified premise. Sections 6c and 6d then design the two attestations that were still missing.
@@ -21,7 +34,7 @@ a **tenant**.
 |---|---|---|
 | Server builds `GenerationStore` only in production | `recall_mcp/server.py:629` | confirmed |
 | Missing `generation_id` degrades to `"legacy"` | `recall_mcp/service.py:974` | confirmed. A second site uses the same default but maps it to `None` immediately after, so the two do not behave identically |
-| `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:891` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
+| `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:909` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
 | `calibration = None` is deliberate, and names an open design question | `recall/cli.py:2132-2143` | confirmed |
 | Legacy `chunks` has no `source_sha256` **column** | `recall/store.py:297` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
@@ -38,19 +51,38 @@ servable**. What `promote()` adds over calibration and serving is that it sets
 even that is not exclusive to it (see F2).
 
 **F2. The promotion gate does not hold the invariant it claims to hold.**
-`rollback()` (`recall/generations.py:962`) <!-- cite-anchor: def rollback --> writes the same `active_generation_id` column with **no
+`rollback()` (`recall/generations.py:980`) <!-- cite-anchor: def rollback --> writes the same `active_generation_id` column with **no
 environment check and no `unsafe_development` flag**, and its target may be in state `ready`
 (`recall/generations.py:988`) <!-- cite-anchor: GenerationState.RETIRED -->. So "no ungated generation becomes active in production" is not a
 property this system has. `promote()`'s message says the refusal stands "until certification gates
 land", which is accurate: it is a placeholder, not a safety property.
 
-🔁 **Closed 2026-08-20, and the finding is why the fix covers two functions rather than one.**
+🔁 **Closed 2026-08-20**, and then **partly reopened and re-closed the same day**, which is the more
+useful record.
+
 `promote()` now requires a calibration that is published, that certified, and whose pipeline and
-corpus fingerprints still match the generation — the gate its message had been promising. Building
-that into `promote()` alone would have left exactly the window this finding describes, so
-`rollback()` applies the same check in production. The invariant is now a property rather than a
-placeholder, and a mutation that removes the `rollback()` half is caught by
-`tests/test_calibration_v2.py::test_rollback_in_production_is_gated_by_the_same_certification`.
+corpus fingerprints still match the generation — the gate its message had been promising.
+
+⛔ **The first version of that fix also gated `rollback()`, and that was wrong.** The reasoning was
+this finding's own words: building the gate into `promote()` alone leaves the window open beside
+the new door. But section 6 decision 2, in this same document, had already settled the question the
+other way, and the fix was written without reading it. Three ways the refusal bit, each found
+independently in the audit: `forget()` bricked rollback permanently by making every calibration
+stale; upgrading bricked it, because every generation an existing install serves was promoted under
+`development` and has no published calibration; and there is no override to reach for, so the
+remaining routes are a mid-incident recalibration or flipping `RECALL_ENV`.
+
+**The resolution is that this finding named its invariant slightly wrong.** "No ungated generation
+becomes active in production" is not the property worth having, because rollback is the incident
+path and a refusal there buys nothing an operator will not route around. The property is **"no
+generation becomes active without the operator being told what they are activating"**, and rollback
+satisfies it by *reporting*: `generation_rolled_back` carries the resolved calibration status and an
+optional `provisional_reason`. Prevented, no; hidden, never.
+
+Pinned by `tests/test_calibration_v2.py::test_rollback_never_refuses_and_records_what_it_activated`,
+which replaced the test that pinned the reversed behaviour, and by
+`::test_a_rollback_onto_a_certified_target_records_no_provisional_reason`, so an undegraded rollback
+cannot start looking degraded.
 
 **F3. The legacy `chunks` table records enough to establish a binding, not merely assert one.**
 It has no `source_sha256` column, but `recall/index.py:861` stamps into every chunk's metadata:
@@ -65,8 +97,8 @@ the tree this was measured against: the fallback returned the literal string
 carried a 384 dimensional profile's id.
 
 🔁 **Fixed upstream, 2026-08-18, by #370**, which this measurement prompted. `_fallback_profile_id`
-(`recall/embeddings.py:802`) now derives `unregistered__{model}__{dimension}__{kind}`
-(`recall/embeddings.py:853`) instead of claiming a registry id it does not have.
+(`recall/embeddings.py:839`) now derives `unregistered__{model}__{dimension}__{kind}`
+(`recall/embeddings.py:890`) instead of claiming a registry id it does not have.
 
 ⚠️ **That does NOT restore `embedding_profile` as an adoption check, and the design still must not
 use it.** Every corpus indexed *before* #370 carries the old literal, which is exactly the
@@ -98,7 +130,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
    into `StoreRegistry` (`recall_mcp/stores.py:154`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:357`).
-5. **Promotion permission.** Production once refused `promote()` outright; it now requires a published, certified, still-bound calibration (`recall/generations.py:891`) <!-- cite-anchor: def promote -->. 🔁 Updated 2026-08-20.
+5. **Promotion permission.** Production once refused `promote()` outright; it now requires a published, certified, still-bound calibration (`recall/generations.py:909`) <!-- cite-anchor: def promote -->. 🔁 Updated 2026-08-20.
 6. **Generation creation.** Production requires a verified pipeline identity and refuses
    `allow_unverified` (`recall/generations.py:286`, `:288`), which an adopted generation cannot satisfy with
    an unpinned default embedder.

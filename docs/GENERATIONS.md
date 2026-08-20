@@ -68,15 +68,33 @@ Promotion updates active and previous pointers in one transaction. Searches pin 
 for the whole retrieval operation, so a concurrent promotion or rollback cannot mix generations.
 Rollback atomically restores the previous ready generation.
 
-Generation-bound calibration artifacts are documented in [CALIBRATION.md](CALIBRATION.md). Strict
-trust enforcement is delivered in the next implementation session. Until then, promotion is
-intentionally unavailable in production. Development requires the conspicuous
-`--unsafe-development-promotion` flag:
+Generation-bound calibration artifacts are documented in [CALIBRATION.md](CALIBRATION.md).
+
+**In production**, promotion requires the generation's calibration to resolve CERTIFIED, and
+`--unsafe-development-promotion` is refused there rather than honoured:
+
+```bash
+recall --tenant acme calibration calibrate --generation <generation-id> --queries labels.json --publish
+recall --tenant acme generation promote <generation-id>
+```
+
+**In development**, there is no calibration requirement and the conspicuous flag is mandatory,
+so the unchecked path always names itself:
 
 ```bash
 recall --tenant acme generation promote <generation-id> --unsafe-development-promotion
+```
+
+**Rollback is ungated in both**, because it is what an operator reaches for when the active
+generation is the problem. It records the target's calibration status and an optional reason
+instead of refusing (`docs/UNCALIBRATED_FIRST_RUN_DESIGN.md`, section 6):
+
+```bash
 recall --tenant acme generation rollback
 ```
+
+What is still deferred is strict refusal at **read** time: an active generation whose calibration is
+absent or stale still answers, marked uncalibrated.
 
 ## Retention and erasure
 
