@@ -1,6 +1,6 @@
 # Pre-registration: calibration carry-forward across a bounded corpus delta
 
-**Date:** 2026-08-20   **Status:** predicted, not yet measured
+**Date:** 2026-08-20   **Status:** measured 2026-08-20; every prediction below is unedited
 
 Tenant `memory` on VPS2 (`recall_repos`, port 55432), embedder `fastembed:BAAI/bge-large-en-v1.5`.
 
@@ -154,3 +154,131 @@ be claimed without demonstrating the red one first.
    itself a falsification of the mechanism, only of the clean form of the argument.
 5. **One tenant, one delta, one embedder.** Nothing here licenses a general claim about how large
    a delta a calibration survives. It measures 10.8% on `memory` with bge-large, and that is all.
+
+## Result (2026-08-20)
+
+**Status:** measured
+
+Measured on VPS2, tenant `memory`. Parent `gen_f15666c398f7488fbcdc9327ee0d24ae`
+(`memory-2026-08-17`), child `gen_c5c87c56c24048cb8b8e6296656150e5` (`memory-2026-08-20`), both
+built with `fastembed:BAAI/bge-large-en-v1.5`. The scoring pass wrote nothing and used only the
+code already deployed on that host, so it is independent of whether the carry-forward artifact
+path is installed.
+
+**Apparatus check, step 2, done before reading any calibration number.** The stored query set
+re-canonicalised to its digest `504255095b09fe01…`, 50 queries, and the child reports 1,149
+sources against the parent's 1,080. The negative control recorded in the prediction still holds:
+the parent generation does not retrieve `a-substring-test-for-a-directory-identity.md`.
+
+### The corpus delta, which the prediction had to estimate and the manifests now state
+
+| | predicted | measured |
+|---|---|---|
+| changed sources | 118 of 1,094 = **10.8%** | 69 added, 38 modified, 0 removed of 1,149 union = **9.31%** |
+
+The prediction's denominator counted this workstation's live stores; the measured one is the
+difference between the two committed manifests, which is the quantity the mechanism actually uses.
+They are close enough that the prediction was aimed at the right magnitude, and the difference is
+not a correction to anything: it is two different populations, counted on purpose.
+
+### P1. Carry-forward succeeds at this delta — **CONFIRMED**
+
+| | predicted | measured |
+|---|---|---|
+| separability CI lower bound | >= 0.94 | **0.9528** |
+| point separability | 0.96 to 0.99 | **0.9870** |
+
+Both inside the predicted band, and 0.9528 clears the 0.90 certification bar. The parent's own AUC
+was 0.9886, so the ordering degraded by 0.0016 across a 9.31% corpus delta.
+
+### P2. The direction of the error — **FALSIFIED, and the prediction named its own cause**
+
+| at the inherited threshold 0.712 | predicted | measured |
+|---|---|---|
+| false abstain, over 22 answerable | 0% to 4.5%, **can only fall** | **9.09%** (2 of 22) |
+| false confirm, over 28 unanswerable | 3.6% to 11%, can only rise | **3.57%** (1 of 28) |
+
+**False abstains doubled and false confirms did not move.** That is the opposite of the predicted
+direction on both halves.
+
+The argument was that a top-1 cosine is a max over the indexed set, so adding documents can only
+raise it. The argument is sound and the premise is false: **38 of the 107 changed sources were
+modifications, not additions**, and a modified file replaces its earlier text and re-chunks. A memo
+whose answering passage was rewritten, or merely split differently, can score lower than it did.
+The prediction stated this in advance as the thing that would explain a rise, so what is falsified
+is the monotonicity claim, not the diagnosis.
+
+The two near misses are both genuine answerable queries the child now abstains on:
+
+```
+0.6678  why did writing a file with python change every line ending
+0.7100  why did my branch look like it had regressed
+```
+
+The second misses the threshold by **0.0020**. A refit on the same scores chooses **0.707**, which
+would catch it. So the inherited threshold is now measurably worse on this corpus than a fresh fit,
+by one query, while still certifying — which is exactly the drift `refit_threshold` was added to
+make visible rather than to act on.
+
+**The single crosser is a real false confirm, not label rot.** The pre-registration named label rot
+as the dangerous confound and required every crosser to be read by hand. The one crosser is:
+
+```
+0.7158  how did the GraphQL schema migration affect latency
+```
+
+There is no GraphQL anywhere in these projects, so the `answerable: false` label is still correct
+and this is an honest false confirm rather than a query the new memos started answering. The
+confound was checked and did not fire.
+
+### P3. The rebuild is cheap now — **CONFIRMED, both parts**
+
+| | predicted | measured |
+|---|---|---|
+| sources reused | >= 89% | **1,042 of 1,149 = 90.7%** |
+| child wall clock as a fraction of the parent's | <= 15% | **73.2 min / 722 min = 10.1%** |
+
+The reuse count is exactly `1,149 - 107`, i.e. every unchanged source was copied and every changed
+one re-embedded, with nothing else touched. Parent wall clock is taken from
+`generation_build.log`'s create-to-last-write span (2026-08-17 09:28:25Z to 21:30:35Z), not from
+`ready_at`, which includes a `validate` run started the following day and would have overstated it
+at 1,422 minutes.
+
+**The warning in `bin/build_generation.sh` is now obsolete and should be corrected in place**: it
+says the build re-embeds all 1,080 files, which was true only while the corpus lived in the legacy
+`chunks` table with no generation to reuse from.
+
+### P4. The mechanism is needed at all — **CONFIRMED**
+
+```
+gen_f15666c398f7488fbcdc9327ee0d24ae  status=certified  artifact=cal_17ae06a8eb5a4504a06ac3e2565dc880
+gen_c5c87c56c24048cb8b8e6296656150e5  status=stale      artifact=None
+failure code for the child: CALIBRATION_STALE
+```
+
+Measured before any new code was installed. Strict policy refuses every query against the child.
+
+### What the implemented mechanism decides on these numbers
+
+Certified. Separability CI low 0.9528 >= 0.90, false abstain 0.0909 <= 0.10, false confirm
+0.0357 <= 0.10. **The false-abstain rate sits at 91% of its bound**, so on this trajectory the next
+comparable delta is the one that fails, and that is the intended behaviour rather than a margin to
+be widened.
+
+### The gap that teaches something
+
+The prediction treated a corpus delta as a single quantity and reasoned about it as if it were all
+additions. It is not: **additions and modifications move the error in opposite directions**, and
+only additions are monotone. 69 additions pushed false confirms up, 38 modifications pushed false
+abstains up, and the two effects landed on different classes. A delta bound that does not separate
+them cannot predict which way a threshold will fail, and `corpus_delta` as implemented returns the
+counts separately for exactly this reason, even though the bound is applied to their sum.
+
+### Not measured here, and it matters more than any number above
+
+The live MCP servers on VPS2 query tenant `memory` with **`voyage:voyage-4`**, while the legacy
+`chunks` table those servers read holds **8,716 chunks under `bge-small-symmetric-v1`** and 2 under
+`voyage:voyage-4`, and the calibrated generation measured above is **`bge-large`**. Three models on
+one tenant, all at 1,024 dimensions, so nothing raises. Every number in this record concerns the
+bge-large generation path and says nothing about what those servers currently return. Recorded here
+because a green carry-forward result must not be read as "vps2 memory search is working".
