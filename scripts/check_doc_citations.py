@@ -112,6 +112,60 @@ def git(*args: str) -> str:
     return result.stdout.decode("utf-8", errors="replace")
 
 
+def dirty_paths() -> frozenset[str]:
+    """Every path git reports as not clean, from ONE `status` call.
+
+    **This is one spawn, and it used to be one per document.** That is the whole point of the
+    function existing rather than the call sitting inline in the loop. Process creation on Windows
+    is this checker's entire cost: measured 2026-08-20 on a 12 core machine, 178 spawns at 141ms
+    each, with 98% of wall clock inside `subprocess.run` and only 7.4% of it burnt as this
+    process's own CPU. The 61 per-document `status` calls were 8.6s of a 23s run; the single call
+    replacing them takes 0.12s.
+
+    That mattered beyond tidiness, because the cost is not linear in load. Under 12 way CPU
+    saturation the same run took 289s rather than 25s, an 11.6x degradation driven by how badly
+    Windows process and thread creation starve: `threading.Thread.start()` alone went from 0.37ms
+    to 51.65ms median, and every `capture_output=True` call starts reader threads. Since
+    `tests/test_doc_citations.py` carries no timeout of its own it runs under the 120s default, so
+    a loaded machine turned this into a killed run whose stack landed in `Thread.start()` and read
+    exactly like a deadlock. It was not one; it was starvation.
+
+    ⚠️ **`--porcelain -z`, not `--porcelain`.** The NUL form is unambiguous: without it, a path
+    containing a space or a non ASCII byte is quoted and escaped according to `core.quotepath`, so
+    the membership test below would silently miss exactly the paths hardest to notice by eye.
+
+    ⚠️ **`-uall`, because the per document call this replaced had a pathspec and this one does not.**
+    Asked about the whole tree, git COLLAPSES untracked directories: a new `docs/notes/` full of
+    documents is reported as the single entry `docs/notes/`, and no document inside it would match
+    the membership test. Asked about one file, the pathspec forced git to name that file. `-uall`
+    is what makes the batched question equivalent to the 61 questions it replaced, and it is free
+    here: measured at 0.40s either way on this repository.
+
+    A rename or copy puts the ORIGINAL path in the following NUL field, and both names are recorded
+    here. Being in this set means "do not check this document", so naming both is the conservative
+    direction: the alternative is checking a document against a baseline that no longer describes
+    it.
+    """
+    fields = [field for field in git("status", "--porcelain", "-z", "-uall").split("\0") if field]
+    paths: set[str] = set()
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        # `XY <path>`: two status characters, a space, then the path.
+        if len(entry) < 4:
+            index += 1
+            continue
+        code, path = entry[:2], entry[3:]
+        paths.add(path)
+        if "R" in code or "C" in code:
+            if index + 1 < len(fields):
+                paths.add(fields[index + 1])
+            index += 2
+            continue
+        index += 1
+    return frozenset(paths)
+
+
 def load_policy() -> tuple[list[dict], list[dict]]:
     if not POLICY.exists():
         return [], []
@@ -179,6 +233,8 @@ def check() -> tuple[list[Finding], list[str]]:
     docs = sorted({p for p in (REPO / "docs").rglob("*.md")} | set(REPO.glob("*.md")))
     findings: list[Finding] = []
     skipped: list[str] = []
+    # Asked ONCE, before the loop. See `dirty_paths`: this replaced one `git status` per document.
+    dirty = dirty_paths()
     cache: dict[tuple[str, str], list[tuple[int, int, int, int]] | None] = {}
 
     for doc in docs:
@@ -211,7 +267,7 @@ def check() -> tuple[list[Finding], list[str]]:
         # drift for citations that were just repaired against the current tree. Measured while
         # building this: six citations corrected by hand were all reported stale, and all six
         # findings vanished on commit. CI always has a clean tree, so nothing is lost there.
-        if git("status", "--porcelain", "--", rel).strip():
+        if rel in dirty:
             skipped.append(rel)
             continue
 
