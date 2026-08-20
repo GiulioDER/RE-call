@@ -348,8 +348,9 @@ def write_runtime_profile(
 #: The environment variable Claude Code uses to relocate the directory it writes config into.
 #:
 #: ⚠️ **Undocumented, and real.** It appears in neither `code.claude.com/docs/en/settings` nor the
-#: CLI reference (both checked 2026-08-20), but the installed client binary contains it, next to its
-#: own advice: "Use `CLAUDE_CONFIG_DIR=/tmp` for ephemeral local writes with external mirroring".
+#: CLI reference (both checked 2026-08-20). The installed client binary contains it beside its own
+#: advice, "Use `CLAUDE_CONFIG_DIR=/tmp` for ephemeral local writes with external mirroring", and
+#: the client demonstrably honours it: see `claude_config_path` for the measurement.
 CLAUDE_CONFIG_DIR = "CLAUDE_CONFIG_DIR"
 
 
@@ -365,12 +366,25 @@ def claude_config_path() -> Path:
     them substitutes this collaborator and so can only assert that it was called, not that it was
     called correctly.
 
-    ⚠️ **Where `.claude.json` lands under that variable is INFERRED, not documented.** The docs say
-    it lives at `~/.claude.json`, a sibling of `~/.claude/`, and say nothing about relocation. Two
-    readings were possible; this takes the one the binary's own example implies, where the variable
-    names the directory config is written INTO. If that turns out to be wrong, the symptom is the
-    same silent one, so it is worth re-checking against a real relocated install rather than trusting
-    this note.
+    **The variable is undocumented; the layout is MEASURED.** Those are separate claims and the
+    first version of this note ran them together as "inferred".
+
+    Undocumented: it appears in neither `code.claude.com/docs/en/settings` nor the CLI reference
+    (2026-08-20), and the settings page says `.claude.json` lives at `~/.claude.json`, a SIBLING of
+    `~/.claude/`, with nothing about relocation. So the documented layout argues AGAINST what this
+    function does, which is why it is worth writing down.
+
+    Measured: seed both candidate layouts with distinctly named user-scope servers, point
+    `CLAUDE_CONFIG_DIR` at a temporary directory, and ask the client what it can see.
+
+        saw INSIDE probe  : True     <- .claude.json inside the configured directory
+        saw SIBLING probe : False    <- .claude.json beside it, the documented home layout
+
+    Run twice on 2026-08-20, once by the user-acquisition session and once here, independently. That
+    is the client's own behaviour rather than a reading of a help string, and it is what a claim
+    with a silent failure mode needs. ⚠️ Filter such a probe by the PROBE NAMES: a project-scoped
+    `.mcp.json` in the working directory is read whatever the config dir is, and would otherwise
+    look like a positive.
     """
     configured = os.environ.get(CLAUDE_CONFIG_DIR, "").strip()
     if configured:

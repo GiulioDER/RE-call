@@ -898,10 +898,10 @@ def test_the_default_config_path_follows_a_relocated_config_directory(
     reintroduced at its own default.
 
     ⚠️ The variable is UNDOCUMENTED — absent from `code.claude.com/docs/en/settings` and the CLI
-    reference, both checked 2026-08-20 — and real: the installed client binary contains it beside
-    its own example, "Use `CLAUDE_CONFIG_DIR=/tmp` for ephemeral local writes". Where `.claude.json`
-    lands under it is INFERRED from that example, not documented, which is why this test pins the
-    behaviour rather than leaving it to a reading.
+    reference, both checked 2026-08-20, whose stated layout puts `.claude.json` BESIDE `~/.claude/`
+    rather than inside it. The placement here is not a reading of that: it is measured. Seeding both
+    candidate layouts and asking `claude mcp list` which one it sees answers INSIDE=True,
+    SIBLING=False, run independently by two sessions on 2026-08-20.
 
     Found by the user-acquisition session end to end, past six of their own passing tests: every one
     substitutes this collaborator, so they can assert it was called and not that it was called
