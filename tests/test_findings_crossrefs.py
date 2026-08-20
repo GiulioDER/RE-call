@@ -56,6 +56,11 @@ EXPECTED: dict[str, tuple[str, str]] = {
     # Cited by SUITE-DESIGN.md and CHANGELOG.md as the source of the BEAM reproduce commands —
     # the evidence tier those documents now rest on, since the per-question dumps are gitignored.
     "9e": ("FINDINGS", "headline numbers actually are"),
+    # Cited from docs/AGENT_MEMORY_FIELD_REVIEW.md, which rests on §9f for the argument that a
+    # competitor's LoCoMo headline and ours are different quantities rather than two values of one.
+    # This is the label the module docstring names as the cause of the original re-lettering
+    # incident, so it is the one most worth keeping pinned.
+    "9f": ("FINDINGS", "not the same measurement"),
     "9g": ("FINDINGS", "hosted embedder"),
     "9h": ("FINDINGS", "abstention category is a hallucination test"),
     "9i": ("FINDINGS", "the count rule does not pay"),
