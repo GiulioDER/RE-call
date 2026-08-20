@@ -2153,7 +2153,13 @@ def generation_ingest(
             chunker,
         )
         manager.validate(generation.generation_id)
-        manager.promote(generation.generation_id, unsafe_development=True)
+        # ⚠️ Development-only flag; see `GenerationManager.promote`. A desktop upload to a
+        # production tenant now reaches the certification gate rather than being refused for
+        # carrying a flag, which is the whole point of the gate existing.
+        manager.promote(
+            generation.generation_id,
+            unsafe_development=manager.environment != "production",
+        )
     except Exception:
         raise
     return IndexResult(

@@ -843,12 +843,62 @@ class GenerationManager:
                 pass
             raise
 
+    def require_certified_for_production(self, generation_id: str) -> None:
+        """Refuse unless `generation_id` is backed by a PUBLISHED, CERTIFIED, still-bound calibration.
+
+        This is the gate `promote`'s old message promised — "unavailable in production until
+        certification gates land" — and it is deliberately built from the machinery that already
+        exists rather than a new notion of certified. `CalibrationRepository.resolve` answers
+        exactly the question being asked: is there a calibration for this generation that is
+        published, that certified, and whose pipeline and corpus fingerprints still match the
+        generation as it stands now. A calibration that certified against a corpus which has since
+        changed resolves as STALE, which is the case a naive "does a published row exist" check
+        would wave through.
+
+        ⚠️ **The status is reported, not flattened to a boolean.** MISSING, DRAFT, UNCERTIFIED and
+        STALE need four different actions from whoever hit this — calibrate, publish, re-calibrate,
+        re-calibrate against the current corpus — and a gate that says only "no" sends them to guess.
+
+        Imported lazily. `recall.calibration_v2` does not import this module today, so a top-level
+        import would work, but the calibration layer is the higher one and making the generation
+        layer depend on it at import time invites the cycle later.
+        """
+        from recall.calibration_v2 import CalibrationRepository, CalibrationStatus
+
+        from recall.calibration_v2 import CalibrationBindingError
+
+        try:
+            resolution = CalibrationRepository(
+                self._dsn, self.tenant_id, actor=self.actor
+            ).resolve(generation_id)
+        except CalibrationBindingError as exc:
+            # Translated rather than propagated. Callers of `promote` and `rollback` handle
+            # `UnsafePromotion`; a binding error escaping from two layers down is a different
+            # contract for the same refusal, and the reason is the same either way — this
+            # generation is not backed by a calibration that can carry it into production.
+            raise UnsafePromotion(
+                f"generation {generation_id} cannot go live in production: {exc}"
+            ) from exc
+        if resolution.status is CalibrationStatus.CERTIFIED:
+            return
+        raise UnsafePromotion(
+            f"generation {generation_id} cannot go live in production: its calibration is "
+            f"{resolution.status.value}. Production serves only a generation whose published "
+            f"calibration certified and is still bound to this pipeline and corpus. Run "
+            f"`recall calibration calibrate --generation {generation_id} --queries FILE --publish`."
+        )
+
     def promote(self, generation_id: str, *, unsafe_development: bool = False) -> None:
         if self.environment == "production":
-            raise UnsafePromotion(
-                "generation promotion is unavailable in production until certification gates land"
-            )
-        if not unsafe_development:
+            # ⛔ **`unsafe_development` does not open this door.** Refused here rather than after
+            # the certification check, so a caller cannot learn that the flag would otherwise have
+            # worked. The production path has exactly one way through: a certified calibration.
+            if unsafe_development:
+                raise UnsafePromotion(
+                    "unsafe_development is unavailable in production; promotion there requires a "
+                    "published, certified calibration bound to this generation"
+                )
+        elif not unsafe_development:
             raise UnsafePromotion("development promotion requires unsafe_development=True")
         with self._connect() as conn, conn.transaction():
             conn.execute(
@@ -866,6 +916,14 @@ class GenerationManager:
                 raise InvalidGenerationTransition(
                     f"promotion requires ready state, found {target.state.value}"
                 )
+            # ⚠️ **After the existence and state checks, deliberately.** Run first, the gate answered
+            # a missing generation with `CalibrationBindingError: generation ... does not exist` and
+            # a mid-build one with the same, replacing `GenerationNotFound` and
+            # `InvalidGenerationTransition` — three different problems arriving as one unrelated
+            # exception type. Measured before this was moved. Ordering the cheap, specific checks
+            # first keeps each failure named by the thing that actually failed.
+            if self.environment == "production":
+                self.require_certified_for_production(generation_id)
             active = str(state[0]) if state and state[0] else None
             if active:
                 conn.execute(
@@ -886,14 +944,36 @@ class GenerationManager:
                 "WHERE tenant_id = %s",
                 (generation_id, active, self.tenant_id),
             )
+            # Two paths reach here and they are not the same event. Recording a certified
+            # production promotion as `..._unsafe_development` would make the audit trail say the
+            # opposite of what happened, and the audit trail is the artefact that outlives everyone
+            # who remembers the code.
             self._audit(
                 conn,
-                "generation_promoted_unsafe_development",
+                (
+                    "generation_promoted_certified"
+                    if self.environment == "production"
+                    else "generation_promoted_unsafe_development"
+                ),
                 generation_id=generation_id,
                 payload={"previous_generation_id": active},
             )
 
     def rollback(self) -> str:
+        """Return the tenant to its previous generation, under the same gate as promotion.
+
+        ⛔ **This used to have no environment check and no flag at all**, while `promote` refused
+        production outright — so "no ungated generation becomes active in production" was not a
+        property this system had. `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md` records it as finding F2:
+        rollback writes the same `active_generation_id` column, and its target may be in state
+        `ready`, meaning a generation that never passed a gate could be made live by rolling
+        "back" to it.
+
+        Building the certification gate into `promote` alone would have left that window open
+        beside the new door, so the same check applies here. Rollback is the safety valve and must
+        stay usable, which is why the gate is the same one rather than a stricter one: a generation
+        that was certified and is still bound can be returned to.
+        """
         with self._connect() as conn, conn.transaction():
             state = conn.execute(
                 "SELECT active_generation_id, previous_generation_id "
@@ -909,6 +989,8 @@ class GenerationManager:
                 raise InvalidGenerationTransition(
                     f"rollback target is {target.state.value}, expected retired or ready"
                 )
+            if self.environment == "production":
+                self.require_certified_for_production(previous)
             if active:
                 conn.execute(
                     "UPDATE recall_generations SET state = 'ready', retired_at = NULL "

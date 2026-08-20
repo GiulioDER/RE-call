@@ -27,7 +27,7 @@ from recall.calibration_v2 import (
 )
 from recall.cli import main as cli_main
 from recall.generation_store import GenerationStore
-from recall.generations import GenerationManager
+from recall.generations import GenerationManager, UnsafePromotion
 from recall.trust import trusted_search
 from recall_mcp.service import search_memory
 from tests.conftest import TEST_DSN, requires_db
@@ -556,3 +556,157 @@ def test_the_remediation_example_is_advice_the_guard_itself_accepts() -> None:
         assert datetime.fromisoformat(suggestion) == datetime.fromisoformat(naive).replace(
             tzinfo=UTC
         )
+
+
+# ----------------------------------------------------------------------------------------------
+# The production certification gate
+# ----------------------------------------------------------------------------------------------
+
+
+def _production(manager: GenerationManager) -> GenerationManager:
+    """The same tenant and database, seen as production."""
+    return GenerationManager(
+        TEST_DSN, manager.tenant_id, actor="pytest", environment="production"
+    )
+
+
+@requires_db
+def test_a_certified_generation_promotes_in_production(calibration_tenant) -> None:
+    """⛔ **The half that makes this a gate rather than a wall.**
+
+    `promote` used to refuse production outright — "unavailable until certification gates land" —
+    so the desktop could build a generation and never activate it. A replacement that refuses
+    everything is the same placeholder with a longer message, so this is the test that has to pass:
+    a generation whose calibration certified, published, and is still bound goes live.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+    artifact = repository.calibrate(generation_id, _labels(), embedder)
+    repository.publish(artifact.calibration_id)
+
+    _production(manager).promote(generation_id)
+
+    assert repository.resolve(generation_id).status == CalibrationStatus.CERTIFIED
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        active = conn.execute(
+            "SELECT active_generation_id FROM recall_tenant_state WHERE tenant_id = %s",
+            (tenant,),
+        ).fetchone()
+        state = conn.execute(
+            "SELECT state FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
+            (tenant, generation_id),
+        ).fetchone()
+    assert active is not None and active[0] == generation_id, "the tenant must be serving it"
+    assert state is not None and state[0] == "active"
+
+
+@requires_db
+def test_an_uncertified_generation_is_refused_and_told_which_precondition_failed(
+    calibration_tenant,
+) -> None:
+    """MISSING, DRAFT, UNCERTIFIED and STALE need four different actions from the reader.
+
+    A gate that says only "no" sends them to guess, so the status is carried into the message
+    rather than flattened to a boolean.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+    production = _production(manager)
+
+    # Nothing calibrated yet.
+    with pytest.raises(UnsafePromotion, match="missing"):
+        production.promote(generation_id)
+
+    # Calibrated but not published: a draft is not a licence to serve.
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+    artifact = repository.calibrate(generation_id, _labels(), embedder)
+    with pytest.raises(UnsafePromotion, match="draft") as caught:
+        production.promote(generation_id)
+    assert "recall calibration calibrate" in str(caught.value), (
+        "a refusal without a remedy is only half the report"
+    )
+
+    repository.publish(artifact.calibration_id)
+    production.promote(generation_id)
+
+
+@requires_db
+def test_the_unsafe_development_flag_does_not_open_the_production_door(
+    calibration_tenant,
+) -> None:
+    """⛔ The flag exists for development and must not be a way past certification.
+
+    Refused BEFORE the certification check, so a caller cannot discover that the flag would
+    otherwise have worked on an uncertified generation.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+    artifact = repository.calibrate(generation_id, _labels(), embedder)
+    repository.publish(artifact.calibration_id)
+
+    with pytest.raises(UnsafePromotion, match="unsafe_development is unavailable in production"):
+        _production(manager).promote(generation_id, unsafe_development=True)
+
+
+@requires_db
+def test_rollback_in_production_is_gated_by_the_same_certification(calibration_tenant) -> None:
+    """⛔ **F2: rollback wrote the same column with no environment check and no flag.**
+
+    `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md` records this as the reason "no ungated generation
+    becomes active in production" was not a property this system had: rollback's target may be in
+    state `ready`, so a generation that never passed a gate could be made live by rolling "back" to
+    it. Building the gate into `promote` alone would have left that window open beside the new door.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+
+    first = _ready(manager, embedder, b"answer corpus", "v1")
+    published = repository.calibrate(first, _labels(), embedder)
+    repository.publish(published.calibration_id)
+    production = _production(manager)
+    production.promote(first)
+
+    # A second generation, certified, so it can legitimately take over.
+    second = _ready(manager, embedder, b"answer corpus two", "v2")
+    second_artifact = repository.calibrate(second, _labels(), embedder)
+    repository.publish(second_artifact.calibration_id)
+    production.promote(second)
+
+    # Rolling back to the first is allowed: it certified and is still bound.
+    assert production.rollback() == first
+
+    # Now break the first one's binding by rejecting its calibration, and rollback must refuse.
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        conn.execute(
+            "UPDATE recall_calibrations SET lifecycle_state = 'superseded' "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (tenant, second),
+        )
+    with pytest.raises(UnsafePromotion):
+        production.rollback()
+
+
+@requires_db
+def test_development_promotion_is_unchanged_by_the_gate(calibration_tenant) -> None:
+    """The gate is production-only. Development still promotes uncertified, with the flag.
+
+    Worth pinning: a gate that quietly tightened development would break every local install and
+    every test that builds a corpus without calibrating one.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+
+    manager.promote(generation_id, unsafe_development=True)
+
+    assert CalibrationRepository(TEST_DSN, tenant, actor="pytest").resolve(
+        generation_id
+    ).status == CalibrationStatus.MISSING, "promoted with no calibration at all, as before"

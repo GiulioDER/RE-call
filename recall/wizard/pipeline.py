@@ -384,7 +384,14 @@ def run_corpus(
     if certified:
         announce("promote")
         try:
-            manager.promote(generation_id, unsafe_development=True)
+            # ⚠️ The flag is a DEVELOPMENT requirement and a PRODUCTION refusal, so it cannot be
+            # passed unconditionally. In production the certification gate decides instead, and
+            # passing the flag there raises before the gate is ever consulted. This branch is only
+            # reached when the corpus certified, which is the same thing the gate checks.
+            manager.promote(
+                generation_id,
+                unsafe_development=manager.environment != "production",
+            )
         except BaseException as exc:
             _fail("promote", exc)
             raise
