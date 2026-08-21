@@ -269,6 +269,37 @@ Both arms run against a pgvector container on a per worktree port bound to `127.
 5432: the default compose file binds it on all interfaces and it has previously resolved to a native
 Postgres on this machine, producing false reds.
 
+## Correction appended 2026-08-21: the instrument holds 37 distinct rows, not 38
+
+**Nothing above this line is edited.** Every count, interval and citation above stands as written
+on 2026-08-14, including the ones this section contradicts, because what they record is what was
+believed before either arm ran. The correction goes underneath.
+
+Two things moved under this document while it sat unmerged, both in
+`benchmarks/labelling/truth_extraction/adjudication.csv`.
+
+**A1 is effectively done.** The table above records "adjudication rows, currently unlabelled | 38".
+37 of the 38 now carry a verdict: Y=10, N=27.
+
+**The 38th is a duplicate, and it is the blank one.** Item 7 and item 29 carry a byte-identical
+`evidence_sentence` and the same `candidate_target` (`pep-0324`). Item 29 is labelled `N`, item 7
+is unlabelled. The file has 38 rows and **37 distinct (evidence, target) pairs**, so every distinct
+row already has a verdict.
+
+Consequence for scoring, which is not a rewrite of any prediction above: wherever this document
+says the precision instrument is **38 rows**, the denominator actually available is **37**. P4's
+interval, invariant I8's non vacuity check and the upper falsifier at 0.95 are all stated against
+38 and should be **scored against 37 with the gap noted**, never by changing the number above.
+
+One more property of the frozen input, recorded before anyone reads the evidence column literally:
+4 of the 38 sentences (items 7, 14, 29, 30) begin with a stray `'+ ` or `'- `, which is diff
+context that survived extraction. Two of those four are already labelled, so the labeller coped,
+but the artefact is in the instrument rather than in a rendering of it.
+
+**Item 7 is deliberately still blank.** It needs a human verdict, or a deliberate decision to drop
+it as a duplicate of item 29. This instrument's whole value is that its negatives are not model
+produced, so a verdict supplied by the thing under measurement would destroy what it measures.
+
 ---
 
 ## Result
