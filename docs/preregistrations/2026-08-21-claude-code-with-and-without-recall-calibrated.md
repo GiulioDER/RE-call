@@ -105,6 +105,29 @@ repository whose memory this is", and no further.
 inventory and pointers to credential files. No transcript is published unreviewed; the preferred
 route is a rerun against a filtered corpus.
 
+## Deviation, recorded 2026-08-21 while the headline run was still executing
+
+**Nothing above is edited.** The design section says 10 tasks and 5 repetitions for both
+comparisons. The **ceiling** comparison (`recall` vs `bare`) will run at **3 repetitions**, not 5.
+The **headline** comparison (`recall` vs `claude_md`) is unchanged at 5 and was already executing
+when this was written.
+
+Reason, stated before the data exists: the measured session rate is about 1.8 minutes, so the
+ceiling comparison at 5 repetitions is roughly three hours of wall clock, and the two comparisons
+cannot be run concurrently because **wall time is one of the endpoints** and CPU contention would
+corrupt it in both. The ceiling is the secondary comparison; it bounds how much of the headline gap
+is attributable to memory at all, and it does not need the headline's precision to do that.
+
+What this costs, so the weaker number is not read as an equal one: 3 repetitions over 4
+`memory_only` tasks is **12 pairs** against the headline's 20. That clears the 6-pair floor in
+`benchmarks/agent_ab/stats.py`, so the exact test can still reach significance on a clean effect,
+but the ceiling comparison has less power and a wider interval than the headline, and any null in
+it is correspondingly weaker evidence. The `both` and `claude_md_only` controls drop to 12 pairs
+each on the same terms.
+
+No endpoint, task, arm, detector or prediction changes. Only the repetition count of the secondary
+comparison, and only downward.
+
 ## Result
 
 *Not yet run. Appended below when it is, without editing anything above.*
