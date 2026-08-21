@@ -2431,9 +2431,9 @@ def main(argv: list[str] | None = None) -> None:
                 screen = (
                     DRIFT_SCREEN_DELTA if args.screen_delta is None else args.screen_delta
                 )
-                # The embedder is built only where it is used. A screen-only run over a directory
-                # must not pay to load a model, and on a machine with no cached weights that cost
-                # is a download rather than a second.
+                # A FACTORY, not an embedder. `evaluate_drift` calls it only if it reaches the
+                # probe, so a delta below the screen (the common case on a live corpus) costs no
+                # model load at all: seconds on a warm machine, a download on a cold one.
                 probing = args.probe and args.generation is not None
                 report = evaluate_drift(
                     repository,
@@ -2444,7 +2444,7 @@ def main(argv: list[str] | None = None) -> None:
                         else None
                     ),
                     candidate_label=args.path or args.generation,
-                    embedder=_make_embedder(args.embedder) if probing else None,
+                    embedder=(lambda: _make_embedder(args.embedder)) if probing else None,
                     screen_delta=screen,
                     probe=args.probe,
                 )

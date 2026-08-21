@@ -33,7 +33,7 @@ cut, each rate over its own denominator. See `memory/separability-cannot-see-a-s
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -318,7 +318,11 @@ def evaluate_drift(
     generation_id: str | None = None,
     corpus_objects: Sequence[Mapping[str, Any]] | None = None,
     candidate_label: str | None = None,
-    embedder: Embedder | None = None,
+    #: An embedder, or a callable that builds one. The callable form exists so the SCREEN really
+    #: is free: loading model weights costs seconds on a warm machine and a download on a cold
+    #: one, and the common case by far is a delta below the screen where no probe is run at all.
+    #: Passing an already-built embedder is still fine and is what a caller that has one should do.
+    embedder: "Embedder | Callable[[], Embedder] | None" = None,
     screen_delta: float = DRIFT_SCREEN_DELTA,
     required_delta: float = DRIFT_REQUIRED_DELTA,
     max_error: float = DEFAULT_MAX_CARRY_FORWARD_ERROR,
@@ -433,8 +437,11 @@ def evaluate_drift(
             **common,
         )
 
+    # Resolved HERE and nowhere earlier: every return above this line is a verdict reached without
+    # a model, which is the property that makes running this after every rebuild affordable.
+    resolved = embedder() if callable(embedder) else embedder
     try:
-        measured = _probe(repository, artifact, generation_id, embedder, max_error=max_error)
+        measured = _probe(repository, artifact, generation_id, resolved, max_error=max_error)
     except CalibrationError as exc:
         # The decisive check could not be made, which is a RECOMMENDATION and never a verdict of
         # its own. Reported rather than raised because the caller is usually a monitor: a stored
