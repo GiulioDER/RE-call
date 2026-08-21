@@ -4101,6 +4101,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+agent-ab = [
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
 bench = [
     { name = "mem0ai" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -4230,6 +4234,7 @@ requires-dist = [
     { name = "python-oxmsg", marker = "extra == 'documents'", specifier = ">=0.0.2" },
     { name = "python-pptx", marker = "extra == 'documents'", specifier = ">=1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16,<0.17" },
+    { name = "scipy", marker = "extra == 'agent-ab'", specifier = ">=1.11" },
     { name = "sentence-transformers", marker = "extra == 'entail'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'finetune'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'rerank'", specifier = ">=3.0" },
@@ -4238,7 +4243,7 @@ requires-dist = [
     { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.2.2" },
     { name = "xlrd", marker = "extra == 'documents'", specifier = ">=2.0" },
 ]
-provides-extras = ["fastembed", "documents", "pool", "mcp", "voyage", "openai", "s3", "sparse", "rerank", "entail", "eval", "extract", "finetune", "langchain", "llamaindex", "bench", "dev", "desktop"]
+provides-extras = ["fastembed", "agent-ab", "documents", "pool", "mcp", "voyage", "openai", "s3", "sparse", "rerank", "entail", "eval", "extract", "finetune", "langchain", "llamaindex", "bench", "dev", "desktop"]
 
 [[package]]
 name = "referencing"

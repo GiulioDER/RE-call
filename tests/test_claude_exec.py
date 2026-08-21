@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import gzip
 import json
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,11 +22,18 @@ from benchmarks.agent_ab.claude_exec import (
     ClaudeTranscriptError,
     build_record,
     init_event,
+    resolve_claude_executable,
     parse_claude_stream_json,
     transcript_fields,
 )
 from benchmarks.agent_ab.gate import admit_pairs, check_session
 from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON, SessionRecord
+
+#: Any existing absolute path satisfies `resolve_claude_executable`, which short-circuits
+#: before it consults PATH. Using the running interpreter keeps these tests about the
+#: command that gets built rather than about whether Claude Code happens to be installed:
+#: on CI it is not, and three of these failed for that reason alone.
+EXECUTABLE = sys.executable
 
 FIXTURES = Path(__file__).parent / "fixtures" / "agent_ab"
 BARE_TOOLS = FIXTURES / "claude_bare_tools.jsonl"
@@ -59,17 +68,13 @@ def _record(path: Path, variant: str = RECALL_ON, **kwargs) -> SessionRecord:
 
 def test_command_puts_prompt_after_flags_and_never_uses_a_shell() -> None:
     config = ClaudeExecConfig(
-        model="anthropic/claude-haiku-4.5",
+        executable=EXECUTABLE, model="anthropic/claude-haiku-4.5",
         mcp_config='{"mcpServers":{}}',
         allowed_tools=("Bash", "mcp__recall-memory__recall_search"),
         disallowed_tools=("Bash(docker *)",),
         permission_mode="dontAsk",
     )
     command = config.command("do the thing")
-    # Resolved to a real binary, never left as the npm batch shim: `create_subprocess_exec` takes
-    # an argv list and starts no shell, so a `.cmd` wrapper cannot be executed at all.
-    assert Path(command[0]).stem.lower() == "claude"
-    assert Path(command[0]).suffix.lower() not in {".cmd", ".bat", ".ps1"}
     assert "--bare" in command
     assert command[command.index("-p") + 1] == "do the thing"
     assert command[command.index("--output-format") + 1] == "stream-json"
@@ -81,12 +86,27 @@ def test_command_puts_prompt_after_flags_and_never_uses_a_shell() -> None:
     assert command[command.index("--disallowed-tools") + 1] == "Bash(docker *)"
 
 
+@pytest.mark.skipif(shutil.which("claude") is None, reason="Claude Code is not installed here")
+def test_the_npm_shim_is_resolved_to_a_native_binary() -> None:
+    """A `.cmd` wrapper cannot be started at all, so resolution must reach the real executable.
+
+    `create_subprocess_exec` takes an argv list and starts no shell, which is the property that
+    stops a task prompt becoming a command. That is also why the npm batch shim is unusable and
+    must be resolved past. Skipped rather than failed where Claude Code is absent: on a runner
+    without it this asserts something about the machine, not about the code.
+    """
+
+    resolved = Path(resolve_claude_executable())
+    assert resolved.stem.lower() == "claude"
+    assert resolved.suffix.lower() not in {".cmd", ".bat", ".ps1"}
+
+
 def test_strict_mcp_config_without_a_config_must_be_stated_explicitly() -> None:
     # The combination is legitimate for the off arm and catastrophic for the on arm, and the two
     # look identical on the command line, so it may not be reached by defaulting.
     with pytest.raises(ValueError, match="no MCP servers"):
-        ClaudeExecConfig(strict_mcp_config=True, mcp_config=None)
-    assert ClaudeExecConfig(strict_mcp_config=False).command("x")
+        ClaudeExecConfig(executable=EXECUTABLE, strict_mcp_config=True, mcp_config=None)
+    assert ClaudeExecConfig(executable=EXECUTABLE, strict_mcp_config=False).command("x")
 
 
 # --------------------------------------------------------------------------- stream parsing

@@ -262,6 +262,12 @@ class TranscriptFields:
     subagent_tool_calls: int
 
 
+#: One tool call as it is assembled from the stream. The values are genuinely heterogeneous
+#: (name, id, text output, a bool, a float latency, None), so this is `Any` on purpose rather
+#: than a union that every read site would have to narrow.
+ToolCall = dict[str, Any]
+
+
 def transcript_fields(
     events: Sequence[Mapping[str, Any]],
     *,
@@ -270,7 +276,7 @@ def transcript_fields(
     """Reconstruct conversation, tool calls, RE-call usage and failures from the stream."""
 
     # tool_use_id -> the call, so a result can find its call however far away it lands.
-    calls: dict[str, dict[str, Any]] = {}
+    calls: dict[str, ToolCall] = {}
     order: list[str] = []
     conversation: list[dict[str, Any]] = []
     response = ""
@@ -288,7 +294,7 @@ def transcript_fields(
                     continue
                 call_id = str(block.get("id") or f"call-{len(order)}")
                 arguments = block.get("input")
-                call = {
+                call: ToolCall = {
                     "id": call_id,
                     "name": str(block.get("name", "")),
                     "args": dict(arguments) if isinstance(arguments, Mapping) else {},
@@ -310,20 +316,21 @@ def transcript_fields(
                 if block.get("type") != "tool_result":
                     continue
                 call_id = str(block.get("tool_use_id", ""))
-                call = calls.get(call_id)
+                existing = calls.get(call_id)
                 output = _text_of(block.get("content"))
-                if call is None:
+                if existing is None:
                     # A result with no matching call: record it rather than drop it, so the count
                     # of results never silently disagrees with the count of calls.
-                    call = {
+                    existing = {
                         "id": call_id,
                         "name": "",
                         "args": {},
                         "started_ms": None,
                         "subagent": _is_subagent(event),
                     }
-                    calls[call_id] = call
+                    calls[call_id] = existing
                     order.append(call_id)
+                call = existing
                 call["output"] = output
                 call["is_error"] = bool(block.get("is_error"))
                 finished = _timestamp_ms(event)
@@ -346,9 +353,9 @@ def transcript_fields(
     ]
     contexts: list[str] = []
     for call in recall_calls:
-        output = call.get("output")
-        if isinstance(output, str) and output:
-            contexts.append(output)
+        retrieved = call.get("output")
+        if isinstance(retrieved, str) and retrieved:
+            contexts.append(retrieved)
 
     tool_calls = tuple(
         {

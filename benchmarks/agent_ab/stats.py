@@ -95,6 +95,27 @@ def paired_bootstrap(
     return (lo, hi)
 
 
+def _exact_binomial_two_sided(successes: int, trials: int) -> float:
+    """Exact two-sided binomial p-value at p=0.5, in the standard library.
+
+    This is the whole of McNemar's exact test, and it is written out rather than imported so the
+    PRIMARY endpoint carries no third-party dependency. scipy is not installed on the CI runner and
+    an undeclared import made these tests fail there while passing here.
+
+    At p=0.5 the distribution is symmetric, so the two-sided value is twice the smaller tail,
+    capped at 1. Verified against the values scipy produced on the real runs: 0 of 8 discordant
+    pairs gives 0.0078125, and 0 of 21 gives 9.5367431640625e-07, both reproduced exactly.
+    """
+
+    if trials <= 0:
+        raise ValueError("an exact binomial needs at least one trial")
+    total = 2**trials
+    lower = sum(math.comb(trials, k) for k in range(0, successes + 1))
+    upper = sum(math.comb(trials, k) for k in range(successes, trials + 1))
+    tail = 2.0 * float(min(lower, upper)) / float(total)
+    return min(1.0, tail)
+
+
 def mcnemar_exact(on: Sequence[bool], off: Sequence[bool]) -> tuple[float | None, int, int]:
     """Exact McNemar on paired binary outcomes; returns `(p, b, c)`.
 
@@ -114,9 +135,7 @@ def mcnemar_exact(on: Sequence[bool], off: Sequence[bool]) -> tuple[float | None
         # Every pair agreed. There is no evidence of a difference AND no evidence of sameness;
         # reporting p=1.0 would assert the second.
         return None, b, c
-    from scipy.stats import binomtest
-
-    return float(binomtest(b, b + c, 0.5).pvalue), b, c
+    return _exact_binomial_two_sided(b, b + c), b, c
 
 
 def wilcoxon_signed_rank(deltas: Sequence[float]) -> float | None:
@@ -130,7 +149,14 @@ def wilcoxon_signed_rank(deltas: Sequence[float]) -> float | None:
     nonzero = [d for d in usable if d != 0.0]
     if len(nonzero) < 1:
         return None
-    from scipy.stats import wilcoxon
+    try:
+        from scipy.stats import wilcoxon  # type: ignore[import-untyped]
+    except ImportError as error:  # pragma: no cover - exercised by the CI runner, not locally
+        raise RuntimeError(
+            "the Wilcoxon signed-rank test needs scipy, which is an optional extra of this "
+            "benchmark harness: pip install 'recall-rag[agent-ab]'. The binary endpoints do not "
+            "need it; only the continuous cost metrics do."
+        ) from error
 
     return float(wilcoxon(usable, zero_method="wilcox", alternative="two-sided").pvalue)
 

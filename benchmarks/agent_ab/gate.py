@@ -197,8 +197,8 @@ def admit_pairs(
         arms = by_task[task_id]
         pair_verdicts = []
         for variant in (RECALL_ON, RECALL_OFF):
-            record = arms.get(variant)
-            if record is None:
+            arm = arms.get(variant)
+            if arm is None:
                 pair_verdicts.append(
                     AdmissionVerdict(
                         task_id=task_id,
@@ -209,7 +209,7 @@ def admit_pairs(
                 )
                 continue
             pair_verdicts.append(
-                check_session(record, recall_tool_prefix=recall_tool_prefix)
+                check_session(arm, recall_tool_prefix=recall_tool_prefix)
             )
         verdicts.extend(pair_verdicts)
         if all(verdict.admitted for verdict in pair_verdicts):

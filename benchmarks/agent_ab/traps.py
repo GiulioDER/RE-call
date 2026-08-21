@@ -465,7 +465,7 @@ def qualify(
             trap.governing_memo in source for source in sources
         )
         marker = trap.claude_md_marker
-        in_claude_md = bool(marker) and _normalise(marker) in _normalise(claude_md_text)
+        in_claude_md = marker is not None and _normalise(marker) in _normalise(claude_md_text)
         qualifications.append(
             TrapQualification(
                 trap_id=trap.trap_id,

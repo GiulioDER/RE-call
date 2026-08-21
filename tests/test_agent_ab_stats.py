@@ -6,6 +6,7 @@ a test nobody has watched fail has not been tested. The mutations used are named
 
 from __future__ import annotations
 
+import importlib.util
 import math
 
 import pytest
@@ -17,6 +18,13 @@ from benchmarks.agent_ab.stats import (
     mcnemar_exact,
     paired_bootstrap,
     wilcoxon_signed_rank,
+)
+
+
+#: Only the Wilcoxon path needs scipy. The McNemar tests below run everywhere, which is
+#: deliberate: the primary endpoint must be verifiable on a runner with no extras.
+needs_scipy = pytest.mark.skipif(
+    importlib.util.find_spec("scipy") is None, reason="scipy is the agent-ab extra"
 )
 
 
@@ -88,6 +96,7 @@ def test_compare_binary_reports_a_clean_separation():
     assert "on-only=0, off-only=10" in result.note
 
 
+@needs_scipy
 def test_compare_continuous_drops_missing_measurements_rather_than_zeroing_them():
     """Mutation: treating None as 0.0. That reports an unmeasured session as a free one."""
 
@@ -99,6 +108,7 @@ def test_compare_continuous_drops_missing_measurements_rather_than_zeroing_them(
     assert result.on_mean == 100.0
 
 
+@needs_scipy
 def test_compare_continuous_detects_a_consistent_reduction():
     pairs = [(90.0, 150.0), (95.0, 160.0), (80.0, 140.0), (100.0, 170.0),
              (85.0, 155.0), (92.0, 148.0), (88.0, 162.0), (97.0, 151.0)]

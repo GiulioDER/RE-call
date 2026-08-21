@@ -50,8 +50,23 @@ dependencies = [
 # upload possible. Re-check with `recall.embeddings.embedder_artifact_digest(resolve_embedder(
 # "fastembed"))` before raising this bound.
 fastembed = ["fastembed>=0.3,<1"]
-# Application level scoring for the optional paired agent benchmark harness.
-ragas = ["ragas>=0.4,<1"]
+# ⛔ Ragas is deliberately NOT declared as an extra, and this is a security decision.
+#
+# PYSEC-2026-3046 / GHSA-95ww-475f-pr4f (SSRF via the multi-modal faithfulness module)
+# affects 0.2.3 through 0.4.3, and 0.4.3 is the LATEST release: there is no fixed version
+# to pin to. Declaring it here would ship a known-vulnerable dependency to everyone who
+# installs this package, to no purpose, because Ragas cannot run on this project's Python
+# anyway: it pulls HuggingFace `datasets`, which needs a `pyarrow.parquet` extension that
+# has no cp314 wheel. The scorer therefore runs in its own interpreter, and
+# `scripts/agent_ab_score_ragas.py` carries the install command for that venv.
+#
+# The benchmark never reaches the vulnerable path: it uses AnswerCorrectness and
+# FactualCorrectness, not the multi-modal collections module. That is a reason the tool is
+# safe to USE in an isolated venv, not a reason to ship it as a dependency.
+# The paired A/B harness. scipy carries ONLY the Wilcoxon test for the continuous cost
+# metrics; the primary binary endpoint uses an exact binomial written in the standard
+# library, so the headline result needs nothing from this extra.
+agent-ab = ["scipy>=1.11"]
 # Native extraction for PDF, Office, spreadsheets, presentations, HTML, and tables.
 documents = [
     "pypdf>=5.0",
