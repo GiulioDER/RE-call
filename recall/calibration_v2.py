@@ -536,6 +536,59 @@ class CalibrationRepository:
         "created_at, created_by, artifact_checksum, carry_forward"
     )
 
+    def score_query_set(
+        self, generation_id: str, embedder: Embedder, labels: Sequence[Mapping[str, Any]]
+    ) -> tuple[list[float], list[float]]:
+        """Best dense cosine per labelled query against ONE pinned generation.
+
+        Extracted because `calibrate`, `carry_forward` and drift monitoring all need exactly this
+        and had two byte-identical copies of it between them. The sampling rule is the single one
+        in `recall.eval.calibrate.measure_top_cosines`, so a fit, a re-verification and a drift
+        probe cannot come to different answers about the same generation for the reason that they
+        sampled it differently.
+
+        `pin_generation` is what makes the scores belong to the generation named rather than to
+        whatever is active at the moment the query runs.
+        """
+        from recall.eval.calibrate import measure_top_cosines
+        from recall.generation_store import GenerationStore
+
+        store = GenerationStore(self.dsn, embedder.dim, tenant=self.tenant_id)
+        try:
+            store.check_schema()
+            with store.pin_generation(generation_id):
+                return measure_top_cosines(store, embedder, list(labels))
+        finally:
+            store.close()
+
+    def stored_query_set(
+        self, query_set_digest: str
+    ) -> tuple[tuple[Mapping[str, Any], ...], str]:
+        """The labelled queries behind a digest, re-canonicalised and re-digested.
+
+        Returned with the digest RECOMPUTED rather than echoed back, so a caller comparing it
+        against the artifact's `query_set_digest` is checking the stored bytes and not its own
+        argument. That is the same check `resolve` makes, and it exists because the evidence could
+        otherwise be edited between the fit and any later re-verification.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT queries FROM recall_calibration_query_sets WHERE tenant_id = %s "
+                "AND query_set_digest = %s",
+                (self.tenant_id, query_set_digest),
+            ).fetchone()
+        if row is None or not isinstance(row[0], list):
+            raise CalibrationNotFound(
+                f"labelled query set {query_set_digest} is not stored for tenant "
+                f"{self.tenant_id!r}, so nothing can be re-scored against it"
+            )
+        return canonical_query_set(row[0])
+
+    def manifest_objects_for(self, generation_id: str) -> list[Mapping[str, Any]]:
+        """The generation's manifest source objects, on a connection of this repository's own."""
+        with self._connect() as conn:
+            return self._manifest_objects(conn, generation_id)
+
     def _manifest_objects(
         self, conn: psycopg.Connection, generation_id: str
     ) -> list[Mapping[str, Any]]:
@@ -569,16 +622,7 @@ class CalibrationRepository:
                 "embedder implementation does not match the generation pipeline identity"
             )
 
-        from recall.eval.calibrate import measure_top_cosines
-        from recall.generation_store import GenerationStore
-
-        store = GenerationStore(self.dsn, embedder.dim, tenant=self.tenant_id)
-        try:
-            store.check_schema()
-            with store.pin_generation(generation_id):
-                answerable, unanswerable = measure_top_cosines(store, embedder, list(labels))
-        finally:
-            store.close()
+        answerable, unanswerable = self.score_query_set(generation_id, embedder, labels)
         runtime = from_samples(embedder.name, answerable, unanswerable)
         if runtime.separability is None or runtime.separability_ci is None:
             raise CalibrationBindingError("both labelled classes are required for calibration")
@@ -785,16 +829,7 @@ class CalibrationRepository:
                 "embedder implementation does not match the generation pipeline identity"
             )
 
-        from recall.eval.calibrate import measure_top_cosines
-        from recall.generation_store import GenerationStore
-
-        store = GenerationStore(self.dsn, embedder.dim, tenant=self.tenant_id)
-        try:
-            store.check_schema()
-            with store.pin_generation(generation_id):
-                answerable, unanswerable = measure_top_cosines(store, embedder, list(labels))
-        finally:
-            store.close()
+        answerable, unanswerable = self.score_query_set(generation_id, embedder, labels)
 
         # The inherited threshold and scale, judged on the CHILD's scores. `from_samples` is used
         # only for `refit_threshold`, which is diagnostic and reaches nothing.

@@ -1,0 +1,613 @@
+"""Watch a live corpus against the calibration that is serving it, and say when to refit.
+
+Everything else in this package answers the drift question **after** a rebuild.
+`CalibrationRepository.resolve` compares fingerprints and returns `STALE` on any mismatch, which is
+a yes/no about identity rather than a statement about magnitude; `carry_forward` re-verifies a
+threshold against a generation that already exists. Neither can be asked "the corpus on disk has
+moved on, does the threshold serving it still decide anything?", which is the question an operator
+has between rebuilds and the one this module answers.
+
+**Two tiers, because the cheap signal cannot decide on its own.** That is measured, not assumed:
+`docs/preregistrations/2026-08-21-calibration-drift-trigger.md` registers the prediction and records
+what the delta-to-error curve actually looks like over three corpora.
+
+* **The screen** is `corpus_delta`, a manifest comparison over `(uri, sha256)` pairs. No embedding,
+  no retrieval, no database beyond one row. It is an upper bound on how much *could* have moved,
+  never an estimate of how much did: a top-1 cosine is a max over the index, so a change only moves
+  a query's score when it lands near that query.
+* **The probe** replays the calibration's own stored labelled query set against the index and
+  measures what the frozen threshold now costs, per class. This is the tier that decides, and it is
+  the same evidence and the same rule `carry_forward` applies.
+
+⛔ **The screen firing is not a verdict, and this module never reports it as one.** When the probe
+cannot run, the report says `RECALIBRATE_RECOMMENDED` and names the check that was not made. A
+screen promoted to a verdict is how a guard starts crying wolf, and a guard nobody believes is worse
+than no guard (`memory/a-guard-that-cries-wolf-is-worse-than-none.md`).
+
+⚠️ **Separability is deliberately not the outcome.** It is threshold-free, so a corpus change that
+lifts every unanswerable score by the same amount leaves AUC at 1.00 while sliding the whole class
+over a threshold that is not allowed to move. The outcome here is the per-class error of the fixed
+cut, each rate over its own denominator. See `memory/separability-cannot-see-a-shifted-class.md`.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
+
+from recall.calibration import MIN_SEPARABILITY, Calibration, from_samples, separability
+from recall.calibration_v2 import (
+    DEFAULT_MAX_CARRY_FORWARD_ERROR,
+    DEFAULT_MAX_CORPUS_DELTA,
+    CalibrationArtifactV2,
+    CalibrationError,
+    CalibrationRepository,
+    CalibrationStatus,
+    corpus_delta,
+    threshold_error_rates,
+)
+from recall.embeddings import Embedder
+from recall.observability import get_logger
+
+_log = get_logger("drift")
+
+__all__ = [
+    "AutoCalibrationMode",
+    "DRIFT_SCREEN_DELTA",
+    "DriftReport",
+    "DriftVerdict",
+    "auto_recalibrate",
+    "corpus_objects_for_directory",
+    "evaluate_drift",
+]
+
+
+#: Corpus delta below which nothing is reported and no probe is spent.
+#:
+#: **Measured, not chosen.** `docs/preregistrations/2026-08-21-calibration-drift-trigger.md`, three
+#: corpora, one embedder. The value is the largest screen that still catches every snapshot whose
+#: frozen threshold had gone over `DEFAULT_MAX_CARRY_FORWARD_ERROR`, so it is tuned for recall of
+#: the failures rather than for precision: a screen that fires needlessly costs one probe, and a
+#: screen that stays quiet costs an operator a threshold that has silently stopped deciding.
+#:
+#: ⚠️ It is a SCREEN and not a verdict. Below it, this module is quiet because the probe is not
+#: worth spending, not because the threshold has been shown to be fine.
+#:
+#: Re-measure, from your own worktree:
+#:
+#:     python -m benchmarks.calibration_drift --out results/calibration_drift.json
+DRIFT_SCREEN_DELTA = 0.05
+
+#: Delta past which no probe can rescue the calibration, so recalibration is reported as required
+#: without spending one. Deliberately the SAME number `carry_forward` refuses at: past it, the
+#: labelled query set is describing a corpus that no longer exists, and re-scoring it says nothing
+#: about the queries nobody labelled. Two different bounds for one idea would be a second place to
+#: forget to update.
+DRIFT_REQUIRED_DELTA = DEFAULT_MAX_CORPUS_DELTA
+
+
+class DriftVerdict(StrEnum):
+    """What an operator should do, in a vocabulary a script can branch on."""
+
+    #: The corpus has not moved far enough to be worth a probe, or the probe says the threshold
+    #: still decides. Not a promise; see `DRIFT_SCREEN_DELTA`.
+    STABLE = "stable"
+    #: The screen fired and the decisive check could not be made. Named separately from REQUIRED
+    #: because the remedy differs: run the probe, or recalibrate if you cannot.
+    RECALIBRATE_RECOMMENDED = "recalibrate_recommended"
+    #: Measured: the frozen threshold's error is over the bound, or the delta is past the point
+    #: where the labelled evidence describes this corpus at all.
+    RECALIBRATE_REQUIRED = "recalibrate_required"
+    #: There is nothing to compare against. A missing calibration is not low drift.
+    UNKNOWN = "unknown"
+
+
+class AutoCalibrationMode(StrEnum):
+    """How far a deployment lets drift monitoring act on its own.
+
+    `WARN` is the default rather than `AUTO`, and rather than `OFF`, for two different reasons.
+    Not `AUTO`, because recalibration republishes the artifact every query is judged against and
+    that is an operator's decision on any corpus they did not personally curate. Not `OFF`, because
+    a threshold that has stopped deciding fails silently, which is the whole failure mode this
+    module exists to end.
+    """
+
+    OFF = "off"
+    WARN = "warn"
+    AUTO = "auto"
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> "AutoCalibrationMode":
+        raw = (environ if environ is not None else os.environ).get("RECALL_AUTO_CALIBRATE", "")
+        value = raw.strip().lower()
+        if not value:
+            return cls.WARN
+        try:
+            return cls(value)
+        except ValueError:
+            # Refused rather than defaulted. Silently reading `RECALL_AUTO_CALIBRATE=true` as OFF
+            # would leave an operator who asked for automation with none, and reading it as AUTO
+            # would republish artifacts on the strength of a typo.
+            raise ValueError(
+                f"RECALL_AUTO_CALIBRATE={raw!r} is not one of "
+                f"{', '.join(mode.value for mode in cls)}"
+            ) from None
+
+
+@dataclass(frozen=True)
+class DriftReport:
+    """One drift measurement, with every number it was decided on."""
+
+    tenant_id: str
+    verdict: DriftVerdict
+    reason: str
+    #: What the live corpus was compared AGAINST: the calibration serving this tenant.
+    calibration_id: str | None
+    baseline_generation_id: str | None
+    #: What was compared: a generation id, or a directory path.
+    candidate: str
+    #: `corpus_delta` output, or empty when there was nothing to compare.
+    delta: Mapping[str, Any]
+    #: The probe's per-class error and separability, or None when it was not run. `probe is None`
+    #: and `probe` reporting no error are different states and are never collapsed.
+    probe: Mapping[str, Any] | None = None
+    screen_delta: float = DRIFT_SCREEN_DELTA
+    max_error: float = DEFAULT_MAX_CARRY_FORWARD_ERROR
+
+    @property
+    def needs_action(self) -> bool:
+        return self.verdict in {
+            DriftVerdict.RECALIBRATE_RECOMMENDED,
+            DriftVerdict.RECALIBRATE_REQUIRED,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tenant_id": self.tenant_id,
+            "verdict": self.verdict.value,
+            "reason": self.reason,
+            "calibration_id": self.calibration_id,
+            "baseline_generation_id": self.baseline_generation_id,
+            "candidate": self.candidate,
+            "delta": dict(self.delta),
+            "probe": dict(self.probe) if self.probe is not None else None,
+            "screen_delta": self.screen_delta,
+            "max_error": self.max_error,
+        }
+
+    def format(self) -> str:
+        """One operator-readable block. The numbers first, the advice last."""
+        lines = [
+            f"tenant:      {self.tenant_id}",
+            f"calibration: {self.calibration_id or 'none'}",
+            f"baseline:    {self.baseline_generation_id or 'none'}",
+            f"candidate:   {self.candidate}",
+        ]
+        if self.delta:
+            lines.append(
+                f"delta:       {self.delta.get('corpus_delta', float('nan')):.4f} "
+                f"({self.delta.get('sources_added', 0)} added, "
+                f"{self.delta.get('sources_removed', 0)} removed, "
+                f"{self.delta.get('sources_modified', 0)} modified "
+                f"of {self.delta.get('sources_union', 0)} sources)"
+            )
+        if self.probe is not None:
+            lines.append(
+                f"probe:       false abstain "
+                f"{self.probe['false_abstain_rate']:.1%} of {self.probe['n_answerable']} "
+                f"answerable, false confirm {self.probe['false_confirm_rate']:.1%} of "
+                f"{self.probe['n_unanswerable']} unanswerable, bound {self.max_error:.1%}"
+            )
+            # `separability` is guaranteed non-None by `_probe`, which refuses a one-class result
+            # outright; formatted defensively anyway, because a `None` reaching a `.4f` here would
+            # turn a monitor into a crash at the moment it had something to report.
+            auc = self.probe.get("separability")
+            rendered = f"{auc:.4f}" if isinstance(auc, (int, float)) else "unknown"
+            lines.append(
+                f"             separability {rendered}, refit would be "
+                f"{self.probe['refit_threshold']:.4f} against the "
+                f"{self.probe['threshold']:.4f} in force"
+            )
+        else:
+            lines.append("probe:       not run")
+        lines.append(f"verdict:     {self.verdict.value.upper()}")
+        lines.append(f"             {self.reason}")
+        return "\n".join(lines)
+
+
+def corpus_objects_for_directory(root: str | Path, glob: str | None = None) -> list[dict[str, Any]]:
+    """Inventory a live directory into the `(uri, sha256)` objects `corpus_delta` compares.
+
+    The walk is `recall.wizard.inventory.build_inventory`, which is `recall.index.candidate_files`,
+    which is the walk `index_path` performs. Inheriting it rather than writing a third one is what
+    keeps a drift measurement about the corpus that would actually be indexed: a private walk here
+    could report a delta over files indexing would never read, and the number would look fine.
+    """
+    from recall.lint import DEFAULT_GLOB
+    from recall.wizard.inventory import build_inventory
+
+    return build_inventory(root, glob or DEFAULT_GLOB)
+
+
+def _published_calibration(repository: CalibrationRepository) -> CalibrationArtifactV2 | None:
+    """The artifact currently serving this tenant, or None.
+
+    Newest published wins, which is the same order `carry_forward` picks a parent by, so the
+    calibration this module reports drift for is the one that mechanism would inherit from.
+    """
+    for record in repository.list_records():
+        if str(record.get("lifecycle_state")) != "published":
+            continue
+        try:
+            artifact = repository.get(str(record["calibration_id"]))
+        except CalibrationError:  # pragma: no cover - a row that cannot be loaded is not a baseline
+            continue
+        if artifact.status is CalibrationStatus.CERTIFIED:
+            return artifact
+    return None
+
+
+def _probe(
+    repository: CalibrationRepository,
+    artifact: CalibrationArtifactV2,
+    generation_id: str,
+    embedder: Embedder,
+    *,
+    max_error: float,
+) -> dict[str, Any]:
+    """Re-score the calibration's own labelled evidence and judge the FROZEN threshold on it.
+
+    Deliberately the same evidence, the same sampling rule and the same two conditions
+    `carry_forward` applies, reached through the same methods. A monitor that judged by a different
+    rule than the gate would tell an operator to act and then be refused, or stay quiet about a
+    state the gate would reject.
+    """
+    labels, digest = repository.stored_query_set(artifact.query_set_digest)
+    if digest != artifact.query_set_digest:
+        raise CalibrationError(
+            "stored labelled query set no longer matches its digest, so it cannot be re-scored"
+        )
+    answerable, unanswerable = repository.score_query_set(generation_id, embedder, labels)
+    if not answerable or not unanswerable:
+        # Not a drift finding. Both classes are needed for every number below, and a one-class
+        # result means the evidence or the index is wrong rather than that the corpus moved.
+        # Raised rather than reported as a clean zero, which is what a missing class would become
+        # if it were allowed to flow into `threshold_error_rates` (whose rates are 0.0 for an
+        # empty class, by its own contract).
+        raise CalibrationError(
+            f"re-scoring returned {len(answerable)} answerable and {len(unanswerable)} "
+            f"unanswerable scores; both classes are required to judge a threshold, so this is a "
+            f"broken index or a broken query set rather than a measurement of drift"
+        )
+    errors = threshold_error_rates(answerable, unanswerable, artifact.threshold)
+    frozen = Calibration(
+        embedder=artifact.runtime.embedder,
+        threshold=artifact.threshold,
+        scale=artifact.scale,
+        separability=separability(answerable, unanswerable),
+        n_answerable=len(answerable),
+        n_unanswerable=len(unanswerable),
+    )
+    refit = from_samples(artifact.runtime.embedder, answerable, unanswerable)
+    ci = frozen.separability_ci
+    return {
+        "threshold": artifact.threshold,
+        "refit_threshold": refit.threshold,
+        "threshold_drift": refit.threshold - artifact.threshold,
+        "n_answerable": len(answerable),
+        "n_unanswerable": len(unanswerable),
+        "separability": frozen.separability,
+        "separability_ci": list(ci) if ci is not None else None,
+        "still_certified": frozen.certified is True,
+        "max_error": max(errors["false_abstain_rate"], errors["false_confirm_rate"]),
+        "within_error": (
+            errors["false_abstain_rate"] <= max_error
+            and errors["false_confirm_rate"] <= max_error
+        ),
+        **errors,
+    }
+
+
+def evaluate_drift(
+    repository: CalibrationRepository,
+    *,
+    generation_id: str | None = None,
+    corpus_objects: Sequence[Mapping[str, Any]] | None = None,
+    candidate_label: str | None = None,
+    embedder: Embedder | None = None,
+    screen_delta: float = DRIFT_SCREEN_DELTA,
+    required_delta: float = DRIFT_REQUIRED_DELTA,
+    max_error: float = DEFAULT_MAX_CARRY_FORWARD_ERROR,
+    probe: bool = True,
+) -> DriftReport:
+    """Compare a corpus against the calibration serving this tenant and say what to do.
+
+    Exactly one of `generation_id` and `corpus_objects` names the candidate corpus. A generation can
+    be probed, because its chunks are in the index; a directory cannot, because nothing has embedded
+    it yet, and that asymmetry is why the report distinguishes RECOMMENDED from REQUIRED rather than
+    guessing.
+
+    `probe=False` forces the screen-only path even where a probe was possible, which is what a
+    post-index hook wants on a corpus that is rebuilt continuously: the probe costs one retrieval
+    per labelled query and the screen costs a manifest comparison.
+    """
+    if (generation_id is None) == (corpus_objects is None):
+        raise ValueError("name exactly one of generation_id or corpus_objects")
+
+    tenant = repository.tenant_id
+    candidate = candidate_label or generation_id or "<directory>"
+    artifact = _published_calibration(repository)
+    if artifact is None:
+        return DriftReport(
+            tenant_id=tenant,
+            verdict=DriftVerdict.UNKNOWN,
+            reason=(
+                "no certified published calibration for this tenant, so there is no threshold to "
+                "measure drift against. A missing calibration is not low drift: calibrate first."
+            ),
+            calibration_id=None,
+            baseline_generation_id=None,
+            candidate=candidate,
+            delta={},
+            screen_delta=screen_delta,
+            max_error=max_error,
+        )
+
+    baseline = repository.manifest_objects_for(artifact.generation_id)
+    candidate_objects = (
+        list(corpus_objects)
+        if corpus_objects is not None
+        else repository.manifest_objects_for(str(generation_id))
+    )
+    delta = corpus_delta(baseline, candidate_objects)
+    magnitude = float(delta["corpus_delta"])
+    common = {
+        "tenant_id": tenant,
+        "calibration_id": artifact.calibration_id,
+        "baseline_generation_id": artifact.generation_id,
+        "candidate": candidate,
+        "delta": delta,
+        "screen_delta": screen_delta,
+        "max_error": max_error,
+    }
+
+    if magnitude == 0.0:
+        return DriftReport(
+            verdict=DriftVerdict.STABLE,
+            reason=(
+                f"the corpus is byte-identical to the {delta['sources_parent']} sources "
+                f"calibration {artifact.calibration_id} was fitted on"
+            ),
+            **common,
+        )
+
+    if magnitude >= required_delta:
+        # Refused before any embedding work, and for the reason `carry_forward` refuses: past this
+        # point the labelled set is evidence about a corpus that no longer exists, and re-scoring it
+        # would answer confidently about the wrong thing.
+        return DriftReport(
+            verdict=DriftVerdict.RECALIBRATE_REQUIRED,
+            reason=(
+                f"corpus delta {magnitude:.3f} is at or past {required_delta:.3f}, the point where "
+                f"the labelled query set behind calibration {artifact.calibration_id} stops "
+                f"describing this corpus. Re-scoring it would say nothing about the queries nobody "
+                f"labelled. Recalibrate against a labelled set drawn from the corpus as it is now."
+            ),
+            **common,
+        )
+
+    if magnitude < screen_delta:
+        return DriftReport(
+            verdict=DriftVerdict.STABLE,
+            reason=(
+                f"corpus delta {magnitude:.3f} is below the {screen_delta:.3f} screen, so the "
+                f"probe is not worth spending. This is a screen, not a clean bill of health: it "
+                f"bounds how much COULD have moved, never how much did."
+            ),
+            **common,
+        )
+
+    if not probe or embedder is None or generation_id is None:
+        # Ordered by which reason is the ROOT one. A directory reaches here with no embedder built,
+        # because building one to probe something unindexed would be wasted work, so an
+        # embedder-first test would report the symptom and send the operator to supply a model
+        # that could not have helped.
+        missing = (
+            "a directory has no index to score against, so only a rebuilt generation can be probed"
+            if generation_id is None
+            else "probing was disabled"
+            if not probe
+            else "no embedder was supplied"
+        )
+        return DriftReport(
+            verdict=DriftVerdict.RECALIBRATE_RECOMMENDED,
+            reason=(
+                f"corpus delta {magnitude:.3f} is over the {screen_delta:.3f} screen and the "
+                f"decisive check was not made: {missing}. The screen bounds how much could have "
+                f"moved, so this is a reason to look, not a measurement that the threshold failed."
+            ),
+            **common,
+        )
+
+    try:
+        measured = _probe(repository, artifact, generation_id, embedder, max_error=max_error)
+    except CalibrationError as exc:
+        # The decisive check could not be made, which is a RECOMMENDATION and never a verdict of
+        # its own. Reported rather than raised because the caller is usually a monitor: a stored
+        # query set that has gone missing is exactly the state an operator needs told about, and
+        # a traceback out of a post-build advisory would instead read as a broken build.
+        return DriftReport(
+            verdict=DriftVerdict.RECALIBRATE_RECOMMENDED,
+            reason=(
+                f"corpus delta {magnitude:.3f} is over the {screen_delta:.3f} screen and the "
+                f"probe could not run: {exc}"
+            ),
+            **common,
+        )
+    if not measured["within_error"]:
+        return DriftReport(
+            verdict=DriftVerdict.RECALIBRATE_REQUIRED,
+            reason=(
+                f"the threshold {artifact.threshold:.4f} in force no longer decides this corpus: "
+                f"false abstain {measured['false_abstain_rate']:.1%} of "
+                f"{measured['n_answerable']} answerable, false confirm "
+                f"{measured['false_confirm_rate']:.1%} of {measured['n_unanswerable']} "
+                f"unanswerable, against a bound of {max_error:.1%}. A refit would place it at "
+                f"{measured['refit_threshold']:.4f}."
+            ),
+            probe=measured,
+            **common,
+        )
+    if not measured["still_certified"]:
+        return DriftReport(
+            verdict=DriftVerdict.RECALIBRATE_REQUIRED,
+            reason=(
+                f"the threshold still decides within the error bound, but the classes have stopped "
+                f"separating: the 95% lower bound on separability is below {MIN_SEPARABILITY}. No "
+                f"threshold separates them, so moving this one only trades one error for the other."
+            ),
+            probe=measured,
+            **common,
+        )
+    return DriftReport(
+        verdict=DriftVerdict.STABLE,
+        reason=(
+            f"corpus delta {magnitude:.3f} cleared the screen and the probe cleared the bound: "
+            f"false abstain {measured['false_abstain_rate']:.1%}, false confirm "
+            f"{measured['false_confirm_rate']:.1%}, both at or under {max_error:.1%}. A refit "
+            f"would move the threshold by {measured['threshold_drift']:+.4f}."
+        ),
+        probe=measured,
+        **common,
+    )
+
+
+@dataclass(frozen=True)
+class AutoCalibrationOutcome:
+    """What automatic recalibration did, and which of the two paths it took."""
+
+    #: `carried_forward`, `recalibrated`, `skipped`, or `failed`.
+    action: str
+    calibration_id: str | None
+    reason: str
+    published: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action": self.action,
+            "calibration_id": self.calibration_id,
+            "reason": self.reason,
+            "published": self.published,
+        }
+
+
+def auto_recalibrate(
+    repository: CalibrationRepository,
+    generation_id: str,
+    embedder: Embedder,
+    *,
+    publish: bool = True,
+    max_corpus_delta: float = DEFAULT_MAX_CORPUS_DELTA,
+) -> AutoCalibrationOutcome:
+    """Re-establish a certified calibration on `generation_id` without asking a human for labels.
+
+    Two paths, cheapest first, and **neither loosens certification**. Both end in an artifact that
+    had to clear the same bar a hand-driven `recall calibration calibrate` clears, so the automation
+    is in what gets run, never in what gets accepted.
+
+    1. **`carry_forward`.** Re-scores the parent's stored evidence and inherits the threshold only
+       if the frozen cut still holds on the new scores. Cheapest, and it keeps the operating point
+       an operator has already seen.
+    2. **A fresh fit against that same stored labelled set.** Reached when carry-forward is refused,
+       which is exactly the case where the threshold needs to MOVE rather than be re-verified.
+
+    ⛔ **Path 2 reuses the labels, not the threshold, and it cannot rescue a corpus that has moved
+    past the labels.** If the delta is past `max_corpus_delta` the stored questions are about a
+    corpus that no longer exists, so this refuses rather than fitting a confident threshold to stale
+    evidence. Producing a fresh labelled set is `recall.wizard.queryset`, and doing it unattended on
+    a corpus nobody has looked at is a different decision from re-running an existing measurement.
+    """
+    artifact = _published_calibration(repository)
+    if artifact is None:
+        return AutoCalibrationOutcome(
+            action="skipped",
+            calibration_id=None,
+            reason=(
+                "no certified published calibration to carry forward from; the first calibration "
+                "on a corpus is a human decision about what the labelled questions should be"
+            ),
+        )
+    if artifact.generation_id == generation_id:
+        return AutoCalibrationOutcome(
+            action="skipped",
+            calibration_id=artifact.calibration_id,
+            reason=f"calibration {artifact.calibration_id} is already bound to {generation_id}",
+        )
+
+    try:
+        carried = repository.carry_forward(
+            generation_id,
+            embedder,
+            parent_calibration_id=artifact.calibration_id,
+            max_corpus_delta=max_corpus_delta,
+        )
+    except CalibrationError as exc:
+        carried = None
+        carry_refusal = str(exc)
+    else:
+        carry_refusal = ""
+        if carried.certified:
+            if publish:
+                carried = repository.publish(carried.calibration_id)
+            return AutoCalibrationOutcome(
+                action="carried_forward",
+                calibration_id=carried.calibration_id,
+                reason=(
+                    f"the threshold {artifact.threshold:.4f} still holds on this generation's "
+                    f"fresh scores, so it was inherited rather than refitted"
+                ),
+                published=publish,
+            )
+        carry_refusal = carried.certification_reason
+
+    # The threshold has to move. Refit on the SAME labelled evidence, which is what makes this
+    # unattended: no new questions are invented, and the fit is judged by the usual certification.
+    _log.info("carry-forward did not certify (%s); refitting on the stored query set", carry_refusal)
+    try:
+        labels, _digest = repository.stored_query_set(artifact.query_set_digest)
+        fitted = repository.calibrate(generation_id, labels, embedder)
+    except CalibrationError as exc:
+        return AutoCalibrationOutcome(
+            action="failed",
+            calibration_id=None,
+            reason=(
+                f"carry-forward was refused ({carry_refusal or 'see log'}) and the refit could not "
+                f"be made either: {exc}"
+            ),
+        )
+    if not fitted.certified:
+        return AutoCalibrationOutcome(
+            action="failed",
+            calibration_id=fitted.calibration_id,
+            reason=(
+                f"a fresh fit on the stored labelled set does not certify either: "
+                f"{fitted.certification_reason}. The corpus needs labelled questions drawn from "
+                f"what it is now, which is not a decision this should make unattended."
+            ),
+        )
+    if publish:
+        fitted = repository.publish(fitted.calibration_id)
+    return AutoCalibrationOutcome(
+        action="recalibrated",
+        calibration_id=fitted.calibration_id,
+        reason=(
+            f"carry-forward was refused ({carry_refusal or 'threshold no longer held'}), so the "
+            f"threshold was refitted on the same labelled evidence and moved from "
+            f"{artifact.threshold:.4f} to {fitted.threshold:.4f}"
+        ),
+        published=publish,
+    )

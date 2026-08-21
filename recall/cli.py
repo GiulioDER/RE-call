@@ -848,6 +848,73 @@ def _run_extract(args: argparse.Namespace) -> None:
             cache.close()
 
 
+
+def _report_drift_after_build(args: argparse.Namespace, generation_id: str) -> None:
+    """Say what the new generation did to the calibration serving this tenant, per policy.
+
+    Runs after a build reports success and **can never turn that success into a failure**. A build
+    that wrote every chunk correctly has succeeded whether or not the advisory afterwards can reach
+    a model, a query set or a database, so every failure here is logged and swallowed. The opposite
+    choice would make a corpus unbuildable because a monitor was misconfigured.
+
+    `RECALL_AUTO_CALIBRATE` decides how far this goes:
+
+    * `off` does nothing at all, including opening a connection;
+    * `warn`, the default, reports and leaves the decision to the operator;
+    * `auto` re-establishes the calibration by carrying the threshold forward, or refitting it on
+      the same stored labelled evidence when the threshold has to move.
+
+    ⚠️ **The probe runs here, and the screen alone would not be enough.** A build is exactly the
+    moment the new generation IS indexed, so the decisive check is available for the price of one
+    retrieval per labelled query; declining to spend that would report a screen result at the one
+    moment a real answer was cheap.
+    """
+    from recall.drift import AutoCalibrationMode
+
+    try:
+        mode = AutoCalibrationMode.from_env()
+    except ValueError as exc:
+        print(f"drift: {exc}", file=sys.stderr)
+        return
+    if mode is AutoCalibrationMode.OFF:
+        return
+
+    from recall.calibration_v2 import CalibrationRepository
+    from recall.drift import auto_recalibrate, evaluate_drift
+
+    repository = CalibrationRepository(args.dsn, args.tenant)
+    try:
+        # Built once and reused below. `_make_embedder` loads model weights, and the auto path
+        # needs the same model the probe just used; building a second one would pay that twice
+        # and, worse, would let the two halves of one decision run on different weights.
+        build_embedder = _make_embedder(args.embedder)
+        report = evaluate_drift(
+            repository,
+            generation_id=generation_id,
+            embedder=build_embedder,
+        )
+    except Exception as exc:  # noqa: BLE001 - see the docstring: advice never fails a build
+        print(f"drift: could not measure drift for {generation_id}: {exc}", file=sys.stderr)
+        return
+    print()
+    print(report.format())
+    if mode is AutoCalibrationMode.WARN or not report.needs_action:
+        if report.needs_action:
+            print()
+            print(
+                "RECALL_AUTO_CALIBRATE=auto would re-establish this automatically; "
+                f"or run `recall --tenant {args.tenant} calibration auto "
+                f"--generation {generation_id}`"
+            )
+        return
+    try:
+        outcome = auto_recalibrate(repository, generation_id, build_embedder)
+    except Exception as exc:  # noqa: BLE001 - as above
+        print(f"drift: automatic recalibration failed for {generation_id}: {exc}", file=sys.stderr)
+        return
+    print()
+    print(f"auto-calibrate: {outcome.action} ({outcome.reason})")
+
 def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):  # clean UTF-8 output on Windows consoles
         # `errors=` as well as `encoding=`, because reconfiguring the encoding RESETS errors to
@@ -1493,6 +1560,65 @@ def main(argv: list[str] | None = None) -> None:
         f"is the check separability cannot make",
     )
     p_cal_carry.add_argument("--publish", action="store_true")
+
+    from recall.drift import DRIFT_SCREEN_DELTA
+
+    p_cal_drift = calibration_sub.add_parser(
+        "drift",
+        help="ask whether the corpus has moved far enough to need recalibrating",
+    )
+    # Exactly one of the two, enforced by argparse rather than by a runtime check, because the
+    # difference is not a preference: a generation can be probed and a directory cannot.
+    drift_target = p_cal_drift.add_mutually_exclusive_group(required=True)
+    drift_target.add_argument(
+        "--generation",
+        default=None,
+        help="an already-built generation to compare and, unless --no-probe, to re-score against",
+    )
+    drift_target.add_argument(
+        "--path",
+        default=None,
+        help="a live corpus directory. Compared, never probed: nothing has indexed it yet, so the "
+        "strongest verdict this can reach is a recommendation",
+    )
+    p_cal_drift.add_argument(
+        "--glob", default=None, help="glob for --path (default: the indexing default)"
+    )
+    p_cal_drift.add_argument(
+        "--screen-delta",
+        type=float,
+        default=None,
+        help=f"corpus delta below which nothing is reported (default {DRIFT_SCREEN_DELTA}, "
+        f"measured; see docs/preregistrations/2026-08-21-calibration-drift-trigger.md)",
+    )
+    p_cal_drift.add_argument(
+        "--no-probe",
+        dest="probe",
+        action="store_false",
+        help="screen only. Cheap enough for a post-index hook, and it can never reach a REQUIRED "
+        "verdict on error, only on delta",
+    )
+    p_cal_drift.add_argument("--json", action="store_true", help="machine-readable report")
+    p_cal_drift.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit 1 when recalibration is recommended or required, for use in CI",
+    )
+
+    p_cal_auto = calibration_sub.add_parser(
+        "auto",
+        help="re-establish a certified calibration on a rebuilt generation without asking for "
+        "labels: carry the threshold forward, or refit it on the same stored evidence",
+    )
+    p_cal_auto.add_argument("--generation", required=True)
+    p_cal_auto.add_argument(
+        "--no-publish",
+        dest="publish",
+        action="store_false",
+        help="write the artifact but leave it a draft, so an operator chooses when it serves",
+    )
+    p_cal_auto.add_argument("--json", action="store_true")
+
     calibration_sub.add_parser("list")
     p_cal_show = calibration_sub.add_parser("show")
     p_cal_show.add_argument("calibration_id")
@@ -2046,6 +2172,7 @@ def main(argv: list[str] | None = None) -> None:
             f"{generation_stats.chunks} chunks, {generation_stats.reused_objects} objects "
             f"reused; run `recall generation validate {generation_stats.generation_id}`"
         )
+        _report_drift_after_build(args, generation_stats.generation_id)
         return
 
     if args.cmd == "lint":  # pure filesystem check — no embedder, no DB
@@ -2294,6 +2421,61 @@ def main(argv: list[str] | None = None) -> None:
                 if args.publish:
                     artifact = repository.publish(artifact.calibration_id)
                     print(f"published: {artifact.calibration_id}")
+            elif args.calibration_cmd == "drift":
+                from recall.drift import (
+                    DRIFT_SCREEN_DELTA,
+                    corpus_objects_for_directory,
+                    evaluate_drift,
+                )
+
+                screen = (
+                    DRIFT_SCREEN_DELTA if args.screen_delta is None else args.screen_delta
+                )
+                # The embedder is built only where it is used. A screen-only run over a directory
+                # must not pay to load a model, and on a machine with no cached weights that cost
+                # is a download rather than a second.
+                probing = args.probe and args.generation is not None
+                report = evaluate_drift(
+                    repository,
+                    generation_id=args.generation,
+                    corpus_objects=(
+                        corpus_objects_for_directory(args.path, args.glob)
+                        if args.path is not None
+                        else None
+                    ),
+                    candidate_label=args.path or args.generation,
+                    embedder=_make_embedder(args.embedder) if probing else None,
+                    screen_delta=screen,
+                    probe=args.probe,
+                )
+                print(
+                    json.dumps(report.to_dict(), indent=2)
+                    if args.json
+                    else report.format()
+                )
+                if args.strict and report.needs_action:
+                    raise SystemExit(1)
+            elif args.calibration_cmd == "auto":
+                from recall.drift import auto_recalibrate
+
+                outcome = auto_recalibrate(
+                    repository,
+                    args.generation,
+                    _make_embedder(args.embedder),
+                    publish=args.publish,
+                )
+                if args.json:
+                    print(json.dumps(outcome.to_dict(), indent=2))
+                else:
+                    print(f"action: {outcome.action}")
+                    print(f"calibration: {outcome.calibration_id or 'none'}")
+                    print(f"published: {'yes' if outcome.published else 'no'}")
+                    print(f"reason: {outcome.reason}")
+                # `failed` is the only exit-1 case. `skipped` is a correct, expected outcome for a
+                # tenant whose first calibration has not been made yet, and exiting non-zero on it
+                # would make a post-index hook look broken on every fresh install.
+                if outcome.action == "failed":
+                    raise SystemExit(1)
             else:  # unreachable while argparse constrains the choices, but never guess a default
                 raise SystemExit(f"unknown calibration subcommand: {args.calibration_cmd}")
         except CalibrationError as exc:
