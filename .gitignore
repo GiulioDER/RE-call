@@ -91,6 +91,13 @@ docs/_*_2x.png
 # with a leading `.tmp_` by convention and never shipped. Measured 2026-08-19: 25 were sitting
 # untracked in the main checkout, which is most of what made `git status` there unreadable and a
 # real change hard to pick out among them.
+#
+# Scratch CLONES of third-party harnesses arrive under the same prefix and are the sharper case:
+# `.tmp_erbleaderboard` is the EnterpriseRAG-Bench leaderboard Space, 105 MB carrying its own
+# `.git`. A nested `.git` means a careless `git add -A` records a GITLINK rather than files, so
+# the failure is quiet: one line pointing at a commit in a repository this project does not own,
+# which nobody can clone from here and which `git status` then reports as permanently modified.
+# The rule is deliberately `.tmp_*` and not `.tmp_*/`, so it catches the file case too.
 .tmp_*
 
 # Upload staging. `stage_uploads` resolves RECALL_INDEX_ROOT, whose documented default is `.`, so
