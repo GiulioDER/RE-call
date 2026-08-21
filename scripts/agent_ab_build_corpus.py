@@ -59,6 +59,29 @@ def run(command: list[str], env: dict[str, str], *, timeout: float = 3600) -> st
     return proc.stdout.strip()
 
 
+def ensure_database(dsn: str) -> None:
+    """Create the benchmark's database if it is not there.
+
+    Added after losing a built corpus: the session container is disposable and was removed by
+    something outside the session that built it, taking the database with it. `session-db.sh`
+    creates no volume, so a removed container is a destroyed corpus. The build is the backup, and
+    a build that assumes its own database exists is not one.
+    """
+
+    import psycopg
+    from psycopg import sql
+
+    target = dsn.rsplit("/", 1)[-1].split("?", 1)[0]
+    admin = dsn.rsplit("/", 1)[0] + "/postgres"
+    with psycopg.connect(admin, autocommit=True, connect_timeout=20) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s", (target,)
+        ).fetchone()
+        if not exists:
+            conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(target)))
+            print(f"  created database {target!r}")
+
+
 def existing_generation(dsn: str) -> tuple[str, str] | None:
     """Return an already-built generation, so a re-run never duplicates one."""
 
@@ -117,6 +140,7 @@ def main() -> int:
     cli = [sys.executable, "-m", "recall.cli"]
 
     print("1/6  schema")
+    ensure_database(args.dsn)
     run(cli + ["schema", "apply"], env)
 
     print("2/6  manifest")
