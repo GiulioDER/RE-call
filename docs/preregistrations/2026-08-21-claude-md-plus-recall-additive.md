@@ -258,4 +258,118 @@ it is correspondingly weak. That is a real loss and is not offset by anything.
 
 ## Result
 
-*Not yet run. Appended below when it is, without editing anything above.*
+Measured 2026-08-21. **Nothing above this line has been edited.**
+
+Runs: `agent-ab-additive-002` (primary endpoint + 2 controls, 48 pairs, uninterrupted, 0 errors,
+0 gate discards) and `agent-ab-additive-002c` (12 further control pairs, 0 discards) after the
+`shared_db` exclusion recorded above. Corpus `gen_f01fc522...`, calibration `cal_b40f2c6e...`
+certified at threshold 0.731, separability 0.980, served `trusted` over stdio. Claude Code 2.1.238,
+agent `anthropic/claude-haiku-4.5`, judge `openai/gpt-4.1-mini`, both via OpenRouter.
+
+### Primary endpoint
+
+| locus | n | +RE-call | CLAUDE.md | delta | 95% CI | p |
+|---|---|---|---|---|---|---|
+| **memory_only** | 40 | **0.000** | 0.525 | **-0.525** | [-0.675, -0.375] | **<0.0001** |
+
+Discordant pairs: **on-only 0, off-only 21.** The RE-call arm triggered **no trap in any of the 40
+pairs**, and never once hit a hazard the baseline avoided.
+
+Per-task, the headlined view (one rate per trap, repetitions collapsed):
+
+| trap | +RE-call | CLAUDE.md | delta |
+|---|---|---|---|
+| omp_threads | 0.000 | 0.900 | -0.900 |
+| cairo_render | 0.000 | 0.800 | -0.800 |
+| torch_install | 0.000 | 0.400 | -0.400 |
+| cast_conversion | 0.000 | 0.000 | 0.000 |
+
+**3 of 4 traps improved**, mean -0.525, cluster CI **[-0.850, -0.200]** resampling traps rather
+than repetitions. As preregistered, **no p-value is reported for this view**: with 4 distinct traps
+a sign test cannot reach p<0.05 at any effect size.
+
+### Controls: the memory layer changes nothing where the file already knows
+
+| locus | n | +RE-call | CLAUDE.md | delta | p |
+|---|---|---|---|---|---|
+| `both` (002c) | 12 | 0.083 | 0.083 | **0.000** | **1.0000** |
+| `both` (002) | 4 | 0.000 | 0.000 | - | below the 6-pair floor |
+| `claude_md_only` (002) | 4 | 0.000 | 0.000 | - | below the 6-pair floor |
+
+Discordant pairs on the 12-pair control: **1 and 1**. This is the result that rules out "the treated
+arm is simply better at everything".
+
+### Answer quality, and the finding that was not predicted at all
+
+| metric | n | +RE-call | CLAUDE.md | delta | p |
+|---|---|---|---|---|---|
+| answer_correctness | 48 | **0.337** | 0.149 | **+0.188** | **0.0002** |
+| factual_correctness | 48 | **0.506** | 0.272 | **+0.234** | **<0.0001** |
+
+Restricted to the primary tasks (n=40): answer_correctness **0.358 vs 0.144, p=0.0003**;
+factual_correctness **0.559 vs 0.288, p<0.0001**. On the 12 control pairs the same metrics show
+**no significant difference** (+0.119, p=0.15 and +0.074, p=0.26), so the gain is concentrated
+exactly where the memory holds the fact.
+
+⚠️ **This contradicts the superseded substitutional run, and the contradiction is the point.**
+Comparing `CLAUDE.md` against **RE-call alone**, run 001 found no quality difference (+0.044,
+p=0.43). Comparing `CLAUDE.md` against **`CLAUDE.md` + RE-call**, this run finds +0.188 at
+p=0.0002. **Replacing the hand-written file with retrieval does nothing for answer quality; adding
+retrieval to it roughly doubles correctness.** Prediction 11 expected no significant difference and
+is falsified in the direction nobody predicted.
+
+### Cost
+
+| metric | n | +RE-call | CLAUDE.md | delta mean | delta median | p |
+|---|---|---|---|---|---|---|
+| input_tokens | 48 | 52,938 | 55,232 | -2,293 | **+14,904** | 0.1724 |
+| output_tokens | 48 | 1,208 | 1,358 | -150 | -38 | 0.9150 |
+| wall_time_ms | 48 | 23,344 | 56,379 | -33,035 | **+1,703** | 0.9473 |
+| model_turns | 48 | 4 | 5 | -1 | 0 | 0.8556 |
+
+**The mean and the median disagree in sign on three of four metrics.** Reading means alone would
+claim RE-call is cheaper and faster. It is typically **dearer and slightly slower**, and
+occasionally saves an enormous amount because the baseline goes exploring; the rank-based p-values
+follow the median and none is significant. On the control tasks, where retrieval cannot help, it is
+significantly **slower**: +11,283 ms median, p=0.0269. That is the honest cost of the layer.
+
+### Scoring the predictions
+
+| # | predicted | measured | verdict |
+|---|---|---|---|
+| 1 | off hit rate 0.65 | 0.525 | close, slightly over |
+| 2 | on hit rate 0.30 | **0.000** | under-predicted |
+| 3 | reduction 35 points | **52.5 points**, CI excludes zero | correct, magnitude under-predicted |
+| 4 | 3 of 4 traps improve | **3 of 4** | **exact** |
+| 5a | search rate >= 85% | **85%** (34/40) | **exact** |
+| 6a | governing memo retrieved 55% | **82%** (33/40) | under-predicted |
+| 7 | controls within 10 points | **0.000**, p=1.0000 | **correct** |
+| 8 | on arm worse on `claude_md_only` by 10-30 | 0.000 vs 0.000 | not observed |
+| 9 | input tokens +8% | median +14,904 (~+28%), not significant | under-predicted, unconfirmed |
+| 10 | wall time +10 s median | median +1.7 s, not significant | over-predicted |
+| 11 | no quality difference, within +0.05 | **+0.188, p=0.0002** | **falsified** |
+| 12 | non-answers <10%, arms within 5pp | **0 and 0** | **correct** |
+
+Six correct or exact, three under-predicted, one over-predicted, one falsified, one not observed.
+The house pattern of over-predicting effect sizes did **not** hold here: predictions 2, 3, 6a and 9
+were all too conservative, and the only falsified prediction was falsified by an effect that was
+predicted to be absent.
+
+### What this supports, and what it does not
+
+**Supports:** on this corpus, task set and model, adding a calibrated retrieval memory layer to an
+existing `CLAUDE.md` eliminated a class of known hazard (0 of 40, from a 52.5% baseline) and roughly
+doubled answer correctness, while changing nothing on tasks whose facts the file already held.
+
+**Does not support:** any claim of general uplift; any claim that the work itself succeeds more
+often, since no task here writes code, runs a test or is scored on completion; any cost advantage;
+generalisation beyond the 4 distinct hazards the primary rests on, or beyond an agent working in
+the repository whose memory this is.
+
+**Weaknesses, restated rather than buried:** 4 distinct primary traps, so the per-task view can
+never reach significance; `claude_md_only` retains one task after the `shared_db` exclusion;
+controls are spliced across two runs; the generation was built `--unverified-development`; and this
+run was **not blind**, as recorded above.
+
+The next benchmark, which measures whether the WORK succeeds rather than whether a hazard was
+avoided, is specified in `benchmarks/agent_ab/NEXT-BENCHMARK-TASK-SUCCESS.md`.
