@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 import re
 import threading
 import uuid
@@ -1532,3 +1533,107 @@ def test_the_reclaim_never_touches_a_generation_another_path_built(manager) -> N
         "passes the exclusion assertions above while leaking a full corpus copy per upload"
     )
     assert mine not in confined, "the generation being kept must never be in its own reclaim list"
+
+
+def test_two_ingests_into_one_tenant_cannot_overlap(manager: GenerationManager) -> None:
+    """⛔ **The lost update, reproduced — this is what took the finding out of UNCERTAIN.**
+
+    Nothing serialised `servable_manifest()` through `promote`. Two uploads to one tenant both read
+    the same base manifest M, built M+A and M+B, and whichever promoted second retired the other.
+    The loser's files were gone from the live corpus while its tool call had already returned
+    success. Nothing counted it, because nothing had vanished — `_vanished_note` reports 0 and is
+    right to, which is why this shape is worse than a drop.
+
+    `recall_ingest` runs each tool body through `anyio.to_thread.run_sync`, so two calls genuinely
+    execute in parallel worker threads; this drives the same primitive from two threads.
+    """
+    import threading
+
+    order: list[str] = []
+    inside = threading.Event()
+    release = threading.Event()
+    failed: list[BaseException] = []
+
+    def first() -> None:
+        try:
+            with manager.tenant_ingest_lock():
+                order.append("first-in")
+                inside.set()
+                release.wait(timeout=10)
+                order.append("first-out")
+        except BaseException as exc:  # noqa: BLE001 - reported through `failed`
+            failed.append(exc)
+
+    def second() -> None:
+        try:
+            inside.wait(timeout=10)
+            with manager.tenant_ingest_lock(wait_seconds=10):
+                order.append("second-in")
+        except BaseException as exc:  # noqa: BLE001 - reported through `failed`
+            failed.append(exc)
+
+    one = threading.Thread(target=first)
+    two = threading.Thread(target=second)
+    one.start()
+    two.start()
+    inside.wait(timeout=10)
+    # The second thread is now blocked on the lock. Give it room to get it wrong.
+    time.sleep(1.0)
+    assert "second-in" not in order, (
+        "the second ingest entered while the first still held the tenant: both would seed from the "
+        "same base manifest and the second to promote would silently retire the first"
+    )
+    release.set()
+    one.join(timeout=15)
+    two.join(timeout=15)
+
+    assert not failed, failed
+    assert order == ["first-in", "first-out", "second-in"], order
+
+
+def test_a_second_ingest_refuses_rather_than_hanging(manager: GenerationManager) -> None:
+    """⚠️ A bounded wait, then a refusal that says what to do.
+
+    The caller is an interactive upload inside an MCP tool call, where an unbounded wait is
+    indistinguishable from a hang. A short wait absorbs two clicks in quick succession; past that,
+    saying so is honest. The message must name the tenant and tell the user to retry.
+    """
+    import threading
+
+    from recall.generations import ConcurrentIngest
+
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        with manager.tenant_ingest_lock():
+            holding.set()
+            release.wait(timeout=10)
+
+    keeper = threading.Thread(target=hold)
+    keeper.start()
+    try:
+        assert holding.wait(timeout=10)
+        started = time.monotonic()
+        with pytest.raises(ConcurrentIngest) as caught:
+            with manager.tenant_ingest_lock(wait_seconds=0.5):
+                pass
+        waited = time.monotonic() - started
+    finally:
+        release.set()
+        keeper.join(timeout=15)
+
+    assert waited < 5, f"it must refuse promptly, not hang; waited {waited:.1f}s"
+    assert manager.tenant_id in str(caught.value)
+    assert "try again" in str(caught.value).lower()
+
+
+def test_the_lock_is_released_when_the_ingest_raises(manager: GenerationManager) -> None:
+    """A failed upload must not wedge the tenant against every later one."""
+    with pytest.raises(RuntimeError):
+        with manager.tenant_ingest_lock():
+            raise RuntimeError("the build blew up")
+
+    # Immediately re-acquirable: if the finally did not fire, this refuses.
+    with manager.tenant_ingest_lock(wait_seconds=1.0):
+        pass

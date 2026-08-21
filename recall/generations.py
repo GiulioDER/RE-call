@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
@@ -53,6 +54,15 @@ class InvalidGenerationTransition(GenerationError):
 
 class UnsafePromotion(GenerationError):
     pass
+
+
+class ConcurrentIngest(GenerationError):
+    """Another ingest holds this tenant's lock.
+
+    Raised rather than waited out, because the caller is an interactive upload and an unbounded
+    wait inside a tool call is indistinguishable from a hang. A retry is cheap; a lost upload that
+    reported success is not.
+    """
 
 
 class NoActiveGeneration(GenerationError):
@@ -432,6 +442,60 @@ class GenerationManager:
         if not isinstance(manifest_raw, Mapping) or not isinstance(pipeline_raw, Mapping):
             raise GenerationError("stored generation identity is malformed")
         return IndexManifestV1.from_dict(manifest_raw), PipelineIdentity.from_dict(pipeline_raw)
+
+    @contextmanager
+    def tenant_ingest_lock(self, *, wait_seconds: float = 20.0) -> Iterator[None]:
+        """Serialise the whole ingest for ONE tenant: read the base, build, promote, reclaim.
+
+        ⛔ **Session-scoped, not `pg_advisory_xact_lock`.** The sibling `_source_lock` uses the
+        transaction-scoped form, which is right for the single statement it guards and useless
+        here: an ingest spans several transactions on several connections, and a transaction lock
+        is released at the first commit, which is before the interesting part even starts.
+
+        ⛔ **Why this exists at all.** Nothing serialised `servable_manifest()` through `promote`,
+        so two uploads to one tenant both seeded from the same base manifest M, built M+A and M+B
+        respectively, and whichever promoted second retired the other. The loser's files were
+        absent from the live corpus while its tool call had already reported success — a silent
+        loss with a success message on top, which is the worst shape this codebase has. Nothing
+        counted it, because nothing had vanished: `_vanished_note` reports 0 and is right to.
+
+        A second, narrower hazard closes with it: `_release_superseded` selects READY generations
+        by prefix, and a concurrent upload sits READY between `validate()` and `promote()`. It was
+        therefore a candidate for abandonment by the other upload, which would destroy a build that
+        had already succeeded and then fail its promote with `InvalidGenerationTransition`.
+
+        ⚠️ **Refuses after `wait_seconds` instead of waiting.** The caller is an interactive
+        upload. A bounded wait absorbs the ordinary case of two clicks in quick succession; beyond
+        that, saying "another upload is in progress, try again" is honest and a hang is not.
+
+        The lock is held on its OWN connection, so it outlives each step's transaction, and it is
+        released by closing that connection even if the process dies mid-ingest — a session lock
+        does not survive its backend.
+        """
+        key = f"ingest\x1f{self.tenant_id}"
+        with self._connect() as conn:
+            deadline = time.monotonic() + wait_seconds
+            while True:
+                row = conn.execute(
+                    "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (key,)
+                ).fetchone()
+                if row is not None and row[0]:
+                    break
+                if time.monotonic() >= deadline:
+                    raise ConcurrentIngest(
+                        f"another upload into tenant {self.tenant_id!r} is still running. "
+                        "Uploads to one tenant are serialised, because two at once would each "
+                        "build from the same starting point and the second to finish would "
+                        "silently drop the first one's files. Wait for it to finish and try again."
+                    )
+                time.sleep(0.25)
+            try:
+                yield
+            finally:
+                with suppress(Exception):
+                    conn.execute(
+                        "SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (key,)
+                    )
 
     @staticmethod
     def _source_lock(conn: psycopg.Connection, tenant_id: str, source_uri: str) -> None:

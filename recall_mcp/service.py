@@ -2254,200 +2254,217 @@ def generation_ingest(
         raise ValueError("the staged upload contains no files")
 
     manager = GenerationManager(store._dsn, store.tenant, actor="recall-desktop")
-    try:
-        # ⚠️ The newest SERVABLE generation, not the active one. A refused promotion leaves its
-        # generation READY and never advances `active_generation_id`, so seeding from the active
-        # manifest made each upload silently drop every previous un-promoted upload's files.
-        #
-        # ⛔ **What may be dropped, and why the predicate is not `is_file()`.** `build` calls
-        # `reader.fetch(entry)` for EVERY manifest object with no skip path, and each entry pins a
-        # size and a digest that `fetch` verifies. So this decision has been wrong in both
-        # directions, and each wrong version was a fix for the previous one:
-        #
-        #   1. confined the reader to the staging directory and kept everything, so a wizard-built
-        #      corpus under `data_root` failed the whole upload;
-        #   2. dropped whatever the reader could not reach, which was worse: the upload then
-        #      SUCCEEDED with a truncated manifest and promotion put it live;
-        #   3. dropped on `is_file()`, which conflates "gone" with "cannot be stat-ed" (an offline
-        #      share, a path past the Windows limit, a permission-denied parent) AND carried an
-        #      edited file forward with its stale digest, so `fetch` raised, the generation went to
-        #      `failed`, and the next upload re-seeded the same stale entry, forever.
-        #
-        # `_carry_forward` asks what the manifest actually pinned. Five auditors reached this one
-        # rule by four different routes, which is what says it is the rule and not an edge case.
-        #
-        # ⚠️ **On the cost of getting it wrong, stated accurately.** Earlier versions of this
-        # comment said the superseded generation is deleted by `gc` "after the retention window",
-        # which overstates it: `gc` has one caller in this tree, the explicit `recall generation gc`
-        # command, and it also protects the two most recent retired generations for seven days, and
-        # `rollback` can restore the previous one. The real cost is that the corpus stops being
-        # SERVED and search silently degrades until somebody notices. That is bad enough to fix and
-        # not so bad that it needs exaggerating.
-        active_objects, carried_roots, vanished, restamped = _carry_forward(
-            {entry.uri: entry for entry in manager.servable_manifest().objects}
-        )
-    except NoActiveGeneration:
-        active_objects = {}
-        carried_roots = ()
-        vanished = 0
-        restamped = 0
-
-    # Keep the active corpus and add only this job's files. In particular, do not scan sibling
-    # job directories because a failed upload must not poison every later indexing attempt.
-    for path in job_files:
-        data = path.read_bytes()
-        digest = hashlib.sha256(data).hexdigest()
-        media_type = (
-            "text/x-code"
-            if category == "code"
-            else mimetypes.guess_type(path.name)[0] or "text/plain"
-        )
-        entry = ManifestObjectV1(
-            uri=path.resolve().as_uri(),
-            version_id=digest,
-            media_type=media_type,
-            size=len(data),
-            sha256=digest,
-        )
-        active_objects[entry.uri] = entry
-    objects = sorted(active_objects.values(), key=lambda entry: entry.uri)
-    manifest = IndexManifestV1(
-        tenant_id=store.tenant,
-        corpus_version=f"{_DESKTOP_CORPUS_PREFIX}{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
-        objects=tuple(objects),
-    )
-    # ⚠️ **Verified when the weights can be hashed, honestly unverified when they cannot.**
-    # A desktop upload used to declare `unverified_reason` unconditionally, so `create` refused it
-    # under `RECALL_ENV=production` and no upload to a production tenant could ever succeed. Hashing
-    # the model's own snapshot directory is a real provenance claim: those are the bytes that
-    # produced these vectors. An embedder with no weights on disk still gets an unverified identity
-    # — the alternative would be inventing a digest to pass a gate, which is the one outcome worse
-    # than the refusal.
-    # ⚠️ NOT `digest`: that name is already bound in this function to each uploaded FILE's sha256,
-    # a few lines above. Two different digests under one name in one function is how the wrong one
-    # gets used later.
-    from recall.generation_build import BuildRequest, pipeline_for
-
-    embedder_digest = embedder_artifact_digest(embedder)
-    # ⛔ **Built through `pipeline_for`, not assembled here.** This function used to hardcode
-    # `provider="fastembed"` for every embedder and spell out its own `ChunkerIdentity`. Both were
-    # copies of rules that already exist in `recall/generation_build.py`, and the provider copy was
-    # wrong: `HashingEmbedder` is shipped in this repository and identifies itself as provider
-    # `recall` at revision `hashing-md5-bow-v1`, so a desktop upload recorded it as a fastembed
-    # artifact — false provenance written into an immutable lineage record, which is the one place
-    # a wrong value cannot later be corrected.
+    # ⛔ **One ingest per tenant at a time, and the lock spans everything below.** Nothing
+    # serialised reading the base manifest through `promote`, and `recall_ingest` runs each tool
+    # body on its own worker thread, so two uploads to one tenant both seeded from the same base M,
+    # built M+A and M+B, and whichever promoted second retired the other. The loser's files were
+    # absent from the live corpus while its call had already reported success.
     #
-    # It also silently disagreed about the CHUNKER's identity: this spelled `recall.chunk_text`
-    # with version 1 and empty params, while `chunker_for` records the real parameters. A generation
-    # built here and one built by `recall index` therefore carried different pipeline fingerprints
-    # for the same pipeline, which is exactly what makes a calibration resolve STALE.
-    chunker, pipeline = pipeline_for(
-        embedder,
-        BuildRequest(
-            chunker="code" if category == "code" else "text",
-            artifact_digest=embedder_digest,
-            unverified=not embedder_digest,
-        ),
-    )
-    # ⚠️ Ask for the exemption only when it is actually needed. Passed unconditionally, a
-    # VERIFIED identity still requested `allow_unverified`, which production refuses outright —
-    # so hashing the weights above bought nothing and the upload failed one gate later with a
-    # message about a flag rather than about provenance. Measured end to end.
-    generation = manager.create(manifest, pipeline, allow_unverified=not pipeline.verified)
-    try:
-        stats = manager.build(
-            generation.generation_id,
-            # The staging directory PLUS the directories the carried-forward objects live in.
-            # Those are files a previous generation of this same tenant already indexed, so
-            # re-reading them is what carry-forward means; confining the reader to staging
-            # alone is what made the manifest lossy.
-            ExtractingLocalObjectReader((tenant_root, *carried_roots)),
-            embedder,
-            chunker,
-        )
-        manager.validate(generation.generation_id)
-        # A production-served tenant promotes only a CERTIFIED generation, so produce the
-        # certification rather than leaving the gate unreachable. See `_certify_upload`. The reason
-        # is threaded into the refusal message below rather than raised: `promote` will refuse for
-        # the same underlying fact a moment later, and the caller wants ONE message that says both
-        # what happened and what is left to do.
-        uncertified: str | None = None
-        if manager.certification_required:
-            uncertified = _certify_upload(
-                store._dsn, store.tenant, generation.generation_id, embedder
-            )
-        # ⚠️ Development-only flag; see `GenerationManager.promote`. A desktop upload to a
-        # production tenant now reaches the certification gate rather than being refused for
-        # carrying a flag, which is the whole point of the gate existing.
+    # That is the worst shape available here: nothing VANISHED, so `_vanished_note` correctly
+    # reports 0 and the message says everything carried forward. A silent loss wearing a success
+    # message. It also closes a narrower hazard, since `_release_superseded` selects READY
+    # generations and a concurrent upload sits READY between `validate()` and `promote()`.
+    #
+    # The lock covers the reclaim too, not just the build: abandoning is the destructive half.
+    #
+    # ⚠️ This fix WIDENS the window it protects, which is why it needed the lock rather than a
+    # narrower guard: `_carry_forward` now reads and hashes every carried-forward file between
+    # `servable_manifest()` and `build`.
+    with manager.tenant_ingest_lock():
         try:
-            manager.promote(
-                generation.generation_id,
-                unsafe_development=not manager.certification_required,
-            )
-        except UnsafePromotion as exc:
-            # ⚠️ **Reported as an outcome, not raised as a failure.** The upload WORKED: every file
-            # was read, chunked, embedded and written into a generation that validated. What did
-            # not happen is activation, because a production tenant serves only a certified
-            # generation — the gate doing its job, not the ingest failing.
+            # ⚠️ The newest SERVABLE generation, not the active one. A refused promotion leaves its
+            # generation READY and never advances `active_generation_id`, so seeding from the active
+            # manifest made each upload silently drop every previous un-promoted upload's files.
             #
-            # Raising here told the user their upload failed and invited them to retry it,
-            # rebuilding the same generation for the same refusal. Saying what is true, and what
-            # remains to be done, is the difference between a gate and a wall.
-            # ⛔ **Reclaim what this one supersedes.** A READY generation holds a full copy of the
-            # corpus's chunk rows and `gc` collects only `retired` and `failed`, so one per refused
-            # upload grows the database without bound. `abandon` exists precisely for this state and
-            # says so in its own docstring; `recall/wizard/pipeline.py::_fail` does the same thing on
-            # the same shape of failure. Returning success without it made the leak per-attempt.
+            # ⛔ **What may be dropped, and why the predicate is not `is_file()`.** `build` calls
+            # `reader.fetch(entry)` for EVERY manifest object with no skip path, and each entry pins a
+            # size and a digest that `fetch` verifies. So this decision has been wrong in both
+            # directions, and each wrong version was a fix for the previous one:
             #
-            # The NEWEST is kept, not abandoned: it carries the whole corpus forward and it is the
-            # one the message below tells the user to certify.
-            reclaimed = _release_superseded(manager, generation.generation_id)
-            return IndexResult(
-                files=stats.objects,
-                chunks=stats.chunks,
-                message=(
-                    f"Indexed {stats.chunks} chunk(s) from {stats.objects} file(s) into generation "
-                    f"{generation.generation_id}, which is built and validated but NOT yet live. "
-                    f"It carries forward everything previously uploaded"
-                    + _vanished_note(vanished)
-                    + _restamped_note(restamped)
-                    + (f"; {reclaimed} superseded build(s) released" if reclaimed else "")
-                    + f". {uncertified or exc}"
-                ),
+            #   1. confined the reader to the staging directory and kept everything, so a wizard-built
+            #      corpus under `data_root` failed the whole upload;
+            #   2. dropped whatever the reader could not reach, which was worse: the upload then
+            #      SUCCEEDED with a truncated manifest and promotion put it live;
+            #   3. dropped on `is_file()`, which conflates "gone" with "cannot be stat-ed" (an offline
+            #      share, a path past the Windows limit, a permission-denied parent) AND carried an
+            #      edited file forward with its stale digest, so `fetch` raised, the generation went to
+            #      `failed`, and the next upload re-seeded the same stale entry, forever.
+            #
+            # `_carry_forward` asks what the manifest actually pinned. Five auditors reached this one
+            # rule by four different routes, which is what says it is the rule and not an edge case.
+            #
+            # ⚠️ **On the cost of getting it wrong, stated accurately.** Earlier versions of this
+            # comment said the superseded generation is deleted by `gc` "after the retention window",
+            # which overstates it: `gc` has one caller in this tree, the explicit `recall generation gc`
+            # command, and it also protects the two most recent retired generations for seven days, and
+            # `rollback` can restore the previous one. The real cost is that the corpus stops being
+            # SERVED and search silently degrades until somebody notices. That is bad enough to fix and
+            # not so bad that it needs exaggerating.
+            active_objects, carried_roots, vanished, restamped = _carry_forward(
+                {entry.uri: entry for entry in manager.servable_manifest().objects}
             )
-    except Exception as exc:
-        # ⛔ **This used to be `except Exception: raise`, which is a no-op wearing a policy's
-        # clothes** — and `_certify_upload`'s docstring reasoned about it as if it did something.
-        # After `validate()` the generation is READY, and READY is the one state `gc` cannot
-        # reclaim, so any failure that is not `UnsafePromotion` (a dropped connection during
-        # calibration, a binding error, an unexpected transition) stranded a full copy of the
-        # corpus forever. `recall/wizard/pipeline.py::_fail` does exactly this on the same shape of
-        # failure. The original error is re-raised untouched; the cleanup is best effort.
-        # ⛔ **`fail` FIRST, `abandon` only as the fallback.** This used to call `abandon` alone,
-        # and `abandon` raises `InvalidGenerationTransition` on anything but READY. `validate()` is
-        # what sets READY, so every failure inside `build()` — the longest and most failure-prone
-        # step — was refused, and `suppress` made the refusal silent. `gc` collects `retired` and
-        # `failed`, so those generations stranded a full corpus copy exactly as before the fix. This
-        # is the ladder `recall/wizard/pipeline.py::_fail` uses, and matching it is what the comment
-        # already claimed. The original error is re-raised untouched.
-        _reclaim_failed(manager, generation.generation_id, f"desktop upload failed: {exc}")
-        raise
+        except NoActiveGeneration:
+            active_objects = {}
+            carried_roots = ()
+            vanished = 0
+            restamped = 0
 
-    # ⛔ **The reclaim runs on the SUCCESS path too.** Confining it to the `UnsafePromotion` branch
-    # meant the leak reopened the moment an upload finally certified: every earlier refused build
-    # stayed READY forever, holding a full corpus copy `gc` collects only from `retired`/`failed`.
-    # Three auditors found this independently.
-    _release_superseded(manager, generation.generation_id)
-    return IndexResult(
-        files=stats.objects,
-        chunks=stats.chunks,
-        message=(
-            f"Built and activated generation {generation.generation_id} with "
-            f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
-            + _vanished_note(vanished)
-            + _restamped_note(restamped)
-        ),
-    )
+        # Keep the active corpus and add only this job's files. In particular, do not scan sibling
+        # job directories because a failed upload must not poison every later indexing attempt.
+        for path in job_files:
+            data = path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            media_type = (
+                "text/x-code"
+                if category == "code"
+                else mimetypes.guess_type(path.name)[0] or "text/plain"
+            )
+            entry = ManifestObjectV1(
+                uri=path.resolve().as_uri(),
+                version_id=digest,
+                media_type=media_type,
+                size=len(data),
+                sha256=digest,
+            )
+            active_objects[entry.uri] = entry
+        objects = sorted(active_objects.values(), key=lambda entry: entry.uri)
+        manifest = IndexManifestV1(
+            tenant_id=store.tenant,
+            corpus_version=f"{_DESKTOP_CORPUS_PREFIX}{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
+            objects=tuple(objects),
+        )
+        # ⚠️ **Verified when the weights can be hashed, honestly unverified when they cannot.**
+        # A desktop upload used to declare `unverified_reason` unconditionally, so `create` refused it
+        # under `RECALL_ENV=production` and no upload to a production tenant could ever succeed. Hashing
+        # the model's own snapshot directory is a real provenance claim: those are the bytes that
+        # produced these vectors. An embedder with no weights on disk still gets an unverified identity
+        # — the alternative would be inventing a digest to pass a gate, which is the one outcome worse
+        # than the refusal.
+        # ⚠️ NOT `digest`: that name is already bound in this function to each uploaded FILE's sha256,
+        # a few lines above. Two different digests under one name in one function is how the wrong one
+        # gets used later.
+        from recall.generation_build import BuildRequest, pipeline_for
+
+        embedder_digest = embedder_artifact_digest(embedder)
+        # ⛔ **Built through `pipeline_for`, not assembled here.** This function used to hardcode
+        # `provider="fastembed"` for every embedder and spell out its own `ChunkerIdentity`. Both were
+        # copies of rules that already exist in `recall/generation_build.py`, and the provider copy was
+        # wrong: `HashingEmbedder` is shipped in this repository and identifies itself as provider
+        # `recall` at revision `hashing-md5-bow-v1`, so a desktop upload recorded it as a fastembed
+        # artifact — false provenance written into an immutable lineage record, which is the one place
+        # a wrong value cannot later be corrected.
+        #
+        # It also silently disagreed about the CHUNKER's identity: this spelled `recall.chunk_text`
+        # with version 1 and empty params, while `chunker_for` records the real parameters. A generation
+        # built here and one built by `recall index` therefore carried different pipeline fingerprints
+        # for the same pipeline, which is exactly what makes a calibration resolve STALE.
+        chunker, pipeline = pipeline_for(
+            embedder,
+            BuildRequest(
+                chunker="code" if category == "code" else "text",
+                artifact_digest=embedder_digest,
+                unverified=not embedder_digest,
+            ),
+        )
+        # ⚠️ Ask for the exemption only when it is actually needed. Passed unconditionally, a
+        # VERIFIED identity still requested `allow_unverified`, which production refuses outright —
+        # so hashing the weights above bought nothing and the upload failed one gate later with a
+        # message about a flag rather than about provenance. Measured end to end.
+        generation = manager.create(manifest, pipeline, allow_unverified=not pipeline.verified)
+        try:
+            stats = manager.build(
+                generation.generation_id,
+                # The staging directory PLUS the directories the carried-forward objects live in.
+                # Those are files a previous generation of this same tenant already indexed, so
+                # re-reading them is what carry-forward means; confining the reader to staging
+                # alone is what made the manifest lossy.
+                ExtractingLocalObjectReader((tenant_root, *carried_roots)),
+                embedder,
+                chunker,
+            )
+            manager.validate(generation.generation_id)
+            # A production-served tenant promotes only a CERTIFIED generation, so produce the
+            # certification rather than leaving the gate unreachable. See `_certify_upload`. The reason
+            # is threaded into the refusal message below rather than raised: `promote` will refuse for
+            # the same underlying fact a moment later, and the caller wants ONE message that says both
+            # what happened and what is left to do.
+            uncertified: str | None = None
+            if manager.certification_required:
+                uncertified = _certify_upload(
+                    store._dsn, store.tenant, generation.generation_id, embedder
+                )
+            # ⚠️ Development-only flag; see `GenerationManager.promote`. A desktop upload to a
+            # production tenant now reaches the certification gate rather than being refused for
+            # carrying a flag, which is the whole point of the gate existing.
+            try:
+                manager.promote(
+                    generation.generation_id,
+                    unsafe_development=not manager.certification_required,
+                )
+            except UnsafePromotion as exc:
+                # ⚠️ **Reported as an outcome, not raised as a failure.** The upload WORKED: every file
+                # was read, chunked, embedded and written into a generation that validated. What did
+                # not happen is activation, because a production tenant serves only a certified
+                # generation — the gate doing its job, not the ingest failing.
+                #
+                # Raising here told the user their upload failed and invited them to retry it,
+                # rebuilding the same generation for the same refusal. Saying what is true, and what
+                # remains to be done, is the difference between a gate and a wall.
+                # ⛔ **Reclaim what this one supersedes.** A READY generation holds a full copy of the
+                # corpus's chunk rows and `gc` collects only `retired` and `failed`, so one per refused
+                # upload grows the database without bound. `abandon` exists precisely for this state and
+                # says so in its own docstring; `recall/wizard/pipeline.py::_fail` does the same thing on
+                # the same shape of failure. Returning success without it made the leak per-attempt.
+                #
+                # The NEWEST is kept, not abandoned: it carries the whole corpus forward and it is the
+                # one the message below tells the user to certify.
+                reclaimed = _release_superseded(manager, generation.generation_id)
+                return IndexResult(
+                    files=stats.objects,
+                    chunks=stats.chunks,
+                    message=(
+                        f"Indexed {stats.chunks} chunk(s) from {stats.objects} file(s) into generation "
+                        f"{generation.generation_id}, which is built and validated but NOT yet live. "
+                        f"It carries forward everything previously uploaded"
+                        + _vanished_note(vanished)
+                        + _restamped_note(restamped)
+                        + (f"; {reclaimed} superseded build(s) released" if reclaimed else "")
+                        + f". {uncertified or exc}"
+                    ),
+                )
+        except Exception as exc:
+            # ⛔ **This used to be `except Exception: raise`, which is a no-op wearing a policy's
+            # clothes** — and `_certify_upload`'s docstring reasoned about it as if it did something.
+            # After `validate()` the generation is READY, and READY is the one state `gc` cannot
+            # reclaim, so any failure that is not `UnsafePromotion` (a dropped connection during
+            # calibration, a binding error, an unexpected transition) stranded a full copy of the
+            # corpus forever. `recall/wizard/pipeline.py::_fail` does exactly this on the same shape of
+            # failure. The original error is re-raised untouched; the cleanup is best effort.
+            # ⛔ **`fail` FIRST, `abandon` only as the fallback.** This used to call `abandon` alone,
+            # and `abandon` raises `InvalidGenerationTransition` on anything but READY. `validate()` is
+            # what sets READY, so every failure inside `build()` — the longest and most failure-prone
+            # step — was refused, and `suppress` made the refusal silent. `gc` collects `retired` and
+            # `failed`, so those generations stranded a full corpus copy exactly as before the fix. This
+            # is the ladder `recall/wizard/pipeline.py::_fail` uses, and matching it is what the comment
+            # already claimed. The original error is re-raised untouched.
+            _reclaim_failed(manager, generation.generation_id, f"desktop upload failed: {exc}")
+            raise
+
+        # ⛔ **The reclaim runs on the SUCCESS path too.** Confining it to the `UnsafePromotion` branch
+        # meant the leak reopened the moment an upload finally certified: every earlier refused build
+        # stayed READY forever, holding a full corpus copy `gc` collects only from `retired`/`failed`.
+        # Three auditors found this independently.
+        _release_superseded(manager, generation.generation_id)
+        return IndexResult(
+            files=stats.objects,
+            chunks=stats.chunks,
+            message=(
+                f"Built and activated generation {generation.generation_id} with "
+                f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
+                + _vanished_note(vanished)
+                + _restamped_note(restamped)
+            ),
+        )
 
 
 def _release_superseded(manager: GenerationManager, keep: str) -> int:
