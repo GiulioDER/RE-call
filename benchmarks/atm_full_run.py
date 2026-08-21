@@ -13,6 +13,7 @@ from contextlib import contextmanager
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -22,8 +23,6 @@ from typing import Any
 _SOURCE_ROOT = str(Path(__file__).resolve().parents[1])
 if _SOURCE_ROOT not in sys.path:
     sys.path.insert(0, _SOURCE_ROOT)
-
-import requests
 
 from benchmarks.atm_bench import build_memory_items, git_revision, load_questions, sha256
 from recall.embeddings import (
@@ -202,28 +201,52 @@ def generate_answer(
     }
     last_error: str | None = None
     for attempt in range(max_attempts):
-        response: requests.Response | None = None
         try:
-            attempt_deadline = time.monotonic() + 180.0
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                stream=True,
-                timeout=(30.0, 30.0),
+            completed = subprocess.run(
+                [
+                    "curl",
+                    "--silent",
+                    "--show-error",
+                    "--max-time",
+                    "180",
+                    "--connect-timeout",
+                    "30",
+                    "-H",
+                    f"Authorization: Bearer {api_key}",
+                    "-H",
+                    "Content-Type: application/json",
+                    "-H",
+                    "Connection: close",
+                    "--data-binary",
+                    "@-",
+                    "-w",
+                    "\n__HTTP_STATUS__:%{http_code}",
+                    url,
+                ],
+                input=json.dumps(payload, ensure_ascii=False),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=195,
             )
-            if _retryable_status(response.status_code):
-                last_error = f"provider status {response.status_code}"
+            output, marker, status_text = completed.stdout.rpartition("\n__HTTP_STATUS__:")
+            if not marker:
+                raise RuntimeError(
+                    f"provider transport failed with curl exit {completed.returncode}"
+                )
+            status = int(status_text.strip() or "0")
+            if _retryable_status(status):
+                last_error = f"provider status {status}"
                 if attempt + 1 < max_attempts:
                     time.sleep(min(30.0, 2.0**attempt))
                     continue
-            response.raise_for_status()
-            body_bytes = bytearray()
-            for chunk in response.iter_content(chunk_size=8192):
-                body_bytes.extend(chunk)
-                if time.monotonic() > attempt_deadline:
-                    raise RuntimeError("provider response exceeded the 180 second total timeout")
-            body = json.loads(body_bytes.decode("utf-8"))
+            if completed.returncode != 0 or status >= 400:
+                detail = completed.stderr.strip().splitlines()[0][:160] if completed.stderr else ""
+                raise RuntimeError(
+                    f"provider request failed with status {status}"
+                    + (f": {detail}" if detail else "")
+                )
+            body = json.loads(output)
             choices = body.get("choices") if isinstance(body, dict) else None
             if not isinstance(choices, list) or not choices:
                 raise RuntimeError("provider returned no choices")
@@ -244,15 +267,12 @@ def generate_answer(
             }
             returned_model = body.get("model") if isinstance(body, dict) else None
             return answer, usage_row, str(returned_model) if returned_model else None
-        except (requests.RequestException, ValueError, RuntimeError) as exc:
+        except (subprocess.TimeoutExpired, ValueError, RuntimeError) as exc:
             last_error = str(exc).splitlines()[0][:240]
             if attempt + 1 < max_attempts:
                 time.sleep(min(30.0, 2.0**attempt))
                 continue
             raise RuntimeError(f"answer generation failed after {max_attempts} attempts: {last_error}") from exc
-        finally:
-            if response is not None:
-                response.close()
     raise RuntimeError(f"answer generation failed: {last_error or 'unknown provider error'}")
 
 
@@ -363,6 +383,12 @@ def run(args: argparse.Namespace) -> int:
         if isinstance(loaded_manifest, dict):
             previous_manifest = loaded_manifest
     with _build_retriever(args) as (retriever, embedder, chunks, index_ms):
+        source_commit_history = {
+            commit.strip()
+            for commit in os.environ.get("RECALL_PRIOR_SOURCE_COMMITS", "").split(",")
+            if commit.strip()
+        }
+        source_commit_history.add(git_revision())
         usage_total = {
             key: 0
             for key in ("calls", "prompt_tokens", "completion_tokens", "total_tokens")
@@ -438,6 +464,7 @@ def run(args: argparse.Namespace) -> int:
                 record = {
                     "position": position,
                     "id": question_id,
+                    "source_commit": git_revision(),
                     "answer": answer_row["answer"],
                     "answer_sha256": hashlib.sha256(
                         answer_row["answer"].encode("utf-8")
@@ -514,6 +541,7 @@ def run(args: argparse.Namespace) -> int:
         "table": args.table,
         "tenant": args.tenant,
         "git_revision": git_revision(),
+        "source_commit_history": sorted(source_commit_history),
         "data_sha256": {
             str(path): sha256(path)
             for path in (args.qa_file, args.image_file, args.video_file, args.email_file)
