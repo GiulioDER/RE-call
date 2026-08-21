@@ -111,7 +111,7 @@ reusable as a template instead of one-off prose.
 ### Auto-index
 
 After scaffolding, the wizard indexes `memory/` into the DB immediately, using the
-same `Indexer`/`PgVectorStore` path `recall index` uses (`recall/cli.py:2654-2669`),
+same `Indexer`/`PgVectorStore` path `recall index` uses (`recall/cli.py:2656-2671`),
 so `recall_search` can find the new memory files without the user needing to run
 `recall index` by hand first.
 
