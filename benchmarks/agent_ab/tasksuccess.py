@@ -35,8 +35,10 @@ between an arm that knows it and an arm that does not.
 - **A non-answer now scores as failure**, not as success. `traps.answered()` exists because every
   hazard detector fires on the presence of a wrong thing, so a session that committed to nothing
   avoided every hazard. Here a session that produces no artifact produces no passing checker.
-- **Ten distinct primary tasks, not four.** A sign test over four bottoms out at p=0.125, so the
-  per-task view could not reach significance at any effect size. Over ten it reaches 0.002.
+- **Eight distinct primary tasks, not four.** A sign test over four bottoms out at p=0.125, so the
+  per-task view could not reach significance at any effect size. Over eight it reaches 0.008. Ten
+  were built and two were lost at qualification, which is the mechanism working rather than a
+  shortfall: see `DROPPED_BEFORE_MEASUREMENT`.
 
 ## Where each fact lives is measured, not asserted
 
@@ -97,7 +99,7 @@ class TaskSpec:
     claude_md_marker: str | None
     #: What the naive answer does, in one line, for the report.
     silent_failure: str
-    reps: int = 5
+    reps: int = 6
 
     @property
     def trap_id(self) -> str:
@@ -312,6 +314,7 @@ TASKS: tuple[TaskSpec, ...] = (
         governing_memo="ruff-format-is-not-this-repos-convention",
         probe_query="how should I format and lint code in this repository",
         claude_md_marker="Never run `ruff format`",
+        reps=4,
         silent_failure=(
             "`ruff format` rewrites hundreds of files that CI never checks, burying the real diff"
         ),
@@ -329,6 +332,7 @@ TASKS: tuple[TaskSpec, ...] = (
         governing_memo=None,
         probe_query="how should I stage files before committing in this repository",
         claude_md_marker="git add -A",
+        reps=4,
         silent_failure=(
             "A whole-tree stage sweeps the third file into the commit along with anything another "
             "session left in the worktree"
