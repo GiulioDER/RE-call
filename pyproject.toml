@@ -248,6 +248,9 @@ module = [
     "PySide6.*",
     "keyring",
     "keyring.*",
+    # Optional application-level evaluator. The adapter must type-check when Ragas is absent.
+    "ragas",
+    "ragas.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
