@@ -8,6 +8,54 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Added
+
+* **`recall calibration drift` says whether the corpus under a live calibration has moved far
+  enough to need refitting.** Until now the drift question could only be asked *after* a rebuild:
+  `resolve` compares fingerprints and answers `STALE` on any mismatch, which is a yes/no about
+  identity rather than a statement about magnitude, and `carry-forward` needs a new generation to
+  already exist. Nothing could be asked the question an operator actually has between rebuilds.
+
+  Two tiers, and which one produced the verdict is always in the output. The **screen** is a
+  manifest comparison over `(uri, sha256)`: no embedding, no retrieval, not even a model load. The
+  **probe** replays the calibration's own stored labelled query set and measures what the frozen
+  threshold now costs, per class, by the same two conditions `carry-forward` enforces. ⛔ **The
+  screen firing is never reported as a verdict**: where the probe cannot run the strongest verdict
+  is `recalibrate_recommended`, and the report names the check that was not made, so a directory can
+  never reach `recalibrate_required` however total its delta.
+
+* **`RECALL_AUTO_CALIBRATE` and `recall calibration auto` re-establish a calibration without asking
+  for labels.** After a generation build: `off` does nothing, `warn` (the default) reports, `auto`
+  additionally carries the threshold forward, or refits it on the same stored labelled evidence
+  when it has to move. **Neither path loosens certification**, so the automation is in what gets
+  run and never in what gets accepted, and neither invents questions: a tenant with no published
+  calibration reports `skipped`, because deciding what the labelled questions should be is not a
+  decision to make unattended.
+
+* **`recall calibration carry-forward`** and the `corpus_delta` / `threshold_error_rates`
+  primitives, rescued from an unmerged branch and rebased onto master.
+
+### Changed
+
+* ⚠️ **There is deliberately no corpus delta at which recalibration is demanded outright, and this
+  reverses the design this feature started with.** Measured over 57 snapshots of three real corpus
+  histories (`docs/preregistrations/2026-08-21-calibration-drift-trigger.md`): the frozen threshold
+  first crossed the 0.10 error bound at a delta of **0.945** and never below it, so a delta-only
+  rule at 0.25 fires on **56 of 57** snapshots and is right about **5**, a precision of **0.09**.
+  The labels also proved far more durable than that rule assumed: at delta 0.981 only **27.5%** of
+  the answerable queries' original evidence still existed and the false-abstain rate was **0.025**.
+  What moved was the false-*confirm* rate, tracking corpus **growth** rather than change as such.
+
+  This does **not** license raising `--max-corpus-delta` on carry-forward, and it was left at 0.25.
+  That bound governs whether a threshold may be *inherited*, and what the numbers establish is that
+  a delta is a poor alarm, not that a large delta is safe.
+
+
+- `recall uninstall` also removes the desktop app's handoff file from the user config directory
+  (`%APPDATA%/RE-call/runtime.json`), which the previous release looked for in the wrong place.
+- `--selftest` resolves the embedder only when a model cache already exists, and says which branch
+  it took. It was downloading model weights on a cold cache.
+
 ### Fixed
 
 - **A desktop upload no longer silently shrinks the corpus.** Carried-forward files that live
@@ -33,12 +81,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - **`corpus_version` may no longer begin with `desktop-`.** That prefix decides which generations
   the desktop upload path abandons; a wizard corpus carrying it would have been reclaimed.
 
-### Changed
-
-- `recall uninstall` also removes the desktop app's handoff file from the user config directory
-  (`%APPDATA%/RE-call/runtime.json`), which the previous release looked for in the wrong place.
-- `--selftest` resolves the embedder only when a model cache already exists, and says which branch
-  it took. It was downloading model weights on a cold cache.
 
 ## [0.9.7]
 
