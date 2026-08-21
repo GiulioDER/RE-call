@@ -143,16 +143,12 @@ def _evenly_spaced(items: Sequence[Any], count: int) -> list[Any]:
     if count < 2:
         return [items[-1]]
     step = (len(items) - 1) / (count - 1)
-    picked = [items[round(index * step)] for index in range(count)]
-    # `round` can collide on adjacent indices for a short history; dedupe preserving order.
-    seen: set[int] = set()
-    unique = []
-    for item in picked:
-        key = id(item) if not isinstance(item, str) else hash(item)
-        if key not in seen:
-            seen.add(key)
-            unique.append(item)
-    return unique
+    # `round` can collide on adjacent positions for a short history, so the indices are deduped
+    # BEFORE they are used. Deduping the drawn items instead would be wrong for any sequence that
+    # can legitimately repeat a value, and deduping on `id()` would additionally depend on which
+    # objects CPython happens to intern.
+    positions = sorted({round(index * step) for index in range(count)})
+    return [items[position] for position in positions]
 
 
 class GitHistory:
@@ -501,7 +497,15 @@ def measure_corpus(
         unanswerable = [float(s) for s, ok in zip(scores, answerable_mask, strict=True) if not ok]
         errors = threshold_error_rates(answerable, unanswerable, fitted.threshold)
         auc = separability(answerable, unanswerable)
-        ci = separability_interval(auc, len(answerable), len(unanswerable)) if auc else (0.0, 1.0)
+        # `is not None`, never a truth test. An AUC of exactly 0.0 is a real and dramatic
+        # measurement (the classes are perfectly inverted) and a falsy check would file it under
+        # "could not judge", which is the failure `memory/missing-input-becomes-a-clean-null.md`
+        # names: an absent input and a constant become indistinguishable in the output.
+        ci = (
+            separability_interval(auc, len(answerable), len(unanswerable))
+            if auc is not None
+            else (0.0, 1.0)
+        )
         refit = from_samples(EMBEDDER, answerable, unanswerable)
         delta = corpus_delta(base_objects, snapshot.manifest_objects())
         present = {_sha256(text.encode("utf-8")) for text in chunks}
