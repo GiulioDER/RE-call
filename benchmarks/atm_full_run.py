@@ -49,6 +49,7 @@ DEFAULT_CANDIDATE_K = 25
 DEFAULT_RETRIEVAL_K = 10
 DEFAULT_EMBEDDING_BATCH_SIZE = 32
 DEFAULT_ANSWER_WORKERS = 1
+DEFAULT_TRUNCATION_RETRY_MAX_OUTPUT_TOKENS = 8192
 
 
 def _positive_int(value: str) -> int:
@@ -162,6 +163,10 @@ def _retryable_status(status: int) -> bool:
     return status == 429 or status >= 500
 
 
+class OutputCeilingReached(RuntimeError):
+    """The provider completed only because the configured output ceiling was reached."""
+
+
 def generate_answer(
     *,
     question: str,
@@ -249,7 +254,9 @@ def generate_answer(
             if not isinstance(choice, dict):
                 raise RuntimeError("provider returned an invalid choice")
             if choice.get("finish_reason") == "length":
-                raise RuntimeError("provider answer reached the configured output ceiling")
+                raise OutputCeilingReached(
+                    "provider answer reached the configured output ceiling"
+                )
             message = choice.get("message", {})
             answer = _message_text(message.get("content") if isinstance(message, dict) else None)
             if not answer:
@@ -262,6 +269,8 @@ def generate_answer(
             }
             returned_model = body.get("model") if isinstance(body, dict) else None
             return answer, usage_row, str(returned_model) if returned_model else None
+        except OutputCeilingReached:
+            raise
         except (subprocess.TimeoutExpired, ValueError, RuntimeError) as exc:
             last_error = str(exc).splitlines()[0][:240]
             if attempt + 1 < max_attempts:
@@ -430,31 +439,58 @@ def run(args: argparse.Namespace) -> int:
 
         def answer_one(
             item: tuple[int, dict[str, Any], dict[str, Any]],
-        ) -> tuple[int, str, dict[str, Any], dict[str, int], str | None]:
+        ) -> tuple[int, str, dict[str, Any], dict[str, int], str | None, dict[str, Any]]:
             position, question, row = item
-            answer, usage, returned_model = generate_answer(
-                question=question["question"],
-                qtype=question.get("qtype"),
-                evidence=_evidence_text(row["hits"], args.evidence_chars),
-                model=args.answer_model,
-                base_url=args.answer_base_url,
-                api_key=api_key,
-                reasoning_effort=args.reasoning_effort,
-                max_output_tokens=args.max_output_tokens,
-                max_attempts=args.max_attempts,
-            )
+            generation_kwargs = {
+                "question": question["question"],
+                "qtype": question.get("qtype"),
+                "evidence": _evidence_text(row["hits"], args.evidence_chars),
+                "model": args.answer_model,
+                "base_url": args.answer_base_url,
+                "api_key": api_key,
+                "reasoning_effort": args.reasoning_effort,
+                "max_attempts": args.max_attempts,
+            }
+            used_truncation_retry = False
+            generation_max_output_tokens = args.max_output_tokens
+            try:
+                answer, usage, returned_model = generate_answer(
+                    **generation_kwargs,
+                    max_output_tokens=args.max_output_tokens,
+                )
+            except OutputCeilingReached:
+                retry_limit = args.truncation_retry_max_output_tokens
+                if retry_limit <= args.max_output_tokens:
+                    raise
+                used_truncation_retry = True
+                generation_max_output_tokens = retry_limit
+                answer, usage, returned_model = generate_answer(
+                    **generation_kwargs,
+                    max_output_tokens=retry_limit,
+                )
             return (
                 position,
                 question["id"],
                 {"id": question["id"], "answer": answer},
                 usage,
                 returned_model,
+                {
+                    "requested_max_output_tokens": args.max_output_tokens,
+                    "generation_max_output_tokens": generation_max_output_tokens,
+                    "used_truncation_retry": used_truncation_retry,
+                },
             )
 
         completed = len(answers)
-        def accept_answer(result: tuple[int, str, dict[str, Any], dict[str, int], str | None]) -> None:
-            nonlocal completed
-            position, question_id, answer_row, usage, returned_model = result
+        truncation_retry_count = sum(
+            1 for record in answer_records.values() if record.get("used_truncation_retry")
+        )
+
+        def accept_answer(
+            result: tuple[int, str, dict[str, Any], dict[str, int], str | None, dict[str, Any]]
+        ) -> None:
+            nonlocal completed, truncation_retry_count
+            position, question_id, answer_row, usage, returned_model, generation_meta = result
             record = {
                 "position": position,
                 "id": question_id,
@@ -465,6 +501,7 @@ def run(args: argparse.Namespace) -> int:
                 ).hexdigest(),
                 "usage": usage,
                 "returned_model": returned_model,
+                **generation_meta,
             }
             _write_json(answer_records_path / f"{position:04d}.json", record)
             answer_records[question_id] = record
@@ -475,6 +512,8 @@ def run(args: argparse.Namespace) -> int:
                 usage_total[key] += usage[key]
             if returned_model:
                 returned_models.add(returned_model)
+            if generation_meta.get("used_truncation_retry"):
+                truncation_retry_count += 1
             completed += 1
             _write_json(
                 usage_checkpoint_path,
@@ -534,6 +573,8 @@ def run(args: argparse.Namespace) -> int:
             "effective_deepseek_effort": "high" if args.reasoning_effort == "medium" else None,
         },
         "max_output_tokens": args.max_output_tokens,
+        "truncation_retry_max_output_tokens": args.truncation_retry_max_output_tokens,
+        "truncation_retry_count": truncation_retry_count,
         "usage": usage_total,
         "usage_record_count": len(answer_records),
         "usage_source": "atomic per-answer records",
@@ -575,6 +616,11 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--answer-model", default=DEFAULT_MODEL)
     ap.add_argument("--reasoning-effort", choices=("none", "minimal", "low", "medium", "high"), default="medium")
     ap.add_argument("--max-output-tokens", type=int, default=DEFAULT_MAX_OUTPUT_TOKENS)
+    ap.add_argument(
+        "--truncation-retry-max-output-tokens",
+        type=int,
+        default=DEFAULT_TRUNCATION_RETRY_MAX_OUTPUT_TOKENS,
+    )
     ap.add_argument("--evidence-chars", type=int, default=DEFAULT_EVIDENCE_CHARS)
     ap.add_argument("--max-attempts", type=int, default=4)
     ap.add_argument("--answer-workers", type=_positive_int, default=DEFAULT_ANSWER_WORKERS)
