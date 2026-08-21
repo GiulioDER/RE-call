@@ -160,10 +160,21 @@ class GitHistory:
     unchanged file must not be re-read, re-chunked or re-embedded.
     """
 
-    def __init__(self, repo: Path, prefix: str, suffix: str) -> None:
+    def __init__(
+        self, repo: Path, prefix: str, suffix: str, exclude: Sequence[str] = ()
+    ) -> None:
         self.repo = repo
         self.prefix = prefix
         self.suffix = suffix
+        #: Paths kept out of the corpus entirely. Needed for exactly one reason, and it is a
+        #: property of THIS repository's history rather than a general knob: until 2026-08-18
+        #: (`docs/preregistrations/2026-08-18-offtopic-pool-out-of-source.md`) the off-topic
+        #: subject pool lived inside `recall/eval/synthetic.py` as source, so a code corpus rooted
+        #: here contains the very word list the unanswerable queries are drawn from.
+        #: `generate_offline` refuses such a corpus outright, and its refusal names this fix:
+        #: "the corpus probably includes a copy of the pool itself (recall's own source does), and
+        #: the fix is to exclude that path rather than to supply a new subject list."
+        self.exclude = tuple(exclude)
         self._blob_cache: dict[str, bytes] = {}
 
     def commits(self) -> list[str]:
@@ -182,6 +193,8 @@ class GitHistory:
             if len(fields) < 3 or fields[1] != "blob":
                 continue  # submodule or tree entry; neither is a source
             if not path.endswith(self.suffix):
+                continue
+            if any(path == item or path.endswith("/" + item) for item in self.exclude):
                 continue
             entries.append((path, fields[2]))
         return entries
@@ -672,9 +685,15 @@ def build_specs(repo: Path, memory_root: Path | None) -> list[CorpusSpec]:
         ),
         CorpusSpec(
             id="code",
-            describe=f"{repo.name}/recall/**/*.py at commits that touched recall/",
+            describe=(
+                f"{repo.name}/recall/**/*.py at commits that touched recall/, less "
+                f"recall/eval/synthetic.py, which held the off-topic subject pool as source "
+                f"until 2026-08-18"
+            ),
             chunker=chunk_code,
-            snapshots=GitHistory(repo, "recall", ".py").snapshots,
+            snapshots=GitHistory(
+                repo, "recall", ".py", exclude=("recall/eval/synthetic.py",)
+            ).snapshots,
             change_mode="edit heavy",
         ),
     ]

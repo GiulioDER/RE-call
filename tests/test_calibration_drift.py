@@ -27,7 +27,6 @@ from recall.calibration_v2 import (
     CalibrationStatus,
 )
 from recall.drift import (
-    DRIFT_REQUIRED_DELTA,
     DRIFT_SCREEN_DELTA,
     AutoCalibrationMode,
     DriftReport,
@@ -240,7 +239,7 @@ def test_a_change_over_the_screen_is_probed_and_can_come_back_stable(carry_tenan
 
     child = _ready(manager, embedder, _bodies(changed=2), "v2")
     report = evaluate_drift(repository, generation_id=child, embedder=embedder)
-    assert DRIFT_SCREEN_DELTA <= report.delta["corpus_delta"] < DRIFT_REQUIRED_DELTA
+    assert report.delta["corpus_delta"] >= DRIFT_SCREEN_DELTA
     assert report.verdict is DriftVerdict.STABLE
     assert report.probe is not None
     assert report.probe["threshold"] == published.threshold
@@ -277,12 +276,16 @@ def test_required_when_the_frozen_threshold_stops_deciding(carry_tenant) -> None
 
 
 @requires_db
-def test_a_delta_past_the_bound_is_required_without_embedding_anything(carry_tenant) -> None:  # noqa: F811, E501
-    """Refused before the probe, and the reason is epistemic rather than statistical.
+def test_a_huge_delta_is_still_probed_rather_than_condemned_on_its_size(carry_tenant) -> None:  # noqa: F811, E501
+    """Every source rewritten, and the verdict is still whatever the probe says.
 
-    Past this point the labelled questions are about a corpus that no longer exists. Re-scoring
-    them would produce a confident, well formed answer about the wrong thing, which is worse than
-    no answer. `probe is None` is the assertion that proves the refusal came first.
+    This test asserts the ABSENCE of a rule an earlier draft had: RECALIBRATE_REQUIRED once the
+    delta passed `DEFAULT_MAX_CORPUS_DELTA`. Measured over 38 snapshots of two real corpus
+    histories, that rule fires on 37 and is right about 4, and the frozen threshold's error did not
+    cross the bound below a delta of 0.945. Condemning a corpus on its delta is a guard crying wolf
+    nine times in ten.
+
+    If this ever starts returning REQUIRED with `probe is None`, a delta-only route has come back.
     """
     tenant, manager = carry_tenant
     embedder = _CarryEmbedder()
@@ -292,10 +295,10 @@ def test_a_delta_past_the_bound_is_required_without_embedding_anything(carry_ten
 
     child = _ready(manager, embedder, _bodies(changed=CORPUS_SIZE), "v2")
     report = evaluate_drift(repository, generation_id=child, embedder=embedder)
-    assert report.delta["corpus_delta"] >= DRIFT_REQUIRED_DELTA
-    assert report.verdict is DriftVerdict.RECALIBRATE_REQUIRED
-    assert report.probe is None
-    assert "stops describing this corpus" in report.reason
+    assert report.delta["corpus_delta"] == pytest.approx(1.0)
+    assert report.probe is not None, "a probeable generation must be probed at any delta"
+    assert report.verdict is DriftVerdict.STABLE
+    assert report.probe["within_error"] is True
 
 
 @requires_db
@@ -320,10 +323,13 @@ def test_a_directory_can_only_ever_be_recommended(carry_tenant, tmp_path) -> Non
         candidate_label=str(tmp_path),
         embedder=embedder,
     )
-    # Nothing in common with the calibrated corpus, so the delta is total.
+    # Nothing in common with the calibrated corpus, so the delta is TOTAL: the largest number this
+    # signal can produce, on a corpus that shares not one source with the calibrated one. Even here
+    # the verdict is a recommendation, because nothing has scored it.
     assert report.delta["corpus_delta"] == pytest.approx(1.0)
-    assert report.verdict is DriftVerdict.RECALIBRATE_REQUIRED
+    assert report.verdict is DriftVerdict.RECALIBRATE_RECOMMENDED
     assert report.probe is None
+    assert "no index to score against" in report.reason
 
 
 @requires_db

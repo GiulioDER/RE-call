@@ -28,6 +28,32 @@ than no guard (`memory/a-guard-that-cries-wolf-is-worse-than-none.md`).
 lifts every unanswerable score by the same amount leaves AUC at 1.00 while sliding the whole class
 over a threshold that is not allowed to move. The outcome here is the per-class error of the fixed
 cut, each rate over its own denominator. See `memory/separability-cannot-see-a-shifted-class.md`.
+
+## Why no delta, however large, is a verdict on its own
+
+An earlier draft of this module reported `RECALIBRATE_REQUIRED` once the delta passed
+`DEFAULT_MAX_CORPUS_DELTA`, on the reasoning that past that point the labelled query set describes a
+corpus that no longer exists. That reasoning is intuitive and **the measurement contradicts it**.
+
+Measured 2026-08-21 over 38 snapshots of two real corpus histories:
+
+- The frozen threshold first went over `DEFAULT_MAX_CARRY_FORWARD_ERROR` at a delta of **0.945**,
+  and never below it.
+- A delta-only rule at 0.25 fires on **37 of 38** snapshots and is right about **4**, a precision of
+  **0.11**. It would have demanded recalibration on twenty consecutive states of this repository's
+  `docs/` where the threshold was measurably fine, several of them with a LOWER error than the day
+  it was fitted.
+- The labels proved far more durable than the argument assumed. At delta 0.981 only **27.5%** of the
+  answerable queries' original evidence chunks still existed, and the false-abstain rate was
+  **0.025**.
+- What moved was the **false-confirm** rate, and it tracked corpus GROWTH rather than change as
+  such: Spearman 0.95 against growth on `docs`, where growth and delta are collinear at 0.98, so
+  this measurement cannot separate the two. A top-1 cosine is a max over the index, so added
+  documents can only raise an unanswerable query's score. How much of the corpus was *rewritten*
+  predicts nothing about that.
+
+So the probe decides, always, wherever a probe can run. Where one cannot, the strongest verdict
+reachable is `RECALIBRATE_RECOMMENDED`.
 """
 
 from __future__ import annotations
@@ -56,8 +82,8 @@ from recall.observability import get_logger
 _log = get_logger("drift")
 
 __all__ = [
-    "AutoCalibrationMode",
     "DRIFT_SCREEN_DELTA",
+    "AutoCalibrationMode",
     "DriftReport",
     "DriftVerdict",
     "auto_recalibrate",
@@ -66,28 +92,29 @@ __all__ = [
 ]
 
 
-#: Corpus delta below which nothing is reported and no probe is spent.
+#: Corpus delta below which no probe is spent and nothing is reported.
 #:
-#: **Measured, not chosen.** `docs/preregistrations/2026-08-21-calibration-drift-trigger.md`, three
-#: corpora, one embedder. The value is the largest screen that still catches every snapshot whose
-#: frozen threshold had gone over `DEFAULT_MAX_CARRY_FORWARD_ERROR`, so it is tuned for recall of
-#: the failures rather than for precision: a screen that fires needlessly costs one probe, and a
-#: screen that stays quiet costs an operator a threshold that has silently stopped deciding.
+#: **A cost decision with a measured margin, not a tuned optimum, and the difference matters.**
+#: Measured 2026-08-21 over 38 snapshots of two real corpus histories
+#: (`docs/preregistrations/2026-08-21-calibration-drift-trigger.md`,
+#: `results/calibration_drift_2026-08-21.json`): the frozen threshold first went over
+#: `DEFAULT_MAX_CARRY_FORWARD_ERROR` at a delta of **0.945**, and never below it. So this screen
+#: sits roughly nineteen times below the smallest failure anyone has observed.
 #:
-#: ⚠️ It is a SCREEN and not a verdict. Below it, this module is quiet because the probe is not
-#: worth spending, not because the threshold has been shown to be fine.
+#: It is low on purpose. Firing costs one probe, which is a retrieval per labelled query and takes
+#: seconds. Staying quiet costs an operator a threshold that has silently stopped deciding, and
+#: that failure is invisible by construction. When the two errors are that asymmetric, the screen
+#: belongs near zero and the probe does the judging.
+#:
+#: ⚠️ It is a SCREEN and not a verdict. Below it this module is quiet because a probe was not worth
+#: spending, never because the threshold has been shown to be fine.
 #:
 #: Re-measure, from your own worktree:
 #:
 #:     python -m benchmarks.calibration_drift --out results/calibration_drift.json
+#:     python -m benchmarks.calibration_drift --analyze results/calibration_drift.json
 DRIFT_SCREEN_DELTA = 0.05
 
-#: Delta past which no probe can rescue the calibration, so recalibration is reported as required
-#: without spending one. Deliberately the SAME number `carry_forward` refuses at: past it, the
-#: labelled query set is describing a corpus that no longer exists, and re-scoring it says nothing
-#: about the queries nobody labelled. Two different bounds for one idea would be a second place to
-#: forget to update.
-DRIFT_REQUIRED_DELTA = DEFAULT_MAX_CORPUS_DELTA
 
 
 class DriftVerdict(StrEnum):
@@ -99,8 +126,9 @@ class DriftVerdict(StrEnum):
     #: The screen fired and the decisive check could not be made. Named separately from REQUIRED
     #: because the remedy differs: run the probe, or recalibrate if you cannot.
     RECALIBRATE_RECOMMENDED = "recalibrate_recommended"
-    #: Measured: the frozen threshold's error is over the bound, or the delta is past the point
-    #: where the labelled evidence describes this corpus at all.
+    #: **Measured.** The probe ran and the frozen threshold's error is over the bound, or the
+    #: classes have stopped separating. Only ever reached through the probe: the module
+    #: docstring records the measurement that removed the delta-only route.
     RECALIBRATE_REQUIRED = "recalibrate_required"
     #: There is nothing to compare against. A missing calibration is not low drift.
     UNKNOWN = "unknown"
@@ -324,7 +352,6 @@ def evaluate_drift(
     #: Passing an already-built embedder is still fine and is what a caller that has one should do.
     embedder: "Embedder | Callable[[], Embedder] | None" = None,
     screen_delta: float = DRIFT_SCREEN_DELTA,
-    required_delta: float = DRIFT_REQUIRED_DELTA,
     max_error: float = DEFAULT_MAX_CARRY_FORWARD_ERROR,
     probe: bool = True,
 ) -> DriftReport:
@@ -332,8 +359,9 @@ def evaluate_drift(
 
     Exactly one of `generation_id` and `corpus_objects` names the candidate corpus. A generation can
     be probed, because its chunks are in the index; a directory cannot, because nothing has embedded
-    it yet, and that asymmetry is why the report distinguishes RECOMMENDED from REQUIRED rather than
-    guessing.
+    it yet. That asymmetry is the whole reason RECOMMENDED exists as a separate verdict: a corpus
+    nobody has scored cannot produce a measurement, and **no delta is large enough to stand in for
+    one**; see the module docstring for the numbers behind that.
 
     `probe=False` forces the screen-only path even where a probe was possible, which is what a
     post-index hook wants on a corpus that is rebuilt continuously: the probe costs one retrieval
@@ -385,21 +413,6 @@ def evaluate_drift(
             reason=(
                 f"the corpus is byte-identical to the {delta['sources_parent']} sources "
                 f"calibration {artifact.calibration_id} was fitted on"
-            ),
-            **common,
-        )
-
-    if magnitude >= required_delta:
-        # Refused before any embedding work, and for the reason `carry_forward` refuses: past this
-        # point the labelled set is evidence about a corpus that no longer exists, and re-scoring it
-        # would answer confidently about the wrong thing.
-        return DriftReport(
-            verdict=DriftVerdict.RECALIBRATE_REQUIRED,
-            reason=(
-                f"corpus delta {magnitude:.3f} is at or past {required_delta:.3f}, the point where "
-                f"the labelled query set behind calibration {artifact.calibration_id} stops "
-                f"describing this corpus. Re-scoring it would say nothing about the queries nobody "
-                f"labelled. Recalibrate against a labelled set drawn from the corpus as it is now."
             ),
             **common,
         )
