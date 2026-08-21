@@ -361,6 +361,13 @@ jobs:
       # Git Bash, which windows-latest ships. This suite covers session-space.sh,
       # the shell half of the same guard, including the claim-lock atomicity that
       # `set -C` silently failed to provide.
+      # Docker is stubbed in this one, so it runs on a runner with no daemon. It covers the
+      # orphan classifier, which reported a clean machine while five containers from a removed
+      # worktree sat exited on it.
+      - name: session-db.sh
+        shell: bash
+        run: bash scripts/session_db_tests.sh
+
       - name: session-space.sh
         shell: bash
         run: bash scripts/session_space_tests.sh
@@ -445,7 +452,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
 
       # `--resolution lowest-direct`: oldest version of each DIRECT dependency, transitives
       # resolved normally. `lowest` would also pin every transitive to its floor, which tests
@@ -502,7 +509,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
 
       # TWO INDEPENDENT CHECKS THAT MUST NOT BE ABLE TO DISABLE EACH OTHER.
       #

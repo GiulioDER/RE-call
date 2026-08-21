@@ -33,7 +33,12 @@ which is correct: an author who touches a document has had the chance to look at
 
 ## What it does not do
 
-It cannot see uncommitted edits, because it compares committed trees. It needs real history, so CI
+A DOCUMENT with uncommitted edits is skipped, because its baseline is unknowable. A cited SOURCE
+file with uncommitted edits is not skipped and is compared as it stands on disk, which is the file
+`check_citation` reads and the file whoever repairs the citation will open. This sentence used to
+say the checker "cannot see uncommitted edits, because it compares committed trees", and while that
+was true it made the destination line wrong by the uncommitted delta whenever a cited source was
+dirty. It needs real history, so CI
 must check out with `fetch-depth: 0`; with a shallow clone it says so and fails rather than passing
 vacuously. And it says nothing about whether a citation was ever right, only whether it still means
 what it meant, which is the failure this repository actually keeps hitting.
@@ -201,7 +206,16 @@ def line_map(path: str, base: str) -> dict[int, int | None] | None:
     a move: whatever was cited may no longer be there at all. A None RETURN means the file did not
     change, so every citation into it is still good.
     """
-    diff = git("diff", "--unified=0", "--no-color", f"{base}..HEAD", "--", path)
+    # `base`, NOT `base..HEAD`. This diffs the base against the WORKING TREE, which is the file
+    # `check_citation` reads into `body` and the file whoever repairs the citation will open.
+    #
+    # ⚠️ It used to be `f"{base}..HEAD"`, and the docstring above already said "the working tree",
+    # so the intent was recorded correctly and only the code disagreed. With uncommitted changes to
+    # a cited source file the two states differ by the uncommitted delta, and the checker then
+    # named a destination line its own `body` did not have at that content. Twice in consecutive
+    # runs that pointed at unrelated code, a comment fragment and a `ValueError`, each off by a
+    # plausible small number and each authoritative enough to copy without checking.
+    diff = git("diff", "--unified=0", "--no-color", base, "--", path)
     if not diff.strip():
         return None
 

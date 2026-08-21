@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import os
 import re
 import time
+from typing import Literal
 
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.guards import DEFAULT_GAP_THRESHOLD, gap_warning, staleness
@@ -73,6 +74,85 @@ class StructuralExpansionPolicy:
             raise ValueError("chunks_per_source must be positive")
         if self.radius < 0:
             raise ValueError("radius must not be negative")
+
+
+@dataclass(frozen=True)
+class SuccessorExpansionPolicy:
+    """Bounded, opt in retrieval of a declared successor the candidate pool did not already hold.
+
+    Unlike the two policies above there is deliberately no `relational_query_only` gate. Those
+    expand on a guess about the QUERY: a relational question probably wants more of the same
+    document. This one fires on a fact about the CORPUS: a retrieved memory declares itself
+    superseded. A query-shape filter could only drop cases the edge has already proved worth
+    expanding.
+    """
+
+    enabled: bool = False
+    max_sources: int = 2
+    chunks_per_source: int = 3
+    #: How verdict-`ok` hits are ordered once a successor has been promoted. Fetching alone is not
+    #: enough: measured, the successor is promoted and then lands at rank 5 behind distractors,
+    #: because `evaluate` preserves pool position and a fetched chunk is appended last.
+    #:
+    #: - ``pool``: as shipped. Pool position decides, so a fetched successor is effectively last.
+    #: - ``promoted_first``: every promoted successor ahead of other `ok` hits, unconditionally.
+    #: - ``inherit``: a promoted successor takes the pool position its DEMOTED PREDECESSOR held.
+    #:
+    #: `inherit` is the principled one and the reason the other two are worth naming next to it.
+    #: The supersession edge transfers the topical relevance the stale memory proved, and the stale
+    #: memory proved it AT ITS OWN RANK. A predecessor that was third best for this query is not
+    #: evidence that its successor is first best, which is what `promoted_first` asserts on every
+    #: query where any retrieved document happens to carry an edge.
+    #:
+    #: ⚠️ **Before tuning this, check whether it can matter to you. For most callers it cannot.**
+    #: `build_evidence_bundle` ships `EvidencePolicy(max_items=5)` with prefix selection, so a
+    #: generator receives the first FIVE `ok` hits. Measured over 16 absent-successor queries and
+    #: 10 regression cases, the fetched successor reaches that bundle **1.00 under every ordering**,
+    #: and the regression gold answer stays in it **1.00 under every ordering**, including the arm
+    #: that displaces gold from rank 1 in 8 of 10 cases
+    #: (`docs/preregistrations/2026-08-20-successor-bundle-membership.md`).
+    #:
+    #: So this setting changes which document is FIRST and changes nothing about what is delivered.
+    #: It is load-bearing only for a caller reading `hits[0]` and ignoring the rest. Five
+    #: pre-registered records were spent on a top-1 metric before anybody checked that.
+    #:
+    #: **Default `pool`, which is the conservative option and NOT the best measured one at top-1.**
+    #: On the 30-pair fixture (`docs/preregistrations/2026-08-20-successor-ordering-displacement.md`,
+    #: 10 of 10 regression cases usable):
+    #:
+    #:   arm              recovery (stratum B, n=16)   gold kept (regression, n=10)
+    #:   pool             0.25                          1.00
+    #:   promoted_first   0.94                          0.20
+    #:   inherit          1.00                          0.90
+    #:
+    #: `inherit` is plainly the best of the three there, and the default is `pool` anyway. This
+    #: briefly WAS `inherit`, on the argument that it "cannot displace a better-ranked answer for
+    #: any arrangement". That argument is disproved: it displaced one.
+    #:
+    #: The property itself survives and is asserted in `tests/test_successor_expansion.py` over
+    #: every predecessor rank: any `ok` hit that outranked the PREDECESSOR still outranks the
+    #: successor. What does not follow, and what I wrongly inferred, is that gold is never
+    #: displaced. Those differ exactly when the superseded document outranked gold, because then
+    #: the successor inherits a rank above gold and the property permits it.
+    #:
+    #: So the default is back to the conservative option until somebody chooses the trade knowingly,
+    #: rather than resting on an impossibility that turned out not to hold. Set `ordering` to pick
+    #: a different one; nothing here says `inherit` is a bad choice, only that it is a choice.
+    ordering: Literal["pool", "promoted_first", "inherit"] = "pool"
+
+    def __post_init__(self) -> None:
+        if self.max_sources < 1:
+            raise ValueError("max_sources must be positive")
+        if self.chunks_per_source < 1:
+            raise ValueError("chunks_per_source must be positive")
+        if self.ordering not in ORDERINGS:
+            raise ValueError(f"ordering must be one of {sorted(ORDERINGS)}")
+
+
+#: The vocabulary `SuccessorExpansionPolicy.ordering` accepts, named once so a caller building the
+#: value at runtime (a benchmark sweeping arms, a config file) validates against the same set the
+#: type annotation declares, rather than discovering a typo as a silent fall-through to pool order.
+ORDERINGS = frozenset({"pool", "promoted_first", "inherit"})
 
 
 _RELATIONAL_QUERY = re.compile(
@@ -202,6 +282,82 @@ def expand_retrieval_by_structure(
     timings = dict(result.diagnostics.stage_ms)
     timings["structural_expansion"] = round((time.perf_counter() - started) * 1000.0, 3)
     timings["structural_expansion_sources"] = float(len(sources))
+    diagnostics = replace(
+        result.diagnostics,
+        reranking_ran=reranking_ran,
+        stage_ms=timings,
+    )
+    return replace(result, hits=merged, diagnostics=diagnostics)
+
+
+def expand_retrieval_by_successor(
+    result: RetrievalResult,
+    search: Callable[[str, int, str | None], RetrievalResult],
+    resolve: Callable[[str], str | None],
+    policy: SuccessorExpansionPolicy,
+) -> RetrievalResult:
+    """Fetch the declared successor of a superseded hit that the pool did not already contain.
+
+    `recall.trust` resolves a successor's filename and then promotes it to verdict ``ok`` only if
+    a chunk from that file is ALREADY in the pool. Nothing fetched it, so validity was enforced as
+    a post-filter over a pool selected without regard to validity: the stale hit was demoted, no
+    hit earned ``ok``, and the search abstained while naming a successor sitting in the index.
+    Pre-registered in `docs/preregistrations/2026-08-19-successor-directed-expansion.md`.
+
+    `resolve` is INJECTED rather than imported because `recall.trust` already imports this module.
+    It must apply the same rules `_verdict` does, so that this fetches for exactly the hits about
+    to be called ``superseded`` and for no others.
+
+    Keyed on ``metadata['file']``, matching `_verdict`: supersession edges name files, and a row
+    carrying no such metadata can be neither superseded nor promoted, so fetching for it would add
+    material the trust layer cannot use.
+    """
+    if not policy.enabled or not result.hits:
+        return result
+
+    present: set[str] = set()
+    for hit in result.hits:
+        file = hit.chunk.metadata.get("file")
+        if isinstance(file, str) and file:
+            present.add(file)
+
+    targets: list[str] = []
+    for hit in result.hits:
+        file = hit.chunk.metadata.get("file")
+        if not isinstance(file, str) or not file:
+            continue
+        successor = resolve(file)
+        # `present` absorbs both cases that need no fetch: the successor is already in the pool
+        # (which must stay byte-identical, since that is the arm the change must not disturb), and
+        # a second stale hit resolving to a successor already queued. Adding each target to it as
+        # it is queued is what keeps this at one scoped search per DISTINCT file.
+        if successor is None or successor in present:
+            continue
+        present.add(successor)
+        targets.append(successor)
+        if len(targets) >= policy.max_sources:
+            break
+    if not targets:
+        return result
+
+    started = time.perf_counter()
+    expanded: list[ScoredChunk] = []
+    reranking_ran = result.diagnostics.reranking_ran
+    for successor in targets:
+        scoped = search(result.query, policy.chunks_per_source, successor)
+        expanded.extend(scoped.hits)
+        reranking_ran = reranking_ran or scoped.diagnostics.reranking_ran
+
+    by_id = {hit.chunk.id: hit for hit in result.hits}
+    merged = list(result.hits)
+    for hit in expanded:
+        if hit.chunk.id not in by_id:
+            by_id[hit.chunk.id] = hit
+            merged.append(hit)
+
+    timings = dict(result.diagnostics.stage_ms)
+    timings["successor_expansion"] = round((time.perf_counter() - started) * 1000.0, 3)
+    timings["successor_expansion_sources"] = float(len(targets))
     diagnostics = replace(
         result.diagnostics,
         reranking_ran=reranking_ran,

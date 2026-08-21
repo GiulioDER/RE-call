@@ -39,8 +39,10 @@ from recall.retriever import (
     DocumentExpansionPolicy,
     HybridRetriever,
     StructuralExpansionPolicy,
+    SuccessorExpansionPolicy,
     expand_retrieval_by_source,
     expand_retrieval_by_structure,
+    expand_retrieval_by_successor,
 )
 from recall.store import EdgeCandidates, PgVectorStore
 from recall.trust_policy import (
@@ -605,6 +607,52 @@ def evaluate(
     )
 
 
+def order_promoted(
+    trusted: TrustedResult, pool_index: dict[str, int], ordering: str
+) -> TrustedResult:
+    """Reorder the verdict-`ok` hits according to `SuccessorExpansionPolicy.ordering`.
+
+    `evaluate` returns ``ok + rest`` with pool position preserved inside each group, so a fetched
+    successor, appended last by the expander, is last among `ok` however relevant it is. Measured
+    over 6 absent-successor queries: promoted 6 of 6, then ranked 5, 5, 5, 5 and 2.
+
+    `pool_index` must be built from the RetrievalResult BEFORE `evaluate`, because ``ok + rest``
+    has already destroyed the interleaving this needs: the predecessor sits in `rest` and its
+    position relative to the `ok` hits is not recoverable afterwards.
+
+    A successor inherits the LOWEST pool index among the superseded hits naming it. A document is
+    several chunks, and the rank it earned is the best one any of them reached, not the last.
+
+    `rest` is never reordered. It is the demoted material, and its order is not a claim.
+    """
+    if ordering == "pool":
+        return trusted
+    ok = [hit for hit in trusted.hits if hit.verdict == "ok"]
+    rest = [hit for hit in trusted.hits if hit.verdict != "ok"]
+    if not ok:
+        return trusted
+    inherited: dict[str, int] = {}
+    for hit in trusted.hits:
+        target = hit.validity.superseded_by
+        index = pool_index.get(hit.chunk.id)
+        if not target or index is None:
+            continue
+        if index < inherited.get(target, index + 1):
+            inherited[target] = index
+    # A hit the pool never saw sorts last rather than first. Reachable only if a caller hands in a
+    # partial index, and defaulting to 0 there would silently promote an unknown to the top.
+    last = len(pool_index) + 1
+
+    def _own(hit: TrustedHit) -> int:
+        return pool_index.get(hit.chunk.id, last)
+
+    if ordering == "promoted_first":
+        ok.sort(key=lambda hit: (0 if hit.provenance.file in inherited else 1, _own(hit)))
+    else:  # "inherit"
+        ok.sort(key=lambda hit: inherited.get(hit.provenance.file or "", _own(hit)))
+    return replace(trusted, hits=ok + rest)
+
+
 def trusted_search(
     store: PgVectorStore,
     embedder: Embedder,
@@ -622,6 +670,7 @@ def trusted_search(
     policy: TrustPolicy | None = None,
     document_expansion: DocumentExpansionPolicy | None = None,
     structural_expansion: StructuralExpansionPolicy | None = None,
+    successor_expansion: SuccessorExpansionPolicy | None = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
@@ -657,6 +706,7 @@ def trusted_search(
                 policy=policy,
                 document_expansion=document_expansion,
                 structural_expansion=structural_expansion,
+                successor_expansion=successor_expansion,
                 _generation_snapshot=False,
             )
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
@@ -757,6 +807,26 @@ def trusted_search(
             if known_as_of is not None:
                 _warn_no_edge_dates(type(store).__name__)
             supersession, unresolved = store.supersession()
+    if successor_expansion is not None:
+        # AFTER the edges are read and BEFORE `evaluate`, which is the only window where both
+        # facts are in hand: the supersession map already says which hits are about to be demoted,
+        # and nothing has been verdicted yet, so a single `evaluate` still sees the whole pool.
+        # Expanding after `evaluate` would mean verdicting twice and reconciling two results.
+        def _resolve(file: str) -> str | None:
+            """The successor `_verdict` is about to find, or None where it will find none."""
+            # An ambiguous edge resolves to `ambiguous_supersession` there rather than to a
+            # successor, so fetching for it here would pull in a document the trust layer is
+            # about to refuse to use. `not_yet_known` is deliberately NOT mirrored: it wins over
+            # `superseded` per-hit, so this may fetch for a hit replayed before its own write.
+            # That costs one scoped search and cannot change a verdict, which is the right side
+            # to err on while the cheaper check is the one that would need the hit dates.
+            if file in unresolved:
+                return None
+            return resolve_successor(file, supersession, edge_candidates, known_as_of)
+
+        result = expand_retrieval_by_successor(
+            result, retriever.search, _resolve, successor_expansion
+        )
     trust_started = time.perf_counter()
     trusted = evaluate(
         result,
@@ -777,6 +847,14 @@ def trusted_search(
         trusted,
         diagnostics=replace(trusted.diagnostics, stage_ms=stage_ms),
     )
+    if successor_expansion is not None and successor_expansion.ordering != "pool":
+        # `result` is the POST-expansion pool and is still in pool order here, which is exactly
+        # what `order_promoted` needs and what `trusted.hits` no longer carries.
+        trusted = order_promoted(
+            trusted,
+            {hit.chunk.id: index for index, hit in enumerate(result.hits)},
+            successor_expansion.ordering,
+        )
     if failure_code is not None:
         # Development degradation. Reached only when the policy explicitly allows it, since
         # strict already raised above. The result is ALWAYS marked degraded and is never
