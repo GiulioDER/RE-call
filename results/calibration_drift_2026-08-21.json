@@ -1,0 +1,2584 @@
+{
+  "measured_at": "2026-08-21T18:14:49Z",
+  "embedder": "BAAI/bge-small-en-v1.5",
+  "per_class": 40,
+  "query_seed": 0,
+  "snapshots_requested": 24,
+  "search": "exact top-1 cosine, not HNSW",
+  "error_bound": 0.1,
+  "default_max_corpus_delta": 0.25,
+  "apparatus_check": {
+    "passed": true,
+    "checks": {
+      "identical_snapshot_is_zero": true,
+      "removal_counts_against_the_union": true,
+      "in_place_edit_counts_as_modified": true
+    }
+  },
+  "wall_clock_seconds": 280.0,
+  "corpora": [
+    {
+      "id": "docs",
+      "describe": "xenodochial-dhawan-18932a/docs/**/*.md at commits that touched docs",
+      "change_mode": "add and edit",
+      "error": null,
+      "dropped_snapshots": 3,
+      "baseline": {
+        "label": "ca67104f241f",
+        "sources": 13,
+        "chunks": 364,
+        "threshold": 0.673,
+        "scale": 0.0199,
+        "separability": 0.986875,
+        "separability_ci": [
+          0.9613946773981358,
+          1.0
+        ],
+        "certified": true,
+        "certification_reason": "separability 0.987 [0.961, 1.000] over 40/40 samples",
+        "n_answerable": 40,
+        "n_unanswerable": 40,
+        "in_sample_errors": {
+          "false_abstain_rate": 0.075,
+          "false_confirm_rate": 0.05,
+          "false_abstain_count": 3,
+          "false_confirm_count": 2
+        },
+        "queries": [
+          {
+            "query": "what does this project say about ordered sample none",
+            "answerable": true
+          },
+          {
+            "query": "how is import failure kind handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was redacted agent dead decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of signature review shipped",
+            "answerable": true
+          },
+          {
+            "query": "where is diff dmax high described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about systems adapter bespoke",
+            "answerable": true
+          },
+          {
+            "query": "how is self frozenset iterable handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was axis neighbours matter decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of seeded already disk invariant sees whole inst",
+            "answerable": true
+          },
+          {
+            "query": "where is import benchmarks ladder described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about threads workers quota",
+            "answerable": true
+          },
+          {
+            "query": "how is lambda conversation turn handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was cells assert missing decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of examples readme writeup",
+            "answerable": true
+          },
+          {
+            "query": "where is missing instance inst described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about benchmark measure summarisation",
+            "answerable": true
+          },
+          {
+            "query": "how is result opaque jargon corpus fine tuning service handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was compute tracking decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of self scored delegate",
+            "answerable": true
+          },
+          {
+            "query": "where is import report exercises described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about english mathematica qrels",
+            "answerable": true
+          },
+          {
+            "query": "how is design know handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was width taken rings decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of takeaway concept",
+            "answerable": true
+          },
+          {
+            "query": "where is edge unlinked time described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about altered json path",
+            "answerable": true
+          },
+          {
+            "query": "how is recorded line bool handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was self review notes section decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of base vocabulary demands",
+            "answerable": true
+          },
+          {
+            "query": "where is task builder source rings frozen manifest none described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about leaked indexed retained",
+            "answerable": true
+          },
+          {
+            "query": "how is task locomo source loader removal handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was floor value rank decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of abstention claim argues",
+            "answerable": true
+          },
+          {
+            "query": "where is create benchmarks ladder described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about ladder results jsonl",
+            "answerable": true
+          },
+          {
+            "query": "how is call cosine rank handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was digest header actual decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of inst high shared",
+            "answerable": true
+          },
+          {
+            "query": "where is instance sequence path described",
+            "answerable": true
+          },
+          {
+            "query": "what explains penguins in antarctic winters",
+            "answerable": false
+          },
+          {
+            "query": "what explains sourdough fermentation",
+            "answerable": false
+          },
+          {
+            "query": "what explains tidal locking of moons",
+            "answerable": false
+          },
+          {
+            "query": "what explains baroque counterpoint",
+            "answerable": false
+          },
+          {
+            "query": "what explains sprinting biomechanics",
+            "answerable": false
+          },
+          {
+            "query": "what explains volcanic ash dispersal",
+            "answerable": false
+          },
+          {
+            "query": "what explains medieval cathedral acoustics",
+            "answerable": false
+          },
+          {
+            "query": "what explains honeybee waggle dances",
+            "answerable": false
+          },
+          {
+            "query": "what explains typography kerning",
+            "answerable": false
+          },
+          {
+            "query": "what explains alpine glacier retreat",
+            "answerable": false
+          },
+          {
+            "query": "what explains origami crease patterns",
+            "answerable": false
+          },
+          {
+            "query": "what explains coral spawning cycles",
+            "answerable": false
+          },
+          {
+            "query": "what explains steam locomotive boilers",
+            "answerable": false
+          },
+          {
+            "query": "what explains monsoon onset timing",
+            "answerable": false
+          },
+          {
+            "query": "what explains cuneiform tablet translation",
+            "answerable": false
+          },
+          {
+            "query": "what explains tidewater glacier calving",
+            "answerable": false
+          },
+          {
+            "query": "what explains tapestry weaving looms",
+            "answerable": false
+          },
+          {
+            "query": "what explains auroral substorm onset",
+            "answerable": false
+          },
+          {
+            "query": "how does penguins in antarctic winters actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does sourdough fermentation actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does tidal locking of moons actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does baroque counterpoint actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does sprinting biomechanics actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does volcanic ash dispersal actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does medieval cathedral acoustics actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does honeybee waggle dances actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does typography kerning actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does alpine glacier retreat actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does origami crease patterns actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does coral spawning cycles actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does steam locomotive boilers actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does monsoon onset timing actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does cuneiform tablet translation actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does tidewater glacier calving actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does tapestry weaving looms actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does auroral substorm onset actually work",
+            "answerable": false
+          },
+          {
+            "query": "why is penguins in antarctic winters difficult to predict",
+            "answerable": false
+          },
+          {
+            "query": "why is sourdough fermentation difficult to predict",
+            "answerable": false
+          },
+          {
+            "query": "why is tidal locking of moons difficult to predict",
+            "answerable": false
+          },
+          {
+            "query": "why is baroque counterpoint difficult to predict",
+            "answerable": false
+          }
+        ]
+      },
+      "points": [
+        {
+          "label": "ca67104f241f",
+          "sources": 13,
+          "chunks": 364,
+          "sources_parent": 13,
+          "sources_child": 13,
+          "sources_added": 0,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 13,
+          "corpus_delta": 0.0,
+          "false_abstain_rate": 0.075,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.075,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.075,
+          "separability": 0.986875,
+          "separability_ci_low": 0.9613946773981358,
+          "certified_now": true,
+          "refit_threshold": 0.673,
+          "threshold_drift": 0.0,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "0e1f247d61c5",
+          "sources": 16,
+          "chunks": 506,
+          "sources_parent": 13,
+          "sources_child": 16,
+          "sources_added": 3,
+          "sources_removed": 0,
+          "sources_modified": 3,
+          "sources_union": 16,
+          "corpus_delta": 0.375,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": -0.024999999999999994,
+          "baseline_max_error": 0.075,
+          "separability": 0.988125,
+          "separability_ci_low": 0.9638934959370822,
+          "certified_now": true,
+          "refit_threshold": 0.676,
+          "threshold_drift": 0.0030000000000000027,
+          "evidence_survival": 0.95
+        },
+        {
+          "label": "ce363ae41aee",
+          "sources": 16,
+          "chunks": 532,
+          "sources_parent": 13,
+          "sources_child": 16,
+          "sources_added": 3,
+          "sources_removed": 0,
+          "sources_modified": 3,
+          "sources_union": 16,
+          "corpus_delta": 0.375,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": -0.024999999999999994,
+          "baseline_max_error": 0.075,
+          "separability": 0.988125,
+          "separability_ci_low": 0.9638934959370822,
+          "certified_now": true,
+          "refit_threshold": 0.676,
+          "threshold_drift": 0.0030000000000000027,
+          "evidence_survival": 0.95
+        },
+        {
+          "label": "78a9ea23944a",
+          "sources": 20,
+          "chunks": 586,
+          "sources_parent": 13,
+          "sources_child": 20,
+          "sources_added": 7,
+          "sources_removed": 0,
+          "sources_modified": 4,
+          "sources_union": 20,
+          "corpus_delta": 0.55,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": -0.024999999999999994,
+          "baseline_max_error": 0.075,
+          "separability": 0.9875,
+          "separability_ci_low": 0.9626363596696337,
+          "certified_now": true,
+          "refit_threshold": 0.676,
+          "threshold_drift": 0.0030000000000000027,
+          "evidence_survival": 0.95
+        },
+        {
+          "label": "6d631e980031",
+          "sources": 22,
+          "chunks": 724,
+          "sources_parent": 13,
+          "sources_child": 22,
+          "sources_added": 9,
+          "sources_removed": 0,
+          "sources_modified": 5,
+          "sources_union": 22,
+          "corpus_delta": 0.6363636363636364,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": -0.024999999999999994,
+          "baseline_max_error": 0.075,
+          "separability": 0.98875,
+          "separability_ci_low": 0.9651673237374908,
+          "certified_now": true,
+          "refit_threshold": 0.679,
+          "threshold_drift": 0.006000000000000005,
+          "evidence_survival": 0.95
+        },
+        {
+          "label": "6b855feb157b",
+          "sources": 22,
+          "chunks": 772,
+          "sources_parent": 13,
+          "sources_child": 22,
+          "sources_added": 9,
+          "sources_removed": 0,
+          "sources_modified": 5,
+          "sources_union": 22,
+          "corpus_delta": 0.6363636363636364,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": -0.024999999999999994,
+          "baseline_max_error": 0.075,
+          "separability": 0.98875,
+          "separability_ci_low": 0.9651673237374908,
+          "certified_now": true,
+          "refit_threshold": 0.68,
+          "threshold_drift": 0.007000000000000006,
+          "evidence_survival": 0.95
+        },
+        {
+          "label": "c0b3bfa54a4c",
+          "sources": 22,
+          "chunks": 841,
+          "sources_parent": 13,
+          "sources_child": 22,
+          "sources_added": 9,
+          "sources_removed": 0,
+          "sources_modified": 5,
+          "sources_union": 22,
+          "corpus_delta": 0.6363636363636364,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": -0.024999999999999994,
+          "baseline_max_error": 0.075,
+          "separability": 0.98875,
+          "separability_ci_low": 0.9651673237374908,
+          "certified_now": true,
+          "refit_threshold": 0.68,
+          "threshold_drift": 0.007000000000000006,
+          "evidence_survival": 0.95
+        },
+        {
+          "label": "46efa5683699",
+          "sources": 22,
+          "chunks": 905,
+          "sources_parent": 13,
+          "sources_child": 22,
+          "sources_added": 9,
+          "sources_removed": 0,
+          "sources_modified": 5,
+          "sources_union": 22,
+          "corpus_delta": 0.6363636363636364,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.075,
+          "separability": 0.9875,
+          "separability_ci_low": 0.9626363596696337,
+          "certified_now": true,
+          "refit_threshold": 0.682,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.95
+        },
+        {
+          "label": "dc9ee514f2d7",
+          "sources": 23,
+          "chunks": 995,
+          "sources_parent": 13,
+          "sources_child": 23,
+          "sources_added": 10,
+          "sources_removed": 0,
+          "sources_modified": 6,
+          "sources_union": 23,
+          "corpus_delta": 0.6956521739130435,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.075,
+          "separability": 0.9875,
+          "separability_ci_low": 0.9626363596696337,
+          "certified_now": true,
+          "refit_threshold": 0.682,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.95
+        },
+        {
+          "label": "927f20ee1d20",
+          "sources": 25,
+          "chunks": 1020,
+          "sources_parent": 13,
+          "sources_child": 25,
+          "sources_added": 12,
+          "sources_removed": 0,
+          "sources_modified": 6,
+          "sources_union": 25,
+          "corpus_delta": 0.72,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.075,
+          "separability": 0.9875,
+          "separability_ci_low": 0.9626363596696337,
+          "certified_now": true,
+          "refit_threshold": 0.682,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.95
+        },
+        {
+          "label": "22786b56618b",
+          "sources": 26,
+          "chunks": 1131,
+          "sources_parent": 13,
+          "sources_child": 26,
+          "sources_added": 13,
+          "sources_removed": 0,
+          "sources_modified": 6,
+          "sources_union": 26,
+          "corpus_delta": 0.7307692307692307,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.075,
+          "separability": 0.9875,
+          "separability_ci_low": 0.9626363596696337,
+          "certified_now": true,
+          "refit_threshold": 0.682,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.95
+        },
+        {
+          "label": "e0d3b6735489",
+          "sources": 26,
+          "chunks": 1212,
+          "sources_parent": 13,
+          "sources_child": 26,
+          "sources_added": 13,
+          "sources_removed": 0,
+          "sources_modified": 6,
+          "sources_union": 26,
+          "corpus_delta": 0.7307692307692307,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.075,
+          "separability": 0.9875,
+          "separability_ci_low": 0.9626363596696337,
+          "certified_now": true,
+          "refit_threshold": 0.682,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.95
+        },
+        {
+          "label": "a3fb15b51324",
+          "sources": 31,
+          "chunks": 1384,
+          "sources_parent": 13,
+          "sources_child": 31,
+          "sources_added": 18,
+          "sources_removed": 0,
+          "sources_modified": 6,
+          "sources_union": 31,
+          "corpus_delta": 0.7741935483870968,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.075,
+          "separability": 0.9875,
+          "separability_ci_low": 0.9626363596696337,
+          "certified_now": true,
+          "refit_threshold": 0.682,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.95
+        },
+        {
+          "label": "f2c1e58147e7",
+          "sources": 38,
+          "chunks": 1703,
+          "sources_parent": 13,
+          "sources_child": 38,
+          "sources_added": 25,
+          "sources_removed": 0,
+          "sources_modified": 6,
+          "sources_union": 38,
+          "corpus_delta": 0.8157894736842105,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.1,
+          "max_error": 0.1,
+          "excess_max_error": 0.02500000000000001,
+          "baseline_max_error": 0.075,
+          "separability": 0.981875,
+          "separability_ci_low": 0.9519083797177389,
+          "certified_now": true,
+          "refit_threshold": 0.683,
+          "threshold_drift": 0.010000000000000009,
+          "evidence_survival": 0.95
+        },
+        {
+          "label": "c76a22f8dcdf",
+          "sources": 30,
+          "chunks": 1246,
+          "sources_parent": 13,
+          "sources_child": 30,
+          "sources_added": 22,
+          "sources_removed": 5,
+          "sources_modified": 4,
+          "sources_union": 35,
+          "corpus_delta": 0.8857142857142857,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.075,
+          "separability": 0.984375,
+          "separability_ci_low": 0.9565623951953337,
+          "certified_now": true,
+          "refit_threshold": 0.684,
+          "threshold_drift": 0.01100000000000001,
+          "evidence_survival": 0.275
+        },
+        {
+          "label": "8e260d96424b",
+          "sources": 38,
+          "chunks": 1319,
+          "sources_parent": 13,
+          "sources_child": 38,
+          "sources_added": 30,
+          "sources_removed": 5,
+          "sources_modified": 4,
+          "sources_union": 43,
+          "corpus_delta": 0.9069767441860465,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.075,
+          "separability": 0.984375,
+          "separability_ci_low": 0.9565623951953337,
+          "certified_now": true,
+          "refit_threshold": 0.684,
+          "threshold_drift": 0.01100000000000001,
+          "evidence_survival": 0.275
+        },
+        {
+          "label": "217f44d65112",
+          "sources": 39,
+          "chunks": 1394,
+          "sources_parent": 13,
+          "sources_child": 39,
+          "sources_added": 31,
+          "sources_removed": 5,
+          "sources_modified": 4,
+          "sources_union": 44,
+          "corpus_delta": 0.9090909090909091,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.1,
+          "max_error": 0.1,
+          "excess_max_error": 0.02500000000000001,
+          "baseline_max_error": 0.075,
+          "separability": 0.9825,
+          "separability_ci_low": 0.9530573517878528,
+          "certified_now": true,
+          "refit_threshold": 0.684,
+          "threshold_drift": 0.01100000000000001,
+          "evidence_survival": 0.275
+        },
+        {
+          "label": "7ef023ee463c",
+          "sources": 50,
+          "chunks": 1755,
+          "sources_parent": 13,
+          "sources_child": 50,
+          "sources_added": 42,
+          "sources_removed": 5,
+          "sources_modified": 5,
+          "sources_union": 55,
+          "corpus_delta": 0.9454545454545454,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.125,
+          "max_error": 0.125,
+          "excess_max_error": 0.05,
+          "baseline_max_error": 0.075,
+          "separability": 0.968125,
+          "separability_ci_low": 0.9283160044736126,
+          "certified_now": true,
+          "refit_threshold": 0.684,
+          "threshold_drift": 0.01100000000000001,
+          "evidence_survival": 0.275
+        },
+        {
+          "label": "bda881226306",
+          "sources": 60,
+          "chunks": 2033,
+          "sources_parent": 13,
+          "sources_child": 60,
+          "sources_added": 52,
+          "sources_removed": 5,
+          "sources_modified": 5,
+          "sources_union": 65,
+          "corpus_delta": 0.9538461538461539,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.175,
+          "max_error": 0.175,
+          "excess_max_error": 0.09999999999999999,
+          "baseline_max_error": 0.075,
+          "separability": 0.965,
+          "separability_ci_low": 0.923272239573163,
+          "certified_now": true,
+          "refit_threshold": 0.688,
+          "threshold_drift": 0.014999999999999902,
+          "evidence_survival": 0.275
+        },
+        {
+          "label": "5c621cabfa04",
+          "sources": 86,
+          "chunks": 2402,
+          "sources_parent": 13,
+          "sources_child": 86,
+          "sources_added": 78,
+          "sources_removed": 5,
+          "sources_modified": 6,
+          "sources_union": 91,
+          "corpus_delta": 0.978021978021978,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.2,
+          "max_error": 0.2,
+          "excess_max_error": 0.125,
+          "baseline_max_error": 0.075,
+          "separability": 0.96375,
+          "separability_ci_low": 0.9212787283590087,
+          "certified_now": true,
+          "refit_threshold": 0.689,
+          "threshold_drift": 0.015999999999999903,
+          "evidence_survival": 0.275
+        },
+        {
+          "label": "9681c1edc556",
+          "sources": 101,
+          "chunks": 2763,
+          "sources_parent": 13,
+          "sources_child": 101,
+          "sources_added": 93,
+          "sources_removed": 5,
+          "sources_modified": 6,
+          "sources_union": 106,
+          "corpus_delta": 0.9811320754716981,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.2,
+          "max_error": 0.2,
+          "excess_max_error": 0.125,
+          "baseline_max_error": 0.075,
+          "separability": 0.966875,
+          "separability_ci_low": 0.926287746887022,
+          "certified_now": true,
+          "refit_threshold": 0.691,
+          "threshold_drift": 0.017999999999999905,
+          "evidence_survival": 0.275
+        }
+      ],
+      "trigger": {
+        "n": 20,
+        "positives": 4,
+        "positive_rate": 0.2,
+        "outcome": "max_error",
+        "error_bound": 0.1,
+        "spearman_delta_vs_outcome": 0.9252774694753398,
+        "under_default_max_delta_but_over_error": 0,
+        "under_default_max_delta": 0,
+        "best_cut_at_recall_0.9": {
+          "cut": 0.9454545454545454,
+          "recall": 1.0,
+          "precision": 1.0,
+          "fired": 4,
+          "true_positives": 4
+        }
+      },
+      "trigger_excess": {
+        "n": 20,
+        "positives": 6,
+        "positive_rate": 0.3,
+        "outcome": "excess_max_error",
+        "error_bound": 0.0,
+        "spearman_delta_vs_outcome": 0.9252774694753398,
+        "under_default_max_delta_but_over_error": 0,
+        "under_default_max_delta": 0,
+        "best_cut_at_recall_0.9": {
+          "cut": 0.8157894736842105,
+          "recall": 1.0,
+          "precision": 0.75,
+          "fired": 8,
+          "true_positives": 6
+        }
+      }
+    },
+    {
+      "id": "code",
+      "describe": "xenodochial-dhawan-18932a/recall/**/*.py at commits that touched recall/, less recall/eval/synthetic.py, which held the off-topic subject pool as source until 2026-08-18",
+      "change_mode": "edit heavy",
+      "error": null,
+      "dropped_snapshots": 4,
+      "baseline": {
+        "label": "d24bfb4507c4",
+        "sources": 29,
+        "chunks": 165,
+        "threshold": 0.651,
+        "scale": 0.0173,
+        "separability": 0.99375,
+        "separability_ci": [
+          0.976188502122224,
+          1.0
+        ],
+        "certified": true,
+        "certification_reason": "separability 0.994 [0.976, 1.000] over 40/40 samples",
+        "n_answerable": 40,
+        "n_unanswerable": 40,
+        "in_sample_errors": {
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.0,
+          "false_abstain_count": 2,
+          "false_confirm_count": 0
+        },
+        "queries": [
+          {
+            "query": "what does this project say about scope supersedes claim",
+            "answerable": true
+          },
+          {
+            "query": "how is scores candidate relevant handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was method scale inclusive decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of digits isnan math",
+            "answerable": true
+          },
+          {
+            "query": "where is ceil percentile rank described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about issues lintissue target",
+            "answerable": true
+          },
+          {
+            "query": "how is inclusive begin ends handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was import functions normaldist decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of level lintissue message",
+            "answerable": true
+          },
+          {
+            "query": "where is args filler corpus described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about conn self connection",
+            "answerable": true
+          },
+          {
+            "query": "how is fusion reranker retrieved handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was self labels histograms decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of distilroberta base compromise",
+            "answerable": true
+          },
+          {
+            "query": "where is import your question described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about calls self wall",
+            "answerable": true
+          },
+          {
+            "query": "how is status markers exception handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was provenance trustedhit file decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of memo settled import",
+            "answerable": true
+          },
+          {
+            "query": "where is best hits abstentions described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about topk relevant item",
+            "answerable": true
+          },
+          {
+            "query": "how is sleep last attempts handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was import recall calibration decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of distractor similarity fraction",
+            "answerable": true
+          },
+          {
+            "query": "where is files root vanished described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about integer value ignoring",
+            "answerable": true
+          },
+          {
+            "query": "how is flags latencies metadata handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was chunker turns document text list chunk deleted decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of idcg flags forces",
+            "answerable": true
+          },
+          {
+            "query": "where is float cite configs described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about supersession seen file",
+            "answerable": true
+          },
+          {
+            "query": "how is prepared blocks chunks handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was literal basename relied decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of seen meta checkresult",
+            "answerable": true
+          },
+          {
+            "query": "where is update import text described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about import iterator random",
+            "answerable": true
+          },
+          {
+            "query": "how is lines line root handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was agents augmented running decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of topk relevant indicator",
+            "answerable": true
+          },
+          {
+            "query": "where is float trust stale described",
+            "answerable": true
+          },
+          {
+            "query": "what explains sourdough fermentation",
+            "answerable": false
+          },
+          {
+            "query": "what explains tidal locking of moons",
+            "answerable": false
+          },
+          {
+            "query": "what explains baroque counterpoint",
+            "answerable": false
+          },
+          {
+            "query": "what explains sprinting biomechanics",
+            "answerable": false
+          },
+          {
+            "query": "what explains volcanic ash dispersal",
+            "answerable": false
+          },
+          {
+            "query": "what explains medieval cathedral acoustics",
+            "answerable": false
+          },
+          {
+            "query": "what explains honeybee waggle dances",
+            "answerable": false
+          },
+          {
+            "query": "what explains typography kerning",
+            "answerable": false
+          },
+          {
+            "query": "what explains deep sea bioluminescence",
+            "answerable": false
+          },
+          {
+            "query": "what explains alpine glacier retreat",
+            "answerable": false
+          },
+          {
+            "query": "what explains origami crease patterns",
+            "answerable": false
+          },
+          {
+            "query": "what explains steam locomotive boilers",
+            "answerable": false
+          },
+          {
+            "query": "what explains wildfire smoke chemistry",
+            "answerable": false
+          },
+          {
+            "query": "what explains cuneiform tablet translation",
+            "answerable": false
+          },
+          {
+            "query": "what explains tidewater glacier calving",
+            "answerable": false
+          },
+          {
+            "query": "what explains tapestry weaving looms",
+            "answerable": false
+          },
+          {
+            "query": "what explains auroral substorm onset",
+            "answerable": false
+          },
+          {
+            "query": "how does sourdough fermentation actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does tidal locking of moons actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does baroque counterpoint actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does sprinting biomechanics actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does volcanic ash dispersal actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does medieval cathedral acoustics actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does honeybee waggle dances actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does typography kerning actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does deep sea bioluminescence actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does alpine glacier retreat actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does origami crease patterns actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does steam locomotive boilers actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does wildfire smoke chemistry actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does cuneiform tablet translation actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does tidewater glacier calving actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does tapestry weaving looms actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does auroral substorm onset actually work",
+            "answerable": false
+          },
+          {
+            "query": "why is sourdough fermentation difficult to predict",
+            "answerable": false
+          },
+          {
+            "query": "why is tidal locking of moons difficult to predict",
+            "answerable": false
+          },
+          {
+            "query": "why is baroque counterpoint difficult to predict",
+            "answerable": false
+          },
+          {
+            "query": "why is sprinting biomechanics difficult to predict",
+            "answerable": false
+          },
+          {
+            "query": "why is volcanic ash dispersal difficult to predict",
+            "answerable": false
+          },
+          {
+            "query": "why is medieval cathedral acoustics difficult to predict",
+            "answerable": false
+          }
+        ]
+      },
+      "points": [
+        {
+          "label": "d24bfb4507c4",
+          "sources": 29,
+          "chunks": 165,
+          "sources_parent": 29,
+          "sources_child": 29,
+          "sources_added": 0,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 29,
+          "corpus_delta": 0.0,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.0,
+          "max_error": 0.05,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.05,
+          "separability": 0.99375,
+          "separability_ci_low": 0.976188502122224,
+          "certified_now": true,
+          "refit_threshold": 0.651,
+          "threshold_drift": 0.0,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "4b7de4963817",
+          "sources": 38,
+          "chunks": 219,
+          "sources_parent": 29,
+          "sources_child": 38,
+          "sources_added": 9,
+          "sources_removed": 0,
+          "sources_modified": 13,
+          "sources_union": 38,
+          "corpus_delta": 0.5789473684210527,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.025,
+          "max_error": 0.05,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.05,
+          "separability": 0.99,
+          "separability_ci_low": 0.9677709151126032,
+          "certified_now": true,
+          "refit_threshold": 0.651,
+          "threshold_drift": 0.0,
+          "evidence_survival": 0.725
+        },
+        {
+          "label": "16e38d183d38",
+          "sources": 42,
+          "chunks": 265,
+          "sources_parent": 29,
+          "sources_child": 42,
+          "sources_added": 13,
+          "sources_removed": 0,
+          "sources_modified": 13,
+          "sources_union": 42,
+          "corpus_delta": 0.6190476190476191,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": 0.024999999999999994,
+          "baseline_max_error": 0.05,
+          "separability": 0.986875,
+          "separability_ci_low": 0.9613946773981358,
+          "certified_now": true,
+          "refit_threshold": 0.654,
+          "threshold_drift": 0.0030000000000000027,
+          "evidence_survival": 0.65
+        },
+        {
+          "label": "2d833e40a664",
+          "sources": 44,
+          "chunks": 284,
+          "sources_parent": 29,
+          "sources_child": 44,
+          "sources_added": 15,
+          "sources_removed": 0,
+          "sources_modified": 13,
+          "sources_union": 44,
+          "corpus_delta": 0.6363636363636364,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.05,
+          "separability": 0.986875,
+          "separability_ci_low": 0.9613946773981358,
+          "certified_now": true,
+          "refit_threshold": 0.654,
+          "threshold_drift": 0.0030000000000000027,
+          "evidence_survival": 0.65
+        },
+        {
+          "label": "ccf68aeb4c06",
+          "sources": 45,
+          "chunks": 294,
+          "sources_parent": 29,
+          "sources_child": 45,
+          "sources_added": 16,
+          "sources_removed": 0,
+          "sources_modified": 14,
+          "sources_union": 45,
+          "corpus_delta": 0.6666666666666666,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.05,
+          "separability": 0.98625,
+          "separability_ci_low": 0.9601673576054387,
+          "certified_now": true,
+          "refit_threshold": 0.654,
+          "threshold_drift": 0.0030000000000000027,
+          "evidence_survival": 0.65
+        },
+        {
+          "label": "7a3d4f636536",
+          "sources": 45,
+          "chunks": 299,
+          "sources_parent": 29,
+          "sources_child": 45,
+          "sources_added": 16,
+          "sources_removed": 0,
+          "sources_modified": 14,
+          "sources_union": 45,
+          "corpus_delta": 0.6666666666666666,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.05,
+          "separability": 0.98625,
+          "separability_ci_low": 0.9601673576054387,
+          "certified_now": true,
+          "refit_threshold": 0.654,
+          "threshold_drift": 0.0030000000000000027,
+          "evidence_survival": 0.575
+        },
+        {
+          "label": "7a50e33bfb1e",
+          "sources": 59,
+          "chunks": 397,
+          "sources_parent": 29,
+          "sources_child": 59,
+          "sources_added": 30,
+          "sources_removed": 0,
+          "sources_modified": 18,
+          "sources_union": 59,
+          "corpus_delta": 0.8135593220338984,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.05,
+          "separability": 0.988125,
+          "separability_ci_low": 0.9638934959370822,
+          "certified_now": true,
+          "refit_threshold": 0.66,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.5
+        },
+        {
+          "label": "c9f1d40f4150",
+          "sources": 63,
+          "chunks": 428,
+          "sources_parent": 29,
+          "sources_child": 63,
+          "sources_added": 34,
+          "sources_removed": 0,
+          "sources_modified": 18,
+          "sources_union": 63,
+          "corpus_delta": 0.8253968253968254,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.05,
+          "separability": 0.989375,
+          "separability_ci_low": 0.9664592554869615,
+          "certified_now": true,
+          "refit_threshold": 0.66,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.5
+        },
+        {
+          "label": "f003bf8a4bdd",
+          "sources": 63,
+          "chunks": 428,
+          "sources_parent": 29,
+          "sources_child": 63,
+          "sources_added": 34,
+          "sources_removed": 0,
+          "sources_modified": 18,
+          "sources_union": 63,
+          "corpus_delta": 0.8253968253968254,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.05,
+          "separability": 0.989375,
+          "separability_ci_low": 0.9664592554869615,
+          "certified_now": true,
+          "refit_threshold": 0.66,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.5
+        },
+        {
+          "label": "b1666ab1b6a5",
+          "sources": 64,
+          "chunks": 443,
+          "sources_parent": 29,
+          "sources_child": 64,
+          "sources_added": 35,
+          "sources_removed": 0,
+          "sources_modified": 18,
+          "sources_union": 64,
+          "corpus_delta": 0.828125,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.05,
+          "separability": 0.989375,
+          "separability_ci_low": 0.9664592554869615,
+          "certified_now": true,
+          "refit_threshold": 0.66,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.5
+        },
+        {
+          "label": "81ccedf9507c",
+          "sources": 64,
+          "chunks": 456,
+          "sources_parent": 29,
+          "sources_child": 64,
+          "sources_added": 35,
+          "sources_removed": 0,
+          "sources_modified": 18,
+          "sources_union": 64,
+          "corpus_delta": 0.828125,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.05,
+          "separability": 0.989375,
+          "separability_ci_low": 0.9664592554869615,
+          "certified_now": true,
+          "refit_threshold": 0.66,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.5
+        },
+        {
+          "label": "d05a1bc17579",
+          "sources": 73,
+          "chunks": 545,
+          "sources_parent": 29,
+          "sources_child": 73,
+          "sources_added": 44,
+          "sources_removed": 0,
+          "sources_modified": 18,
+          "sources_union": 73,
+          "corpus_delta": 0.8493150684931506,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.05,
+          "separability": 0.99,
+          "separability_ci_low": 0.9677709151126032,
+          "certified_now": true,
+          "refit_threshold": 0.66,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.5
+        },
+        {
+          "label": "71300786a137",
+          "sources": 74,
+          "chunks": 552,
+          "sources_parent": 29,
+          "sources_child": 74,
+          "sources_added": 45,
+          "sources_removed": 0,
+          "sources_modified": 18,
+          "sources_union": 74,
+          "corpus_delta": 0.8513513513513513,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.05,
+          "separability": 0.99,
+          "separability_ci_low": 0.9677709151126032,
+          "certified_now": true,
+          "refit_threshold": 0.66,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.5
+        },
+        {
+          "label": "ce71fd26b7ad",
+          "sources": 74,
+          "chunks": 554,
+          "sources_parent": 29,
+          "sources_child": 74,
+          "sources_added": 45,
+          "sources_removed": 0,
+          "sources_modified": 18,
+          "sources_union": 74,
+          "corpus_delta": 0.8513513513513513,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.05,
+          "separability": 0.99,
+          "separability_ci_low": 0.9677709151126032,
+          "certified_now": true,
+          "refit_threshold": 0.66,
+          "threshold_drift": 0.009000000000000008,
+          "evidence_survival": 0.5
+        },
+        {
+          "label": "78fbd1bd05ff",
+          "sources": 77,
+          "chunks": 602,
+          "sources_parent": 29,
+          "sources_child": 77,
+          "sources_added": 48,
+          "sources_removed": 0,
+          "sources_modified": 20,
+          "sources_union": 77,
+          "corpus_delta": 0.8831168831168831,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": 0.024999999999999994,
+          "baseline_max_error": 0.05,
+          "separability": 0.99,
+          "separability_ci_low": 0.9677709151126032,
+          "certified_now": true,
+          "refit_threshold": 0.665,
+          "threshold_drift": 0.014000000000000012,
+          "evidence_survival": 0.45
+        },
+        {
+          "label": "b63d38ca8d3e",
+          "sources": 98,
+          "chunks": 822,
+          "sources_parent": 29,
+          "sources_child": 98,
+          "sources_added": 69,
+          "sources_removed": 0,
+          "sources_modified": 21,
+          "sources_union": 98,
+          "corpus_delta": 0.9183673469387755,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": 0.024999999999999994,
+          "baseline_max_error": 0.05,
+          "separability": 0.989375,
+          "separability_ci_low": 0.9664592554869615,
+          "certified_now": true,
+          "refit_threshold": 0.662,
+          "threshold_drift": 0.01100000000000001,
+          "evidence_survival": 0.45
+        },
+        {
+          "label": "87a6a8afbaf7",
+          "sources": 101,
+          "chunks": 866,
+          "sources_parent": 29,
+          "sources_child": 101,
+          "sources_added": 72,
+          "sources_removed": 0,
+          "sources_modified": 22,
+          "sources_union": 101,
+          "corpus_delta": 0.9306930693069307,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": 0.024999999999999994,
+          "baseline_max_error": 0.05,
+          "separability": 0.989375,
+          "separability_ci_low": 0.9664592554869615,
+          "certified_now": true,
+          "refit_threshold": 0.663,
+          "threshold_drift": 0.01200000000000001,
+          "evidence_survival": 0.45
+        },
+        {
+          "label": "69320a40dd99",
+          "sources": 106,
+          "chunks": 923,
+          "sources_parent": 29,
+          "sources_child": 106,
+          "sources_added": 77,
+          "sources_removed": 0,
+          "sources_modified": 26,
+          "sources_union": 106,
+          "corpus_delta": 0.9716981132075472,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": 0.024999999999999994,
+          "baseline_max_error": 0.05,
+          "separability": 0.989375,
+          "separability_ci_low": 0.9664592554869615,
+          "certified_now": true,
+          "refit_threshold": 0.663,
+          "threshold_drift": 0.01200000000000001,
+          "evidence_survival": 0.425
+        },
+        {
+          "label": "64ffee52e198",
+          "sources": 128,
+          "chunks": 1149,
+          "sources_parent": 29,
+          "sources_child": 128,
+          "sources_added": 99,
+          "sources_removed": 0,
+          "sources_modified": 26,
+          "sources_union": 128,
+          "corpus_delta": 0.9765625,
+          "false_abstain_rate": 0.025,
+          "false_confirm_rate": 0.1,
+          "max_error": 0.1,
+          "excess_max_error": 0.05,
+          "baseline_max_error": 0.05,
+          "separability": 0.98625,
+          "separability_ci_low": 0.9601673576054387,
+          "certified_now": true,
+          "refit_threshold": 0.675,
+          "threshold_drift": 0.02400000000000002,
+          "evidence_survival": 0.4
+        },
+        {
+          "label": "09121da34ceb",
+          "sources": 141,
+          "chunks": 1338,
+          "sources_parent": 29,
+          "sources_child": 141,
+          "sources_added": 112,
+          "sources_removed": 0,
+          "sources_modified": 26,
+          "sources_union": 141,
+          "corpus_delta": 0.9787234042553191,
+          "false_abstain_rate": 0.0,
+          "false_confirm_rate": 0.15,
+          "max_error": 0.15,
+          "excess_max_error": 0.09999999999999999,
+          "baseline_max_error": 0.05,
+          "separability": 0.99,
+          "separability_ci_low": 0.9677709151126032,
+          "certified_now": true,
+          "refit_threshold": 0.677,
+          "threshold_drift": 0.026000000000000023,
+          "evidence_survival": 0.4
+        }
+      ],
+      "trigger": {
+        "n": 19,
+        "positives": 1,
+        "positive_rate": 0.05263157894736842,
+        "outcome": "max_error",
+        "error_bound": 0.1,
+        "spearman_delta_vs_outcome": 0.664709812118297,
+        "under_default_max_delta_but_over_error": 0,
+        "under_default_max_delta": 0,
+        "best_cut_at_recall_0.9": {
+          "cut": 0.9787234042553191,
+          "recall": 1.0,
+          "precision": 1.0,
+          "fired": 1,
+          "true_positives": 1
+        }
+      },
+      "trigger_excess": {
+        "n": 19,
+        "positives": 7,
+        "positive_rate": 0.3684210526315789,
+        "outcome": "excess_max_error",
+        "error_bound": 0.0,
+        "spearman_delta_vs_outcome": 0.664709812118297,
+        "under_default_max_delta_but_over_error": 0,
+        "under_default_max_delta": 0,
+        "best_cut_at_recall_0.9": {
+          "cut": 0.6190476190476191,
+          "recall": 1.0,
+          "precision": 0.3888888888888889,
+          "fired": 18,
+          "true_positives": 7
+        }
+      }
+    },
+    {
+      "id": "memory",
+      "describe": "C:\\Users\\gde00\\.claude\\projects\\C--Users-gde00-Documents-recall\\memory revealed in mtime order (a reconstruction)",
+      "change_mode": "append only",
+      "error": null,
+      "dropped_snapshots": 5,
+      "baseline": {
+        "label": "n0043",
+        "sources": 43,
+        "chunks": 175,
+        "threshold": 0.68,
+        "scale": 0.0167,
+        "separability": 0.98375,
+        "separability_ci": [
+          0.955383811987699,
+          1.0
+        ],
+        "certified": true,
+        "certification_reason": "separability 0.984 [0.955, 1.000] over 40/40 samples",
+        "n_answerable": 40,
+        "n_unanswerable": 40,
+        "in_sample_errors": {
+          "false_abstain_rate": 0.1,
+          "false_confirm_rate": 0.05,
+          "false_abstain_count": 4,
+          "false_confirm_count": 2
+        },
+        "queries": [
+          {
+            "query": "what does this project say about lock replace inside",
+            "answerable": true
+          },
+          {
+            "query": "how is diff proposals change handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was takeover replace exclusive decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of action placed guards",
+            "answerable": true
+          },
+          {
+            "query": "where is nodes proposal chunk described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about tokens public repo",
+            "answerable": true
+          },
+          {
+            "query": "how is claude current agent handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was null result constant decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of tenant holds indexing",
+            "answerable": true
+          },
+          {
+            "query": "where is mutation combination debugging described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about chrome cairosvg playwright",
+            "answerable": true
+          },
+          {
+            "query": "how is rebuild returned external handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was typed docs reasoning decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of nohup rising setsid",
+            "answerable": true
+          },
+          {
+            "query": "where is mutation lower mutant described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about torchvision runtimeerror therefore",
+            "answerable": true
+          },
+          {
+            "query": "how is sometimes creates previous handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was cheap expensive running decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of ardinghelli suspicious extraction",
+            "answerable": true
+          },
+          {
+            "query": "where is reduces fixture root described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about kill killed created",
+            "answerable": true
+          },
+          {
+            "query": "how is partial total failure handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was push created github decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of active record blocked",
+            "answerable": true
+          },
+          {
+            "query": "where is fabrication guarded judged described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about ships tools documents",
+            "answerable": true
+          },
+          {
+            "query": "how is issue widening annotated handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was chrome html success decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of gave function mtime",
+            "answerable": true
+          },
+          {
+            "query": "where is approves bind global described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about tenant filters models",
+            "answerable": true
+          },
+          {
+            "query": "how is pgcustom workspace scripts handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was outer duplicated removed decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of gate canary string",
+            "answerable": true
+          },
+          {
+            "query": "where is crlf showed observed described",
+            "answerable": true
+          },
+          {
+            "query": "what does this project say about archive examples moved",
+            "answerable": true
+          },
+          {
+            "query": "how is extract shared result handled here",
+            "answerable": true
+          },
+          {
+            "query": "why was bash launch exit decided this way",
+            "answerable": true
+          },
+          {
+            "query": "what is the behaviour of attention outlived revert",
+            "answerable": true
+          },
+          {
+            "query": "where is setup choices designed described",
+            "answerable": true
+          },
+          {
+            "query": "what explains penguins in antarctic winters",
+            "answerable": false
+          },
+          {
+            "query": "what explains sourdough fermentation",
+            "answerable": false
+          },
+          {
+            "query": "what explains tidal locking of moons",
+            "answerable": false
+          },
+          {
+            "query": "what explains baroque counterpoint",
+            "answerable": false
+          },
+          {
+            "query": "what explains sprinting biomechanics",
+            "answerable": false
+          },
+          {
+            "query": "what explains volcanic ash dispersal",
+            "answerable": false
+          },
+          {
+            "query": "what explains medieval cathedral acoustics",
+            "answerable": false
+          },
+          {
+            "query": "what explains honeybee waggle dances",
+            "answerable": false
+          },
+          {
+            "query": "what explains typography kerning",
+            "answerable": false
+          },
+          {
+            "query": "what explains deep sea bioluminescence",
+            "answerable": false
+          },
+          {
+            "query": "what explains alpine glacier retreat",
+            "answerable": false
+          },
+          {
+            "query": "what explains origami crease patterns",
+            "answerable": false
+          },
+          {
+            "query": "what explains steam locomotive boilers",
+            "answerable": false
+          },
+          {
+            "query": "what explains harpsichord tuning",
+            "answerable": false
+          },
+          {
+            "query": "what explains lichen growth rates",
+            "answerable": false
+          },
+          {
+            "query": "what explains cuneiform tablet translation",
+            "answerable": false
+          },
+          {
+            "query": "what explains tidewater glacier calving",
+            "answerable": false
+          },
+          {
+            "query": "what explains tapestry weaving looms",
+            "answerable": false
+          },
+          {
+            "query": "what explains auroral substorm onset",
+            "answerable": false
+          },
+          {
+            "query": "what explains papyrus conservation methods",
+            "answerable": false
+          },
+          {
+            "query": "how does penguins in antarctic winters actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does sourdough fermentation actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does tidal locking of moons actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does baroque counterpoint actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does sprinting biomechanics actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does volcanic ash dispersal actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does medieval cathedral acoustics actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does honeybee waggle dances actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does typography kerning actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does deep sea bioluminescence actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does alpine glacier retreat actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does origami crease patterns actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does steam locomotive boilers actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does harpsichord tuning actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does lichen growth rates actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does cuneiform tablet translation actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does tidewater glacier calving actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does tapestry weaving looms actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does auroral substorm onset actually work",
+            "answerable": false
+          },
+          {
+            "query": "how does papyrus conservation methods actually work",
+            "answerable": false
+          }
+        ]
+      },
+      "points": [
+        {
+          "label": "n0043",
+          "sources": 43,
+          "chunks": 175,
+          "sources_parent": 43,
+          "sources_child": 43,
+          "sources_added": 0,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 43,
+          "corpus_delta": 0.0,
+          "false_abstain_rate": 0.1,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.1,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.1,
+          "separability": 0.98375,
+          "separability_ci_low": 0.955383811987699,
+          "certified_now": true,
+          "refit_threshold": 0.68,
+          "threshold_drift": 0.0,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0051",
+          "sources": 51,
+          "chunks": 216,
+          "sources_parent": 43,
+          "sources_child": 51,
+          "sources_added": 8,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 51,
+          "corpus_delta": 0.1568627450980392,
+          "false_abstain_rate": 0.1,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.1,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.1,
+          "separability": 0.9875,
+          "separability_ci_low": 0.9626363596696337,
+          "certified_now": true,
+          "refit_threshold": 0.68,
+          "threshold_drift": 0.0,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0060",
+          "sources": 60,
+          "chunks": 247,
+          "sources_parent": 43,
+          "sources_child": 60,
+          "sources_added": 17,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 60,
+          "corpus_delta": 0.2833333333333333,
+          "false_abstain_rate": 0.075,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.98625,
+          "separability_ci_low": 0.9601673576054387,
+          "certified_now": true,
+          "refit_threshold": 0.684,
+          "threshold_drift": 0.0040000000000000036,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0068",
+          "sources": 68,
+          "chunks": 282,
+          "sources_parent": 43,
+          "sources_child": 68,
+          "sources_added": 25,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 68,
+          "corpus_delta": 0.36764705882352944,
+          "false_abstain_rate": 0.075,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.98625,
+          "separability_ci_low": 0.9601673576054387,
+          "certified_now": true,
+          "refit_threshold": 0.684,
+          "threshold_drift": 0.0040000000000000036,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0077",
+          "sources": 77,
+          "chunks": 350,
+          "sources_parent": 43,
+          "sources_child": 77,
+          "sources_added": 34,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 77,
+          "corpus_delta": 0.44155844155844154,
+          "false_abstain_rate": 0.075,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.986875,
+          "separability_ci_low": 0.9613946773981358,
+          "certified_now": true,
+          "refit_threshold": 0.684,
+          "threshold_drift": 0.0040000000000000036,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0085",
+          "sources": 85,
+          "chunks": 391,
+          "sources_parent": 43,
+          "sources_child": 85,
+          "sources_added": 42,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 85,
+          "corpus_delta": 0.49411764705882355,
+          "false_abstain_rate": 0.075,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.986875,
+          "separability_ci_low": 0.9613946773981358,
+          "certified_now": true,
+          "refit_threshold": 0.684,
+          "threshold_drift": 0.0040000000000000036,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0093",
+          "sources": 93,
+          "chunks": 433,
+          "sources_parent": 43,
+          "sources_child": 93,
+          "sources_added": 50,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 93,
+          "corpus_delta": 0.5376344086021505,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": -0.05,
+          "baseline_max_error": 0.1,
+          "separability": 0.989375,
+          "separability_ci_low": 0.9664592554869615,
+          "certified_now": true,
+          "refit_threshold": 0.69,
+          "threshold_drift": 0.009999999999999898,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0102",
+          "sources": 102,
+          "chunks": 500,
+          "sources_parent": 43,
+          "sources_child": 102,
+          "sources_added": 59,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 102,
+          "corpus_delta": 0.5784313725490197,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.05,
+          "max_error": 0.05,
+          "excess_max_error": -0.05,
+          "baseline_max_error": 0.1,
+          "separability": 0.989375,
+          "separability_ci_low": 0.9664592554869615,
+          "certified_now": true,
+          "refit_threshold": 0.69,
+          "threshold_drift": 0.009999999999999898,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0110",
+          "sources": 110,
+          "chunks": 544,
+          "sources_parent": 43,
+          "sources_child": 110,
+          "sources_added": 67,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 110,
+          "corpus_delta": 0.6090909090909091,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.98875,
+          "separability_ci_low": 0.9651673237374908,
+          "certified_now": true,
+          "refit_threshold": 0.69,
+          "threshold_drift": 0.009999999999999898,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0118",
+          "sources": 118,
+          "chunks": 591,
+          "sources_parent": 43,
+          "sources_child": 118,
+          "sources_added": 75,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 118,
+          "corpus_delta": 0.635593220338983,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.98625,
+          "separability_ci_low": 0.9601673576054387,
+          "certified_now": true,
+          "refit_threshold": 0.696,
+          "threshold_drift": 0.015999999999999903,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0127",
+          "sources": 127,
+          "chunks": 647,
+          "sources_parent": 43,
+          "sources_child": 127,
+          "sources_added": 84,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 127,
+          "corpus_delta": 0.6614173228346457,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.98625,
+          "separability_ci_low": 0.9601673576054387,
+          "certified_now": true,
+          "refit_threshold": 0.696,
+          "threshold_drift": 0.015999999999999903,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0135",
+          "sources": 135,
+          "chunks": 706,
+          "sources_parent": 43,
+          "sources_child": 135,
+          "sources_added": 92,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 135,
+          "corpus_delta": 0.6814814814814815,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.98875,
+          "separability_ci_low": 0.9651673237374908,
+          "certified_now": true,
+          "refit_threshold": 0.696,
+          "threshold_drift": 0.015999999999999903,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0144",
+          "sources": 144,
+          "chunks": 765,
+          "sources_parent": 43,
+          "sources_child": 144,
+          "sources_added": 101,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 144,
+          "corpus_delta": 0.7013888888888888,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.98875,
+          "separability_ci_low": 0.9651673237374908,
+          "certified_now": true,
+          "refit_threshold": 0.696,
+          "threshold_drift": 0.015999999999999903,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0152",
+          "sources": 152,
+          "chunks": 808,
+          "sources_parent": 43,
+          "sources_child": 152,
+          "sources_added": 109,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 152,
+          "corpus_delta": 0.7171052631578947,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.98875,
+          "separability_ci_low": 0.9651673237374908,
+          "certified_now": true,
+          "refit_threshold": 0.696,
+          "threshold_drift": 0.015999999999999903,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0160",
+          "sources": 160,
+          "chunks": 889,
+          "sources_parent": 43,
+          "sources_child": 160,
+          "sources_added": 117,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 160,
+          "corpus_delta": 0.73125,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.98875,
+          "separability_ci_low": 0.9651673237374908,
+          "certified_now": true,
+          "refit_threshold": 0.696,
+          "threshold_drift": 0.015999999999999903,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0169",
+          "sources": 169,
+          "chunks": 927,
+          "sources_parent": 43,
+          "sources_child": 169,
+          "sources_added": 126,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 169,
+          "corpus_delta": 0.7455621301775148,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.98875,
+          "separability_ci_low": 0.9651673237374908,
+          "certified_now": true,
+          "refit_threshold": 0.696,
+          "threshold_drift": 0.015999999999999903,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0177",
+          "sources": 177,
+          "chunks": 971,
+          "sources_parent": 43,
+          "sources_child": 177,
+          "sources_added": 134,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 177,
+          "corpus_delta": 0.7570621468926554,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.98875,
+          "separability_ci_low": 0.9651673237374908,
+          "certified_now": true,
+          "refit_threshold": 0.696,
+          "threshold_drift": 0.015999999999999903,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0186",
+          "sources": 186,
+          "chunks": 1018,
+          "sources_parent": 43,
+          "sources_child": 186,
+          "sources_added": 143,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 186,
+          "corpus_delta": 0.7688172043010753,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.075,
+          "max_error": 0.075,
+          "excess_max_error": -0.02500000000000001,
+          "baseline_max_error": 0.1,
+          "separability": 0.98875,
+          "separability_ci_low": 0.9651673237374908,
+          "certified_now": true,
+          "refit_threshold": 0.696,
+          "threshold_drift": 0.015999999999999903,
+          "evidence_survival": 1.0
+        },
+        {
+          "label": "n0194",
+          "sources": 194,
+          "chunks": 1105,
+          "sources_parent": 43,
+          "sources_child": 194,
+          "sources_added": 151,
+          "sources_removed": 0,
+          "sources_modified": 0,
+          "sources_union": 194,
+          "corpus_delta": 0.7783505154639175,
+          "false_abstain_rate": 0.05,
+          "false_confirm_rate": 0.1,
+          "max_error": 0.1,
+          "excess_max_error": 0.0,
+          "baseline_max_error": 0.1,
+          "separability": 0.9875,
+          "separability_ci_low": 0.9626363596696337,
+          "certified_now": true,
+          "refit_threshold": 0.696,
+          "threshold_drift": 0.015999999999999903,
+          "evidence_survival": 1.0
+        }
+      ],
+      "trigger": {
+        "n": 18,
+        "positives": 0,
+        "positive_rate": 0.0,
+        "outcome": "max_error",
+        "error_bound": 0.1,
+        "spearman_delta_vs_outcome": 0.13629325512727639,
+        "under_default_max_delta_but_over_error": 0,
+        "under_default_max_delta": 1,
+        "best_cut_at_recall_0.9": null
+      },
+      "trigger_excess": {
+        "n": 18,
+        "positives": 0,
+        "positive_rate": 0.0,
+        "outcome": "excess_max_error",
+        "error_bound": 0.0,
+        "spearman_delta_vs_outcome": 0.13629325512727639,
+        "under_default_max_delta_but_over_error": 0,
+        "under_default_max_delta": 1,
+        "best_cut_at_recall_0.9": null
+      }
+    }
+  ],
+  "pooled_trigger": {
+    "n": 57,
+    "positives": 5,
+    "positive_rate": 0.08771929824561403,
+    "outcome": "max_error",
+    "error_bound": 0.1,
+    "spearman_delta_vs_outcome": 0.3841880186204739,
+    "under_default_max_delta_but_over_error": 0,
+    "under_default_max_delta": 1,
+    "best_cut_at_recall_0.9": {
+      "cut": 0.9454545454545454,
+      "recall": 1.0,
+      "precision": 0.7142857142857143,
+      "fired": 7,
+      "true_positives": 5
+    }
+  },
+  "pooled_trigger_excess": {
+    "n": 57,
+    "positives": 13,
+    "positive_rate": 0.22807017543859648,
+    "outcome": "excess_max_error",
+    "error_bound": 0.0,
+    "spearman_delta_vs_outcome": 0.719679336208844,
+    "under_default_max_delta_but_over_error": 0,
+    "under_default_max_delta": 1,
+    "best_cut_at_recall_0.9": {
+      "cut": 0.8157894736842105,
+      "recall": 0.9230769230769231,
+      "precision": 0.5714285714285714,
+      "fired": 21,
+      "true_positives": 12
+    }
+  }
+}

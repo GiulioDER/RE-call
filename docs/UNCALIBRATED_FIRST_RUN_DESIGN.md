@@ -36,14 +36,14 @@ a **tenant**.
 | Missing `generation_id` degrades to `"legacy"` | `recall_mcp/service.py:974` | confirmed. A second site uses the same default but maps it to `None` immediately after, so the two do not behave identically |
 | `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:977` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
-| `calibration = None` is deliberate, and names an open design question | `recall/cli.py:2227-2238` | confirmed |
+| `calibration = None` is deliberate, and names an open design question | `recall/cli.py:2640-2650` | confirmed |
 | Legacy `chunks` has no `source_sha256` **column** | `recall/store.py:354` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
 
 ### Four findings that change the available answers
 
 **F1. Promotion is not required, for either calibration or serving.**
 `CalibrationRepository._generation` accepts states `{"ready", "active", "retired"}`
-(`recall/calibration_v2.py:349`). `GenerationStore.pin_generation` accepts the same three
+(`recall/calibration_v2.py:494`). `GenerationStore.pin_generation` accepts the same three
 (`recall/generation_store.py:146`). And `SERVABLE_ACTIVE_STATES = frozenset({"ready", "active"})`
 (`recall/control_plane.py:34`), so the enterprise control plane **already treats `ready` as
 servable**. What `promote()` adds over calibration and serving is that it sets
@@ -123,10 +123,10 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 
 `RECALL_ENV` is one string carrying at least six unrelated policies:
 
-1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:1837`, `recall/cli.py:2244`).
+1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:1837`, `recall/cli.py:2252`).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:366`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
-   `recall_mcp/server.py:629`, `recall/cli.py:2283`, and the `generation_mode` parameter threaded
+   `recall_mcp/server.py:629`, `recall/cli.py:2291`, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`recall_mcp/stores.py:154`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:513`).
@@ -230,7 +230,7 @@ redirected. Section 6's claim that policy 1 is untouched does not survive withou
 
 ### Q: Is there an honest install time calibration binding that does not need a full build?
 
-**Yes, and `recall/cli.py:2238` was right to refuse the version that would have been dishonest.**
+**Yes, and `recall/cli.py:2246` was right to refuse the version that would have been dishonest.**
 
 The comment says: "Resolve that by deciding where install-time calibration binds, not by reinstating
 the line below." My answer is that **there is no honest process global calibration and there should
@@ -393,7 +393,7 @@ disagreement is itself reportable.
 
 **Why.** `resolve()` re-derives the lineage comparison on every query, which is what catches a
 `forget()` that rewrote `corpus_fingerprint` (`recall/generations.py:1235`) or a `publish()` that
-superseded the artifact (`recall/calibration_v2.py:511`). A cached mode cannot catch either.
+superseded the artifact (`recall/calibration_v2.py:977`). A cached mode cannot catch either.
 Making it authoritative would require every current and future invalidator to update it, which is
 exactly the growing-enumeration failure this design criticises in F2. **A cache that must be
 invalidated by an open-ended set of writers is a bug with a schedule.**
@@ -425,7 +425,7 @@ failure-code API is untouched and the fail-closed default stays exactly as it is
 
 The question assumed provisional was a *weaker certification*. The Q2 measurement falsified that:
 a generated query set **passes** `Calibration.certified`, and `publish()` accepts the artifact
-(`recall/calibration_v2.py:513` only refuses `not artifact.certified`). So certification and
+(`recall/calibration_v2.py:979` only refuses `not artifact.certified`). So certification and
 provenance are **two independent axes**, and the original framing conflated them.
 
 So: `CalibrationStatus` keeps meaning "is this artifact bound and statistically sound". Provenance

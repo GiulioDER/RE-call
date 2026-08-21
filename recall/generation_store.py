@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
@@ -158,22 +158,48 @@ class GenerationStore(PgVectorStore):
             self._pinned_generation.reset(token)
 
     def generation_binding(self) -> dict[str, str]:
+        """Identity of the generation this store reads, including WHICH MODEL wrote its vectors.
+
+        `embedder_model` and `embedder_dimension` are read here rather than left to a readiness
+        check, because this is the only place the serving path looks the generation up.
+        `check_enterprise_readiness` does
+        compare the runtime embedder against the generation's, but only `if control_plane is not
+        None`, and a stdio server has no control plane; its sibling check on the calibration's
+        identity is documented at `recall_mcp/server.py` as unreachable from startup. So on the
+        stdio path nothing compared them at all, and a mismatch is invisible rather than loud.
+        """
         generation_id = self._generation_id()
         row = self._with_retry(
             lambda conn: conn.execute(
-                "SELECT pipeline_fingerprint, corpus_fingerprint FROM recall_generations "
-                "WHERE tenant_id = %s AND generation_id = %s",
+                "SELECT pipeline_fingerprint, corpus_fingerprint, pipeline_identity "
+                "FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
                 (self._tenant, generation_id),
             ).fetchone()
         )
         if row is None:
             raise NoActiveGeneration(generation_id)
-        return {
+        binding = {
             "tenant_id": self._tenant,
             "generation_id": generation_id,
             "pipeline_fingerprint": str(row[0]),
             "corpus_fingerprint": str(row[1]),
         }
+        identity = row[2] if isinstance(row[2], Mapping) else {}
+        embedder = identity.get("embedder")
+        if isinstance(embedder, Mapping):
+            # `model` and `dimension`, NOT a `provider:model` string compared against
+            # `embedding_profile_id`. That function returns a registered `profile_id` when there
+            # is one and the bare `embedder.name` otherwise, so it does not spell
+            # `provider:model`, and comparing the two would have refused the CORRECT embedder.
+            # This pair is the comparison `CalibrationRepository.calibrate` already makes, and it
+            # is known to accept the matching case: the 2026-08-20 carry-forward passed it.
+            model = str(embedder.get("model", "")).strip()
+            if model:
+                binding["embedder_model"] = model
+            dimension = embedder.get("dimension")
+            if isinstance(dimension, int):
+                binding["embedder_dimension"] = str(dimension)
+        return binding
 
     def resolve_calibration(self) -> CalibrationResolution:
         from recall.calibration_v2 import CalibrationRepository

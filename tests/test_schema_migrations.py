@@ -59,11 +59,12 @@ def _target(prefix: str = "mig_"):
 
 def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     migrations = load_migrations()
-    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 14)]
+    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 15)]
     assert migrations[0].transactional
     assert migrations[7].transactional
     assert all(m.concurrent_index for m in (*migrations[1:7], *migrations[8:10]))
     assert migrations[10].transactional
+    assert migrations[13].transactional  # 0014_calibration_carry_forward
     assert len({m.checksum for m in migrations}) == len(migrations)
 
 
@@ -115,7 +116,7 @@ def test_fresh_apply_repeated_apply_and_plan_is_read_only():
         assert [m.version for m in applied] == [f"{n:04d}" for n in range(1, 8)]
         assert apply_migrations(TEST_DSN, table=table, dim=DIM) == ()
         status = schema_status(TEST_DSN, table=table, dim=DIM)
-        assert status.compatible and status.current_version == "0013"
+        assert status.compatible and status.current_version == "0014"
 
         with PgVectorStore(TEST_DSN, dim=DIM, table=table) as store:
             store.check_schema()
@@ -149,7 +150,7 @@ def test_schema_cli_plan_apply_and_status_are_wired(capsys):
         assert "applied 0001" in applied and "applied 0007" in applied
         cli_main([*base, "schema", "--dim", str(DIM), "status"])
         status = capsys.readouterr().out
-        assert "current: 0013" in status and "compatible: yes" in status
+        assert "current: 0014" in status and "compatible: yes" in status
 
 
 @requires_db
