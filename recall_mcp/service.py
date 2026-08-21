@@ -2101,25 +2101,26 @@ _DESKTOP_CORPUS_PREFIX = "desktop-"
 
 
 def _local_path(uri: str) -> Path | None:
-    """The filesystem path a local `file://` URI names, or `None` for anything else.
+    """Where a carried-forward object lives, or `None` if it is not a readable local file.
 
-    Anything that is not a local `file://` URI returns `None` rather than being guessed at. A URI
-    carrying a host (`file://server/share/x`) is NOT local and is rejected: `urlparse` puts the host
-    in `netloc`, and reading only `path` would silently reinterpret a remote share as a local
-    directory.
+    ⛔ **Delegates to `recall.manifest.local_path_for`, which is the reader's OWN resolution.**
+    This used to re-derive it with `urlparse` and `unquote`, and disagreed with the reader in three
+    ways that `local_path_for`'s comments each explain at length: the double decode (so a file
+    genuinely named `percent%20literal.md` resolved to a different existing file), the dropped UNC
+    authority (so a network-share corpus contributed no root and the build refused it), and
+    `urlsplit` raising `ValueError` on an unbalanced `[` straight out of the carry-forward loop.
+
+    A filter and the fetcher it guards must not answer this question separately. When they did, the
+    filter decided a file was unreachable that the reader could have read, and the reverse.
     """
-    from urllib.parse import unquote, urlparse
+    from recall.manifest import ObjectNotAllowed, local_path_for
 
-    parsed = urlparse(uri)
-    if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
-        return None
-    path = unquote(parsed.path)
-    # A Windows `file:///C:/x` parses with a leading slash before the drive letter.
-    if len(path) > 2 and path[0] == "/" and path[2] == ":":
-        path = path[1:]
     try:
-        return Path(path).resolve()
-    except (OSError, ValueError):  # pragma: no cover - an unresolvable path names no root
+        return local_path_for(uri)
+    except ObjectNotAllowed:
+        # Not a local file, or not one this platform can read. It names no root, so the reader will
+        # refuse it and `build` will raise — the correct LOUD outcome for an object this path
+        # genuinely cannot rebuild.
         return None
 
 
@@ -2509,6 +2510,18 @@ def _certify_upload(
     # does this correctly on the same generator: `generate_offline` REFUSES outright when the corpus
     # has fewer distinct chunks than requested, so a flat bump to the headroom would turn "a small
     # corpus certifies" into "a small corpus errors". Try the headroom, fall back to the floor.
+    #
+    # ⚠️ **Measured cost of the ladder, so nobody has to re-derive it: worst case 1.90x, and it is
+    # deliberately not optimised.** On an 18 MB / 9,226-chunk corpus where the headroom attempt
+    # fails the capacity check LATE, the two attempts tokenise the corpus twice: 15.2s against 8.0s
+    # for a single pass. The suggested fix is to hoist `offtopic_subjects_absent_from` and the
+    # document frequencies out of `generate_offline` and choose `per_class` up front, which changes
+    # that function's signature for every caller. Seven seconds against an upload that builds,
+    # embeds and validates a whole corpus is not where the time goes, so the API stays as it is.
+    #
+    # The case that is NOT slow, and that the obvious reading gets wrong: a corpus SMALLER than the
+    # headroom costs nothing extra, because `generate_offline` checks `len(chunks) < per_class`
+    # before it tokenises anything. Measured at 25 chunks: 0.000s for the failed 40-attempt.
     entries = None
     last: Exception | None = None
     for per_class in (DEFAULT_PER_CLASS, MIN_PER_CLASS):

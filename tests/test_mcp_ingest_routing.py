@@ -25,6 +25,8 @@ import textwrap
 
 import pytest
 
+from types import SimpleNamespace
+
 import recall_mcp.server as server
 
 
@@ -638,11 +640,154 @@ def test_a_carried_forward_file_that_still_exists_is_never_dropped(tmp_path) -> 
     spaced.write_text("x", encoding="utf-8")
     assert _local_path(spaced.as_uri()) == spaced.resolve()
     assert _local_path("s3://bucket/key.md") is None
-    assert _local_path("file://nas1/share/docs/a.md") is None, (
-        "a URI with an authority is a UNC share, not a local path; reading only the path component "
-        "would rebase it onto the current drive, which recall/manifest.py documents at length"
-    )
     assert _roots_of({"s3://bucket/key.md": object()}) == (), (
         "a non-local object contributes no root, so the reader refuses it and the build fails "
         "LOUDLY — which is the right outcome for a corpus this path cannot rebuild"
     )
+
+    # ⛔ **The filter and the fetcher must give the SAME answer, so this asks both.** The first
+    # version of this helper re-derived URI-to-path with `urlparse` and `unquote`, and disagreed
+    # with `LocalObjectReader` in three ways: it decoded twice (so `percent%20literal.md` named a
+    # different existing file), it dropped the UNC authority (so a network-share corpus was called
+    # unreachable and silently excluded), and it raised `ValueError` on an unbalanced `[` straight
+    # out of the carry-forward loop, failing the whole upload from the code meant to make a bad URI
+    # harmless. It delegates now, and this compares the two rather than restating one of them.
+    from pathlib import Path
+
+    from recall.lineage import LineageError
+    from recall.manifest import LocalObjectReader, ManifestObjectV1, ObjectNotAllowed
+
+    def reader_says(uri: str, roots: tuple[Path, ...]) -> Path | None:
+        # A file:// object's version_id must BE its content digest; `recall.lineage` enforces
+        # that, because a local file has no version other than its contents.
+        digest = "0" * 64
+        try:
+            # The TYPE refuses some URIs outright, before any resolution happens. That is worth
+            # knowing: a malformed one can only reach `_local_path` from stored data, never
+            # from a freshly constructed manifest, which is exactly why the filter must
+            # answer rather than raise.
+            entry = ManifestObjectV1(uri, digest, "text/markdown", 0, digest)
+        except (ValueError, LineageError):
+            return None
+        try:
+            return LocalObjectReader(roots)._resolve(entry)
+        except ObjectNotAllowed:
+            return None
+
+    # Wide enough that only the URI-to-path decision can differ, never the containment check.
+    wide = (Path("/"), Path("C:/"), Path("//nas1/share"))
+    for uri in (
+        present.as_uri(),
+        spaced.as_uri(),
+        "file://nas1/share/docs/a.md",
+        "file:///C:/x/percent%2520literal.md",
+        "s3://bucket/key.md",
+        "file://[unbalanced/x.md",
+        "not a uri at all",
+    ):
+        mine = _local_path(uri)
+        theirs = reader_says(uri, wide)
+        if mine is not None and theirs is not None:
+            assert mine == theirs, f"{uri}: filter says {mine}, reader says {theirs}"
+
+    assert _local_path("file://[unbalanced/x.md") is None, (
+        "a malformed URI is an ANSWER, not a crash: raising here failed the entire upload"
+    )
+    assert _local_path("file://nas1/share/docs/a.md") is not None, (
+        "a UNC share is an ordinary thing to have on the platform this targets, and the reader "
+        "carries the authority deliberately; calling it unreachable excluded the whole corpus"
+    )
+
+
+def test_the_certification_asks_for_headroom_before_it_asks_for_the_floor() -> None:
+    """⛔ Asking for the FLOOR refuses corpora that are genuinely separable.
+
+    Certification tests the LOWER bound of the Hanley-McNeil interval, and that bound tightens as
+    the sample grows, so the floor is a certification threshold and not a generation target. The
+    numbers below are executed rather than quoted, because the whole argument for the ladder rests
+    on them and a quoted number in a comment is one nobody re-checks:
+
+        separability_interval(0.95, 20, 20) -> lower ~0.8786   refused (bar is 0.90)
+        separability_interval(0.95, 40, 40) -> lower ~0.9001   certified
+
+    So every corpus whose true separability lies in roughly [0.950, 0.962) certifies through the
+    installer and was refused by the desktop upload, leaving it READY and never live. The fix
+    shipped with no test at all, so a revert to `per_class=MIN_PER_CLASS` rebuilt that wall
+    silently.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    import recall_mcp.service as service
+    from recall.calibration import separability_interval
+    from recall.wizard.queryset import DEFAULT_PER_CLASS, MIN_PER_CLASS
+
+    # The measured premise. If this stops holding, the ladder is arguing from a fact that changed.
+    at_floor = separability_interval(0.95, MIN_PER_CLASS, MIN_PER_CLASS)[0]
+    at_headroom = separability_interval(0.95, DEFAULT_PER_CLASS, DEFAULT_PER_CLASS)[0]
+    assert at_floor < 0.90 <= at_headroom, (
+        f"the ladder exists because the floor's lower bound ({at_floor:.4f}) misses the 0.90 bar "
+        f"that the headroom's ({at_headroom:.4f}) clears; if that is no longer true, the ladder is "
+        "arguing from a fact that has changed"
+    )
+
+    # And the order it actually climbs them in. Structural, because `_certify_upload` opens a
+    # database before it reaches the ladder; the behavioural twin is the wizard's, below.
+    tree = ast.parse(textwrap.dedent(inspect.getsource(service._certify_upload)))
+    ladders = [
+        [element.id for element in node.iter.elts if isinstance(element, ast.Name)]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.For) and isinstance(node.iter, ast.Tuple)
+    ]
+    assert ["DEFAULT_PER_CLASS", "MIN_PER_CLASS"] in ladders, (
+        f"the headroom must be tried FIRST and the floor only as a fallback, found {ladders}"
+    )
+
+
+def test_the_wizard_falls_back_to_the_floor_rather_than_refusing(tmp_path) -> None:
+    """The same ladder, driven rather than read, on the path where driving it is cheap.
+
+    ⚠️ The two are NOT identical in shape and this no longer pretends otherwise. An earlier version
+    of this test asserted both spelled the ladder as a literal tuple; the wizard builds it as
+    `[per_class] if per_class <= MIN_PER_CLASS else [per_class, MIN_PER_CLASS]`, because its
+    per-class size is a parameter rather than a constant. The shared property is the BEHAVIOUR:
+    ask high, fall back to the floor, refuse only when the floor also fails.
+    """
+    from recall.wizard import pipeline
+    from recall.wizard.queryset import MIN_PER_CLASS, QuerySetError
+
+    asked: list[int] = []
+
+    def generator(chunks, *, per_class, seed):  # noqa: ARG001
+        asked.append(per_class)
+        if per_class != MIN_PER_CLASS:
+            raise QuerySetError(f"corpus cannot produce {per_class} per class")
+        return [{"query": "q", "answer": "a"}]
+
+    original_generate = pipeline.generate_offline
+    original_chunks = pipeline.chunks_from_directory
+    original_canon = pipeline.canonicalize
+    try:
+        pipeline.generate_offline = generator  # type: ignore[assignment]
+        pipeline.chunks_from_directory = lambda *a, **k: ["chunk"]  # type: ignore[assignment]
+        pipeline.canonicalize = lambda entries: entries  # type: ignore[assignment]
+
+        spec = SimpleNamespace(root=tmp_path, glob="*.md", tenant="docs")
+        entries, used = pipeline._labelled_set(
+            spec, lambda text: [text], per_class=MIN_PER_CLASS * 2, seed=1
+        )
+        assert asked == [MIN_PER_CLASS * 2, MIN_PER_CLASS], (
+            f"headroom first, floor as the fallback, got {asked}"
+        )
+        assert used == MIN_PER_CLASS, "and it reports the size it actually used, not the one it asked for"
+        assert entries
+
+        # A request already at or below the floor makes ONE attempt: there is nothing to fall back to.
+        asked.clear()
+        pipeline._labelled_set(spec, lambda text: [text], per_class=MIN_PER_CLASS, seed=1)
+        assert asked == [MIN_PER_CLASS]
+    finally:
+        pipeline.generate_offline = original_generate  # type: ignore[assignment]
+        pipeline.chunks_from_directory = original_chunks  # type: ignore[assignment]
+        pipeline.canonicalize = original_canon  # type: ignore[assignment]

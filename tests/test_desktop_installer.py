@@ -730,3 +730,64 @@ def test_the_installer_window_never_waits_forever_to_close(monkeypatch: pytest.M
         window._jobs.clear()
         monkeypatch.setattr(window.pool, "waitForDone", lambda *args: True, raising=False)
         window.close()
+
+
+def test_both_dsn_forms_have_their_password_scrubbed() -> None:
+    """⛔ libpq accepts two DSN forms and the installer's field is free text; only one was covered.
+
+    `urlsplit("host=db password=s3cret dbname=recall").password` is `None`, so the keyword form —
+    which psycopg accepts, and which is what somebody pasting from a hosting provider's console
+    often has — went through with the password intact while the caller's docstring said it had been
+    removed. A promise that holds for one input shape and silently fails for another is worse than
+    no promise, because the caller stops looking.
+    """
+    from recall.store import scrub_dsn_secrets
+
+    assert scrub_dsn_secrets("failed for s3cret", "postgresql://u:s3cret@h/db") == "failed for ***"
+    assert (
+        scrub_dsn_secrets('missing "=" after password=s3cret x', "host=db password=s3cret dbname=r")
+        == 'missing "=" after password=*** x'
+    )
+    # A quoted value with spaces is reachable through libpq and must be matched in full, not up to
+    # the first space.
+    assert (
+        scrub_dsn_secrets("error: pw with spaces", "host=db password='pw with spaces' dbname=x")
+        == "error: ***"
+    )
+
+    # It must never raise, on any input: this runs while REPORTING an error, and the malformed-DSN
+    # case is the one that produced the leak it exists to stop.
+    assert scrub_dsn_secrets("weird [dsn", "postgresql://[unbalanced") == "weird [dsn"
+    assert scrub_dsn_secrets("untouched", "") == "untouched"
+    assert scrub_dsn_secrets("untouched", "host=db dbname=r") == "untouched"
+
+
+def test_a_scrubbed_message_still_carries_its_diagnosis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⛔ Asserting only that the password is ABSENT passes for a helper that returns nothing useful.
+
+    `_scrubbed` has a fallback that replaces the whole message when the scrub raises. The tests for
+    it asserted only `password not in shown`, which that fallback satisfies while losing every word
+    of the diagnosis. An absence assertion needs a presence assertion beside it or it cannot tell
+    redaction from destruction.
+    """
+    from recall.desktop.install_ui import _scrubbed
+
+    dsn = "postgresql://recall:hunter2@127.0.0.1:5432/recall"
+    message = "Could not check that database: password authentication failed for hunter2"
+
+    shown = _scrubbed(message, dsn)
+    assert "hunter2" not in shown
+    assert "Could not check that database" in shown, "the diagnosis must survive the redaction"
+    assert "password authentication failed" in shown
+
+    # A blank DSN returns the message unchanged rather than suppressing it.
+    assert _scrubbed(message, "") == message
+
+    # And when the scrub itself fails, the message is suppressed rather than leaked.
+    def explode(*_args: object, **_kwargs: object) -> str:
+        raise RuntimeError("scrubber is broken")
+
+    monkeypatch.setattr("recall.store.scrub_dsn_secrets", explode)
+    suppressed = _scrubbed(message, dsn)
+    assert "hunter2" not in suppressed
+    assert "could not be displayed safely" in suppressed

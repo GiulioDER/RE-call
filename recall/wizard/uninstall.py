@@ -314,20 +314,39 @@ def _registrations(project_root: Path, config_path: Path) -> tuple[Removable, ..
     return tuple(found)
 
 
-def _profile_for(data_root: Path) -> Path | None:
+#: How the desktop app's handoff file is described in the plan. A constant because `execute`
+#: matches on it to decide what to keep when the teardown fails, and the profile lives outside
+#: `data_root` so it cannot be recognised by filename alone the way the other two can.
+_PROFILE_DETAIL = "the desktop app's handoff file"
+
+
+def _profile_for(data_root: Path, profile_path: Path | None = None) -> Path | None:
     """The desktop runtime profile, but only when it points at THIS install.
 
     Lives in the user's config directory rather than under `data_root`, so it has to be resolved
     through the writer's own path function rather than assumed. Guarded by whose stack it names: a
     second install's profile is not ours to remove, and there is exactly one profile file for the
     machine.
+
+    ⛔ **`profile_path` is injectable for the same reason `claude_config_path` is.** Without the
+    seam, `plan_uninstall` — documented as safe to call on a whim, opening nothing and deleting
+    nothing — read the developer's REAL `%APPDATA%/RE-call/runtime.json` on every test run, and the
+    deletion of a machine-global file had no way to be exercised at all. That is how this file's
+    predecessor bug survived: the only test touching it fabricated the file in the wrong directory.
     """
+    if profile_path is not None:
+        resolved = profile_path
+    else:
+        try:
+            from recall.desktop.profiles import profile_path as writers_own_path
+        except Exception:  # noqa: BLE001 - no desktop extra means no profile to remove
+            return None
+        try:
+            resolved = writers_own_path()
+        except Exception:  # noqa: BLE001 - an unresolvable config dir names no profile
+            return None
     try:
-        from recall.desktop.profiles import profile_path
-    except Exception:  # noqa: BLE001 - no desktop extra means no profile to remove
-        return None
-    try:
-        path = profile_path()
+        path = resolved
         if not path.exists():
             return None
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -349,6 +368,7 @@ def plan_uninstall(
     data_root: Path,
     purge_data: bool = False,
     claude_config_path: Path | None = None,
+    profile_path: Path | None = None,
     runner: Callable[[Sequence[str]], tuple[int, str]] | None = None,
 ) -> UninstallPlan:
     """Work out what removing this install would take away. Opens nothing, deletes nothing.
@@ -425,9 +445,9 @@ def plan_uninstall(
         if path.exists():
             items.append(Removable("file", str(path), "written by the installer"))
 
-    profile = _profile_for(data_root)
+    profile = _profile_for(data_root, profile_path)
     if profile is not None:
-        items.append(Removable("file", str(profile), "the desktop app's handoff file"))
+        items.append(Removable("file", str(profile), _PROFILE_DETAIL))
 
     project_root = _configured_project_root(data_root)
     if project_root is not None:
@@ -554,15 +574,24 @@ def execute(
     # it, so without it the second attempt cannot find the MCP registrations to unwind or say which
     # folders it is keeping.
     #
-    # The desktop profile is deliberately NOT in this set. It points at the compose file, which is
-    # being kept, so leaving the profile behind would leave the desktop app pointing at an install
-    # the user has asked to remove — and unlike the two above, nothing on the retry path reads it.
+    # 🔁 **The desktop profile is kept too, and the first version of this reasoned its way to the
+    # opposite answer.** That argument was: the profile points at an install the user asked to
+    # remove, so leaving it behind leaves the app pointing at something that should be gone. It is
+    # wrong about the state it is reasoning about. If the teardown FAILED, the stack is still
+    # running — that is what failure means here — and the compose file naming it is being kept for
+    # exactly that reason. Deleting the app's only pointer to a stack that is still up, while
+    # keeping the file that names it, is the same defect as deleting the stack file itself: it
+    # strands a live resource behind a tool that can no longer reach it.
+    #
+    # The retry removes all three together once the teardown succeeds, which is the state in which
+    # removing any of them is correct.
     teardown_failed = compose_failed or any(
         item.kind in {"container", "volume"} for item, _reason in report.failed
     )
     for item in plan.removing("file"):
         path = Path(item.name)
-        if teardown_failed and path.name in {COMPOSE_NAME, "wizard.json"}:
+        keep_for_retry = path.name in {COMPOSE_NAME, "wizard.json"} or item.detail == _PROFILE_DETAIL
+        if teardown_failed and keep_for_retry:
             report.kept.append(
                 Removable(
                     item.kind,

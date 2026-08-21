@@ -824,3 +824,117 @@ def test_the_backup_never_overwrites_the_one_the_installer_made(tmp_path: Path) 
             "world-readable copy of every credential beside a 0600 original"
         )
         assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
+def _profile(path: Path, compose_file: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"compose_file": str(compose_file)}), encoding="utf-8")
+    return path
+
+
+def test_the_desktop_handoff_file_is_removed_at_its_real_location(tmp_path: Path) -> None:
+    """⛔ It lives in the user's CONFIG directory, not under `data_root`.
+
+    It was listed as a `data_root`-relative name, so the entry never matched on Windows and every
+    uninstall left the desktop app holding a profile pointing at a compose file that had just been
+    deleted. The only test touching it fabricated the file under `data_root`, which is precisely
+    why the mismatch was invisible: the fixture agreed with the bug.
+    """
+    data_root = _install(tmp_path)
+    profile = _profile(tmp_path / "appdata" / "runtime.json", data_root / COMPOSE_NAME)
+
+    plan = plan_uninstall(data_root=data_root, profile_path=profile, runner=_docker())
+    assert str(profile) in [item.name for item in plan.removing("file")]
+
+    execute(
+        plan,
+        runner=_docker(),
+        claude_config_path=tmp_path / "claude.json",
+    )
+    assert not profile.exists()
+
+
+def test_another_installs_handoff_file_is_never_touched(tmp_path: Path) -> None:
+    """There is ONE profile per machine, so removing it blindly breaks a second install.
+
+    The guard is whose stack it names. A profile pointing somewhere else, a profile that is not a
+    JSON object, and a profile naming no stack at all must all be left alone rather than guessed at.
+    """
+    data_root = _install(tmp_path)
+    someone_else = _profile(tmp_path / "appdata" / "runtime.json", tmp_path / "other" / COMPOSE_NAME)
+
+    # Every plan-only case first: `execute` removes the stack file, and `plan_uninstall` needs it.
+    for content in (
+        json.dumps({"compose_file": str(tmp_path / "other" / COMPOSE_NAME)}),
+        "null",
+        "[]",
+        '{"compose_file": null}',
+        "{}",
+        "not json at all",
+    ):
+        someone_else.write_text(content, encoding="utf-8")
+        quiet = plan_uninstall(data_root=data_root, profile_path=someone_else, runner=_docker())
+        assert str(someone_else) not in [item.name for item in quiet.removing("file")], content
+
+    missing = plan_uninstall(
+        data_root=data_root, profile_path=tmp_path / "nope" / "runtime.json", runner=_docker()
+    )
+    assert not [item for item in missing.removing("file") if "runtime.json" in item.name]
+
+    # Then the destructive half, once, on the case that matters most.
+    someone_else.write_text(
+        json.dumps({"compose_file": str(tmp_path / "other" / COMPOSE_NAME)}), encoding="utf-8"
+    )
+    plan = plan_uninstall(data_root=data_root, profile_path=someone_else, runner=_docker())
+    execute(plan, runner=_docker(), claude_config_path=tmp_path / "claude.json")
+    assert someone_else.exists(), "a second install's profile is not ours to remove"
+
+
+def test_a_failed_teardown_keeps_the_handoff_file_too(tmp_path: Path) -> None:
+    """🔁 **This corrects an earlier judgement of mine, which reasoned to the opposite answer.**
+
+    That argument was: the profile points at an install the user asked to remove, so leaving it
+    behind leaves the app pointing at something that should be gone. It is wrong about the state it
+    reasons over. If the teardown FAILED, the stack is still running — that is what failure means
+    here — and the compose file naming it is kept for exactly that reason. Deleting the app's only
+    pointer to a live stack while keeping the file that names it strands a running resource behind a
+    tool that can no longer reach it, which is the same defect as deleting the stack file.
+    """
+    data_root = _install(tmp_path)
+    profile = _profile(tmp_path / "appdata" / "runtime.json", data_root / COMPOSE_NAME)
+
+    def dead(command: list[str]) -> tuple[int, str]:
+        return (1, "Cannot connect to the Docker daemon")
+
+    plan = plan_uninstall(data_root=data_root, profile_path=profile, runner=dead)
+    execute(plan, runner=dead, claude_config_path=tmp_path / "claude.json")
+
+    assert profile.exists(), "the stack is still up; the app must still be able to reach it"
+    assert (data_root / COMPOSE_NAME).exists()
+
+    # And the retry removes all three together, which is the state in which removal is correct.
+    retry = plan_uninstall(data_root=data_root, profile_path=profile, runner=_docker())
+    execute(retry, runner=_docker(), claude_config_path=tmp_path / "claude.json")
+    assert not profile.exists()
+    assert not (data_root / COMPOSE_NAME).exists()
+
+
+def test_a_stack_file_that_is_not_an_object_is_refused_rather_than_guessed(tmp_path: Path) -> None:
+    """⛔ Five `isinstance` guards were added; only the one that DEGRADES had a test.
+
+    The one that changes control flow is `_compose_project`'s, which refuses. A compose file
+    containing `null` or a list has no project name, and matching containers on a name pattern
+    instead is the single thing this module refuses to do.
+    """
+    data_root = _install(tmp_path)
+    for content in ("null", "[]", '"a string"', "42"):
+        (data_root / COMPOSE_NAME).write_text(content, encoding="utf-8")
+        with pytest.raises(UninstallRefusal):
+            plan_uninstall(data_root=data_root, runner=_docker())
+
+    # Control: a well-formed object still plans, so the refusal is about the SHAPE, not about
+    # refusing everything.
+    (data_root / COMPOSE_NAME).write_text(
+        json.dumps({"name": PROJECT, "services": {"db": {}}}), encoding="utf-8"
+    )
+    assert plan_uninstall(data_root=data_root, runner=_docker()).project_name == PROJECT

@@ -53,6 +53,32 @@ def _is_local_host(host: str) -> bool:
         return False
 
 
+def _dsn_passwords(dsn: str) -> tuple[str, ...]:
+    """Every password this DSN could carry, in either libpq form. Never raises.
+
+    The URI form (`postgresql://u:pw@host/db`) and the keyword form (`host=x password=pw`) are both
+    accepted by libpq, so both are scrubbed. A DSN that parses as neither yields nothing to scrub,
+    which is the honest answer: this is a redaction helper, not a validator, and a malformed DSN is
+    exactly when the caller most needs it to keep working.
+    """
+    found: list[str] = []
+    try:
+        uri_password = urlsplit(dsn).password
+    except ValueError:
+        uri_password = None
+    if uri_password:
+        found.append(uri_password)
+
+    # The keyword form. libpq allows single-quoted values with backslash escapes, so a password
+    # containing a space or a quote is reachable and must still be matched in full.
+    for match in re.finditer(r"password\s*=\s*(?:'((?:[^'\\]|\\.)*)'|(\S+))", dsn):
+        quoted, bare = match.group(1), match.group(2)
+        value = quoted.replace("\\'", "'").replace("\\\\", "\\") if quoted is not None else bare
+        if value:
+            found.append(value)
+    return tuple(found)
+
+
 def scrub_dsn_secrets(text: str, *dsns: str) -> str:
     """Remove any of these DSNs' passwords from `text`.
 
@@ -71,10 +97,17 @@ def scrub_dsn_secrets(text: str, *dsns: str) -> str:
     Anything derived from a connection attempt goes through here. Lives beside `redacted_dsn`
     rather than in one caller, because it was written twice before this: once in
     `recall/wizard/headless.py` and once, nearly, in the preflight.
+
+    ⛔ **Both DSN forms, because libpq accepts both and the installer's field is free text.**
+    This handled only the URI form: `urlsplit("host=db password=s3cret dbname=recall").password` is
+    `None`, so a keyword/value DSN — which psycopg accepts, and which is what somebody pasting from
+    a hosting provider's console often has — passed through with the password intact, while the
+    caller's docstring promised it had been removed. The parse is hand-rolled rather than delegated
+    to `psycopg.conninfo`, because this function must not fail on a MALFORMED dsn: malformed is the
+    case that produced the second measurement above.
     """
     for dsn in dsns:
-        password = urlsplit(dsn).password
-        if password:
+        for password in _dsn_passwords(dsn):
             text = text.replace(password, "***")
     return text
 
