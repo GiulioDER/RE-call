@@ -59,15 +59,42 @@ def _p(value: float | None) -> str:
     return "-" if value is None else (f"{value:.4f}" if value >= 0.0001 else "<0.0001")
 
 
-def build_pairs(records: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
+def build_pairs(
+    records: list[dict[str, Any]], discarded: set[str] | None = None
+) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, int]]:
+    """Pair the records the GATE admitted, and report what was dropped and why.
+
+    ⛔ `records.jsonl` holds every session the runner attempted, **including the ones the gate
+    threw out**. Reading it whole and calling the result "admitted pairs" is how a cost table ends
+    up averaging sessions that never ran: on `agent-ab-additive-001` the gate admitted 49 pairs and
+    this function reported 64, so the token and wall-time figures silently included 15 pairs whose
+    sessions died on `402 Insufficient credits`. The trap rates were unaffected, because those read
+    the admitted-only scores, which is exactly what made the bug hard to see.
+
+    A record is usable only if the gate kept its task AND the session itself completed. A session
+    that errored has no measurement to contribute, and averaging its zeros in would understate
+    every cost.
+    """
+
+    dropped = {"gate_discarded": 0, "errored": 0, "unpaired": 0}
     by_task: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     for record in records:
-        by_task[record["task_id"]][record["variant"]] = record
-    return {
+        task = record["task_id"]
+        if discarded and task in discarded:
+            dropped["gate_discarded"] += 1
+            continue
+        if record.get("error"):
+            dropped["errored"] += 1
+            continue
+        by_task[task][record["variant"]] = record
+
+    paired = {
         task: arms
         for task, arms in by_task.items()
         if RECALL_ON in arms and RECALL_OFF in arms
     }
+    dropped["unpaired"] = len(by_task) - len(paired)
+    return paired, dropped
 
 
 def main() -> int:
@@ -129,8 +156,24 @@ def main() -> int:
                 f"the trap rate (a non-answer avoids every detector trivially)"
             )
 
-    pairs = build_pairs(records)
+    # The gate's own verdict, not a second opinion computed here. `admission.json` is written by
+    # the runner from the same `admit_pairs` the run used; a salvaged run has no such file, and
+    # its records.jsonl already holds admitted records only, so an absent file means nothing to
+    # exclude rather than "exclude nothing by accident".
+    admission_path = artifacts / "admission.json"
+    discarded: set[str] = set()
+    if admission_path.is_file():
+        admission = json.loads(admission_path.read_text(encoding="utf-8"))
+        discarded = set(admission.get("discarded_task_ids") or [])
+
+    pairs, dropped = build_pairs(records, discarded)
     print(f"\nrun {args.run_id}: {len(pairs)} admitted pairs")
+    if any(dropped.values()):
+        print(
+            f"  excluded: {dropped['gate_discarded']} gate-discarded record(s), "
+            f"{dropped['errored']} errored, {dropped['unpaired']} unpaired"
+        )
+    analysis_dropped = dict(dropped)
     print(
         f"corpus: calibrated={environment.get('recall_calibrated')} "
         f"trust={environment.get('recall_trust_state')} "
@@ -138,7 +181,16 @@ def main() -> int:
         f"cli={environment.get('claude_code_version')}"
     )
 
-    analysis: dict[str, Any] = {"run_id": args.run_id, "pairs": len(pairs), "primary": {}, "controls": {}, "cost": {}}
+    analysis: dict[str, Any] = {
+        "run_id": args.run_id,
+        "pairs": len(pairs),
+        # In the artifact, not just on stdout: a reader must be able to see that a run lost
+        # sessions without re-deriving it from the raw records.
+        "excluded": analysis_dropped,
+        "primary": {},
+        "controls": {},
+        "cost": {},
+    }
 
     print("\n--- trap hit rate, by locus (PRIMARY = memory_only) ---")
     print(f"{'locus':<16}{'n':>4}{'on':>8}{'off':>8}{'delta':>9}{'95% CI':>20}{'p':>10}")
