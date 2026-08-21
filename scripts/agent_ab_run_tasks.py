@@ -58,7 +58,7 @@ from benchmarks.agent_ab.io import write_jsonl  # noqa: E402
 from benchmarks.agent_ab.recall_server import StdioRecallSpec  # noqa: E402
 from benchmarks.agent_ab.runner import run_paired  # noqa: E402
 from benchmarks.agent_ab.sandbox import restore  # noqa: E402
-from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON  # noqa: E402
+from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON, SessionRecord  # noqa: E402
 from benchmarks.agent_ab.summarize import summarize_recall_overhead  # noqa: E402
 from benchmarks.agent_ab.tasksuccess import TASKS, TASKS_BY_ID, check_workspace  # noqa: E402
 
@@ -140,6 +140,39 @@ def load_tasks(limit: int | None, reps: int | None) -> list[dict[str, Any]]:
     return expanded
 
 
+def completed_pairs(progress: Path) -> tuple[set[str], list[dict[str, Any]]]:
+    """Task ids whose BOTH arms are already recorded, and the rows to carry forward.
+
+    A run that dies should cost the sessions it did not do, not the ones it did. `records.partial`
+    is appended and fsynced per session for exactly this, and it is the only reason the first
+    attempt at this run is not a total loss: it died at 46 of 112 sessions when the process that
+    launched it exited, taking the `nohup`'d child with it.
+
+    ⚠️ **A pair with only ONE arm recorded is not carried forward, it is re-run.** Half a pair is
+    not evidence: pairing is the whole design, and splicing an arm measured before a crash onto one
+    measured after it would silently mix two environments inside a single comparison. The orphan
+    row is dropped from the carried set so it cannot be counted twice either.
+    """
+
+    if not progress.is_file():
+        return set(), []
+    rows = [
+        json.loads(line)
+        for line in progress.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    variants: dict[str, set[str]] = {}
+    for row in rows:
+        variants.setdefault(str(row["task_id"]), set()).add(str(row["variant"]))
+    done = {task_id for task_id, seen in variants.items() if len(seen) == 2}
+    carried = [row for row in rows if str(row["task_id"]) in done and not row.get("error")]
+    # A session that errored is not a completed session, so its pair is re-run rather than kept.
+    errored = {str(row["task_id"]) for row in rows if row.get("error")}
+    done -= errored
+    carried = [row for row in carried if str(row["task_id"]) not in errored]
+    return done, carried
+
+
 def load_loci() -> dict[str, str]:
     """Where each task's fact lives, read from the COMMITTED qualification.
 
@@ -196,22 +229,39 @@ async def main() -> int:
     parser.add_argument("--reps", type=int, default=None, help="override every task's reps")
     parser.add_argument("--pair-concurrency", type=int, default=1)
     parser.add_argument("--timeout-s", type=float, default=1800.0)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue a run that died, skipping pairs whose BOTH arms are already recorded",
+    )
     args = parser.parse_args()
 
     artifacts = REPO_ROOT / "benchmarks" / "artifacts" / "agent_ab" / args.run_id
-    if artifacts.exists() and any(artifacts.iterdir()):
+    progress_path = artifacts / "records.partial.jsonl"
+    if artifacts.exists() and any(artifacts.iterdir()) and not args.resume:
         print(
             f"{artifacts} already has contents. A run identifier names one immutable run; "
-            f"choose a new one rather than overwriting the evidence."
+            f"choose a new one rather than overwriting the evidence, or pass --resume to "
+            f"continue this one from its recorded sessions."
         )
         return 1
+    already, carried = completed_pairs(progress_path) if args.resume else (set(), [])
     (artifacts / "streams").mkdir(parents=True, exist_ok=True)
     work_root = artifacts / "work"
     work_root.mkdir(parents=True, exist_ok=True)
 
     loci = load_loci()
     tasks = load_tasks(args.limit, args.reps)
+    planned = len(tasks)
+    if already:
+        tasks = [row for row in tasks if str(row["task_id"]) not in already]
+        print(
+            f"resuming {args.run_id}: {len(already)} pairs already recorded and carried forward, "
+            f"{len(tasks)} of {planned} still to run"
+        )
     print(f"run {args.run_id}: additive, {len(tasks)} paired sessions, {len(tasks) * 2} in total\n")
+    if not tasks:
+        print("nothing left to run; re-deriving the artifacts from the recorded sessions")
 
     agent_env = openrouter_env()
     await preflight(agent_env, args.model)
@@ -263,7 +313,6 @@ async def main() -> int:
         for variant, config in templates.items()
     }
 
-    progress_path = artifacts / "records.partial.jsonl"
     progress_lock = asyncio.Lock()
     completed = 0
 
@@ -271,6 +320,16 @@ async def main() -> int:
         base_id = str(row["base_task_id"])
         task = TASKS_BY_ID[base_id]
         workdir = work_root / str(row["task_id"]).replace("#", "-") / variant
+        if workdir.exists():
+            # A half-finished pair from a previous attempt leaves its sandbox behind, and `restore`
+            # refuses a directory with contents rather than cleaning it, because a stale artifact
+            # is indistinguishable from this session's work. On a resume the directory is known to
+            # be dead, so it is moved aside rather than deleted: whatever the dead session wrote is
+            # still readable if the resumed pair later looks wrong.
+            attempt = 1
+            while (aside := workdir.parent / f"{workdir.name}.abandoned{attempt}").exists():
+                attempt += 1
+            workdir.rename(aside)
         digest = restore(task.workspace, workdir)
         config = replace(templates[variant], cwd=workdir)
 
@@ -320,7 +379,15 @@ async def main() -> int:
             )
         return stamped
 
-    records = await run_paired(tasks, run_case, pair_concurrency=args.pair_concurrency)
+    fresh = await run_paired(tasks, run_case, pair_concurrency=args.pair_concurrency)
+
+    # Carried-forward sessions rejoin here, so `records.jsonl` is the whole run rather than
+    # whatever survived the last restart. They are reconstructed from their recorded rows, not
+    # re-derived: the artifact must say what those sessions actually did, and a re-derivation would
+    # be this run's opinion of a session that happened under a different process.
+    records = [SessionRecord.from_mapping(row) for row in carried] + list(fresh)
+    if carried:
+        print(f"\ncarried forward {len(carried)} recorded sessions from earlier attempts")
 
     report = admit_pairs(records)
     admitted = list(report.admitted)
