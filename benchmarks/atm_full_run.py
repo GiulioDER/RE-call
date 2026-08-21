@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+import hashlib
 import json
 import os
 import sys
@@ -59,13 +60,29 @@ def _positive_int(value: str) -> int:
 
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
 
 
 def _append_jsonl(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _write_jsonl(path: Path, rows: list[object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
 
 
 def _load_jsonl(path: Path) -> dict[str, dict[str, Any]]:
@@ -81,6 +98,29 @@ def _load_jsonl(path: Path) -> dict[str, dict[str, Any]]:
                 raise ValueError(f"invalid JSONL row at {path}:{line_number}")
             rows[str(row["id"])] = row
     return rows
+
+
+def _load_answer_records(path: Path) -> dict[str, dict[str, Any]]:
+    records: dict[str, dict[str, Any]] = {}
+    if not path.exists():
+        return records
+    for record_path in sorted(path.glob("*.json")):
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        if not isinstance(record, dict) or not record.get("id"):
+            raise ValueError(f"invalid answer record at {record_path}")
+        question_id = str(record["id"])
+        if question_id in records:
+            raise ValueError(f"duplicate answer record for {question_id}")
+        usage = record.get("usage")
+        if not isinstance(usage, dict) or any(
+            not isinstance(usage.get(key), int) or usage[key] < 0
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+        ):
+            raise ValueError(f"invalid usage in answer record {record_path}")
+        if not isinstance(record.get("answer"), str) or not record["answer"].strip():
+            raise ValueError(f"invalid answer in answer record {record_path}")
+        records[question_id] = record
+    return records
 
 
 def _compact_text(value: object) -> str:
@@ -279,8 +319,26 @@ def run(args: argparse.Namespace) -> int:
         raise RuntimeError("OPENROUTER_API_KEY is required for answer generation")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     answers_path = args.out_dir / "answers.jsonl"
+    answer_records_path = args.out_dir / "answer_records"
     retrieval_path = args.out_dir / "retrieval.jsonl"
+    usage_checkpoint_path = args.out_dir / "usage_checkpoint.json"
     answers = _load_jsonl(answers_path)
+    answer_records = _load_answer_records(answer_records_path)
+    orphan_answers = set(answers) - set(answer_records)
+    if orphan_answers:
+        raise RuntimeError(
+            "answers.jsonl contains answers without atomic usage records; "
+            "start a new output directory instead of guessing token usage: "
+            + ", ".join(sorted(orphan_answers)[:5])
+        )
+    for question_id, record in answer_records.items():
+        answer_row = {"id": question_id, "answer": record["answer"]}
+        existing = answers.get(question_id)
+        if existing is not None and existing.get("answer") != answer_row["answer"]:
+            raise RuntimeError(f"answer record disagrees with answers.jsonl for {question_id}")
+        if existing is None:
+            _append_jsonl(answers_path, answer_row)
+        answers[question_id] = answer_row
     retrieval_rows = _load_jsonl(retrieval_path)
     previous_manifest: dict[str, Any] = {}
     manifest_path = args.out_dir / "manifest.json"
@@ -289,17 +347,22 @@ def run(args: argparse.Namespace) -> int:
         if isinstance(loaded_manifest, dict):
             previous_manifest = loaded_manifest
     with _build_retriever(args) as (retriever, embedder, chunks, index_ms):
-        previous_usage = previous_manifest.get("usage", {})
         usage_total = {
-            key: int(previous_usage.get(key, 0) or 0)
+            key: 0
             for key in ("calls", "prompt_tokens", "completion_tokens", "total_tokens")
         }
-        returned_models: set[str] = set(previous_manifest.get("answer_models_returned", []))
+        returned_models: set[str] = set()
+        for record in answer_records.values():
+            usage_total["calls"] += 1
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                usage_total[key] += int(record["usage"][key])
+            if record.get("returned_model"):
+                returned_models.add(str(record["returned_model"]))
         errors: list[dict[str, str]] = []
         pending: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
         for position, question in enumerate(questions, start=1):
             question_id = question["id"]
-            if question_id in answers:
+            if question_id in answer_records:
                 continue
             row = retrieval_rows.get(question_id)
             if row is None:
@@ -356,6 +419,18 @@ def run(args: argparse.Namespace) -> int:
             futures = [executor.submit(answer_one, item) for item in pending]
             for future in as_completed(futures):
                 position, question_id, answer_row, usage, returned_model = future.result()
+                record = {
+                    "position": position,
+                    "id": question_id,
+                    "answer": answer_row["answer"],
+                    "answer_sha256": hashlib.sha256(
+                        answer_row["answer"].encode("utf-8")
+                    ).hexdigest(),
+                    "usage": usage,
+                    "returned_model": returned_model,
+                }
+                _write_json(answer_records_path / f"{position:04d}.json", record)
+                answer_records[question_id] = record
                 _append_jsonl(answers_path, answer_row)
                 answers[question_id] = answer_row
                 usage_total["calls"] += 1
@@ -364,8 +439,31 @@ def run(args: argparse.Namespace) -> int:
                 if returned_model:
                     returned_models.add(returned_model)
                 completed += 1
+                _write_json(
+                    usage_checkpoint_path,
+                    {
+                        "benchmark": "ATM-Bench",
+                        "question_count": len(questions),
+                        "answer_count": len(answers),
+                        "usage": usage_total,
+                        "answer_models_returned": sorted(returned_models),
+                        "git_revision": git_revision(),
+                    },
+                )
                 print(f"answered {completed}/{len(questions)} question_position={position}", flush=True)
 
+        if len(answer_records) != len(questions):
+            raise RuntimeError(
+                f"answer record count {len(answer_records)} does not match "
+                f"question count {len(questions)}"
+            )
+        _write_jsonl(
+            answers_path,
+            [
+                {"id": question["id"], "answer": answer_records[question["id"]]["answer"]}
+                for question in questions
+            ],
+        )
         manifest = {
         "benchmark": "ATM-Bench",
         "measurement": "retrieve_rerank_answer",
@@ -391,6 +489,10 @@ def run(args: argparse.Namespace) -> int:
         },
         "max_output_tokens": args.max_output_tokens,
         "usage": usage_total,
+        "usage_record_count": len(answer_records),
+        "usage_source": "atomic per-answer records",
+        "answer_records": answer_records_path.name,
+        "usage_checkpoint": usage_checkpoint_path.name,
         "errors": errors,
         "index_ms": index_ms,
         "table": args.table,
