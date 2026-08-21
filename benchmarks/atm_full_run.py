@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from collections.abc import Iterator
@@ -202,33 +203,27 @@ def generate_answer(
     last_error: str | None = None
     for attempt in range(max_attempts):
         try:
-            completed = subprocess.run(
-                [
-                    "curl",
-                    "--silent",
-                    "--show-error",
-                    "--max-time",
-                    "180",
-                    "--connect-timeout",
-                    "30",
-                    "-H",
-                    f"Authorization: Bearer {api_key}",
-                    "-H",
-                    "Content-Type: application/json",
-                    "-H",
-                    "Connection: close",
-                    "--data-binary",
-                    "@-",
-                    "-w",
-                    "\n__HTTP_STATUS__:%{http_code}",
-                    url,
-                ],
-                input=json.dumps(payload, ensure_ascii=False),
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=195,
-            )
+            with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", prefix="recall-curl-", suffix=".conf", delete=False
+            ) as config_handle:
+                config_path = Path(config_handle.name)
+                config_handle.write(f'url = "{url}"\n')
+                config_handle.write(f'header = "Authorization: Bearer {api_key}"\n')
+                config_handle.write('header = "Content-Type: application/json"\n')
+                config_handle.write('header = "Connection: close"\n')
+                config_handle.write('silent\nshow-error\nmax-time = 180\nconnect-timeout = 30\n')
+                config_handle.write('write-out = "\\n__HTTP_STATUS__:%{http_code}"\n')
+            try:
+                completed = subprocess.run(
+                    ["curl", "--config", str(config_path), "--data-binary", "@-"],
+                    input=json.dumps(payload, ensure_ascii=False),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=195,
+                )
+            finally:
+                config_path.unlink(missing_ok=True)
             output, marker, status_text = completed.stdout.rpartition("\n__HTTP_STATUS__:")
             if not marker:
                 raise RuntimeError(
