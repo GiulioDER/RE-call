@@ -158,6 +158,56 @@ They are superseded here, before measuring, by:
 Predictions 8 and 9 (tokens, wall time) are expected to move against RE-call now that the on arm
 actually searches; they are **not** revised, and will be scored as written.
 
+## Rerun, 2026-08-21: `agent-ab-additive-002` supersedes `agent-ab-additive-001`
+
+**Nothing above is edited.** Run `agent-ab-additive-001` executed and is superseded, not deleted.
+Its artifacts stay on disk and its outcome is stated here, because the next run is no longer blind
+and pretending otherwise would be the dishonest option.
+
+### Why 001 is being rerun
+
+The OpenRouter account ran out of credit part-way through. **28 sessions died on `402 Insufficient
+credits`** and the gate discarded 15 pairs. The failure landed on the control tasks, which sit last
+in the manifest, so:
+
+- the primary endpoint completed intact: all **40 `memory_only` pairs**;
+- the controls were reduced to **4 and 5 pairs** against the 24 designed.
+
+Finishing only the missing controls was possible and was rejected deliberately. It would produce a
+result whose controls were measured an hour later than its primary, and "the controls were run
+separately after we topped up" is precisely the sentence a sceptical reader pulls on. Run 002 is
+the same design executed once, end to end, with credit in hand.
+
+### ⚠️ Run 002 is NOT blind, and here is exactly what was seen
+
+Run 001's outcome is known to me before 002 starts. Disclosed in full so a reader can discount it:
+
+| endpoint | run 001 |
+|---|---|
+| `memory_only` per-pair, n=40 | on 0.100, off 0.675, delta −0.575, CI [−0.725, −0.425], p<0.0001 |
+| per-task | 3 of 4 traps improved; cluster CI [−0.850, −0.175] |
+| controls (underpowered) | 0.000 vs 0.000 on both loci |
+| cost | input +3,410 (p=0.049), wall time −29,850 ms (p=0.078) |
+| mechanism | search rate 86%, zero non-answers in either arm |
+
+**No prediction is revised.** Predictions 1 through 12, including the amended 5a, 6a and 12, stand
+exactly as committed, and will be scored against 002. They were written blind against 001; against
+002 they are a **replication check**, not a blind forecast, and any writeup must say so. The
+temptation this creates is to treat a confirming 002 as independent evidence. It is not: it is the
+same design run twice, the second time knowing the first answer.
+
+Nothing else changes: same tasks, same reps, same arms, same corpus generation and calibration,
+same gate, same stopping rule.
+
+### One fix landed between the runs
+
+`scripts/agent_ab_analyze.py` was reading every record in `records.jsonl` and calling the result
+"admitted pairs", so run 001's cost table averaged 15 pairs whose sessions never completed. Fixed
+and regression-tested before 002. It changed two of 001's conclusions in opposite directions, which
+is why the corrected 001 figures above differ from what I reported earlier: wall time went from
+significant to not, and input tokens from not to marginal. The analysis code is now identical for
+both runs, so 001 and 002 are comparable.
+
 ## Result
 
 *Not yet run. Appended below when it is, without editing anything above.*
