@@ -38,7 +38,7 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -708,6 +708,80 @@ def _sizing(specs: Sequence[CorpusSpec], count: int) -> None:
     print(f"\nTOTAL distinct chunks to embed: {total}")
 
 
+def analyze(payload: Mapping[str, Any]) -> None:
+    """Print the figures the registered predictions are scored against, and nothing else.
+
+    Separate from the measurement so a result can be re-read without re-running it, and so the
+    numbers that go into the Result section come out of committed code rather than out of a
+    snippet typed once and lost. Every rate is printed with its denominator, because a rate
+    without one is not a result.
+    """
+    print(f"measured_at      {payload.get('measured_at')}")
+    print(f"embedder         {payload.get('embedder')}")
+    print(f"apparatus        {payload.get('apparatus_check', {}).get('passed')}")
+    print(f"wall clock       {payload.get('wall_clock_seconds')}s")
+    bound = float(payload.get("error_bound", DEFAULT_MAX_CARRY_FORWARD_ERROR))
+
+    for corpus in payload.get("corpora", ()):
+        points = [point for point in corpus.get("points", ()) if point["corpus_delta"] > 0]
+        baseline = corpus.get("baseline") or {}
+        print()
+        print(f"=== {corpus['id']} ({corpus.get('change_mode')}) ===")
+        if corpus.get("error"):
+            print(f"  ERROR: {corpus['error']}")
+            continue
+        in_sample = baseline.get("in_sample_errors", {})
+        print(
+            f"  baseline {baseline.get('label')}: {baseline.get('sources')} sources, "
+            f"{baseline.get('chunks')} chunks, threshold {baseline.get('threshold')}, "
+            f"AUC {baseline.get('separability'):.4f}, in-sample "
+            f"fa {in_sample.get('false_abstain_rate', 0):.3f} / "
+            f"fc {in_sample.get('false_confirm_rate', 0):.3f}"
+        )
+        print(f"  dropped {corpus.get('dropped_snapshots', 0)} snapshot(s) before it")
+        print(f"  {len(points)} non-baseline snapshot(s), delta range "
+              f"{min((p['corpus_delta'] for p in points), default=float('nan')):.3f} to "
+              f"{max((p['corpus_delta'] for p in points), default=float('nan')):.3f}")
+        over = [point for point in points if point["max_error"] > bound]
+        print(f"  over the {bound} bound: {len(over)} of {len(points)}")
+        if over:
+            first = min(over, key=lambda point: point["corpus_delta"])
+            print(f"  smallest delta that is over the bound: {first['corpus_delta']:.3f} "
+                  f"(fa {first['false_abstain_rate']:.3f}, fc {first['false_confirm_rate']:.3f})")
+        else:
+            print("  no snapshot crossed the bound")
+        # P2 is a claim about WHICH error dominates, so it is scored by the counts and not by an
+        # average that could hide one large excursion inside many quiet snapshots.
+        abstain_led = sum(
+            1 for point in points
+            if point["false_abstain_rate"] > point["false_confirm_rate"]
+        )
+        confirm_led = sum(
+            1 for point in points
+            if point["false_confirm_rate"] > point["false_abstain_rate"]
+        )
+        print(f"  false abstain leads in {abstain_led}, false confirm leads in {confirm_led}, "
+              f"tied in {len(points) - abstain_led - confirm_led}")
+        print(f"  evidence survival at the last snapshot: "
+              f"{points[-1]['evidence_survival']:.3f}" if points else "  no points")
+        for label in ("trigger", "trigger_excess"):
+            block = corpus.get(label) or {}
+            if block:
+                print(f"  {label}: spearman "
+                      f"{block.get('spearman_delta_vs_outcome', float('nan')):.3f}, "
+                      f"{block.get('positives')} positive of {block.get('n')}, "
+                      f"best cut {block.get('best_cut_at_recall_0.9')}")
+
+    for label in ("pooled_trigger", "pooled_trigger_excess"):
+        block = payload.get(label) or {}
+        if not block:
+            continue
+        print()
+        print(f"=== {label} ===")
+        for key, value in block.items():
+            print(f"  {key}: {value}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default=".", help="repository whose history supplies snapshots")
@@ -725,7 +799,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--out", default=None, help="write the result JSON here")
     parser.add_argument("--sizing", action="store_true", help="chunk counts only, no embedding")
     parser.add_argument("--only", default=None, help="comma-separated corpus ids to run")
+    parser.add_argument(
+        "--analyze",
+        default=None,
+        help="read a result JSON and print the figures the registered predictions are scored "
+        "against, instead of measuring anything",
+    )
     args = parser.parse_args(argv)
+
+    if args.analyze:
+        analyze(json.loads(Path(args.analyze).read_text(encoding="utf-8")))
+        return 0
 
     repo = Path(args.repo).resolve()
     memory_root = Path(args.memory_root).expanduser() if args.memory_root else None
