@@ -16,6 +16,12 @@ name: Windows installer
 
 on:
   workflow_dispatch:
+    inputs:
+      allow_unsigned:
+        description: >-
+          Publish an artifact WITHOUT a signature. Only for the bootstrap case below.
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
@@ -123,13 +129,36 @@ jobs:
       # worse than shipping nothing: it works for whoever built it and is blocked on the machines
       # this bundle exists to serve, and nothing in the release says which the downloader got. A
       # pull request build is allowed to be unsigned — that is a check, not a download.
+      # ⚠️ **The bootstrap case, and it is a real deadlock rather than an oversight.** SignPath's
+      # own terms require that "the project must already be released in the form that should be
+      # signed" — so the first Windows release cannot be signed, because the certificate is granted
+      # on the strength of that release existing. The guard below would otherwise make the first
+      # release impossible and the certificate unobtainable.
+      #
+      # So it is escapable, but only by someone deliberately ticking a box on a manual run, and
+      # never by a tag push. The artifact is then renamed to say what it is; see the next step.
       - name: Refuse an unsigned release
-        if: github.event_name == 'push' && steps.sign.outcome == 'skipped'
+        if: >-
+          steps.sign.outcome == 'skipped'
+          && (github.event_name == 'push' || inputs.allow_unsigned != true)
+          && github.event_name != 'pull_request'
         run: |
-          echo "::error::tag build with no signing credentials configured: the artifact would be"
-          echo "::error::blocked by Smart App Control on the machines it targets. Set the"
-          echo "::error::SIGNPATH_ORGANIZATION_ID variable and SIGNPATH_API_TOKEN secret."
+          echo "::error::no signing credentials configured, so the artifact would be blocked by"
+          echo "::error::Smart App Control on the machines it targets. Set the"
+          echo "::error::SIGNPATH_ORGANIZATION_ID variable and SIGNPATH_API_TOKEN secret, or run"
+          echo "::error::this workflow manually with allow_unsigned to produce a bootstrap build."
           exit 1
+
+      # ⛔ **An unsigned artifact must never carry the name of the signed one.** Somebody arriving
+      # at a release page cannot inspect a signature before downloading, so the filename is the only
+      # warning they get, and it has to be one they cannot miss.
+      - name: Publish the unsigned bootstrap artifact
+        if: steps.sign.outcome == 'skipped' && inputs.allow_unsigned == true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: recall-install-windows-UNSIGNED-will-be-blocked-by-smart-app-control
+          path: dist/recall-install
+          if-no-files-found: error
 
       - name: Verify the signature is real
         # ⚠️ The signing step's exit code says the SERVICE accepted the request. `signtool verify
