@@ -122,6 +122,82 @@ The output also prints `refit_threshold`: what a fresh fit on these scores would
 **changes nothing**. It is there so that an operator watching the inherited number drift away from
 the data gets the warning before the drift is large enough to fail.
 
+## Watch for drift between rebuilds
+
+Carry-forward answers the drift question *after* a rebuild, and `resolve` answers it as a yes/no
+about identity. Neither can be asked the question an operator actually has: **the corpus on disk has
+moved on, is the threshold serving it still deciding anything?**
+
+```bash
+# a rebuilt generation: compared and re-scored
+recall --tenant acme calibration drift --generation gen_child
+
+# a live directory: compared only, because nothing has indexed it
+recall --tenant acme calibration drift --path ./docs --strict
+```
+
+Two tiers, and which one produced the verdict is always visible in the output.
+
+| Tier | Cost | What it establishes |
+|---|---|---|
+| **screen** `corpus_delta` over `(uri, sha256)` | a manifest comparison, no embedding, no retrieval, no model load | an upper bound on how much *could* have moved |
+| **probe** the calibration's own stored labelled query set, replayed | one retrieval per labelled query | what the frozen threshold costs now, per class |
+
+⛔ **The screen firing is never reported as a verdict.** Where the probe cannot run, the strongest
+verdict is `recalibrate_recommended`, and the report names the check that was not made. A directory
+therefore can never reach `recalibrate_required`, however total its delta, because nothing has
+scored it.
+
+### Why there is no delta at which recalibration is demanded outright
+
+An earlier draft demanded it past `--max-corpus-delta`, reasoning that the labelled set had stopped
+describing the corpus. **Measured 2026-08-21 over 38 snapshots of two real corpus histories**
+(`docs/preregistrations/2026-08-21-calibration-drift-trigger.md`,
+`results/calibration_drift_2026-08-21.json`), that reasoning is wrong:
+
+- the frozen threshold first crossed the 0.10 error bound at a corpus delta of **0.945**, and never
+  below it;
+- a delta-only rule at 0.25 fires on **37 of 38** snapshots and is right about **4**, a precision of
+  **0.11**;
+- the labels were durable where the argument assumed rot. At delta 0.981 only **27.5%** of the
+  answerable queries' original evidence chunks still existed, and false abstains were **0.025**;
+- what moved was the **false-confirm** rate, tracking corpus **growth** rather than change (Spearman
+  0.95 against growth on `docs`, where growth and delta are collinear at 0.98, so this measurement
+  cannot tell them apart). A top-1 cosine is a max over the index: added documents can only raise an
+  unanswerable query's score, and how much of a corpus was rewritten predicts nothing about that.
+
+⚠️ **This does not license raising `--max-corpus-delta` on carry-forward.** That bound governs
+whether a threshold may be *inherited*, on one repository, one embedder, generated queries and exact
+rather than approximate search. What the numbers above establish is that a delta is a poor alarm,
+not that a large delta is safe.
+
+### Automatic recalibration
+
+`RECALL_AUTO_CALIBRATE` decides how far a build is allowed to act on what it finds.
+
+| value | after a generation build |
+|---|---|
+| `off` | nothing, including opening a connection |
+| `warn` (default) | measure drift, print the report, leave the decision to the operator |
+| `auto` | additionally re-establish the calibration |
+
+Under `auto`, two paths are tried cheapest first, and **neither loosens certification**:
+
+1. **carry the threshold forward**, keeping an operating point the operator has already seen;
+2. **refit on the same stored labelled evidence** when the threshold has to move, which is exactly
+   the case carry-forward refuses.
+
+```bash
+recall --tenant acme calibration auto --generation gen_child
+```
+
+It **will not invent a first calibration**. A tenant with no published artifact reports `skipped`,
+because deciding what the labelled questions should be is not a decision to make unattended, and a
+post-build hook that failed on every fresh install is a hook that gets removed. For the same reason
+a missing calibration reports `unknown` rather than `stable`: an uncalibrated tenant has zero
+measured drift by every arithmetic definition, and calling that stable would say a threshold which
+does not exist is holding up fine.
+
 ## Inspect and transfer
 
 ```bash
