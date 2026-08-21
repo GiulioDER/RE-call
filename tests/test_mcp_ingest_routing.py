@@ -934,8 +934,18 @@ def test_a_file_that_cannot_be_read_is_kept_so_the_build_fails_loudly(tmp_path, 
     real_stat = os.stat
     denied_calls: list[str] = []
 
+    # ⛔ **Resolved ONCE, before the patch is installed, and never inside `denied`.**
+    # `Path.resolve()` stats each prefix of the path on CPython 3.11 and 3.12, so calling it from
+    # inside the stub re-entered the stub on every one of those stats and recursed without bound:
+    # measured at 332 `os.stat` calls before `RecursionError` on 3.12.9. It does NOT recurse on
+    # 3.14, where `resolve()` no longer stats — so this passed on the machine it was written on and
+    # took down BOTH Linux jobs, on 3.11 and 3.12, with a traceback naming this line.
+    #
+    # The seam being tested is `Path.stat()`, not `resolve()`, so hoisting costs the test nothing.
+    target = str(unreadable.resolve())
+
     def denied(path, *args, **kwargs):
-        if str(path) == str(unreadable.resolve()):
+        if str(path) == target:
             denied_calls.append(str(path))
             raise PermissionError(13, "Access is denied")
         return real_stat(path, *args, **kwargs)
