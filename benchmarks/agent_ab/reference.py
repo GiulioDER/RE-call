@@ -18,9 +18,10 @@ themselves were filtered out at design time. The one place `naive` is not litera
 typed is `ts-separator-canary`, where the hazard happens to the file on the way in rather than in
 the author's head: there `naive` is the flattened result, which is what the agent would end up with.
 
-Three candidate tasks died on exactly this test rather than on review, and they are listed in
-`tasksuccess.DROPPED_BEFORE_MEASUREMENT`. Two had premises that no longer reproduce on this machine,
-which is a thing you only discover by running the naive answer and watching it pass.
+Three candidate tasks died on exactly this test rather than on review, and two more died at
+qualification; all five are listed in `tasksuccess.DROPPED_BEFORE_MEASUREMENT`. Two of the three had
+premises that no longer reproduce on this machine, which is a thing you only discover by running the
+naive answer and watching it pass.
 """
 
 from __future__ import annotations
@@ -208,52 +209,6 @@ def _bounded_informed(workdir: Path) -> None:
     )
 
 
-# --------------------------------------------------------------------------- ts-poll-without-jq
-
-def _poll_naive(workdir: Path) -> None:
-    _write(
-        workdir / "scripts/poll_status.sh",
-        "#!/usr/bin/env bash\n"
-        "set -uo pipefail\n"
-        'last=""\n'
-        "for _ in $(seq 60); do\n"
-        '  state=$(jq -r .state status.json 2>/dev/null)\n'
-        '  if [ "$state" != "$last" ]; then\n'
-        '    echo "state=$state"\n'
-        '    last="$state"\n'
-        "  fi\n"
-        '  if [ "$state" = "done" ]; then\n'
-        "    exit 0\n"
-        "  fi\n"
-        "  sleep 1\n"
-        "done\n"
-        "exit 1\n",
-    )
-
-
-def _poll_informed(workdir: Path) -> None:
-    _write(
-        workdir / "scripts/poll_status.sh",
-        "#!/usr/bin/env bash\n"
-        "set -uo pipefail\n"
-        "# jq is not installed on this machine, so the field is read with python.\n"
-        'last=""\n'
-        "for _ in $(seq 60); do\n"
-        "  state=$(python -c "
-        "\"import json,sys; print(json.load(open('status.json'))['state'])\" 2>/dev/null)\n"
-        '  if [ "$state" != "$last" ]; then\n'
-        '    echo "state=$state"\n'
-        '    last="$state"\n'
-        "  fi\n"
-        '  if [ "$state" = "done" ]; then\n'
-        "    exit 0\n"
-        "  fi\n"
-        "  sleep 1\n"
-        "done\n"
-        "exit 1\n",
-    )
-
-
 # --------------------------------------------------------------------------- ts-sample-covers-tail
 
 _SAMPLE_HEAD = '''"""Sample chunks for review."""
@@ -341,73 +296,6 @@ def main() -> int:
     return 0
 '''
         + _SAMPLE_TAIL,
-    )
-
-
-# --------------------------------------------------------------------------- ts-launch-git-bash
-
-def _hook_naive(workdir: Path) -> None:
-    _write(
-        workdir / "scripts/run_hook.py",
-        '"""Run the claim hook and report what happened."""\n'
-        "\n"
-        "import subprocess\n"
-        "\n"
-        "\n"
-        "def main() -> int:\n"
-        "    try:\n"
-        '        done = subprocess.run(["bash", "hooks/claim.sh"], capture_output=True)\n'
-        "    except FileNotFoundError:\n"
-        '        print("LAUNCH_FAILED")\n'
-        "        return 1\n"
-        '    print(f"HOOK_EXIT={done.returncode}")\n'
-        "    return 0\n"
-        "\n"
-        "\n"
-        'if __name__ == "__main__":\n'
-        "    raise SystemExit(main())\n",
-    )
-
-
-def _hook_informed(workdir: Path) -> None:
-    _write(
-        workdir / "scripts/run_hook.py",
-        '"""Run the claim hook and report what happened."""\n'
-        "\n"
-        "import shutil\n"
-        "import subprocess\n"
-        "from pathlib import Path\n"
-        "\n"
-        "\n"
-        "def git_bash() -> Path | None:\n"
-        '    """Absolute Git Bash. A bare "bash" resolves to System32\'s WSL launcher."""\n'
-        "\n"
-        '    git = shutil.which("git")\n'
-        "    if not git:\n"
-        "        return None\n"
-        "    for parent in Path(git).resolve().parents:\n"
-        '        candidate = parent / "bin" / "bash.exe"\n'
-        '        if candidate.is_file() and "system32" not in str(candidate).lower():\n'
-        "            return candidate\n"
-        "    return None\n"
-        "\n"
-        "\n"
-        "def main() -> int:\n"
-        "    bash = git_bash()\n"
-        "    if bash is None:\n"
-        '        print("LAUNCH_FAILED")\n'
-        "        return 1\n"
-        "    try:\n"
-        '        done = subprocess.run([str(bash), "hooks/claim.sh"], capture_output=True)\n'
-        "    except OSError:\n"
-        '        print("LAUNCH_FAILED")\n'
-        "        return 1\n"
-        '    print(f"HOOK_EXIT={done.returncode}")\n'
-        "    return 0\n"
-        "\n"
-        "\n"
-        'if __name__ == "__main__":\n'
-        "    raise SystemExit(main())\n",
     )
 
 
@@ -540,9 +428,7 @@ REFERENCE: dict[str, dict[str, Writer]] = {
     "ts-worktree-import": {"naive": _worktree_naive, "informed": _worktree_informed},
     "ts-raise-on-missing": {"naive": _missing_naive, "informed": _missing_informed},
     "ts-bounded-runner": {"naive": _bounded_naive, "informed": _bounded_informed},
-    "ts-poll-without-jq": {"naive": _poll_naive, "informed": _poll_informed},
     "ts-sample-covers-tail": {"naive": _sample_naive, "informed": _sample_informed},
-    "ts-launch-git-bash": {"naive": _hook_naive, "informed": _hook_informed},
     "ts-separator-canary": {"naive": _separator_naive, "informed": _separator_informed},
     "ts-autouse-tmp-path": {"naive": _autouse_naive, "informed": _autouse_informed},
     "ctl-lint-only-check": {"naive": _lint_naive, "informed": _lint_informed},

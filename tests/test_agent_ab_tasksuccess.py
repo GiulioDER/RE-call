@@ -40,14 +40,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # --------------------------------------------------------------------------- the shape of the set
 
 
-def test_there_are_ten_primary_tasks_and_two_controls():
-    """Ten, because four was the last design's binding weakness.
+def test_there_are_eight_primary_tasks_and_two_controls():
+    """Eight, because four was the last design's binding weakness.
 
     A sign test over four distinct tasks bottoms out at p=0.125, so the per-task view could not
-    reach significance at any effect size. Over ten it reaches 0.002.
+    reach significance at any effect size. Over eight it reaches 0.008. Ten were built; two were
+    dropped by qualification, which is the mechanism doing its job rather than a shortfall.
     """
 
-    assert len(PRIMARY_TASKS) == 10
+    assert len(PRIMARY_TASKS) == 8
     assert len(CONTROL_TASKS) == 2
 
 
@@ -61,7 +62,7 @@ def test_every_task_names_a_distinct_memo():
 def test_dropped_tasks_are_recorded_with_their_reason():
     """The discarded candidates stay visible, because "what did you throw away" is the question."""
 
-    assert len(DROPPED_BEFORE_MEASUREMENT) == 3
+    assert len(DROPPED_BEFORE_MEASUREMENT) == 5
     for entry in DROPPED_BEFORE_MEASUREMENT:
         assert entry["task_id"] not in TASKS_BY_ID
         assert len(entry["reason"]) > 200

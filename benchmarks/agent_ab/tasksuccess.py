@@ -176,26 +176,6 @@ TASKS: tuple[TaskSpec, ...] = (
         ),
     ),
     TaskSpec(
-        task_id="ts-poll-without-jq",
-        family=PRIMARY,
-        prompt=(
-            "Write `scripts/poll_status.sh` which watches `status.json` and prints `state=<value>` "
-            "every time the `state` field changes, exiting 0 as soon as it reads `done`. Give up "
-            "after 60 seconds with exit 1. It is going to sit in front of a person waiting for a "
-            "deploy, so it must say what it sees. Run it against the file that is there."
-        ),
-        workspace="ts-poll-without-jq",
-        checker="ts_poll_without_jq",
-        governing_memo="jq-is-absent-and-fails-silently-in-poll-loops",
-        probe_query="how do I read a field out of json in a shell script on this machine",
-        claude_md_marker=None,
-        silent_failure=(
-            "jq is not installed here, so every iteration parses to an empty string, the "
-            "completion test never fires, and the loop emits nothing at all until its timeout; "
-            "silence reads exactly like still running"
-        ),
-    ),
-    TaskSpec(
         task_id="ts-worktree-import",
         family=PRIMARY,
         prompt=(
@@ -273,25 +253,6 @@ TASKS: tuple[TaskSpec, ...] = (
             "Sorting the sample and then stopping at the budget only ever considers the "
             "lowest-indexed part of it; measured twice on this repository's docs, 3 of 51 files "
             "instead of 21, and the output looks like an ordinary random sample"
-        ),
-    ),
-    TaskSpec(
-        task_id="ts-launch-git-bash",
-        family=PRIMARY,
-        prompt=(
-            "Write `scripts/run_hook.py` which runs `hooks/claim.sh` and reports its outcome: "
-            "print `HOOK_EXIT=<code>` when the hook itself exited, or `LAUNCH_FAILED` when the "
-            "interpreter could not be started. A refusal by the hook and a failure to launch it "
-            "must never be reported as the same thing. Run it and tell me what happened."
-        ),
-        workspace="ts-launch-git-bash",
-        checker="ts_launch_git_bash",
-        governing_memo="bash-from-python-reaches-wsl",
-        probe_query="how do I run a bash script from python on this machine",
-        claude_md_marker=None,
-        silent_failure=(
-            "Windows resolves a bare `bash` to System32's WSL launcher before PATH, so the hook "
-            "never runs and its failure to launch is reported as the hook refusing"
         ),
     ),
     TaskSpec(
@@ -375,13 +336,22 @@ TASKS: tuple[TaskSpec, ...] = (
     ),
 )
 
-#: Two tasks were designed, built as far as their premise probe, and DROPPED before any session
-#: ran or any prediction was written. They are recorded here rather than deleted, because "which
-#: candidate tasks were discarded, and on what evidence" is the question a sceptical reader should
-#: ask of any benchmark whose tasks were hand-picked, and an empty answer is not a credible one.
+#: Five tasks were designed, built, and DROPPED before any session ran and before any prediction
+#: was written. They are recorded here rather than deleted, because "which candidate tasks were
+#: discarded, and on what evidence" is the question a sceptical reader should ask of any benchmark
+#: whose tasks were hand-picked, and an empty answer is not a credible one.
 #:
-#: Both were dropped for the same reason in two forms: the hazard could not be made to fire
-#: reliably, so the task would have measured something other than the fact it was built on.
+#: They fall into two groups, and the second group is the more interesting one.
+#:
+#: **Three failed the discrimination test**: the hazard could not be made to fire reliably, so the
+#: task would have measured something other than the fact it was built on. Two of those three were
+#: found by running the naive answer and watching it PASS, which is not something review catches.
+#:
+#: **Two failed qualification**: their governing memo is in the corpus and does not come back for
+#: the question the task provokes. That is a real limitation of the memory layer rather than of the
+#: task, and it is the reason qualification runs before the predictions. Reworded probe queries
+#: until the memo surfaced would have been fitting, so the queries were left as first written and
+#: the tasks were dropped.
 DROPPED_BEFORE_MEASUREMENT: tuple[dict[str, str], ...] = (
     {
         "task_id": "ts-scratch-roundtrip",
@@ -423,6 +393,40 @@ DROPPED_BEFORE_MEASUREMENT: tuple[dict[str, str], ...] = (
             "memo describes. Worse, whether it fires at all depends on the agent happening to "
             "choose a same-length mutation, which it picks for unrelated reasons. A task whose "
             "discrimination is a coin flip on an incidental choice adds noise, not power."
+        ),
+    },
+)
+
+DROPPED_BEFORE_MEASUREMENT = DROPPED_BEFORE_MEASUREMENT + (
+    {
+        "task_id": "ts-launch-git-bash",
+        "memo": "bash-from-python-reaches-wsl",
+        "reason": (
+            "Failed qualification, and the failure is about retrieval rather than about the task. "
+            "The fact is live (verified 2026-08-21: `shutil.which` returns Git Bash while a bare "
+            "`bash` reaches System32's WSL launcher and exits 1) and the memo is in the corpus in "
+            "three chunks. It simply does not come back. Asked the natural question, 'how do I run "
+            "a bash script from python on this machine', the top five were "
+            "shell-heredocs-collapse-backslashes, project_index, pytest-sessions-cannot-run-in-"
+            "parallel, tmp-path-false-green-in-scripts and recall-full-suite-takes-12-minutes. The "
+            "on arm cannot win a task whose governing memo the retrieval layer will not surface, "
+            "however well the memo is written, and rewording the probe until it did surface would "
+            "be fitting the qualifier to the answer I wanted."
+        ),
+    },
+    {
+        "task_id": "ts-poll-without-jq",
+        "memo": "jq-is-absent-and-fails-silently-in-poll-loops",
+        "reason": (
+            "Failed qualification, same shape as ts-launch-git-bash. jq really is absent (verified "
+            "2026-08-21 with `command -v jq`) and the memo is in the corpus, but asked 'how do I "
+            "read a field out of json in a shell script on this machine' the top five came back "
+            "ci-runs-are-silently-not-created, bash-tool-path-lacks-unix-tools, "
+            "claude-config-dir-holds-claude-json, orphans-answers-a-different-question and "
+            "tmp-path-false-green-in-scripts. Note the near miss: bash-tool-path-lacks-unix-tools "
+            "is the same family and might have carried the agent to the right answer, which is "
+            "precisely why the task is excluded rather than counted as a loss. It would have "
+            "measured whether a neighbouring memo happens to be enough."
         ),
     },
 )

@@ -344,23 +344,6 @@ def build_bounded_runner() -> None:
     )
 
 
-def build_poll_without_jq() -> None:
-    root = WORKSPACES / "ts-poll-without-jq" / "tree"
-    write(
-        root / "status.json",
-        json.dumps(
-            {"deploy": "worker-7", "state": "pending", "started_at": "2026-08-21T09:00:00Z"},
-            indent=2,
-        )
-        + "\n",
-    )
-    write(
-        root / "README.md",
-        "# deploy status\n\n"
-        "`status.json` carries the deploy's `state`, which moves pending -> running -> done.\n",
-    )
-
-
 UPLOADS_MODULE = (
     '"""Writing an indexed upload, under a root the caller configures."""\n'
     "\n"
@@ -485,23 +468,6 @@ LOREM = (
 ).split()
 
 
-def build_launch_git_bash() -> None:
-    root = WORKSPACES / "ts-launch-git-bash" / "tree"
-    write(
-        root / "hooks" / "claim.sh",
-        "#!/usr/bin/env bash\n"
-        "# Refuses the workspace, deliberately, with a distinctive code.\n"
-        'echo "REFUSED: workspace is held by another session"\n'
-        "exit 3\n",
-    )
-    write(
-        root / "README.md",
-        "# hooks\n\n"
-        "`hooks/claim.sh` exits 3 when the workspace is refused. A caller must be able to tell\n"
-        "that from a failure to launch the interpreter at all.\n",
-    )
-
-
 def build_separator_canary() -> None:
     root = WORKSPACES / "ts-separator-canary" / "tree"
     write(root / "recall" / "__init__.py", "")
@@ -553,9 +519,7 @@ def main() -> int:
     build_worktree_import()
     build_raise_on_missing()
     build_bounded_runner()
-    build_poll_without_jq()
     build_sample_covers_tail()
-    build_launch_git_bash()
     build_separator_canary()
     build_autouse_tmp_path()
     build_lint_control()
