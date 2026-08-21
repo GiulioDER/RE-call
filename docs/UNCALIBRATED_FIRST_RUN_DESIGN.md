@@ -36,7 +36,7 @@ a **tenant**.
 | Missing `generation_id` degrades to `"legacy"` | `recall_mcp/service.py:974` | confirmed. A second site uses the same default but maps it to `None` immediately after, so the two do not behave identically |
 | `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:977` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
-| `calibration = None` is deliberate, and names an open design question | `recall/cli.py:2235-2246` | confirmed |
+| `calibration = None` is deliberate, and names an open design question | `recall/cli.py:2640-2650` | confirmed |
 | Legacy `chunks` has no `source_sha256` **column** | `recall/store.py:354` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
 
 ### Four findings that change the available answers
