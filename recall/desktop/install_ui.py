@@ -51,8 +51,10 @@ _qt: Any = None
 try:  # pragma: no cover - exercised on environments without the desktop extra
     _qt = importlib.import_module("PySide6.QtWidgets")
     from PySide6.QtCore import Qt, QThreadPool
+    # ⚠️ `QApplication` is deliberately NOT imported here; it is resolved by `getattr` below, the
+    # same way `recall/desktop/ui.py` does it. Importing it as well would give the name two
+    # definitions and mypy rejects the second.
     from PySide6.QtWidgets import (
-        QApplication,
         QComboBox,
         QFileDialog,
         QFormLayout,
@@ -67,7 +69,10 @@ try:  # pragma: no cover - exercised on environments without the desktop extra
         QWidget,
     )
 except ImportError:  # pragma: no cover
-    QApplication = None  # type: ignore[assignment,misc]
+    pass
+
+# See `recall/desktop/jobs.py`: resolved by `getattr` so no ignore is needed in either environment.
+QApplication: Any = getattr(_qt, "QApplication", None)
 
 
 if QApplication is not None:

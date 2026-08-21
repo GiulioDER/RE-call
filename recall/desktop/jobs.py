@@ -28,6 +28,7 @@ installer needs and what a single `done` signal cannot express.
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
 
 __all__ = ["CLOSE_WAIT_MS", "Job", "JobSignals", "StreamingJob"]
@@ -40,12 +41,20 @@ __all__ = ["CLOSE_WAIT_MS", "Job", "JobSignals", "StreamingJob"]
 #: close.
 CLOSE_WAIT_MS = 2000
 
+_qt_core: Any = None
 try:  # pragma: no cover - exercised on environments without the desktop extra
-    from PySide6.QtCore import QObject, QRunnable, Signal
+    _qt_core = importlib.import_module("PySide6.QtCore")
 except ImportError:  # pragma: no cover
-    QObject = None  # type: ignore[assignment,misc]
-    QRunnable = None  # type: ignore[assignment,misc]
-    Signal = None  # type: ignore[assignment,misc]
+    pass
+
+# ⚠️ `getattr` rather than a re-assignment in the `except`, matching `recall/desktop/ui.py`. CI
+# type-checks WITHOUT the desktop extra, so there the fallback branch is live and a
+# `# type: ignore` on it is UNUSED, which `warn_unused_ignores` rejects; locally PySide6 is present
+# and the same ignore is required. No single ignore comment can be correct in both, so the fix is
+# to write it so no ignore is needed at all.
+QObject: Any = getattr(_qt_core, "QObject", None)
+QRunnable: Any = getattr(_qt_core, "QRunnable", None)
+Signal: Any = getattr(_qt_core, "Signal", None)
 
 
 if QObject is not None:

@@ -528,3 +528,22 @@ def test_the_selftest_fails_loudly_when_the_engine_is_missing(
     from recall.desktop.main import _selftest
 
     assert _selftest() == 1
+
+
+def test_a_failing_gui_install_still_reaches_the_shell(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-zero status must propagate; a successful one must not exit through an exception.
+
+    ⚠️ Both halves are here because the first fix got the second one wrong. `main()` is typed to
+    return None, so `return install_main(...)` is a type error — and the obvious repair, raising
+    `SystemExit` unconditionally, made a SUCCESSFUL run exit through an exception, which no other
+    branch of that function does. The test asserting the terminal flow does not also run caught it.
+    """
+    import recall.desktop.main as desktop_main
+    from recall import cli
+
+    monkeypatch.setattr(desktop_main, "install_main", lambda argv: 3)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["wizard", "--gui"])
+
+    assert excinfo.value.code == 3, "the installer's failure must reach the shell"

@@ -1595,8 +1595,13 @@ def main(argv: list[str] | None = None) -> None:
             answer = input("\nProceed? [y/N]: ").strip().lower()
             if answer not in {"y", "yes"}:
                 raise SystemExit("cancelled; nothing was removed")
-        report = execute(plan, purge_data=args.purge_data)
-        print(report.render())
+        # `uninstall_report`, not `report`. `main()` is one long function and the `manifest
+        # inventory` branch below binds `report` to an `InventoryReport`; reusing the name
+        # type-narrows it across the whole function and mypy rejects both. This file already
+        # carries two comments recording exactly this trap, for `wizard_report` and for
+        # `config_written`, and I walked into it anyway.
+        uninstall_report = execute(plan, purge_data=args.purge_data)
+        print(uninstall_report.render())
         return
 
     if args.cmd == "wizard":
@@ -1618,7 +1623,20 @@ def main(argv: list[str] | None = None) -> None:
                 )
             from recall.desktop.main import install_main
 
-            return install_main([])
+            # ⚠️ Neither `return install_main(...)` nor an unconditional `raise SystemExit(...)`.
+            # `main()` is typed to return None, so returning the status is a type error; raising it
+            # unconditionally makes a SUCCESSFUL run exit through an exception, which no other
+            # branch of this function does and which broke the test asserting the terminal flow does
+            # not also run. A non-zero status still has to reach the shell.
+            # `install_status`, not `status`. That is the THIRD name this one function has already
+            # claimed elsewhere — after `report` and alongside the recorded `wizard_report` and
+            # `config_written` cases — and mypy narrows a reused name across the whole body, so the
+            # collision surfaces as a nonsense error hundreds of lines away ("int has no attribute
+            # compatible"). `main()` is long enough that every new local needs a qualified name.
+            install_status = install_main([])
+            if install_status:
+                raise SystemExit(install_status)
+            return
 
         if args.config is None:
             from recall.wizard.interactive import (
