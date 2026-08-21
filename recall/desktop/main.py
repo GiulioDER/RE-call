@@ -141,11 +141,25 @@ def _qt_notify(title: str, text: str) -> None:
         print(f"{title}: {text}", file=sys.stderr)
 
 
+def _qt_choose_folder(title: str, start: str) -> str:
+    """Ask for a directory. Returns "" when the person cancels, which is a decision.
+
+    Separate from `_qt_confirm` because it runs BEFORE there is anything to confirm: the plan
+    cannot be rendered until a folder is chosen, and offering a confirmation first would be
+    confirming a removal nobody has described yet.
+    """
+    from PySide6.QtWidgets import QApplication, QFileDialog
+
+    QApplication.instance() or QApplication([])
+    return str(QFileDialog.getExistingDirectory(None, title, start) or "")
+
+
 def uninstall_main(
     argv: list[str] | None = None,
     *,
     confirm: Any = None,
     notify: Any = None,
+    choose: Any = None,
 ) -> int:
     """Show what an uninstall would remove, and do it only after somebody agrees.
 
@@ -163,8 +177,9 @@ def uninstall_main(
     parser = argparse.ArgumentParser(prog="recall-uninstall")
     parser.add_argument(
         "--data-root",
-        required=True,
-        help="the data folder chosen during installation, recorded in its wizard.json",
+        default=None,
+        help="the data folder chosen during installation, recorded in its wizard.json. Omit it and "
+        "you are asked to pick the folder.",
     )
     parser.add_argument(
         "--purge-data",
@@ -179,11 +194,19 @@ def uninstall_main(
 
     ask = confirm or _qt_confirm
     tell = notify or _qt_notify
+    pick = choose or _qt_choose_folder
+
+    # ⛔ **`--data-root` cannot be required, and requiring it made this unreachable.** A Start Menu
+    # shortcut or a double-clicked exe passes no arguments, so the argparse error went to a stderr
+    # nobody sees and the process exited 2 — an uninstaller that appears to do nothing at all. The
+    # audience that needed a window to install is the same audience here.
+    chosen = args.data_root or pick("Which recall install should be removed?", str(Path.home() / ".recall"))
+    if not chosen:
+        # Cancelling the picker is a decision, not a failure.
+        return 0
 
     try:
-        plan = plan_uninstall(
-            data_root=Path(args.data_root).expanduser(), purge_data=args.purge_data
-        )
+        plan = plan_uninstall(data_root=Path(chosen).expanduser(), purge_data=args.purge_data)
     except UninstallRefusal as exc:
         # ⚠️ Shown, not raised. Pointing this at the wrong folder is the ordinary mistake, and a
         # frozen binary has nowhere to print a traceback that anybody will ever read.

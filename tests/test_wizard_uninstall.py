@@ -493,3 +493,47 @@ def test_a_refusal_is_shown_rather_than_raised(tmp_path: Path) -> None:
     assert status == 1
     assert told, "the refusal must be shown somewhere"
     assert COMPOSE_NAME in told[-1][1]
+
+
+def test_the_folder_is_asked_for_when_no_argument_is_given(tmp_path: Path) -> None:
+    """⛔ **Requiring `--data-root` made the graphical uninstaller unreachable.**
+
+    A Start Menu shortcut, a pinned icon and a double-clicked exe all pass no arguments. argparse
+    then wrote its usage error to a stderr that a windowed process does not show and exited 2 — an
+    uninstaller that appears to do nothing at all when clicked. The audience that needed a window to
+    install is exactly the audience here, and it is the one that never types a flag.
+    """
+    from recall.desktop.main import uninstall_main
+
+    data_root = _install(tmp_path)
+    asked: list[tuple[str, str]] = []
+
+    status = uninstall_main(
+        [],
+        choose=lambda title, start: asked.append((title, start)) or str(data_root),
+        confirm=lambda *_a: True,
+        notify=lambda *_a: None,
+    )
+
+    assert status == 0
+    assert asked, "with no argument the person must be asked which install to remove"
+    assert not (data_root / COMPOSE_NAME).exists(), "and the chosen install must actually go"
+
+
+def test_cancelling_the_folder_picker_removes_nothing(tmp_path: Path) -> None:
+    """Backing out is a decision, not a failure, and must not be reported as one."""
+    from recall.desktop.main import uninstall_main
+
+    data_root = _install(tmp_path)
+    told: list[Any] = []
+
+    status = uninstall_main(
+        [],
+        choose=lambda title, start: "",
+        confirm=lambda *_a: pytest.fail("nothing may be confirmed after a cancel"),
+        notify=lambda *args: told.append(args),
+    )
+
+    assert status == 0, "cancelling is not an error"
+    assert not told, "and it needs no dialog telling the person what they just decided"
+    assert (data_root / COMPOSE_NAME).exists()
