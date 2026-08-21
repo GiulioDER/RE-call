@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import sys
@@ -882,12 +883,16 @@ def _report_drift_after_build(args: argparse.Namespace, generation_id: str) -> N
     from recall.calibration_v2 import CalibrationRepository
     from recall.drift import auto_recalibrate, evaluate_drift
 
+    # Memoised, and passed as a FACTORY rather than as an embedder. Two properties at once:
+    # `evaluate_drift` calls it only if it reaches the probe, so a build whose delta is under the
+    # screen loads no model at all; and when both the probe and the automatic recalibration below
+    # need one, they get the same instance rather than two loads of the same weights.
+    @functools.cache
+    def build_embedder() -> Embedder:
+        return _make_embedder(args.embedder)
+
     repository = CalibrationRepository(args.dsn, args.tenant)
     try:
-        # Built once and reused below. `_make_embedder` loads model weights, and the auto path
-        # needs the same model the probe just used; building a second one would pay that twice
-        # and, worse, would let the two halves of one decision run on different weights.
-        build_embedder = _make_embedder(args.embedder)
         report = evaluate_drift(
             repository,
             generation_id=generation_id,
@@ -908,12 +913,13 @@ def _report_drift_after_build(args: argparse.Namespace, generation_id: str) -> N
             )
         return
     try:
-        outcome = auto_recalibrate(repository, generation_id, build_embedder)
+        outcome = auto_recalibrate(repository, generation_id, build_embedder())
     except Exception as exc:  # noqa: BLE001 - as above
         print(f"drift: automatic recalibration failed for {generation_id}: {exc}", file=sys.stderr)
         return
     print()
     print(f"auto-calibrate: {outcome.action} ({outcome.reason})")
+
 
 def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):  # clean UTF-8 output on Windows consoles
