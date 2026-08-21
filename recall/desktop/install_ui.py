@@ -428,15 +428,22 @@ if QApplication is not None:
             """
             from recall.desktop.jobs import CLOSE_WAIT_MS
 
-            if self._jobs and not self.pool.waitForDone(CLOSE_WAIT_MS):
-                # Said out loud rather than swallowed: the user is entitled to know the install did
-                # not stop just because the window did.
-                print(
-                    "recall-install: the install is still running in the background; "
-                    "it will finish on its own.",
-                    file=sys.stderr,
-                )
-            event.accept()
+            # ⛔ **`try`/`finally`, matching the window this was copied from.** Without it an
+            # exception from `waitForDone` or from the reporting `print` skips `event.accept()`, and
+            # the window that would not close is exactly the failure being fixed — reintroduced by
+            # the error path of its own fix. `ui.MainWindow.closeEvent` already had the guard; the
+            # copy dropped it.
+            try:
+                if self._jobs and not self.pool.waitForDone(CLOSE_WAIT_MS):
+                    # Said out loud rather than swallowed: the user is entitled to know the install
+                    # did not stop just because the window did.
+                    print(
+                        "recall-install: the install is still running in the background; "
+                        "it will finish on its own.",
+                        file=sys.stderr,
+                    )
+            finally:
+                event.accept()
 
         def _release(self, job: Any) -> None:
             if job in self._jobs:

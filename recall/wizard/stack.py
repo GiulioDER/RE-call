@@ -397,13 +397,26 @@ def _publishes_documents(version: str) -> bool:
     document extraction from images that should have it, which is the quieter of the two failures
     and therefore the wrong default.
     """
+    # ⛔ **Leading digits only.** The first version of this joined EVERY digit in the component,
+    # so `"5rc1"` became 51 and `_publishes_documents("0.9.5rc1")` returned True — pinning the
+    # `documents` extra on a release that predates it, which is precisely the unbuildable image this
+    # function exists to prevent. Measured before the fix: 0.9.5rc1, 0.9.2b3 and 0.9.1rc1 all True.
+    #
+    # A suffix also means PRE-release, which sorts BELOW the release it precedes: 0.9.6rc1 comes
+    # before 0.9.6 and must not claim an extra that 0.9.6 introduced.
     parts: list[int] = []
+    prerelease = False
     for piece in version.split(".")[:3]:
-        digits = "".join(char for char in piece if char.isdigit())
-        if not digits:
+        match = re.match(r"(\d+)(.*)", piece.strip())
+        if match is None:
+            # Genuinely unparseable, which is the documented default: a local or branch build
+            # carries the CURRENT extras, because dropping document extraction from an image that
+            # should have it is the quieter of the two failures.
             return True
-        parts.append(int(digits))
-    return tuple(parts) >= _DOCUMENTS_EXTRA_SINCE
+        parts.append(int(match.group(1)))
+        prerelease = prerelease or bool(match.group(2))
+    exact = tuple(parts) == _DOCUMENTS_EXTRA_SINCE
+    return tuple(parts) > _DOCUMENTS_EXTRA_SINCE or (exact and not prerelease)
 
 
 def dockerfile_text(version: str | None = None) -> str:
@@ -449,15 +462,38 @@ def dockerfile_text(version: str | None = None) -> str:
         "# extract, fastembed, finetune, langchain, llamaindex, mcp, pool, rerank, s3, sparse and\n"
         "# voyage: `documents` is NOT among them. These imports turn that into a build failure,\n"
         "# where it is cheap and legible, instead of an extraction that silently returns nothing.\n"
-        "RUN python -c \"import recall_mcp.server\" \\\n"
-        " && python -c \"import fastembed\"\n"
-        + (
-            ' && python -c "import pypdf, docx, openpyxl, pptx, bs4"\n'
-            if extras == _IMAGE_EXTRAS
-            else "# `documents` is not published for this pinned version, so the extraction\n"
+        + _import_assertion(extras)
+    )
+
+
+def _import_assertion(extras: str) -> str:
+    """The post-install `RUN` that turns a silently-missing extra into a build failure.
+
+    ⛔ **Joined from a list so the line continuations are STRUCTURAL, not hand-placed.** The
+    previous version wrote each fragment as its own string literal with a trailing `\\\\`, and
+    moving the last fragment into a conditional expression silently made the fragment ABOVE it
+    the end of the RUN instruction. Docker then parsed the next line as a top-level instruction
+    and failed with `unknown instruction: &&` — so every Dockerfile generated for 0.9.6 or later
+    was invalid, which is strictly worse than the unbuildable-pin bug that refactor was fixing.
+
+    The substring tests could not see it: they assert that a fragment is PRESENT, and a
+    continuation is a property of the line before it. `test_every_line_of_the_run_block_continues`
+    asserts the invariant instead.
+    """
+    checks = [
+        'python -c "import recall_mcp.server"',
+        'python -c "import fastembed"',
+    ]
+    trailer = ""
+    if extras == _IMAGE_EXTRAS:
+        checks.append('python -c "import pypdf, docx, openpyxl, pptx, bs4"')
+    else:
+        trailer = (
+            "# `documents` is not published for this pinned version, so the extraction\n"
             "# packages are deliberately not asserted; this image reads text formats only.\n"
         )
-    )
+    body = " \\\n && ".join(checks)
+    return f"RUN {body}\n{trailer}"
 
 
 def write_dockerfile(directory: Path, version: str | None = None) -> Path:

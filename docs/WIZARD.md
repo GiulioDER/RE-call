@@ -249,8 +249,17 @@ wrote, by name, and prints the corpus roots under **This will KEEP** so you can 
 
 What it removes: the stack's containers (found by the compose project label recorded in the stack
 file, never by a name pattern, so a second install on the same machine is untouched), the files the
-installer wrote into the data folder, and the MCP registrations whose `cwd` marks them as written by
-this install. An entry you wrote by hand under a name the wizard also uses is left alone.
+installer wrote into the data folder, the desktop app's handoff file at `%APPDATA%/RE-call/runtime.json`
+(outside the data folder, and only when it names *this* install), every volume the stack declares
+that it also created, and the MCP registrations whose `cwd` marks them as written by this install.
+An entry you wrote by hand under a name the wizard also uses is left alone.
+
+Two things it leaves behind on purpose. It writes a timestamped backup of the MCP client config
+(`~/.claude.json.recall-backup-<stamp>`) before editing it, and never deletes it: that file holds
+every project the client tracks, and the edit is the one direction a mistake cannot be undone. And
+if the teardown fails — most often because docker is not running — it **keeps** the stack file and
+`wizard.json`, because they are the only things that name the containers still up, and prints what
+went wrong. Start docker and run it again.
 
 `--purge-data` additionally removes the database volume holding the built indexes. Off by default:
 they are reproducible by re-indexing and expensive to rebuild, so whoever reinstalls next week and

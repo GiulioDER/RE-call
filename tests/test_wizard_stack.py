@@ -790,3 +790,58 @@ def test_an_unparseable_version_keeps_the_current_extras() -> None:
 
     assert "documents" in _pin("1.0.0rc1")
     assert "documents" in _pin("someones-branch-build")
+
+
+def test_every_generated_dockerfile_is_syntactically_valid() -> None:
+    """⛔ **My fix for the extras bug emitted a Dockerfile Docker cannot parse.**
+
+    Refactoring the post-install assertion into a conditional expression dropped the line
+    continuation after `import fastembed`, so the RUN instruction terminated there and the next line
+    began with `&&`. Docker fails with `unknown instruction: &&`. Every version at or above 0.9.6 —
+    the default path, including the current release — generated an unbuildable file, which is
+    strictly worse than the unbuildable PIN that refactor was fixing.
+
+    Two auditors found it independently. The tests written alongside that fix asserted only that a
+    fragment was PRESENT, and a continuation is a property of the line BEFORE it, so a substring
+    check cannot express the invariant. This one can: inside a RUN block, every line except the last
+    must end with a backslash.
+    """
+    from recall.wizard.stack import dockerfile_text
+
+    verbs = {"FROM", "RUN", "WORKDIR", "COPY", "ENV", "ARG", "CMD", "ENTRYPOINT", "EXPOSE", "USER"}
+
+    for version in ("0.9.1", "0.9.5", "0.9.6", "0.9.7", "1.0.0"):
+        lines = dockerfile_text(version).splitlines()
+        continuing = False
+        for number, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continuing = False
+                continue
+            if not continuing:
+                verb = stripped.split(" ", 1)[0]
+                assert verb in verbs, (
+                    f"{version}: line {number} starts a new instruction with {verb!r}, which is not "
+                    f"a Dockerfile verb. The line before it is missing its continuation.\n{line}"
+                )
+            continuing = line.rstrip().endswith("\\")
+
+
+def test_a_prerelease_never_claims_an_extra_its_release_introduced() -> None:
+    """⛔ Digit extraction CONCATENATED, so `"5rc1"` became 51 and 0.9.5rc1 sorted above 0.9.6.
+
+    That pinned `documents` on a release predating it — the unbuildable image `_publishes_documents`
+    exists to prevent, reintroduced by the function meant to prevent it. A suffix also means
+    PRE-release, which sorts below the release it precedes.
+    """
+    from recall.wizard.stack import _publishes_documents
+
+    for older in ("0.9.5rc1", "0.9.2b3", "0.9.1rc1", "0.9.6rc1", "0.9.5", "0.9"):
+        assert not _publishes_documents(older), f"{older} predates the documents extra"
+
+    for current in ("0.9.6", "0.9.7", "0.9.10", "0.10.0", "1.0", "v0.9.6"):
+        assert _publishes_documents(current), f"{current} is at or after 0.9.6"
+
+    # An unparseable version keeps the CURRENT extras: dropping extraction from an image that should
+    # have it is the quieter failure, so it is the wrong default.
+    assert _publishes_documents("someones-branch-build")

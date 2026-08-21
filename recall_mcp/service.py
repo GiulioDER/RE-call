@@ -39,6 +39,7 @@ from recall.lineage import IndexManifestV1, ManifestObjectV1
 from recall.manifest import ExtractingLocalObjectReader
 from recall.generations import (
     GenerationManager,
+    InvalidGenerationTransition,
     NoActiveGeneration,
     UnsafePromotion,
 )
@@ -2099,29 +2100,43 @@ def calibration_status(store: PgVectorStore) -> dict[str, object]:
 _DESKTOP_CORPUS_PREFIX = "desktop-"
 
 
-def _reachable_from(uri: str, root: Path) -> bool:
-    """Whether `uri` names a file the build reader, confined to `root`, could fetch.
+def _local_path(uri: str) -> Path | None:
+    """The filesystem path a local `file://` URI names, or `None` for anything else.
 
-    Carried-forward manifest entries come from whatever generation last served the tenant, which on
-    a wizard install points into the install's own corpus directories rather than into the upload
-    staging area. `LocalObjectReader` refuses those, and `build` has no skip path, so an unfiltered
-    carry-forward turns every upload into a hard failure.
-
-    Anything that is not a local `file://` URI is treated as unreachable rather than guessed at.
+    Anything that is not a local `file://` URI returns `None` rather than being guessed at. A URI
+    carrying a host (`file://server/share/x`) is NOT local and is rejected: `urlparse` puts the host
+    in `netloc`, and reading only `path` would silently reinterpret a remote share as a local
+    directory.
     """
     from urllib.parse import unquote, urlparse
 
     parsed = urlparse(uri)
-    if parsed.scheme != "file":
-        return False
+    if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+        return None
     path = unquote(parsed.path)
     # A Windows `file:///C:/x` parses with a leading slash before the drive letter.
     if len(path) > 2 and path[0] == "/" and path[2] == ":":
         path = path[1:]
     try:
-        return Path(path).resolve().is_relative_to(root)
-    except (OSError, ValueError):  # pragma: no cover - an unresolvable path is unreachable
-        return False
+        return Path(path).resolve()
+    except (OSError, ValueError):  # pragma: no cover - an unresolvable path names no root
+        return None
+
+
+def _roots_of(objects: dict[str, ManifestObjectV1]) -> tuple[Path, ...]:
+    """The directories the carried-forward objects live in, for the build reader's allowlist.
+
+    Deduplicated, and only for objects whose URI names a local file. A non-local object contributes
+    no root, so the reader will refuse it and `build` will raise — which is the correct, LOUD
+    outcome for a corpus this path genuinely cannot rebuild, and is what the filtering version of
+    this code silently hid.
+    """
+    roots: dict[str, Path] = {}
+    for uri in objects:
+        path = _local_path(uri)
+        if path is not None:
+            roots.setdefault(str(path.parent), path.parent)
+    return tuple(roots.values())
 
 
 def generation_ingest(
@@ -2163,16 +2178,39 @@ def generation_ingest(
         # degraded-install tenant previously had no active generation at all, so nothing was carried
         # forward and the upload succeeded by accident.
         #
-        # Dropping an unreachable object is the right degradation: it was never this path's to
-        # rebuild, and the generation it came from still holds it.
-        staging = tenant_root.resolve()
-        active_objects = {
-            entry.uri: entry
-            for entry in manager.servable_manifest().objects
-            if _reachable_from(entry.uri, staging)
-        }
+        # ⛔ **Every object is KEPT and the reader is widened to reach them.** An earlier fix
+        # filtered the unreachable ones out instead, and that was worse than the bug it fixed: the
+        # upload then SUCCEEDED with a truncated manifest, promotion (which the same release made
+        # work) put it live, the generation holding the dropped files was retired, and `gc` deleted
+        # it after the retention window. A loud failure became permanent silent loss of the corpus
+        # the user had indexed. The comment here used to claim "the generation it came from still
+        # holds it", which stops being true after two more uploads.
+        # ⚠️ **The ONLY reason to drop a carried-forward object is that its bytes are gone**,
+        # and even then the drop is COUNTED and named in the message. Two earlier versions of this
+        # got it wrong in opposite directions. The first kept everything and confined the reader to
+        # the staging directory, so a wizard-built corpus under `data_root` failed the whole upload.
+        # The second filtered out whatever the reader could not reach, which was worse: the upload
+        # then succeeded with a truncated manifest, promotion put it live, the generation still
+        # holding those files was retired, and `gc` deleted it after the retention window — a loud
+        # failure traded for permanent silent loss of the user's corpus.
+        #
+        # A file that no longer exists is genuinely unrecoverable, so dropping it is the only option
+        # left; a file that exists somewhere else is recoverable, and `carried_roots` below lets the
+        # reader reach it. Staging lives in the container's writable layer with no volume behind it,
+        # so `docker compose down`/`up` is enough to make this real rather than theoretical.
+        active_objects = {}
+        vanished = 0
+        for entry in manager.servable_manifest().objects:
+            local = _local_path(entry.uri)
+            if local is not None and not local.is_file():
+                vanished += 1
+                continue
+            active_objects[entry.uri] = entry
+        carried_roots = _roots_of(active_objects)
     except NoActiveGeneration:
         active_objects = {}
+        carried_roots = ()
+        vanished = 0
 
     # Keep the active corpus and add only this job's files. In particular, do not scan sibling
     # job directories because a failed upload must not poison every later indexing attempt.
@@ -2239,7 +2277,11 @@ def generation_ingest(
     try:
         stats = manager.build(
             generation.generation_id,
-            ExtractingLocalObjectReader((tenant_root,)),
+            # The staging directory PLUS the directories the carried-forward objects live in.
+            # Those are files a previous generation of this same tenant already indexed, so
+            # re-reading them is what carry-forward means; confining the reader to staging
+            # alone is what made the manifest lossy.
+            ExtractingLocalObjectReader((tenant_root, *carried_roots)),
             embedder,
             chunker,
         )
@@ -2287,6 +2329,7 @@ def generation_ingest(
                     f"Indexed {stats.chunks} chunk(s) from {stats.objects} file(s) into generation "
                     f"{generation.generation_id}, which is built and validated but NOT yet live. "
                     f"It carries forward everything previously uploaded"
+                    + _vanished_note(vanished)
                     + (f"; {reclaimed} superseded build(s) released" if reclaimed else "")
                     + f". {uncertified or exc}"
                 ),
@@ -2299,8 +2342,14 @@ def generation_ingest(
         # calibration, a binding error, an unexpected transition) stranded a full copy of the
         # corpus forever. `recall/wizard/pipeline.py::_fail` does exactly this on the same shape of
         # failure. The original error is re-raised untouched; the cleanup is best effort.
-        with suppress(Exception):
-            manager.abandon(generation.generation_id, f"desktop upload failed: {exc}")
+        # ⛔ **`fail` FIRST, `abandon` only as the fallback.** This used to call `abandon` alone,
+        # and `abandon` raises `InvalidGenerationTransition` on anything but READY. `validate()` is
+        # what sets READY, so every failure inside `build()` — the longest and most failure-prone
+        # step — was refused, and `suppress` made the refusal silent. `gc` collects `retired` and
+        # `failed`, so those generations stranded a full corpus copy exactly as before the fix. This
+        # is the ladder `recall/wizard/pipeline.py::_fail` uses, and matching it is what the comment
+        # already claimed. The original error is re-raised untouched.
+        _reclaim_failed(manager, generation.generation_id, f"desktop upload failed: {exc}")
         raise
 
     # ⛔ **The reclaim runs on the SUCCESS path too.** Confining it to the `UnsafePromotion` branch
@@ -2314,6 +2363,7 @@ def generation_ingest(
         message=(
             f"Built and activated generation {generation.generation_id} with "
             f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
+            + _vanished_note(vanished)
         ),
     )
 
@@ -2331,17 +2381,64 @@ def _release_superseded(manager: GenerationManager, keep: str) -> int:
 
     Best effort by design: losing a reclaim must not lose the upload report, which is the only thing
     telling the user what state they are in.
+
+    ⛔ **The LISTING is inside the try, not only the abandons.** It used to sit outside, and
+    `superseded_ready_generations` opens its own database connection, so a transient error there
+    escaped a function documented as best effort. That was destructive in both directions: on the
+    refusal path this is called from inside `generation_ingest`'s outer `try`, so the raise reached
+    the cleanup handler and ABANDONED the very generation the comment there promises is kept; on the
+    success path it sits outside every handler, so it reported an already-promoted, already-live
+    upload as a failure and invited the user to rebuild it. Four auditors found this.
     """
     reclaimed = 0
-    for stale in manager.superseded_ready_generations(
-        keep, corpus_version_prefix=_DESKTOP_CORPUS_PREFIX
-    ):
+    try:
+        stale_ids = tuple(
+            manager.superseded_ready_generations(
+                keep, corpus_version_prefix=_DESKTOP_CORPUS_PREFIX
+            )
+        )
+    except Exception:  # noqa: BLE001 - see the docstring; a failed reclaim is not a failed upload
+        return 0
+    for stale in stale_ids:
         try:
             manager.abandon(stale, "superseded by a later upload from the same desktop")
         except Exception:  # noqa: BLE001 - see the docstring; a failed reclaim is not a failed upload
             continue
         reclaimed += 1
     return reclaimed
+
+
+def _reclaim_failed(manager: GenerationManager, generation_id: str, reason: str) -> None:
+    """Move a generation to a state `gc` can collect, from whatever state it is in. Never raises.
+
+    `fail` accepts the in-flight states, `abandon` accepts READY, and between them they cover every
+    state a failed upload can be sitting in. Calling only one of the two leaves the other half
+    stranded holding a full copy of the corpus's chunk rows.
+    """
+    try:
+        manager.fail(generation_id, reason)
+        return
+    except InvalidGenerationTransition:
+        pass
+    except Exception:  # noqa: BLE001 - the original failure is what matters
+        return
+    with suppress(Exception):
+        manager.abandon(generation_id, reason)
+
+
+def _vanished_note(vanished: int) -> str:
+    """Name the carried-forward files whose bytes are gone, or say nothing when none are.
+
+    Never silent when the count is non-zero: a corpus that quietly shrank is the failure mode this
+    whole path has now been fixed for twice, and a number in the message is what makes the third
+    time visible.
+    """
+    if not vanished:
+        return ""
+    return (
+        f" ({vanished} file(s) from an earlier upload could not be re-read and are NOT in this "
+        f"build; re-upload them if you still need them)"
+    )
 
 
 def _certify_upload(
@@ -2429,10 +2526,11 @@ def _certify_upload(
     try:
         artifact = repository.calibrate(generation_id, entries, embedder)
     except CalibrationError as exc:
-        # ⛔ **A raise here loses the upload.** `generation_ingest`'s outer handler re-raises, so a
-        # binding failure would escape leaving the generation READY and unreclaimable — the exact
-        # leak the refusal path was fixed to prevent, reintroduced one step before it. `CalibrationError`
-        # and not `Exception`: a domain failure is a reason, a bug is still a bug.
+        # ⛔ **A raise here still loses the upload REPORT, though no longer the corpus.**
+        # `generation_ingest`'s outer handler now reclaims the generation before re-raising, so a
+        # binding failure no longer strands a full corpus copy. What it would still cost is the one
+        # message telling the user what state they are in, which is why a domain failure is returned
+        # as a REASON. `CalibrationError` and not `Exception`: a bug is still a bug.
         return f"calibration could not be measured: {type(exc).__name__}: {exc}"
     try:
         repository.publish(artifact.calibration_id)

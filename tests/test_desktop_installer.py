@@ -474,10 +474,16 @@ def test_the_selftest_reaches_the_engine_a_packaged_build_would_be_missing(
     from recall.desktop.main import _selftest
 
     tree = ast.parse(textwrap.dedent(inspect.getsource(_selftest)))
+    # ⛔ **`ast.Import` as well as `ast.ImportFrom`.** This collected only the `from x import y`
+    # form, so the three plain `import fastembed` / `onnxruntime` / `tokenizers` lines added to
+    # cover the native payload were invisible to it: all three could be deleted with the suite
+    # green, and the whole stated point of that change ("a bundle missing all three passed the
+    # selftest and died on that click") was unpinned.
     imported = {
-        node.module
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module
+        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module
+    }
+    imported |= {
+        alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
     }
     for engine_module in (
         "recall.wizard.headless",
@@ -488,6 +494,11 @@ def test_the_selftest_reaches_the_engine_a_packaged_build_would_be_missing(
         assert engine_module in imported, (
             f"{engine_module} is reached only from inside a callback in normal use, which is "
             "exactly why a bundle can be missing it and still look healthy"
+        )
+    for native in ("fastembed", "onnxruntime", "tokenizers"):
+        assert native in imported, (
+            f"{native} ships native binaries and data files that PyInstaller's static analysis "
+            "misses; importing it is what proves the payload made it into the bundle"
         )
 
 
@@ -604,4 +615,118 @@ def test_an_install_failure_never_shows_the_password(
         assert _PLACEHOLDER_PASSWORD not in shown, f"the password reached the log: {shown!r}"
         assert "failed" in shown, "and the diagnosis must survive the scrubbing"
     finally:
+        window.close()
+
+
+def test_the_selftest_does_not_provision_a_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """⛔ **A self-test that downloads 100MB of weights is not a self-test.**
+
+    `resolve_embedder("fastembed")` constructs a real `TextEmbedding` eagerly, so on a cold cache it
+    fetches BAAI/bge-small-en-v1.5 before it can answer; measured warm at 6.76s. Adding it gave the
+    test above a silent network dependency and made its `tmp_path` emptiness assertion a false
+    negative, because the weights land in the HuggingFace cache rather than in `tmp_path`. This
+    repository already carries one network-dependent test whose failure is indistinguishable from a
+    regression, and a second was the wrong trade for a check the three imports mostly cover.
+
+    So the resolution runs only when a cache already exists — and the skip is PRINTED, because a
+    gate that was skipped and a gate that passed must never render the same.
+    """
+    from recall.desktop import main as desktop_main
+
+    resolved: list[str] = []
+
+    def never_resolve(name: str):  # pragma: no cover - the assertion is that this is not called
+        resolved.append(name)
+        raise AssertionError("the selftest must not construct an embedder with no cache present")
+
+    monkeypatch.setattr(desktop_main, "_model_cache_exists", lambda: False)
+    monkeypatch.setattr("recall.embeddings.resolve_embedder", never_resolve)
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    pytest.importorskip("PySide6")
+
+    assert desktop_main._selftest() == 0
+    assert resolved == [], "no cache means no model is provisioned"
+    assert list(tmp_path.iterdir()) == [], "and nothing is written where the test can see it"
+
+
+def test_the_selftest_says_which_branch_it_took(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A skipped check that prints nothing is indistinguishable from a check that passed."""
+    from recall.desktop import main as desktop_main
+
+    monkeypatch.setattr(desktop_main, "_model_cache_exists", lambda: False)
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    pytest.importorskip("PySide6")
+
+    desktop_main._selftest()
+    assert "no local model cache" in capsys.readouterr().err, (
+        "the reader has to be able to tell a skipped embedder check from a passing one"
+    )
+
+
+def test_the_installer_window_never_waits_forever_to_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⛔ `QThreadPool.waitForDone()` with NO argument waits forever, and a parented pool's
+    destructor calls exactly that.
+
+    `MainWindow` was given a bounded `closeEvent` after closing during a first install froze the
+    application for up to half an hour. This window runs a strictly longer job — image pull,
+    migrations, a generation and a calibration per corpus — and its own bounded handler shipped with
+    no test, so a regression to the unbounded form would surface as FLAKINESS rather than a failure:
+    the wait only exceeds a test timeout when Docker happens to be busy.
+
+    Three properties: the wait is bounded, the bound is not absurd, and the window closes even when
+    the wait itself raises.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.install_ui import InstallerWindow
+    from recall.desktop.jobs import CLOSE_WAIT_MS
+
+    QApplication.instance() or QApplication([])
+
+    class _Event:
+        def __init__(self) -> None:
+            self.accepted = False
+
+        def accept(self) -> None:
+            self.accepted = True
+
+    window = InstallerWindow()
+    try:
+        waits: list[object] = []
+        monkeypatch.setattr(
+            window.pool, "waitForDone", lambda *args: waits.append(args) or True, raising=False
+        )
+        window._jobs.append(object())
+
+        event = _Event()
+        window.closeEvent(event)
+
+        assert waits and waits[0], "the wait must be given a bound; no argument waits forever"
+        bound = waits[0][0]
+        assert isinstance(bound, int) and 0 < bound <= 10_000, (
+            f"a close that waits {bound}ms is a window that will not close"
+        )
+        assert bound == CLOSE_WAIT_MS, "the same constant the main window uses"
+        assert event.accepted
+
+        # And it closes even when the wait blows up: without try/finally the error path of this
+        # very fix reproduces the hang it exists to prevent.
+        def explode(*_args: object) -> bool:
+            raise RuntimeError("the pool is gone")
+
+        monkeypatch.setattr(window.pool, "waitForDone", explode, raising=False)
+        broken = _Event()
+        with pytest.raises(RuntimeError):
+            window.closeEvent(broken)
+        assert broken.accepted, "the window must close even when the wait itself fails"
+    finally:
+        # The teardown close would otherwise re-enter the still-exploding handler.
+        window._jobs.clear()
+        monkeypatch.setattr(window.pool, "waitForDone", lambda *args: True, raising=False)
         window.close()

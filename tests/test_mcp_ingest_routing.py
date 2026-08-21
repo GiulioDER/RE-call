@@ -197,28 +197,10 @@ def test_the_reclaim_runs_on_both_outcomes_and_is_confined() -> None:
         and node.func.attr == "superseded_ready_generations"
     ]
     assert calls, "the helper must ask which builds it supersedes"
-    assert any(
-        keyword.arg == "corpus_version_prefix" for call in calls for keyword in call.keywords
-    ), "and it must be confined to generations this path created"
-    assert any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "abandon"
-        for node in ast.walk(helper)
-    ), "released means abandoned, so gc can reclaim the rows"
-
-    # ⛔ Both outcomes. One call site would put us back where we started.
-    ingest = ast.parse(textwrap.dedent(inspect.getsource(service.generation_ingest)))
-    sites = [
-        node
-        for node in ast.walk(ingest)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_release_superseded"
-    ]
-    assert len(sites) >= 2, (
-        f"the reclaim must run on the refusal path AND the success path, found {len(sites)} call(s)"
-    )
+    # ⚠️ The confinement, the abandons and the two call sites are asserted BEHAVIOURALLY at the
+    # bottom of this file. The assertions that used to be here checked that a keyword was NAMED
+    # `corpus_version_prefix` and that there were two call sites, and two auditors defeated both by
+    # executed mutation: `corpus_version_prefix=None` and `if False:` each left this file green.
 
 
 def test_a_failure_after_validate_does_not_strand_a_generation() -> None:
@@ -247,10 +229,16 @@ def test_a_failure_after_validate_does_not_strand_a_generation() -> None:
         "a handler whose entire body is `raise` implements nothing; either give it the cleanup its "
         "docstring implies or remove it"
     )
+    # ⚠️ This used to assert that `abandon` appeared literally inside `generation_ingest`, which is
+    # the trap a source-shape test always sets: the reclaim moved into `_reclaim_failed` — because
+    # `abandon` refuses every state but READY and so missed every failure inside `build()` — and the
+    # test went red for a fix that made the behaviour strictly better. The property is now asserted
+    # where it lives, in `test_a_failure_before_validate_is_also_reclaimed`. What is kept here is
+    # only the claim this test's docstring is actually about: no handler is a bare re-raise.
     assert any(
         isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "abandon"
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_reclaim_failed"
         for node in ast.walk(tree)
     ), "the failure path must release the generation it created"
 
@@ -431,4 +419,230 @@ def test_the_shared_builder_disagrees_with_the_hand_written_identity() -> None:
     assert shared.fingerprint != hand_written.fingerprint, (
         "if these agree the hand-written identity was harmless and this whole change is noise; "
         "they did not agree when measured"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# The reclaim, asked BEHAVIOURALLY.
+#
+# ⛔ The three source-inspection tests above these were defeated by executed mutation, twice, by two
+# independent auditors: `corpus_version_prefix=None` (the full pre-fix destructive behaviour) and
+# `if False:` around the success-path call both left the file green. An AST test can see that a
+# keyword is NAMED but not what it is BOUND to, and can count call sites but not tell a reachable
+# one from dead code. A third auditor watched one of them fail spuriously when `inspect.getsource`
+# returned a single line. These drive the real function against a recording stub instead.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+class _RecordingManager:
+    """The two methods `_release_superseded` uses, recording how they were called."""
+
+    def __init__(self, stale: tuple[str, ...] = (), *, listing_error: Exception | None = None):
+        self._stale = stale
+        self._listing_error = listing_error
+        self.listed: list[tuple[str, object]] = []
+        self.abandoned: list[str] = []
+
+    def superseded_ready_generations(self, keep, *, corpus_version_prefix=None):
+        self.listed.append((keep, corpus_version_prefix))
+        if self._listing_error is not None:
+            raise self._listing_error
+        return self._stale
+
+    def abandon(self, generation_id, reason):  # noqa: ARG002 - the reason is not under test
+        self.abandoned.append(generation_id)
+
+
+def test_the_reclaim_is_confined_to_this_paths_own_corpus_prefix() -> None:
+    """⛔ The VALUE of the prefix, not just the presence of the keyword.
+
+    `superseded_ready_generations` keeps the unfiltered branch for `corpus_version_prefix=None`, so
+    passing None restores exactly the behaviour that abandons a generation a wizard install built
+    and deliberately left READY — and gc then deletes a corpus this path never created. The AST test
+    this replaces accepted None, which was demonstrated by mutation.
+    """
+    from recall_mcp.service import _DESKTOP_CORPUS_PREFIX, _release_superseded
+
+    manager = _RecordingManager(stale=("gen-old-1", "gen-old-2"))
+    released = _release_superseded(manager, "gen-new")
+
+    assert manager.listed == [("gen-new", _DESKTOP_CORPUS_PREFIX)], (
+        "the reclaim must be confined by the desktop corpus prefix, and the prefix must be the "
+        "constant rather than None, which selects on state alone"
+    )
+    assert _DESKTOP_CORPUS_PREFIX, "an empty prefix would match every corpus, confining nothing"
+    assert manager.abandoned == ["gen-old-1", "gen-old-2"]
+    assert released == 2
+    assert "gen-new" not in manager.abandoned, "the generation being kept must never be abandoned"
+
+
+def test_a_failed_listing_does_not_lose_the_upload() -> None:
+    """⛔ The listing opens its own database connection, and it used to sit OUTSIDE the try.
+
+    `_release_superseded`'s docstring says losing a reclaim must not lose the upload report. It was
+    only true of the abandons. A raise from the listing was destructive in both directions: on the
+    refusal path the call sits inside `generation_ingest`'s outer try, so it reached the cleanup
+    handler and abandoned the very generation the design keeps; on the success path it reported an
+    already-promoted, already-live upload as failed. Four auditors found this.
+    """
+    from recall_mcp.service import _release_superseded
+
+    manager = _RecordingManager(listing_error=RuntimeError("connection reset"))
+
+    assert _release_superseded(manager, "gen-new") == 0, "a failed reclaim reclaims nothing"
+    assert manager.abandoned == [], "and abandons nothing"
+
+
+def test_a_failed_abandon_does_not_stop_the_others() -> None:
+    """Best effort is per generation, not all-or-nothing."""
+    from recall_mcp.service import _release_superseded
+
+    manager = _RecordingManager(stale=("gen-a", "gen-b", "gen-c"))
+    refused = {"gen-b"}
+    original = manager.abandon
+
+    def abandon(generation_id, reason):
+        if generation_id in refused:
+            raise RuntimeError("already retired")
+        original(generation_id, reason)
+
+    manager.abandon = abandon  # type: ignore[method-assign]
+
+    assert _release_superseded(manager, "gen-new") == 2
+    assert manager.abandoned == ["gen-a", "gen-c"]
+
+
+def test_the_reclaim_call_sites_are_both_reachable() -> None:
+    """⛔ Counting call sites cannot tell a reachable call from dead code.
+
+    An auditor wrapped the success-path call in `if False:` and the previous `len(sites) >= 2`
+    assertion stayed green — the leak reopened with the suite passing. This asserts PLACEMENT: one
+    call inside the `except UnsafePromotion` handler, and one that is a direct statement of the
+    function body, not nested in any conditional or handler.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    import recall_mcp.service as service
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(service.generation_ingest)))
+    function = tree.body[0]
+    assert isinstance(function, ast.FunctionDef)
+
+    def calls_reclaim(node: ast.AST) -> bool:
+        return any(
+            isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Name)
+            and inner.func.id == "_release_superseded"
+            for inner in ast.walk(node)
+        )
+
+    top_level = [statement for statement in function.body if calls_reclaim(statement)]
+    assert any(isinstance(statement, ast.Expr) for statement in top_level), (
+        "the success-path reclaim must be an unconditional statement of the function body; nesting "
+        "it in a conditional makes it dead code that a call-site count cannot see"
+    )
+
+    handlers = [
+        handler
+        for handler in ast.walk(function)
+        if isinstance(handler, ast.ExceptHandler)
+        and isinstance(handler.type, ast.Name)
+        and handler.type.id == "UnsafePromotion"
+    ]
+    assert handlers, "the refusal path must still be an UnsafePromotion handler"
+    assert any(calls_reclaim(handler) for handler in handlers), (
+        "the refusal path must reclaim too: one call site puts us back where we started"
+    )
+
+
+def test_a_failure_before_validate_is_also_reclaimed() -> None:
+    """⛔ `abandon` refuses every state but READY, and `validate()` is what sets READY.
+
+    So the cleanup handler, which called only `abandon`, was a no-op for any failure inside
+    `build()` — the longest and most failure-prone step — and `suppress` made the refusal silent.
+    `gc` collects `retired` and `failed`, so those generations stranded a full corpus copy exactly
+    as before the fix that claimed to close the leak.
+    """
+    from recall.generations import InvalidGenerationTransition
+    from recall_mcp.service import _reclaim_failed
+
+    class _Building:
+        def __init__(self):
+            self.failed: list[str] = []
+            self.abandoned: list[str] = []
+
+        def fail(self, generation_id, reason):  # noqa: ARG002
+            self.failed.append(generation_id)
+
+        def abandon(self, generation_id, reason):  # noqa: ARG002
+            self.abandoned.append(generation_id)
+
+    building = _Building()
+    _reclaim_failed(building, "gen-1", "build blew up")
+    assert building.failed == ["gen-1"], "an in-flight generation is failed, which gc can collect"
+
+    class _Ready(_Building):
+        def fail(self, generation_id, reason):  # noqa: ARG002
+            raise InvalidGenerationTransition("ready generations are abandoned, not failed")
+
+    ready = _Ready()
+    _reclaim_failed(ready, "gen-2", "promote blew up")
+    assert ready.abandoned == ["gen-2"], "and a READY one falls back to abandon"
+
+    class _Broken(_Building):
+        def fail(self, generation_id, reason):  # noqa: ARG002
+            raise RuntimeError("database gone")
+
+        def abandon(self, generation_id, reason):  # noqa: ARG002
+            raise RuntimeError("database gone")
+
+    _reclaim_failed(_Broken(), "gen-3", "everything blew up")  # must not raise
+
+
+def test_a_carried_forward_file_that_still_exists_is_never_dropped(tmp_path) -> None:
+    """⛔ The carry-forward filter has now been wrong in BOTH directions, so both are pinned.
+
+    Version one confined the build reader to the upload staging directory and kept every object, so
+    a wizard-built corpus under `data_root` failed the whole upload. Version two dropped whatever
+    the reader could not reach, which was worse: the upload succeeded with a truncated manifest,
+    promotion put it live, the generation still holding those files was retired, and gc deleted it
+    after the retention window — silent, permanent loss of the user's corpus.
+
+    The only object that may be dropped is one whose bytes are gone, because nothing can rebuild it.
+    """
+    from recall_mcp.service import _local_path, _roots_of
+
+    elsewhere = tmp_path / "wizard-data" / "docs"
+    elsewhere.mkdir(parents=True)
+    present = elsewhere / "kept.md"
+    present.write_text("carried forward", encoding="utf-8")
+    missing = elsewhere / "gone.md"
+
+    assert _local_path(present.as_uri()) == present.resolve()
+    assert _local_path(present.as_uri()).is_file()
+    assert not _local_path(missing.as_uri()).is_file(), (
+        "a staged file whose container was recreated is gone, and dropping it is the only option "
+        "left; keeping it makes every later upload fail forever on a file that cannot be read"
+    )
+
+    roots = _roots_of({present.as_uri(): object()})
+    assert elsewhere.resolve() in roots, (
+        "the build reader must be widened to the directory a carried-forward object lives in, "
+        "rather than the object being filtered out for living outside the staging root"
+    )
+
+    # A percent-encoded name and a non-local URI: the first must survive, the second names no root.
+    spaced = elsewhere / "two words.md"
+    spaced.write_text("x", encoding="utf-8")
+    assert _local_path(spaced.as_uri()) == spaced.resolve()
+    assert _local_path("s3://bucket/key.md") is None
+    assert _local_path("file://nas1/share/docs/a.md") is None, (
+        "a URI with an authority is a UNC share, not a local path; reading only the path component "
+        "would rebase it onto the current drive, which recall/manifest.py documents at length"
+    )
+    assert _roots_of({"s3://bucket/key.md": object()}) == (), (
+        "a non-local object contributes no root, so the reader refuses it and the build fails "
+        "LOUDLY — which is the right outcome for a corpus this path cannot rebuild"
     )

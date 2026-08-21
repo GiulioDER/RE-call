@@ -62,15 +62,19 @@ _INSTALLER_FILES = (
     "wizard.state.json",
 )
 
-#: ⛔ **`runtime.json` is NOT in the list above, because it is not under `data_root`.** The
-#: installer writes it to the user's config directory (`%APPDATA%/RE-call/` on Windows, which is
-#: the platform this targets), and `recall/wizard/headless.py` says so outright: "written to the
-#: user's config directory, outside both data_root and project_root". Listing it as a
-#: `data_root`-relative name meant the entry NEVER matched on Windows, so every uninstall left the
-#: desktop app holding a profile pointing at a compose file that had just been deleted. The unit
-#: test fabricated the file under `data_root`, which is precisely why the mismatch was invisible.
-#:
-#: It is planned at its real location instead, and only when it names THIS install.
+# ⛔ **`runtime.json` is NOT in the list above, because it is not under `data_root`.** The
+# installer writes it to the user's config directory (`%APPDATA%/RE-call/` on Windows, which is
+# the platform this targets), and `recall/wizard/headless.py` says so outright: "written to the
+# user's config directory, outside both data_root and project_root". Listing it as a
+# `data_root`-relative name meant the entry NEVER matched on Windows, so every uninstall left the
+# desktop app holding a profile pointing at a compose file that had just been deleted. The unit
+# test fabricated the file under `data_root`, which is precisely why the mismatch was invisible.
+#
+# It is planned at its real location instead, and only when it names THIS install.
+#
+# ⚠️ Plain `#`, not `#:`. Sphinx's attribute-doc marker documents the object that FOLLOWS it, and
+# this block sits after `_INSTALLER_FILES` closes — so as `#:` it rendered as the documentation for
+# `UninstallRefusal`, which has its own docstring.
 
 
 class UninstallRefusal(RuntimeError):
@@ -173,7 +177,9 @@ def _run(command: Sequence[str], *, timeout: float = 60.0) -> tuple[int, str]:
     return completed.returncode, ((completed.stdout or "") + (completed.stderr or "")).strip()
 
 
-def _compose_project(compose_path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+def _compose_project(
+    compose_path: Path,
+) -> tuple[str, tuple[str, ...], tuple[str, ...], bool]:
     """The project name, service names and DECLARED VOLUMES recorded in the stack file.
 
     Read from the FILE rather than recomputed from `data_root` and the project name. Recomputing
@@ -208,7 +214,15 @@ def _compose_project(compose_path: Path) -> tuple[str, tuple[str, ...], tuple[st
     # volume name yields a name that stack never declared: `docker volume rm` reports "no such
     # volume", `execute` counts that as removed, and the real volume holding the indexes survives
     # while the report says it went. That is the one irreversible item in the plan.
+    #
+    # ⚠️ **Three cases, not two.** `declares_volumes` distinguishes "this stack has no `volumes:`
+    # key at all", where the historical derived name is the only guess available and is right, from
+    # "volumes were declared and every one was external", where deriving a name UNDOES the exclusion
+    # three lines below: for `{pgdata: {external: true, name: "<project>_pgdata"}}` the derived name
+    # is exactly the external volume just skipped, and `docker volume rm` would remove a volume this
+    # code had already decided was not ours.
     declared = document.get("volumes")
+    declares_volumes = isinstance(declared, dict) and bool(declared)
     volumes: list[str] = []
     if isinstance(declared, dict):
         for key, spec in declared.items():
@@ -217,7 +231,7 @@ def _compose_project(compose_path: Path) -> tuple[str, tuple[str, ...], tuple[st
                 continue
             explicit = spec.get("name") if isinstance(spec, dict) else None
             volumes.append(str(explicit) if explicit else f"{name}_{key}")
-    return name, tuple(str(key) for key in services), tuple(volumes)
+    return name, tuple(str(key) for key in services), tuple(volumes), declares_volumes
 
 
 def _corpus_roots(data_root: Path) -> tuple[tuple[str, Path], ...]:
@@ -355,7 +369,7 @@ def plan_uninstall(
             "the data folder chosen during installation; it is recorded in that install's "
             "wizard.json."
         )
-    project_name, services, declared_volumes = _compose_project(compose_path)
+    project_name, services, declared_volumes, declares_volumes = _compose_project(compose_path)
 
     items: list[Removable] = []
 
@@ -391,7 +405,10 @@ def plan_uninstall(
             )
         )
 
-    for volume in declared_volumes or (f"{project_name}_{DB_VOLUME}",):
+    # The derived name is the fallback for a LEGACY stack only. See `_compose_project`: a stack
+    # that declared volumes and had them all excluded as external must not have one guessed back.
+    fallback = () if declares_volumes else (f"{project_name}_{DB_VOLUME}",)
+    for volume in declared_volumes or fallback:
         items.append(
             Removable(
                 "volume",
@@ -479,11 +496,34 @@ def execute(
             # the indexes are kept deliberately.
             command.append("-v")
         status, output = run(command)
+        # ⛔ **The teardown status is captured HERE, not inferred from the container items.** It used
+        # to be recorded only by looping over `plan.removing("container")`, and the sibling fix that
+        # stopped reporting an unqueryable docker as a removal sets `removing=False` on exactly that
+        # item — so the two fixes cancelled. Reproduced: with the daemon unreachable at plan time AND
+        # at execute time, a failing `compose down` produced `failed: []`, the report printed
+        # "Removed 3 item(s).", and the stack file naming the still-running containers was deleted.
+        # Three auditors found it independently, which is what a defect that lives BETWEEN two
+        # correct-looking fixes looks like.
+        compose_failed = status != 0
         for item in plan.removing("container"):
             if status == 0:
                 report.removed.append(item)
             else:
                 report.failed.append((item, output[:200] or "docker compose down failed"))
+        if compose_failed and not plan.removing("container"):
+            # Nothing was listed to attach the failure to, so the stack itself carries it. Without
+            # this the error never reaches the user at all.
+            report.failed.append(
+                (
+                    Removable(
+                        "container",
+                        plan.project_name,
+                        "the stack's containers",
+                        removing=False,
+                    ),
+                    output[:200] or "docker compose down failed",
+                )
+            )
 
     for item in plan.removing("volume"):
         # `compose down -v` above already removed it; this is the belt-and-braces path for a volume
@@ -506,11 +546,18 @@ def execute(
                 else:
                     report.failed.append((item, failure))
 
-    # ⛔ The stack file is the ONLY thing that identifies this install's containers and volume, and
-    # `plan_uninstall` refuses without it. Deleting it after a failed teardown leaves resources that
-    # can no longer be named by the tool, and the refusal message tells the user to restore a file
-    # this function just removed.
-    teardown_failed = any(
+    # ⛔ **Two files are kept, and each for its own reason.** The stack file is the only thing that
+    # identifies this install's containers and volumes, and `plan_uninstall` refuses without it —
+    # so deleting it after a failed teardown leaves resources nothing can name, and the refusal
+    # message then tells the user to restore a file this function just removed. `wizard.json` is
+    # kept because the retry needs it too: `_configured_project_root` and `_corpus_roots` both read
+    # it, so without it the second attempt cannot find the MCP registrations to unwind or say which
+    # folders it is keeping.
+    #
+    # The desktop profile is deliberately NOT in this set. It points at the compose file, which is
+    # being kept, so leaving the profile behind would leave the desktop app pointing at an install
+    # the user has asked to remove — and unlike the two above, nothing on the retry path reads it.
+    teardown_failed = compose_failed or any(
         item.kind in {"container", "volume"} for item, _reason in report.failed
     )
     for item in plan.removing("file"):
@@ -572,12 +619,25 @@ def _unregister(names: Sequence[str], project_root: Path, config_path: Path) -> 
 
     temporary = config_path.with_name(config_path.name + ".tmp")
     try:
-        # ⛔ **A backup first, matching `register_local_scope`.** That function writes a
-        # `.recall-backup` before its own atomic replace; this one did not, so the REMOVAL
-        # direction — the one where a mistake is unrecoverable — had less protection than the
-        # addition direction. This file holds every project the MCP client tracks.
-        backup = config_path.with_name(config_path.name + ".recall-backup")
-        backup.write_text(original, encoding="utf-8", newline="\n")
+        # ⛔ **A backup first, and it must NOT clobber the install-time one.** `register_local_scope`
+        # writes `<name>.recall-backup` before its own atomic replace, so copying that fixed name
+        # here overwrote the only copy of the file from before recall ever touched it — with the
+        # already-rewritten content, at the moment it is most likely to be wanted. `claude_code.py`
+        # already had the right pattern and this now matches it: a timestamped name, never reused.
+        #
+        # `copy2` and not `write_text`: this file carries bearer tokens, and a fresh `write_text`
+        # creates it at the umask default, leaving a world-readable copy of every credential beside
+        # a 0600 original. The same argument was already made five lines down for the temp file.
+        backup = _backup_path(config_path)
+        try:
+            shutil.copy2(config_path, backup)
+        except OSError:
+            # A backup that cannot be written is not a reason to refuse the uninstall, but it IS a
+            # reason not to pretend one exists: fall back to the content already read, and still
+            # narrow the mode rather than leaving it at the umask default.
+            backup.write_text(original, encoding="utf-8", newline="\n")
+            with suppress(OSError, NotImplementedError):
+                shutil.copymode(config_path, backup)
         temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
         # `replace` installs a fresh inode at the umask default, discarding a 0600 the user or the
         # client may have set on a file that carries bearer tokens. Copy the mode across first.
@@ -587,6 +647,25 @@ def _unregister(names: Sequence[str], project_root: Path, config_path: Path) -> 
     except OSError as exc:
         return f"cannot write {config_path}: {exc}"
     return None
+
+
+def _backup_path(config_path: Path) -> Path:
+    """A backup name that is never reused, so an earlier backup is never overwritten.
+
+    ⛔ The fixed `<name>.recall-backup` that `register_local_scope` writes is the copy of the file
+    from BEFORE recall was ever registered. Reusing that name here destroyed it, at the exact moment
+    somebody undoing an install would want it. The counter, rather than a timestamp alone, is
+    because two uninstalls inside the same second are a thing that happens in tests and in scripts.
+    """
+    import time
+
+    stamp = int(time.time())
+    for suffix in range(64):
+        tail = f".recall-backup-{stamp}" + (f".{suffix}" if suffix else "")
+        candidate = config_path.with_name(config_path.name + tail)
+        if not candidate.exists():
+            return candidate
+    return config_path.with_name(f"{config_path.name}.recall-backup-{stamp}.last")
 
 
 def _default_claude_config() -> Path:

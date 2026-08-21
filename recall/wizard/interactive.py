@@ -178,7 +178,15 @@ def ask_config(
                 f"\n{question.prompt}", default=default_for(question, answers)
             )
 
-    return build_config(answers)
+    try:
+        return build_config(answers)
+    except ValueError as exc:
+        # ⛔ **Translated, because `recall/cli.py` handles `InteractiveRefusal` and not `ValueError`.**
+        # The data-folder validation added alongside this is reachable by TYPING a relative path,
+        # unlike the three corpus-root refusals which are effectively unreachable from a prompt that
+        # offers a non-empty default. So the terminal interview ended in a traceback with every
+        # answer already given thrown away. The GUI was fine; it catches `ValueError` itself.
+        raise InteractiveRefusal(str(exc)) from exc
 
 
 def _applies(question: Question, answers: dict[str, str]) -> bool:
