@@ -175,16 +175,41 @@ def test_a_refused_upload_releases_the_builds_it_supersedes() -> None:
 
     The NEWEST is deliberately kept — it carries the whole corpus forward and is the one the message
     tells the user to certify.
+
+    ⚠️ **This assertion used to be a substring match on `inspect.getsource`, and three auditors
+    said why that was wrong: a source-text check cannot tell which BRANCH a call sits in.** It
+    could not see that the reclaim ran only inside `except UnsafePromotion`, it could not see what
+    the loop selected, and it broke the moment the call gained an argument. It is now parsed.
     """
+    import ast
     import inspect
+    import textwrap
 
     import recall_mcp.service as service
 
-    source = inspect.getsource(service.generation_ingest)
-    assert "superseded_ready_generations(generation.generation_id)" in source, (
-        "the refusal path must release the builds this one supersedes"
-    )
-    assert "manager.abandon(" in source, "released means abandoned, so gc can reclaim the rows"
+    tree = ast.parse(textwrap.dedent(inspect.getsource(service.generation_ingest)))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "superseded_ready_generations"
+    ]
+    assert calls, "the refusal path must release the builds this one supersedes"
+
+    # ⛔ And it must be CONFINED. Called without a provenance filter it selects on state alone, and
+    # `abandon` does not protect a never-promoted generation — so it would destroy a corpus another
+    # path built. See test_generations.py::test_the_reclaim_never_touches_a_generation_another_path_built.
+    assert any(
+        keyword.arg == "corpus_version_prefix" for call in calls for keyword in call.keywords
+    ), "the reclaim must be confined to generations this path created"
+
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "abandon"
+        for node in ast.walk(tree)
+    ), "released means abandoned, so gc can reclaim the rows"
 
 
 # ----------------------------------------------------------------------------------------------

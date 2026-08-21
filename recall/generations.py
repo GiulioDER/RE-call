@@ -895,11 +895,23 @@ class GenerationManager:
 
         repository = CalibrationRepository(self._dsn, self.tenant_id, actor=self.actor)
         try:
-            resolution = (
-                repository.resolve_within(conn, generation_id)
-                if conn is not None
-                else repository.resolve(generation_id)
-            )
+            if conn is not None:
+                # ⛔ **A SAVEPOINT, and without it this method breaks the promise above.**
+                # Catching a `psycopg.Error` in Python does NOT clear the server-side aborted
+                # transaction state. On the borrowed connection that is the CALLER'S transaction,
+                # so swallowing the error here left `rollback`'s next UPDATE raising
+                # `InFailedSqlTransaction` — the reporting call added to make a degradation visible
+                # was instead blocking the recovery, which is exactly what decision 2 forbids.
+                # A nested `conn.transaction()` emits SAVEPOINT / ROLLBACK TO SAVEPOINT, so a
+                # failed read leaves the outer transaction usable and `"unknown"` becomes true
+                # rather than a lie told over a broken connection.
+                #
+                # Found by three auditors independently. The pre-existing test asserted only that
+                # the read happens INTRANS; nothing drove a failing read.
+                with conn.transaction():
+                    resolution = repository.resolve_within(conn, generation_id)
+            else:
+                resolution = repository.resolve(generation_id)
             return str(resolution.status.value)
         except Exception:  # noqa: BLE001 - reporting must not be able to block recovery
             return "unknown"
@@ -1168,18 +1180,36 @@ class GenerationManager:
             return IndexManifestV1.from_dict(row[0])
         return self.active_manifest()
 
-    def superseded_ready_generations(self, keep: str) -> tuple[str, ...]:
-        """Every READY generation for this tenant other than `keep`, newest first.
+    def superseded_ready_generations(
+        self, keep: str, *, corpus_version_prefix: str | None = None
+    ) -> tuple[str, ...]:
+        """READY generations for this tenant other than `keep`, newest first.
 
         The reclaim list. A READY generation holds a full copy of the corpus's chunk rows and `gc`
         collects only `retired` and `failed`, so one left behind per refused upload grows the
         database without bound — the leak `abandon` was written to close, documented in its own
         docstring, and reintroduced by a path that returns success instead of raising.
+
+        ⛔ **`corpus_version_prefix` is not optional in spirit, and omitting it destroys other
+        people's corpora.** Without it this selects on STATE ALONE, and `abandon` protects only the
+        tenant's active and previous generations — so a generation that was built and validated but
+        deliberately NEVER promoted is fair game. That is precisely what a degraded wizard install
+        leaves behind: `recall/wizard/pipeline.py` skips `promote` when the corpus did not certify,
+        on purpose, so an operator can promote it later. One refused desktop upload would then
+        abandon it, `gc` would collect it, and the chunk rows would cascade away.
+
+        Caller-supplied rather than inferred, because only the caller knows which generations are
+        its own to reclaim. A caller that cannot name its own provenance should not be reclaiming.
         """
         return tuple(
             record.generation_id
             for record in self.list_generations()
-            if record.state is GenerationState.READY and record.generation_id != keep
+            if record.state is GenerationState.READY
+            and record.generation_id != keep
+            and (
+                corpus_version_prefix is None
+                or record.corpus_version.startswith(corpus_version_prefix)
+            )
         )
 
     def active_manifest(self) -> IndexManifestV1:

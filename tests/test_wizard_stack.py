@@ -739,3 +739,54 @@ def test_image_version_reads_back_only_tags_this_module_writes() -> None:
         "ghcr.io/someone/recall-wizard:0.9.1",
     ):
         assert _image_version(foreign) is None, f"{foreign!r} must not yield a version to pin to"
+
+
+def test_the_dockerfile_extras_follow_the_pinned_version() -> None:
+    """⛔ Making the Dockerfile follow the inherited tag made it UNBUILDABLE on old stacks.
+
+    The image-tag fix taught `write_compose` to pin the version the stack actually runs, so a 0.9.1
+    stack keeps serving 0.9.1. But `_IMAGE_EXTRAS` is a constant including `documents`, and that
+    extra first shipped in 0.9.6 — so adding a project to an older stack wrote
+    `recall-rag[mcp,fastembed,documents]==0.9.1`, and the post-install import assertion turned that
+    into a hard build failure. One silent bug traded for a loud one, which is better, but still a
+    stack the wizard writes and cannot build.
+
+    The extras and the assertion now both follow the pinned version.
+    """
+    from recall.wizard.stack import dockerfile_text
+
+    def _pin(version: str) -> str:
+        """The `pip install` line only. The file's PROSE names `documents` while explaining why an
+        old release lacks it, so asserting over the whole text matches the comment rather than the
+        command — the same code-versus-prose trap this suite has hit before."""
+        return next(
+            line for line in dockerfile_text(version).splitlines() if "pip install" in line
+        )
+
+    for old in ("0.9.1", "0.9.5"):
+        assert "documents" not in _pin(old), f"{old} predates the documents extra"
+        assert "pypdf" not in dockerfile_text(old), "its packages must not be asserted either"
+        assert "mcp,fastembed" in _pin(old), "the extras that DID exist must still be requested"
+
+    for current in ("0.9.6", "0.9.7"):
+        assert "documents" in _pin(current)
+        assert "pypdf, docx, openpyxl, pptx, bs4" in dockerfile_text(current), (
+            "from 0.9.6 the extra exists, so a silently-missing one must stay a build failure"
+        )
+
+
+def test_an_unparseable_version_keeps_the_current_extras() -> None:
+    """A pre-release or local build carries current extras; guessing 'legacy' drops them silently.
+
+    Of the two failure directions, dropping document extraction from an image that should have it
+    is the quieter one, so it is the wrong default.
+    """
+    from recall.wizard.stack import dockerfile_text
+
+    def _pin(version: str) -> str:
+        return next(
+            line for line in dockerfile_text(version).splitlines() if "pip install" in line
+        )
+
+    assert "documents" in _pin("1.0.0rc1")
+    assert "documents" in _pin("someones-branch-build")

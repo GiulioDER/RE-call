@@ -2093,6 +2093,37 @@ def calibration_status(store: PgVectorStore) -> dict[str, object]:
     }
 
 
+#: Stamped into every generation this module builds, and the ONLY thing that identifies one as
+#: ours when reclaiming. Defined once so the stamp and the filter cannot drift: a filter that stops
+#: matching the stamp silently widens the reclaim to generations other paths created.
+_DESKTOP_CORPUS_PREFIX = "desktop-"
+
+
+def _reachable_from(uri: str, root: Path) -> bool:
+    """Whether `uri` names a file the build reader, confined to `root`, could fetch.
+
+    Carried-forward manifest entries come from whatever generation last served the tenant, which on
+    a wizard install points into the install's own corpus directories rather than into the upload
+    staging area. `LocalObjectReader` refuses those, and `build` has no skip path, so an unfiltered
+    carry-forward turns every upload into a hard failure.
+
+    Anything that is not a local `file://` URI is treated as unreachable rather than guessed at.
+    """
+    from urllib.parse import unquote, urlparse
+
+    parsed = urlparse(uri)
+    if parsed.scheme != "file":
+        return False
+    path = unquote(parsed.path)
+    # A Windows `file:///C:/x` parses with a leading slash before the drive letter.
+    if len(path) > 2 and path[0] == "/" and path[2] == ":":
+        path = path[1:]
+    try:
+        return Path(path).resolve().is_relative_to(root)
+    except (OSError, ValueError):  # pragma: no cover - an unresolvable path is unreachable
+        return False
+
+
 def generation_ingest(
     store: PgVectorStore,
     embedder: Embedder,
@@ -2118,7 +2149,24 @@ def generation_ingest(
         # ⚠️ The newest SERVABLE generation, not the active one. A refused promotion leaves its
         # generation READY and never advances `active_generation_id`, so seeding from the active
         # manifest made each upload silently drop every previous un-promoted upload's files.
-        active_objects = {entry.uri: entry for entry in manager.servable_manifest().objects}
+        #
+        # ⛔ **Filtered to what the build reader can actually reach, and without that filter this
+        # breaks the upload outright.** The reader below is confined to `tenant_root` (the upload
+        # staging directory), while a wizard-built generation's objects live under the install's
+        # `data_root`. `build` calls `reader.fetch(entry)` for EVERY manifest object with no skip
+        # path, so one unreachable carried-forward entry raises and the whole upload fails. Widening
+        # the seed set from `active_manifest` to `servable_manifest` is what exposed this: the
+        # degraded-install tenant previously had no active generation at all, so nothing was carried
+        # forward and the upload succeeded by accident.
+        #
+        # Dropping an unreachable object is the right degradation: it was never this path's to
+        # rebuild, and the generation it came from still holds it.
+        staging = tenant_root.resolve()
+        active_objects = {
+            entry.uri: entry
+            for entry in manager.servable_manifest().objects
+            if _reachable_from(entry.uri, staging)
+        }
     except NoActiveGeneration:
         active_objects = {}
 
@@ -2143,7 +2191,7 @@ def generation_ingest(
     objects = sorted(active_objects.values(), key=lambda entry: entry.uri)
     manifest = IndexManifestV1(
         tenant_id=store.tenant,
-        corpus_version=f"desktop-{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
+        corpus_version=f"{_DESKTOP_CORPUS_PREFIX}{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
         objects=tuple(objects),
     )
     # ⚠️ **Verified when the weights can be hashed, honestly unverified when they cannot.**
@@ -2228,7 +2276,13 @@ def generation_ingest(
             # The NEWEST is kept, not abandoned: it carries the whole corpus forward and it is the
             # one the message below tells the user to certify.
             reclaimed = 0
-            for stale in manager.superseded_ready_generations(generation.generation_id):
+            # ⛔ Confined to this path's OWN generations. Without the prefix this reclaims
+            # every READY generation on the tenant, including one a degraded wizard install
+            # deliberately left for an operator to promote later — and `abandon` does not
+            # protect it, so `gc` would then delete a corpus this path never created.
+            for stale in manager.superseded_ready_generations(
+                generation.generation_id, corpus_version_prefix=_DESKTOP_CORPUS_PREFIX
+            ):
                 try:
                     manager.abandon(stale, "superseded by a later upload that also awaits certification")
                 except GenerationError:
@@ -2289,6 +2343,7 @@ def _certify_upload(
         CalibrationUncertified,
     )
     from recall.wizard.queryset import (
+        DEFAULT_PER_CLASS,
         MIN_PER_CLASS,
         QuerySetError,
         canonicalize,
@@ -2310,12 +2365,34 @@ def _certify_upload(
         ).fetchall()
     chunks = [str(row[0]) for row in rows if str(row[0]).strip()]
 
-    try:
-        entries = canonicalize(generate_offline(chunks, per_class=MIN_PER_CLASS))
-    except QuerySetError as exc:
+    # ⛔ **Ask for the HEADROOM and fall back to the floor, never ask for the floor.**
+    # `MIN_PER_CLASS` is the certification floor, not a generation target. Certification tests the
+    # LOWER bound of the Hanley-McNeil interval, and that bound tightens as the sample grows, so
+    # asking for exactly the floor refuses corpora that are genuinely separable. Measured:
+    #
+    #     separability_interval(0.95, 20, 20) -> lower 0.8786   REFUSED (bar is 0.90)
+    #     separability_interval(0.95, 40, 40) -> lower 0.9001   certified
+    #
+    # So every corpus whose true separability lies in roughly [0.950, 0.962) certifies through the
+    # installer and was refused here — leaving the upload READY-and-never-live, which is the exact
+    # wall `_certify_upload` exists to remove.
+    #
+    # The ladder is copied in shape from `recall/wizard/pipeline.py::_labelled_set`, which already
+    # does this correctly on the same generator: `generate_offline` REFUSES outright when the corpus
+    # has fewer distinct chunks than requested, so a flat bump to the headroom would turn "a small
+    # corpus certifies" into "a small corpus errors". Try the headroom, fall back to the floor.
+    entries = None
+    last: Exception | None = None
+    for per_class in (DEFAULT_PER_CLASS, MIN_PER_CLASS):
+        try:
+            entries = canonicalize(generate_offline(chunks, per_class=per_class))
+            break
+        except QuerySetError as exc:
+            last = exc
+    if entries is None:
         # The commonest case by far, and it is about the CORPUS, not about the upload: a handful of
         # files cannot produce MIN_PER_CLASS distinct answerable questions. Say the number.
-        return f"no certifiable query set could be generated from {len(chunks)} chunk(s): {exc}"
+        return f"no certifiable query set could be generated from {len(chunks)} chunk(s): {last}"
 
     repository = CalibrationRepository(dsn, tenant, actor="recall-desktop")
     try:

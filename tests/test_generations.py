@@ -1473,3 +1473,41 @@ def test_iter_chunks_wraps_its_server_side_cursor_in_a_transaction(manager) -> N
 
     assert chunks, "iter_chunks yielded nothing for an active generation"
     assert all(c.text for c in chunks)
+
+
+@requires_db
+def test_the_reclaim_never_touches_a_generation_another_path_built(manager) -> None:
+    """⛔ **Critical: the desktop reclaim could destroy a corpus it did not create.**
+
+    `superseded_ready_generations` selected on STATE ALONE, and `abandon` protects only the
+    tenant's active and previous generations. A generation that was built and validated but
+    deliberately NEVER promoted is in neither — and that is exactly what a degraded wizard install
+    leaves behind, because `recall/wizard/pipeline.py` skips `promote` when the corpus did not
+    certify so an operator can promote it later.
+
+    One refused desktop upload would abandon it, `gc` would collect it, and the chunk rows would
+    cascade away. The only previous test asserted on `inspect.getsource(...)` containing a literal
+    string, which cannot observe what the loop selects — so this one builds the two generations and
+    asks.
+    """
+    data = b"ready generation"
+    somebody_elses = _ready(
+        manager, _manifest(manager.tenant_id, data, version="wizard-2026-01-01"),
+        _pipeline("model-a"), _reader(_manifest(manager.tenant_id, data, version="wizard-2026-01-01"), data),
+        _Embedder(1),
+    )
+    mine = _ready(
+        manager, _manifest(manager.tenant_id, data + b" two", version="desktop-abc123"),
+        _pipeline("model-a"),
+        _reader(_manifest(manager.tenant_id, data + b" two", version="desktop-abc123"), data + b" two"),
+        _Embedder(1),
+    )
+
+    unconfined = manager.superseded_ready_generations(mine)
+    confined = manager.superseded_ready_generations(mine, corpus_version_prefix="desktop-")
+
+    assert somebody_elses in unconfined, "the fixture must actually reproduce the hazard"
+    assert somebody_elses not in confined, (
+        "a generation another path built and deliberately left READY must survive the desktop "
+        "reclaim; abandoning it makes gc delete a corpus this path never created"
+    )

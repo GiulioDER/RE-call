@@ -39,7 +39,10 @@ jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: read
+      # `write` only so the tag path can attach the signed bundle to its release; every other
+      # trigger reaches no step that uses it. A pull request build cannot write, because
+      # `GITHUB_TOKEN` is read-only on a fork PR and the attach step is gated on a tag ref.
+      contents: write
       # SignPath's action reads the workflow run and the uploaded artifact to bind the signature to
       # a specific, reproducible build rather than to whatever bytes were handed to it.
       actions: read
@@ -180,3 +183,23 @@ jobs:
           name: recall-install-windows
           path: dist-signed/recall-install
           if-no-files-found: error
+
+      # ⛔ **Without this the tag path produced nothing a downloader could get.** Both steps above
+      # are `upload-artifact`, which makes run-scoped, expiring, login-gated ZIPs — invisible to
+      # somebody arriving at the releases page. The 0.9.7 asset went up by hand because of this
+      # gap, and a hand-attached asset is exactly where the UNSIGNED naming convention gets
+      # forgotten.
+      #
+      # `contents: write` is scoped to this step's job-level grant below rather than the workflow,
+      # so nothing else in the run can write to the repository.
+      - name: Attach the signed bundle to the release
+        if: startsWith(github.ref, 'refs/tags/v') && steps.sign.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $zip = "recall-install-$tag-windows-x64.zip"
+          Compress-Archive -Path dist-signed/recall-install -DestinationPath $zip -CompressionLevel Optimal
+          gh release upload $tag $zip --clobber
+          if ($LASTEXITCODE -ne 0) { throw "could not attach $zip to release $tag" }

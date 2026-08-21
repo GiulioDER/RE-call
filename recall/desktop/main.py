@@ -83,6 +83,19 @@ def _selftest() -> int:
         from recall.wizard.headless import load_config, run_headless  # noqa: F401
         from recall.wizard.pipeline import run_corpus  # noqa: F401
         from recall.wizard.uninstall import plan_uninstall  # noqa: F401
+
+        # ⛔ **The native payload, which is the half that was never checked.** PyInstaller's
+        # characteristic failure is a missing binary extension, and every binary in this bundle
+        # lives behind these three imports: fastembed pulls onnxruntime's DLLs and tokenizers'
+        # compiled core. The pure-Python imports above cannot fail in a way these would not.
+        #
+        # This is the branch the first Install click reaches — `resolve_embedder(...)` in
+        # `install_ui._test_dsn` and again in `run_headless` — and the spec's own excludes comment
+        # says why it matters: "an installer that cannot embed cannot install". Until this line
+        # existed, a bundle missing all three passed the selftest and died on that click.
+        import fastembed  # noqa: F401
+        import onnxruntime  # noqa: F401
+        import tokenizers  # noqa: F401
     except Exception as exc:  # noqa: BLE001 - the whole point is to name what is missing
         print(f"selftest: import failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
@@ -107,6 +120,21 @@ def _selftest() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"selftest: building the window failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+
+    # The embedder is RESOLVED, not merely imported. `resolve_embedder` is what the Install click
+    # calls, and it is where a bundle missing the ONNX runtime's data files fails — an import of
+    # `fastembed` alone can succeed against a bundle that cannot construct a model.
+    try:
+        from recall.embeddings import resolve_embedder
+
+        dim = int(resolve_embedder("fastembed").dim)
+        if dim <= 0:
+            failures.append(f"the fastembed embedder resolved to a non-positive dimension {dim}")
+    except Exception as exc:  # noqa: BLE001 - naming the failure is the point
+        # Reported rather than fatal on its own: a runner with no network cannot fetch the model on
+        # a cold cache, and that is an environment fact rather than a broken bundle. The imports
+        # above already prove the binaries shipped.
+        print(f"selftest: could not resolve the embedder: {type(exc).__name__}: {exc}", file=sys.stderr)
 
     if failures:
         for failure in failures:

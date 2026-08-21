@@ -110,6 +110,19 @@ DOCKERFILE_NAME = "Dockerfile"
 #: and extracts nothing from them, which is a silent failure rather than a missing feature.
 _IMAGE_EXTRAS = "mcp,fastembed,documents"
 
+#: The extras available before `documents` was published. Used when the pinned version predates it.
+_LEGACY_IMAGE_EXTRAS = "mcp,fastembed"
+
+#: The first release that publishes the `documents` extra. Pinning it on anything older produces a
+#: Dockerfile that CANNOT build, because the post-install import assertion below fails on the
+#: packages the extra would have brought.
+#:
+#: ⛔ This exists because making the Dockerfile follow the INHERITED image tag (so a stack keeps
+#: serving the recall it was built with) turned a silent wrong-image bug into an unbuildable one:
+#: adding a project to a 0.9.1 stack wrote `recall-rag[...,documents]==0.9.1`, and `documents`
+#: first shipped in 0.9.6.
+_DOCUMENTS_EXTRA_SINCE = (0, 9, 6)
+
 #: Where pg18 wants its single mount. See the module docstring; the wrong path exits 1.
 DB_MOUNT = "/var/lib/postgresql"
 
@@ -376,6 +389,23 @@ def tenant_service(base_env: dict[str, str], *, image: str) -> dict[str, object]
     }
 
 
+def _publishes_documents(version: str) -> bool:
+    """Whether `version` is a release that published the `documents` extra.
+
+    Unparseable versions are treated as CURRENT (True). A pre-release or a local build carries the
+    current extras by definition; guessing "legacy" for anything unfamiliar would silently drop
+    document extraction from images that should have it, which is the quieter of the two failures
+    and therefore the wrong default.
+    """
+    parts: list[int] = []
+    for piece in version.split(".")[:3]:
+        digits = "".join(char for char in piece if char.isdigit())
+        if not digits:
+            return True
+        parts.append(int(digits))
+    return tuple(parts) >= _DOCUMENTS_EXTRA_SINCE
+
+
 def dockerfile_text(version: str | None = None) -> str:
     """The Dockerfile the generated stack builds from.
 
@@ -393,6 +423,8 @@ def dockerfile_text(version: str | None = None) -> str:
         from recall import __version__
 
         version = __version__
+    # The extras follow the PINNED version, not the running one. See `_DOCUMENTS_EXTRA_SINCE`.
+    extras = _IMAGE_EXTRAS if _publishes_documents(version) else _LEGACY_IMAGE_EXTRAS
     # LibreOffice is a large layer and a slow build. It is here for parity with
     # `docker/desktop/Dockerfile`: the UI offers .docx/.xlsx/.pptx, and without it those files are
     # accepted and yield nothing, which reads as recall being bad at documents rather than as a
@@ -408,7 +440,7 @@ def dockerfile_text(version: str | None = None) -> str:
         "        libreoffice-impress \\\n"
         "        libreoffice-writer \\\n"
         "    && rm -rf /var/lib/apt/lists/*\n"
-        f'RUN pip install --no-cache-dir "recall-rag[{_IMAGE_EXTRAS}]=={version}"\n'
+        f'RUN pip install --no-cache-dir "recall-rag[{extras}]=={version}"\n'
         "\n"
         "# ⚠️ **pip only WARNS about an extra a release does not provide.** So a pin whose version\n"
         "# predates an extra installs cleanly, the image builds, the container runs, and the\n"
@@ -418,8 +450,13 @@ def dockerfile_text(version: str | None = None) -> str:
         "# voyage: `documents` is NOT among them. These imports turn that into a build failure,\n"
         "# where it is cheap and legible, instead of an extraction that silently returns nothing.\n"
         "RUN python -c \"import recall_mcp.server\" \\\n"
-        " && python -c \"import fastembed\" \\\n"
-        " && python -c \"import pypdf, docx, openpyxl, pptx, bs4\"\n"
+        " && python -c \"import fastembed\"\n"
+        + (
+            ' && python -c "import pypdf, docx, openpyxl, pptx, bs4"\n'
+            if extras == _IMAGE_EXTRAS
+            else "# `documents` is not published for this pinned version, so the extraction\n"
+            "# packages are deliberately not asserted; this image reads text formats only.\n"
+        )
     )
 
 
