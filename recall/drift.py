@@ -551,11 +551,19 @@ def auto_recalibrate(
     2. **A fresh fit against that same stored labelled set.** Reached when carry-forward is refused,
        which is exactly the case where the threshold needs to MOVE rather than be re-verified.
 
-    ⛔ **Path 2 reuses the labels, not the threshold, and it cannot rescue a corpus that has moved
-    past the labels.** If the delta is past `max_corpus_delta` the stored questions are about a
-    corpus that no longer exists, so this refuses rather than fitting a confident threshold to stale
-    evidence. Producing a fresh labelled set is `recall.wizard.queryset`, and doing it unattended on
-    a corpus nobody has looked at is a different decision from re-running an existing measurement.
+    ⚠️ **`max_corpus_delta` bounds only how far path 1 will try, and path 2 is NOT bounded by it.**
+    An earlier draft of this docstring claimed the opposite: that past that delta the stored
+    questions describe a corpus that no longer exists, so a refit would be fitting to stale
+    evidence. The measurement contradicts that, and the code never implemented it. At a delta of
+    0.981 on this repository's `docs/`, only 27.5% of the answerable queries' original evidence
+    chunks still existed and the false-abstain rate was 0.025: the questions kept working long
+    after the specific text that first answered them was gone. Certification still gates the refit,
+    so a set that genuinely has stopped describing the corpus is refused by the usual bar rather
+    than by a delta nobody measured.
+
+    ⛔ **What neither path does is invent questions.** Both reuse the stored labelled set. Producing
+    a fresh one is `recall.wizard.queryset`, and doing that unattended on a corpus nobody has looked
+    at is a different decision from re-running an existing measurement.
     """
     artifact = _published_calibration(repository)
     if artifact is None:
