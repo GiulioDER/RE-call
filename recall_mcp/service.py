@@ -2142,10 +2142,17 @@ def _roots_of(objects: dict[str, ManifestObjectV1]) -> tuple[Path, ...]:
 
 def _carry_forward(
     objects: dict[str, ManifestObjectV1],
-) -> tuple[dict[str, ManifestObjectV1], tuple[Path, ...], int]:
+) -> tuple[dict[str, ManifestObjectV1], tuple[Path, ...], int, int]:
     """Which of the previous generation's objects this build carries, and where to read them.
 
-    Returns the objects to keep, the reader roots that reach them, and how many were dropped.
+    Returns the objects to keep, the reader roots that reach them, how many were dropped, and how
+    many were RE-STAMPED.
+
+    ⚠️ **The two counts are different facts and both are reported.** A drop loses a document; a
+    re-stamp keeps it and changes what the manifest pins for it. Neither is a failure and the served
+    content is correct either way, which is exactly why the re-stamp used to be silent: it has no
+    symptom. But it changes what the corpus holds relative to what the user last certified, and
+    "never silent" is this path's whole doctrine rather than a preference, so the caller names both.
 
     ⚠️ **This reads every carried-forward file that still exists, to compare its digest against
     what the manifest pinned.** That is a second read of the carried corpus per upload, since
@@ -2157,6 +2164,7 @@ def _carry_forward(
     """
     kept: dict[str, ManifestObjectV1] = {}
     vanished = 0
+    restamped = 0
     for uri, entry in objects.items():
         local = _local_path(uri)
         if local is None:
@@ -2198,7 +2206,11 @@ def _carry_forward(
             kept[uri] = entry
             continue
         kept[uri] = replace(entry, version_id=digest, size=stat.st_size, sha256=digest)
-    return kept, _roots_of(kept), vanished
+        # Counted HERE and nowhere earlier: an unreadable file took the `digest is None` branch
+        # above and was carried unchanged, so counting it would report a change that did not
+        # happen. Only the line above alters what the manifest pins.
+        restamped += 1
+    return kept, _roots_of(kept), vanished, restamped
 
 
 def _digest_of(path: Path) -> str | None:
@@ -2271,13 +2283,14 @@ def generation_ingest(
         # `rollback` can restore the previous one. The real cost is that the corpus stops being
         # SERVED and search silently degrades until somebody notices. That is bad enough to fix and
         # not so bad that it needs exaggerating.
-        active_objects, carried_roots, vanished = _carry_forward(
+        active_objects, carried_roots, vanished, restamped = _carry_forward(
             {entry.uri: entry for entry in manager.servable_manifest().objects}
         )
     except NoActiveGeneration:
         active_objects = {}
         carried_roots = ()
         vanished = 0
+        restamped = 0
 
     # Keep the active corpus and add only this job's files. In particular, do not scan sibling
     # job directories because a failed upload must not poison every later indexing attempt.
@@ -2397,6 +2410,7 @@ def generation_ingest(
                     f"{generation.generation_id}, which is built and validated but NOT yet live. "
                     f"It carries forward everything previously uploaded"
                     + _vanished_note(vanished)
+                    + _restamped_note(restamped)
                     + (f"; {reclaimed} superseded build(s) released" if reclaimed else "")
                     + f". {uncertified or exc}"
                 ),
@@ -2431,6 +2445,7 @@ def generation_ingest(
             f"Built and activated generation {generation.generation_id} with "
             f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
             + _vanished_note(vanished)
+            + _restamped_note(restamped)
         ),
     )
 
@@ -2506,6 +2521,24 @@ def _vanished_note(vanished: int) -> str:
         f" ({vanished} file(s) from an earlier upload could not be re-read and are NOT in this "
         f"build; re-upload them if you still need them)"
     )
+
+
+def _restamped_note(restamped: int) -> str:
+    """Name the carried-forward files whose bytes CHANGED since the manifest pinned them.
+
+    The sibling of `_vanished_note`, and it exists because the pair was asymmetric: a drop was
+    counted and named, while a re-stamp silently rewrote the entry's `version_id`, `size` and
+    `sha256`. Nothing is lost and what gets served is correct, so this never blocked anything and
+    never will — which is the argument FOR saying it, not against. A change with no symptom is the
+    one the user cannot notice for themselves, and the corpus they last certified is no longer the
+    corpus they hold.
+
+    Phrased as an outcome rather than a warning, because re-reading an edited document is the right
+    thing to have done and needs no action from anyone.
+    """
+    if not restamped:
+        return ""
+    return f" ({restamped} file(s) changed since they were indexed and were re-read)"
 
 
 def _query_set_for(chunks: list[str]) -> tuple[list[dict[str, object]] | None, Exception | None]:

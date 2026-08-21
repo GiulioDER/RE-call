@@ -698,10 +698,34 @@ def test_a_carried_forward_file_that_still_exists_is_never_dropped(tmp_path) -> 
     assert _local_path("file://[unbalanced/x.md") is None, (
         "a malformed URI is an ANSWER, not a crash: raising here failed the entire upload"
     )
-    assert _local_path("file://nas1/share/docs/a.md") is not None, (
-        "a UNC share is an ordinary thing to have on the platform this targets, and the reader "
-        "carries the authority deliberately; calling it unreachable excluded the whole corpus"
-    )
+    # ⛔ **Gated on the platform, because the ANSWER here is platform-dependent and the INVARIANT
+    # is not.** `local_path_for` refuses a UNC authority on POSIX in its own vocabulary, through the
+    # `_unc_supported` seam, because `\\server\share` is a Windows concept. Asserting the Windows
+    # answer unconditionally passed on the machine this was written on and failed BOTH Linux jobs in
+    # CI, on 3.11 and 3.12 — the same way the sibling `os.stat` test broke, and the second time in
+    # one file that a Windows-only truth was pinned as if it were universal.
+    #
+    # What must hold on BOTH platforms is that the filter and the reader give ONE answer. The loop
+    # above compares them only when both are non-None, so on POSIX the UNC case slipped through
+    # entirely unchecked; pinning both ends to None is what closes that, and it makes this test
+    # cover the refusal branch rather than skip it.
+    from recall.manifest import _unc_supported
+
+    unc = "file://nas1/share/docs/a.md"
+    if _unc_supported():
+        assert _local_path(unc) is not None, (
+            "a UNC share is an ordinary thing to have on the platform this targets, and the reader "
+            "carries the authority deliberately; calling it unreachable excluded the whole corpus"
+        )
+    else:
+        assert _local_path(unc) is None, (
+            "a UNC authority is a Windows concept, and POSIX refuses it in the reader's own "
+            "vocabulary rather than letting an untyped URLError escape"
+        )
+        assert reader_says(unc, wide) is None, (
+            "and the READER must refuse it identically: one question, one answer, which is the "
+            "property this whole test exists to pin"
+        )
 
 
 def test_the_wizard_falls_back_to_the_floor_rather_than_refusing(tmp_path) -> None:
@@ -795,7 +819,7 @@ def test_a_carried_forward_file_is_judged_against_what_the_manifest_pinned(tmp_p
     # The edit happens after the manifest pinned the old bytes.
     edited.write_bytes(b"the user rewrote this document")
 
-    kept, roots, vanished = _carry_forward(objects)
+    kept, roots, vanished, _restamped = _carry_forward(objects)
 
     assert unchanged.as_uri() in kept, "an untouched file is carried forward as-is"
     assert kept[unchanged.as_uri()].sha256 == objects[unchanged.as_uri()].sha256
@@ -816,6 +840,93 @@ def test_a_carried_forward_file_is_judged_against_what_the_manifest_pinned(tmp_p
     assert vanished == 1, f"and it is COUNTED so the message can name it, got {vanished}"
 
     assert tmp_path.resolve() in roots, "the reader must be widened to reach what was carried"
+
+
+def test_a_restamped_file_is_counted_and_named_in_the_upload_message(tmp_path) -> None:
+    """⛔ **The drop is counted and the RE-STAMP was silent, which is the asymmetry.**
+
+    `_carry_forward` makes two different changes to what the corpus holds relative to what the user
+    last certified. A vanished object is named in the returned message; a re-stamped one changed the
+    manifest's `version_id`, `size` and `sha256` and said nothing. Nothing is lost either way and
+    the served content is correct, so this never blocked an upload — which is exactly why it needed
+    pinning rather than remembering: a silent difference has no symptom to notice.
+
+    This module's whole doctrine is that a corpus which quietly changed under the user is the
+    failure mode it has been fixed for repeatedly. "Never silent" has to cover the change as well as
+    the loss, or the doctrine is a preference.
+
+    Three things are asserted, because two of them can pass while the user still hears nothing:
+    the COUNT, the SENTENCE, and that both message sites actually append it.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from recall.manifest import ManifestObjectV1
+    from recall_mcp import service
+    from recall_mcp.service import _carry_forward, _restamped_note, _vanished_note
+
+    def entry_for(path, *, data: bytes) -> ManifestObjectV1:
+        digest = hashlib.sha256(data).hexdigest()
+        return ManifestObjectV1(path.as_uri(), digest, "text/markdown", len(data), digest)
+
+    unchanged = tmp_path / "unchanged.md"
+    unchanged.write_bytes(b"original")
+    edited = tmp_path / "edited.md"
+    edited.write_bytes(b"original")
+    absent = tmp_path / "absent.md"
+
+    objects = {
+        unchanged.as_uri(): entry_for(unchanged, data=b"original"),
+        edited.as_uri(): entry_for(edited, data=b"original"),
+        absent.as_uri(): entry_for(absent, data=b"original"),
+    }
+    edited.write_bytes(b"the user rewrote this document")
+
+    kept, _roots, vanished, restamped = _carry_forward(objects)
+
+    assert restamped == 1, (
+        f"only the EDITED file is a re-stamp, got {restamped}: an untouched file is carried "
+        f"unchanged and an absent one is a drop, which is already counted separately"
+    )
+    assert vanished == 1, "and the two counts stay distinct; they are different facts"
+    assert kept[edited.as_uri()].sha256 != objects[edited.as_uri()].sha256, (
+        "the count must track an entry that actually changed, not merely one that was looked at"
+    )
+
+    # The SENTENCE. Silent at zero, or every upload carries a nil report nobody reads.
+    assert _restamped_note(0) == "", "no re-stamp means no note"
+    note = _restamped_note(1)
+    assert "1 file(s) changed since they were indexed and were re-read" in note, (
+        f"the message must say what happened in words a user can act on, got {note!r}"
+    )
+
+    # ⛔ **The vanished wording is NOT touched.** It is the half that already worked, and a test
+    # that lets it drift turns one fix into two regressions.
+    assert _vanished_note(1) == (
+        " (1 file(s) from an earlier upload could not be re-read and are NOT in this "
+        "build; re-upload them if you still need them)"
+    )
+
+    # ⚠️ **STRUCTURAL, and for the same reason the sibling reclaim test is.** `generation_ingest`
+    # opens a database long before it builds either message, so driving both outcomes needs a fake
+    # manager. What a helper returning the right sentence does NOT prove is that anything appends
+    # it: a note nobody calls is precisely the silence being fixed. Both sites already call
+    # `_vanished_note`, so each one is checked for its sibling.
+    tree = ast.parse(textwrap.dedent(inspect.getsource(service.generation_ingest)))
+    called = [
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    assert called.count("_vanished_note") == 2, (
+        f"expected the two message sites this test is anchored to, found "
+        f"{called.count('_vanished_note')}"
+    )
+    assert called.count("_restamped_note") == called.count("_vanished_note"), (
+        "every message that names the drop must also name the re-stamp, or the asymmetry is back "
+        "on whichever outcome was missed"
+    )
 
 
 def test_a_file_that_cannot_be_read_is_kept_so_the_build_fails_loudly(tmp_path, monkeypatch) -> None:
@@ -847,15 +958,25 @@ def test_a_file_that_cannot_be_read_is_kept_so_the_build_fails_loudly(tmp_path, 
     real_stat = os.stat
     denied_calls: list[str] = []
 
+    # ⛔ **Resolved ONCE, before the patch is installed, and never inside `denied`.**
+    # `Path.resolve()` stats each prefix of the path on CPython 3.11 and 3.12, so calling it from
+    # inside the stub re-entered the stub on every one of those stats and recursed without bound:
+    # measured at 332 `os.stat` calls before `RecursionError` on 3.12.9. It does NOT recurse on
+    # 3.14, where `resolve()` no longer stats — so this passed on the machine it was written on and
+    # took down BOTH Linux jobs, on 3.11 and 3.12, with a traceback naming this line.
+    #
+    # The seam being tested is `Path.stat()`, not `resolve()`, so hoisting costs the test nothing.
+    target = str(unreadable.resolve())
+
     def denied(path, *args, **kwargs):
-        if str(path) == str(unreadable.resolve()):
+        if str(path) == target:
             denied_calls.append(str(path))
             raise PermissionError(13, "Access is denied")
         return real_stat(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "stat", denied)
 
-    kept, _roots, vanished = _carry_forward(objects)
+    kept, _roots, vanished, _restamped = _carry_forward(objects)
 
     # ⛔ **The seam must actually have been reached.** Measured on CPython 3.14.6: `Path.stat()`
     # honours a patched `os.stat` and `Path.is_file()` does NOT, because of a C fast path added in
