@@ -38,6 +38,46 @@ def test_the_package_and_the_project_declare_the_same_version() -> None:
     )
 
 
+def test_every_hand_maintained_copy_of_the_version_is_accounted_for() -> None:
+    """⚠️ **There are FOUR copies, not two, and I asserted two.**
+
+    The commit that added this file claimed the version "lived in two places". It lives in four:
+    `pyproject.toml`, `recall/__init__.py`, `server.json` (three times) and `CITATION.cff`. CI found
+    the two I had missed, because `tests/test_smoke.py` already guarded them — so the repository's
+    coverage was better than my assessment of it, and the genuinely unguarded one was
+    `recall/__init__.py`, which is exactly the one that slipped.
+
+    This test fails when a NEW copy appears that nothing checks. It does not re-assert what
+    `test_smoke.py` already covers; it asserts that the set of files carrying the version is the set
+    somebody has thought about.
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent
+    declared = _declared()
+    known = {"pyproject.toml", "recall/__init__.py", "server.json", "CITATION.cff", "uv.lock"}
+
+    carrying: set[str] = set()
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix not in {".py", ".json", ".toml", ".cff", ".lock"}:
+            continue
+        relative = path.relative_to(root).as_posix()
+        if any(part in {".git", "build", "dist", "__pycache__", ".venv"} for part in path.parts):
+            continue
+        if relative.startswith(("tests/", "docs/", "results/", "benchmarks/")):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        # The quoted or `version:` form only. A bare `0.9.7` inside prose is a historical
+        # measurement — `recall/wizard/stack.py` is full of them — and rewriting those would
+        # falsify a record of what was measured.
+        if f'"{declared}"' in text or f"version: {declared}" in text or f"=={declared}" in text:
+            carrying.add(relative)
+
+    assert carrying <= known, (
+        f"these files carry the version and nothing is known to check them: {sorted(carrying - known)}. "
+        "Add them to `known` here only after adding a test that asserts they agree; the point of "
+        "this list is that every copy has been thought about."
+    )
+
+
 def test_the_generated_dockerfile_pins_the_version_that_will_be_published() -> None:
     """The consequence, asserted rather than described.
 
