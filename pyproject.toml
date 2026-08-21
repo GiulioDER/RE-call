@@ -169,6 +169,13 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# The agent-benchmark fixtures are INPUT, not source. `benchmarks/agent_ab/workspaces/` holds the
+# repository states restored into each sandbox, and one of them is a lint control whose whole
+# design is that three files are lint-clean but unformatted while a fourth fails `ruff check`: the
+# tree is how the checker tells which tool the agent reached for. Linting them here would either
+# fail CI or force a fix that destroys the measurement. Excluded rather than noqa'd, because the
+# noqa comments would themselves be visible to the agent being measured.
+extend-exclude = ["benchmarks/agent_ab/workspaces", "benchmarks/agent_ab/oracles"]
 
 [tool.ruff.lint]
 # Ruff 0.16 expands the implicit default rule set from 59 rules to 413. RE-call keeps the previous

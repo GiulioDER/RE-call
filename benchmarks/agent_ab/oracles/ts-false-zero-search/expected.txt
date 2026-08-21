@@ -1,0 +1,6 @@
+benchmarks/remote_probe.py
+docs/OPERATIONS.md
+recall/remote_config.py
+scripts/deploy_worker.sh
+scripts/sync_memory.sh
+tests/test_remote_paths.py
