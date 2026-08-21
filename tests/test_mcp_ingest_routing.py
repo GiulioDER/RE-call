@@ -698,10 +698,34 @@ def test_a_carried_forward_file_that_still_exists_is_never_dropped(tmp_path) -> 
     assert _local_path("file://[unbalanced/x.md") is None, (
         "a malformed URI is an ANSWER, not a crash: raising here failed the entire upload"
     )
-    assert _local_path("file://nas1/share/docs/a.md") is not None, (
-        "a UNC share is an ordinary thing to have on the platform this targets, and the reader "
-        "carries the authority deliberately; calling it unreachable excluded the whole corpus"
-    )
+    # ⛔ **Gated on the platform, because the ANSWER here is platform-dependent and the INVARIANT
+    # is not.** `local_path_for` refuses a UNC authority on POSIX in its own vocabulary, through the
+    # `_unc_supported` seam, because `\\server\share` is a Windows concept. Asserting the Windows
+    # answer unconditionally passed on the machine this was written on and failed BOTH Linux jobs in
+    # CI, on 3.11 and 3.12 — the same way the sibling `os.stat` test broke, and the second time in
+    # one file that a Windows-only truth was pinned as if it were universal.
+    #
+    # What must hold on BOTH platforms is that the filter and the reader give ONE answer. The loop
+    # above compares them only when both are non-None, so on POSIX the UNC case slipped through
+    # entirely unchecked; pinning both ends to None is what closes that, and it makes this test
+    # cover the refusal branch rather than skip it.
+    from recall.manifest import _unc_supported
+
+    unc = "file://nas1/share/docs/a.md"
+    if _unc_supported():
+        assert _local_path(unc) is not None, (
+            "a UNC share is an ordinary thing to have on the platform this targets, and the reader "
+            "carries the authority deliberately; calling it unreachable excluded the whole corpus"
+        )
+    else:
+        assert _local_path(unc) is None, (
+            "a UNC authority is a Windows concept, and POSIX refuses it in the reader's own "
+            "vocabulary rather than letting an untyped URLError escape"
+        )
+        assert reader_says(unc, wide) is None, (
+            "and the READER must refuse it identically: one question, one answer, which is the "
+            "property this whole test exists to pin"
+        )
 
 
 def test_the_wizard_falls_back_to_the_floor_rather_than_refusing(tmp_path) -> None:
