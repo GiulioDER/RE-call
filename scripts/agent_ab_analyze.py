@@ -104,6 +104,12 @@ def main() -> int:
     trap_of: dict[str, str] = {row["task_id"]: row["trap_id"] for row in tasks}
 
     triggered: dict[tuple[str, str], bool] = {}
+    # A session that declined to answer avoids every detector trivially, so it is excluded from
+    # the rate rather than scored as clean. Counted per arm, because if one arm hedges more often
+    # that is itself a finding and must not hide inside the primary endpoint.
+    answered: dict[tuple[str, str], bool] = {
+        (s["task_id"], s["variant"]): bool(s.get("answered", True)) for s in trap_scores
+    }
     incidental = 0
     for score in trap_scores:
         base = score["task_id"].split("#")[0]
@@ -115,6 +121,13 @@ def main() -> int:
                 incidental += 1
     if incidental:
         print(f"note: {incidental} incidental trap hit(s) on tasks that did not target them")
+    for variant in (RECALL_ON, RECALL_OFF):
+        hedged = [t for (t, v), ok in answered.items() if v == variant and not ok]
+        if hedged:
+            print(
+                f"note: {len(hedged)} {variant} session(s) gave NO answer and are excluded from "
+                f"the trap rate (a non-answer avoids every detector trivially)"
+            )
 
     pairs = build_pairs(records)
     print(f"\nrun {args.run_id}: {len(pairs)} admitted pairs")
@@ -135,6 +148,8 @@ def main() -> int:
             for task in pairs
             if LOCUS.get(trap_of.get(task.split("#")[0], ""), "") == locus
             and (task, RECALL_ON) in triggered
+            and answered.get((task, RECALL_ON), True)
+            and answered.get((task, RECALL_OFF), True)
         ]
         if not selected:
             continue
@@ -163,6 +178,8 @@ def main() -> int:
                 if LOCUS.get(trap_of.get(base, ""), "") != locus:
                     continue
                 if (task, RECALL_ON) not in triggered:
+                    continue
+                if not (answered.get((task, RECALL_ON), True) and answered.get((task, RECALL_OFF), True)):
                     continue
                 by_task.setdefault(base, []).append(
                     (triggered[(task, RECALL_ON)], triggered.get((task, RECALL_OFF), False))

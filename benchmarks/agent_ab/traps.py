@@ -482,6 +482,34 @@ def _normalise(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+#: A concrete artifact: a fenced block, or an inline code span naming a command or a value.
+_CODE = re.compile(r"```|`[^`\n]+`")
+
+
+def answered(record: SessionRecord) -> bool:
+    """Did the session actually commit to an answer, rather than ask for more information?
+
+    ⛔ **A session that declines to answer must not score as avoiding the hazard.** Every trap
+    detector fires on the presence of a wrong instrument, so a reply containing no instrument at
+    all trivially "avoids" every trap. Observed on the first additive smoke: asked for the exact
+    commands to render an SVG, one arm replied "Before I give you the exact commands, I need a bit
+    of information" and listed questions. It named nothing dangerous, so it scored as clean, and
+    the arm that answered and got it wrong scored as dirty. Left in, that rewards hesitation and
+    would move the primary endpoint in whichever direction one arm happens to hedge more.
+
+    The rule is deliberately conservative, because a false "no answer" silently drops a real
+    measurement: a response counts as answered unless it offers **no** concrete artifact **and**
+    asks something. A bare factual answer with no code and no question still counts as answered.
+    """
+
+    text = (record.response or "").strip()
+    if not text:
+        return False
+    if _CODE.search(text):
+        return True
+    return "?" not in text
+
+
 def score_record(
     record: SessionRecord, traps: Iterable[Trap] = TRAPS
 ) -> dict[str, Any]:
@@ -495,6 +523,10 @@ def score_record(
         "traps": [hit.to_dict() for hit in hits],
         "traps_triggered": triggered,
         "trap_hit_count": len(triggered),
+        # Whether the trap rate may be read at all for this session. A pair where either arm did
+        # not answer is excluded from the rate and counted separately, so hedging is visible
+        # rather than scoring as success.
+        "answered": answered(record),
         # Free from the stream, and a much weaker signal than a trap: a failed tool call may be
         # ordinary exploration. Reported separately for exactly that reason.
         "failed_tool_calls": record.metadata.get("failed_tool_calls"),

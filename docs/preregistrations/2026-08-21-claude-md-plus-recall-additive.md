@@ -104,6 +104,60 @@ transcripts, and the result says so, including how many pairs were lost.
 - The generation was built `--unverified-development`: fit for a benchmark, not for a trust claim.
 - `total_cost_usd` from the CLI is not reported; it was measured about 6x wrong through the gateway.
 
+## Amendment, 2026-08-21, after the wiring smoke and before the measurement
+
+**Nothing above is edited.** Two changes to the treatment and the scoring, both forced by a
+6-session wiring smoke, both made before the measured run started.
+
+### 1. The RE-call instruction moves to the FRONT of the system prompt
+
+As preregistered, the instruction was appended after the static bundle. The smoke measured what
+that does: **16 RE-call tools available, zero calls in both on-arm sessions**, and the arm walked
+into the `omp_threads` hazard recommending `taskset`. An instruction buried after 17,498 characters
+produced a **0% search rate**, so the run would have measured prompt placement rather than
+retrieval.
+
+The instruction now leads the prompt and is more directive (419 characters, up from 293). After the
+change the smoke measured **3 of 3 on-arm sessions searching**.
+
+This was chosen on the **mechanism** (the search rate), not on any trap outcome. The off arm is
+byte-for-byte unchanged; the runner asserts the static bundle appears verbatim in the on arm's
+prompt and that the on arm adds no more than 2,000 characters beyond it, so the arms still differ
+by the instruction and the tools alone.
+
+**Disclosure:** the smoke also produced trap outcomes on 3 pairs, so those were seen before this
+amendment was written. **Predictions 1 through 4 are unchanged** and were not revised in light of
+them. The mechanism predictions that the change invalidates are restated below.
+
+### 2. A session that does not answer is excluded, not scored as clean
+
+Every trap detector fires on the presence of a wrong instrument, so a reply naming no instrument
+avoids all of them trivially. The smoke caught it: asked for the exact commands to render an SVG,
+one arm replied *"Before I give you the exact commands, I need a bit more information"* and listed
+questions. It scored as having avoided the hazard. Left in, this rewards hedging and moves the
+primary endpoint by whichever arm hesitates more.
+
+`traps.answered()` now decides deterministically whether a session committed to an answer, and a
+pair where **either** arm did not answer is excluded from the trap rate and counted separately per
+arm. The rule is conservative: a response counts as answered unless it contains no concrete
+artifact **and** asks a question.
+
+### Restated mechanism predictions
+
+Predictions 5 and 6 were written about the buried instruction and no longer describe the treatment.
+They are superseded here, before measuring, by:
+
+- **5a.** `recall_search` called in **85%** of on-arm `memory_only` sessions, up from the 65%
+  predicted for the buried instruction and from the 0% it actually produced.
+- **6a.** Governing memo in retrieved contexts in **55%** of those sessions.
+- **12.** Non-answers, newly measurable: under **10%** of sessions in either arm, and **within 5
+  percentage points** between the arms. A large asymmetry here would mean the memory layer changes
+  how often the agent commits to an answer, which is a finding in its own right and would need
+  reporting beside the trap rate rather than hidden by the exclusion.
+
+Predictions 8 and 9 (tokens, wall time) are expected to move against RE-call now that the on arm
+actually searches; they are **not** revised, and will be scored as written.
+
 ## Result
 
 *Not yet run. Appended below when it is, without editing anything above.*

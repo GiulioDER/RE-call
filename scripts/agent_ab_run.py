@@ -235,14 +235,25 @@ async def main() -> int:
             # rather than assumed: the on arm's prompt must begin with the off arm's, byte for
             # byte. A silent divergence here would look like a treatment effect.
             static_text = static_prompt.read_text(encoding="utf-8").rstrip()
-            if not combined.read_text(encoding="utf-8").startswith(static_text):
+            combined_text = combined.read_text(encoding="utf-8")
+            # Containment, not prefix: the RE-call instruction now leads, because buried at the
+            # end after 17.5k characters it produced a 0% search rate. What must still hold is
+            # that the off arm's bundle appears in the on arm's prompt UNCHANGED, so the arms
+            # differ by the instruction and the tools and nothing else.
+            if static_text not in combined_text:
                 raise SystemExit(
-                    "the additive arm's prompt does not start with the static bundle the off arm "
-                    "receives; the arms would differ by more than RE-call"
+                    "the additive arm's prompt does not contain the static bundle the off arm "
+                    "receives verbatim; the arms would differ by more than RE-call"
+                )
+            extra = len(combined_text) - len(static_text)
+            if extra > 2000:
+                raise SystemExit(
+                    f"the additive arm's prompt adds {extra} characters beyond the static bundle; "
+                    f"that is too large to be the tool instruction and would confound the arms"
                 )
             print(
                 f"additive arms: static {len(static_text)} chars in BOTH; "
-                f"on arm adds RE-call + {len(combined.read_text(encoding='utf-8')) - len(static_text)} chars"
+                f"on arm adds RE-call + {extra} chars, instruction FIRST"
             )
         elif isinstance(source, StdioRecallSpec):
             recall_spec = ArmSpec.recall_stdio(

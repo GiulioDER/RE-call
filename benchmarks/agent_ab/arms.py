@@ -62,8 +62,10 @@ DENIED_TOOLS: tuple[str, ...] = ("Bash(docker:*)", "Bash(docker-compose:*)")
 #: here so a reader can see exactly how large the nudge is.
 RECALL_SYSTEM_PROMPT = (
     "You have a persistent project memory available through the {server} MCP server. "
-    "Search it with {tool} before relying on assumptions about this repository's conventions, "
-    "tooling, or history. It holds decisions and hazards that are not derivable from the code."
+    "Search it with {tool} BEFORE answering any question about this repository's conventions, "
+    "tooling, commands, or history, and before recommending a command you have not verified "
+    "against it. It holds decisions and hazards that are not derivable from the code, and the "
+    "notes below do not contain all of them."
 )
 
 
@@ -282,7 +284,17 @@ def write_claude_md_recall_prompt(
     instruction = RECALL_SYSTEM_PROMPT.format(
         server=server_name, tool=f"{tool_prefix}recall_search"
     )
-    target.write_text(static.rstrip() + "\n\n" + instruction + "\n", encoding="utf-8")
+    # ⚠️ The instruction goes FIRST, ahead of the static bundle, and this is load-bearing.
+    #
+    # Appended last it sits after 17,498 characters of CLAUDE.md, and the first additive smoke
+    # measured what that does: 16 RE-call tools available, **zero** calls in both sessions, and
+    # the arm walked into the omp_threads hazard recommending `taskset`. A tool the agent never
+    # invokes measures prompt placement, not retrieval.
+    #
+    # Chosen on the MECHANISM (a 0% search rate), before any trap outcome was looked at, and it
+    # matches what somebody installing a memory layer actually does: the setup line goes at the
+    # top of CLAUDE.md, not buried at the bottom. The change is recorded in the preregistration.
+    target.write_text(instruction.rstrip() + "\n\n" + static.rstrip() + "\n", encoding="utf-8")
     return target
 
 
