@@ -68,6 +68,14 @@ def _dsn_passwords(dsn: str) -> tuple[str, ...]:
         uri_password = None
     if uri_password:
         found.append(uri_password)
+        # ⛔ **The DECODED form too.** `urlsplit` does not percent-decode and libpq does, so a
+        # password containing a reserved character (which MUST be encoded in a URI DSN, making this
+        # the ordinary case rather than an edge one) was scrubbed in a spelling that never appears
+        # in an error message. Measured: `postgresql://u:p%40ss@h/db` scrubbed `p%40ss` while the
+        # text carried `p@ss`. Three auditors found this independently.
+        decoded = unquote(uri_password)
+        if decoded != uri_password:
+            found.append(decoded)
 
     # The keyword form. libpq allows single-quoted values with backslash escapes, so a password
     # containing a space or a quote is reachable and must still be matched in full.
@@ -98,6 +106,14 @@ def scrub_dsn_secrets(text: str, *dsns: str) -> str:
     rather than in one caller, because it was written twice before this: once in
     `recall/wizard/headless.py` and once, nearly, in the preflight.
 
+    ⚠️ **A password shorter than 4 characters is NOT removed.** A blind `str.replace` of a
+    one-character password rewrote every occurrence of that letter: measured, a password of `a`
+    turned "cannot connect to database at host a" into
+    "c***nnot connect to d***t***b***se ***t host ***". An unreadable error is its own kind of
+    failure, and the callers put this on screen. So the guarantee below has a floor, and it is
+    stated HERE rather than in a comment inside the loop, because a caller who needs an
+    unconditional guarantee must be able to see that this is not one.
+
     ⛔ **Both DSN forms, because libpq accepts both and the installer's field is free text.**
     This handled only the URI form: `urlsplit("host=db password=s3cret dbname=recall").password` is
     `None`, so a keyword/value DSN — which psycopg accepts, and which is what somebody pasting from
@@ -108,6 +124,14 @@ def scrub_dsn_secrets(text: str, *dsns: str) -> str:
     """
     for dsn in dsns:
         for password in _dsn_passwords(dsn):
+            # ⚠️ **Short passwords are skipped, deliberately.** A blind `str.replace` of a
+            # one-character password rewrote every occurrence of that letter: measured, a password
+            # of `a` turned "cannot connect to database at host a" into
+            # "c***nnot connect to d***t***b***se ***t host ***". An unreadable error is its own
+            # kind of failure, and a password that short is not the secret worth protecting at the
+            # cost of every diagnosis the user needs.
+            if len(password) < 4:
+                continue
             text = text.replace(password, "***")
     return text
 

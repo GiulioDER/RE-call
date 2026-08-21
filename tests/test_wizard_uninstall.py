@@ -8,6 +8,7 @@ below that begins "never" or "keeps" is the more important half of this file.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -938,3 +939,202 @@ def test_a_stack_file_that_is_not_an_object_is_refused_rather_than_guessed(tmp_p
         json.dumps({"name": PROJECT, "services": {"db": {}}}), encoding="utf-8"
     )
     assert plan_uninstall(data_root=data_root, runner=_docker()).project_name == PROJECT
+
+
+def test_a_missing_stack_file_at_execute_time_does_not_crash(tmp_path: Path) -> None:
+    """⛔ **FIX-04.** `compose_failed` was bound only inside `if compose_path.exists():` and read
+    unconditionally, so `execute` raised `UnboundLocalError` when the stack file was gone.
+
+    Three auditors reproduced it. It is reachable as a TOCTOU: `uninstall_main` plans, then blocks
+    on a confirmation dialog for an unbounded time, then calls `execute`. It also makes a repeat run
+    non-idempotent, because the first successful run deletes that very file.
+
+    The docstring one line above says "A partial uninstall must not abort partway", and an
+    `UnboundLocalError` before the report is returned is the sharpest possible violation of it.
+    """
+    data_root = _install(tmp_path)
+    plan = plan_uninstall(data_root=data_root, runner=_docker())
+    (data_root / COMPOSE_NAME).unlink()
+
+    report = execute(plan, runner=_docker(), claude_config_path=tmp_path / "claude.json")
+    assert report is not None, "a vanished stack file is a fact to report, not a crash"
+
+
+def test_a_failed_unregistration_keeps_the_files_a_retry_needs(tmp_path: Path) -> None:
+    """⛔ **FIX-03.** `teardown_failed` counted only failed CONTAINER and VOLUME items.
+
+    So a failed MCP unregistration deleted the stack file, `wizard.json` and the handoff file
+    anyway, and the retry became impossible: `plan_uninstall` refuses without the stack file, and
+    `project_root` (the only thing that can find the stale `~/.claude.json` entry) lived in
+    `wizard.json`. The comment above that line claims the opposite in so many words.
+    """
+    project_root = tmp_path / "work"
+    project_root.mkdir()
+    data_root = _install(tmp_path, project_root=project_root)
+    config_path = tmp_path / "claude.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "projects": {
+                    str(project_root): {
+                        "mcpServers": {"recall": {"command": "python", "cwd": str(project_root)}}
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    plan = plan_uninstall(data_root=data_root, claude_config_path=config_path, runner=_docker())
+    assert plan.removing("registration"), "the fixture must actually plan an unregistration"
+
+    # Make the rewrite fail the way a locked or unreadable config would.
+    config_path.unlink()
+
+    report = execute(plan, runner=_docker(), claude_config_path=config_path)
+
+    assert any(item.kind == "registration" for item, _reason in report.failed)
+    assert (data_root / COMPOSE_NAME).exists(), (
+        "a failed unregistration must keep the stack file: without it plan_uninstall refuses and "
+        "the retry that would finish the job cannot even be built"
+    )
+    assert (data_root / "wizard.json").exists(), (
+        "and wizard.json, which is the only record of project_root and therefore the only way to "
+        "find the ~/.claude.json entry that was just left behind"
+    )
+
+
+def test_a_stack_whose_volumes_are_all_external_can_still_be_uninstalled(tmp_path: Path) -> None:
+    """⛔ **FIX-05.** The external-volume exclusion defeated the plan/execute agreement guard.
+
+    With every declared volume `external`, the plan holds no volume item, so
+    `purge_data != bool(plan.removing("volume"))` was true and `execute` refused the whole
+    uninstall before removing anything. `recall/desktop/main.py` calls `execute` outside its
+    handler, so in the frozen GUI that is a traceback after the user already confirmed the plan.
+
+    The guard is meant to catch a caller that widens the removal between plan and execute. It must
+    compare INTENT, not the emptiness of a list that is legitimately empty.
+    """
+    data_root = _install(tmp_path)
+    (data_root / COMPOSE_NAME).write_text(
+        json.dumps(
+            {
+                "name": PROJECT,
+                "services": {"db": {}},
+                "volumes": {"pgdata": {"external": True, "name": f"{PROJECT}_pgdata"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plan = plan_uninstall(data_root=data_root, runner=_docker(), purge_data=True)
+    assert plan.removing("volume") == (), "an external volume is never ours to remove"
+
+    report = execute(
+        plan, runner=_docker(), purge_data=True, claude_config_path=tmp_path / "claude.json"
+    )
+    assert not (data_root / COMPOSE_NAME).exists(), (
+        "the uninstall must proceed: there is simply no volume of ours to purge"
+    )
+    assert not any(item.kind == "volume" for item in report.removed), (
+        "and it must not claim to have removed somebody else's volume"
+    )
+
+    # Control: the guard still fires on the case it exists for, a caller widening the removal.
+    other = _install(tmp_path / "second")
+    widened = plan_uninstall(data_root=other, runner=_docker(), purge_data=False)
+    with pytest.raises(UninstallRefusal):
+        execute(widened, runner=_docker(), purge_data=True, claude_config_path=tmp_path / "c.json")
+
+
+def test_the_handoff_file_is_resolved_through_the_writers_own_path(tmp_path: Path, monkeypatch) -> None:
+    """⛔ **FIX-10.** Every profile test injected `profile_path=`, so the DEFAULT branch was unpinned.
+
+    An auditor pointed that default back at `data_root / "runtime.json"` — the original bug, where
+    the uninstaller looked for the handoff file in the wrong directory and left it behind on every
+    Windows uninstall — and 32 tests stayed green. The docstring on the fix says the old unit test
+    "fabricated the file under `data_root`, which is precisely why the mismatch was invisible"; the
+    replacement inherited the same blind spot from the other side.
+
+    Injecting the writer's own function rather than a path is what pins the delegation without
+    touching the developer's real %APPDATA%.
+    """
+    import recall.desktop.profiles as profiles
+
+    data_root = _install(tmp_path)
+    real_profile = tmp_path / "appdata" / "RE-call" / "runtime.json"
+    real_profile.parent.mkdir(parents=True)
+    real_profile.write_text(
+        json.dumps({"compose_file": str(data_root / COMPOSE_NAME)}), encoding="utf-8"
+    )
+    # A decoy in the place the ORIGINAL bug looked, which must never be chosen.
+    (data_root / "runtime.json").write_text(
+        json.dumps({"compose_file": str(data_root / COMPOSE_NAME)}), encoding="utf-8"
+    )
+    monkeypatch.setattr(profiles, "profile_path", lambda: real_profile)
+
+    plan = plan_uninstall(data_root=data_root, runner=_docker())
+    planned = [item.name for item in plan.removing("file")]
+
+    assert str(real_profile) in planned, (
+        "the handoff file must be resolved through the writer's own path function, which is the "
+        "only thing that knows it lives in the user config directory"
+    )
+    assert str(data_root / "runtime.json") not in planned, (
+        "and never guessed at relative to data_root, which is where it was looked for when every "
+        "Windows uninstall left it behind"
+    )
+
+
+def test_an_unwritable_backup_refuses_rather_than_writing_it_unsafely(tmp_path: Path, monkeypatch) -> None:
+    """⛔ **FIX-19b. The fallback defeated the protection instead of degrading from it.**
+
+    The backup is created with `O_EXCL | O_NOFOLLOW` at 0600 because `~/.claude.json` carries every
+    MCP bearer token and its backup name is predictable to the second. But the `except OSError`
+    beneath that used to fall back to `write_text`, which FOLLOWS a symlink — and `O_NOFOLLOW`
+    reports a planted link by raising `ELOOP`, which is an `OSError`. So the single case the
+    exclusive open exists to catch routed straight into the unsafe write. A reviewer found it in
+    the error path of the fix itself.
+
+    Refusing is the right degradation: the caller records a failure, the files a retry needs are
+    kept, and the config the backup would have protected is left untouched.
+    """
+    project_root = tmp_path / "work"
+    project_root.mkdir()
+    data_root = _install(tmp_path, project_root=project_root)
+    config_path = tmp_path / "claude.json"
+    before = json.dumps(
+        {
+            "projects": {
+                str(project_root): {
+                    "mcpServers": {"recall": {"command": "python", "cwd": str(project_root)}}
+                }
+            }
+        }
+    )
+    config_path.write_text(before, encoding="utf-8")
+
+    real_open = os.open
+
+    def refuse_backup(path, flags, mode=0o777, **kwargs):
+        if ".recall-backup-" in str(path):
+            raise OSError(40, "Too many levels of symbolic links")
+        return real_open(path, flags, mode, **kwargs)
+
+    monkeypatch.setattr(os, "open", refuse_backup)
+
+    plan = plan_uninstall(data_root=data_root, claude_config_path=config_path, runner=_docker())
+    report = execute(plan, runner=_docker(), claude_config_path=config_path)
+
+    assert config_path.read_text(encoding="utf-8") == before, (
+        "the config must be untouched: rewriting it without a backup is the one thing the backup "
+        "exists to prevent, and writing the backup through a symlink is worse than not writing it"
+    )
+    assert any(item.kind == "registration" for item, _reason in report.failed), (
+        "and the refusal must be REPORTED, not swallowed"
+    )
+    reason = next(r for item, r in report.failed if item.kind == "registration")
+    assert "backup" in reason.lower() and "nothing was changed" in reason.lower(), reason
+
+    assert not [
+        path for path in config_path.parent.iterdir() if ".recall-backup-" in path.name
+    ], "and no partial or unsafe backup is left behind"

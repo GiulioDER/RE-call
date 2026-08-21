@@ -755,6 +755,26 @@ def test_both_dsn_forms_have_their_password_scrubbed() -> None:
         == "error: ***"
     )
 
+    # ⛔ **FIX-13: the DECODED form too.** `urlsplit` does not percent-decode and libpq does, so a
+    # password containing a reserved character — which MUST be encoded in a URI DSN, making this the
+    # ordinary case rather than an edge one — was scrubbed in a spelling that never appears in an
+    # error message. Three auditors found this independently.
+    assert (
+        scrub_dsn_secrets("rejected for p@ss:word", "postgresql://u:p%40ss%3Aword@h/db")
+        == "rejected for ***"
+    )
+    # And the encoded spelling is still scrubbed, in case the text carries the DSN verbatim.
+    assert "p%40ss%3Aword" not in scrub_dsn_secrets(
+        "dsn postgresql://u:p%40ss%3Aword@h/db failed", "postgresql://u:p%40ss%3Aword@h/db"
+    )
+
+    # ⚠️ A very short password is NOT scrubbed, deliberately: a blind replace of a one-character
+    # password rewrote every occurrence of that letter and destroyed the diagnosis. Measured, a
+    # password of `a` turned "cannot connect to database at host a" into
+    # "c***nnot connect to d***t***b***se ***t host ***".
+    readable = scrub_dsn_secrets("cannot connect to database at host a", "host=h password=a")
+    assert readable == "cannot connect to database at host a"
+
     # It must never raise, on any input: this runs while REPORTING an error, and the malformed-DSN
     # case is the one that produced the leak it exists to stop.
     assert scrub_dsn_secrets("weird [dsn", "postgresql://[unbalanced") == "weird [dsn"
@@ -791,3 +811,64 @@ def test_a_scrubbed_message_still_carries_its_diagnosis(monkeypatch: pytest.Monk
     suppressed = _scrubbed(message, dsn)
     assert "hunter2" not in suppressed
     assert "could not be displayed safely" in suppressed
+
+
+def test_the_selftest_fails_when_a_native_dependency_is_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """⛔ **FIX-12.** The AST test could not tell a reachable import from dead code.
+
+    An auditor wrapped the three native imports in `if False:` and 27 tests stayed green. Worse,
+    CPython emits no `IMPORT_NAME` for an elided block, so PyInstaller's modulegraph would drop the
+    payload too: green CI, a bundle with no ONNX runtime, and a crash on the first Install click,
+    which is the precise outcome the selftest exists to prevent.
+
+    This makes the import fail and asserts the selftest says so and exits non-zero.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+
+    import builtins
+
+    from recall.desktop import main as desktop_main
+
+    real_import = builtins.__import__
+
+    def missing_onnx(name, *args, **kwargs):
+        if name == "onnxruntime":
+            raise ModuleNotFoundError("No module named 'onnxruntime'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_onnx)
+
+    assert desktop_main._selftest() == 1, (
+        "a bundle missing a native dependency must FAIL the selftest, not merely mention it"
+    )
+
+
+def test_an_unusable_engine_fails_the_selftest_rather_than_being_mentioned(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⛔ **FIX-07. The check could not fail in ANY environment.**
+
+    With no model cache it printed a skip; with a cache present the `except` printed to stderr and
+    appended nothing to `failures`; and `dim <= 0`, the only thing that could fail, is something
+    `FastEmbedEmbedder` cannot produce. So the workflow step gained zero coverage while its log line
+    read as though a check had run. That is the "a skip must never read as a pass" rule broken by
+    the code a few lines below the comment stating it.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+
+    from recall.desktop import main as desktop_main
+
+    def unusable(name: str):
+        raise RuntimeError("the ONNX runtime data files are not in this bundle")
+
+    monkeypatch.setattr(desktop_main, "_model_cache_exists", lambda: True)
+    monkeypatch.setattr("recall.embeddings.resolve_embedder", unusable)
+
+    assert desktop_main._selftest() == 1, (
+        "a cache that is present and unusable is a BUNDLE problem, because the bundle supplies the "
+        "runtime; reporting it to stderr and exiting 0 is a check that cannot fail"
+    )

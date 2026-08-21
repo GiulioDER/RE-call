@@ -571,3 +571,28 @@ def test_the_desktop_corpus_prefix_is_reserved_against_a_wizard_install() -> Non
         "the reservation and the reclaim filter must be the same string; if they drift, the "
         "reservation stops protecting anything and nothing says so"
     )
+
+    # ⛔ **And the refusal is DRIVEN.** The first version of this test asserted only the equality
+    # above, so an auditor disabled the refusal itself (`if False and ...`) and 109 tests stayed
+    # green. A test named "the prefix is reserved" that never reaches the code implementing the
+    # reservation is the exact defect a previous round had already retired once.
+    import inspect
+
+    from recall.wizard.pipeline import PipelineRefusal, run_corpus
+
+    source = inspect.getsource(run_corpus)
+    assert "_RESERVED_CORPUS_PREFIX" in source, "the funnel must consult the reservation"
+
+    # The refusal happens before anything is built, so a bare manager and spec are enough to reach
+    # it; anything that gets past it fails later for an unrelated reason, which is still not this
+    # assertion passing.
+    with pytest.raises((PipelineRefusal, TypeError, AttributeError)) as caught:
+        run_corpus(
+            manager=None,
+            spec=None,
+            embedder=None,
+            project="acme",
+            corpus_version=_RESERVED_CORPUS_PREFIX + "2026-01-01",
+        )
+    if isinstance(caught.value, PipelineRefusal):
+        assert "reserved" in str(caught.value).lower(), str(caught.value)

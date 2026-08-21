@@ -31,6 +31,7 @@ worse than asking.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from contextlib import suppress
@@ -103,6 +104,10 @@ class UninstallPlan:
     items: tuple[Removable, ...]
     #: The project whose MCP registrations this install wrote, if the config named one.
     project_root: Path | None = None
+    #: Whether this plan was built to purge the index volumes. Recorded rather than inferred from
+    #: the item list: a plan that purges but finds every declared volume `external` legitimately
+    #: lists none, and inferring intent from that emptiness refused the whole uninstall.
+    purge_data: bool = False
 
     def removing(self, kind: RemovableKind | None = None) -> tuple[Removable, ...]:
         return tuple(
@@ -466,6 +471,7 @@ def plan_uninstall(
         project_name=project_name,
         items=tuple(items),
         project_root=project_root,
+        purge_data=purge_data,
     )
 
 
@@ -489,8 +495,17 @@ def execute(
     ⛔ **Pass the same `purge_data` to `plan_uninstall`.** The plan is what the person read and
     agreed to; executing a wider removal than the one displayed is the failure this whole
     plan-then-do split exists to prevent. Mismatched values are refused rather than reconciled.
+
+    🔁 **The guard compares the plan's own INTENT, not whether it listed any volume.** It used to
+    test `purge_data != bool(plan.removing("volume"))`, and the external-volume exclusion made that
+    wrong: a stack whose declared volumes are all `external` has nothing this uninstaller may
+    remove, so a `--purge-data` plan legitimately lists zero volumes and the guard refused the
+    entire uninstall. `recall/desktop/main.py` calls this outside its handler, so in the frozen GUI
+    that surfaced as a traceback after the person had already confirmed the plan. Three auditors
+    reproduced it. An empty list is not disagreement; a different answer to "were we asked to
+    purge?" is.
     """
-    if purge_data != bool(plan.removing("volume")):
+    if purge_data != plan.purge_data:
         raise UninstallRefusal(
             "the plan shown and the removal asked for disagree about the index volume. The plan is "
             "what the person agreed to, so pass the same purge_data to plan_uninstall and execute "
@@ -500,6 +515,13 @@ def execute(
     report = UninstallReport()
 
     compose_path = plan.data_root / COMPOSE_NAME
+    # ⛔ **Bound before the branch, because it is READ after it.** This was assigned only inside
+    # the `exists()` branch and read unconditionally below, so `execute` raised `UnboundLocalError`
+    # when the stack file was gone — which is reachable as a TOCTOU (plan, then a confirmation
+    # dialog with no time bound, then execute) and makes a repeat run non-idempotent, since the
+    # first successful run deletes that very file. Three auditors reproduced it, against a docstring
+    # promising that a partial uninstall never aborts partway.
+    compose_failed = False
     if compose_path.exists():
         command = [
             "docker",
@@ -585,9 +607,14 @@ def execute(
     #
     # The retry removes all three together once the teardown succeeds, which is the state in which
     # removing any of them is correct.
-    teardown_failed = compose_failed or any(
-        item.kind in {"container", "volume"} for item, _reason in report.failed
-    )
+    # 🔁 **Any failure at all, not only a container or volume failure.** This filtered on
+    # `kind in {"container", "volume"}`, so a failed MCP unregistration deleted the stack file,
+    # `wizard.json` and the handoff file anyway — and then the retry was impossible, because
+    # `plan_uninstall` refuses without the stack file and `project_root`, the only thing that can
+    # find the `~/.claude.json` entry just left behind, lived in `wizard.json`. The comment below
+    # already claimed these files are kept "so the uninstall can be retried"; the predicate did not
+    # cover the failure that most needs a retry.
+    teardown_failed = compose_failed or bool(report.failed)
     for item in plan.removing("file"):
         path = Path(item.name)
         keep_for_retry = path.name in {COMPOSE_NAME, "wizard.json"} or item.detail == _PROFILE_DETAIL
@@ -654,19 +681,46 @@ def _unregister(names: Sequence[str], project_root: Path, config_path: Path) -> 
         # already-rewritten content, at the moment it is most likely to be wanted. `claude_code.py`
         # already had the right pattern and this now matches it: a timestamped name, never reused.
         #
-        # `copy2` and not `write_text`: this file carries bearer tokens, and a fresh `write_text`
-        # creates it at the umask default, leaving a world-readable copy of every credential beside
-        # a 0600 original. The same argument was already made five lines down for the temp file.
+        # 🔁 This used to say "`copy2` and not `write_text`", and the `os.open` rewrite below
+        # falsified it: the backup is now written through a descriptor opened at 0600, so the mode
+        # is set at CREATION rather than narrowed after the credential bytes are already on disk,
+        # which is stronger than what `copy2` gave. Two consequences worth stating rather than
+        # discovering: the copy is no longer byte-identical, because it is written with `\n` and a
+        # CRLF original is normalised, and `copy2`'s mtime preservation is gone. The content is
+        # exactly the text the rewrite below is derived from.
         backup = _backup_path(config_path)
         try:
-            shutil.copy2(config_path, backup)
-        except OSError:
-            # A backup that cannot be written is not a reason to refuse the uninstall, but it IS a
-            # reason not to pretend one exists: fall back to the content already read, and still
-            # narrow the mode rather than leaving it at the umask default.
-            backup.write_text(original, encoding="utf-8", newline="\n")
-            with suppress(OSError, NotImplementedError):
-                shutil.copymode(config_path, backup)
+            # ⛔ **`O_EXCL | O_NOFOLLOW` at 0600, not `copy2` after an `exists()` test.** The name is
+            # predictable to the second, and `copy2` opens the destination with plain `open(...,
+            # "wb")`: it follows a symlink planted in the window between the check and the copy, and
+            # it creates at the umask default before any mode is narrowed. This file holds every
+            # bearer token the MCP client tracks, so it is created private rather than made private.
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(backup, flags, 0o600)
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                    handle.write(original)
+            except BaseException:
+                with suppress(OSError):
+                    os.unlink(backup)
+                raise
+        except OSError as exc:
+            # ⛔ **No fallback that FOLLOWS a symlink.** This used to fall back to
+            # `backup.write_text(...)`, and that defeated the protection above rather than degrading
+            # from it: `O_NOFOLLOW` reports a planted symlink by raising `ELOOP`, which is an
+            # `OSError`, so the one case the exclusive open exists to catch routed straight into a
+            # write that follows the link — putting every bearer token in this file wherever the
+            # link pointed. A reviewer found this in the error path of my own fix.
+            #
+            # Refusing is the right degradation here, and it is what the caller already understands:
+            # `_unregister` returns a reason, `execute` records it as a failed registration, and
+            # (since the teardown-failure fix) the files a retry needs are then kept. The rewrite
+            # does NOT proceed, so the config the backup would have protected is untouched.
+            return (
+                f"cannot create a private backup of {config_path}: {type(exc).__name__}: {exc}. "
+                "Refusing to rewrite it, because that file carries access tokens and the backup is "
+                "the only way back. Nothing was changed."
+            )
         temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
         # `replace` installs a fresh inode at the umask default, discarding a 0600 the user or the
         # client may have set on a file that carries bearer tokens. Copy the mode across first.

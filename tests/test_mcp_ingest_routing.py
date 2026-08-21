@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import textwrap
 
+import hashlib
+
 import pytest
 
 from types import SimpleNamespace
@@ -296,7 +298,10 @@ def test_the_upload_uses_the_installers_query_set_generator() -> None:
 
     import recall_mcp.service as service
 
-    source = inspect.getsource(service._certify_upload)
+    # The ladder moved into `_query_set_for` so it could be driven rather than read; the
+    # property this test is about — the upload uses the INSTALLER's generator, not a second
+    # implementation — is unchanged.
+    source = inspect.getsource(service._query_set_for)
     assert "from recall.wizard.queryset import" in source
     assert "generate_offline" in source and "canonicalize" in source
     # The NAME appears, in the docstring explaining why it is not used. The CALL must not.
@@ -699,52 +704,6 @@ def test_a_carried_forward_file_that_still_exists_is_never_dropped(tmp_path) -> 
     )
 
 
-def test_the_certification_asks_for_headroom_before_it_asks_for_the_floor() -> None:
-    """⛔ Asking for the FLOOR refuses corpora that are genuinely separable.
-
-    Certification tests the LOWER bound of the Hanley-McNeil interval, and that bound tightens as
-    the sample grows, so the floor is a certification threshold and not a generation target. The
-    numbers below are executed rather than quoted, because the whole argument for the ladder rests
-    on them and a quoted number in a comment is one nobody re-checks:
-
-        separability_interval(0.95, 20, 20) -> lower ~0.8786   refused (bar is 0.90)
-        separability_interval(0.95, 40, 40) -> lower ~0.9001   certified
-
-    So every corpus whose true separability lies in roughly [0.950, 0.962) certifies through the
-    installer and was refused by the desktop upload, leaving it READY and never live. The fix
-    shipped with no test at all, so a revert to `per_class=MIN_PER_CLASS` rebuilt that wall
-    silently.
-    """
-    import ast
-    import inspect
-    import textwrap
-
-    import recall_mcp.service as service
-    from recall.calibration import separability_interval
-    from recall.wizard.queryset import DEFAULT_PER_CLASS, MIN_PER_CLASS
-
-    # The measured premise. If this stops holding, the ladder is arguing from a fact that changed.
-    at_floor = separability_interval(0.95, MIN_PER_CLASS, MIN_PER_CLASS)[0]
-    at_headroom = separability_interval(0.95, DEFAULT_PER_CLASS, DEFAULT_PER_CLASS)[0]
-    assert at_floor < 0.90 <= at_headroom, (
-        f"the ladder exists because the floor's lower bound ({at_floor:.4f}) misses the 0.90 bar "
-        f"that the headroom's ({at_headroom:.4f}) clears; if that is no longer true, the ladder is "
-        "arguing from a fact that has changed"
-    )
-
-    # And the order it actually climbs them in. Structural, because `_certify_upload` opens a
-    # database before it reaches the ladder; the behavioural twin is the wizard's, below.
-    tree = ast.parse(textwrap.dedent(inspect.getsource(service._certify_upload)))
-    ladders = [
-        [element.id for element in node.iter.elts if isinstance(element, ast.Name)]
-        for node in ast.walk(tree)
-        if isinstance(node, ast.For) and isinstance(node.iter, ast.Tuple)
-    ]
-    assert ["DEFAULT_PER_CLASS", "MIN_PER_CLASS"] in ladders, (
-        f"the headroom must be tried FIRST and the floor only as a fallback, found {ladders}"
-    )
-
-
 def test_the_wizard_falls_back_to_the_floor_rather_than_refusing(tmp_path) -> None:
     """The same ladder, driven rather than read, on the path where driving it is cheap.
 
@@ -791,3 +750,230 @@ def test_the_wizard_falls_back_to_the_floor_rather_than_refusing(tmp_path) -> No
         pipeline.generate_offline = original_generate  # type: ignore[assignment]
         pipeline.chunks_from_directory = original_chunks  # type: ignore[assignment]
         pipeline.canonicalize = original_canon  # type: ignore[assignment]
+
+
+def test_a_carried_forward_file_is_judged_against_what_the_manifest_pinned(tmp_path) -> None:
+    """⛔ **FIX-01. `is_file()` is the wrong predicate, and it is wrong in BOTH directions.**
+
+    Five auditors reached this one rule by four different routes, which is what says it is the rule
+    and not an edge case. A manifest entry pins `size` and `sha256`; `LocalObjectReader.fetch`
+    verifies both and `build` fetches EVERY object with no skip path. So:
+
+    - **Keeps too much.** A file the user EDITED is still `is_file()`, so it is carried forward with
+      the OLD digest, `fetch` raises, the generation goes to `failed`, and `servable_manifest()`
+      re-selects the same stale base — every later upload fails identically, forever. Reproduced by
+      an auditor as `expected 13, received 28`.
+    - **Drops too much.** `Path.is_file()` routes through `os.path.isfile`, which swallows EVERY
+      `OSError`, not just a missing file. Verified: `C:/Windows/System32/config/SAM` answers False
+      while `os.stat` on it raises `PermissionError`. An unreachable share, a path over the Windows
+      limit and a permission-denied parent were therefore all counted as "the bytes are gone" and
+      silently dropped.
+
+    No predicate on `is_file()` can fix both, so the rule now asks what the manifest actually pinned:
+    absent is dropped and counted, unreadable is KEPT so the build fails loudly, and a changed file
+    is re-stamped, because a user editing an indexed document means re-index it, not refuse forever.
+    """
+    from recall.manifest import ManifestObjectV1
+    from recall_mcp.service import _carry_forward
+
+    def entry_for(path, *, data: bytes) -> ManifestObjectV1:
+        digest = hashlib.sha256(data).hexdigest()
+        # A file:// object's version_id must BE its digest; `recall.lineage` enforces it.
+        return ManifestObjectV1(path.as_uri(), digest, "text/markdown", len(data), digest)
+
+    unchanged = tmp_path / "unchanged.md"
+    unchanged.write_bytes(b"original")
+    edited = tmp_path / "edited.md"
+    edited.write_bytes(b"original")
+    absent = tmp_path / "absent.md"
+
+    objects = {
+        unchanged.as_uri(): entry_for(unchanged, data=b"original"),
+        edited.as_uri(): entry_for(edited, data=b"original"),
+        absent.as_uri(): entry_for(absent, data=b"original"),
+    }
+    # The edit happens after the manifest pinned the old bytes.
+    edited.write_bytes(b"the user rewrote this document")
+
+    kept, roots, vanished = _carry_forward(objects)
+
+    assert unchanged.as_uri() in kept, "an untouched file is carried forward as-is"
+    assert kept[unchanged.as_uri()].sha256 == objects[unchanged.as_uri()].sha256
+
+    assert edited.as_uri() in kept, (
+        "an EDITED file must not be dropped: its bytes are right there, and dropping it loses the "
+        "document from the corpus"
+    )
+    restamped = kept[edited.as_uri()]
+    assert restamped.size == len(b"the user rewrote this document"), (
+        "and it must be re-stamped with the CURRENT size, or `fetch` raises and every later upload "
+        "re-seeds the same stale entry and fails identically, forever"
+    )
+    assert restamped.sha256 == hashlib.sha256(b"the user rewrote this document").hexdigest()
+    assert restamped.version_id == restamped.sha256, "lineage requires the two to agree"
+
+    assert absent.as_uri() not in kept, "a file that is genuinely gone is unrecoverable"
+    assert vanished == 1, f"and it is COUNTED so the message can name it, got {vanished}"
+
+    assert tmp_path.resolve() in roots, "the reader must be widened to reach what was carried"
+
+
+def test_a_file_that_cannot_be_read_is_kept_so_the_build_fails_loudly(tmp_path, monkeypatch) -> None:
+    """⛔ **FIX-01, the other direction.** Unreadable is not the same fact as absent.
+
+    `os.path.isfile` swallows every `OSError`, so a permission-denied parent, a path past the
+    Windows length limit and an offline network share all answered False and were counted as
+    vanished. Those objects were then dropped from the manifest and the upload SUCCEEDED with a
+    smaller corpus, which is the silent-loss failure this whole path has been fixed for twice.
+
+    Only `FileNotFoundError` means gone. Anything else keeps the object, so the reader raises and
+    the user is told, which the module's own comment argues is the correct outcome for a corpus this
+    path cannot rebuild.
+    """
+    import os
+
+    from recall.manifest import ManifestObjectV1
+    from recall_mcp.service import _carry_forward
+
+    unreadable = tmp_path / "unreadable.md"
+    unreadable.write_bytes(b"present but not stattable")
+    digest = hashlib.sha256(b"present but not stattable").hexdigest()
+    objects = {
+        unreadable.as_uri(): ManifestObjectV1(
+            unreadable.as_uri(), digest, "text/markdown", 25, digest
+        )
+    }
+
+    real_stat = os.stat
+    denied_calls: list[str] = []
+
+    def denied(path, *args, **kwargs):
+        if str(path) == str(unreadable.resolve()):
+            denied_calls.append(str(path))
+            raise PermissionError(13, "Access is denied")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", denied)
+
+    kept, _roots, vanished = _carry_forward(objects)
+
+    # ⛔ **The seam must actually have been reached.** Measured on CPython 3.14.6: `Path.stat()`
+    # honours a patched `os.stat` and `Path.is_file()` does NOT, because of a C fast path added in
+    # 3.13. So if the predicate ever reverts to `is_file()`, this test would answer True under its
+    # own patch and pass while proving nothing. Asserting the stub was called is what makes that
+    # impossible. (The revert itself is caught by the sibling edited-file test, not by this one.)
+    assert denied_calls, (
+        "the os.stat seam was never reached, so this test proves nothing about how an unreadable "
+        "file is treated"
+    )
+
+    assert unreadable.as_uri() in kept, (
+        "a file that cannot be STATTED must be kept, not dropped: the build then fails loudly "
+        "instead of quietly shipping a corpus that lost documents nobody was told about"
+    )
+    assert vanished == 0, "and it must not be counted as vanished, because it has not vanished"
+
+
+def test_the_ladder_asks_for_headroom_then_the_floor_and_nothing_else(monkeypatch) -> None:
+    """⛔ **FIX-09.** The previous test read the loop header; an auditor rebound the CALL and it
+    stayed green.
+
+    `generate_offline` is asked for `DEFAULT_PER_CLASS` first and `MIN_PER_CLASS` only as a
+    fallback, because certification tests the LOWER bound of a Hanley-McNeil interval and that bound
+    tightens with n. Asking for the floor refuses corpora that are genuinely separable, which is the
+    READY-and-never-live wall this exists to remove.
+    """
+    import recall_mcp.service as service
+    from recall.calibration import separability_interval
+    from recall.wizard.queryset import DEFAULT_PER_CLASS, MIN_PER_CLASS, QuerySetError
+
+    # ⛔ **The PREMISE, executed rather than quoted.** The test this replaced carried these three
+    # lines and the replacement dropped them, which an anti-regression pass caught: the assertion
+    # exists nowhere else in the suite. Without it the ladder would keep climbing for a reason that
+    # had stopped being true, and nothing would say so. Certification tests the LOWER bound of a
+    # Hanley-McNeil interval, and that bound tightens with n, which is the entire argument for
+    # asking for headroom before the floor.
+    at_floor = separability_interval(0.95, MIN_PER_CLASS, MIN_PER_CLASS)[0]
+    at_headroom = separability_interval(0.95, DEFAULT_PER_CLASS, DEFAULT_PER_CLASS)[0]
+    assert at_floor < 0.90 <= at_headroom, (
+        f"the ladder exists because the floor's lower bound ({at_floor:.4f}) misses the 0.90 bar "
+        f"that the headroom's ({at_headroom:.4f}) clears"
+    )
+
+    asked: list[int] = []
+
+    def only_the_floor_works(chunks, *, per_class):  # noqa: ARG001
+        asked.append(per_class)
+        if per_class != MIN_PER_CLASS:
+            raise QuerySetError(f"cannot make {per_class} per class")
+        return [{"query": "q", "answer": "a"}]
+
+    # ⚠️ Patched on `recall.wizard.queryset`, not on `service`: the helper imports the generator
+    # at call time, so rebinding the service module's attribute would silently patch nothing and
+    # the test would pass without ever exercising the ladder. `canonicalize` is imported the same
+    # way and validates the entries, so it is stubbed to identity: the ladder is under test here,
+    # not the canonical form.
+    #
+    # ⛔ **`monkeypatch`, not a hand-rolled try/finally.** These rebind attributes on a SHARED
+    # module, and my first version leaked them into other tests in the same session, which showed
+    # up as an unrelated test failing depending on the order pytest happened to pick. An
+    # order-dependent failure is worse than a plain one: it reads as flakiness in the code under
+    # test. `monkeypatch` unwinds at teardown even when the test raises partway.
+    import recall.wizard.queryset as queryset
+
+    monkeypatch.setattr(queryset, "canonicalize", lambda entries: entries)
+    monkeypatch.setattr(queryset, "generate_offline", only_the_floor_works)
+    entries, last = service._query_set_for(["chunk"])
+
+    assert asked == [DEFAULT_PER_CLASS, MIN_PER_CLASS], (
+        f"headroom FIRST and the floor only as a fallback; got {asked}. Both rungs asking for the "
+        "floor is the pre-fix behaviour and it must not be reachable with the suite green"
+    )
+    assert entries and last is None
+
+    # And a corpus that satisfies the headroom must never reach the floor at all.
+    asked.clear()
+    monkeypatch.setattr(
+        queryset,
+        "generate_offline",
+        lambda chunks, *, per_class: asked.append(per_class) or [{"query": "q", "answer": "a"}],
+    )
+    service._query_set_for(["chunk"])
+    assert asked == [DEFAULT_PER_CLASS], f"one rung is enough when it works; got {asked}"
+
+
+def test_both_reclaim_call_sites_keep_the_generation_they_just_built() -> None:
+    """⛔ **FIX-11.** An auditor changed the refusal path's argument to `""` and the suite stayed
+    green.
+
+    That is not cosmetic: the freshly built generation carries the `desktop-` prefix and is READY,
+    so with an empty `keep` it selects ITSELF for abandon — destroying the upload the returned
+    message tells the user to go and certify.
+
+    ⚠️ This is a STRUCTURAL assertion, and I would rather it were not. `generation_ingest` opens a
+    database before it reaches either call site, so driving it needs a fake manager, which is the
+    right fix and a larger one. What this does pin is exactly what the mutation changed: the
+    argument, not merely the presence or placement of the call.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    import recall_mcp.service as service
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(service.generation_ingest)))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_release_superseded"
+    ]
+    assert len(calls) >= 2, f"the reclaim must run on both outcomes, found {len(calls)}"
+    for call in calls:
+        assert len(call.args) == 2, f"expected (manager, keep), got {ast.dump(call)[:120]}"
+        keep = call.args[1]
+        assert isinstance(keep, ast.Attribute) and keep.attr == "generation_id", (
+            "the generation to KEEP must be the one just built; a literal or a different name here "
+            "makes the reclaim select the upload it was meant to protect"
+        )

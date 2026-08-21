@@ -404,17 +404,35 @@ def _publishes_documents(version: str) -> bool:
     #
     # A suffix also means PRE-release, which sorts BELOW the release it precedes: 0.9.6rc1 comes
     # before 0.9.6 and must not claim an extra that 0.9.6 introduced.
+    # ⛔ **Normalised first, because two shapes reached the wrong answer.** Measured: `v0.9.5`
+    # and `0.9.post1` both returned True and pinned the `documents` extra on a release that
+    # predates it, which builds an image whose own import assertion cannot pass; and `0.9.6+local`
+    # returned False and silently dropped document extraction, contradicting this function's own
+    # docstring. A leading `v` is an ordinary Docker tag spelling, and PEP 440 says local metadata
+    # sorts ABOVE its base release while `.post` is a POST-release, not a pre-release.
+    normalised = version.strip().lstrip("vV").split("+", 1)[0]
     parts: list[int] = []
     prerelease = False
-    for piece in version.split(".")[:3]:
+    for piece in normalised.split(".")[:3]:
         match = re.match(r"(\d+)(.*)", piece.strip())
         if match is None:
+            # ⚠️ **Unparseable means NOTHING parsed, not "this component did not".** Bailing on the
+            # first non-numeric component made `0.9.post1` return True and pin an extra that 0.9.6
+            # introduced, because `post1` fell through to the default. A version that has already
+            # yielded a numeric release is compared on what it yielded: `0.9.post1` is a post
+            # release of 0.9, which sorts above 0.9 and well below 0.9.6.
+            if parts:
+                break
             # Genuinely unparseable, which is the documented default: a local or branch build
             # carries the CURRENT extras, because dropping document extraction from an image that
             # should have it is the quieter of the two failures.
             return True
         parts.append(int(match.group(1)))
-        prerelease = prerelease or bool(match.group(2))
+        # Only an alphabetic pre-release marker demotes the version. `post` and `rev` sort ABOVE
+        # the release they follow, so folding every suffix into "pre-release" was wrong in the
+        # direction that loses the extra.
+        suffix = match.group(2).lstrip(".-_").lower()
+        prerelease = prerelease or suffix.startswith(("a", "b", "c", "rc", "dev", "pre"))
     exact = tuple(parts) == _DOCUMENTS_EXTRA_SINCE
     return tuple(parts) > _DOCUMENTS_EXTRA_SINCE or (exact and not prerelease)
 
@@ -477,8 +495,10 @@ def _import_assertion(extras: str) -> str:
     was invalid, which is strictly worse than the unbuildable-pin bug that refactor was fixing.
 
     The substring tests could not see it: they assert that a fragment is PRESENT, and a
-    continuation is a property of the line before it. `test_every_line_of_the_run_block_continues`
-    asserts the invariant instead.
+    continuation is a property of the line before it. `test_every_generated_dockerfile_is_syntactically_valid`
+    asserts the invariant instead. (This named a test that was never written under that name, which
+    is the quietest kind of stale reference: it points a future reader at nothing, on the one
+    invariant a substring test cannot express.)
     """
     checks = [
         'python -c "import recall_mcp.server"',

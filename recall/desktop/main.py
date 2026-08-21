@@ -160,12 +160,16 @@ def _selftest() -> int:
             if dim <= 0:
                 failures.append(f"the fastembed embedder resolved to a non-positive dimension {dim}")
         except Exception as exc:  # noqa: BLE001 - naming the failure is the point
-            # Reported rather than fatal on its own: a cache can be present and incomplete, and that
-            # is an environment fact rather than a broken bundle.
-            print(
-                f"selftest: could not resolve the embedder: {type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
+            # ⛔ **This is a FAILURE, and it used to only print.** The branch appended nothing to
+            # `failures`, and `dim <= 0` (which `FastEmbedEmbedder` cannot produce) was the only
+            # thing that could fail the selftest, so the check could not fail in ANY environment
+            # while its log line read as though a check had run. That is precisely the "a skip must
+            # never read as a pass" rule stated a few lines down, broken by the code stating it.
+            #
+            # A cache that is present and unusable is a bundle problem here, because the bundle is
+            # what supplies the runtime: `packaging/recall-install.spec` collects fastembed's data
+            # files but not tokenizers', which is exactly the shape of defect this catches.
+            failures.append(f"the fastembed embedder would not resolve: {type(exc).__name__}: {exc}")
     else:
         print(
             "selftest: no local model cache, so the embedder was NOT resolved; the fastembed, "

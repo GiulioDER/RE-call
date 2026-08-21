@@ -845,3 +845,45 @@ def test_a_prerelease_never_claims_an_extra_its_release_introduced() -> None:
     # An unparseable version keeps the CURRENT extras: dropping extraction from an image that should
     # have it is the quieter failure, so it is the wrong default.
     assert _publishes_documents("someones-branch-build")
+
+
+def test_a_docker_tag_spelling_never_pins_an_extra_the_release_lacks() -> None:
+    """⛔ **FIX-06.** Two shapes reached the wrong answer, in opposite directions.
+
+    `v0.9.5` and `0.9.post1` both returned True and pinned the `documents` extra on a release that
+    predates it, producing an image whose own import assertion cannot pass. `0.9.6+local` returned
+    False and silently dropped document extraction, contradicting this function's own docstring.
+
+    A leading `v` is an ordinary Docker tag spelling and reaches here through `_image_version`
+    reading an existing compose file. PEP 440 puts local metadata ABOVE its base release, and
+    `.post` is a post-release, not a pre-release; folding every suffix into "pre-release" was wrong
+    in the direction that loses the extra.
+    """
+    from recall.wizard.stack import _publishes_documents
+
+    expected = {
+        # A `v` prefix must not change the answer in either direction.
+        "v0.9.5": False,
+        "v0.9.7": True,
+        # Local metadata sorts ABOVE the base release.
+        "0.9.6+local": True,
+        "0.9.5+local": False,
+        # A post-release sorts above its base; `0.9.post1` is still below 0.9.6.
+        "0.9.post1": False,
+        "0.9.6.post1": True,
+        # Pre-releases stay below the release they precede.
+        "0.9.6rc1": False,
+        "0.9.6a1": False,
+        "0.9.7rc1": True,
+        # The plain cases, as a control that this is not just refusing everything.
+        "0.9.5": False,
+        "0.9.6": True,
+        "0.9.10": True,
+        "0.10.0": True,
+        # Genuinely unparseable keeps the CURRENT extras, which is the documented default.
+        "latest": True,
+        "main": True,
+        "": True,
+    }
+    wrong = {v: _publishes_documents(v) for v, e in expected.items() if _publishes_documents(v) != e}
+    assert not wrong, f"wrong answers: {wrong} (expected {[expected[v] for v in wrong]})"

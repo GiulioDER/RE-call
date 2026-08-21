@@ -252,8 +252,10 @@ jobs:
           # `release.yml` in a job that needs the `pypi` environment's required reviewer, so the
           # delay is however long an approval takes, not however long a machine takes. A flat
           # 60 × 30s poll billed up to half an hour of runner time and still gave up after thirty
-          # minutes; doubling reaches roughly the same total in eight checks and can then keep
-          # waiting cheaply.
+          # minutes. Doubling to a 600s ceiling reaches 25.75 minutes by check 8 and gives up after
+          # 12 checks, the last at 65.75 minutes, for 75.8 minutes of billed wall clock. Those are
+          # simulated from the loop as written, not estimated: an earlier version of this comment
+          # claimed a 600s cap the code did not implement.
           delay=15
           waited=0
           for attempt in $(seq 1 12); do
@@ -264,9 +266,14 @@ jobs:
             echo "waiting ${delay}s for release ${TAG} (check ${attempt}/12, ${waited}s so far)"
             sleep "${delay}"
             waited=$((waited + delay))
-            if [ "${delay}" -lt 600 ]; then delay=$((delay * 2)); fi
+            # ⛔ **Cap the PRODUCT, not the operand.** `if [ delay -lt 600 ]` tested before
+            # doubling, so 480 doubled to 960 and froze there: the real ceiling was 960s and the
+            # total 111.8 minutes, against a comment claiming 600s and roughly 30 minutes. Two
+            # auditors simulated the loop and got the same sequence.
+            delay=$((delay * 2))
+            if [ "${delay}" -gt 600 ]; then delay=600; fi
           done
-          echo "::error::the release for ${TAG} never appeared after ${waited}s. It is created by"
+          echo "::error::the release for ${TAG} was not there at the last check. It is created by"
           echo "::error::release.yml AFTER the pypi environment's required reviewer approves the"
           echo "::error::publish, so approve that first and re-run this job."
           exit 1

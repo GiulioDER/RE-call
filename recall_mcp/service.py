@@ -2140,6 +2140,83 @@ def _roots_of(objects: dict[str, ManifestObjectV1]) -> tuple[Path, ...]:
     return tuple(roots.values())
 
 
+def _carry_forward(
+    objects: dict[str, ManifestObjectV1],
+) -> tuple[dict[str, ManifestObjectV1], tuple[Path, ...], int]:
+    """Which of the previous generation's objects this build carries, and where to read them.
+
+    Returns the objects to keep, the reader roots that reach them, and how many were dropped.
+
+    ⚠️ **This reads every carried-forward file that still exists, to compare its digest against
+    what the manifest pinned.** That is a second read of the carried corpus per upload, since
+    `build` reads them again. It is deliberate: the alternative is comparing size alone, which
+    misses a same-size edit and leaves exactly the permanent wedge this function was fixed for.
+    The corpus this serves is a personal document set (the wizard's own sizing note puts the real
+    one at 796 files and about 4 MB), and the upload that follows embeds every one of them, so the
+    hash is not where the time goes.
+    """
+    kept: dict[str, ManifestObjectV1] = {}
+    vanished = 0
+    for uri, entry in objects.items():
+        local = _local_path(uri)
+        if local is None:
+            # Not a local file. It names no root, so the reader refuses it and the build fails
+            # LOUDLY, which is the right outcome for a corpus this path cannot rebuild.
+            kept[uri] = entry
+            continue
+        try:
+            stat = local.stat()
+        except FileNotFoundError:
+            # The only fact that justifies a drop. The bytes are gone, so nothing can rebuild this
+            # object, and the count is named in the message the caller returns.
+            vanished += 1
+            continue
+        except OSError:
+            # ⛔ **Unreadable is NOT absent, and this used to conflate them.** `Path.is_file()`
+            # routes through `os.path.isfile`, which swallows EVERY `OSError`: a permission-denied
+            # parent, a path past the Windows length limit and an offline network share all
+            # answered False. Verified: `C:/Windows/System32/config/SAM` is False to `is_file()`
+            # while `os.stat` on it raises `PermissionError`. Those objects were dropped and the
+            # upload SUCCEEDED with a smaller corpus, which is the silent loss this path has been
+            # fixed for twice. Keeping it makes the reader raise and the user hear about it.
+            kept[uri] = entry
+            continue
+        if stat.st_size == entry.size and _digest_of(local) == entry.sha256:
+            kept[uri] = entry
+            continue
+        # ⛔ **The file was EDITED, so re-stamp it rather than carrying a digest that cannot
+        # verify.** A manifest entry pins `size` and `sha256`, `LocalObjectReader.fetch` checks
+        # both, and `build` fetches every object with no skip path. So one edited document made the
+        # build raise, the generation went to `failed`, and `servable_manifest()` re-selected the
+        # same stale entry: every later upload failed identically, forever. A user editing an
+        # indexed document means re-index it, not refuse until somebody reads a traceback.
+        #
+        # `version_id` moves with the digest because `recall.lineage` requires them equal for a
+        # `file://` object: a local file has no version other than its contents.
+        digest = _digest_of(local)
+        if digest is None:
+            kept[uri] = entry
+            continue
+        kept[uri] = replace(entry, version_id=digest, size=stat.st_size, sha256=digest)
+    return kept, _roots_of(kept), vanished
+
+
+def _digest_of(path: Path) -> str | None:
+    """The file's sha256, or `None` if it cannot be read.
+
+    `None` makes the caller keep the entry unchanged, so an unreadable file fails in the reader
+    where the error names the object, rather than here where it would be a bare OSError.
+    """
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
 def generation_ingest(
     store: PgVectorStore,
     embedder: Embedder,
@@ -2170,44 +2247,33 @@ def generation_ingest(
         # generation READY and never advances `active_generation_id`, so seeding from the active
         # manifest made each upload silently drop every previous un-promoted upload's files.
         #
-        # ⛔ **Filtered to what the build reader can actually reach, and without that filter this
-        # breaks the upload outright.** The reader below is confined to `tenant_root` (the upload
-        # staging directory), while a wizard-built generation's objects live under the install's
-        # `data_root`. `build` calls `reader.fetch(entry)` for EVERY manifest object with no skip
-        # path, so one unreachable carried-forward entry raises and the whole upload fails. Widening
-        # the seed set from `active_manifest` to `servable_manifest` is what exposed this: the
-        # degraded-install tenant previously had no active generation at all, so nothing was carried
-        # forward and the upload succeeded by accident.
+        # ⛔ **What may be dropped, and why the predicate is not `is_file()`.** `build` calls
+        # `reader.fetch(entry)` for EVERY manifest object with no skip path, and each entry pins a
+        # size and a digest that `fetch` verifies. So this decision has been wrong in both
+        # directions, and each wrong version was a fix for the previous one:
         #
-        # ⛔ **Every object is KEPT and the reader is widened to reach them.** An earlier fix
-        # filtered the unreachable ones out instead, and that was worse than the bug it fixed: the
-        # upload then SUCCEEDED with a truncated manifest, promotion (which the same release made
-        # work) put it live, the generation holding the dropped files was retired, and `gc` deleted
-        # it after the retention window. A loud failure became permanent silent loss of the corpus
-        # the user had indexed. The comment here used to claim "the generation it came from still
-        # holds it", which stops being true after two more uploads.
-        # ⚠️ **The ONLY reason to drop a carried-forward object is that its bytes are gone**,
-        # and even then the drop is COUNTED and named in the message. Two earlier versions of this
-        # got it wrong in opposite directions. The first kept everything and confined the reader to
-        # the staging directory, so a wizard-built corpus under `data_root` failed the whole upload.
-        # The second filtered out whatever the reader could not reach, which was worse: the upload
-        # then succeeded with a truncated manifest, promotion put it live, the generation still
-        # holding those files was retired, and `gc` deleted it after the retention window — a loud
-        # failure traded for permanent silent loss of the user's corpus.
+        #   1. confined the reader to the staging directory and kept everything, so a wizard-built
+        #      corpus under `data_root` failed the whole upload;
+        #   2. dropped whatever the reader could not reach, which was worse: the upload then
+        #      SUCCEEDED with a truncated manifest and promotion put it live;
+        #   3. dropped on `is_file()`, which conflates "gone" with "cannot be stat-ed" (an offline
+        #      share, a path past the Windows limit, a permission-denied parent) AND carried an
+        #      edited file forward with its stale digest, so `fetch` raised, the generation went to
+        #      `failed`, and the next upload re-seeded the same stale entry, forever.
         #
-        # A file that no longer exists is genuinely unrecoverable, so dropping it is the only option
-        # left; a file that exists somewhere else is recoverable, and `carried_roots` below lets the
-        # reader reach it. Staging lives in the container's writable layer with no volume behind it,
-        # so `docker compose down`/`up` is enough to make this real rather than theoretical.
-        active_objects = {}
-        vanished = 0
-        for entry in manager.servable_manifest().objects:
-            local = _local_path(entry.uri)
-            if local is not None and not local.is_file():
-                vanished += 1
-                continue
-            active_objects[entry.uri] = entry
-        carried_roots = _roots_of(active_objects)
+        # `_carry_forward` asks what the manifest actually pinned. Five auditors reached this one
+        # rule by four different routes, which is what says it is the rule and not an edge case.
+        #
+        # ⚠️ **On the cost of getting it wrong, stated accurately.** Earlier versions of this
+        # comment said the superseded generation is deleted by `gc` "after the retention window",
+        # which overstates it: `gc` has one caller in this tree, the explicit `recall generation gc`
+        # command, and it also protects the two most recent retired generations for seven days, and
+        # `rollback` can restore the previous one. The real cost is that the corpus stops being
+        # SERVED and search silently degrades until somebody notices. That is bad enough to fix and
+        # not so bad that it needs exaggerating.
+        active_objects, carried_roots, vanished = _carry_forward(
+            {entry.uri: entry for entry in manager.servable_manifest().objects}
+        )
     except NoActiveGeneration:
         active_objects = {}
         carried_roots = ()
@@ -2442,6 +2508,32 @@ def _vanished_note(vanished: int) -> str:
     )
 
 
+def _query_set_for(chunks: list[str]) -> tuple[list[dict[str, object]] | None, Exception | None]:
+    """The labelled query set for a corpus, asking for headroom before the floor.
+
+    Extracted so it can be DRIVEN rather than read. The test that used to cover this asserted the
+    AST shape of the loop header and said nothing about what `per_class` was bound to in the call,
+    so an auditor rebound it to `MIN_PER_CLASS` on both rungs — the exact pre-fix behaviour, which
+    refuses corpora whose true separability lies in roughly [0.950, 0.962) — and the suite stayed
+    green. That is the same keyword-name-not-value defect a previous round had already retired once.
+    """
+    from recall.wizard.queryset import (
+        DEFAULT_PER_CLASS,
+        MIN_PER_CLASS,
+        QuerySetError,
+        canonicalize,
+        generate_offline,
+    )
+
+    last: Exception | None = None
+    for per_class in (DEFAULT_PER_CLASS, MIN_PER_CLASS):
+        try:
+            return canonicalize(generate_offline(chunks, per_class=per_class)), None
+        except QuerySetError as exc:
+            last = exc
+    return None, last
+
+
 def _certify_upload(
     dsn: str,
     tenant: str,
@@ -2470,13 +2562,6 @@ def _certify_upload(
         CalibrationError,
         CalibrationRepository,
         CalibrationUncertified,
-    )
-    from recall.wizard.queryset import (
-        DEFAULT_PER_CLASS,
-        MIN_PER_CLASS,
-        QuerySetError,
-        canonicalize,
-        generate_offline,
     )
 
     with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
@@ -2522,14 +2607,7 @@ def _certify_upload(
     # The case that is NOT slow, and that the obvious reading gets wrong: a corpus SMALLER than the
     # headroom costs nothing extra, because `generate_offline` checks `len(chunks) < per_class`
     # before it tokenises anything. Measured at 25 chunks: 0.000s for the failed 40-attempt.
-    entries = None
-    last: Exception | None = None
-    for per_class in (DEFAULT_PER_CLASS, MIN_PER_CLASS):
-        try:
-            entries = canonicalize(generate_offline(chunks, per_class=per_class))
-            break
-        except QuerySetError as exc:
-            last = exc
+    entries, last = _query_set_for(chunks)
     if entries is None:
         # The commonest case by far, and it is about the CORPUS, not about the upload: a handful of
         # files cannot produce MIN_PER_CLASS distinct answerable questions. Say the number.
