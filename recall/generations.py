@@ -208,7 +208,26 @@ class GenerationManager:
         *,
         actor: str = "recall-cli",
         environment: str | None = None,
+        serving_environment: str | None = None,
     ) -> None:
+        """`environment` is where the BUILD runs; `serving_environment` is where the tenant is READ.
+
+        ⚠️ **They are the same value almost everywhere and different on the path that matters.** The
+        certification gate keys on the serving one, because certification is a claim about what a
+        query will get back, not about which process built it.
+
+        The wizard is the case that forced this apart, and it is the ordinary install rather than a
+        corner: it builds every corpus under `environment="development"`, because a production build
+        demands a verifiable embedder identity that a bundled FastEmbed model does not have, and
+        then writes `RECALL_ENV=production` into the MCP server block that serves those same
+        tenants. So before this parameter existed, the gate ran on **no tenant the wizard
+        creates** — every real first install took the ungated branch and was then served as
+        production. The wizard's own pipeline refuses to promote an uncertified generation, so
+        nothing shipped uncertified; but the gate and the pipeline check were two independent
+        implementations of one rule, and only one of them was tested as the thing that holds it.
+
+        `serving_environment` defaults to `environment`, so every existing caller is unchanged.
+        """
         if not tenant_id.strip():
             raise ValueError("tenant_id must be non-empty")
         self._dsn = dsn
@@ -217,6 +236,21 @@ class GenerationManager:
         self.environment = (environment or os.environ.get("RECALL_ENV", "development")).lower()
         if self.environment not in {"development", "test", "production"}:
             raise ValueError("environment must be development, test, or production")
+        self.serving_environment = (serving_environment or self.environment).lower()
+        if self.serving_environment not in {"development", "test", "production"}:
+            raise ValueError(
+                "serving_environment must be development, test, or production"
+            )
+
+    @property
+    def certification_required(self) -> bool:
+        """Whether promotion here must present a CERTIFIED calibration.
+
+        Reads the SERVING environment, not the build one. `promote` and every caller that decides
+        whether to pass `unsafe_development` consult this rather than comparing environments
+        themselves, so the two cannot drift apart.
+        """
+        return self.serving_environment == "production"
 
     @contextmanager
     def _connect(self) -> Iterator[psycopg.Connection]:
@@ -843,12 +877,110 @@ class GenerationManager:
                 pass
             raise
 
-    def promote(self, generation_id: str, *, unsafe_development: bool = False) -> None:
-        if self.environment == "production":
-            raise UnsafePromotion(
-                "generation promotion is unavailable in production until certification gates land"
+    def calibration_status_for(
+        self, generation_id: str, *, conn: psycopg.Connection | None = None
+    ) -> str:
+        """The generation's calibration status as a plain string, for reporting rather than gating.
+
+        `rollback` records this instead of refusing on it, per decision 2. Never raises: a status
+        that cannot be determined must not be the thing that stops an incident recovery, so an
+        unreadable calibration reads as `"unknown"` and the rollback proceeds and says so.
+
+        Pass `conn` from inside an open transaction to read on it rather than opening a second
+        connection; see `CalibrationRepository.resolve_within` for why that matters under a lock.
+        Rollback passes its own, so the status it RECORDS is the one that was true for the
+        transaction that did the activating, rather than one read beside it.
+        """
+        from recall.calibration_v2 import CalibrationRepository
+
+        repository = CalibrationRepository(self._dsn, self.tenant_id, actor=self.actor)
+        try:
+            resolution = (
+                repository.resolve_within(conn, generation_id)
+                if conn is not None
+                else repository.resolve(generation_id)
             )
-        if not unsafe_development:
+            return str(resolution.status.value)
+        except Exception:  # noqa: BLE001 - reporting must not be able to block recovery
+            return "unknown"
+
+    def require_certified_for_production(
+        self, generation_id: str, *, conn: psycopg.Connection | None = None
+    ) -> None:
+        """Refuse unless `generation_id` is backed by a PUBLISHED, CERTIFIED, still-bound calibration.
+
+        This is the gate `promote`'s old message promised — "unavailable in production until
+        certification gates land" — and it is deliberately built from the machinery that already
+        exists rather than a new notion of certified. `CalibrationRepository.resolve` answers
+        exactly the question being asked: is there a calibration for this generation that is
+        published, that certified, and whose pipeline and corpus fingerprints still match the
+        generation as it stands now. A calibration that certified against a corpus which has since
+        changed resolves as STALE, which is the case a naive "does a published row exist" check
+        would wave through.
+
+        ⚠️ **The status is reported, not flattened to a boolean.** MISSING, DRAFT, UNCERTIFIED and
+        STALE need four different actions from whoever hit this — calibrate, publish, re-calibrate,
+        re-calibrate against the current corpus — and a gate that says only "no" sends them to guess.
+
+        ⛔ **`conn` is not an optimisation.** Passed, the resolution runs on the caller's OPEN
+        transaction, so the verdict and the activation it authorises are one decision. Omitted, it
+        opens its own connection, and the gate then approves a snapshot that a concurrent `forget()`
+        can invalidate before the promotion commits — approving a state that no longer exists. It
+        also acquires that connection while the caller holds a tenant lock, which stalls the lock
+        rather than the caller under exhaustion. `promote` always passes it; the parameter is
+        optional only so a caller outside a transaction can still ask the question.
+
+        Imported lazily. `recall.calibration_v2` does not import this module today, so a top-level
+        import would work, but the calibration layer is the higher one and making the generation
+        layer depend on it at import time invites the cycle later.
+        """
+        from recall.calibration_v2 import CalibrationRepository, CalibrationStatus
+
+        from recall.calibration_v2 import CalibrationBindingError
+
+        repository = CalibrationRepository(self._dsn, self.tenant_id, actor=self.actor)
+        try:
+            resolution = (
+                repository.resolve_within(conn, generation_id)
+                if conn is not None
+                else repository.resolve(generation_id)
+            )
+        except CalibrationBindingError as exc:
+            # Translated rather than propagated. Callers of `promote` and `rollback` handle
+            # `UnsafePromotion`; a binding error escaping from two layers down is a different
+            # contract for the same refusal, and the reason is the same either way — this
+            # generation is not backed by a calibration that can carry it into production.
+            raise UnsafePromotion(
+                f"generation {generation_id} cannot go live in production: {exc}"
+            ) from exc
+        if resolution.status is CalibrationStatus.CERTIFIED:
+            return
+        raise UnsafePromotion(
+            f"generation {generation_id} cannot go live in production: its calibration is "
+            f"{resolution.status.value}. Production serves only a generation whose published "
+            f"calibration certified and is still bound to this pipeline and corpus. Run "
+            f"`recall calibration calibrate --generation {generation_id} --queries FILE --publish`."
+        )
+
+    def promote(self, generation_id: str, *, unsafe_development: bool = False) -> None:
+        """Make one ready generation live, gated on how the tenant is SERVED.
+
+        See `certification_required`: the gate follows the serving environment, so a build that runs
+        under `development` in order to use an unverifiable embedder is still gated when its output
+        will be read under `RECALL_ENV=production`. That is the wizard, which is to say every
+        install this project ships.
+        """
+        if self.certification_required:
+            # ⛔ **`unsafe_development` does not open this door.** Refused here rather than after
+            # the certification check, so a caller cannot learn that the flag would otherwise have
+            # worked. The production path has exactly one way through: a certified calibration.
+            if unsafe_development:
+                raise UnsafePromotion(
+                    "unsafe_development is unavailable for a tenant served under production; "
+                    "promotion there requires a published, certified calibration bound to this "
+                    "generation"
+                )
+        elif not unsafe_development:
             raise UnsafePromotion("development promotion requires unsafe_development=True")
         with self._connect() as conn, conn.transaction():
             conn.execute(
@@ -866,6 +998,17 @@ class GenerationManager:
                 raise InvalidGenerationTransition(
                     f"promotion requires ready state, found {target.state.value}"
                 )
+            # ⚠️ **After the existence and state checks, deliberately.** Run first, the gate answered
+            # a missing generation with `CalibrationBindingError: generation ... does not exist` and
+            # a mid-build one with the same, replacing `GenerationNotFound` and
+            # `InvalidGenerationTransition` — three different problems arriving as one unrelated
+            # exception type. Measured before this was moved. Ordering the cheap, specific checks
+            # first keeps each failure named by the thing that actually failed.
+            if self.certification_required:
+                # On THIS connection, inside THIS transaction. See the method's docstring: the
+                # generation row is already locked here, so the check and the activation cannot be
+                # separated by a concurrent fingerprint rewrite.
+                self.require_certified_for_production(generation_id, conn=conn)
             active = str(state[0]) if state and state[0] else None
             if active:
                 conn.execute(
@@ -886,14 +1029,54 @@ class GenerationManager:
                 "WHERE tenant_id = %s",
                 (generation_id, active, self.tenant_id),
             )
+            # Two paths reach here and they are not the same event. Recording a certified
+            # production promotion as `..._unsafe_development` would make the audit trail say the
+            # opposite of what happened, and the audit trail is the artefact that outlives everyone
+            # who remembers the code.
             self._audit(
                 conn,
-                "generation_promoted_unsafe_development",
+                (
+                    "generation_promoted_certified"
+                    if self.certification_required
+                    else "generation_promoted_unsafe_development"
+                ),
                 generation_id=generation_id,
                 payload={"previous_generation_id": active},
             )
 
-    def rollback(self) -> str:
+    def rollback(self, *, provisional_reason: str | None = None) -> str:
+        """Return the tenant to its previous generation. **Never refuses on certification grounds.**
+
+        ⛔ **This refused in production for one release, and that was wrong.**
+        `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md` section 6 decision 2 had already settled the
+        question, in bold: "`rollback(*, provisional_reason: str | None = None)`, and it never
+        refuses on certification grounds ... Rollback is the incident path. A gate that blocks
+        recovery precisely when recovery is needed is worse than serving a `provisional` answer
+        that says so on the wire, and an operator facing a bad generation will route around a
+        refusal in a way nobody audits. **Refusing here would trade a visible degradation for an
+        invisible workaround.**" The gate was added without reading that section.
+
+        Three ways the refusal bit, each found independently in the audit that caught this:
+
+        * **`forget()` bricked it permanently.** It rewrites `corpus_fingerprint` on every
+          generation of the tenant, so after one erasure request every calibration resolves STALE
+          and there was no target left to return to — ever.
+        * **Upgrading bricked it.** Production `promote` refused outright before this release, so
+          every generation an existing install is serving was promoted under `development` and has
+          no published calibration. Upgrading would have removed rollback from every one of them.
+        * There is no override to reach for, which is exactly the "invisible workaround" the
+          decision predicted: the remaining routes are a mid-incident recalibration that must
+          certify, or flipping `RECALL_ENV`, which silently changes five other policies.
+
+        **The invariant F2 is about survives**, because it was never "only certified generations go
+        live". It was "no generation becomes active without the operator being told what they are
+        activating". A rollback to an uncertified target is recorded as such: the audit event
+        carries the resolved calibration status and the reason, so the downgrade is visible rather
+        than prevented. `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md`: "Prevented, no; hidden, never."
+
+        `promote` keeps its gate. Promotion is the planned path and has somewhere to go back to;
+        rollback is what you reach for when it does not.
+        """
         with self._connect() as conn, conn.transaction():
             state = conn.execute(
                 "SELECT active_generation_id, previous_generation_id "
@@ -909,6 +1092,9 @@ class GenerationManager:
                 raise InvalidGenerationTransition(
                     f"rollback target is {target.state.value}, expected retired or ready"
                 )
+            # ⛔ Deliberately NOT gated. See the docstring: this is the incident path, and the
+            # status is reported into the audit event below rather than used to refuse.
+            status = self.calibration_status_for(previous, conn=conn)
             if active:
                 conn.execute(
                     "UPDATE recall_generations SET state = 'ready', retired_at = NULL "
@@ -931,7 +1117,18 @@ class GenerationManager:
                 conn,
                 "generation_rolled_back",
                 generation_id=previous,
-                payload={"replaced_generation_id": active},
+                payload={
+                    "replaced_generation_id": active,
+                    # ⚠️ The downgrade is REPORTED, which is the whole of decision 2's bargain:
+                    # "Prevented, no; hidden, never." A rollback onto an uncertified target is
+                    # allowed and leaves a record saying exactly what was activated and why.
+                    "calibration_status": status,
+                    "provisional_reason": (
+                        provisional_reason or "rollback: incident recovery"
+                        if status != "certified"
+                        else None
+                    ),
+                },
             )
             return previous
 
@@ -944,6 +1141,46 @@ class GenerationManager:
         if not row or not row[0]:
             raise NoActiveGeneration(f"tenant {self.tenant_id!r} has no active generation")
         return str(row[0])
+
+    def servable_manifest(self) -> IndexManifestV1:
+        """The manifest a NEW build should carry forward: the newest generation worth continuing.
+
+        ⛔ **`active_manifest` is the wrong base once a build can finish without being activated.**
+        A desktop upload whose promotion is refused leaves its generation READY, never active, so
+        `active_generation_id` does not advance. The next upload then seeds from the OLD active
+        manifest and silently contains none of the previous upload's files: two READY generations,
+        neither holding the whole corpus, and the message from the first told the user to certify
+        the one that will be superseded. Three auditors found this independently.
+
+        So the base is the newest generation in a state that can still become active — READY or
+        ACTIVE — falling back to the active one, and to an empty manifest when the tenant has
+        neither. RETIRED and FAILED are excluded: continuing from a retired corpus would resurrect
+        content that was deliberately rolled away from.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT manifest FROM recall_generations "
+                "WHERE tenant_id = %s AND state IN ('ready', 'active') "
+                "ORDER BY created_at DESC, generation_id DESC LIMIT 1",
+                (self.tenant_id,),
+            ).fetchone()
+        if row and isinstance(row[0], Mapping):
+            return IndexManifestV1.from_dict(row[0])
+        return self.active_manifest()
+
+    def superseded_ready_generations(self, keep: str) -> tuple[str, ...]:
+        """Every READY generation for this tenant other than `keep`, newest first.
+
+        The reclaim list. A READY generation holds a full copy of the corpus's chunk rows and `gc`
+        collects only `retired` and `failed`, so one left behind per refused upload grows the
+        database without bound — the leak `abandon` was written to close, documented in its own
+        docstring, and reintroduced by a path that returns success instead of raising.
+        """
+        return tuple(
+            record.generation_id
+            for record in self.list_generations()
+            if record.state is GenerationState.READY and record.generation_id != keep
+        )
 
     def active_manifest(self) -> IndexManifestV1:
         """Return the manifest for the active generation.

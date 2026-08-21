@@ -104,19 +104,25 @@ function boundaries, and markdown chunked as code loses its headings.
 The Python corpus above was built from `.py` files only for exactly this reason, which is why it
 has 573 objects where the mixed legacy tenant had 615.
 
-## Promotion and serving want different modes today
+## Promotion and serving want different modes
 
-A known rough edge, with a design proposal in `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md`.
+🔁 **Corrected: production promotion is no longer blocked.** This section used to say `promote()`
+"refuses outright in production ... until certification gates land". Those gates have landed, and
+production promotion now succeeds for a CERTIFIED generation, which is what the calibration on this
+page is for.
 
 ```
 UnsafePromotion: development promotion requires unsafe_development=True
 ```
 
-`promote()` refuses outright in production ("generation promotion is unavailable in production
-until certification gates land") and requires an explicit flag in development. Meanwhile the MCP
-server only builds a generation-aware store when `RECALL_ENV=production`. So today a generation is
-promoted in one mode and served in the other. The flag name is alarming, but it marks an incomplete
-feature rather than a destructive action.
+That message is the **development** path, and it is unchanged: with no certification requirement,
+the unchecked promotion has to name itself, hence `--unsafe-development-promotion`. The flag is
+refused in production rather than ignored.
+
+The remaining rough edge is narrower than it was, and it is a *serving* one: the MCP server only
+builds a generation-aware store when `RECALL_ENV=production`, so a development-mode server serves
+the legacy table no matter which generation is active. Design notes in
+`docs/UNCALIBRATED_FIRST_RUN_DESIGN.md`.
 
 ## The labelled query set
 

@@ -26,16 +26,22 @@ from recall.embeddings import (
     FastEmbedEmbedder,
     HashingEmbedder,
     REMOTE_MODEL_CODE_OPT_IN,
+    embedder_artifact_digest,
     embedding_profile_id,
     resolve_embedder,
 )
 from recall.guards import staleness
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
-from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_code, chunk_text
-from recall.lineage import ChunkerIdentity, EmbedderIdentity, IndexManifestV1, ManifestObjectV1, PipelineIdentity
+from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_text
+from recall.lineage import IndexManifestV1, ManifestObjectV1
 from recall.manifest import ExtractingLocalObjectReader
-from recall.generations import GenerationManager, NoActiveGeneration
+from recall.generations import (
+    GenerationError,
+    GenerationManager,
+    NoActiveGeneration,
+    UnsafePromotion,
+)
 from recall.observability import METRICS, get_logger
 from recall.profiles import (
     RetrievalAdmission,
@@ -2093,7 +2099,14 @@ def generation_ingest(
     staged_root: str,
     category: str,
 ) -> IndexResult:
-    """Build, validate, and activate one local generation for a desktop upload."""
+    """Build and validate one local generation for a desktop upload, and activate it if allowed.
+
+    ⚠️ **Activation is no longer guaranteed, and the docstring said it was.** Under
+    `RECALL_ENV=production` promotion requires a CERTIFIED calibration, which a fresh upload does not
+    have, so the ordinary desktop path now ends with the generation READY and not live. That is
+    reported in the returned message rather than raised, because the upload itself succeeded: the
+    corpus is built, validated and carries forward every earlier upload's files.
+    """
     job_root = Path(staged_root)
     tenant_root = job_root.parent
     job_files = sorted(path for path in job_root.rglob("*") if path.is_file())
@@ -2102,7 +2115,10 @@ def generation_ingest(
 
     manager = GenerationManager(store._dsn, store.tenant, actor="recall-desktop")
     try:
-        active_objects = {entry.uri: entry for entry in manager.active_manifest().objects}
+        # ⚠️ The newest SERVABLE generation, not the active one. A refused promotion leaves its
+        # generation READY and never advances `active_generation_id`, so seeding from the active
+        # manifest made each upload silently drop every previous un-promoted upload's files.
+        active_objects = {entry.uri: entry for entry in manager.servable_manifest().objects}
     except NoActiveGeneration:
         active_objects = {}
 
@@ -2130,21 +2146,44 @@ def generation_ingest(
         corpus_version=f"desktop-{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
         objects=tuple(objects),
     )
-    chunker = chunk_code if category == "code" else chunk_text
-    pipeline = PipelineIdentity(
-        EmbedderIdentity(
-            provider="fastembed",
-            model=embedder.name,
-            dimension=embedder.dim,
-            unverified_reason="desktop local development build",
-        ),
-        ChunkerIdentity(
-            "recall.chunk_code" if category == "code" else "recall.chunk_text",
-            1,
-            {},
+    # ⚠️ **Verified when the weights can be hashed, honestly unverified when they cannot.**
+    # A desktop upload used to declare `unverified_reason` unconditionally, so `create` refused it
+    # under `RECALL_ENV=production` and no upload to a production tenant could ever succeed. Hashing
+    # the model's own snapshot directory is a real provenance claim: those are the bytes that
+    # produced these vectors. An embedder with no weights on disk still gets an unverified identity
+    # — the alternative would be inventing a digest to pass a gate, which is the one outcome worse
+    # than the refusal.
+    # ⚠️ NOT `digest`: that name is already bound in this function to each uploaded FILE's sha256,
+    # a few lines above. Two different digests under one name in one function is how the wrong one
+    # gets used later.
+    from recall.generation_build import BuildRequest, pipeline_for
+
+    embedder_digest = embedder_artifact_digest(embedder)
+    # ⛔ **Built through `pipeline_for`, not assembled here.** This function used to hardcode
+    # `provider="fastembed"` for every embedder and spell out its own `ChunkerIdentity`. Both were
+    # copies of rules that already exist in `recall/generation_build.py`, and the provider copy was
+    # wrong: `HashingEmbedder` is shipped in this repository and identifies itself as provider
+    # `recall` at revision `hashing-md5-bow-v1`, so a desktop upload recorded it as a fastembed
+    # artifact — false provenance written into an immutable lineage record, which is the one place
+    # a wrong value cannot later be corrected.
+    #
+    # It also silently disagreed about the CHUNKER's identity: this spelled `recall.chunk_text`
+    # with version 1 and empty params, while `chunker_for` records the real parameters. A generation
+    # built here and one built by `recall index` therefore carried different pipeline fingerprints
+    # for the same pipeline, which is exactly what makes a calibration resolve STALE.
+    chunker, pipeline = pipeline_for(
+        embedder,
+        BuildRequest(
+            chunker="code" if category == "code" else "text",
+            artifact_digest=embedder_digest,
+            unverified=not embedder_digest,
         ),
     )
-    generation = manager.create(manifest, pipeline, allow_unverified=True)
+    # ⚠️ Ask for the exemption only when it is actually needed. Passed unconditionally, a
+    # VERIFIED identity still requested `allow_unverified`, which production refuses outright —
+    # so hashing the weights above bought nothing and the upload failed one gate later with a
+    # message about a flag rather than about provenance. Measured end to end.
+    generation = manager.create(manifest, pipeline, allow_unverified=not pipeline.verified)
     try:
         stats = manager.build(
             generation.generation_id,
@@ -2153,7 +2192,61 @@ def generation_ingest(
             chunker,
         )
         manager.validate(generation.generation_id)
-        manager.promote(generation.generation_id, unsafe_development=True)
+        # A production-served tenant promotes only a CERTIFIED generation, so produce the
+        # certification rather than leaving the gate unreachable. See `_certify_upload`. The reason
+        # is threaded into the refusal message below rather than raised: `promote` will refuse for
+        # the same underlying fact a moment later, and the caller wants ONE message that says both
+        # what happened and what is left to do.
+        uncertified: str | None = None
+        if manager.certification_required:
+            uncertified = _certify_upload(
+                store._dsn, store.tenant, generation.generation_id, embedder
+            )
+        # ⚠️ Development-only flag; see `GenerationManager.promote`. A desktop upload to a
+        # production tenant now reaches the certification gate rather than being refused for
+        # carrying a flag, which is the whole point of the gate existing.
+        try:
+            manager.promote(
+                generation.generation_id,
+                unsafe_development=not manager.certification_required,
+            )
+        except UnsafePromotion as exc:
+            # ⚠️ **Reported as an outcome, not raised as a failure.** The upload WORKED: every file
+            # was read, chunked, embedded and written into a generation that validated. What did
+            # not happen is activation, because a production tenant serves only a certified
+            # generation — the gate doing its job, not the ingest failing.
+            #
+            # Raising here told the user their upload failed and invited them to retry it,
+            # rebuilding the same generation for the same refusal. Saying what is true, and what
+            # remains to be done, is the difference between a gate and a wall.
+            # ⛔ **Reclaim what this one supersedes.** A READY generation holds a full copy of the
+            # corpus's chunk rows and `gc` collects only `retired` and `failed`, so one per refused
+            # upload grows the database without bound. `abandon` exists precisely for this state and
+            # says so in its own docstring; `recall/wizard/pipeline.py::_fail` does the same thing on
+            # the same shape of failure. Returning success without it made the leak per-attempt.
+            #
+            # The NEWEST is kept, not abandoned: it carries the whole corpus forward and it is the
+            # one the message below tells the user to certify.
+            reclaimed = 0
+            for stale in manager.superseded_ready_generations(generation.generation_id):
+                try:
+                    manager.abandon(stale, "superseded by a later upload that also awaits certification")
+                except GenerationError:
+                    # Best effort. Losing the reclaim must not lose the upload report, which is the
+                    # only thing telling the user what state they are in.
+                    continue
+                reclaimed += 1
+            return IndexResult(
+                files=stats.objects,
+                chunks=stats.chunks,
+                message=(
+                    f"Indexed {stats.chunks} chunk(s) from {stats.objects} file(s) into generation "
+                    f"{generation.generation_id}, which is built and validated but NOT yet live. "
+                    f"It carries forward everything previously uploaded"
+                    + (f"; {reclaimed} superseded build(s) released" if reclaimed else "")
+                    + f". {uncertified or exc}"
+                ),
+            )
     except Exception:
         raise
     return IndexResult(
@@ -2164,6 +2257,84 @@ def generation_ingest(
             f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
         ),
     )
+
+
+def _certify_upload(
+    dsn: str,
+    tenant: str,
+    generation_id: str,
+    embedder: Embedder,
+) -> str | None:
+    """Calibrate and publish a freshly built desktop upload. Returns why it could not, or `None`.
+
+    ⛔ **Without this step a production tenant could never accept an upload at all.** The gate on
+    `promote` requires a published, certified calibration, and nothing on the desktop path produced
+    one, so every upload ended READY-and-never-live and the only route to a live corpus was the CLI.
+    A gate with no reachable way through is a wall.
+
+    The query set comes from `recall.wizard.queryset.generate_offline`, the same generator the
+    installer uses, rather than from `_generated_calibration_queries` below. That helper's negatives
+    are a hardcoded list never checked against the corpus, and its positives are 500-character chunk
+    bodies rather than questions; `queryset` exists because a measurement
+    (`recall/eval/synthetic.py`) showed that unanswerable queries which are not genuinely off-topic
+    produce a set that is not separable at all. Two generators for one job would mean the installer's
+    corpora and the desktop's are judged by different evidence.
+
+    Failure is a RETURNED REASON, not an exception: an upload whose calibration does not certify has
+    still been built and validated, and the caller reports that state rather than losing the work.
+    """
+    from recall.calibration_v2 import (
+        CalibrationError,
+        CalibrationRepository,
+        CalibrationUncertified,
+    )
+    from recall.wizard.queryset import (
+        MIN_PER_CLASS,
+        QuerySetError,
+        canonicalize,
+        generate_offline,
+    )
+
+    with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        rows = conn.execute(
+            # ⚠️ **No LIMIT, deliberately.** `generate_offline` picks its answerable chunks from
+            # this list, which a cap would only narrow harmlessly; but it also derives the gap class
+            # by asking which off-topic subjects are ABSENT from the corpus, and a truncated view
+            # would call a subject absent because it was cut off. That silently produces a
+            # non-disjoint gap class, which `recall/wizard/queryset.py` records as the one design
+            # constraint that is not negotiable: a non-disjoint set measured as not separable at all.
+            "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+            "ORDER BY chunk_id",
+            (tenant, generation_id),
+        ).fetchall()
+    chunks = [str(row[0]) for row in rows if str(row[0]).strip()]
+
+    try:
+        entries = canonicalize(generate_offline(chunks, per_class=MIN_PER_CLASS))
+    except QuerySetError as exc:
+        # The commonest case by far, and it is about the CORPUS, not about the upload: a handful of
+        # files cannot produce MIN_PER_CLASS distinct answerable questions. Say the number.
+        return f"no certifiable query set could be generated from {len(chunks)} chunk(s): {exc}"
+
+    repository = CalibrationRepository(dsn, tenant, actor="recall-desktop")
+    try:
+        artifact = repository.calibrate(generation_id, entries, embedder)
+    except CalibrationError as exc:
+        # ⛔ **A raise here loses the upload.** `generation_ingest`'s outer handler re-raises, so a
+        # binding failure would escape leaving the generation READY and unreclaimable — the exact
+        # leak the refusal path was fixed to prevent, reintroduced one step before it. `CalibrationError`
+        # and not `Exception`: a domain failure is a reason, a bug is still a bug.
+        return f"calibration could not be measured: {type(exc).__name__}: {exc}"
+    try:
+        repository.publish(artifact.calibration_id)
+    except CalibrationUncertified as exc:
+        # Kept, not deleted: the artifact is the evidence of WHY it did not certify, and it is what
+        # an operator reads before deciding whether to promote deliberately.
+        return f"calibration {artifact.calibration_id} did not certify: {exc}"
+    except CalibrationError as exc:
+        return f"calibration {artifact.calibration_id} could not be published: {exc}"
+    return None
 
 
 def _generated_calibration_queries(store: PgVectorStore, generation_id: str) -> list[dict[str, object]]:

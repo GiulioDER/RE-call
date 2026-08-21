@@ -91,9 +91,22 @@ A privacy erasure changes the effective corpus fingerprint of every affected gen
 immediately makes prior calibration stale, prevents it from being republished, and carries the
 same tombstone-derived fingerprint into replacement generations built from the old manifest.
 
-Strict refusal before returning corpus text is intentionally deferred to the strict-trust session.
-Until then, a missing or stale artifact produces a result marked uncalibrated; production generation
-promotion remains disabled.
+Strict refusal before returning **corpus text** is still deferred: a missing or stale artifact
+produces a result marked uncalibrated rather than an error.
+
+Refusal at **promotion** time has landed. For a tenant served under production (see
+`GenerationManager.certification_required`, which reads the serving environment rather than the
+build one), `generation promote` resolves the generation's calibration and raises `UnsafePromotion`
+unless the status is CERTIFIED,
+so an absent, stale, mismatched, rejected or superseded artifact cannot be made active. The check
+runs inside the promotion transaction, after the generation's existence and state are established,
+and a calibration that cannot be resolved fails closed.
+
+⛔ **`generation rollback` is exempt, on purpose.** It is the incident path, and a gate there blocks
+recovery exactly when recovery is needed. It activates the previous generation whatever the status,
+and records that status plus the operator's `provisional_reason` in `generation_rolled_back`. The
+argument is in `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md` section 6, decision 2, and its shortest form
+is: prevented, no; hidden, never.
 
 ## Operations and privacy
 

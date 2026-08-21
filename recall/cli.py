@@ -954,6 +954,40 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="do not read or write a state file at all.",
     )
+    p_wizard.add_argument(
+        "--gui",
+        action="store_true",
+        help="ask the questions in a window instead of the terminal. Same questions, same config "
+        "file, same engine; needs the desktop extra. `recall-install` opens it directly.",
+    )
+
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        help="remove an install's containers, stack files and MCP registrations. Never removes the "
+        "folders it was indexing.",
+    )
+    p_uninstall.add_argument(
+        "--data-root",
+        required=True,
+        help="the data folder chosen during installation; it is recorded in that install's "
+        "wizard.json.",
+    )
+    p_uninstall.add_argument(
+        "--purge-data",
+        action="store_true",
+        help="also remove the database volume holding the built indexes. Off by default: they are "
+        "reproducible by re-indexing and expensive to rebuild.",
+    )
+    p_uninstall.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the confirmation. Without it the plan is printed and you are asked.",
+    )
+    p_uninstall.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print what would be removed and stop.",
+    )
 
     p_schema = sub.add_parser("schema", help="inspect or apply versioned database migrations")
 
@@ -1536,6 +1570,40 @@ def main(argv: list[str] | None = None) -> None:
         run_setup_wizard(dsn=args.dsn, migration_dsn=args.migration_dsn, table=args.table)
         return
 
+    if args.cmd == "uninstall":
+        from recall.wizard.uninstall import UninstallRefusal, execute, plan_uninstall
+
+        try:
+            plan = plan_uninstall(
+                data_root=Path(args.data_root).expanduser(), purge_data=args.purge_data
+            )
+        except UninstallRefusal as exc:
+            raise SystemExit(str(exc)) from exc
+        print(plan.render())
+        if args.dry_run:
+            return
+        if not args.yes:
+            # ⚠️ Asked AFTER the plan is printed, never before. A confirmation offered ahead of the
+            # list is a confirmation of nothing, and this removes containers and rewrites the MCP
+            # client's config.
+            if not sys.stdin.isatty():
+                raise SystemExit(
+                    "\nrefusing to uninstall without confirmation, and this session has no "
+                    "terminal to ask in. Re-run with --yes if you meant it, or --dry-run to see "
+                    "the plan without acting on it."
+                )
+            answer = input("\nProceed? [y/N]: ").strip().lower()
+            if answer not in {"y", "yes"}:
+                raise SystemExit("cancelled; nothing was removed")
+        # `uninstall_report`, not `report`. `main()` is one long function and the `manifest
+        # inventory` branch below binds `report` to an `InventoryReport`; reusing the name
+        # type-narrows it across the whole function and mypy rejects both. This file already
+        # carries two comments recording exactly this trap, for `wizard_report` and for
+        # `config_written`, and I walked into it anyway.
+        uninstall_report = execute(plan, purge_data=args.purge_data)
+        print(uninstall_report.render())
+        return
+
     if args.cmd == "wizard":
         from recall.wizard.headless import PipelineRefusal, load_config, run_headless
 
@@ -1543,6 +1611,33 @@ def main(argv: list[str] | None = None) -> None:
         # answers directly. One engine, and the user keeps an artefact they can re-run, hand to
         # somebody else, or put in CI. An interactive flow that installed from memory would be a
         # second installer that drifts from the first.
+        if args.gui:
+            # ⚠️ Returns rather than falling through. The graphical installer asks the questions,
+            # writes the config AND runs it, so continuing into the terminal flow below would ask
+            # every question a second time and install twice.
+            if args.config is not None:
+                raise SystemExit(
+                    "`--gui` asks the questions itself, so there is nothing for `--config` to do. "
+                    "Run `recall wizard --headless --config <file>` to replay a saved config, or "
+                    "`recall wizard --gui` to be asked."
+                )
+            from recall.desktop.main import install_main
+
+            # ⚠️ Neither `return install_main(...)` nor an unconditional `raise SystemExit(...)`.
+            # `main()` is typed to return None, so returning the status is a type error; raising it
+            # unconditionally makes a SUCCESSFUL run exit through an exception, which no other
+            # branch of this function does and which broke the test asserting the terminal flow does
+            # not also run. A non-zero status still has to reach the shell.
+            # `install_status`, not `status`. That is the THIRD name this one function has already
+            # claimed elsewhere — after `report` and alongside the recorded `wizard_report` and
+            # `config_written` cases — and mypy narrows a reused name across the whole body, so the
+            # collision surfaces as a nonsense error hundreds of lines away ("int has no attribute
+            # compatible"). `main()` is long enough that every new local needs a qualified name.
+            install_status = install_main([])
+            if install_status:
+                raise SystemExit(install_status)
+            return
+
         if args.config is None:
             from recall.wizard.interactive import (
                 InteractiveRefusal,

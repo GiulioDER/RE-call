@@ -39,7 +39,21 @@ is loud in one place and mute in the rest.
 | MCP server serves generation-routed reads | serves the legacy table |
 | `recall index` / `demo` / `code` and the MCP `recall_index` tool refuse local-filesystem indexing | accepted |
 | generations require a pinned, verified embedder identity | an unverified embedder can build one |
-| `generation promote` is blocked | promotion is permitted |
+| `generation promote` requires a CERTIFIED calibration, and refuses `--unsafe-development-promotion` | promotion requires `--unsafe-development-promotion` and no calibration |
+
+⚠️ **The promotion row keys on where the tenant is SERVED, which is not always where the build
+runs.** For the CLI the two are one value and this distinction never shows. The installer is the
+exception, and it is the ordinary case rather than a corner: it builds every corpus under
+`development`, because a production build demands a verifiable embedder identity that a bundled
+model does not have, and then writes `RECALL_ENV=production` into the server block that serves those
+same tenants. `GenerationManager` therefore takes a separate `serving_environment`, defaulting to
+`environment`, and the gate reads `certification_required`. Before that split the gate ran on no
+tenant the installer creates.
+
+`generation rollback` is **not** in that table, because it behaves the same in both: it is the
+incident path and never refuses on certification grounds. It records the target's calibration
+status and the operator's reason in the audit event instead, so a recovery onto an uncertified
+generation is visible rather than prevented (`docs/UNCALIBRATED_FIRST_RUN_DESIGN.md`, section 6).
 
 ```bash
 recall --serving-dsn "$RECALL_SERVING_DSN" --table chunks schema --dim 384 status

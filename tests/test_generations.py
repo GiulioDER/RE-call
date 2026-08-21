@@ -360,8 +360,60 @@ def test_promotion_is_explicitly_unsafe_and_unavailable_in_production(manager) -
     production = GenerationManager(
         TEST_DSN, manager.tenant_id, actor="pytest", environment="production"
     )
-    with pytest.raises(UnsafePromotion, match="unavailable in production"):
+    with pytest.raises(UnsafePromotion, match="served under production"):
         production.promote(generation, unsafe_development=True)
+
+
+@requires_db
+def test_the_gate_follows_the_serving_environment_not_the_build_one(manager) -> None:
+    """⛔ The wizard's shape: BUILD under development, SERVE under production.
+
+    This combination is not exotic — it is every install this project ships. A production build
+    demands a verifiable embedder identity that the bundled FastEmbed model does not have, so the
+    wizard builds under `development`; a calibrated corpus is then served with
+    `RECALL_ENV=production`, because that is the only environment that reads the generation store.
+
+    While `promote` keyed on the BUILD environment, the certification gate therefore ran on nothing
+    the installer produces. Both assertions below failed before `serving_environment` existed: the
+    flag was accepted, and the promotion went through ungated.
+    """
+    data = b"ready generation"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = _ready(
+        manager, manifest, _pipeline("model-a"), _reader(manifest, data), _Embedder(1)
+    )
+    split = GenerationManager(
+        TEST_DSN,
+        manager.tenant_id,
+        actor="pytest",
+        environment="development",
+        serving_environment="production",
+    )
+    assert split.certification_required, "a production-served tenant is gated wherever it was built"
+
+    with pytest.raises(UnsafePromotion, match="served under production"):
+        split.promote(generation, unsafe_development=True)
+
+    # And without the flag it reaches the certification check rather than sailing through: this
+    # generation has no published calibration at all.
+    with pytest.raises(UnsafePromotion, match="calibration is"):
+        split.promote(generation)
+
+
+@requires_db
+def test_serving_environment_defaults_to_the_build_environment(manager) -> None:
+    """Every existing caller passes one environment and must keep the behaviour it had."""
+    for environment in ("development", "test", "production"):
+        instance = GenerationManager(
+            TEST_DSN, manager.tenant_id, actor="pytest", environment=environment
+        )
+        assert instance.serving_environment == environment
+        assert instance.certification_required == (environment == "production")
+
+    with pytest.raises(ValueError, match="serving_environment must be"):
+        GenerationManager(
+            TEST_DSN, manager.tenant_id, actor="pytest", serving_environment="prod"
+        )
 
 
 @requires_db

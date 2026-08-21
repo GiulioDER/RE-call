@@ -18,6 +18,7 @@ from recall.wizard.stack import (
     DB_INTERNAL_PORT,
     DB_MOUNT,
     StackSpec,
+    add_tenant_services,
     choose_port,
     compose_document,
     container_dsn,
@@ -437,3 +438,304 @@ def test_no_subprocess_call_decodes_with_the_platform_codec() -> None:
         "these subprocess calls decode with the platform codec, which on Windows returns "
         "rc=0 with stdout=None instead of raising: " + ", ".join(offenders)
     )
+
+
+# ----------------------------------------------------------------------------------------------
+# Adding a project to a stack somebody else provisioned
+# ----------------------------------------------------------------------------------------------
+
+
+def _stack(tmp_path: Path, *, db_volume: str, tenants: dict[str, str]) -> Path:
+    """A compose file with a chosen db mount and chosen tenant images."""
+    document = {
+        "name": "recall-test",
+        "services": {
+            "db": {"image": "pgvector/pgvector:pg16", "volumes": [f"{db_volume}:/var/lib/postgresql/data"]},
+            **{
+                f"recall-{tenant}": {"image": image, "environment": {"RECALL_TENANT": tenant}}
+                for tenant, image in tenants.items()
+            },
+        },
+        "volumes": {"pgdata": None},
+    }
+    path = tmp_path / "docker-compose.recall.yml"
+    write_compose(path, document)
+    return path
+
+
+def test_a_new_project_inherits_the_image_its_siblings_already_run(tmp_path: Path) -> None:
+    """⚠️ Defaulting to THIS version's tag gives one project a different recall from the rest.
+
+    `_default_image` is scoped to `recall.__version__`, so a stack provisioned by an older install
+    carries an older tag. Adding a project after an upgrade would tag that one service with the new
+    version while every existing corpus kept the old one — and Compose REUSES a tag rather than
+    rebuilding it, so both start and neither complains. One project answering from a different
+    recall than its siblings, with nothing on screen to say so.
+    """
+    compose = _stack(
+        tmp_path, db_volume="pgdata", tenants={"default-docs": "recall-wizard:0.9.1"}
+    )
+
+    added = add_tenant_services(compose, {"myproject-docs": {"RECALL_TENANT": "myproject-docs"}})
+
+    assert added == ("myproject-docs",)
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    assert services["recall-myproject-docs"]["image"] == "recall-wizard:0.9.1", (
+        "the new service must run what the stack already runs, not what this build happens to be"
+    )
+
+
+def test_a_stack_with_no_tenants_yet_takes_the_current_image(tmp_path: Path) -> None:
+    """Nothing to inherit from, so the caller's default is the only answer available."""
+    compose = _stack(tmp_path, db_volume="pgdata", tenants={})
+
+    add_tenant_services(
+        compose, {"first-docs": {"RECALL_TENANT": "first-docs"}}, image="recall-wizard:9.9.9"
+    )
+
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    assert services["recall-first-docs"]["image"] == "recall-wizard:9.9.9"
+
+
+def test_disagreeing_images_are_left_alone_rather_than_reconciled(tmp_path: Path) -> None:
+    """A hand-edited stack is not this function's to normalise.
+
+    Inheriting from an ambiguous set would mean picking one of a user's deliberate choices at
+    random. Falling back to the caller's default is at least a stated rule.
+    """
+    compose = _stack(
+        tmp_path,
+        db_volume="pgdata",
+        tenants={"a-docs": "recall-wizard:0.9.1", "b-docs": "recall-wizard:0.9.2"},
+    )
+
+    add_tenant_services(
+        compose, {"c-docs": {"RECALL_TENANT": "c-docs"}}, image="recall-wizard:9.9.9"
+    )
+
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    assert services["recall-c-docs"]["image"] == "recall-wizard:9.9.9"
+
+
+def test_a_bind_mounted_database_is_refused_rather_than_extended(tmp_path: Path) -> None:
+    """⛔ The bind mount is the layout that loses PostgreSQL WAL writes on Windows.
+
+    That is why `DB_VOLUME` exists, and an intermittent WAL write failure is a corruption risk
+    rather than an availability one. A stack provisioned before that change still has the old mount;
+    adding a project would put another corpus onto it. Refusing keeps the exposure from growing,
+    and says what to do instead.
+
+    Refusing rather than migrating is deliberate: moving the volume means moving a live database the
+    user may be serving from, which is not something "add a project" should attempt unasked.
+    """
+    compose = _stack(
+        tmp_path, db_volume="./pgdata", tenants={"default-docs": "recall-wizard:1.0.0"}
+    )
+
+    with pytest.raises(ValueError) as caught:
+        add_tenant_services(compose, {"myproject-docs": {"RECALL_TENANT": "myproject-docs"}})
+
+    message = str(caught.value)
+    assert "./pgdata" in message, "the offending path must be named"
+    assert "re-provision" in message, "a refusal without a remedy is only half the report"
+
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    assert "recall-myproject-docs" not in services, "and nothing may be written"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param(
+            "C:/Users/gde00/recall/database:/var/lib/postgresql/data", id="windows-as-posix"
+        ),
+        pytest.param("C:\\Users\\gde00\\database:/var/lib/postgresql/data", id="windows-backslash"),
+        pytest.param("D:/data:/var/lib/postgresql/data:rw", id="windows-with-access-mode"),
+        pytest.param("/home/u/recall/database:/var/lib/postgresql/data", id="posix-absolute"),
+        pytest.param("./pgdata:/var/lib/postgresql/data", id="relative"),
+        pytest.param("~/recall/db:/var/lib/postgresql/data", id="home-relative"),
+        pytest.param(
+            {"type": "bind", "source": "C:/data", "target": "/var/lib/postgresql/data"},
+            id="long-syntax-bind",
+        ),
+    ],
+)
+def test_every_host_path_shape_is_refused(tmp_path: Path, entry: object) -> None:
+    """⛔ **The Windows cases are why this is parametrised, and they were the ones that got through.**
+
+    The first version split each entry on its FIRST colon, so
+    `C:/Users/gde00/recall/database:/var/lib/postgresql/data` yielded the source `"C"` — no
+    separator, no leading dot — and was waved through as a named volume. Five auditors found it
+    independently and three executed it. Released v0.9.6 wrote exactly that string,
+    `f"{database_dir.as_posix()}:{DB_MOUNT}"` off an absolute `data_root`, so the guard was inert
+    for every real Windows install, on the one platform whose intermittent WAL corruption is the
+    entire reason it exists.
+
+    The original test used `./pgdata`, which is refused by any implementation, so the suite agreed
+    with the bug.
+
+    ⚠️ The second attempt was ALSO wrong on the same input: parsing right-to-left strips the target,
+    then strips again because `/Users/...` starts with a slash too, arriving back at `"C"`. Hence
+    the explicit drive-prefix check, and hence this case being pinned by id.
+    """
+    compose = _stack(tmp_path, db_volume="pgdata", tenants={"default-docs": "recall-wizard:1.0.0"})
+    document = json.loads(compose.read_text(encoding="utf-8"))
+    document["services"]["db"]["volumes"] = [entry]
+    write_compose(compose, document)
+
+    with pytest.raises(ValueError, match="rather than in a Docker volume|could not be determined"):
+        add_tenant_services(compose, {"myproject-docs": {"RECALL_TENANT": "myproject-docs"}})
+
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    assert "recall-myproject-docs" not in services, "nothing may be written on a refusal"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param("pgdata:/var/lib/postgresql/data", id="named"),
+        pytest.param("pgdata:/var/lib/postgresql/data:rw", id="named-with-mode"),
+        pytest.param("recall_pg-data.1:/var/lib/postgresql/data", id="named-with-punctuation"),
+        pytest.param(
+            {"type": "volume", "source": "pgdata", "target": "/var/lib/postgresql/data"},
+            id="long-syntax-volume",
+        ),
+    ],
+)
+def test_a_named_volume_is_never_refused(tmp_path: Path, entry: object) -> None:
+    """The other half: a guard that refuses everything is not a guard, it is an outage.
+
+    The allowlist is positive — only a Docker named volume passes — so this is what stops the
+    fail-closed direction from breaking every current install.
+    """
+    compose = _stack(tmp_path, db_volume="pgdata", tenants={"default-docs": "recall-wizard:1.0.0"})
+    document = json.loads(compose.read_text(encoding="utf-8"))
+    document["services"]["db"]["volumes"] = [entry]
+    write_compose(compose, document)
+
+    assert add_tenant_services(
+        compose, {"myproject-docs": {"RECALL_TENANT": "myproject-docs"}}
+    ) == ("myproject-docs",)
+
+
+def test_a_named_volume_is_not_mistaken_for_a_host_path(tmp_path: Path) -> None:
+    """The guard must not refuse the layout it exists to protect."""
+    compose = _stack(
+        tmp_path, db_volume="pgdata", tenants={"default-docs": "recall-wizard:1.0.0"}
+    )
+
+    added = add_tenant_services(compose, {"myproject-docs": {"RECALL_TENANT": "myproject-docs"}})
+
+    assert added == ("myproject-docs",)
+
+
+def test_the_dockerfile_follows_the_inherited_tag_not_the_running_version(tmp_path) -> None:
+    """⛔ The tag decides what runs, so the Dockerfile beside it must name the same version.
+
+    `add_tenant_services` inherits the existing stack's image tag so a new project runs the same
+    recall as its siblings. `write_compose` then regenerated the Dockerfile at whatever version the
+    WIZARD was, which put the two in disagreement.
+
+    Measured before the fix, on a 0.9.1 stack under a 0.9.6 wizard:
+
+        new service's image tag: recall-wizard:0.9.1
+        Dockerfile installs    : recall-rag==0.9.6
+
+    Compose reuses a tag it already holds rather than building, so the container starts the 0.9.1
+    image while every file on disk claims 0.9.6. That is the same silent-wrong-image failure
+    `_default_image`'s docstring records, reintroduced through the very inheritance meant to
+    prevent it.
+    """
+    import json
+
+    from recall.wizard.stack import (
+        COMPOSE_NAME,
+        DB_IMAGE,
+        DOCKERFILE_NAME,
+        add_tenant_services,
+        tenant_service,
+        write_compose,
+    )
+
+    old = "0.9.1"
+    compose = tmp_path / COMPOSE_NAME
+    write_compose(
+        compose,
+        {
+            "services": {
+                "db": {"image": DB_IMAGE, "volumes": ["recall-db:/var/lib/postgresql"]},
+                "recall-docs": tenant_service(
+                    {"RECALL_TENANT": "docs"}, image=f"recall-wizard:{old}"
+                ),
+            }
+        },
+    )
+
+    assert add_tenant_services(compose, {"newproj": {"RECALL_TENANT": "newproj"}}) == ("newproj",)
+
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    tag = services["recall-newproj"]["image"]
+    dockerfile = (tmp_path / DOCKERFILE_NAME).read_text(encoding="utf-8")
+
+    assert tag == f"recall-wizard:{old}", "the new service must join its siblings' image"
+    assert "recall-rag[" in dockerfile
+    assert f"=={old}" in dockerfile, (
+        f"the tag says {old} and the Dockerfile does not; Compose will serve the {old} image under "
+        "a file claiming otherwise"
+    )
+
+
+def test_a_foreign_image_tag_leaves_the_dockerfile_at_the_running_version(tmp_path) -> None:
+    """A tag this module did not write carries no version to pin to, and guessing one is worse.
+
+    `_image_version` recognises only `recall-wizard:<version>`. Somebody running their own
+    `myco/recall:latest` gets the running version in the Dockerfile — the previous behaviour, which
+    is right when there is nothing better to infer, rather than a version parsed out of a string
+    that was never a version.
+    """
+    import json
+
+    from recall import __version__
+    from recall.wizard.stack import (
+        COMPOSE_NAME,
+        DB_IMAGE,
+        DOCKERFILE_NAME,
+        add_tenant_services,
+        tenant_service,
+        write_compose,
+    )
+
+    compose = tmp_path / COMPOSE_NAME
+    write_compose(
+        compose,
+        {
+            "services": {
+                "db": {"image": DB_IMAGE, "volumes": ["recall-db:/var/lib/postgresql"]},
+                "recall-docs": tenant_service(
+                    {"RECALL_TENANT": "docs"}, image="myco/recall:latest"
+                ),
+            }
+        },
+    )
+
+    add_tenant_services(compose, {"newproj": {"RECALL_TENANT": "newproj"}})
+
+    services = json.loads(compose.read_text(encoding="utf-8"))["services"]
+    assert services["recall-newproj"]["image"] == "myco/recall:latest"
+    assert f"=={__version__}" in (tmp_path / DOCKERFILE_NAME).read_text(encoding="utf-8")
+
+
+def test_image_version_reads_back_only_tags_this_module_writes() -> None:
+    """The parser is narrow on purpose: its output PINS what a Dockerfile installs."""
+    from recall.wizard.stack import _image_version
+
+    assert _image_version("recall-wizard:0.9.1") == "0.9.1"
+    assert _image_version("recall-wizard:1.0.0rc1") == "1.0.0rc1"
+    for foreign in (
+        "myco/recall:latest",
+        "recall-wizard",
+        "recall-wizard:",
+        "recall-desktop-recall:local",
+        "ghcr.io/someone/recall-wizard:0.9.1",
+    ):
+        assert _image_version(foreign) is None, f"{foreign!r} must not yield a version to pin to"

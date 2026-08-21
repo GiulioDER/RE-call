@@ -45,6 +45,7 @@ environment but is NOT a declared dependency of this project and so cannot be re
 from __future__ import annotations
 
 import json
+import re
 import socket
 import subprocess
 from dataclasses import dataclass
@@ -436,6 +437,154 @@ def write_dockerfile(directory: Path, version: str | None = None) -> Path:
     return target
 
 
+def _image_version(image: str) -> str | None:
+    """The recall version a `recall-wizard:<version>` tag names, or `None` for any other tag.
+
+    Deliberately narrow. It recognises only tags this module itself writes, because the value is
+    used to PIN what a Dockerfile installs, and guessing a version out of somebody's own
+    `myco/recall:latest` would install whatever that string happened to look like.
+    """
+    prefix, separator, version = image.partition(":")
+    if prefix != "recall-wizard" or not separator or not version:
+        return None
+    return version
+
+
+def _stack_image(services: dict[str, object]) -> str | None:
+    """The image the stack's existing tenant services already run, if they agree on one.
+
+    ⚠️ **Defaulting to THIS version's tag adds a service that runs a different recall from its
+    siblings.** `_default_image` is scoped to `recall.__version__`, so a stack provisioned by an
+    older install carries an older tag, and adding a project after an upgrade would give that one
+    project a different image while every existing corpus kept the old one. Compose reuses a tag
+    rather than rebuilding it, so both would start and neither would complain: one project answering
+    from a different recall than the rest, with nothing on screen to say so.
+
+    Returns None when the services disagree or there are none yet, and the caller then falls back to
+    the current version. Disagreement is left alone deliberately: this function exists to keep an
+    add consistent with what is there, not to reconcile a stack somebody has already hand-edited.
+    """
+    tags = {
+        service.get("image")
+        for name, service in services.items()
+        if name != "db" and isinstance(service, dict) and isinstance(service.get("image"), str)
+    }
+    if len(tags) == 1:
+        only = tags.pop()
+        return only if isinstance(only, str) else None
+    return None
+
+
+#: A Docker NAMED volume: the shape `docker volume create` accepts. Anything else in the source
+#: position of a mount is a host path.
+#:
+#: ⛔ **Matched positively, so the guard fails CLOSED.** The first version enumerated host paths
+#: instead — "contains a separator, or starts with a dot" — after splitting the entry on its FIRST
+#: colon. On Windows that splits `C:/Users/me/db:/var/lib/postgresql/data` into the source `"C"`,
+#: which has no separator and no leading dot, so the guard passed the exact layout it exists to
+#: refuse. Five auditors found it independently and three executed it. The released v0.9.6 wizard
+#: wrote precisely that string, `f"{database_dir.as_posix()}:{DB_MOUNT}"` off an absolute
+#: `data_root`, so the miss covered every real Windows install on the one platform whose
+#: intermittent WAL corruption motivated the guard.
+#:
+#: Enumerating the unsafe shapes means a shape nobody enumerated is treated as safe. Enumerating the
+#: ONE safe shape means a shape nobody anticipated is refused, which is the direction a guard
+#: protecting against data loss should fail in.
+_NAMED_VOLUME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+
+#: A Windows absolute path, `C:/…` or `C:\…`. Recognised before the source is parsed, because the
+#: drive colon is indistinguishable from the separator between a mount's source and target.
+_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _is_named_volume(source: str) -> bool:
+    return bool(_NAMED_VOLUME.match(source))
+
+
+def _volume_source(entry: object) -> str | None:
+    """The host-or-volume side of one compose volume entry, or None when there is nothing to judge.
+
+    Handles both syntaxes, because `add_tenant_services` is documented to accept a stack "somebody
+    else provisioned" and a hand-written or tool-generated file may use either:
+
+    * short — `SOURCE:TARGET[:MODE]`. Parsed from the RIGHT, so a Windows drive letter in the source
+      survives. `recall/wizard/stack.py`'s `existing_port` learned the same lesson in the other
+      direction when a published port gained a host IP.
+    * long — `{"type": "bind", "source": ..., "target": ...}`. The short-syntax-only version skipped
+      these silently, so a bind mount declared the long way read as "no bind mount at all".
+    """
+    if isinstance(entry, dict):
+        source = entry.get("source")
+        if entry.get("type") == "bind":
+            # A bind is a bind whatever its source looks like; return something that cannot be a
+            # named volume so the caller refuses.
+            return str(source) if isinstance(source, str) else "<bind mount>"
+        return str(source) if isinstance(source, str) else None
+    if not isinstance(entry, str) or ":" not in entry:
+        return None
+    # ⛔ **The drive prefix is decided BEFORE any splitting, and that ordering is the fix.**
+    # Stripping right-to-left is not enough on its own: `C:/Users/me/db:/var/lib/postgresql/data`
+    # strips the target, leaving `C:/Users/me/db`, and then strips AGAIN because `/Users/me/db`
+    # also starts with a slash — yielding the source `"C"`, which is a valid named volume. That is
+    # the same wrong answer the original first-colon split gave, reached by a longer route, and it
+    # survived the first attempt at this fix. A drive-lettered entry is a host path, full stop.
+    if _DRIVE_PREFIX.match(entry):
+        return entry
+    # The container target is an absolute POSIX path, and an optional access mode follows it. Strip
+    # from the right until what remains is the source.
+    remainder = entry
+    for _ in range(2):
+        head, _sep, tail = remainder.rpartition(":")
+        if not head:
+            break
+        if tail.startswith("/") or tail in {"ro", "rw", "z", "Z", "cached", "delegated"}:
+            remainder = head
+            continue
+        break
+    return remainder
+
+
+def _refuse_bind_mounted_database(compose_path: Path, db: object) -> None:
+    """Refuse to extend a stack whose database still lives on a host bind mount.
+
+    ⛔ **The bind mount is the layout that corrupted a database**, which is why `DB_VOLUME` exists:
+    PostgreSQL's WAL writes fail intermittently with EINTR on a Windows bind mount, and an
+    intermittent WAL write failure is a corruption risk rather than an availability one. See the
+    comment on the `db` service in `compose_document`.
+
+    A stack provisioned before that change still has the old mount. Adding a project to it would put
+    a new corpus onto that database — more data on the layout the wizard stopped using precisely
+    because it loses data. So this refuses and says what to do, rather than quietly making the
+    exposure larger.
+
+    Refusing is safe in a way that migrating is not: moving the volume means moving a live database
+    the user may be serving from, which is not something an "add a project" action should attempt
+    without being asked.
+    """
+    if not isinstance(db, dict):
+        return
+    volumes = db.get("volumes")
+    if volumes is None:
+        return
+    if not isinstance(volumes, list):
+        raise ValueError(
+            f"the stack at {compose_path} declares its database volumes as "
+            f"{type(volumes).__name__}, which this cannot read. Refusing rather than adding a "
+            "corpus to a database whose storage layout could not be determined."
+        )
+    for entry in volumes:
+        source = _volume_source(entry)
+        if source is None or _is_named_volume(source):
+            continue
+        raise ValueError(
+                f"the stack at {compose_path} keeps its database on the host directory {source!r} "
+                "rather than in a Docker volume. That layout loses PostgreSQL WAL writes "
+                "intermittently on Windows, which is why newer installs use a named volume, and "
+                "adding a project would put another corpus onto it. Back up the data you care "
+                "about, then re-provision the stack with a current install."
+            )
+
+
 def add_tenant_services(
     compose_path: Path, env: dict[str, dict[str, str]], *, image: str = _DEFAULT_IMAGE
 ) -> tuple[str, ...]:
@@ -468,17 +617,22 @@ def add_tenant_services(
         raise ValueError(
             f"{compose_path} defines no `db` service, so it is not a recall stack to add to"
         )
+    _refuse_bind_mounted_database(compose_path, services["db"])
 
+    inherited = _stack_image(services) or image
     added: list[str] = []
     for tenant, base_env in env.items():
         name = _service_name(tenant)
         if name in services:
             continue
-        services[name] = tenant_service(base_env, image=image)
+        services[name] = tenant_service(base_env, image=inherited)
         added.append(tenant)
 
     if added:
-        write_compose(compose_path, document)
+        # The Dockerfile follows the tag, not the running wizard. See `write_compose`: regenerating
+        # it at the running version left a 0.9.1 stack carrying a 0.9.6 Dockerfile, and Compose
+        # would have served the 0.9.1 image under it without a word.
+        write_compose(compose_path, document, dockerfile_version=_image_version(inherited))
     return tuple(sorted(added))
 
 
@@ -487,7 +641,9 @@ def _service_name(tenant: str) -> str:
     return f"recall-{tenant}"
 
 
-def write_compose(path: Path, document: dict[str, object]) -> None:
+def write_compose(
+    path: Path, document: dict[str, object], *, dockerfile_version: str | None = None
+) -> None:
     """Write the compose file atomically, as JSON, with LF endings.
 
     JSON because it is valid YAML and `json.dumps` quotes a Windows path containing spaces
@@ -498,12 +654,23 @@ def write_compose(path: Path, document: dict[str, object]) -> None:
     compose document pointing at a file that is not there is broken by construction. Coupling them
     here means no caller can produce half a stack: the failure would be a `docker compose up` that
     cannot find the Dockerfile, at the moment the user is trying to start their index.
+
+    ⛔ **`dockerfile_version` exists because writing the RUNNING version here made the stack lie.**
+    `add_tenant_services` inherits the existing stack's image tag so a new project runs the same
+    recall as its siblings; this then regenerated the Dockerfile at whatever version the wizard
+    happened to be. Measured on a 0.9.1 stack under a 0.9.6 wizard: the new service's tag said
+    `recall-wizard:0.9.1` and the Dockerfile beside it installed `recall-rag==0.9.6`. Compose reuses
+    a tag it already holds rather than building, so the container would start the 0.9.1 image while
+    every file on disk claimed 0.9.6 — the same silent-wrong-image failure `_default_image`'s
+    docstring records, reintroduced through the inheritance that was meant to prevent it.
+
+    The tag is the thing that decides what actually runs, so the Dockerfile follows the tag.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
     temporary.replace(path)
-    write_dockerfile(path.parent)
+    write_dockerfile(path.parent, dockerfile_version)
 
 
 def wait_for_database(dsn: str, *, timeout: float = 120.0, interval: float = 2.0) -> None:

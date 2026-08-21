@@ -10,9 +10,21 @@ and because promoting first gives a fresh corpus fingerprint that makes the cali
 python -m recall.cli wizard --headless --config wizard.json
 ```
 
-`--headless` is required rather than implied. The interactive and GUI front ends do not exist yet, and
-a bare `recall wizard` that silently built, calibrated and promoted would be the wrong surprise for
-an installer.
+`--headless` is required rather than implied: a bare `recall wizard --config <file>` that
+silently built, calibrated and promoted would be the wrong surprise for an installer.
+
+🔁 **Corrected: there are now three front ends, and this page used to say there were none.** They
+are three RENDERERS of one question plan (`recall/wizard/questions.py`) driving one engine, not
+three installers:
+
+| | |
+|---|---|
+| `recall wizard` | asks in the terminal |
+| `recall wizard --gui`, or `recall-install` | asks in a window |
+| `recall wizard --headless --config <file>` | asks nothing |
+
+All three produce the same config document and run it from disk, so an install made in a window is
+one you can re-run in CI.
 
 ## The config
 
@@ -216,10 +228,113 @@ It refuses, before asking anything, in a session with no terminal. Piping into i
 either hang on a line that never arrives or read EOF and accept every default, and both of those
 look like a successful install from the outside.
 
+- **A smoke search per server.** After wiring, one real query goes through each configured server,
+  drawn from that tenant's own indexed text and using the store its own `RECALL_ENV` selects. The
+  report shows hits, trust state and any failure code, so "a config was written" and "the install
+  answers" are separate lines rather than one assumption.
+
+## Uninstalling
+
+```bash
+recall uninstall --data-root C:/Users/me/.recall            # prints the plan, then asks
+recall uninstall --data-root C:/Users/me/.recall --dry-run  # prints the plan and stops
+recall-uninstall --data-root C:/Users/me/.recall            # the same thing in a window
+```
+
+⛔ **It never removes a folder, and that is the whole design.** The installer SUGGESTS the corpus
+roots underneath the data folder, so on a default install your notes, your source and your agent
+memory sit inside the directory being uninstalled. Removing the index is recoverable by
+re-indexing; removing what was indexed is not. So it removes the specific files the installer
+wrote, by name, and prints the corpus roots under **This will KEEP** so you can see they survived.
+
+What it removes: the stack's containers (found by the compose project label recorded in the stack
+file, never by a name pattern, so a second install on the same machine is untouched), the files the
+installer wrote into the data folder, and the MCP registrations whose `cwd` marks them as written by
+this install. An entry you wrote by hand under a name the wizard also uses is left alone.
+
+`--purge-data` additionally removes the database volume holding the built indexes. Off by default:
+they are reproducible by re-indexing and expensive to rebuild, so whoever reinstalls next week and
+whoever is reclaiming disk want opposite things.
+
+## The Windows executable
+
+`packaging/recall-install.spec` builds a frozen bundle of the graphical installer, for somebody who
+has no Python and is not going to get one.
+
+```bash
+pip install pyinstaller
+cd packaging && python -m PyInstaller recall-install.spec --noconfirm --distpath ../dist
+```
+
+Two choices in that spec are not preferences:
+
+- **`onedir`, not `onefile`.** A onefile build unpacks its whole payload to a temporary directory on
+  every launch, and this bundle carries PySide6 and the ONNX runtime. On an installer, whose entire
+  job is to reassure somebody that something is happening, that is a long unexplained pause before
+  the window appears.
+- **`collect_submodules("recall")`.** This codebase imports lazily nearly everywhere, so
+  PyInstaller's static analysis cannot see most of what an install actually needs. A bundle built
+  from the visible imports alone starts fine and dies with `ModuleNotFoundError` at the moment the
+  user presses Install.
+
+## Code signing, which is what makes the binary runnable at all
+
+⛔ **This is not cosmetic, and "SmartScreen warning" understates it.** Measured 2026-08-21 on a
+Windows 11 machine with Smart App Control enforced (`VerifiedAndReputablePolicyState = 1`), the
+freshly built unsigned executable was refused outright:
+
+    An Application Control policy has blocked this file
+
+There is no "run anyway". Smart App Control is on by default for machines that qualify, and it can
+only be enabled on a clean install — so a user who turns it off to run recall **cannot turn it back
+on without resetting Windows**. Do not suggest that as a workaround.
+
+The fix is settled by Microsoft's own documentation
+([Smart App Control overview](https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/overview)):
+
+> If the app intelligence service is unable to make a prediction, then Smart App Control will still
+> allow an app to run if it is signed with a certificate issued by a certificate authority (CA)
+> within the Trusted Root Program.
+
+**A signature is sufficient. Reputation is not additionally required**, which matters more than it
+sounds: it means the first release runs, rather than being blocked until enough people have
+downloaded it to build reputation it cannot build while blocked. An **OV** certificate does this;
+EV buys nothing extra here.
+
+### Getting a certificate
+
+The private key for any publicly trusted code signing certificate must live in hardware or a cloud
+HSM, so none of these routes end with a file you keep.
+
+| Route | Cost | The catch |
+|---|---|---|
+| [SignPath Foundation](https://signpath.org/) | free for open source | needs a public repository, a recognized licence and an existing release; every release is manually approved |
+| [Azure Artifact Signing](https://azure.microsoft.com/en-us/products/artifact-signing) (was Trusted Signing) | $9.99/month basic | **individual sign-up is US and Canada only**; the organisation route wants verifiable business history |
+| A CA directly (DigiCert, Sectigo, SSL.com) | a few hundred a year | you buy and manage the token or cloud HSM yourself |
+
+recall qualifies for the SignPath Foundation route on paper: the repository is public, the licence
+is Apache-2.0, and there are releases on PyPI and GitHub. That is an application somebody has to
+make and be approved for; it is not something the build can arrange for itself.
+
+### What is already wired
+
+`.github/workflows/windows-installer.yml` signs through SignPath when two settings exist, and does
+the right thing when they do not:
+
+- repository **variable** `SIGNPATH_ORGANIZATION_ID`
+- repository **secret** `SIGNPATH_API_TOKEN`
+
+Without them a pull request build still runs and still self-tests, unsigned — that is a check, not
+a download. **A tag build without them fails**, deliberately: shipping an unsigned release is worse
+than shipping none, because it works for whoever built it and is blocked for the audience it exists
+to serve, with nothing in the release saying which one you got.
+
+After signing, `signtool verify /pa` runs against the artifact. The signing step's exit code only
+says the service accepted the request; `signtool` asks Windows whether the file now carries a chain
+it will honour, which is the question the user's machine will ask.
+
 ## What is not built yet
 
-- The GUI front end for installation. The desktop app manages an install; it does not yet create one.
-- An end-to-end smoke search per server after wiring. The configuration is written from what
-  actually happened, and a tenant that cannot answer gets no server, but the wizard does not yet
-  issue a query to prove each server answers.
-- The Windows installer (`.exe`), winget prerequisites and reboot-resume.
+- winget prerequisites and reboot-resume. The bundle assumes Docker Desktop is already installed;
+  it does not install it, and it does not survive the reboot Docker Desktop asks for.
+- A certificate. Everything above is wired and inert until somebody obtains one; see the table.
