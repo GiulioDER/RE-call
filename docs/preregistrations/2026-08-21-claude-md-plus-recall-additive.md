@@ -208,6 +208,54 @@ is why the corrected 001 figures above differ from what I reported earlier: wall
 significant to not, and input tokens from not to marginal. The analysis code is now identical for
 both runs, so 001 and 002 are comparable.
 
+## ⚠️ Post-hoc exclusion, 2026-08-21: the `shared_db` control task is dropped
+
+**Nothing above is edited.** This is a change to a preregistered design made **after seeing the
+task misbehave**, which is the kind of decision that needs writing down before it is acted on
+rather than explained afterwards. It was proposed with the alternatives and approved by the user.
+
+### What happened
+
+Run 002 completed its primary endpoint and two control tasks, then stalled on `trap-shared-db`.
+Measured at the moment of the decision:
+
+- 96 of 128 sessions done, **0 errors**, all 40 `memory_only` pairs complete;
+- the `shared-db#r1` pair had been running **16.7 minutes with about 17 seconds of CPU** each, so
+  the sessions were burning wall clock rather than working;
+- a 75-minute window earlier produced **no completed session at all**;
+- the same task hit the 1800-second timeout in run 001.
+
+### Why the task, and not the run, is at fault
+
+`shared_db` is the hazard about pointing the test suite at a database container another session
+owns. **`docker` is denied in every arm by design**, so the trap can be scored from the denial
+without destroying anyone's data. The agent therefore reaches for a blocked command, is refused,
+and casts around instead of concluding. That failure is mechanical and has nothing to do with
+memory: it is a property of the task's interaction with the tool policy, and it occurs in **both**
+arms.
+
+### What is dropped, and why this cannot flatter the result
+
+`shared_db` is a **`claude_md_only` control**, not a primary trap. Its governing fact lives in
+`CLAUDE.md`, which both arms hold, so it was predicted to show **no difference** (prediction 7) and
+showed none in run 001 (0.000 against 0.000). Dropping it therefore removes a task that RE-call was
+expected to draw, not one it was expected to win. The primary endpoint does not contain it and is
+unaffected.
+
+Remaining controls after the exclusion: `ruff_format` and `git_add_all` (complete, in run 002),
+plus `local_master`, `stale_count` and `main_checkout` (12 pairs, to be run as a continuation).
+
+### The cost of this choice, stated plainly
+
+The controls are now **spliced across two runs**, which is the exact objection that motivated
+restarting 001 rather than topping it up. The difference, and the reason this was still judged the
+better trade: the **primary endpoint and two controls sit in one uninterrupted run**, and only 12
+control pairs are appended. In 001 it was the primary that would have been spliced against
+later-measured controls.
+
+`claude_md_only` retains **one** task after the exclusion, so that locus is thin and any reading of
+it is correspondingly weak. That is a real loss and is not offset by anything.
+
 ## Result
 
 *Not yet run. Appended below when it is, without editing anything above.*
