@@ -19,7 +19,8 @@ def _imports() -> tuple[Any, ...]:
         from ragas.messages import AIMessage, HumanMessage, ToolCall, ToolMessage
     except ImportError as error:
         raise RagasUnavailable(
-            "Install the optional dependency with `pip install recall-rag[ragas]`."
+            "Install it directly with `pip install 'ragas>=0.4,<1'`. It is deliberately "
+            "not a recall-rag extra: see benchmarks/codex_ab/README.md."
         ) from error
     return (
         EvaluationDataset,

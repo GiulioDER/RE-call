@@ -66,11 +66,23 @@ by the session runner. Ragas evaluator usage is a separate cost surface.
 
 ## Ragas integration
 
-Ragas is optional. Install it with:
+Ragas is optional, and deliberately **not** a `recall-rag` extra. Install it directly:
 
 ```text
-pip install recall-rag[ragas]
+pip install 'ragas>=0.4,<1'
 ```
+
+**Why not an extra.** CI's `audit` job scans `uv export --all-extras`, so anything declared as an
+extra is scanned whether or not it is installed. As of 2026-08-21 ragas 0.4.3 carries CVE-2026-6587
+(SSRF through `retrieved_contexts`, exploit public) and pulls `diskcache` 5.6.3, which carries
+CVE-2025-69872 (pickle deserialisation RCE). Neither has a fix version. Declaring the extra would
+turn a currently green repository wide security gate red and keep it red until upstream ships
+fixes, which is how a gate stops being read.
+
+Neither vulnerability is reachable through this adapter as written: the import is lazy and
+`metrics` is supplied by the caller, so the vulnerable multi modal faithfulness path runs only if
+something explicitly selects that metric. That is an argument for installing ragas deliberately,
+not for making every `--all-extras` resolution carry it. Revisit when a patched release exists.
 
 The adapter converts single turn records to `SingleTurnSample` objects and structured conversations
 to `MultiTurnSample` objects. Use Ragas for answer quality, faithfulness, goal completion, and tool
