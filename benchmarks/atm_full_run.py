@@ -202,15 +202,28 @@ def generate_answer(
     }
     last_error: str | None = None
     for attempt in range(max_attempts):
+        response: requests.Response | None = None
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=180)
+            attempt_deadline = time.monotonic() + 180.0
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                stream=True,
+                timeout=(30.0, 30.0),
+            )
             if _retryable_status(response.status_code):
                 last_error = f"provider status {response.status_code}"
                 if attempt + 1 < max_attempts:
                     time.sleep(min(30.0, 2.0**attempt))
                     continue
             response.raise_for_status()
-            body = response.json()
+            body_bytes = bytearray()
+            for chunk in response.iter_content(chunk_size=8192):
+                body_bytes.extend(chunk)
+                if time.monotonic() > attempt_deadline:
+                    raise RuntimeError("provider response exceeded the 180 second total timeout")
+            body = json.loads(body_bytes.decode("utf-8"))
             choices = body.get("choices") if isinstance(body, dict) else None
             if not isinstance(choices, list) or not choices:
                 raise RuntimeError("provider returned no choices")
@@ -237,6 +250,9 @@ def generate_answer(
                 time.sleep(min(30.0, 2.0**attempt))
                 continue
             raise RuntimeError(f"answer generation failed after {max_attempts} attempts: {last_error}") from exc
+        finally:
+            if response is not None:
+                response.close()
     raise RuntimeError(f"answer generation failed: {last_error or 'unknown provider error'}")
 
 
