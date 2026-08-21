@@ -124,6 +124,90 @@ def wilcoxon_signed_rank(deltas: Sequence[float]) -> float | None:
     return float(wilcoxon(usable, zero_method="wilcox", alternative="two-sided").pvalue)
 
 
+@dataclass(frozen=True)
+class TaskRate:
+    """One trap's rate in each arm, across its repetitions."""
+
+    task: str
+    n_reps: int
+    on_rate: float
+    off_rate: float
+
+    @property
+    def delta(self) -> float:
+        return self.on_rate - self.off_rate
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**asdict(self), "delta": self.delta}
+
+
+def summarize_by_task(
+    pairs_by_task: dict[str, Sequence[tuple[bool, bool]]],
+    *,
+    n: int = 10000,
+    confidence: float = 0.95,
+    seed: int = 12345,
+) -> dict[str, Any]:
+    """The per-TASK view, which is the conservative reading of a repeated-measures design.
+
+    Repetitions of one task are **not** independent: the same prompt, the same corpus and the same
+    governing memo produce correlated outcomes, so treating 10 repetitions of 4 traps as 40
+    independent pairs overstates confidence. This collapses each trap to one rate per arm, so the
+    unit of evidence is the hazard rather than the session.
+
+    ⚠️ **With few traps this view cannot reach significance at any effect size, and that is a
+    property of the design rather than a result.** A sign test over 4 tasks bottoms out at p=0.125
+    even when all four move the same way. So `n_improved` and the per-task deltas are reported as
+    DESCRIPTIVE, and no p-value is invented for them. The cluster bootstrap resamples whole tasks,
+    which is the honest interval for generalising to a new hazard, and it will be wide.
+    """
+
+    rates = [
+        TaskRate(
+            task=task,
+            n_reps=len(pairs),
+            on_rate=sum(1 for on, _ in pairs if on) / len(pairs),
+            off_rate=sum(1 for _, off in pairs if off) / len(pairs),
+        )
+        for task, pairs in sorted(pairs_by_task.items())
+        if pairs
+    ]
+    if not rates:
+        return {"tasks": [], "n_tasks": 0, "note": "no tasks"}
+
+    deltas = [r.delta for r in rates]
+    improved = sum(1 for d in deltas if d < 0)
+    worsened = sum(1 for d in deltas if d > 0)
+
+    cluster_ci = None
+    if len(rates) >= 2 and len(set(deltas)) > 1:
+        rng = random.Random(seed)
+        size = len(rates)
+        means = sorted(
+            sum(deltas[rng.randrange(size)] for _ in range(size)) / size for _ in range(n)
+        )
+        lo_q = (1.0 - confidence) / 2.0
+        cluster_ci = (
+            means[min(len(means) - 1, int(lo_q * len(means)))],
+            means[min(len(means) - 1, int((1.0 - lo_q) * len(means)))],
+        )
+
+    return {
+        "tasks": [r.to_dict() for r in rates],
+        "n_tasks": len(rates),
+        "mean_delta": sum(deltas) / len(deltas),
+        "improved": improved,
+        "worsened": worsened,
+        "unchanged": len(deltas) - improved - worsened,
+        # Resamples TASKS, not pairs, so the interval answers "what would a new hazard do".
+        "cluster_ci": list(cluster_ci) if cluster_ci else None,
+        "note": (
+            f"descriptive: {len(rates)} distinct traps. A sign test over this many cannot reach "
+            f"p<0.05 at any effect size, so no p-value is reported for this view."
+        ),
+    }
+
+
 def compare_binary(metric: str, pairs: Sequence[tuple[bool, bool]]) -> PairedResult:
     """Compare a paired binary endpoint, such as whether a trap was triggered."""
 

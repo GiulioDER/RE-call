@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -37,6 +38,7 @@ from benchmarks.agent_ab.arms import (  # noqa: E402
     ArmSpec,
     build_configs,
     write_claude_md_prompt,
+    write_claude_md_recall_prompt,
     write_recall_prompt,
 )
 from benchmarks.agent_ab.claude_exec import (  # noqa: E402
@@ -80,9 +82,21 @@ def load_tasks(path: Path, limit: int | None, reps: int) -> list[dict[str, Any]]
     if limit:
         rows = rows[:limit]
     expanded: list[dict[str, Any]] = []
-    for rep in range(1, reps + 1):
-        for row in rows:
-            expanded.append({**row, "task_id": f"{row['task_id']}#r{rep}", "base_task_id": row["task_id"], "rep": rep})
+    for row in rows:
+        # A manifest may set `reps` per task, so the primary endpoint can be run deep while the
+        # controls stay cheap. Controls exist to show that nothing moved where nothing should;
+        # they do not need the primary's precision to do that, and spending equal effort on them
+        # buys hours of wall clock and no evidence.
+        count = int(row.get("reps", reps))
+        for rep in range(1, count + 1):
+            expanded.append(
+                {
+                    **row,
+                    "task_id": f"{row['task_id']}#r{rep}",
+                    "base_task_id": row["task_id"],
+                    "rep": rep,
+                }
+            )
     return expanded
 
 
@@ -123,7 +137,14 @@ def environment_capture(model: str, source: Any, check: dict[str, Any]) -> dict[
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--comparison", choices=("headline", "ceiling"), default="headline")
+    parser.add_argument(
+        "--comparison",
+        choices=("additive", "headline", "ceiling"),
+        default="additive",
+        help="additive = claude_md vs claude_md+recall, which isolates the memory layer and is "
+        "the configuration a real user runs; headline = claude_md vs recall ALONE, which "
+        "measures replacing the file; ceiling = bare vs recall alone",
+    )
     parser.add_argument("--reps", type=int, default=1)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--tasks", default=str(TASKS))
@@ -184,18 +205,46 @@ async def main() -> int:
                 "say so wherever it is published."
             )
         recall_prompt = write_recall_prompt(artifacts / "recall-prompt.txt", source)
-        if args.comparison == "headline":
+        static_prompt: Path | None = None
+        if args.comparison in {"headline", "additive"}:
             off_profile = "claude_md"
-            off_spec = ArmSpec.claude_md(
-                write_claude_md_prompt(
-                    artifacts / "static-memory-prompt.txt", static_sources, repo_root=REPO_ROOT
-                )
+            static_prompt = write_claude_md_prompt(
+                artifacts / "static-memory-prompt.txt", static_sources, repo_root=REPO_ROOT
             )
+            off_spec = ArmSpec.claude_md(static_prompt)
         else:
             off_profile = "bare"
             off_spec = ArmSpec.bare()
 
-        if isinstance(source, StdioRecallSpec):
+        if args.comparison == "additive":
+            # The arm a real user runs: the hand-written file AND the memory layer. Both arms hold
+            # the same static bundle, so the only difference is RE-call.
+            if not isinstance(source, StdioRecallSpec):
+                raise SystemExit("the additive comparison requires --transport stdio")
+            assert static_prompt is not None
+            combined = write_claude_md_recall_prompt(
+                artifacts / "static-plus-recall-prompt.txt",
+                static_prompt=static_prompt,
+                server_name=source.server_name,
+                tool_prefix=source.tool_prefix(),
+            )
+            recall_spec = ArmSpec.claude_md_recall(
+                source, artifacts / "recall-mcp.json", combined
+            )
+            # The claim rests on the two arms holding the SAME static memory, so it is asserted
+            # rather than assumed: the on arm's prompt must begin with the off arm's, byte for
+            # byte. A silent divergence here would look like a treatment effect.
+            static_text = static_prompt.read_text(encoding="utf-8").rstrip()
+            if not combined.read_text(encoding="utf-8").startswith(static_text):
+                raise SystemExit(
+                    "the additive arm's prompt does not start with the static bundle the off arm "
+                    "receives; the arms would differ by more than RE-call"
+                )
+            print(
+                f"additive arms: static {len(static_text)} chars in BOTH; "
+                f"on arm adds RE-call + {len(combined.read_text(encoding='utf-8')) - len(static_text)} chars"
+            )
+        elif isinstance(source, StdioRecallSpec):
             recall_spec = ArmSpec.recall_stdio(
                 source, artifacts / "recall-mcp.json", recall_prompt
             )
@@ -212,6 +261,14 @@ async def main() -> int:
         }
         environment = environment_capture(args.model, source, check)
 
+        # Appended to as each session finishes, and fsynced. The previous run died at 71 of 100
+        # sessions and lost its index entirely, because records.jsonl was written once at the end;
+        # the transcripts survived only because the adapter writes those before parsing. A run
+        # that dies should cost the sessions it did not do, not the ones it did.
+        progress_path = artifacts / "records.partial.jsonl"
+        progress_lock = asyncio.Lock()
+        completed = 0
+
         async def run_case(row: dict[str, Any], variant: str):
             record = await run_claude_case(row, variant, configs[variant])
             # Carry the run's own labels onto the record, so a records.jsonl can be grouped by
@@ -225,7 +282,22 @@ async def main() -> int:
                 "trap_id": row.get("trap_id"),
                 "locus": row.get("locus"),
             }
-            return record.__class__.from_mapping({**record.to_dict(), "metadata": merged})
+            stamped = record.__class__.from_mapping(
+                {**record.to_dict(), "metadata": merged}
+            )
+            nonlocal completed
+            async with progress_lock:
+                completed += 1
+                with progress_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(stamped.to_dict(), sort_keys=True) + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                print(
+                    f"  [{completed}/{len(tasks) * 2}] {stamped.task_id} {variant} "
+                    f"in={stamped.input_tokens} recall_calls={stamped.recall_call_count}",
+                    flush=True,
+                )
+            return stamped
 
         records = await run_paired(tasks, run_case, pair_concurrency=args.pair_concurrency)
 

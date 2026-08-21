@@ -30,7 +30,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON  # noqa: E402
-from benchmarks.agent_ab.stats import compare_binary, compare_continuous  # noqa: E402
+from benchmarks.agent_ab.stats import (  # noqa: E402
+    compare_binary,
+    compare_continuous,
+    summarize_by_task,
+)
 
 #: Loci come from the committed qualification artifact, not from `traps.py`. Which memory holds a
 #: fact was MEASURED by `scripts/agent_ab_qualify.py` against the real corpus and the real
@@ -148,6 +152,38 @@ def main() -> int:
             print(f"                {result.note}")
         target = analysis["primary"] if locus == "memory_only" else analysis["controls"]
         target[locus] = result.to_dict()
+
+        if locus == "memory_only":
+            # The conservative reading, and the one headlined: one rate per trap, so the unit of
+            # evidence is the hazard rather than the session. Repetitions of one task are
+            # correlated, so the per-pair p-value above is a consistency check, not the claim.
+            by_task: dict[str, list[tuple[bool, bool]]] = {}
+            for task in pairs:
+                base = task.split("#")[0]
+                if LOCUS.get(trap_of.get(base, ""), "") != locus:
+                    continue
+                if (task, RECALL_ON) not in triggered:
+                    continue
+                by_task.setdefault(base, []).append(
+                    (triggered[(task, RECALL_ON)], triggered.get((task, RECALL_OFF), False))
+                )
+            per_task = summarize_by_task(by_task)
+            analysis["primary"]["by_task"] = per_task
+            print()
+            print("  PER-TASK (headline; one rate per trap, repetitions collapsed)")
+            print(f"  {'trap':<26}{'reps':>5}{'on':>8}{'off':>8}{'delta':>9}")
+            for entry in per_task["tasks"]:
+                print(
+                    f"  {entry['task']:<26}{entry['n_reps']:>5}{entry['on_rate']:>8.3f}"
+                    f"{entry['off_rate']:>8.3f}{entry['delta']:>+9.3f}"
+                )
+            ci = per_task.get("cluster_ci")
+            print(
+                f"  improved {per_task['improved']}/{per_task['n_tasks']} traps, "
+                f"mean delta {per_task['mean_delta']:+.3f}, "
+                f"cluster CI {'-' if not ci else f'[{ci[0]:.3f}, {ci[1]:.3f}]'}"
+            )
+            print(f"  {per_task['note']}")
 
     print("\n--- cost ---")
     print(f"{'metric':<16}{'n':>4}{'on':>12}{'off':>12}{'delta':>12}{'p':>10}")

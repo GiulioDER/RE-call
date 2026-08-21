@@ -37,7 +37,11 @@ if TYPE_CHECKING:  # pragma: no cover
 BARE = "bare"
 CLAUDE_MD = "claude_md"
 RECALL = "recall"
+#: `CLAUDE.md` plus RE-call. The additive arm, and the only one that isolates the memory layer
+#: rather than trading it against the hand-written file.
+CLAUDE_MD_RECALL = "claude_md_recall"
 OFF_ARM_PROFILES = (BARE, CLAUDE_MD)
+ON_ARM_PROFILES = (RECALL, CLAUDE_MD_RECALL)
 
 #: Tools every arm may use, so the task is doable in all of them. Docker is deliberately absent:
 #: see `DENIED_TOOLS`.
@@ -92,6 +96,47 @@ class ArmSpec:
             profile=CLAUDE_MD,
             append_system_prompt_file=prompt_file,
             metadata={"memory": "static", "prompt_file": str(prompt_file)},
+        )
+
+    @classmethod
+    def claude_md_recall(
+        cls,
+        spec: "StdioRecallSpec",
+        config_path: str | Path,
+        combined_prompt_file: str | Path,
+    ) -> "ArmSpec":
+        """`CLAUDE.md` **and** RE-call: the configuration a real user would actually run.
+
+        This is the arm that makes the comparison additive rather than substitutional. The earlier
+        `recall` arm REPLACED the hand-written file, which measured something nobody does and
+        produced a control failure that said so: where a fact lived in `CLAUDE.md`, the arm holding
+        `CLAUDE.md` won by 38 points, because the other arm simply did not have it.
+
+        Against `claude_md` alone, the only difference here is the memory layer, so a difference in
+        outcome is attributable to it and to nothing else. It also turns the `both` and
+        `claude_md_only` traps into genuine controls: both arms hold the file, so both should avoid
+        those hazards, and any gap there is noise rather than treatment.
+
+        `combined_prompt_file` must already hold the static bundle followed by the RE-call
+        instruction; `write_claude_md_recall_prompt` builds it. One file, because
+        `--append-system-prompt-file` takes exactly one.
+        """
+
+        prefix = spec.tool_prefix()
+        return cls(
+            profile=CLAUDE_MD_RECALL,
+            mcp_config=str(spec.write_mcp_config(config_path)),
+            append_system_prompt_file=combined_prompt_file,
+            recall_tool_prefix=prefix,
+            extra_allowed_tools=(f"{prefix}recall_search", f"{prefix}recall_evidence"),
+            metadata={
+                "memory": "static+retrieved",
+                "transport": "stdio",
+                "tenant": spec.tenant,
+                "tool_prefix": prefix,
+                "prompt_file": str(combined_prompt_file),
+                "calibrated": True,
+            },
         )
 
     @classmethod
@@ -163,9 +208,9 @@ def build_configs(
     missing = [variant for variant in VARIANTS if variant not in specs]
     if missing:
         raise ValueError(f"an ArmSpec is required for every variant; missing {missing}")
-    if specs[RECALL_ON].profile != RECALL:
+    if specs[RECALL_ON].profile not in ON_ARM_PROFILES:
         raise ValueError(
-            f"the {RECALL_ON} arm must use the {RECALL!r} profile, got "
+            f"the {RECALL_ON} arm must use one of {ON_ARM_PROFILES}, got "
             f"{specs[RECALL_ON].profile!r}"
         )
     if specs[RECALL_OFF].profile not in OFF_ARM_PROFILES:
@@ -212,6 +257,32 @@ def write_recall_prompt(destination: str | Path, server: "WarmRecallServer") -> 
         ),
         encoding="utf-8",
     )
+    return target
+
+
+def write_claude_md_recall_prompt(
+    destination: str | Path,
+    *,
+    static_prompt: str | Path,
+    server_name: str,
+    tool_prefix: str,
+) -> Path:
+    """Build the additive arm's single system prompt: the static bundle, then the RE-call sentence.
+
+    `--append-system-prompt-file` takes ONE file, so the two halves have to be concatenated here
+    rather than passed separately. The order matters and is deliberate: the static memory first,
+    exactly as the `claude_md` arm receives it byte for byte, then the instruction about the tool.
+    Keeping the static half identical between the arms is what makes the difference between them
+    the memory layer and nothing else, and the artifact keeps the file so that is checkable.
+    """
+
+    target = Path(destination)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    static = Path(static_prompt).read_text(encoding="utf-8")
+    instruction = RECALL_SYSTEM_PROMPT.format(
+        server=server_name, tool=f"{tool_prefix}recall_search"
+    )
+    target.write_text(static.rstrip() + "\n\n" + instruction + "\n", encoding="utf-8")
     return target
 
 
