@@ -60,6 +60,7 @@ async def main() -> int:
         "not grading its own output",
     )
     parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--max-tokens", type=int, default=8192)
     args = parser.parse_args()
 
     artifacts = REPO_ROOT / "benchmarks" / "artifacts" / "agent_ab" / args.run_id
@@ -75,7 +76,15 @@ async def main() -> int:
     if not key:
         raise SystemExit("OPENROUTER_API_KEY is required to reach the judge")
     client = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=key)
-    llm = llm_factory(args.judge, provider="openai", client=client)
+    # max_tokens is load-bearing, not a tuning knob. These metrics decompose an answer into
+    # statements and emit them as structured output; an agent's transcript-length response
+    # produces enough of them to exceed a small default, and instructor then raises
+    # IncompleteOutputException. Measured before this was raised: 5 of 6 samples failed that way,
+    # and a scorer that silently recorded those as errors would have reported a quality result
+    # computed from one sixth of the run.
+    llm = llm_factory(
+        args.judge, provider="openai", client=client, max_tokens=args.max_tokens
+    )
 
     # weights=[1, 0] drops AnswerCorrectness's embedding half. The semantic-similarity term would
     # need a second provider and would reward an answer for sounding like the reference, which is
@@ -129,6 +138,7 @@ async def main() -> int:
         "judge_provider": "openrouter",
         "ragas_version": __import__("ragas").__version__,
         "python": sys.version.split()[0],
+        "judge_max_tokens": args.max_tokens,
         "metrics": {
             "answer_correctness": "weights=[1.0, 0.0], factual half only",
             "factual_correctness": "default",
