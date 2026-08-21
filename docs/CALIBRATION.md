@@ -151,14 +151,14 @@ scored it.
 ### Why there is no delta at which recalibration is demanded outright
 
 An earlier draft demanded it past `--max-corpus-delta`, reasoning that the labelled set had stopped
-describing the corpus. **Measured 2026-08-21 over 38 snapshots of two real corpus histories**
+describing the corpus. **Measured 2026-08-21 over 57 snapshots of three real corpus histories**
 (`docs/preregistrations/2026-08-21-calibration-drift-trigger.md`,
 `results/calibration_drift_2026-08-21.json`), that reasoning is wrong:
 
 - the frozen threshold first crossed the 0.10 error bound at a corpus delta of **0.945**, and never
   below it;
-- a delta-only rule at 0.25 fires on **37 of 38** snapshots and is right about **4**, a precision of
-  **0.11**;
+- a delta-only rule at 0.25 fires on **56 of 57** snapshots and is right about **5**, a precision of
+  **0.09**;
 - the labels were durable where the argument assumed rot. At delta 0.981 only **27.5%** of the
   answerable queries' original evidence chunks still existed, and false abstains were **0.025**;
 - what moved was the **false-confirm** rate, tracking corpus **growth** rather than change (Spearman

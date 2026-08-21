@@ -35,12 +35,12 @@ An earlier draft of this module reported `RECALIBRATE_REQUIRED` once the delta p
 `DEFAULT_MAX_CORPUS_DELTA`, on the reasoning that past that point the labelled query set describes a
 corpus that no longer exists. That reasoning is intuitive and **the measurement contradicts it**.
 
-Measured 2026-08-21 over 38 snapshots of two real corpus histories:
+Measured 2026-08-21 over 57 snapshots of three real corpus histories:
 
 - The frozen threshold first went over `DEFAULT_MAX_CARRY_FORWARD_ERROR` at a delta of **0.945**,
   and never below it.
-- A delta-only rule at 0.25 fires on **37 of 38** snapshots and is right about **4**, a precision of
-  **0.11**. It would have demanded recalibration on twenty consecutive states of this repository's
+- A delta-only rule at 0.25 fires on **56 of 57** snapshots and is right about **5**, a precision of
+  **0.09**. It would have demanded recalibration on twenty consecutive states of this repository's
   `docs/` where the threshold was measurably fine, several of them with a LOWER error than the day
   it was fitted.
 - The labels proved far more durable than the argument assumed. At delta 0.981 only **27.5%** of the
@@ -95,7 +95,7 @@ __all__ = [
 #: Corpus delta below which no probe is spent and nothing is reported.
 #:
 #: **A cost decision with a measured margin, not a tuned optimum, and the difference matters.**
-#: Measured 2026-08-21 over 38 snapshots of two real corpus histories
+#: Measured 2026-08-21 over 57 snapshots of three real corpus histories
 #: (`docs/preregistrations/2026-08-21-calibration-drift-trigger.md`,
 #: `results/calibration_drift_2026-08-21.json`): the frozen threshold first went over
 #: `DEFAULT_MAX_CARRY_FORWARD_ERROR` at a delta of **0.945**, and never below it. So this screen
@@ -114,7 +114,6 @@ __all__ = [
 #:     python -m benchmarks.calibration_drift --out results/calibration_drift.json
 #:     python -m benchmarks.calibration_drift --analyze results/calibration_drift.json
 DRIFT_SCREEN_DELTA = 0.05
-
 
 
 class DriftVerdict(StrEnum):

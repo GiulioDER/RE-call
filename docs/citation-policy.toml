@@ -81,3 +81,16 @@ reason = "registered predictions and their citations; never repointed after meas
 [[exempt]]
 path = "docs/their-harness-parity.md"
 reason = "cites a third party harness whose paths collide with this repository's"
+
+# The drift-trigger record, which has the same two zones as the two entries above: registered
+# predictions, then a measured result appended under a rule.
+#
+# It cites `recall/calibration_v2.py:210` and `:161` for `corpus_delta` and `threshold_error_rates`
+# as they stood when the prediction was written. Both have since moved, because the same branch
+# extracted `score_query_set` and `stored_query_set` out of `calibrate` and `carry_forward`. The
+# stale pointer is the more informative artefact: it shows what the tree looked like when the
+# prediction was made, which is exactly what a pre-registration is evidence of.
+[[frozen_above]]
+path = "docs/preregistrations/2026-08-21-calibration-drift-trigger.md"
+marker = "## A note on line numbers below this rule"
+reason = "citations above this rule are registered predictions and are never updated"
