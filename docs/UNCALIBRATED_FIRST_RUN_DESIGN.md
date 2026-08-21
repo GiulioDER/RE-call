@@ -393,7 +393,7 @@ disagreement is itself reportable.
 
 **Why.** `resolve()` re-derives the lineage comparison on every query, which is what catches a
 `forget()` that rewrote `corpus_fingerprint` (`recall/generations.py:1235`) or a `publish()` that
-superseded the artifact (`recall/calibration_v2.py:975`). A cached mode cannot catch either.
+superseded the artifact (`recall/calibration_v2.py:977`). A cached mode cannot catch either.
 Making it authoritative would require every current and future invalidator to update it, which is
 exactly the growing-enumeration failure this design criticises in F2. **A cache that must be
 invalidated by an open-ended set of writers is a bug with a schedule.**
@@ -425,7 +425,7 @@ failure-code API is untouched and the fail-closed default stays exactly as it is
 
 The question assumed provisional was a *weaker certification*. The Q2 measurement falsified that:
 a generated query set **passes** `Calibration.certified`, and `publish()` accepts the artifact
-(`recall/calibration_v2.py:977` only refuses `not artifact.certified`). So certification and
+(`recall/calibration_v2.py:979` only refuses `not artifact.certified`). So certification and
 provenance are **two independent axes**, and the original framing conflated them.
 
 So: `CalibrationStatus` keeps meaning "is this artifact bound and statistically sound". Provenance
