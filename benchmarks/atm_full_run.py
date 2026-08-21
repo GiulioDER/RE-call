@@ -452,43 +452,51 @@ def run(args: argparse.Namespace) -> int:
             )
 
         completed = len(answers)
-        with ThreadPoolExecutor(max_workers=args.answer_workers) as executor:
-            futures = [executor.submit(answer_one, item) for item in pending]
-            for future in as_completed(futures):
-                position, question_id, answer_row, usage, returned_model = future.result()
-                record = {
-                    "position": position,
-                    "id": question_id,
-                    "source_commit": git_revision(),
-                    "answer": answer_row["answer"],
-                    "answer_sha256": hashlib.sha256(
-                        answer_row["answer"].encode("utf-8")
-                    ).hexdigest(),
-                    "usage": usage,
-                    "returned_model": returned_model,
-                }
-                _write_json(answer_records_path / f"{position:04d}.json", record)
-                answer_records[question_id] = record
-                _append_jsonl(answers_path, answer_row)
-                answers[question_id] = answer_row
-                usage_total["calls"] += 1
-                for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                    usage_total[key] += usage[key]
-                if returned_model:
-                    returned_models.add(returned_model)
-                completed += 1
-                _write_json(
-                    usage_checkpoint_path,
-                    {
-                        "benchmark": "ATM-Bench",
-                        "question_count": len(questions),
-                        "answer_count": len(answers),
-                        "usage": usage_total,
-                        "answer_models_returned": sorted(returned_models),
-                        "git_revision": git_revision(),
-                    },
-                )
-                print(f"answered {completed}/{len(questions)} question_position={position}", flush=True)
+        def accept_answer(result: tuple[int, str, dict[str, Any], dict[str, int], str | None]) -> None:
+            nonlocal completed
+            position, question_id, answer_row, usage, returned_model = result
+            record = {
+                "position": position,
+                "id": question_id,
+                "source_commit": git_revision(),
+                "answer": answer_row["answer"],
+                "answer_sha256": hashlib.sha256(
+                    answer_row["answer"].encode("utf-8")
+                ).hexdigest(),
+                "usage": usage,
+                "returned_model": returned_model,
+            }
+            _write_json(answer_records_path / f"{position:04d}.json", record)
+            answer_records[question_id] = record
+            _append_jsonl(answers_path, answer_row)
+            answers[question_id] = answer_row
+            usage_total["calls"] += 1
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                usage_total[key] += usage[key]
+            if returned_model:
+                returned_models.add(returned_model)
+            completed += 1
+            _write_json(
+                usage_checkpoint_path,
+                {
+                    "benchmark": "ATM-Bench",
+                    "question_count": len(questions),
+                    "answer_count": len(answers),
+                    "usage": usage_total,
+                    "answer_models_returned": sorted(returned_models),
+                    "git_revision": git_revision(),
+                },
+            )
+            print(f"answered {completed}/{len(questions)} question_position={position}", flush=True)
+
+        if args.answer_workers == 1:
+            for item in pending:
+                accept_answer(answer_one(item))
+        else:
+            with ThreadPoolExecutor(max_workers=args.answer_workers) as executor:
+                futures = [executor.submit(answer_one, item) for item in pending]
+                for future in as_completed(futures):
+                    accept_answer(future.result())
 
         if len(answer_records) != len(questions):
             raise RuntimeError(
