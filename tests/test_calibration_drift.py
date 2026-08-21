@@ -19,6 +19,8 @@ gate drift apart without anything failing.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from recall.calibration_v2 import (
@@ -430,3 +432,111 @@ def test_auto_skips_rather_than_inventing_a_first_calibration(carry_tenant) -> N
     assert outcome.action == "skipped"
     assert outcome.calibration_id is None
     assert "human decision" in outcome.reason
+
+
+# --------------------------------------------------------------------------------------------
+# The CLI wiring. The tests above exercise the decision; these exercise the dispatch, which is
+# where a feature that works is still unreachable.
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _cli_embedder(monkeypatch):
+    """Make `--embedder` resolve to the fixture embedder these tests build generations with.
+
+    Only the model is stubbed. Argparse, the dispatch branch, the report rendering and the exit
+    codes are the real ones, which is the half that the library tests cannot reach: a correct
+    `evaluate_drift` behind a mutually-exclusive group that refuses both arguments is a feature
+    nobody can run.
+    """
+    from recall import cli
+
+    monkeypatch.setattr(cli, "_make_embedder", lambda _name: _CarryEmbedder())
+    monkeypatch.setenv("RECALL_TRUST_MODE", "development")
+
+
+def test_cli_drift_refuses_both_a_generation_and_a_path(capsys) -> None:
+    """Argparse enforces it, so the refusal costs no database and no model.
+
+    Named as a test because the mutual exclusion is a design decision, not a formality: a
+    generation can be probed and a directory cannot, so accepting both would mean silently
+    choosing which question was asked.
+    """
+    from recall.cli import main
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--tenant", "t", "calibration", "drift", "--generation", "g", "--path", "."])
+    assert exit_info.value.code == 2
+    assert "not allowed with" in capsys.readouterr().err
+
+
+@requires_db
+def test_cli_drift_reports_a_directory_and_stays_quiet_under_strict(
+    carry_tenant, tmp_path, capsys, _cli_embedder  # noqa: F811
+) -> None:
+    """An uncalibrated tenant: UNKNOWN, and `--strict` must NOT exit 1 on it.
+
+    The exit code is the assertion that matters. `--strict` is for CI, and a fresh tenant has no
+    calibration by definition; failing the build there would train everyone to drop the flag.
+    """
+    from recall.cli import main
+
+    tenant, _manager = carry_tenant
+    (tmp_path / "a.md").write_text("alpha", encoding="utf-8")
+    main(["--tenant", tenant, "--dsn", TEST_DSN, "calibration", "drift",
+          "--path", str(tmp_path), "--strict"])
+    out = capsys.readouterr().out
+    assert "verdict:     UNKNOWN" in out
+    assert "not low drift" in out
+
+
+@requires_db
+def test_cli_drift_probes_a_generation_and_exits_1_under_strict(
+    carry_tenant, capsys, _cli_embedder  # noqa: F811
+) -> None:
+    """The whole path end to end: build, calibrate, publish, poison, ask the CLI."""
+    from recall.cli import main
+
+    tenant, manager = carry_tenant
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+    clean = _CarryEmbedder()
+    parent = _ready(manager, clean, _bodies(), "v1")
+    repository.publish(repository.calibrate(parent, _labels(), clean).calibration_id)
+    child = _ready(manager, _CarryEmbedder(poisoned=True), _bodies(added=2), "v2")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--tenant", tenant, "--dsn", TEST_DSN, "calibration", "drift",
+              "--generation", child, "--strict"])
+    assert exit_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "verdict:     RECALIBRATE_REQUIRED" in out
+    # The numbers behind the verdict are printed, not just the verdict. An operator told to
+    # recalibrate and not told what failed cannot tell a real drift from a broken monitor.
+    assert "false abstain" in out and "false confirm" in out
+    assert "refit would be" in out
+
+
+@requires_db
+def test_cli_drift_json_is_machine_readable(carry_tenant, tmp_path, capsys, _cli_embedder) -> None:  # noqa: F811, E501
+    from recall.cli import main
+
+    tenant, _manager = carry_tenant
+    (tmp_path / "a.md").write_text("alpha", encoding="utf-8")
+    main(["--tenant", tenant, "--dsn", TEST_DSN, "calibration", "drift",
+          "--path", str(tmp_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["verdict"] == "unknown"
+    assert payload["probe"] is None
+
+
+@requires_db
+def test_cli_auto_on_an_uncalibrated_tenant_exits_zero(carry_tenant, capsys, _cli_embedder) -> None:  # noqa: F811, E501
+    """`skipped` is a correct outcome, so it must not look like a failure to a post-build hook."""
+    from recall.cli import main
+
+    tenant, manager = carry_tenant
+    generation = _ready(manager, _CarryEmbedder(), _bodies(), "v1")
+    main(["--tenant", tenant, "--dsn", TEST_DSN, "calibration", "auto", "--generation", generation])
+    out = capsys.readouterr().out
+    assert "action: skipped" in out
+    assert "human decision" in out
