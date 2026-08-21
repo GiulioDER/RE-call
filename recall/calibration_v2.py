@@ -557,7 +557,9 @@ class CalibrationRepository:
         try:
             store.check_schema()
             with store.pin_generation(generation_id):
-                return measure_top_cosines(store, embedder, list(labels))
+                # Real dicts, not the stored Mappings. `measure_top_cosines` is annotated
+                # `list[dict]`, and `canonical_query_set` hands back frozen mappings.
+                return measure_top_cosines(store, embedder, [dict(item) for item in labels])
         finally:
             store.close()
 

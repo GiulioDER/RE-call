@@ -2443,7 +2443,10 @@ def main(argv: list[str] | None = None) -> None:
                 # probe, so a delta below the screen (the common case on a live corpus) costs no
                 # model load at all: seconds on a warm machine, a download on a cold one.
                 probing = args.probe and args.generation is not None
-                report = evaluate_drift(
+                # `drift_report`, not `report`. `main()` is one long function and `report` is
+                # already bound to the wizard's `InventoryReport` further up, which is the same
+                # collision the `wizard_report` and `uninstall_report` names above exist to avoid.
+                drift_report = evaluate_drift(
                     repository,
                     generation_id=args.generation,
                     corpus_objects=(
@@ -2457,11 +2460,11 @@ def main(argv: list[str] | None = None) -> None:
                     probe=args.probe,
                 )
                 print(
-                    json.dumps(report.to_dict(), indent=2)
+                    json.dumps(drift_report.to_dict(), indent=2)
                     if args.json
-                    else report.format()
+                    else drift_report.format()
                 )
-                if args.strict and report.needs_action:
+                if args.strict and drift_report.needs_action:
                     raise SystemExit(1)
             elif args.calibration_cmd == "auto":
                 from recall.drift import auto_recalibrate

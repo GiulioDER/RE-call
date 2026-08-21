@@ -63,7 +63,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict, cast
 
 from recall.calibration import MIN_SEPARABILITY, Calibration, from_samples, separability
 from recall.calibration_v2 import (
@@ -163,6 +163,24 @@ class AutoCalibrationMode(StrEnum):
                 f"RECALL_AUTO_CALIBRATE={raw!r} is not one of "
                 f"{', '.join(mode.value for mode in cls)}"
             ) from None
+
+
+class _CommonFields(TypedDict):
+    """The fields every verdict below carries, spelled once.
+
+    A `TypedDict` rather than a plain dict because `**common` on a plain one collapses to
+    `dict[str, object]` and every field of every `DriftReport` then reads as a type error. Spelled
+    here, the splat is checked: adding a field to `DriftReport` without adding it here fails the
+    type check rather than failing at the first caller who hits that branch.
+    """
+
+    tenant_id: str
+    calibration_id: str | None
+    baseline_generation_id: str | None
+    candidate: str
+    delta: Mapping[str, Any]
+    screen_delta: float
+    max_error: float
 
 
 @dataclass(frozen=True)
@@ -396,7 +414,7 @@ def evaluate_drift(
     )
     delta = corpus_delta(baseline, candidate_objects)
     magnitude = float(delta["corpus_delta"])
-    common = {
+    common: _CommonFields = {
         "tenant_id": tenant,
         "calibration_id": artifact.calibration_id,
         "baseline_generation_id": artifact.generation_id,
@@ -457,7 +475,7 @@ def evaluate_drift(
     # `callable()` test says "this is not a factory" by elimination, and the day somebody adds
     # `__call__` to an embedder it would silently start invoking the model as though it built one.
     # Asking for the attribute that makes it an embedder cannot go wrong that way.
-    resolved = embedder if hasattr(embedder, "embed") else embedder()
+    resolved = cast("Embedder", embedder) if hasattr(embedder, "embed") else embedder()
     try:
         measured = _probe(repository, artifact, generation_id, resolved, max_error=max_error)
     except CalibrationError as exc:
@@ -589,7 +607,9 @@ def auto_recalibrate(
             max_corpus_delta=max_corpus_delta,
         )
     except CalibrationError as exc:
-        carried = None
+        # `carried` is deliberately left unbound here rather than set to None. It is only ever read
+        # inside the `else` branch, where the call succeeded, so a None binding would widen its
+        # type for no reader and make every later attribute access look unsafe.
         carry_refusal = str(exc)
     else:
         carry_refusal = ""

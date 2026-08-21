@@ -722,8 +722,8 @@ def _sizing(specs: Sequence[CorpusSpec], count: int) -> None:
             per_snapshot.append((snapshot.label, len(snapshot.sources), len(chunks), len(fresh)))
         total += len(seen)
         print(f"\n{spec.id}: {len(per_snapshot)} snapshots, {len(seen)} distinct chunks to embed")
-        for label, sources, chunks, fresh in per_snapshot:
-            print(f"   {label:>14}  sources={sources:>4}  chunks={chunks:>5}  new={fresh:>5}")
+        for label, n_sources, n_chunks, n_fresh in per_snapshot:
+            print(f"   {label:>14}  sources={n_sources:>4}  chunks={n_chunks:>5}  new={n_fresh:>5}")
     print(f"\nTOTAL distinct chunks to embed: {total}")
 
 
