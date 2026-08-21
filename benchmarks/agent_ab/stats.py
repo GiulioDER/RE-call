@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 import random
+import statistics
 from dataclasses import asdict, dataclass
 from typing import Any, Sequence
 
@@ -42,6 +43,16 @@ class PairedResult:
     on_mean: float | None
     off_mean: float | None
     delta_mean: float | None
+    #: The MEDIAN within-pair difference, reported beside the mean and never instead of it.
+    #:
+    #: These distributions are skewed by construction, and the two statistics can disagree about
+    #: the sign. Measured on `agent-ab-additive-002` wall time: mean -33,035 ms but median
+    #: +1,703 ms, because the on arm was slower in 29 of 48 pairs while a handful of baseline
+    #: sessions explored for 400 seconds and dragged the mean down. Reporting the mean alone
+    #: would have claimed "33 seconds faster" for a configuration that is typically slightly
+    #: SLOWER and occasionally saves an enormous amount. The rank-based p-value tracks the
+    #: median, so a mean-only table also looks inconsistent with its own significance test.
+    delta_median: float | None
     delta_ci: tuple[float, float] | None
     p_value: float | None
     test: str
@@ -217,7 +228,8 @@ def compare_binary(metric: str, pairs: Sequence[tuple[bool, bool]]) -> PairedRes
     if n < MIN_PAIRS:
         return PairedResult(
             metric=metric, n_pairs=n, on_mean=_mean([float(x) for x in on]),
-            off_mean=_mean([float(x) for x in off]), delta_mean=None, delta_ci=None,
+            off_mean=_mean([float(x) for x in off]), delta_mean=None, delta_median=None,
+            delta_ci=None,
             p_value=None, test="mcnemar_exact",
             note=f"only {n} pairs; below {MIN_PAIRS} no split of the discordant pairs can reach "
                  f"p < 0.05, so a p-value here would describe the sample size, not the effect",
@@ -230,6 +242,7 @@ def compare_binary(metric: str, pairs: Sequence[tuple[bool, bool]]) -> PairedRes
     return PairedResult(
         metric=metric, n_pairs=n, on_mean=_mean([float(x) for x in on]),
         off_mean=_mean([float(x) for x in off]), delta_mean=_mean(deltas),
+        delta_median=statistics.median(deltas) if deltas else None,
         delta_ci=paired_bootstrap(deltas), p_value=p, test="mcnemar_exact", note=note,
     )
 
@@ -251,7 +264,8 @@ def compare_continuous(metric: str, pairs: Sequence[tuple[float, float]]) -> Pai
     if n < MIN_PAIRS:
         return PairedResult(
             metric=metric, n_pairs=n, on_mean=_mean([a for a, _ in usable]),
-            off_mean=_mean([b for _, b in usable]), delta_mean=None, delta_ci=None,
+            off_mean=_mean([b for _, b in usable]), delta_mean=None, delta_median=None,
+            delta_ci=None,
             p_value=None, test="wilcoxon_signed_rank",
             note=(note + "; " if note else "") + f"only {n} usable pairs, below {MIN_PAIRS}",
         )
@@ -259,6 +273,7 @@ def compare_continuous(metric: str, pairs: Sequence[tuple[float, float]]) -> Pai
     return PairedResult(
         metric=metric, n_pairs=n, on_mean=_mean([a for a, _ in usable]),
         off_mean=_mean([b for _, b in usable]), delta_mean=_mean(deltas),
+        delta_median=statistics.median(deltas) if deltas else None,
         delta_ci=paired_bootstrap(deltas), p_value=wilcoxon_signed_rank(deltas),
         test="wilcoxon_signed_rank", note=note,
     )

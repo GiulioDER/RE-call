@@ -255,7 +255,10 @@ def main() -> int:
             print(f"  {per_task['note']}")
 
     print("\n--- cost ---")
-    print(f"{'metric':<16}{'n':>4}{'on':>12}{'off':>12}{'delta':>12}{'p':>10}")
+    print(
+        f"{'metric':<16}{'n':>4}{'on mean':>12}{'off mean':>12}"
+        f"{'delta mean':>12}{'delta med':>12}{'p':>10}"
+    )
     for metric, getter in (
         ("input_tokens", lambda r: r.get("input_tokens")),
         ("output_tokens", lambda r: r.get("output_tokens")),
@@ -269,8 +272,19 @@ def main() -> int:
         print(
             f"{metric:<16}{result.n_pairs:>4}{_fmt(result.on_mean, 0):>12}"
             f"{_fmt(result.off_mean, 0):>12}{_fmt(result.delta_mean, 0):>12}"
-            f"{_p(result.p_value):>10}"
+            f"{_fmt(result.delta_median, 0):>12}{_p(result.p_value):>10}"
         )
+        # The two can disagree in SIGN on a skewed metric. Say so where it happens rather than
+        # leaving a reader to notice that the mean and the p-value tell different stories.
+        if (
+            result.delta_mean is not None
+            and result.delta_median is not None
+            and result.delta_mean * result.delta_median < 0
+        ):
+            print(
+                "                ^ mean and median DISAGREE in sign: the mean is driven by "
+                "outliers, the rank-based p-value follows the median"
+            )
         analysis["cost"][metric] = result.to_dict()
 
     ragas_path = artifacts / "ragas-scores.json"
