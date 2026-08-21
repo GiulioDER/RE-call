@@ -1594,8 +1594,10 @@ def main(argv: list[str] | None = None) -> None:
         "--screen-delta",
         type=float,
         default=None,
-        help=f"corpus delta below which nothing is reported (default {DRIFT_SCREEN_DELTA}, "
-        f"measured; see docs/preregistrations/2026-08-21-calibration-drift-trigger.md)",
+        help=f"corpus delta below which no probe is spent (default {DRIFT_SCREEN_DELTA}). Low on "
+        f"purpose: firing costs one probe, staying quiet costs a threshold that has silently "
+        f"stopped deciding, and the smallest measured failure was at a delta of 0.945 "
+        f"(docs/preregistrations/2026-08-21-calibration-drift-trigger.md)",
     )
     p_cal_drift.add_argument(
         "--no-probe",
