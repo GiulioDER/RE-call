@@ -110,6 +110,19 @@ DOCKERFILE_NAME = "Dockerfile"
 #: and extracts nothing from them, which is a silent failure rather than a missing feature.
 _IMAGE_EXTRAS = "mcp,fastembed,documents"
 
+#: The extras available before `documents` was published. Used when the pinned version predates it.
+_LEGACY_IMAGE_EXTRAS = "mcp,fastembed"
+
+#: The first release that publishes the `documents` extra. Pinning it on anything older produces a
+#: Dockerfile that CANNOT build, because the post-install import assertion below fails on the
+#: packages the extra would have brought.
+#:
+#: ⛔ This exists because making the Dockerfile follow the INHERITED image tag (so a stack keeps
+#: serving the recall it was built with) turned a silent wrong-image bug into an unbuildable one:
+#: adding a project to a 0.9.1 stack wrote `recall-rag[...,documents]==0.9.1`, and `documents`
+#: first shipped in 0.9.6.
+_DOCUMENTS_EXTRA_SINCE = (0, 9, 6)
+
 #: Where pg18 wants its single mount. See the module docstring; the wrong path exits 1.
 DB_MOUNT = "/var/lib/postgresql"
 
@@ -376,6 +389,54 @@ def tenant_service(base_env: dict[str, str], *, image: str) -> dict[str, object]
     }
 
 
+def _publishes_documents(version: str) -> bool:
+    """Whether `version` is a release that published the `documents` extra.
+
+    Unparseable versions are treated as CURRENT (True). A pre-release or a local build carries the
+    current extras by definition; guessing "legacy" for anything unfamiliar would silently drop
+    document extraction from images that should have it, which is the quieter of the two failures
+    and therefore the wrong default.
+    """
+    # ⛔ **Leading digits only.** The first version of this joined EVERY digit in the component,
+    # so `"5rc1"` became 51 and `_publishes_documents("0.9.5rc1")` returned True — pinning the
+    # `documents` extra on a release that predates it, which is precisely the unbuildable image this
+    # function exists to prevent. Measured before the fix: 0.9.5rc1, 0.9.2b3 and 0.9.1rc1 all True.
+    #
+    # A suffix also means PRE-release, which sorts BELOW the release it precedes: 0.9.6rc1 comes
+    # before 0.9.6 and must not claim an extra that 0.9.6 introduced.
+    # ⛔ **Normalised first, because two shapes reached the wrong answer.** Measured: `v0.9.5`
+    # and `0.9.post1` both returned True and pinned the `documents` extra on a release that
+    # predates it, which builds an image whose own import assertion cannot pass; and `0.9.6+local`
+    # returned False and silently dropped document extraction, contradicting this function's own
+    # docstring. A leading `v` is an ordinary Docker tag spelling, and PEP 440 says local metadata
+    # sorts ABOVE its base release while `.post` is a POST-release, not a pre-release.
+    normalised = version.strip().lstrip("vV").split("+", 1)[0]
+    parts: list[int] = []
+    prerelease = False
+    for piece in normalised.split(".")[:3]:
+        match = re.match(r"(\d+)(.*)", piece.strip())
+        if match is None:
+            # ⚠️ **Unparseable means NOTHING parsed, not "this component did not".** Bailing on the
+            # first non-numeric component made `0.9.post1` return True and pin an extra that 0.9.6
+            # introduced, because `post1` fell through to the default. A version that has already
+            # yielded a numeric release is compared on what it yielded: `0.9.post1` is a post
+            # release of 0.9, which sorts above 0.9 and well below 0.9.6.
+            if parts:
+                break
+            # Genuinely unparseable, which is the documented default: a local or branch build
+            # carries the CURRENT extras, because dropping document extraction from an image that
+            # should have it is the quieter of the two failures.
+            return True
+        parts.append(int(match.group(1)))
+        # Only an alphabetic pre-release marker demotes the version. `post` and `rev` sort ABOVE
+        # the release they follow, so folding every suffix into "pre-release" was wrong in the
+        # direction that loses the extra.
+        suffix = match.group(2).lstrip(".-_").lower()
+        prerelease = prerelease or suffix.startswith(("a", "b", "c", "rc", "dev", "pre"))
+    exact = tuple(parts) == _DOCUMENTS_EXTRA_SINCE
+    return tuple(parts) > _DOCUMENTS_EXTRA_SINCE or (exact and not prerelease)
+
+
 def dockerfile_text(version: str | None = None) -> str:
     """The Dockerfile the generated stack builds from.
 
@@ -393,6 +454,8 @@ def dockerfile_text(version: str | None = None) -> str:
         from recall import __version__
 
         version = __version__
+    # The extras follow the PINNED version, not the running one. See `_DOCUMENTS_EXTRA_SINCE`.
+    extras = _IMAGE_EXTRAS if _publishes_documents(version) else _LEGACY_IMAGE_EXTRAS
     # LibreOffice is a large layer and a slow build. It is here for parity with
     # `docker/desktop/Dockerfile`: the UI offers .docx/.xlsx/.pptx, and without it those files are
     # accepted and yield nothing, which reads as recall being bad at documents rather than as a
@@ -408,7 +471,7 @@ def dockerfile_text(version: str | None = None) -> str:
         "        libreoffice-impress \\\n"
         "        libreoffice-writer \\\n"
         "    && rm -rf /var/lib/apt/lists/*\n"
-        f'RUN pip install --no-cache-dir "recall-rag[{_IMAGE_EXTRAS}]=={version}"\n'
+        f'RUN pip install --no-cache-dir "recall-rag[{extras}]=={version}"\n'
         "\n"
         "# ⚠️ **pip only WARNS about an extra a release does not provide.** So a pin whose version\n"
         "# predates an extra installs cleanly, the image builds, the container runs, and the\n"
@@ -417,10 +480,40 @@ def dockerfile_text(version: str | None = None) -> str:
         "# extract, fastembed, finetune, langchain, llamaindex, mcp, pool, rerank, s3, sparse and\n"
         "# voyage: `documents` is NOT among them. These imports turn that into a build failure,\n"
         "# where it is cheap and legible, instead of an extraction that silently returns nothing.\n"
-        "RUN python -c \"import recall_mcp.server\" \\\n"
-        " && python -c \"import fastembed\" \\\n"
-        " && python -c \"import pypdf, docx, openpyxl, pptx, bs4\"\n"
+        + _import_assertion(extras)
     )
+
+
+def _import_assertion(extras: str) -> str:
+    """The post-install `RUN` that turns a silently-missing extra into a build failure.
+
+    ⛔ **Joined from a list so the line continuations are STRUCTURAL, not hand-placed.** The
+    previous version wrote each fragment as its own string literal with a trailing `\\\\`, and
+    moving the last fragment into a conditional expression silently made the fragment ABOVE it
+    the end of the RUN instruction. Docker then parsed the next line as a top-level instruction
+    and failed with `unknown instruction: &&` — so every Dockerfile generated for 0.9.6 or later
+    was invalid, which is strictly worse than the unbuildable-pin bug that refactor was fixing.
+
+    The substring tests could not see it: they assert that a fragment is PRESENT, and a
+    continuation is a property of the line before it. `test_every_generated_dockerfile_is_syntactically_valid`
+    asserts the invariant instead. (This named a test that was never written under that name, which
+    is the quietest kind of stale reference: it points a future reader at nothing, on the one
+    invariant a substring test cannot express.)
+    """
+    checks = [
+        'python -c "import recall_mcp.server"',
+        'python -c "import fastembed"',
+    ]
+    trailer = ""
+    if extras == _IMAGE_EXTRAS:
+        checks.append('python -c "import pypdf, docx, openpyxl, pptx, bs4"')
+    else:
+        trailer = (
+            "# `documents` is not published for this pinned version, so the extraction\n"
+            "# packages are deliberately not asserted; this image reads text formats only.\n"
+        )
+    body = " \\\n && ".join(checks)
+    return f"RUN {body}\n{trailer}"
 
 
 def write_dockerfile(directory: Path, version: str | None = None) -> Path:

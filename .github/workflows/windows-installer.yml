@@ -38,7 +38,16 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    outputs:
+      # Consumed by `attach`, so the two jobs cannot disagree about whether a signed bundle exists.
+      signed: ${{ steps.outcome.outputs.signed }}
     permissions:
+      # ⛔ **`read`, and the attach lives in its own job below.** This was briefly `write`, with a
+      # comment claiming the grant was "scoped to this step". It is not: a job-level `permissions:`
+      # block applies the token to EVERY step in the job, and a step-level `if:` gates execution
+      # rather than the token. So the third-party signing action and PyInstaller executing
+      # repository code all ran with a repo-writable token, on same-repo pull requests too — the
+      # fork-PR argument in that comment does not cover them. Three auditors said so.
       contents: read
       # SignPath's action reads the workflow run and the uploaded artifact to bind the signature to
       # a specific, reproducible build rather than to whatever bytes were handed to it.
@@ -170,7 +179,17 @@ jobs:
           $tool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
             Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
           if (-not $tool) { throw "signtool.exe not found on the runner" }
-          & $tool.FullName verify /pa /v dist-signed\recall-install\recall-install.exe
+          # ⚠️ **The layout is listed before it is assumed.** `upload-artifact` computes the
+          # artifact root as the least common ancestor of the matched files, so uploading
+          # `dist/recall-install` produces entries relative to THAT directory — the folder name is
+          # stripped. SignPath then extracts into `dist-signed`, and the exe is at
+          # `dist-signed/recall-install.exe`, not `dist-signed/recall-install/recall-install.exe`.
+          # This branch has never run (no credentials yet), so nothing has caught it; the listing
+          # makes the real shape visible in the log the first time it does.
+          Get-ChildItem -Recurse dist-signed | Select-Object -First 20 FullName | Format-Table -AutoSize
+          $exe = Get-ChildItem -Recurse dist-signed -Filter recall-install.exe | Select-Object -First 1
+          if (-not $exe) { throw "no recall-install.exe under dist-signed" }
+          & $tool.FullName verify /pa /v $exe.FullName
           if ($LASTEXITCODE -ne 0) { throw "the signature does not verify" }
 
       - name: Upload the signed bundle
@@ -178,5 +197,98 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: recall-install-windows
-          path: dist-signed/recall-install
+          # `dist-signed`, not `dist-signed/recall-install`: see the verify step above for why that
+          # directory level does not exist.
+          path: dist-signed
           if-no-files-found: error
+
+      - name: Record whether a signed bundle exists
+        id: outcome
+        shell: pwsh
+        run: |
+          "signed=$('${{ steps.sign.outcome }}' -eq 'success')".ToLower() >> $env:GITHUB_OUTPUT
+
+  # ⛔ **A separate job, so the write grant is not held while third-party actions and
+  # repository-authored build code run.** Without this the whole build ran with a repo-writable
+  # token on every trigger including same-repo pull requests.
+  attach:
+    needs: build
+    # ⛔ **`event_name == 'push'`, not just a tag ref.** The signing policy one job up selects
+    # `release-signing` on a push and `test-signing` otherwise. A `workflow_dispatch` aimed at a tag
+    # therefore signs with the TEST policy while `startsWith(github.ref, 'refs/tags/v')` is still
+    # true, so gating on the ref alone would attach a test-signed bundle to a public release. One
+    # predicate for both decisions.
+    if: github.event_name == 'push' && needs.build.outputs.signed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: recall-install-windows
+          path: signed
+
+      # ⚠️ **The release does not exist yet when this workflow starts, and that is by design.**
+      # `release.yml` creates it in a job that `needs: publish`, and `publish` sits in the `pypi`
+      # environment behind a REQUIRED HUMAN REVIEWER. So the release appears only after somebody
+      # approves the PyPI publish, which is unbounded in time. The first version of this step called
+      # `gh release upload` immediately and would have failed on essentially every tag — the same
+      # end state (a red tag build with no asset) that adding it was meant to remove. Two auditors
+      # found this independently.
+      #
+      # Waiting rather than creating: `release.yml`'s own header states the ordering rule that the
+      # release follows the publish, and creating it here would break that.
+      - name: Wait for the release to exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # ⛔ **The tag reaches the script as an ENVIRONMENT variable, never as `${{ }}` inside it.**
+          # Expression interpolation happens before the shell ever sees the line, so a tag carrying
+          # shell metacharacters would be substituted into the script text itself. Tags here are
+          # pushed by maintainers, so this is a small hole; it is also a free one to close, and the
+          # habit is what matters on a workflow that holds a repo-writable token.
+          TAG: ${{ github.ref_name }}
+        run: |
+          # ⚠️ **Backs off, because what this waits on is a PERSON.** The release is created by
+          # `release.yml` in a job that needs the `pypi` environment's required reviewer, so the
+          # delay is however long an approval takes, not however long a machine takes. A flat
+          # 60 × 30s poll billed up to half an hour of runner time and still gave up after thirty
+          # minutes. Doubling to a 600s ceiling reaches 25.75 minutes by check 8 and gives up after
+          # 12 checks, the last at 65.75 minutes, for 75.8 minutes of billed wall clock. Those are
+          # simulated from the loop as written, not estimated: an earlier version of this comment
+          # claimed a 600s cap the code did not implement.
+          delay=15
+          waited=0
+          for attempt in $(seq 1 12); do
+            if gh release view "${TAG}" >/dev/null 2>&1; then
+              echo "release ${TAG} is present after ${attempt} check(s), ${waited}s"
+              exit 0
+            fi
+            echo "waiting ${delay}s for release ${TAG} (check ${attempt}/12, ${waited}s so far)"
+            sleep "${delay}"
+            waited=$((waited + delay))
+            # ⛔ **Cap the PRODUCT, not the operand.** `if [ delay -lt 600 ]` tested before
+            # doubling, so 480 doubled to 960 and froze there: the real ceiling was 960s and the
+            # total 111.8 minutes, against a comment claiming 600s and roughly 30 minutes. Two
+            # auditors simulated the loop and got the same sequence.
+            delay=$((delay * 2))
+            if [ "${delay}" -gt 600 ]; then delay=600; fi
+          done
+          echo "::error::the release for ${TAG} was not there at the last check. It is created by"
+          echo "::error::release.yml AFTER the pypi environment's required reviewer approves the"
+          echo "::error::publish, so approve that first and re-run this job."
+          exit 1
+
+      - name: Attach the signed bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # See the wait step above: the tag arrives as data, not as script text.
+          TAG: ${{ github.ref_name }}
+        run: |
+          tag="${TAG}"
+          zip="recall-install-${tag}-windows-x64.zip"
+          # Normalised to one named folder so the asset unpacks predictably, rather than dumping the
+          # exe and its `_internal/` directory loose into somebody's downloads.
+          mkdir -p stage/recall-install
+          cp -r signed/* stage/recall-install/
+          (cd stage && zip -rq "../${zip}" recall-install)
+          gh release upload "${tag}" "${zip}" --clobber

@@ -8,6 +8,7 @@ below that begins "never" or "keeps" is the more important half of this file.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +51,6 @@ def _install(root: Path, *, project_root: Path | None = None) -> Path:
     if project_root is not None:
         config["project_root"] = str(project_root)
     (data_root / "wizard.json").write_text(json.dumps(config), encoding="utf-8")
-    (data_root / "runtime.json").write_text("{}", encoding="utf-8")
     for leaf in ("docs", "code", "memory"):
         folder = data_root / leaf
         folder.mkdir()
@@ -302,11 +302,26 @@ def test_a_failure_does_not_abort_the_rest(tmp_path: Path) -> None:
     report = execute(plan, runner=_broken)
 
     assert report.failed, "the docker failure must be reported"
-    assert not (data_root / COMPOSE_NAME).exists(), (
-        "the files must still be removed: a failure on one kind of resource is not a reason to "
-        "leave every other kind behind"
-    )
     assert "Cannot connect to the Docker daemon" in report.render()
+
+    # ⚠️ **This expectation CHANGED, deliberately, for finding BUG-004.** It used to assert the
+    # compose file was removed too. That is wrong when the teardown failed: the stack file is the
+    # only thing naming this install's containers and volume, `plan_uninstall` refuses without it,
+    # and its own refusal message tells the user to "restore the file" — which nothing could,
+    # because the uninstaller had just deleted it. Leftover containers became unnameable by the tool
+    # that left them.
+    assert (data_root / COMPOSE_NAME).exists(), (
+        "the identity file must survive a failed teardown so the uninstall can be retried"
+    )
+    assert any("retried" in item.detail for item in report.kept), (
+        "and the report has to say why it is still there"
+    )
+
+    # The CONTROL, which is the property this test was originally written for and which did not
+    # change: a failure on one kind of resource still does not stop the other kinds being removed.
+    assert not (data_root / DOCKERFILE_NAME).exists(), (
+        "a docker failure is not a reason to leave every other file behind"
+    )
 
 
 def test_the_plan_reads_before_it_writes(tmp_path: Path) -> None:
@@ -464,6 +479,13 @@ def test_answering_yes_removes_and_reports(tmp_path: Path) -> None:
         ["--data-root", str(data_root)],
         confirm=lambda *_args: True,
         notify=lambda title, text: told.append((title, text)),
+        # ⛔ **Injected, because this test used to run REAL docker.** It asserted the stack file was
+        # removed, and on a machine with no such stack `docker compose down` fails — which passed
+        # only because the failure was being discarded and the file deleted anyway. Once that was
+        # fixed the test correctly kept the file and went red. What it is about is the CLI wiring,
+        # so the teardown is now a fake that succeeds and the outcome no longer depends on whether
+        # this machine has a daemon.
+        runner=_docker(),
     )
 
     assert not (data_root / COMPOSE_NAME).exists()
@@ -513,6 +535,9 @@ def test_the_folder_is_asked_for_when_no_argument_is_given(tmp_path: Path) -> No
         choose=lambda title, start: asked.append((title, start)) or str(data_root),
         confirm=lambda *_a: True,
         notify=lambda *_a: None,
+        # See the sibling test: without this the assertion below depends on whether this machine has
+        # a docker daemon, and used to pass only because a failed teardown was being discarded.
+        runner=_docker(),
     )
 
     assert status == 0
@@ -537,3 +562,579 @@ def test_cancelling_the_folder_picker_removes_nothing(tmp_path: Path) -> None:
     assert status == 0, "cancelling is not an error"
     assert not told, "and it needs no dialog telling the person what they just decided"
     assert (data_root / COMPOSE_NAME).exists()
+
+
+def test_a_json_document_that_is_not_an_object_never_aborts_the_run(tmp_path: Path) -> None:
+    """⛔ STAKES-007: `json.loads("null")` returns None, and `.get` on it raises AttributeError.
+
+    That escaped `execute` AFTER `docker compose down` and the volume removal had run and BEFORE
+    the files were unlinked: no report returned, containers gone, files present, and nothing
+    telling the user which. `execute`'s own docstring promises the opposite. `register_local_scope`
+    already guarded this exact shape; the pattern was simply not carried across.
+    """
+    project_root = tmp_path / "work"
+    project_root.mkdir()
+    data_root = _install(tmp_path, project_root=project_root)
+    config_path = tmp_path / "claude.json"
+    config_path.write_text("null", encoding="utf-8")
+
+    plan = plan_uninstall(data_root=data_root, claude_config_path=config_path, runner=_docker())
+    report = execute(plan, claude_config_path=config_path, runner=_docker())
+
+    assert report is not None, "a malformed client config must not abort the uninstall"
+    assert not (data_root / COMPOSE_NAME).exists(), "the rest of the removal must still happen"
+
+
+def test_the_volume_removed_is_the_one_the_stack_declared(tmp_path: Path) -> None:
+    """⛔ STAKES-005: recomputing the name is what `_compose_project` refuses to do for the project.
+
+    A stack written by a release with a different volume name yields a name that stack never
+    declared. `docker volume rm` then says "no such volume", `execute` counts that as REMOVED, and
+    the real volume holding the indexes survives while the report says it went, on the one item
+    that cannot be undone.
+    """
+    data_root = tmp_path / "recall"
+    data_root.mkdir()
+    (data_root / COMPOSE_NAME).write_text(
+        json.dumps(
+            {
+                "name": PROJECT,
+                "services": {"db": {}},
+                "volumes": {"legacy-pgdata": None, "external-thing": {"external": True}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (data_root / "wizard.json").write_text(json.dumps({"project": "acme"}), encoding="utf-8")
+
+    plan = plan_uninstall(data_root=data_root, purge_data=True, runner=_docker())
+
+    names = {item.name for item in plan.removing("volume")}
+    assert names == {f"{PROJECT}_legacy-pgdata"}, (
+        f"the declared volume must be the one removed, got {names}"
+    )
+
+
+def test_the_client_config_is_backed_up_before_it_is_rewritten(tmp_path: Path) -> None:
+    """⛔ STAKES-006: the REMOVAL direction had less protection than the addition direction.
+
+    `register_local_scope` writes a `.recall-backup` before its atomic replace. `_unregister` did
+    not, on the one path where a mistake cannot be undone, over a file holding every project the
+    MCP client tracks.
+    """
+    project_root = tmp_path / "work"
+    project_root.mkdir()
+    data_root = _install(tmp_path, project_root=project_root)
+    config_path = tmp_path / "claude.json"
+    original = json.dumps(
+        {
+            "projects": {
+                str(project_root): {
+                    "mcpServers": {"recall": {"command": "python", "cwd": str(project_root)}}
+                }
+            }
+        }
+    )
+    config_path.write_text(original, encoding="utf-8")
+
+    plan = plan_uninstall(data_root=data_root, claude_config_path=config_path, runner=_docker())
+    execute(plan, claude_config_path=config_path, runner=_docker())
+
+    # ⚠️ **The name is now timestamped, and this expectation changed deliberately.** The fixed
+    # `.recall-backup` is what `register_local_scope` writes at INSTALL time, so reusing it here
+    # overwrote the only copy of the file from before recall ever touched it. The property this test
+    # is about — the previous config survives somewhere before the rewrite — is unchanged.
+    backups = [
+        path
+        for path in config_path.parent.iterdir()
+        if path.name.startswith(config_path.name + ".recall-backup")
+    ]
+    assert len(backups) == 1, "exactly one backup, under a name that is never reused"
+    backup = backups[0]
+    assert backup.exists(), "the previous config must survive somewhere"
+    assert json.loads(backup.read_text(encoding="utf-8")) == json.loads(original), (
+        "and it must be the content as it was before the rewrite"
+    )
+
+
+def test_an_unqueryable_docker_is_not_reported_as_a_removal(tmp_path: Path) -> None:
+    """⛔ STAKES-010: the fallback item is a GLOB, and a glob under "This will remove" is a lie.
+
+    It reads as a name-pattern teardown, which the module docstring says it refuses to do, and
+    `execute` reported the pseudo-name as removed while never naming a real container.
+    """
+    data_root = _install(tmp_path)
+
+    def _no_docker(command: Any) -> tuple[int, str]:
+        return 1, "Cannot connect to the Docker daemon"
+
+    plan = plan_uninstall(data_root=data_root, runner=_no_docker)
+
+    assert not plan.removing("container"), "a container that could not be listed is not a removal"
+    assert any("*" in item.name for item in plan.keeping()), (
+        "and it must still be SHOWN, so the user knows the list is incomplete"
+    )
+
+
+def test_a_dead_docker_never_reports_a_clean_uninstall(tmp_path: Path) -> None:
+    """⛔ **Two correct-looking fixes cancelled each other, and the defect lived BETWEEN them.**
+
+    One stopped reporting an unqueryable docker as a removal, by setting `removing=False` on the
+    fallback container item. The other kept the stack file when the teardown failed, by scanning
+    `report.failed` — which `execute` only ever populated by iterating that same now-empty tuple. So
+    with the daemon unreachable, a failing `docker compose down` was recorded nowhere: no failure,
+    no mention in the report, and the stack file naming the still-running containers deleted anyway.
+    `plan_uninstall` then refuses on retry and tells the user to restore a file this run removed.
+
+    Reproduced before the fix, verbatim: `failed: []`, `Removed 3 item(s).`, compose file gone.
+    Three auditors found it independently, which is what a defect that belongs to no single change
+    looks like.
+    """
+    data_root = _install(tmp_path)
+
+    def dead(command: list[str]) -> tuple[int, str]:
+        return (1, "Cannot connect to the Docker daemon at unix:///var/run/docker.sock")
+
+    plan = plan_uninstall(data_root=data_root, runner=dead)
+    report = execute(plan, runner=dead, claude_config_path=tmp_path / "claude.json")
+
+    assert (data_root / COMPOSE_NAME).exists(), (
+        "the stack file is the only thing that names this install's containers, and they are still "
+        "running; deleting it makes them unnameable by the tool that left them"
+    )
+    assert (data_root / "wizard.json").exists(), "and the retry needs the config it resolves from"
+    assert any(item.kind == "container" for item, _reason in report.failed), (
+        "the teardown failure must be RECORDED even when no container could be listed to hang it on"
+    )
+    assert "Cannot connect to the Docker daemon" in report.render(), (
+        "and the user must be told what went wrong; a failure nobody reports is a failure nobody "
+        "can act on"
+    )
+
+    # The retry the keep-list exists to enable must actually work.
+    retry = plan_uninstall(data_root=data_root, runner=dead)
+    assert retry.project_name == PROJECT
+
+    # Control: with a working docker the same files DO go, so this is not a test that passes by
+    # never deleting anything.
+    healthy = execute(
+        plan_uninstall(data_root=data_root, runner=lambda command: (0, "")),
+        runner=lambda command: (0, ""),
+        claude_config_path=tmp_path / "claude.json",
+    )
+    assert not (data_root / COMPOSE_NAME).exists()
+    assert not healthy.failed
+
+
+def test_a_volume_the_stack_declared_external_is_never_derived_back(tmp_path: Path) -> None:
+    """⛔ The `or (derived,)` fallback undid the external-volume exclusion three lines above it.
+
+    For `{pgdata: {external: true, name: "<project>_pgdata"}}` every declared volume is skipped as
+    not ours, the list is empty, the fallback derives `<project>_pgdata` — which is exactly the
+    volume just excluded — and `docker volume rm` removes somebody else's data. The fallback is for
+    a LEGACY stack that declared no volumes at all, and those are different facts.
+    """
+    data_root = _install(tmp_path)
+    (data_root / COMPOSE_NAME).write_text(
+        json.dumps(
+            {
+                "name": PROJECT,
+                "services": {"db": {}},
+                "volumes": {"pgdata": {"external": True, "name": f"{PROJECT}_pgdata"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    plan = plan_uninstall(data_root=data_root, runner=lambda command: (0, ""), purge_data=True)
+    assert [item.name for item in plan.removing("volume")] == [], (
+        "a stack whose volumes are all external declares nothing this uninstaller may remove"
+    )
+
+    # An explicitly NAMED volume is used verbatim, not derived.
+    (data_root / COMPOSE_NAME).write_text(
+        json.dumps(
+            {
+                "name": PROJECT,
+                "services": {"db": {}},
+                "volumes": {"pgdata": {"name": "chosen-by-the-user"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    named = plan_uninstall(data_root=data_root, runner=lambda command: (0, ""), purge_data=True)
+    assert [item.name for item in named.removing("volume")] == ["chosen-by-the-user"]
+
+    # And a legacy stack with no `volumes:` key at all still gets the historical derived name,
+    # because there it is the only thing available and dropping it would strand the volume.
+    (data_root / COMPOSE_NAME).write_text(
+        json.dumps({"name": PROJECT, "services": {"db": {}}}), encoding="utf-8"
+    )
+    legacy = plan_uninstall(data_root=data_root, runner=lambda command: (0, ""), purge_data=True)
+    assert [item.name for item in legacy.removing("volume")] == [f"{PROJECT}_pgdata"]
+
+
+def test_the_backup_never_overwrites_the_one_the_installer_made(tmp_path: Path) -> None:
+    """⛔ The install-time `.recall-backup` is the copy from BEFORE recall touched the file.
+
+    Reusing that fixed name here destroyed it, with the already-rewritten content, at the moment
+    somebody undoing an install would most want it. `recall/claude_code.py` already had the
+    non-clobbering pattern; this now matches it.
+    """
+    import os
+    import stat
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    data_root = _install(tmp_path, project_root=project_root)
+    config_path = tmp_path / "claude.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "projects": {
+                    str(project_root): {
+                        "mcpServers": {"recall": {"command": "python", "cwd": str(project_root)}}
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    installed_backup = config_path.with_name(config_path.name + ".recall-backup")
+    installed_backup.write_text('{"the": "original, from before recall"}', encoding="utf-8")
+    if os.name != "nt":
+        config_path.chmod(0o600)
+
+    execute(
+        plan_uninstall(data_root=data_root, claude_config_path=config_path, runner=_docker()),
+        runner=_docker(),
+        claude_config_path=config_path,
+    )
+
+    assert installed_backup.read_text(encoding="utf-8") == '{"the": "original, from before recall"}', (
+        "the install-time backup is the only pre-recall copy of this file and must survive"
+    )
+    fresh = [
+        path
+        for path in config_path.parent.iterdir()
+        if path.name.startswith(config_path.name + ".recall-backup-")
+    ]
+    assert len(fresh) == 1, "the uninstall writes its own backup under a name it never reuses"
+    if os.name != "nt":
+        assert stat.S_IMODE(fresh[0].stat().st_mode) == 0o600, (
+            "this file carries bearer tokens; a fresh write at the umask default leaves a "
+            "world-readable copy of every credential beside a 0600 original"
+        )
+        assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
+def _profile(path: Path, compose_file: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"compose_file": str(compose_file)}), encoding="utf-8")
+    return path
+
+
+def test_the_desktop_handoff_file_is_removed_at_its_real_location(tmp_path: Path) -> None:
+    """⛔ It lives in the user's CONFIG directory, not under `data_root`.
+
+    It was listed as a `data_root`-relative name, so the entry never matched on Windows and every
+    uninstall left the desktop app holding a profile pointing at a compose file that had just been
+    deleted. The only test touching it fabricated the file under `data_root`, which is precisely
+    why the mismatch was invisible: the fixture agreed with the bug.
+    """
+    data_root = _install(tmp_path)
+    profile = _profile(tmp_path / "appdata" / "runtime.json", data_root / COMPOSE_NAME)
+
+    plan = plan_uninstall(data_root=data_root, profile_path=profile, runner=_docker())
+    assert str(profile) in [item.name for item in plan.removing("file")]
+
+    execute(
+        plan,
+        runner=_docker(),
+        claude_config_path=tmp_path / "claude.json",
+    )
+    assert not profile.exists()
+
+
+def test_another_installs_handoff_file_is_never_touched(tmp_path: Path) -> None:
+    """There is ONE profile per machine, so removing it blindly breaks a second install.
+
+    The guard is whose stack it names. A profile pointing somewhere else, a profile that is not a
+    JSON object, and a profile naming no stack at all must all be left alone rather than guessed at.
+    """
+    data_root = _install(tmp_path)
+    someone_else = _profile(tmp_path / "appdata" / "runtime.json", tmp_path / "other" / COMPOSE_NAME)
+
+    # Every plan-only case first: `execute` removes the stack file, and `plan_uninstall` needs it.
+    for content in (
+        json.dumps({"compose_file": str(tmp_path / "other" / COMPOSE_NAME)}),
+        "null",
+        "[]",
+        '{"compose_file": null}',
+        "{}",
+        "not json at all",
+    ):
+        someone_else.write_text(content, encoding="utf-8")
+        quiet = plan_uninstall(data_root=data_root, profile_path=someone_else, runner=_docker())
+        assert str(someone_else) not in [item.name for item in quiet.removing("file")], content
+
+    missing = plan_uninstall(
+        data_root=data_root, profile_path=tmp_path / "nope" / "runtime.json", runner=_docker()
+    )
+    assert not [item for item in missing.removing("file") if "runtime.json" in item.name]
+
+    # Then the destructive half, once, on the case that matters most.
+    someone_else.write_text(
+        json.dumps({"compose_file": str(tmp_path / "other" / COMPOSE_NAME)}), encoding="utf-8"
+    )
+    plan = plan_uninstall(data_root=data_root, profile_path=someone_else, runner=_docker())
+    execute(plan, runner=_docker(), claude_config_path=tmp_path / "claude.json")
+    assert someone_else.exists(), "a second install's profile is not ours to remove"
+
+
+def test_a_failed_teardown_keeps_the_handoff_file_too(tmp_path: Path) -> None:
+    """🔁 **This corrects an earlier judgement of mine, which reasoned to the opposite answer.**
+
+    That argument was: the profile points at an install the user asked to remove, so leaving it
+    behind leaves the app pointing at something that should be gone. It is wrong about the state it
+    reasons over. If the teardown FAILED, the stack is still running — that is what failure means
+    here — and the compose file naming it is kept for exactly that reason. Deleting the app's only
+    pointer to a live stack while keeping the file that names it strands a running resource behind a
+    tool that can no longer reach it, which is the same defect as deleting the stack file.
+    """
+    data_root = _install(tmp_path)
+    profile = _profile(tmp_path / "appdata" / "runtime.json", data_root / COMPOSE_NAME)
+
+    def dead(command: list[str]) -> tuple[int, str]:
+        return (1, "Cannot connect to the Docker daemon")
+
+    plan = plan_uninstall(data_root=data_root, profile_path=profile, runner=dead)
+    execute(plan, runner=dead, claude_config_path=tmp_path / "claude.json")
+
+    assert profile.exists(), "the stack is still up; the app must still be able to reach it"
+    assert (data_root / COMPOSE_NAME).exists()
+
+    # And the retry removes all three together, which is the state in which removal is correct.
+    retry = plan_uninstall(data_root=data_root, profile_path=profile, runner=_docker())
+    execute(retry, runner=_docker(), claude_config_path=tmp_path / "claude.json")
+    assert not profile.exists()
+    assert not (data_root / COMPOSE_NAME).exists()
+
+
+def test_a_stack_file_that_is_not_an_object_is_refused_rather_than_guessed(tmp_path: Path) -> None:
+    """⛔ Five `isinstance` guards were added; only the one that DEGRADES had a test.
+
+    The one that changes control flow is `_compose_project`'s, which refuses. A compose file
+    containing `null` or a list has no project name, and matching containers on a name pattern
+    instead is the single thing this module refuses to do.
+    """
+    data_root = _install(tmp_path)
+    for content in ("null", "[]", '"a string"', "42"):
+        (data_root / COMPOSE_NAME).write_text(content, encoding="utf-8")
+        with pytest.raises(UninstallRefusal):
+            plan_uninstall(data_root=data_root, runner=_docker())
+
+    # Control: a well-formed object still plans, so the refusal is about the SHAPE, not about
+    # refusing everything.
+    (data_root / COMPOSE_NAME).write_text(
+        json.dumps({"name": PROJECT, "services": {"db": {}}}), encoding="utf-8"
+    )
+    assert plan_uninstall(data_root=data_root, runner=_docker()).project_name == PROJECT
+
+
+def test_a_missing_stack_file_at_execute_time_does_not_crash(tmp_path: Path) -> None:
+    """⛔ **FIX-04.** `compose_failed` was bound only inside `if compose_path.exists():` and read
+    unconditionally, so `execute` raised `UnboundLocalError` when the stack file was gone.
+
+    Three auditors reproduced it. It is reachable as a TOCTOU: `uninstall_main` plans, then blocks
+    on a confirmation dialog for an unbounded time, then calls `execute`. It also makes a repeat run
+    non-idempotent, because the first successful run deletes that very file.
+
+    The docstring one line above says "A partial uninstall must not abort partway", and an
+    `UnboundLocalError` before the report is returned is the sharpest possible violation of it.
+    """
+    data_root = _install(tmp_path)
+    plan = plan_uninstall(data_root=data_root, runner=_docker())
+    (data_root / COMPOSE_NAME).unlink()
+
+    report = execute(plan, runner=_docker(), claude_config_path=tmp_path / "claude.json")
+    assert report is not None, "a vanished stack file is a fact to report, not a crash"
+
+
+def test_a_failed_unregistration_keeps_the_files_a_retry_needs(tmp_path: Path) -> None:
+    """⛔ **FIX-03.** `teardown_failed` counted only failed CONTAINER and VOLUME items.
+
+    So a failed MCP unregistration deleted the stack file, `wizard.json` and the handoff file
+    anyway, and the retry became impossible: `plan_uninstall` refuses without the stack file, and
+    `project_root` (the only thing that can find the stale `~/.claude.json` entry) lived in
+    `wizard.json`. The comment above that line claims the opposite in so many words.
+    """
+    project_root = tmp_path / "work"
+    project_root.mkdir()
+    data_root = _install(tmp_path, project_root=project_root)
+    config_path = tmp_path / "claude.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "projects": {
+                    str(project_root): {
+                        "mcpServers": {"recall": {"command": "python", "cwd": str(project_root)}}
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    plan = plan_uninstall(data_root=data_root, claude_config_path=config_path, runner=_docker())
+    assert plan.removing("registration"), "the fixture must actually plan an unregistration"
+
+    # Make the rewrite fail the way a locked or unreadable config would.
+    config_path.unlink()
+
+    report = execute(plan, runner=_docker(), claude_config_path=config_path)
+
+    assert any(item.kind == "registration" for item, _reason in report.failed)
+    assert (data_root / COMPOSE_NAME).exists(), (
+        "a failed unregistration must keep the stack file: without it plan_uninstall refuses and "
+        "the retry that would finish the job cannot even be built"
+    )
+    assert (data_root / "wizard.json").exists(), (
+        "and wizard.json, which is the only record of project_root and therefore the only way to "
+        "find the ~/.claude.json entry that was just left behind"
+    )
+
+
+def test_a_stack_whose_volumes_are_all_external_can_still_be_uninstalled(tmp_path: Path) -> None:
+    """⛔ **FIX-05.** The external-volume exclusion defeated the plan/execute agreement guard.
+
+    With every declared volume `external`, the plan holds no volume item, so
+    `purge_data != bool(plan.removing("volume"))` was true and `execute` refused the whole
+    uninstall before removing anything. `recall/desktop/main.py` calls `execute` outside its
+    handler, so in the frozen GUI that is a traceback after the user already confirmed the plan.
+
+    The guard is meant to catch a caller that widens the removal between plan and execute. It must
+    compare INTENT, not the emptiness of a list that is legitimately empty.
+    """
+    data_root = _install(tmp_path)
+    (data_root / COMPOSE_NAME).write_text(
+        json.dumps(
+            {
+                "name": PROJECT,
+                "services": {"db": {}},
+                "volumes": {"pgdata": {"external": True, "name": f"{PROJECT}_pgdata"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plan = plan_uninstall(data_root=data_root, runner=_docker(), purge_data=True)
+    assert plan.removing("volume") == (), "an external volume is never ours to remove"
+
+    report = execute(
+        plan, runner=_docker(), purge_data=True, claude_config_path=tmp_path / "claude.json"
+    )
+    assert not (data_root / COMPOSE_NAME).exists(), (
+        "the uninstall must proceed: there is simply no volume of ours to purge"
+    )
+    assert not any(item.kind == "volume" for item in report.removed), (
+        "and it must not claim to have removed somebody else's volume"
+    )
+
+    # Control: the guard still fires on the case it exists for, a caller widening the removal.
+    other = _install(tmp_path / "second")
+    widened = plan_uninstall(data_root=other, runner=_docker(), purge_data=False)
+    with pytest.raises(UninstallRefusal):
+        execute(widened, runner=_docker(), purge_data=True, claude_config_path=tmp_path / "c.json")
+
+
+def test_the_handoff_file_is_resolved_through_the_writers_own_path(tmp_path: Path, monkeypatch) -> None:
+    """⛔ **FIX-10.** Every profile test injected `profile_path=`, so the DEFAULT branch was unpinned.
+
+    An auditor pointed that default back at `data_root / "runtime.json"` — the original bug, where
+    the uninstaller looked for the handoff file in the wrong directory and left it behind on every
+    Windows uninstall — and 32 tests stayed green. The docstring on the fix says the old unit test
+    "fabricated the file under `data_root`, which is precisely why the mismatch was invisible"; the
+    replacement inherited the same blind spot from the other side.
+
+    Injecting the writer's own function rather than a path is what pins the delegation without
+    touching the developer's real %APPDATA%.
+    """
+    import recall.desktop.profiles as profiles
+
+    data_root = _install(tmp_path)
+    real_profile = tmp_path / "appdata" / "RE-call" / "runtime.json"
+    real_profile.parent.mkdir(parents=True)
+    real_profile.write_text(
+        json.dumps({"compose_file": str(data_root / COMPOSE_NAME)}), encoding="utf-8"
+    )
+    # A decoy in the place the ORIGINAL bug looked, which must never be chosen.
+    (data_root / "runtime.json").write_text(
+        json.dumps({"compose_file": str(data_root / COMPOSE_NAME)}), encoding="utf-8"
+    )
+    monkeypatch.setattr(profiles, "profile_path", lambda: real_profile)
+
+    plan = plan_uninstall(data_root=data_root, runner=_docker())
+    planned = [item.name for item in plan.removing("file")]
+
+    assert str(real_profile) in planned, (
+        "the handoff file must be resolved through the writer's own path function, which is the "
+        "only thing that knows it lives in the user config directory"
+    )
+    assert str(data_root / "runtime.json") not in planned, (
+        "and never guessed at relative to data_root, which is where it was looked for when every "
+        "Windows uninstall left it behind"
+    )
+
+
+def test_an_unwritable_backup_refuses_rather_than_writing_it_unsafely(tmp_path: Path, monkeypatch) -> None:
+    """⛔ **FIX-19b. The fallback defeated the protection instead of degrading from it.**
+
+    The backup is created with `O_EXCL | O_NOFOLLOW` at 0600 because `~/.claude.json` carries every
+    MCP bearer token and its backup name is predictable to the second. But the `except OSError`
+    beneath that used to fall back to `write_text`, which FOLLOWS a symlink — and `O_NOFOLLOW`
+    reports a planted link by raising `ELOOP`, which is an `OSError`. So the single case the
+    exclusive open exists to catch routed straight into the unsafe write. A reviewer found it in
+    the error path of the fix itself.
+
+    Refusing is the right degradation: the caller records a failure, the files a retry needs are
+    kept, and the config the backup would have protected is left untouched.
+    """
+    project_root = tmp_path / "work"
+    project_root.mkdir()
+    data_root = _install(tmp_path, project_root=project_root)
+    config_path = tmp_path / "claude.json"
+    before = json.dumps(
+        {
+            "projects": {
+                str(project_root): {
+                    "mcpServers": {"recall": {"command": "python", "cwd": str(project_root)}}
+                }
+            }
+        }
+    )
+    config_path.write_text(before, encoding="utf-8")
+
+    real_open = os.open
+
+    def refuse_backup(path, flags, mode=0o777, **kwargs):
+        if ".recall-backup-" in str(path):
+            raise OSError(40, "Too many levels of symbolic links")
+        return real_open(path, flags, mode, **kwargs)
+
+    monkeypatch.setattr(os, "open", refuse_backup)
+
+    plan = plan_uninstall(data_root=data_root, claude_config_path=config_path, runner=_docker())
+    report = execute(plan, runner=_docker(), claude_config_path=config_path)
+
+    assert config_path.read_text(encoding="utf-8") == before, (
+        "the config must be untouched: rewriting it without a backup is the one thing the backup "
+        "exists to prevent, and writing the backup through a symlink is worse than not writing it"
+    )
+    assert any(item.kind == "registration" for item, _reason in report.failed), (
+        "and the refusal must be REPORTED, not swallowed"
+    )
+    reason = next(r for item, r in report.failed if item.kind == "registration")
+    assert "backup" in reason.lower() and "nothing was changed" in reason.lower(), reason
+
+    assert not [
+        path for path in config_path.parent.iterdir() if ".recall-backup-" in path.name
+    ], "and no partial or unsafe backup is left behind"

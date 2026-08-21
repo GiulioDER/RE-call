@@ -872,3 +872,62 @@ def test_rollback_reads_its_recorded_status_on_its_own_transaction(
     assert seen == ["INTRANS"], (
         f"the status must be read inside the rolling-back transaction, saw {seen}"
     )
+
+
+@requires_db
+def test_a_failing_status_read_does_not_break_the_rollback(calibration_tenant, monkeypatch) -> None:
+    """⛔ **The reporting call must not become the thing that blocks recovery.**
+
+    `calibration_status_for` catches every exception and returns `"unknown"`, on the stated grounds
+    that "a status that cannot be determined must not be the thing that stops an incident recovery".
+    But it runs on the ROLLBACK'S OWN open transaction, and catching a `psycopg.Error` in Python
+    does not clear the server-side aborted state. So a failed read left the next `UPDATE` raising
+    `InFailedSqlTransaction`: the refusal decision 2 removed, reintroduced as a crash.
+
+    Reachable without contrivance — a partially migrated install missing `recall_calibrations` is
+    the exact population the docstring cites as "upgrading bricked it".
+
+    Found by three auditors independently. The existing test asserted only that the read happens
+    INTRANS; nothing drove a failing read, which is why a savepoint was never noticed as missing.
+    """
+    import psycopg
+
+    from recall.calibration_v2 import CalibrationRepository as _Repository
+
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+
+    first = _ready(manager, embedder, b"answer corpus", "v1")
+    repository.publish(repository.calibrate(first, _labels(), embedder).calibration_id)
+    production = _production(manager)
+    production.promote(first)
+    second = _ready(manager, embedder, b"answer corpus two", "v2")
+    repository.publish(repository.calibrate(second, _labels(), embedder).calibration_id)
+    production.promote(second)
+
+    def _explode(self, conn, generation):  # noqa: ANN001, ANN202
+        # A real server-side error on the caller's connection, not a Python-only raise: this is
+        # what aborts the transaction. `SELECT 1/0` is the cheapest way to produce one.
+        conn.execute("SELECT 1/0")
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(_Repository, "resolve_within", _explode)
+
+    assert production.rollback(provisional_reason="incident 9000") == first, (
+        "a failed status read must not stop the rollback; the whole point of swallowing it is that "
+        "recovery proceeds"
+    )
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        row = conn.execute(
+            "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
+            "AND event_type = 'generation_rolled_back' ORDER BY created_at DESC LIMIT 1",
+            (tenant,),
+        ).fetchone()
+
+    assert row is not None, "the rollback must still be audited"
+    assert row[0]["calibration_status"] == "unknown", (
+        "and it must record that the status could not be determined, rather than inventing one"
+    )

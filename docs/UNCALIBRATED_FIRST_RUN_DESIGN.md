@@ -34,10 +34,10 @@ a **tenant**.
 |---|---|---|
 | Server builds `GenerationStore` only in production | `recall_mcp/server.py:629` | confirmed |
 | Missing `generation_id` degrades to `"legacy"` | `recall_mcp/service.py:974` | confirmed. A second site uses the same default but maps it to `None` immediately after, so the two do not behave identically |
-| `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:965` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
+| `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:977` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
 | `calibration = None` is deliberate, and names an open design question | `recall/cli.py:2227-2238` | confirmed |
-| Legacy `chunks` has no `source_sha256` **column** | `recall/store.py:297` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
+| Legacy `chunks` has no `source_sha256` **column** | `recall/store.py:354` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
 
 ### Four findings that change the available answers
 
@@ -51,9 +51,9 @@ servable**. What `promote()` adds over calibration and serving is that it sets
 even that is not exclusive to it (see F2).
 
 **F2. The promotion gate does not hold the invariant it claims to hold.**
-`rollback()` (`recall/generations.py:1047`) <!-- cite-anchor: def rollback --> writes the same `active_generation_id` column with **no
+`rollback()` (`recall/generations.py:1059`) <!-- cite-anchor: def rollback --> writes the same `active_generation_id` column with **no
 environment check and no `unsafe_development` flag**, and its target may be in state `ready`
-(`recall/generations.py:1066`) <!-- cite-anchor: GenerationState.RETIRED -->. So "no ungated generation becomes active in production" is not a
+(`recall/generations.py:1103`) <!-- cite-anchor: GenerationState.RETIRED -->. So "no ungated generation becomes active in production" is not a
 property this system has. `promote()`'s message says the refusal stands "until certification gates
 land", which is accurate: it is a placeholder, not a safety property.
 
@@ -104,8 +104,8 @@ carried a 384 dimensional profile's id.
 use it.** Every corpus indexed *before* #370 carries the old literal, which is exactly the
 population an adoption path exists to read. A fix to the writer does not retroactively repair rows
 already written. Only `content_hash` is load bearing here, and the accessor that returns it is
-`PgVectorStore.source_raw_hashes` (`recall/store.py:2119`), **not** `source_content_hashes`
-(`:2075`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
+`PgVectorStore.source_raw_hashes` (`recall/store.py:2176`), **not** `source_content_hashes`
+(`recall/store.py:2158`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
 
 ⚠️ **`content_hash` is media type dependent since `bd582316`.** A markdown source is hashed as
 decoded, newline normalised, NUL stripped text re encoded as UTF-8 (`recall/index.py:722` and
@@ -130,7 +130,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
    into `StoreRegistry` (`recall_mcp/stores.py:154`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:513`).
-5. **Promotion permission.** Production once refused `promote()` outright; it now requires a published, certified, still-bound calibration (`recall/generations.py:965`) <!-- cite-anchor: def promote -->. 🔁 Updated 2026-08-20.
+5. **Promotion permission.** Production once refused `promote()` outright; it now requires a published, certified, still-bound calibration (`recall/generations.py:977`) <!-- cite-anchor: def promote -->. 🔁 Updated 2026-08-20.
 6. **Generation creation.** Production requires a verified pipeline identity and refuses
    `allow_unverified` (`recall/generations.py:320`, `:321`), which an adopted generation cannot satisfy with
    an unpinned default embedder.
@@ -201,7 +201,7 @@ promote(generation_id, *, provisional_reason: str | None = None)
 boolean records that somebody opted in, a reason records *what they were doing*.
 
 ⚠️ **This must be applied to `rollback()` in the same change**, and doing so needs a decision the
-design does not make. `rollback()` today takes no arguments (`recall/generations.py:962`), so it
+design does not make. `rollback()` today takes no arguments (`recall/generations.py:1059`), so it
 cannot record a reason, and its target's calibration may have gone stale or superseded in the
 meantime. Under the certification rule it would either refuse, which blocks incident recovery
 exactly when it is needed, or grant `provisional` with no reason, which is the weakness this design
@@ -392,7 +392,7 @@ what was decided at activation time and why.** Where they disagree, the resolver
 disagreement is itself reportable.
 
 **Why.** `resolve()` re-derives the lineage comparison on every query, which is what catches a
-`forget()` that rewrote `corpus_fingerprint` (`recall/generations.py:1050`) or a `publish()` that
+`forget()` that rewrote `corpus_fingerprint` (`recall/generations.py:1235`) or a `publish()` that
 superseded the artifact (`recall/calibration_v2.py:511`). A cached mode cannot catch either.
 Making it authoritative would require every current and future invalidator to update it, which is
 exactly the growing-enumeration failure this design criticises in F2. **A cache that must be

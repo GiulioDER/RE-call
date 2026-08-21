@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from recall.desktop.models import RuntimeMode, RuntimeProfile
@@ -53,6 +55,21 @@ def install_main(argv: list[str] | None = None) -> int:
     )
 
 
+
+def _model_cache_exists() -> bool:
+    """Whether a fastembed or HuggingFace model cache is already on this machine.
+
+    Deliberately a directory check and not a download attempt: the question being asked is "can this
+    resolve without provisioning anything", and the only honest way to answer it is to look first.
+    """
+    candidates = [
+        Path(os.environ["FASTEMBED_CACHE_PATH"]) if os.environ.get("FASTEMBED_CACHE_PATH") else None,
+        Path(os.environ["HF_HOME"]) / "hub" if os.environ.get("HF_HOME") else None,
+        Path.home() / ".cache" / "huggingface" / "hub",
+        Path.home() / ".cache" / "fastembed",
+    ]
+    return any(path is not None and path.is_dir() and any(path.iterdir()) for path in candidates)
+
 def _selftest() -> int:
     """Prove a packaged build can actually do the thing it exists to do, without a person.
 
@@ -83,6 +100,19 @@ def _selftest() -> int:
         from recall.wizard.headless import load_config, run_headless  # noqa: F401
         from recall.wizard.pipeline import run_corpus  # noqa: F401
         from recall.wizard.uninstall import plan_uninstall  # noqa: F401
+
+        # ⛔ **The native payload, which is the half that was never checked.** PyInstaller's
+        # characteristic failure is a missing binary extension, and every binary in this bundle
+        # lives behind these three imports: fastembed pulls onnxruntime's DLLs and tokenizers'
+        # compiled core. The pure-Python imports above cannot fail in a way these would not.
+        #
+        # This is the branch the first Install click reaches — `resolve_embedder(...)` in
+        # `install_ui._test_dsn` and again in `run_headless` — and the spec's own excludes comment
+        # says why it matters: "an installer that cannot embed cannot install". Until this line
+        # existed, a bundle missing all three passed the selftest and died on that click.
+        import fastembed  # noqa: F401
+        import onnxruntime  # noqa: F401
+        import tokenizers  # noqa: F401
     except Exception as exc:  # noqa: BLE001 - the whole point is to name what is missing
         print(f"selftest: import failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
@@ -107,6 +137,45 @@ def _selftest() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"selftest: building the window failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+
+    # The embedder is RESOLVED, not merely imported. `resolve_embedder` is what the Install click
+    # calls, and it is where a bundle missing the ONNX runtime's data files fails — an import of
+    # `fastembed` alone can succeed against a bundle that cannot construct a model.
+    #
+    # ⚠️ **Only when a model cache already exists, and the skip is PRINTED.** `FastEmbedEmbedder`
+    # constructs a real `TextEmbedding` eagerly, so on a cold cache this downloads
+    # BAAI/bge-small-en-v1.5 before it can answer. Measured warm on this machine: 6.76s. That turned
+    # a self-test documented as provisioning nothing into a step that fetches a model, gave the test
+    # covering it a silent network dependency, and made its `tmp_path` assertion a false negative
+    # (the weights land in the HuggingFace cache, outside the directory it checks). This repository
+    # already has one network-dependent test whose failure is indistinguishable from a regression;
+    # adding a second is the wrong trade for a check the three imports above mostly cover.
+    #
+    # A skip must never read as a pass, so it says which branch ran either way.
+    if _model_cache_exists():
+        try:
+            from recall.embeddings import resolve_embedder
+
+            dim = int(resolve_embedder("fastembed").dim)
+            if dim <= 0:
+                failures.append(f"the fastembed embedder resolved to a non-positive dimension {dim}")
+        except Exception as exc:  # noqa: BLE001 - naming the failure is the point
+            # ⛔ **This is a FAILURE, and it used to only print.** The branch appended nothing to
+            # `failures`, and `dim <= 0` (which `FastEmbedEmbedder` cannot produce) was the only
+            # thing that could fail the selftest, so the check could not fail in ANY environment
+            # while its log line read as though a check had run. That is precisely the "a skip must
+            # never read as a pass" rule stated a few lines down, broken by the code stating it.
+            #
+            # A cache that is present and unusable is a bundle problem here, because the bundle is
+            # what supplies the runtime: `packaging/recall-install.spec` collects fastembed's data
+            # files but not tokenizers', which is exactly the shape of defect this catches.
+            failures.append(f"the fastembed embedder would not resolve: {type(exc).__name__}: {exc}")
+    else:
+        print(
+            "selftest: no local model cache, so the embedder was NOT resolved; the fastembed, "
+            "onnxruntime and tokenizers imports above are what covered the engine here",
+            file=sys.stderr,
+        )
 
     if failures:
         for failure in failures:
@@ -160,6 +229,7 @@ def uninstall_main(
     confirm: Any = None,
     notify: Any = None,
     choose: Any = None,
+    runner: Any = None,
 ) -> int:
     """Show what an uninstall would remove, and do it only after somebody agrees.
 
@@ -206,7 +276,15 @@ def uninstall_main(
         return 0
 
     try:
-        plan = plan_uninstall(data_root=Path(chosen).expanduser(), purge_data=args.purge_data)
+        plan = plan_uninstall(
+            data_root=Path(chosen).expanduser(),
+            purge_data=args.purge_data,
+            # ⚠️ A seam, not a feature: `plan_uninstall` and `execute` already take one, and
+            # without it these tests run real `docker` against the developer's machine, where the
+            # result depends on whether a daemon is up. Two of them passed only because a failing
+            # teardown was being silently discarded, so the false green was load-bearing.
+            **({"runner": runner} if runner is not None else {}),
+        )
     except UninstallRefusal as exc:
         # ⚠️ Shown, not raised. Pointing this at the wrong folder is the ordinary mistake, and a
         # frozen binary has nowhere to print a traceback that anybody will ever read.
@@ -215,7 +293,9 @@ def uninstall_main(
 
     if not ask("Uninstall recall", "Remove this recall install?", plan.render()):
         return 0
-    report = execute(plan, purge_data=args.purge_data)
+    report = execute(
+        plan, purge_data=args.purge_data, **({"runner": runner} if runner is not None else {})
+    )
     tell("Uninstall finished", report.render())
     return 0
 

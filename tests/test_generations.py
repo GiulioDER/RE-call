@@ -84,10 +84,24 @@ def _pipeline(
     )
 
 
-def _manifest(tenant: str, data: bytes, *, version: str = "object-v1") -> IndexManifestV1:
+def _manifest(
+    tenant: str,
+    data: bytes,
+    *,
+    version: str = "object-v1",
+    corpus_version: str = "corpus-v1",
+) -> IndexManifestV1:
+    """A one-object manifest.
+
+    ⛔ `version` is the OBJECT's `version_id`; `corpus_version` is the manifest-level field. They
+    are separate parameters because conflating them made a test vacuous: it stamped `version=` and
+    asserted on a filter that reads `corpus_version`, so both generations carried the default and
+    the filter's result was empty by construction. The assertion then held against a filter that
+    returned nothing at all, which is exactly the mutation that disables the reclaim.
+    """
     return IndexManifestV1(
         tenant,
-        "corpus-v1",
+        corpus_version,
         (
             ManifestObjectV1(
                 f"s3://approved/corpora/{tenant}/memo.md",
@@ -1473,3 +1487,48 @@ def test_iter_chunks_wraps_its_server_side_cursor_in_a_transaction(manager) -> N
 
     assert chunks, "iter_chunks yielded nothing for an active generation"
     assert all(c.text for c in chunks)
+
+
+@requires_db
+def test_the_reclaim_never_touches_a_generation_another_path_built(manager) -> None:
+    """⛔ **Critical: the desktop reclaim could destroy a corpus it did not create.**
+
+    `superseded_ready_generations` selected on STATE ALONE, and `abandon` protects only the
+    tenant's active and previous generations. A generation that was built and validated but
+    deliberately NEVER promoted is in neither — and that is exactly what a degraded wizard install
+    leaves behind, because `recall/wizard/pipeline.py` skips `promote` when the corpus did not
+    certify so an operator can promote it later.
+
+    One refused desktop upload would abandon it, `gc` would collect it, and the chunk rows would
+    cascade away. The only previous test asserted on `inspect.getsource(...)` containing a literal
+    string, which cannot observe what the loop selects — so this one builds the two generations and
+    asks.
+    """
+    data = b"ready generation"
+
+    def ready(payload: bytes, corpus_version: str) -> str:
+        manifest = _manifest(manager.tenant_id, payload, corpus_version=corpus_version)
+        return _ready(manager, manifest, _pipeline("model-a"), _reader(manifest, payload), _Embedder(1))
+
+    somebody_elses = ready(data, "wizard-2026-01-01")
+    also_mine = ready(data + b" two", "desktop-aaa111")
+    mine = ready(data + b" three", "desktop-bbb222")
+
+    unconfined = manager.superseded_ready_generations(mine)
+    confined = manager.superseded_ready_generations(mine, corpus_version_prefix="desktop-")
+
+    assert somebody_elses in unconfined, "the fixture must actually reproduce the hazard"
+    assert somebody_elses not in confined, (
+        "a generation another path built and deliberately left READY must survive the desktop "
+        "reclaim; abandoning it makes gc delete a corpus this path never created"
+    )
+    # ⛔ **The positive half, which the first version of this test did not have.** Without it a
+    # filter that returns NOTHING satisfies every other assertion here, and that filter is precisely
+    # the mutation that disables the reclaim and reopens the unbounded-growth leak the confinement
+    # was added alongside. An exclusion test with no inclusion test cannot tell a working guard from
+    # a disabled one.
+    assert also_mine in confined, (
+        "a generation THIS path built must still be reclaimed; a filter that excludes everything "
+        "passes the exclusion assertions above while leaking a full corpus copy per upload"
+    )
+    assert mine not in confined, "the generation being kept must never be in its own reclaim list"

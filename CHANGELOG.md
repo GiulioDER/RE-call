@@ -8,6 +8,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Fixed
+
+- **A desktop upload no longer silently shrinks the corpus.** Carried-forward files that live
+  outside the upload staging directory (which is every file a wizard install indexed) are kept and
+  the build reader is widened to reach them. Only a file whose bytes are genuinely gone is dropped,
+  and the count is now named in the upload's own message rather than passing unmentioned.
+- **A failed `docker compose down` is reported.** With the docker daemon unreachable, `recall
+  uninstall` recorded no failure, printed `Removed N item(s).`, and deleted the stack file naming
+  the containers that were still running — which then made them unnameable by the tool that left
+  them. The stack file and `wizard.json` are now kept whenever the teardown fails, so the uninstall
+  can be retried.
+- **An uninstall no longer overwrites the install-time backup of the MCP client config.** It writes
+  its own under a name that is never reused, and copies the source file's mode rather than creating
+  it at the umask default, since that file carries bearer tokens.
+- **A volume the stack declared `external` is never removed.** A fallback that derived the
+  historical volume name could reinstate exactly the volume that had just been excluded as not
+  ours. The fallback now applies only to a legacy stack that declares no volumes at all.
+- **A failure inside `build()` no longer strands a generation.** The desktop upload's cleanup path
+  called only `abandon`, which refuses any state but `ready`, so failures before `validate()` left
+  a full copy of the corpus that `gc` could not collect.
+- **A blank or relative data folder is refused** rather than silently becoming the process's
+  working directory, and the terminal interview reports it as a refusal instead of a traceback.
+- **`corpus_version` may no longer begin with `desktop-`.** That prefix decides which generations
+  the desktop upload path abandons; a wizard corpus carrying it would have been reclaimed.
+
+### Changed
+
+- `recall uninstall` also removes the desktop app's handoff file from the user config directory
+  (`%APPDATA%/RE-call/runtime.json`), which the previous release looked for in the wrong place.
+- `--selftest` resolves the embedder only when a model cache already exists, and says which branch
+  it took. It was downloading model weights on a cold cache.
+
 ## [0.9.7]
 
 ### Added

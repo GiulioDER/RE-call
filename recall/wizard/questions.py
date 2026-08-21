@@ -238,7 +238,25 @@ def build_config(
             )
         config["dsn"] = dsn
     else:
-        config["data_root"] = str(Path(answers.get("data_root") or "").expanduser())
+        # ⛔ **Refused, not defaulted.** `Path("")` normalises to `Path(".")`, so a blank answer
+        # produced a RELATIVE data_root, which `load_config` then refuses as non-absolute — an
+        # installer handing the user a validation error about its own output, which is the exact
+        # failure this function's docstring says it exists to prevent. It was caught for the three
+        # corpus roots below and not for this one. The GUI reaches it by clearing the field, and
+        # would have written `wizard.json` into the process's working directory on the way.
+        data_root = (answers.get("data_root") or "").strip()
+        if not data_root:
+            raise ValueError(
+                "a data folder is required: it is where the database and the stack files live. "
+                "Choose one, or pick an existing PostgreSQL instead."
+            )
+        expanded = Path(data_root).expanduser()
+        if not expanded.is_absolute():
+            raise ValueError(
+                f"the data folder must be an absolute path, not {data_root!r}: a relative one "
+                "lands wherever the installer happened to be started from."
+            )
+        config["data_root"] = str(expanded)
 
     for key in ("docs_root", "code_root", "memory_root"):
         value = (answers.get(key) or "").strip()

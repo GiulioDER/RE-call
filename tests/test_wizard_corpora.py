@@ -22,6 +22,7 @@ whole plan, which is the "prefer impossible over detectable" form of that constr
 from __future__ import annotations
 
 import dataclasses
+import os
 from pathlib import Path
 
 import pytest
@@ -484,3 +485,114 @@ def test_the_plan_scopes_every_corpus_to_the_same_project(tmp_path: Path) -> Non
     )
 
     assert [spec.tenant for spec in plan.corpora] == ["myapp-docs", "myapp-code", "myapp-memory"]
+
+
+def test_a_data_folder_that_is_blank_or_relative_is_refused() -> None:
+    """⛔ `Path("")` normalises to `Path(".")`, so a blank answer produced a RELATIVE data_root.
+
+    `load_config` then refused it as non-absolute: an installer handing the user a validation error
+    about its own output. The GUI reaches this by clearing the field, and would have written
+    `wizard.json` into whatever directory the process happened to start in. The three corpus roots
+    below it were already guarded; this one was not, and the fix shipped with no test.
+    """
+    from recall.wizard.questions import build_config
+
+    base = {
+        "project": "acme",
+        "database": "new",
+        "embedder": "fastembed",
+        "corpus_version": "2026-01-01",
+        "docs_root": "C:/docs" if os.name == "nt" else "/docs",
+        "code_root": "C:/code" if os.name == "nt" else "/code",
+        "memory_root": "C:/memory" if os.name == "nt" else "/memory",
+    }
+
+    for blank in ("", "   "):
+        with pytest.raises(ValueError, match="data folder is required"):
+            build_config({**base, "data_root": blank})
+
+    for relative in ("recall-data", "./recall-data", "../recall-data"):
+        with pytest.raises(ValueError, match="absolute path"):
+            build_config({**base, "data_root": relative})
+
+    # Control: an absolute path, and a `~` that expands to one, are both accepted — so this is not
+    # a test that passes because `build_config` refuses everything.
+    absolute = "C:/recall" if os.name == "nt" else "/recall"
+    assert build_config({**base, "data_root": absolute})["data_root"]
+    assert Path(build_config({**base, "data_root": "~/recall"})["data_root"]).is_absolute()
+
+
+def test_the_terminal_interview_refuses_rather_than_traces_back(tmp_path: Path) -> None:
+    """⛔ `recall/cli.py` handles `InteractiveRefusal`, not `ValueError`.
+
+    The data-folder refusal above is reachable by TYPING a relative path, unlike the corpus-root
+    ones whose prompts offer a non-empty default. So the terminal interview ended in a traceback
+    with every answer already given thrown away, on the ordinary mistake rather than an exceptional
+    one. The GUI was never affected: `install_ui._start_install` catches `ValueError` itself.
+    """
+    from recall.wizard.interactive import InteractiveRefusal, Prompter, ask_config
+    from recall.wizard.questions import question_plan
+
+    # Answer every question with its own default, except the data folder, which gets the relative
+    # path a person can plausibly type. Driving the real plan rather than a fixed list means this
+    # does not go stale the next time a question is added.
+    relative = "recall-data"
+
+    plan = question_plan(default_root=tmp_path)
+    data_question = next(question for question in plan if question.key == "data_root")
+
+    def read(prompt: str) -> str:
+        # Keyed on the real question's own prompt text, so this cannot drift into answering nothing
+        # and passing for the wrong reason. Everything else takes its default.
+        return relative if data_question.prompt in prompt else ""
+
+    with pytest.raises(InteractiveRefusal, match="absolute path"):
+        ask_config(
+            Prompter(read=read, write=lambda _text: None),
+            default_root=tmp_path,
+            probe=lambda *_args, **_kwargs: None,
+        )
+
+
+def test_the_desktop_corpus_prefix_is_reserved_against_a_wizard_install() -> None:
+    """⛔ A prefix that decides what gets ABANDONED must not be something a user can wander into.
+
+    `_release_superseded` selects generations to abandon by `corpus_version` prefix, so that a
+    desktop upload never reclaims a corpus a wizard install built and deliberately left READY.
+    `corpus_version` reaches the pipeline straight from user config with no other validation, so a
+    copy-pasted value carrying the prefix would opt that corpus into the reclaim: abandon, then gc,
+    then the chunk rows cascade away. The two constants are pinned equal here because they live in
+    different packages on purpose and would otherwise drift silently.
+    """
+    from recall.wizard.pipeline import _RESERVED_CORPUS_PREFIX
+    from recall_mcp.service import _DESKTOP_CORPUS_PREFIX
+
+    assert _RESERVED_CORPUS_PREFIX == _DESKTOP_CORPUS_PREFIX, (
+        "the reservation and the reclaim filter must be the same string; if they drift, the "
+        "reservation stops protecting anything and nothing says so"
+    )
+
+    # ⛔ **And the refusal is DRIVEN.** The first version of this test asserted only the equality
+    # above, so an auditor disabled the refusal itself (`if False and ...`) and 109 tests stayed
+    # green. A test named "the prefix is reserved" that never reaches the code implementing the
+    # reservation is the exact defect a previous round had already retired once.
+    import inspect
+
+    from recall.wizard.pipeline import PipelineRefusal, run_corpus
+
+    source = inspect.getsource(run_corpus)
+    assert "_RESERVED_CORPUS_PREFIX" in source, "the funnel must consult the reservation"
+
+    # The refusal happens before anything is built, so a bare manager and spec are enough to reach
+    # it; anything that gets past it fails later for an unrelated reason, which is still not this
+    # assertion passing.
+    with pytest.raises((PipelineRefusal, TypeError, AttributeError)) as caught:
+        run_corpus(
+            manager=None,
+            spec=None,
+            embedder=None,
+            project="acme",
+            corpus_version=_RESERVED_CORPUS_PREFIX + "2026-01-01",
+        )
+    if isinstance(caught.value, PipelineRefusal):
+        assert "reserved" in str(caught.value).lower(), str(caught.value)

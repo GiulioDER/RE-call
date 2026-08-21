@@ -474,10 +474,16 @@ def test_the_selftest_reaches_the_engine_a_packaged_build_would_be_missing(
     from recall.desktop.main import _selftest
 
     tree = ast.parse(textwrap.dedent(inspect.getsource(_selftest)))
+    # ⛔ **`ast.Import` as well as `ast.ImportFrom`.** This collected only the `from x import y`
+    # form, so the three plain `import fastembed` / `onnxruntime` / `tokenizers` lines added to
+    # cover the native payload were invisible to it: all three could be deleted with the suite
+    # green, and the whole stated point of that change ("a bundle missing all three passed the
+    # selftest and died on that click") was unpinned.
     imported = {
-        node.module
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module
+        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module
+    }
+    imported |= {
+        alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
     }
     for engine_module in (
         "recall.wizard.headless",
@@ -488,6 +494,11 @@ def test_the_selftest_reaches_the_engine_a_packaged_build_would_be_missing(
         assert engine_module in imported, (
             f"{engine_module} is reached only from inside a callback in normal use, which is "
             "exactly why a bundle can be missing it and still look healthy"
+        )
+    for native in ("fastembed", "onnxruntime", "tokenizers"):
+        assert native in imported, (
+            f"{native} ships native binaries and data files that PyInstaller's static analysis "
+            "misses; importing it is what proves the payload made it into the bundle"
         )
 
 
@@ -547,3 +558,317 @@ def test_a_failing_gui_install_still_reaches_the_shell(monkeypatch: pytest.Monke
         cli.main(["wizard", "--gui"])
 
     assert excinfo.value.code == 3, "the installer's failure must reach the shell"
+
+
+#: An obvious placeholder, never a realistic-looking string. These tests assert that a value does
+#: NOT reach the screen, so the value has to be greppable and unmistakably fake to whoever reads the
+#: failure output.
+_PLACEHOLDER_PASSWORD = "CHANGEME-placeholder-password"
+
+
+def test_a_probe_error_never_shows_the_password(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⛔ SEC-001: a driver error quotes the connection string back verbatim.
+
+    `probe_database` scrubs what it RETURNS and not what it RAISES, and the identical handler in
+    `recall/desktop/ui.py` already scrubs for a measured reason:
+    `ProgrammingError: missing "=" after "not-a-dsn://user:PASSWORD@x"`. I wrote a second copy of
+    that handler and left the scrubbing out. This is the surface most likely to hit it, because it
+    is where somebody types a connection string for the first time and it is what gets screenshotted.
+    """
+
+    def _leaky(dsn: str, expected_dimension: int | None) -> Any:
+        raise RuntimeError(f'missing "=" after "{dsn}"')
+
+    window = _installer(monkeypatch, tmp_path, prober=_leaky)
+    try:
+        window._fields["database"].set_value("existing")
+        window._fields["dsn"].set_value(f"postgresql://user:{_PLACEHOLDER_PASSWORD}@host/db")
+
+        window._test_dsn()
+
+        shown = window.form_status.text()
+        assert _PLACEHOLDER_PASSWORD not in shown, f"the password reached the screen: {shown!r}"
+    finally:
+        window.close()
+
+
+def test_an_install_failure_never_shows_the_password(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⛔ SEC-002: `run_headless` scrubs what it packages; an exception escaping it arrives raw.
+
+    The progress log is what a person screenshots when an install fails, and they reached that
+    screen by typing a connection string a moment earlier.
+    """
+    window = _installer(monkeypatch, tmp_path)
+    try:
+        window._fields["database"].set_value("existing")
+        window._fields["dsn"].set_value(f"postgresql://user:{_PLACEHOLDER_PASSWORD}@host/db")
+
+        window._failed(
+            f'connection to "postgresql://user:{_PLACEHOLDER_PASSWORD}@host/db" failed'
+        )
+
+        shown = window.log.toPlainText()
+        assert _PLACEHOLDER_PASSWORD not in shown, f"the password reached the log: {shown!r}"
+        assert "failed" in shown, "and the diagnosis must survive the scrubbing"
+    finally:
+        window.close()
+
+
+def test_the_selftest_does_not_provision_a_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """⛔ **A self-test that downloads 100MB of weights is not a self-test.**
+
+    `resolve_embedder("fastembed")` constructs a real `TextEmbedding` eagerly, so on a cold cache it
+    fetches BAAI/bge-small-en-v1.5 before it can answer; measured warm at 6.76s. Adding it gave the
+    test above a silent network dependency and made its `tmp_path` emptiness assertion a false
+    negative, because the weights land in the HuggingFace cache rather than in `tmp_path`. This
+    repository already carries one network-dependent test whose failure is indistinguishable from a
+    regression, and a second was the wrong trade for a check the three imports mostly cover.
+
+    So the resolution runs only when a cache already exists — and the skip is PRINTED, because a
+    gate that was skipped and a gate that passed must never render the same.
+    """
+    from recall.desktop import main as desktop_main
+
+    resolved: list[str] = []
+
+    def never_resolve(name: str):  # pragma: no cover - the assertion is that this is not called
+        resolved.append(name)
+        raise AssertionError("the selftest must not construct an embedder with no cache present")
+
+    monkeypatch.setattr(desktop_main, "_model_cache_exists", lambda: False)
+    monkeypatch.setattr("recall.embeddings.resolve_embedder", never_resolve)
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    pytest.importorskip("PySide6")
+
+    assert desktop_main._selftest() == 0
+    assert resolved == [], "no cache means no model is provisioned"
+    assert list(tmp_path.iterdir()) == [], "and nothing is written where the test can see it"
+
+
+def test_the_selftest_says_which_branch_it_took(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A skipped check that prints nothing is indistinguishable from a check that passed."""
+    from recall.desktop import main as desktop_main
+
+    monkeypatch.setattr(desktop_main, "_model_cache_exists", lambda: False)
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    pytest.importorskip("PySide6")
+
+    desktop_main._selftest()
+    assert "no local model cache" in capsys.readouterr().err, (
+        "the reader has to be able to tell a skipped embedder check from a passing one"
+    )
+
+
+def test_the_installer_window_never_waits_forever_to_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⛔ `QThreadPool.waitForDone()` with NO argument waits forever, and a parented pool's
+    destructor calls exactly that.
+
+    `MainWindow` was given a bounded `closeEvent` after closing during a first install froze the
+    application for up to half an hour. This window runs a strictly longer job — image pull,
+    migrations, a generation and a calibration per corpus — and its own bounded handler shipped with
+    no test, so a regression to the unbounded form would surface as FLAKINESS rather than a failure:
+    the wait only exceeds a test timeout when Docker happens to be busy.
+
+    Three properties: the wait is bounded, the bound is not absurd, and the window closes even when
+    the wait itself raises.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.install_ui import InstallerWindow
+    from recall.desktop.jobs import CLOSE_WAIT_MS
+
+    QApplication.instance() or QApplication([])
+
+    class _Event:
+        def __init__(self) -> None:
+            self.accepted = False
+
+        def accept(self) -> None:
+            self.accepted = True
+
+    window = InstallerWindow()
+    try:
+        waits: list[object] = []
+        monkeypatch.setattr(
+            window.pool, "waitForDone", lambda *args: waits.append(args) or True, raising=False
+        )
+        window._jobs.append(object())
+
+        event = _Event()
+        window.closeEvent(event)
+
+        assert waits and waits[0], "the wait must be given a bound; no argument waits forever"
+        bound = waits[0][0]
+        assert isinstance(bound, int) and 0 < bound <= 10_000, (
+            f"a close that waits {bound}ms is a window that will not close"
+        )
+        assert bound == CLOSE_WAIT_MS, "the same constant the main window uses"
+        assert event.accepted
+
+        # And it closes even when the wait blows up: without try/finally the error path of this
+        # very fix reproduces the hang it exists to prevent.
+        def explode(*_args: object) -> bool:
+            raise RuntimeError("the pool is gone")
+
+        monkeypatch.setattr(window.pool, "waitForDone", explode, raising=False)
+        broken = _Event()
+        with pytest.raises(RuntimeError):
+            window.closeEvent(broken)
+        assert broken.accepted, "the window must close even when the wait itself fails"
+    finally:
+        # The teardown close would otherwise re-enter the still-exploding handler.
+        window._jobs.clear()
+        monkeypatch.setattr(window.pool, "waitForDone", lambda *args: True, raising=False)
+        window.close()
+
+
+def test_both_dsn_forms_have_their_password_scrubbed() -> None:
+    """⛔ libpq accepts two DSN forms and the installer's field is free text; only one was covered.
+
+    `urlsplit("host=db password=s3cret dbname=recall").password` is `None`, so the keyword form —
+    which psycopg accepts, and which is what somebody pasting from a hosting provider's console
+    often has — went through with the password intact while the caller's docstring said it had been
+    removed. A promise that holds for one input shape and silently fails for another is worse than
+    no promise, because the caller stops looking.
+    """
+    from recall.store import scrub_dsn_secrets
+
+    assert scrub_dsn_secrets("failed for s3cret", "postgresql://u:s3cret@h/db") == "failed for ***"
+    assert (
+        scrub_dsn_secrets('missing "=" after password=s3cret x', "host=db password=s3cret dbname=r")
+        == 'missing "=" after password=*** x'
+    )
+    # A quoted value with spaces is reachable through libpq and must be matched in full, not up to
+    # the first space.
+    assert (
+        scrub_dsn_secrets("error: pw with spaces", "host=db password='pw with spaces' dbname=x")
+        == "error: ***"
+    )
+
+    # ⛔ **FIX-13: the DECODED form too.** `urlsplit` does not percent-decode and libpq does, so a
+    # password containing a reserved character — which MUST be encoded in a URI DSN, making this the
+    # ordinary case rather than an edge one — was scrubbed in a spelling that never appears in an
+    # error message. Three auditors found this independently.
+    assert (
+        scrub_dsn_secrets("rejected for p@ss:word", "postgresql://u:p%40ss%3Aword@h/db")
+        == "rejected for ***"
+    )
+    # And the encoded spelling is still scrubbed, in case the text carries the DSN verbatim.
+    assert "p%40ss%3Aword" not in scrub_dsn_secrets(
+        "dsn postgresql://u:p%40ss%3Aword@h/db failed", "postgresql://u:p%40ss%3Aword@h/db"
+    )
+
+    # ⚠️ A very short password is NOT scrubbed, deliberately: a blind replace of a one-character
+    # password rewrote every occurrence of that letter and destroyed the diagnosis. Measured, a
+    # password of `a` turned "cannot connect to database at host a" into
+    # "c***nnot connect to d***t***b***se ***t host ***".
+    readable = scrub_dsn_secrets("cannot connect to database at host a", "host=h password=a")
+    assert readable == "cannot connect to database at host a"
+
+    # It must never raise, on any input: this runs while REPORTING an error, and the malformed-DSN
+    # case is the one that produced the leak it exists to stop.
+    assert scrub_dsn_secrets("weird [dsn", "postgresql://[unbalanced") == "weird [dsn"
+    assert scrub_dsn_secrets("untouched", "") == "untouched"
+    assert scrub_dsn_secrets("untouched", "host=db dbname=r") == "untouched"
+
+
+def test_a_scrubbed_message_still_carries_its_diagnosis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⛔ Asserting only that the password is ABSENT passes for a helper that returns nothing useful.
+
+    `_scrubbed` has a fallback that replaces the whole message when the scrub raises. The tests for
+    it asserted only `password not in shown`, which that fallback satisfies while losing every word
+    of the diagnosis. An absence assertion needs a presence assertion beside it or it cannot tell
+    redaction from destruction.
+    """
+    from recall.desktop.install_ui import _scrubbed
+
+    dsn = "postgresql://recall:hunter2@127.0.0.1:5432/recall"
+    message = "Could not check that database: password authentication failed for hunter2"
+
+    shown = _scrubbed(message, dsn)
+    assert "hunter2" not in shown
+    assert "Could not check that database" in shown, "the diagnosis must survive the redaction"
+    assert "password authentication failed" in shown
+
+    # A blank DSN returns the message unchanged rather than suppressing it.
+    assert _scrubbed(message, "") == message
+
+    # And when the scrub itself fails, the message is suppressed rather than leaked.
+    def explode(*_args: object, **_kwargs: object) -> str:
+        raise RuntimeError("scrubber is broken")
+
+    monkeypatch.setattr("recall.store.scrub_dsn_secrets", explode)
+    suppressed = _scrubbed(message, dsn)
+    assert "hunter2" not in suppressed
+    assert "could not be displayed safely" in suppressed
+
+
+def test_the_selftest_fails_when_a_native_dependency_is_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """⛔ **FIX-12.** The AST test could not tell a reachable import from dead code.
+
+    An auditor wrapped the three native imports in `if False:` and 27 tests stayed green. Worse,
+    CPython emits no `IMPORT_NAME` for an elided block, so PyInstaller's modulegraph would drop the
+    payload too: green CI, a bundle with no ONNX runtime, and a crash on the first Install click,
+    which is the precise outcome the selftest exists to prevent.
+
+    This makes the import fail and asserts the selftest says so and exits non-zero.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+
+    import builtins
+
+    from recall.desktop import main as desktop_main
+
+    real_import = builtins.__import__
+
+    def missing_onnx(name, *args, **kwargs):
+        if name == "onnxruntime":
+            raise ModuleNotFoundError("No module named 'onnxruntime'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_onnx)
+
+    assert desktop_main._selftest() == 1, (
+        "a bundle missing a native dependency must FAIL the selftest, not merely mention it"
+    )
+
+
+def test_an_unusable_engine_fails_the_selftest_rather_than_being_mentioned(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⛔ **FIX-07. The check could not fail in ANY environment.**
+
+    With no model cache it printed a skip; with a cache present the `except` printed to stderr and
+    appended nothing to `failures`; and `dim <= 0`, the only thing that could fail, is something
+    `FastEmbedEmbedder` cannot produce. So the workflow step gained zero coverage while its log line
+    read as though a check had run. That is the "a skip must never read as a pass" rule broken by
+    the code a few lines below the comment stating it.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+
+    from recall.desktop import main as desktop_main
+
+    def unusable(name: str):
+        raise RuntimeError("the ONNX runtime data files are not in this bundle")
+
+    monkeypatch.setattr(desktop_main, "_model_cache_exists", lambda: True)
+    monkeypatch.setattr("recall.embeddings.resolve_embedder", unusable)
+
+    assert desktop_main._selftest() == 1, (
+        "a cache that is present and unusable is a BUNDLE problem, because the bundle supplies the "
+        "runtime; reporting it to stderr and exiting 0 is a check that cannot fail"
+    )

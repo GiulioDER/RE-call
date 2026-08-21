@@ -739,3 +739,151 @@ def test_image_version_reads_back_only_tags_this_module_writes() -> None:
         "ghcr.io/someone/recall-wizard:0.9.1",
     ):
         assert _image_version(foreign) is None, f"{foreign!r} must not yield a version to pin to"
+
+
+def test_the_dockerfile_extras_follow_the_pinned_version() -> None:
+    """⛔ Making the Dockerfile follow the inherited tag made it UNBUILDABLE on old stacks.
+
+    The image-tag fix taught `write_compose` to pin the version the stack actually runs, so a 0.9.1
+    stack keeps serving 0.9.1. But `_IMAGE_EXTRAS` is a constant including `documents`, and that
+    extra first shipped in 0.9.6 — so adding a project to an older stack wrote
+    `recall-rag[mcp,fastembed,documents]==0.9.1`, and the post-install import assertion turned that
+    into a hard build failure. One silent bug traded for a loud one, which is better, but still a
+    stack the wizard writes and cannot build.
+
+    The extras and the assertion now both follow the pinned version.
+    """
+    from recall.wizard.stack import dockerfile_text
+
+    def _pin(version: str) -> str:
+        """The `pip install` line only. The file's PROSE names `documents` while explaining why an
+        old release lacks it, so asserting over the whole text matches the comment rather than the
+        command — the same code-versus-prose trap this suite has hit before."""
+        return next(
+            line for line in dockerfile_text(version).splitlines() if "pip install" in line
+        )
+
+    for old in ("0.9.1", "0.9.5"):
+        assert "documents" not in _pin(old), f"{old} predates the documents extra"
+        assert "pypdf" not in dockerfile_text(old), "its packages must not be asserted either"
+        assert "mcp,fastembed" in _pin(old), "the extras that DID exist must still be requested"
+
+    for current in ("0.9.6", "0.9.7"):
+        assert "documents" in _pin(current)
+        assert "pypdf, docx, openpyxl, pptx, bs4" in dockerfile_text(current), (
+            "from 0.9.6 the extra exists, so a silently-missing one must stay a build failure"
+        )
+
+
+def test_an_unparseable_version_keeps_the_current_extras() -> None:
+    """A pre-release or local build carries current extras; guessing 'legacy' drops them silently.
+
+    Of the two failure directions, dropping document extraction from an image that should have it
+    is the quieter one, so it is the wrong default.
+    """
+    from recall.wizard.stack import dockerfile_text
+
+    def _pin(version: str) -> str:
+        return next(
+            line for line in dockerfile_text(version).splitlines() if "pip install" in line
+        )
+
+    assert "documents" in _pin("1.0.0rc1")
+    assert "documents" in _pin("someones-branch-build")
+
+
+def test_every_generated_dockerfile_is_syntactically_valid() -> None:
+    """⛔ **My fix for the extras bug emitted a Dockerfile Docker cannot parse.**
+
+    Refactoring the post-install assertion into a conditional expression dropped the line
+    continuation after `import fastembed`, so the RUN instruction terminated there and the next line
+    began with `&&`. Docker fails with `unknown instruction: &&`. Every version at or above 0.9.6 —
+    the default path, including the current release — generated an unbuildable file, which is
+    strictly worse than the unbuildable PIN that refactor was fixing.
+
+    Two auditors found it independently. The tests written alongside that fix asserted only that a
+    fragment was PRESENT, and a continuation is a property of the line BEFORE it, so a substring
+    check cannot express the invariant. This one can: inside a RUN block, every line except the last
+    must end with a backslash.
+    """
+    from recall.wizard.stack import dockerfile_text
+
+    verbs = {"FROM", "RUN", "WORKDIR", "COPY", "ENV", "ARG", "CMD", "ENTRYPOINT", "EXPOSE", "USER"}
+
+    for version in ("0.9.1", "0.9.5", "0.9.6", "0.9.7", "1.0.0"):
+        lines = dockerfile_text(version).splitlines()
+        continuing = False
+        for number, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continuing = False
+                continue
+            if not continuing:
+                verb = stripped.split(" ", 1)[0]
+                assert verb in verbs, (
+                    f"{version}: line {number} starts a new instruction with {verb!r}, which is not "
+                    f"a Dockerfile verb. The line before it is missing its continuation.\n{line}"
+                )
+            continuing = line.rstrip().endswith("\\")
+
+
+def test_a_prerelease_never_claims_an_extra_its_release_introduced() -> None:
+    """⛔ Digit extraction CONCATENATED, so `"5rc1"` became 51 and 0.9.5rc1 sorted above 0.9.6.
+
+    That pinned `documents` on a release predating it — the unbuildable image `_publishes_documents`
+    exists to prevent, reintroduced by the function meant to prevent it. A suffix also means
+    PRE-release, which sorts below the release it precedes.
+    """
+    from recall.wizard.stack import _publishes_documents
+
+    for older in ("0.9.5rc1", "0.9.2b3", "0.9.1rc1", "0.9.6rc1", "0.9.5", "0.9"):
+        assert not _publishes_documents(older), f"{older} predates the documents extra"
+
+    for current in ("0.9.6", "0.9.7", "0.9.10", "0.10.0", "1.0", "v0.9.6"):
+        assert _publishes_documents(current), f"{current} is at or after 0.9.6"
+
+    # An unparseable version keeps the CURRENT extras: dropping extraction from an image that should
+    # have it is the quieter failure, so it is the wrong default.
+    assert _publishes_documents("someones-branch-build")
+
+
+def test_a_docker_tag_spelling_never_pins_an_extra_the_release_lacks() -> None:
+    """⛔ **FIX-06.** Two shapes reached the wrong answer, in opposite directions.
+
+    `v0.9.5` and `0.9.post1` both returned True and pinned the `documents` extra on a release that
+    predates it, producing an image whose own import assertion cannot pass. `0.9.6+local` returned
+    False and silently dropped document extraction, contradicting this function's own docstring.
+
+    A leading `v` is an ordinary Docker tag spelling and reaches here through `_image_version`
+    reading an existing compose file. PEP 440 puts local metadata ABOVE its base release, and
+    `.post` is a post-release, not a pre-release; folding every suffix into "pre-release" was wrong
+    in the direction that loses the extra.
+    """
+    from recall.wizard.stack import _publishes_documents
+
+    expected = {
+        # A `v` prefix must not change the answer in either direction.
+        "v0.9.5": False,
+        "v0.9.7": True,
+        # Local metadata sorts ABOVE the base release.
+        "0.9.6+local": True,
+        "0.9.5+local": False,
+        # A post-release sorts above its base; `0.9.post1` is still below 0.9.6.
+        "0.9.post1": False,
+        "0.9.6.post1": True,
+        # Pre-releases stay below the release they precede.
+        "0.9.6rc1": False,
+        "0.9.6a1": False,
+        "0.9.7rc1": True,
+        # The plain cases, as a control that this is not just refusing everything.
+        "0.9.5": False,
+        "0.9.6": True,
+        "0.9.10": True,
+        "0.10.0": True,
+        # Genuinely unparseable keeps the CURRENT extras, which is the documented default.
+        "latest": True,
+        "main": True,
+        "": True,
+    }
+    wrong = {v: _publishes_documents(v) for v, e in expected.items() if _publishes_documents(v) != e}
+    assert not wrong, f"wrong answers: {wrong} (expected {[expected[v] for v in wrong]})"
