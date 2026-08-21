@@ -130,4 +130,105 @@ comparison, and only downward.
 
 ## Result
 
-*Not yet run. Appended below when it is, without editing anything above.*
+Measured 2026-08-21. **Nothing above this line has been edited.** Headline comparison only
+(`recall` vs `claude_md`); the ceiling comparison has not been run.
+
+### What the run actually was, including what went wrong
+
+The runner process **died at 71 of 100 sessions** and never wrote its records. The cause is not
+recoverable: the invocation was piped through `grep -v`, which swallowed every diagnostic and
+masked the exit code. That is an instrumentation defect in how the run was launched, not a finding
+about the system under test, and it is recorded here because the run it produced is the one being
+reported.
+
+The evidence survived, because `run_claude_case` writes each transcript to disk **before** parsing
+it. `scripts/agent_ab_salvage.py` rebuilt 71 records into **35 complete pairs, 0 discarded by the
+gate**, excluding 1 unpaired survivor (`trap-shared-db#r1`). So this is 35 pairs against the 50
+that were preregistered, and the per-locus counts below are correspondingly smaller than planned.
+
+Two consequences that must travel with the numbers:
+
+- **`wall_time_ms` is not the preregistered measurement.** The runner's own timing died with it, so
+  salvaged records use the session's self-reported `duration_ms`, which **excludes** process spawn
+  and the ~9 s MCP server startup. Prediction 10 was written about the other quantity and cannot be
+  scored against this one.
+- Other sessions on this machine began four concurrent `pytest` runs and a PyInstaller build at
+  11:36. **Zero measured sessions completed after that point**, so the contamination boundary is
+  clean and no reported figure is affected, but the run stopped there.
+
+Corpus: `gen_860396e395e946539b6eb1b7411ae54f`, calibration `cal_3d6fb8834b9841c4b5040314`,
+threshold 0.731, separability 0.980 [0.952, 1.000], served `trusted`/`calibrated` over stdio.
+Claude Code 2.1.238. Agent `anthropic/claude-haiku-4.5`, judge `openai/gpt-4.1-mini`, both through
+OpenRouter.
+
+### Primary endpoint
+
+| locus | n | recall | claude_md | delta | 95% CI | p |
+|---|---|---|---|---|---|---|
+| **memory_only** | 16 | **0.188** | 0.688 | **−0.500** | [−0.750, −0.250] | **0.0078** |
+| both *(control)* | 13 | 0.385 | 0.000 | +0.385 | [0.154, 0.692] | 0.0625 |
+| claude_md_only *(control)* | 6 | 0.000 | 0.000 | 0.000 | — | undefined |
+
+Discordant pairs on the primary endpoint: **on-only 0, off-only 8**. The RE-call arm never
+triggered a trap the baseline avoided.
+
+### Scoring the predictions
+
+| # | Predicted | Measured | Verdict |
+|---|---|---|---|
+| 1 | off hit rate 0.70 | **0.688** | correct |
+| 2 | on hit rate 0.50 | **0.188** | **under-predicted** |
+| 3 | reduction 20 points, falsified below 8 | **50 points**, CI excludes zero, p=0.0078 | correct, magnitude under-predicted 2.5x |
+| 4 | `recall_search` called in >= 70% | **81%** (13/16) | correct |
+| 5 | governing memo retrieved in >= 50% | **50%** (8/16) | correct, exactly at the boundary |
+| 6 | abstaining traps worse by 10 to 25 points | 25% vs 0%, **25 points** | correct, at the top of the range |
+| 7 | `both` within 10 points either way | **+38.5 points against RE-call** | **falsified** |
+| 8 | `claude_md_only` on arm worse by 10 to 30 | both arms 0.000, no hits | not observed |
+| 9 | input tokens +40% | **+19%**, p=0.65, not significant | over-predicted |
+| 10 | wall time +12 s, of which ~9 s startup | not scoreable, see above | void |
+| 11 | `recall_latency_ms` under 1 s | **182 ms** median | correct |
+
+**Prediction 2 is the first time in this project's record that an effect was under-predicted.**
+The standing note is eleven of twelve predictions too high by two to four times; here the baseline
+was called almost exactly (0.688 against 0.70) and the treatment was called far too pessimistically.
+
+### The falsified control, and what it means
+
+Prediction 7 failed in the direction that matters, and the mechanism is not in doubt. The arms were
+verified after the fact: the on arm receives **290 characters** of system prompt, the bare
+instruction that a memory tool exists; the off arm receives **17,816 characters** of `CLAUDE.md`
+plus `MEMORY.md`. This comparison therefore measures **replacing** the hand-written file with
+retrieval, not adding retrieval to it. Where a fact is in `CLAUDE.md`, the arm holding `CLAUDE.md`
+wins, and RE-call loses those by 38 points.
+
+That is the honest shape of the result: **retrieval wins decisively on what the file cannot hold,
+and loses on what it can.** The configuration a real user would run, `claude_md` **and** `recall`
+together, was not measured and is the obvious next arm. No claim is made here about it.
+
+### Cost and quality
+
+| metric | n | recall | claude_md | delta | p |
+|---|---|---|---|---|---|
+| input tokens | 35 | 75,810 | 63,465 | +12,345 | 0.65 |
+| output tokens | 35 | 1,803 | 1,751 | +52 | 0.94 |
+| model turns | 35 | 8 | 8 | 0 | 0.62 |
+| wall time (salvaged source) | 35 | 67.2 s | 128.1 s | −60.9 s | 0.10 |
+| answer_correctness | 35 | 0.211 | 0.167 | +0.044 | 0.43 |
+| factual_correctness | 35 | 0.260 | 0.236 | +0.024 | 0.65 |
+
+**No cost or quality difference reaches significance at n=35.** In particular, RE-call did **not**
+measurably improve answer correctness as judged by Ragas, and the earlier 3-pair smoke that
+suggested an 83% token saving did not survive scale. Both arms score low in absolute terms (~0.2),
+which is a property of scoring terse agent answers against detailed written references, not a
+statement about either arm.
+
+### What this result supports, and what it does not
+
+It supports: on this corpus, this task set and this model, a calibrated retrieval memory layer cuts
+known-hazard mistakes by 50 points where the governing fact exists only in memory, with the
+retrieval mechanism confirmed (81% search rate, 50% governing-memo retrieval, 182 ms median).
+
+It does not support: any claim about tokens, wall time or answer quality, none of which reached
+significance; any claim about `claude_md` plus `recall` together, which was never run; the ceiling
+comparison, which was never run; or generalisation beyond an agent working in the repository whose
+memory this is.

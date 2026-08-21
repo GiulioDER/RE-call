@@ -83,7 +83,10 @@ def main() -> int:
         if line.strip()
     ]
     trap_scores = json.loads((artifacts / "trap-scores.json").read_text(encoding="utf-8"))
-    environment = json.loads((artifacts / "environment.json").read_text(encoding="utf-8"))
+    env_path = artifacts / "environment.json"
+    environment = (
+        json.loads(env_path.read_text(encoding="utf-8")) if env_path.is_file() else {}
+    )
 
     # Each task has ONE designated trap, and only that one is its outcome. `trap-scores.json`
     # deliberately scores every detector against every transcript, which is useful for spotting a
