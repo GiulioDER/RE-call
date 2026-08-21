@@ -45,6 +45,7 @@ environment but is NOT a declared dependency of this project and so cannot be re
 from __future__ import annotations
 
 import json
+import re
 import socket
 import subprocess
 from dataclasses import dataclass
@@ -108,6 +109,19 @@ DOCKERFILE_NAME = "Dockerfile"
 #: desktop UI classifies .docx/.xlsx/.pptx as DOCUMENTS, so an image without it accepts those files
 #: and extracts nothing from them, which is a silent failure rather than a missing feature.
 _IMAGE_EXTRAS = "mcp,fastembed,documents"
+
+#: The extras available before `documents` was published. Used when the pinned version predates it.
+_LEGACY_IMAGE_EXTRAS = "mcp,fastembed"
+
+#: The first release that publishes the `documents` extra. Pinning it on anything older produces a
+#: Dockerfile that CANNOT build, because the post-install import assertion below fails on the
+#: packages the extra would have brought.
+#:
+#: ⛔ This exists because making the Dockerfile follow the INHERITED image tag (so a stack keeps
+#: serving the recall it was built with) turned a silent wrong-image bug into an unbuildable one:
+#: adding a project to a 0.9.1 stack wrote `recall-rag[...,documents]==0.9.1`, and `documents`
+#: first shipped in 0.9.6.
+_DOCUMENTS_EXTRA_SINCE = (0, 9, 6)
 
 #: Where pg18 wants its single mount. See the module docstring; the wrong path exits 1.
 DB_MOUNT = "/var/lib/postgresql"
@@ -375,6 +389,54 @@ def tenant_service(base_env: dict[str, str], *, image: str) -> dict[str, object]
     }
 
 
+def _publishes_documents(version: str) -> bool:
+    """Whether `version` is a release that published the `documents` extra.
+
+    Unparseable versions are treated as CURRENT (True). A pre-release or a local build carries the
+    current extras by definition; guessing "legacy" for anything unfamiliar would silently drop
+    document extraction from images that should have it, which is the quieter of the two failures
+    and therefore the wrong default.
+    """
+    # ⛔ **Leading digits only.** The first version of this joined EVERY digit in the component,
+    # so `"5rc1"` became 51 and `_publishes_documents("0.9.5rc1")` returned True — pinning the
+    # `documents` extra on a release that predates it, which is precisely the unbuildable image this
+    # function exists to prevent. Measured before the fix: 0.9.5rc1, 0.9.2b3 and 0.9.1rc1 all True.
+    #
+    # A suffix also means PRE-release, which sorts BELOW the release it precedes: 0.9.6rc1 comes
+    # before 0.9.6 and must not claim an extra that 0.9.6 introduced.
+    # ⛔ **Normalised first, because two shapes reached the wrong answer.** Measured: `v0.9.5`
+    # and `0.9.post1` both returned True and pinned the `documents` extra on a release that
+    # predates it, which builds an image whose own import assertion cannot pass; and `0.9.6+local`
+    # returned False and silently dropped document extraction, contradicting this function's own
+    # docstring. A leading `v` is an ordinary Docker tag spelling, and PEP 440 says local metadata
+    # sorts ABOVE its base release while `.post` is a POST-release, not a pre-release.
+    normalised = version.strip().lstrip("vV").split("+", 1)[0]
+    parts: list[int] = []
+    prerelease = False
+    for piece in normalised.split(".")[:3]:
+        match = re.match(r"(\d+)(.*)", piece.strip())
+        if match is None:
+            # ⚠️ **Unparseable means NOTHING parsed, not "this component did not".** Bailing on the
+            # first non-numeric component made `0.9.post1` return True and pin an extra that 0.9.6
+            # introduced, because `post1` fell through to the default. A version that has already
+            # yielded a numeric release is compared on what it yielded: `0.9.post1` is a post
+            # release of 0.9, which sorts above 0.9 and well below 0.9.6.
+            if parts:
+                break
+            # Genuinely unparseable, which is the documented default: a local or branch build
+            # carries the CURRENT extras, because dropping document extraction from an image that
+            # should have it is the quieter of the two failures.
+            return True
+        parts.append(int(match.group(1)))
+        # Only an alphabetic pre-release marker demotes the version. `post` and `rev` sort ABOVE
+        # the release they follow, so folding every suffix into "pre-release" was wrong in the
+        # direction that loses the extra.
+        suffix = match.group(2).lstrip(".-_").lower()
+        prerelease = prerelease or suffix.startswith(("a", "b", "c", "rc", "dev", "pre"))
+    exact = tuple(parts) == _DOCUMENTS_EXTRA_SINCE
+    return tuple(parts) > _DOCUMENTS_EXTRA_SINCE or (exact and not prerelease)
+
+
 def dockerfile_text(version: str | None = None) -> str:
     """The Dockerfile the generated stack builds from.
 
@@ -392,6 +454,8 @@ def dockerfile_text(version: str | None = None) -> str:
         from recall import __version__
 
         version = __version__
+    # The extras follow the PINNED version, not the running one. See `_DOCUMENTS_EXTRA_SINCE`.
+    extras = _IMAGE_EXTRAS if _publishes_documents(version) else _LEGACY_IMAGE_EXTRAS
     # LibreOffice is a large layer and a slow build. It is here for parity with
     # `docker/desktop/Dockerfile`: the UI offers .docx/.xlsx/.pptx, and without it those files are
     # accepted and yield nothing, which reads as recall being bad at documents rather than as a
@@ -407,7 +471,7 @@ def dockerfile_text(version: str | None = None) -> str:
         "        libreoffice-impress \\\n"
         "        libreoffice-writer \\\n"
         "    && rm -rf /var/lib/apt/lists/*\n"
-        f'RUN pip install --no-cache-dir "recall-rag[{_IMAGE_EXTRAS}]=={version}"\n'
+        f'RUN pip install --no-cache-dir "recall-rag[{extras}]=={version}"\n'
         "\n"
         "# ⚠️ **pip only WARNS about an extra a release does not provide.** So a pin whose version\n"
         "# predates an extra installs cleanly, the image builds, the container runs, and the\n"
@@ -416,10 +480,40 @@ def dockerfile_text(version: str | None = None) -> str:
         "# extract, fastembed, finetune, langchain, llamaindex, mcp, pool, rerank, s3, sparse and\n"
         "# voyage: `documents` is NOT among them. These imports turn that into a build failure,\n"
         "# where it is cheap and legible, instead of an extraction that silently returns nothing.\n"
-        "RUN python -c \"import recall_mcp.server\" \\\n"
-        " && python -c \"import fastembed\" \\\n"
-        " && python -c \"import pypdf, docx, openpyxl, pptx, bs4\"\n"
+        + _import_assertion(extras)
     )
+
+
+def _import_assertion(extras: str) -> str:
+    """The post-install `RUN` that turns a silently-missing extra into a build failure.
+
+    ⛔ **Joined from a list so the line continuations are STRUCTURAL, not hand-placed.** The
+    previous version wrote each fragment as its own string literal with a trailing `\\\\`, and
+    moving the last fragment into a conditional expression silently made the fragment ABOVE it
+    the end of the RUN instruction. Docker then parsed the next line as a top-level instruction
+    and failed with `unknown instruction: &&` — so every Dockerfile generated for 0.9.6 or later
+    was invalid, which is strictly worse than the unbuildable-pin bug that refactor was fixing.
+
+    The substring tests could not see it: they assert that a fragment is PRESENT, and a
+    continuation is a property of the line before it. `test_every_generated_dockerfile_is_syntactically_valid`
+    asserts the invariant instead. (This named a test that was never written under that name, which
+    is the quietest kind of stale reference: it points a future reader at nothing, on the one
+    invariant a substring test cannot express.)
+    """
+    checks = [
+        'python -c "import recall_mcp.server"',
+        'python -c "import fastembed"',
+    ]
+    trailer = ""
+    if extras == _IMAGE_EXTRAS:
+        checks.append('python -c "import pypdf, docx, openpyxl, pptx, bs4"')
+    else:
+        trailer = (
+            "# `documents` is not published for this pinned version, so the extraction\n"
+            "# packages are deliberately not asserted; this image reads text formats only.\n"
+        )
+    body = " \\\n && ".join(checks)
+    return f"RUN {body}\n{trailer}"
 
 
 def write_dockerfile(directory: Path, version: str | None = None) -> Path:
@@ -434,6 +528,154 @@ def write_dockerfile(directory: Path, version: str | None = None) -> Path:
     temporary.write_text(dockerfile_text(version), encoding="utf-8", newline="\n")
     temporary.replace(target)
     return target
+
+
+def _image_version(image: str) -> str | None:
+    """The recall version a `recall-wizard:<version>` tag names, or `None` for any other tag.
+
+    Deliberately narrow. It recognises only tags this module itself writes, because the value is
+    used to PIN what a Dockerfile installs, and guessing a version out of somebody's own
+    `myco/recall:latest` would install whatever that string happened to look like.
+    """
+    prefix, separator, version = image.partition(":")
+    if prefix != "recall-wizard" or not separator or not version:
+        return None
+    return version
+
+
+def _stack_image(services: dict[str, object]) -> str | None:
+    """The image the stack's existing tenant services already run, if they agree on one.
+
+    ⚠️ **Defaulting to THIS version's tag adds a service that runs a different recall from its
+    siblings.** `_default_image` is scoped to `recall.__version__`, so a stack provisioned by an
+    older install carries an older tag, and adding a project after an upgrade would give that one
+    project a different image while every existing corpus kept the old one. Compose reuses a tag
+    rather than rebuilding it, so both would start and neither would complain: one project answering
+    from a different recall than the rest, with nothing on screen to say so.
+
+    Returns None when the services disagree or there are none yet, and the caller then falls back to
+    the current version. Disagreement is left alone deliberately: this function exists to keep an
+    add consistent with what is there, not to reconcile a stack somebody has already hand-edited.
+    """
+    tags = {
+        service.get("image")
+        for name, service in services.items()
+        if name != "db" and isinstance(service, dict) and isinstance(service.get("image"), str)
+    }
+    if len(tags) == 1:
+        only = tags.pop()
+        return only if isinstance(only, str) else None
+    return None
+
+
+#: A Docker NAMED volume: the shape `docker volume create` accepts. Anything else in the source
+#: position of a mount is a host path.
+#:
+#: ⛔ **Matched positively, so the guard fails CLOSED.** The first version enumerated host paths
+#: instead — "contains a separator, or starts with a dot" — after splitting the entry on its FIRST
+#: colon. On Windows that splits `C:/Users/me/db:/var/lib/postgresql/data` into the source `"C"`,
+#: which has no separator and no leading dot, so the guard passed the exact layout it exists to
+#: refuse. Five auditors found it independently and three executed it. The released v0.9.6 wizard
+#: wrote precisely that string, `f"{database_dir.as_posix()}:{DB_MOUNT}"` off an absolute
+#: `data_root`, so the miss covered every real Windows install on the one platform whose
+#: intermittent WAL corruption motivated the guard.
+#:
+#: Enumerating the unsafe shapes means a shape nobody enumerated is treated as safe. Enumerating the
+#: ONE safe shape means a shape nobody anticipated is refused, which is the direction a guard
+#: protecting against data loss should fail in.
+_NAMED_VOLUME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+
+#: A Windows absolute path, `C:/…` or `C:\…`. Recognised before the source is parsed, because the
+#: drive colon is indistinguishable from the separator between a mount's source and target.
+_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _is_named_volume(source: str) -> bool:
+    return bool(_NAMED_VOLUME.match(source))
+
+
+def _volume_source(entry: object) -> str | None:
+    """The host-or-volume side of one compose volume entry, or None when there is nothing to judge.
+
+    Handles both syntaxes, because `add_tenant_services` is documented to accept a stack "somebody
+    else provisioned" and a hand-written or tool-generated file may use either:
+
+    * short — `SOURCE:TARGET[:MODE]`. Parsed from the RIGHT, so a Windows drive letter in the source
+      survives. `recall/wizard/stack.py`'s `existing_port` learned the same lesson in the other
+      direction when a published port gained a host IP.
+    * long — `{"type": "bind", "source": ..., "target": ...}`. The short-syntax-only version skipped
+      these silently, so a bind mount declared the long way read as "no bind mount at all".
+    """
+    if isinstance(entry, dict):
+        source = entry.get("source")
+        if entry.get("type") == "bind":
+            # A bind is a bind whatever its source looks like; return something that cannot be a
+            # named volume so the caller refuses.
+            return str(source) if isinstance(source, str) else "<bind mount>"
+        return str(source) if isinstance(source, str) else None
+    if not isinstance(entry, str) or ":" not in entry:
+        return None
+    # ⛔ **The drive prefix is decided BEFORE any splitting, and that ordering is the fix.**
+    # Stripping right-to-left is not enough on its own: `C:/Users/me/db:/var/lib/postgresql/data`
+    # strips the target, leaving `C:/Users/me/db`, and then strips AGAIN because `/Users/me/db`
+    # also starts with a slash — yielding the source `"C"`, which is a valid named volume. That is
+    # the same wrong answer the original first-colon split gave, reached by a longer route, and it
+    # survived the first attempt at this fix. A drive-lettered entry is a host path, full stop.
+    if _DRIVE_PREFIX.match(entry):
+        return entry
+    # The container target is an absolute POSIX path, and an optional access mode follows it. Strip
+    # from the right until what remains is the source.
+    remainder = entry
+    for _ in range(2):
+        head, _sep, tail = remainder.rpartition(":")
+        if not head:
+            break
+        if tail.startswith("/") or tail in {"ro", "rw", "z", "Z", "cached", "delegated"}:
+            remainder = head
+            continue
+        break
+    return remainder
+
+
+def _refuse_bind_mounted_database(compose_path: Path, db: object) -> None:
+    """Refuse to extend a stack whose database still lives on a host bind mount.
+
+    ⛔ **The bind mount is the layout that corrupted a database**, which is why `DB_VOLUME` exists:
+    PostgreSQL's WAL writes fail intermittently with EINTR on a Windows bind mount, and an
+    intermittent WAL write failure is a corruption risk rather than an availability one. See the
+    comment on the `db` service in `compose_document`.
+
+    A stack provisioned before that change still has the old mount. Adding a project to it would put
+    a new corpus onto that database — more data on the layout the wizard stopped using precisely
+    because it loses data. So this refuses and says what to do, rather than quietly making the
+    exposure larger.
+
+    Refusing is safe in a way that migrating is not: moving the volume means moving a live database
+    the user may be serving from, which is not something an "add a project" action should attempt
+    without being asked.
+    """
+    if not isinstance(db, dict):
+        return
+    volumes = db.get("volumes")
+    if volumes is None:
+        return
+    if not isinstance(volumes, list):
+        raise ValueError(
+            f"the stack at {compose_path} declares its database volumes as "
+            f"{type(volumes).__name__}, which this cannot read. Refusing rather than adding a "
+            "corpus to a database whose storage layout could not be determined."
+        )
+    for entry in volumes:
+        source = _volume_source(entry)
+        if source is None or _is_named_volume(source):
+            continue
+        raise ValueError(
+                f"the stack at {compose_path} keeps its database on the host directory {source!r} "
+                "rather than in a Docker volume. That layout loses PostgreSQL WAL writes "
+                "intermittently on Windows, which is why newer installs use a named volume, and "
+                "adding a project would put another corpus onto it. Back up the data you care "
+                "about, then re-provision the stack with a current install."
+            )
 
 
 def add_tenant_services(
@@ -468,17 +710,22 @@ def add_tenant_services(
         raise ValueError(
             f"{compose_path} defines no `db` service, so it is not a recall stack to add to"
         )
+    _refuse_bind_mounted_database(compose_path, services["db"])
 
+    inherited = _stack_image(services) or image
     added: list[str] = []
     for tenant, base_env in env.items():
         name = _service_name(tenant)
         if name in services:
             continue
-        services[name] = tenant_service(base_env, image=image)
+        services[name] = tenant_service(base_env, image=inherited)
         added.append(tenant)
 
     if added:
-        write_compose(compose_path, document)
+        # The Dockerfile follows the tag, not the running wizard. See `write_compose`: regenerating
+        # it at the running version left a 0.9.1 stack carrying a 0.9.6 Dockerfile, and Compose
+        # would have served the 0.9.1 image under it without a word.
+        write_compose(compose_path, document, dockerfile_version=_image_version(inherited))
     return tuple(sorted(added))
 
 
@@ -487,7 +734,9 @@ def _service_name(tenant: str) -> str:
     return f"recall-{tenant}"
 
 
-def write_compose(path: Path, document: dict[str, object]) -> None:
+def write_compose(
+    path: Path, document: dict[str, object], *, dockerfile_version: str | None = None
+) -> None:
     """Write the compose file atomically, as JSON, with LF endings.
 
     JSON because it is valid YAML and `json.dumps` quotes a Windows path containing spaces
@@ -498,12 +747,23 @@ def write_compose(path: Path, document: dict[str, object]) -> None:
     compose document pointing at a file that is not there is broken by construction. Coupling them
     here means no caller can produce half a stack: the failure would be a `docker compose up` that
     cannot find the Dockerfile, at the moment the user is trying to start their index.
+
+    ⛔ **`dockerfile_version` exists because writing the RUNNING version here made the stack lie.**
+    `add_tenant_services` inherits the existing stack's image tag so a new project runs the same
+    recall as its siblings; this then regenerated the Dockerfile at whatever version the wizard
+    happened to be. Measured on a 0.9.1 stack under a 0.9.6 wizard: the new service's tag said
+    `recall-wizard:0.9.1` and the Dockerfile beside it installed `recall-rag==0.9.6`. Compose reuses
+    a tag it already holds rather than building, so the container would start the 0.9.1 image while
+    every file on disk claimed 0.9.6 — the same silent-wrong-image failure `_default_image`'s
+    docstring records, reintroduced through the inheritance that was meant to prevent it.
+
+    The tag is the thing that decides what actually runs, so the Dockerfile follows the tag.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
     temporary.replace(path)
-    write_dockerfile(path.parent)
+    write_dockerfile(path.parent, dockerfile_version)
 
 
 def wait_for_database(dsn: str, *, timeout: float = 120.0, interval: float = 2.0) -> None:

@@ -8,6 +8,125 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Fixed
+
+- **A desktop upload no longer silently shrinks the corpus.** Carried-forward files that live
+  outside the upload staging directory (which is every file a wizard install indexed) are kept and
+  the build reader is widened to reach them. Only a file whose bytes are genuinely gone is dropped,
+  and the count is now named in the upload's own message rather than passing unmentioned.
+- **A failed `docker compose down` is reported.** With the docker daemon unreachable, `recall
+  uninstall` recorded no failure, printed `Removed N item(s).`, and deleted the stack file naming
+  the containers that were still running — which then made them unnameable by the tool that left
+  them. The stack file and `wizard.json` are now kept whenever the teardown fails, so the uninstall
+  can be retried.
+- **An uninstall no longer overwrites the install-time backup of the MCP client config.** It writes
+  its own under a name that is never reused, and copies the source file's mode rather than creating
+  it at the umask default, since that file carries bearer tokens.
+- **A volume the stack declared `external` is never removed.** A fallback that derived the
+  historical volume name could reinstate exactly the volume that had just been excluded as not
+  ours. The fallback now applies only to a legacy stack that declares no volumes at all.
+- **A failure inside `build()` no longer strands a generation.** The desktop upload's cleanup path
+  called only `abandon`, which refuses any state but `ready`, so failures before `validate()` left
+  a full copy of the corpus that `gc` could not collect.
+- **A blank or relative data folder is refused** rather than silently becoming the process's
+  working directory, and the terminal interview reports it as a refusal instead of a traceback.
+- **`corpus_version` may no longer begin with `desktop-`.** That prefix decides which generations
+  the desktop upload path abandons; a wizard corpus carrying it would have been reclaimed.
+
+### Changed
+
+- `recall uninstall` also removes the desktop app's handoff file from the user config directory
+  (`%APPDATA%/RE-call/runtime.json`), which the previous release looked for in the wrong place.
+- `--selftest` resolves the embedder only when a model cache already exists, and says which branch
+  it took. It was downloading model weights on a cold cache.
+
+## [0.9.7]
+
+### Added
+
+* **Production promotion works, gated on certification.** `generation promote` under
+  `RECALL_ENV=production` used to refuse outright with "unavailable in production until
+  certification gates land". Those gates have landed: promotion now succeeds for a generation whose
+  published calibration certified and is still bound to this pipeline and corpus, and refuses every
+  other status by name (MISSING, DRAFT, UNCERTIFIED, STALE each need a different action from
+  whoever hit it). `--unsafe-development-promotion` is refused there rather than ignored, so the
+  development escape hatch cannot be carried into production by habit.
+
+* **A desktop upload into a production tenant can reach CERTIFIED.** The gate above had no
+  reachable door on that path: nothing in `generation_ingest` produced a calibration, so every
+  upload ended built-and-validated but never live, with the CLI as the only route to a live corpus.
+  It now calibrates and publishes before promoting, using the same query-set generator the
+  installer uses. Measured end to end against a production tenant: a ten-file corpus certifies and
+  goes live; a one-file corpus reports "no certifiable query set could be generated from 1
+  chunk(s)" and stays ready — the corpus's own reason, not the gate's generic one.
+
+### Changed
+
+* ⛔ **`generation rollback` never refuses on certification grounds, and this reverses a gate that
+  shipped for one release.** Rollback is the incident path, and a gate that blocks recovery
+  precisely when recovery is needed trades a visible degradation for an invisible workaround. Two
+  ways the refusal bit, both certain rather than hypothetical: `forget()` rewrites the corpus
+  fingerprint of every generation of a tenant, so one erasure request left no rollback target ever
+  again; and every generation an existing install is serving was promoted under `development` and
+  has no published calibration, so upgrading would have removed rollback from all of them.
+
+  The invariant is kept by REPORTING instead of preventing. `generation_rolled_back` now records
+  the target's resolved calibration status and an optional `provisional_reason`, so a recovery that
+  downgrades a tenant from certified to provisional is visible. Reasoning:
+  `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md`.
+
+* **The certification gate follows the SERVING environment, not the build one.** `GenerationManager`
+  takes `serving_environment`, defaulting to `environment`. The wizard is why: it builds every
+  corpus under `development`, because a production build demands a verifiable embedder identity a
+  bundled model does not have, then serves those tenants with `RECALL_ENV=production`. Keyed on the
+  build environment, the gate ran on no tenant an install creates.
+
+* **One definition of a pipeline identity.** `generation_ingest` assembled its own, hardcoding
+  `provider="fastembed"` for every embedder and spelling out a chunker identity with an empty
+  configuration. A generation built by the wizard and one built by a desktop upload therefore
+  carried different pipeline fingerprints for the same pipeline, which is what makes a published
+  calibration resolve STALE. Chunk boundaries are unchanged; only the recorded identity moves.
+
+* **The `fastembed` extra is bounded to `<1`.** `embedder_artifact_path` walks a private attribute
+  chain to find a model's own snapshot directory, and does so defensively — a release that renames
+  it returns `None` rather than raising, which makes the pipeline identity unverified, which makes
+  production builds refuse. An install that silently stops accepting uploads, with nothing pointing
+  at the dependency that moved. Verified reachable on fastembed 0.8.0.
+
+### Fixed
+
+* **The certification gate decided from a different transaction than the one it authorised.** It
+  opened its own connection while `promote` held the tenant and generation rows `FOR UPDATE`, so a
+  concurrent `forget()` could invalidate the calibration between the verdict and the commit, and the
+  connection was acquired while holding a lock. Measured: it is **not** a deadlock, which is what it
+  looks like — a plain `SELECT` does not wait on `FOR UPDATE` under MVCC. Now resolved on the
+  caller's transaction; a competing fingerprint rewrite waits for the promotion rather than racing
+  it.
+
+* **The artifact digest cache vouched for bytes that had changed.** Keyed by path with no
+  invalidation, the first answer stood for the life of the process, so a re-download or a swapped
+  model file kept a provenance claim no bytes on disk supported. Now keyed by file count, total size
+  and newest mtime alongside the digest. This detects staleness, not tampering: someone able to
+  write into the model directory can also set mtimes.
+
+* **A generated stack could serve one version while every file on disk claimed another.** Adding a
+  project inherits the existing stack's image tag so the new corpus runs the same recall as its
+  siblings, but the Dockerfile was regenerated at the running version. Measured on a 0.9.1 stack
+  under a 0.9.6 wizard: tag `recall-wizard:0.9.1`, Dockerfile `recall-rag==0.9.6`. Compose reuses a
+  tag rather than building it, so the container would have started 0.9.1 in silence. The Dockerfile
+  now follows the tag.
+
+* **A refused upload no longer loses the previous upload's files or leaks its corpus.** A new build
+  seeded its manifest from the ACTIVE generation, and a refused promotion never advances that
+  pointer, so each upload dropped every earlier un-promoted upload's files. Measured against a real
+  database: upload #2 reported 1 file where it should have reported 3. Builds it supersedes are now
+  abandoned so `gc` can reclaim them.
+
+* **Six operator documents claimed production promotion was blocked.** Each was true when written
+  and falsified by the gates landing, and each was the document somebody reads before deciding what
+  a command will do: `PRODUCTION.md`, `MIGRATIONS.md`, `CALIBRATION.md`, `GENERATIONS.md`,
+  `FIRST_CALIBRATION.md`, `ENVIRONMENT.md`.
+
 ## [0.9.6]
 
 ### Added

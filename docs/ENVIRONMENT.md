@@ -17,8 +17,11 @@ OPENROUTER_API_KEY=
 
 # Deployment environment: development (default) | test | production. Selects the production
 # code paths: the v1 GenerationStore for `search` and `forget`, generation mode in the MCP
-# server, refusal of local-filesystem indexing, pinned-embedder verification, and the promotion
-# block. It also governs MCP authentication: `production` REFUSES the static token file
+# server, refusal of local-filesystem indexing, pinned-embedder verification, and the
+# certification gate on `generation promote` (production promotes only a CERTIFIED generation and
+# refuses --unsafe-development-promotion; development is the reverse). `generation rollback` is
+# ungated in both, by design. It also governs MCP authentication: `production` REFUSES the
+# static token file
 # (RECALL_AUTH_TOKENS_FILE below), so an HTTP transport there must authenticate via OIDC.
 # Anything other than "production", including an unset value, a typo such as "prod", or a stray
 # trailing space, resolves to development and leaves every one of those guards OFF.

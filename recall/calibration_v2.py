@@ -553,39 +553,72 @@ class CalibrationRepository:
         return self.get(calibration_id)
 
     def resolve(self, generation_id: str) -> CalibrationResolution:
+        """Resolve on a connection of this repository's own, in a read-only snapshot."""
         with self._connect() as conn, conn.transaction():
             conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-            _state, _identity, pipeline, corpus = self._generation(conn, generation_id)
-            row = conn.execute(
-                f"SELECT {self._COLUMNS} FROM recall_calibrations WHERE tenant_id = %s "
-                "AND generation_id = %s AND lifecycle_state = 'published'",
+            return self.resolve_within(conn, generation_id)
+
+    def resolve_within(
+        self, conn: psycopg.Connection, generation_id: str
+    ) -> CalibrationResolution:
+        """The same resolution, on a connection and transaction the CALLER already holds.
+
+        ⚠️ **This exists so a gate can decide and act in one transaction.** `promote` locks the
+        tenant row and the generation row `FOR UPDATE`, then asks whether the generation is
+        certified. Asking through a second connection made that two decisions instead of one:
+
+        * **The verdict came from a different snapshot than the write.** Between `resolve`
+          returning CERTIFIED and the promotion committing, a concurrent `forget()` can rewrite the
+          generation's `corpus_fingerprint` and make the calibration STALE. The gate would have
+          approved a state that no longer existed by the time it was acted on. Read on the
+          promoting connection, the generation row is the one the caller holds `FOR UPDATE`, so
+          the check and the activation are atomic with respect to it.
+        * **A connection was acquired while a tenant lock was held.** Measured: +1 backend for the
+          width of the lock window, against `max_connections=100`. Under exhaustion the acquisition
+          blocks, and it blocks holding the lock, so every other promotion and rollback for that
+          tenant queues behind it rather than behind the work.
+
+        Measured on the same probe: this is **not** a deadlock, which is what it looks like and is
+        the thing worth stating. A plain `SELECT` does not wait on `FOR UPDATE` under MVCC, so the
+        nested read completed and returned. The failure it produces is a wrong verdict under
+        concurrency and a stall under load, not a hang.
+
+        The caller owns the transaction, so no isolation level is set here: `promote`'s transaction
+        has already written and cannot be made `REPEATABLE READ READ ONLY`. Reading at the caller's
+        isolation is the point rather than a compromise, because the question being asked is about
+        the caller's own transaction.
+        """
+        _state, _identity, pipeline, corpus = self._generation(conn, generation_id)
+        row = conn.execute(
+            f"SELECT {self._COLUMNS} FROM recall_calibrations WHERE tenant_id = %s "
+            "AND generation_id = %s AND lifecycle_state = 'published'",
+            (self.tenant_id, generation_id),
+        ).fetchone()
+        if row is None:
+            local = conn.execute(
+                "SELECT certified, lifecycle_state FROM recall_calibrations "
+                "WHERE tenant_id = %s AND generation_id = %s "
+                "ORDER BY created_at DESC, calibration_id DESC LIMIT 1",
                 (self.tenant_id, generation_id),
             ).fetchone()
-            if row is None:
-                local = conn.execute(
-                    "SELECT certified, lifecycle_state FROM recall_calibrations "
-                    "WHERE tenant_id = %s AND generation_id = %s "
-                    "ORDER BY created_at DESC, calibration_id DESC LIMIT 1",
-                    (self.tenant_id, generation_id),
-                ).fetchone()
-                if local is not None and not bool(local[0]):
-                    return CalibrationResolution(CalibrationStatus.UNCERTIFIED)
-                if local is not None and str(local[1]) == "draft":
-                    return CalibrationResolution(CalibrationStatus.DRAFT)
-                any_published = conn.execute(
-                    "SELECT 1 FROM recall_calibrations WHERE tenant_id = %s "
-                    "AND lifecycle_state = 'published' LIMIT 1",
-                    (self.tenant_id,),
-                ).fetchone()
-                return CalibrationResolution(
-                    CalibrationStatus.STALE if any_published else CalibrationStatus.MISSING
-                )
-            artifact = self._artifact(row)
-            query_row = conn.execute(
-                "SELECT queries FROM recall_calibration_query_sets WHERE tenant_id = %s "
-                "AND query_set_digest = %s",
-                (self.tenant_id, artifact.query_set_digest),
+            if local is not None and not bool(local[0]):
+                return CalibrationResolution(CalibrationStatus.UNCERTIFIED)
+            if local is not None and str(local[1]) == "draft":
+                return CalibrationResolution(CalibrationStatus.DRAFT)
+            any_published = conn.execute(
+                "SELECT 1 FROM recall_calibrations WHERE tenant_id = %s "
+                "AND lifecycle_state = 'published' LIMIT 1",
+                (self.tenant_id,),
             ).fetchone()
+            return CalibrationResolution(
+                CalibrationStatus.STALE if any_published else CalibrationStatus.MISSING
+            )
+        artifact = self._artifact(row)
+        query_row = conn.execute(
+            "SELECT queries FROM recall_calibration_query_sets WHERE tenant_id = %s "
+            "AND query_set_digest = %s",
+            (self.tenant_id, artifact.query_set_digest),
+        ).fetchone()
         if artifact.pipeline_fingerprint != pipeline or artifact.corpus_fingerprint != corpus:
             return CalibrationResolution(CalibrationStatus.STALE)
         if query_row is None or not isinstance(query_row[0], list):

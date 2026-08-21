@@ -1,0 +1,294 @@
+name: Windows installer
+
+# Builds the frozen graphical installer, PROVES IT RUNS, and signs it.
+#
+# ⛔ **The `--selftest` step is the reason this workflow is worth having.** A PyInstaller bundle
+# fails characteristically: it starts, draws its window, and raises `ModuleNotFoundError` the
+# instant somebody presses Install — because PyInstaller finds imports by static analysis and this
+# codebase imports lazily nearly everywhere. A workflow that only checked the build succeeded would
+# be green for exactly that bundle. `--selftest` reaches the modules the first click reaches.
+#
+# ⚠️ **The build cannot be run on every developer machine, and the reason is not a bug.** Measured
+# 2026-08-21 on the maintainer's Windows 11 box: Smart App Control enforced
+# (`VerifiedAndReputablePolicyState = 1`), and the freshly built unsigned exe was refused with "An
+# Application Control policy has blocked this file". Not a SmartScreen warning somebody can click
+# past — blocked. A hosted runner has no such policy, which is why the executable check lives here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      allow_unsigned:
+        description: >-
+          Publish an artifact WITHOUT a signature. Only for the bootstrap case below.
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "recall/desktop/**"
+      - "recall/wizard/**"
+      - ".github/workflows/windows-installer.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      # Consumed by `attach`, so the two jobs cannot disagree about whether a signed bundle exists.
+      signed: ${{ steps.outcome.outputs.signed }}
+    permissions:
+      # ⛔ **`read`, and the attach lives in its own job below.** This was briefly `write`, with a
+      # comment claiming the grant was "scoped to this step". It is not: a job-level `permissions:`
+      # block applies the token to EVERY step in the job, and a step-level `if:` gates execution
+      # rather than the token. So the third-party signing action and PyInstaller executing
+      # repository code all ran with a repo-writable token, on same-repo pull requests too — the
+      # fork-PR argument in that comment does not cover them. Three auditors said so.
+      contents: read
+      # SignPath's action reads the workflow run and the uploaded artifact to bind the signature to
+      # a specific, reproducible build rather than to whatever bytes were handed to it.
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.13"
+
+      - name: Install the package and the build tool
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[desktop,mcp,fastembed,documents]"
+          python -m pip install "pyinstaller>=6.10"
+
+      - name: Build
+        working-directory: packaging
+        run: python -m PyInstaller recall-install.spec --noconfirm --distpath ../dist
+
+      - name: Prove the bundle is complete
+        # ⛔ Not `--help`, which exits at argparse before reaching a single lazily imported module.
+        # This builds the window off-screen and imports the engine the first click would reach.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .\dist\recall-install\recall-install.exe --selftest
+
+      - name: Report the bundle size
+        # A number in the log, because this is a download a person waits for and nothing else in CI
+        # would notice it doubling. `collect_submodules("recall")` sweeps in whatever recall grows,
+        # so the exclusions in the spec are load-bearing and their removal should be visible.
+        # Measured locally 2026-08-21: 786 MB before the exclusions, 457 MB after.
+        shell: pwsh
+        run: |
+          $bytes = (Get-ChildItem -Recurse dist/recall-install | Measure-Object -Property Length -Sum).Sum
+          "bundle: {0:N0} MB" -f ($bytes / 1MB)
+
+      # The unsigned bundle is uploaded FIRST because that is what gets signed: SignPath fetches
+      # this artifact by id, so the signature is bound to a build this workflow produced and can be
+      # traced back to, rather than to bytes somebody handed the service.
+      - name: Upload the unsigned bundle
+        id: unsigned
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: recall-install-windows-unsigned
+          path: dist/recall-install
+          if-no-files-found: error
+
+      # ── Signing ──────────────────────────────────────────────────────────────────────────────
+      #
+      # ⛔ **Signing is what makes the binary RUNNABLE, not what makes it look professional.**
+      # Microsoft's documentation settles what Smart App Control requires:
+      # https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/overview
+      #
+      #   "If the app intelligence service is unable to make a prediction, then Smart App Control
+      #    will still allow an app to run if it is signed with a certificate issued by a
+      #    certificate authority (CA) within the Trusted Root Program."
+      #
+      # So a signature from a Trusted Root Program CA is SUFFICIENT — reputation is not additionally
+      # required, which means a first release runs rather than waiting to accumulate downloads. An
+      # OV certificate does it; EV is not needed for this.
+      #
+      # The private key never reaches this runner. SignPath holds it in an HSM and signs server
+      # side, which is also how the free programme for open source projects can offer an OV
+      # certificate at all.
+      #
+      # ⚠️ Gated on a VARIABLE rather than the secret, because `secrets` is not available in an
+      # `if:` at step level on a fork PR and would silently evaluate empty — turning "we have no
+      # credentials" and "this is a fork" into the same skip, which the release guard below then
+      # cannot tell apart.
+      - name: Sign the bundle
+        id: sign
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627  # v2.3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: recall
+          signing-policy-slug: ${{ github.event_name == 'push' && 'release-signing' || 'test-signing' }}
+          artifact-configuration-slug: windows-installer
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist-signed
+
+      # ⛔ **A tag build that produced an UNSIGNED artifact must fail, loudly.** Shipping one is
+      # worse than shipping nothing: it works for whoever built it and is blocked on the machines
+      # this bundle exists to serve, and nothing in the release says which the downloader got. A
+      # pull request build is allowed to be unsigned — that is a check, not a download.
+      # ⚠️ **The bootstrap case, and it is a real deadlock rather than an oversight.** SignPath's
+      # own terms require that "the project must already be released in the form that should be
+      # signed" — so the first Windows release cannot be signed, because the certificate is granted
+      # on the strength of that release existing. The guard below would otherwise make the first
+      # release impossible and the certificate unobtainable.
+      #
+      # So it is escapable, but only by someone deliberately ticking a box on a manual run, and
+      # never by a tag push. The artifact is then renamed to say what it is; see the next step.
+      - name: Refuse an unsigned release
+        if: >-
+          steps.sign.outcome == 'skipped'
+          && (github.event_name == 'push' || inputs.allow_unsigned != true)
+          && github.event_name != 'pull_request'
+        run: |
+          echo "::error::no signing credentials configured, so the artifact would be blocked by"
+          echo "::error::Smart App Control on the machines it targets. Set the"
+          echo "::error::SIGNPATH_ORGANIZATION_ID variable and SIGNPATH_API_TOKEN secret, or run"
+          echo "::error::this workflow manually with allow_unsigned to produce a bootstrap build."
+          exit 1
+
+      # ⛔ **An unsigned artifact must never carry the name of the signed one.** Somebody arriving
+      # at a release page cannot inspect a signature before downloading, so the filename is the only
+      # warning they get, and it has to be one they cannot miss.
+      - name: Publish the unsigned bootstrap artifact
+        if: steps.sign.outcome == 'skipped' && inputs.allow_unsigned == true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: recall-install-windows-UNSIGNED-will-be-blocked-by-smart-app-control
+          path: dist/recall-install
+          if-no-files-found: error
+
+      - name: Verify the signature is real
+        # ⚠️ The signing step's exit code says the SERVICE accepted the request. `signtool verify
+        # /pa` asks Windows whether the file on disk now carries a chain it will actually honour,
+        # which is the question the user's machine asks and the only one that matters here.
+        if: steps.sign.outcome == 'success'
+        shell: pwsh
+        run: |
+          $tool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+          if (-not $tool) { throw "signtool.exe not found on the runner" }
+          # ⚠️ **The layout is listed before it is assumed.** `upload-artifact` computes the
+          # artifact root as the least common ancestor of the matched files, so uploading
+          # `dist/recall-install` produces entries relative to THAT directory — the folder name is
+          # stripped. SignPath then extracts into `dist-signed`, and the exe is at
+          # `dist-signed/recall-install.exe`, not `dist-signed/recall-install/recall-install.exe`.
+          # This branch has never run (no credentials yet), so nothing has caught it; the listing
+          # makes the real shape visible in the log the first time it does.
+          Get-ChildItem -Recurse dist-signed | Select-Object -First 20 FullName | Format-Table -AutoSize
+          $exe = Get-ChildItem -Recurse dist-signed -Filter recall-install.exe | Select-Object -First 1
+          if (-not $exe) { throw "no recall-install.exe under dist-signed" }
+          & $tool.FullName verify /pa /v $exe.FullName
+          if ($LASTEXITCODE -ne 0) { throw "the signature does not verify" }
+
+      - name: Upload the signed bundle
+        if: steps.sign.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: recall-install-windows
+          # `dist-signed`, not `dist-signed/recall-install`: see the verify step above for why that
+          # directory level does not exist.
+          path: dist-signed
+          if-no-files-found: error
+
+      - name: Record whether a signed bundle exists
+        id: outcome
+        shell: pwsh
+        run: |
+          "signed=$('${{ steps.sign.outcome }}' -eq 'success')".ToLower() >> $env:GITHUB_OUTPUT
+
+  # ⛔ **A separate job, so the write grant is not held while third-party actions and
+  # repository-authored build code run.** Without this the whole build ran with a repo-writable
+  # token on every trigger including same-repo pull requests.
+  attach:
+    needs: build
+    # ⛔ **`event_name == 'push'`, not just a tag ref.** The signing policy one job up selects
+    # `release-signing` on a push and `test-signing` otherwise. A `workflow_dispatch` aimed at a tag
+    # therefore signs with the TEST policy while `startsWith(github.ref, 'refs/tags/v')` is still
+    # true, so gating on the ref alone would attach a test-signed bundle to a public release. One
+    # predicate for both decisions.
+    if: github.event_name == 'push' && needs.build.outputs.signed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: recall-install-windows
+          path: signed
+
+      # ⚠️ **The release does not exist yet when this workflow starts, and that is by design.**
+      # `release.yml` creates it in a job that `needs: publish`, and `publish` sits in the `pypi`
+      # environment behind a REQUIRED HUMAN REVIEWER. So the release appears only after somebody
+      # approves the PyPI publish, which is unbounded in time. The first version of this step called
+      # `gh release upload` immediately and would have failed on essentially every tag — the same
+      # end state (a red tag build with no asset) that adding it was meant to remove. Two auditors
+      # found this independently.
+      #
+      # Waiting rather than creating: `release.yml`'s own header states the ordering rule that the
+      # release follows the publish, and creating it here would break that.
+      - name: Wait for the release to exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # ⛔ **The tag reaches the script as an ENVIRONMENT variable, never as `${{ }}` inside it.**
+          # Expression interpolation happens before the shell ever sees the line, so a tag carrying
+          # shell metacharacters would be substituted into the script text itself. Tags here are
+          # pushed by maintainers, so this is a small hole; it is also a free one to close, and the
+          # habit is what matters on a workflow that holds a repo-writable token.
+          TAG: ${{ github.ref_name }}
+        run: |
+          # ⚠️ **Backs off, because what this waits on is a PERSON.** The release is created by
+          # `release.yml` in a job that needs the `pypi` environment's required reviewer, so the
+          # delay is however long an approval takes, not however long a machine takes. A flat
+          # 60 × 30s poll billed up to half an hour of runner time and still gave up after thirty
+          # minutes. Doubling to a 600s ceiling reaches 25.75 minutes by check 8 and gives up after
+          # 12 checks, the last at 65.75 minutes, for 75.8 minutes of billed wall clock. Those are
+          # simulated from the loop as written, not estimated: an earlier version of this comment
+          # claimed a 600s cap the code did not implement.
+          delay=15
+          waited=0
+          for attempt in $(seq 1 12); do
+            if gh release view "${TAG}" >/dev/null 2>&1; then
+              echo "release ${TAG} is present after ${attempt} check(s), ${waited}s"
+              exit 0
+            fi
+            echo "waiting ${delay}s for release ${TAG} (check ${attempt}/12, ${waited}s so far)"
+            sleep "${delay}"
+            waited=$((waited + delay))
+            # ⛔ **Cap the PRODUCT, not the operand.** `if [ delay -lt 600 ]` tested before
+            # doubling, so 480 doubled to 960 and froze there: the real ceiling was 960s and the
+            # total 111.8 minutes, against a comment claiming 600s and roughly 30 minutes. Two
+            # auditors simulated the loop and got the same sequence.
+            delay=$((delay * 2))
+            if [ "${delay}" -gt 600 ]; then delay=600; fi
+          done
+          echo "::error::the release for ${TAG} was not there at the last check. It is created by"
+          echo "::error::release.yml AFTER the pypi environment's required reviewer approves the"
+          echo "::error::publish, so approve that first and re-run this job."
+          exit 1
+
+      - name: Attach the signed bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # See the wait step above: the tag arrives as data, not as script text.
+          TAG: ${{ github.ref_name }}
+        run: |
+          tag="${TAG}"
+          zip="recall-install-${tag}-windows-x64.zip"
+          # Normalised to one named folder so the asset unpacks predictably, rather than dumping the
+          # exe and its `_internal/` directory loose into somebody's downloads.
+          mkdir -p stage/recall-install
+          cp -r signed/* stage/recall-install/
+          (cd stage && zip -rq "../${zip}" recall-install)
+          gh release upload "${tag}" "${zip}" --clobber

@@ -565,8 +565,34 @@ def embed_passages(embedder: Embedder, texts: list[str]) -> list[list[float]]:
     return [[float(x) for x in vector] for vector in raw]
 
 
-def artifact_tree_sha256(path: str | Path) -> str:
-    """Hash a provisioned file or directory without following directory symlinks."""
+def artifact_tree_sha256(path: str | Path, *, follow_file_symlinks: bool = False) -> str:
+    """Hash a provisioned file or directory without following directory symlinks.
+
+    ⛔ **`follow_file_symlinks` defaults to False, and that default is deliberate.** The strict
+    behaviour is what `verify_artifact` compares against a pinned, declared SHA, where a file
+    symlinked in from outside the tree would let unpinned bytes into a verified digest. Nothing that
+    checks against a declared expectation should follow links, so the default does not.
+
+    ⚠️ **It is True for provenance, because the strict rule made the digest unobtainable on Linux.**
+    `huggingface_hub` stores weights once under `<cache>/models--org--repo/blobs/<etag>` and makes
+    `snapshots/<rev>/<file>` a SYMLINK to it. `blobs/` is a sibling of `snapshots/`, so every weight
+    file resolves outside the snapshot root and the escape check refuses the entire tree — meaning
+    `embedder_artifact_digest` returned None, the identity stayed unverified, and a production
+    upload was refused exactly as before. Three auditors reached this independently; the generated
+    stack is `python:3.13-slim` and CI is Linux, so that is the deploy target, not an edge case.
+
+    It went unnoticed here because Windows without developer privileges cannot create symlinks at
+    all (`WinError 1314`), so the hub copies real files and the strict path succeeds. The measured
+    "5 files, 67 MB, 0.95s" in `embedder_artifact_digest` is a Windows measurement.
+
+    Following a FILE symlink is safe for provenance and is in fact the point: the bytes behind the
+    link are the bytes the model loaded, and the digest still changes when they change. DIRECTORY
+    symlinks are not followed in either mode, because `rglob` does not descend them.
+
+    The recorded name comes from the UNRESOLVED path in this mode, so the digest describes the
+    snapshot's own layout rather than the blob store's content-addressed filenames — otherwise two
+    identical trees laid out differently would hash differently.
+    """
     root = Path(path).resolve(strict=True)
     digest = hashlib.sha256()
     files = [root] if root.is_file() else sorted(p for p in root.rglob("*") if p.is_file())
@@ -574,15 +600,128 @@ def artifact_tree_sha256(path: str | Path) -> str:
         raise ValueError(f"model artifact has no files: {root}")
     for file in files:
         resolved = file.resolve(strict=True)
-        if root.is_dir() and not resolved.is_relative_to(root):
+        escapes = root.is_dir() and not resolved.is_relative_to(root)
+        if escapes and not follow_file_symlinks:
             raise ValueError(f"model artifact symlink escapes its root: {file}")
-        relative = resolved.name if root.is_file() else resolved.relative_to(root).as_posix()
+        if root.is_file():
+            relative = resolved.name
+        elif escapes:
+            # Named by where it sits in the tree, not by the blob it points at.
+            relative = file.relative_to(root).as_posix()
+        else:
+            relative = resolved.relative_to(root).as_posix()
         digest.update(relative.encode("utf-8"))
         digest.update(b"\x00")
         with resolved.open("rb") as stream:
             for block in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(block)
     return digest.hexdigest()
+
+
+#: Digests already computed, keyed by resolved artifact directory, each stored WITH the cheap
+#: directory signature it was computed from. Hashing a model costs ~1s for a 67 MB snapshot, which
+#: is cheap once and wasteful per upload.
+#:
+#: ⛔ **Keyed by path alone, this cached a claim about bytes that may have changed.** The digest
+#: exists to say "these are the weights that produced this index"; a cache with no invalidation
+#: says it about whatever was there the first time the process looked. A re-download, a partial
+#: write, or an edited model file kept the old answer for the life of the process, and a
+#: long-running MCP server is exactly the process this matters in.
+_ARTIFACT_DIGESTS: dict[str, tuple[tuple[int, int, int], str]] = {}
+
+#: Cleared wholesale past this many entries. A process sees a handful of model directories at most,
+#: so this is a runaway guard rather than a policy; clearing costs one re-hash and bounds nothing
+#: that matters.
+_ARTIFACT_DIGEST_LIMIT = 32
+
+
+def _artifact_signature(path: Path) -> tuple[int, int, int] | None:
+    """File count, total size and newest mtime of an artifact directory. `None` if unreadable.
+
+    Follows symlinks, because `artifact_tree_sha256(..., follow_file_symlinks=True)` does: a
+    HuggingFace snapshot is a farm of links into a sibling `blobs/`, and a signature that stopped at
+    the link would not see the bytes the digest actually covers.
+
+    ⚠️ **This detects staleness, not tampering, and the difference is worth stating.** Someone able
+    to write into the model directory can also set mtimes, so a same-size same-mtime replacement
+    keeps the cached digest. The defence against that is recomputing the digest, which is what a
+    fresh process does; this only stops the cache from confidently reporting a value it can no
+    longer justify. `None` is returned rather than a partial signature when anything cannot be
+    stat'd, and an unsignable directory is never cached — recomputing is the safe answer when the
+    question "has this changed?" cannot be answered.
+    """
+    count = 0
+    total = 0
+    newest = 0
+    try:
+        for file in sorted(path.rglob("*")):
+            if not file.is_file():
+                continue
+            stat = file.stat()
+            count += 1
+            total += stat.st_size
+            newest = max(newest, stat.st_mtime_ns)
+    except OSError:
+        return None
+    return (count, total, newest)
+
+
+def embedder_artifact_path(embedder: object) -> Path | None:
+    """The directory holding the weights this embedder actually loaded, or None.
+
+    ⚠️ **The model's OWN snapshot directory, never the shared cache.** Measured on this machine:
+    `cache_dir` held 45 files and 1.5 GB across several models, so its digest would change whenever
+    an unrelated model was downloaded and would not identify anything. `_model_dir` is 5 files and
+    67 MB — `model_optimized.onnx`, the tokenizer and the configs — and its directory name is the
+    upstream revision hash.
+
+    Returns None rather than guessing when the path cannot be recovered. This reaches into
+    fastembed's internals, which are free to change between versions, and a wrong answer here would
+    be worse than no answer: it feeds an identity that claims to be verified.
+    """
+    model = getattr(embedder, "_model", None)
+    inner = getattr(model, "model", None)
+    raw = getattr(inner, "_model_dir", None)
+    if raw is None:
+        return None
+    try:
+        path = Path(str(raw)).resolve(strict=True)
+    except (OSError, ValueError):
+        return None
+    return path if path.is_dir() else None
+
+
+def embedder_artifact_digest(embedder: object) -> str | None:
+    """A SHA256 over the weights this embedder loaded, or None when they cannot be located.
+
+    ⛔ **None is a real answer and must stay one.** `HashingEmbedder` has no artifacts at all: it is
+    defined by code, not weights, and there is nothing on disk to hash. Manufacturing a digest for
+    it — over the model name, say — would turn an honest "unverified" into a claim of provenance
+    that no bytes back, which is worse than the refusal it would bypass.
+    """
+    path = embedder_artifact_path(embedder)
+    if path is None:
+        return None
+    key = str(path)
+    signature = _artifact_signature(path)
+    cached = _ARTIFACT_DIGESTS.get(key)
+    if cached is not None and signature is not None and cached[0] == signature:
+        return cached[1]
+    try:
+        # `follow_file_symlinks=True`: a HuggingFace snapshot is a farm of symlinks into a
+        # sibling `blobs/` directory, and the strict rule refuses the whole tree. See
+        # `artifact_tree_sha256`. Without this the digest is None on every Linux install, which
+        # is the deploy target.
+        digest = artifact_tree_sha256(path, follow_file_symlinks=True)
+    except (OSError, ValueError):
+        return None
+    if signature is not None:
+        # Not cached when the directory could not be signed: without a signature there is no way to
+        # notice the next change, and a value that cannot be invalidated should not be stored.
+        if len(_ARTIFACT_DIGESTS) >= _ARTIFACT_DIGEST_LIMIT:
+            _ARTIFACT_DIGESTS.clear()
+        _ARTIFACT_DIGESTS[key] = (signature, digest)
+    return digest
 
 
 def verify_artifact(path: str | Path, expected_sha256: str) -> Path:

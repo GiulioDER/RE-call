@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+from contextlib import suppress
 import mimetypes
 import threading
 import time
@@ -26,16 +27,22 @@ from recall.embeddings import (
     FastEmbedEmbedder,
     HashingEmbedder,
     REMOTE_MODEL_CODE_OPT_IN,
+    embedder_artifact_digest,
     embedding_profile_id,
     resolve_embedder,
 )
 from recall.guards import staleness
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
-from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_code, chunk_text
-from recall.lineage import ChunkerIdentity, EmbedderIdentity, IndexManifestV1, ManifestObjectV1, PipelineIdentity
+from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_text
+from recall.lineage import IndexManifestV1, ManifestObjectV1
 from recall.manifest import ExtractingLocalObjectReader
-from recall.generations import GenerationManager, NoActiveGeneration
+from recall.generations import (
+    GenerationManager,
+    InvalidGenerationTransition,
+    NoActiveGeneration,
+    UnsafePromotion,
+)
 from recall.observability import METRICS, get_logger
 from recall.profiles import (
     RetrievalAdmission,
@@ -2087,13 +2094,159 @@ def calibration_status(store: PgVectorStore) -> dict[str, object]:
     }
 
 
+#: Stamped into every generation this module builds, and the ONLY thing that identifies one as
+#: ours when reclaiming. Defined once so the stamp and the filter cannot drift: a filter that stops
+#: matching the stamp silently widens the reclaim to generations other paths created.
+_DESKTOP_CORPUS_PREFIX = "desktop-"
+
+
+def _local_path(uri: str) -> Path | None:
+    """Where a carried-forward object lives, or `None` if it is not a readable local file.
+
+    ⛔ **Delegates to `recall.manifest.local_path_for`, which is the reader's OWN resolution.**
+    This used to re-derive it with `urlparse` and `unquote`, and disagreed with the reader in three
+    ways that `local_path_for`'s comments each explain at length: the double decode (so a file
+    genuinely named `percent%20literal.md` resolved to a different existing file), the dropped UNC
+    authority (so a network-share corpus contributed no root and the build refused it), and
+    `urlsplit` raising `ValueError` on an unbalanced `[` straight out of the carry-forward loop.
+
+    A filter and the fetcher it guards must not answer this question separately. When they did, the
+    filter decided a file was unreachable that the reader could have read, and the reverse.
+    """
+    from recall.manifest import ObjectNotAllowed, local_path_for
+
+    try:
+        return local_path_for(uri)
+    except ObjectNotAllowed:
+        # Not a local file, or not one this platform can read. It names no root, so the reader will
+        # refuse it and `build` will raise — the correct LOUD outcome for an object this path
+        # genuinely cannot rebuild.
+        return None
+
+
+def _roots_of(objects: dict[str, ManifestObjectV1]) -> tuple[Path, ...]:
+    """The directories the carried-forward objects live in, for the build reader's allowlist.
+
+    Deduplicated, and only for objects whose URI names a local file. A non-local object contributes
+    no root, so the reader will refuse it and `build` will raise — which is the correct, LOUD
+    outcome for a corpus this path genuinely cannot rebuild, and is what the filtering version of
+    this code silently hid.
+    """
+    roots: dict[str, Path] = {}
+    for uri in objects:
+        path = _local_path(uri)
+        if path is not None:
+            roots.setdefault(str(path.parent), path.parent)
+    return tuple(roots.values())
+
+
+def _carry_forward(
+    objects: dict[str, ManifestObjectV1],
+) -> tuple[dict[str, ManifestObjectV1], tuple[Path, ...], int, int]:
+    """Which of the previous generation's objects this build carries, and where to read them.
+
+    Returns the objects to keep, the reader roots that reach them, how many were dropped, and how
+    many were RE-STAMPED.
+
+    ⚠️ **The two counts are different facts and both are reported.** A drop loses a document; a
+    re-stamp keeps it and changes what the manifest pins for it. Neither is a failure and the served
+    content is correct either way, which is exactly why the re-stamp used to be silent: it has no
+    symptom. But it changes what the corpus holds relative to what the user last certified, and
+    "never silent" is this path's whole doctrine rather than a preference, so the caller names both.
+
+    ⚠️ **This reads every carried-forward file that still exists, to compare its digest against
+    what the manifest pinned.** That is a second read of the carried corpus per upload, since
+    `build` reads them again. It is deliberate: the alternative is comparing size alone, which
+    misses a same-size edit and leaves exactly the permanent wedge this function was fixed for.
+    The corpus this serves is a personal document set (the wizard's own sizing note puts the real
+    one at 796 files and about 4 MB), and the upload that follows embeds every one of them, so the
+    hash is not where the time goes.
+    """
+    kept: dict[str, ManifestObjectV1] = {}
+    vanished = 0
+    restamped = 0
+    for uri, entry in objects.items():
+        local = _local_path(uri)
+        if local is None:
+            # Not a local file. It names no root, so the reader refuses it and the build fails
+            # LOUDLY, which is the right outcome for a corpus this path cannot rebuild.
+            kept[uri] = entry
+            continue
+        try:
+            stat = local.stat()
+        except FileNotFoundError:
+            # The only fact that justifies a drop. The bytes are gone, so nothing can rebuild this
+            # object, and the count is named in the message the caller returns.
+            vanished += 1
+            continue
+        except OSError:
+            # ⛔ **Unreadable is NOT absent, and this used to conflate them.** `Path.is_file()`
+            # routes through `os.path.isfile`, which swallows EVERY `OSError`: a permission-denied
+            # parent, a path past the Windows length limit and an offline network share all
+            # answered False. Verified: `C:/Windows/System32/config/SAM` is False to `is_file()`
+            # while `os.stat` on it raises `PermissionError`. Those objects were dropped and the
+            # upload SUCCEEDED with a smaller corpus, which is the silent loss this path has been
+            # fixed for twice. Keeping it makes the reader raise and the user hear about it.
+            kept[uri] = entry
+            continue
+        if stat.st_size == entry.size and _digest_of(local) == entry.sha256:
+            kept[uri] = entry
+            continue
+        # ⛔ **The file was EDITED, so re-stamp it rather than carrying a digest that cannot
+        # verify.** A manifest entry pins `size` and `sha256`, `LocalObjectReader.fetch` checks
+        # both, and `build` fetches every object with no skip path. So one edited document made the
+        # build raise, the generation went to `failed`, and `servable_manifest()` re-selected the
+        # same stale entry: every later upload failed identically, forever. A user editing an
+        # indexed document means re-index it, not refuse until somebody reads a traceback.
+        #
+        # `version_id` moves with the digest because `recall.lineage` requires them equal for a
+        # `file://` object: a local file has no version other than its contents.
+        digest = _digest_of(local)
+        if digest is None:
+            kept[uri] = entry
+            continue
+        kept[uri] = replace(entry, version_id=digest, size=stat.st_size, sha256=digest)
+        # Counted HERE and nowhere earlier: an unreadable file took the `digest is None` branch
+        # above and was carried unchanged, so counting it would report a change that did not
+        # happen. Only the line above alters what the manifest pins.
+        restamped += 1
+    return kept, _roots_of(kept), vanished, restamped
+
+
+def _digest_of(path: Path) -> str | None:
+    """The file's sha256, or `None` if it cannot be read.
+
+    `None` makes the caller keep the entry unchanged, so an unreadable file fails in the reader
+    where the error names the object, rather than here where it would be a bare OSError.
+    """
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
 def generation_ingest(
     store: PgVectorStore,
     embedder: Embedder,
     staged_root: str,
     category: str,
 ) -> IndexResult:
-    """Build, validate, and activate one local generation for a desktop upload."""
+    """Build and validate one local generation for a desktop upload, and activate it if allowed.
+
+    ⚠️ **Activation is attempted, not guaranteed.** Where the tenant is served under production,
+    `_certify_upload` calibrates and publishes first, so an upload with enough content to produce a
+    certifiable query set goes live. One that cannot ends READY and not live, and that outcome is
+    REPORTED in the returned message rather than raised, because the upload itself succeeded: the
+    corpus is built, validated, and carries forward every earlier upload's files.
+
+    ⚠️ An earlier version of this sentence said the ordinary desktop path "now ends with the
+    generation READY and not live". That described the code one commit before `_certify_upload`
+    existed, and contradicted the changelog for the same release.
+    """
     job_root = Path(staged_root)
     tenant_root = job_root.parent
     job_files = sorted(path for path in job_root.rglob("*") if path.is_file())
@@ -2102,9 +2255,42 @@ def generation_ingest(
 
     manager = GenerationManager(store._dsn, store.tenant, actor="recall-desktop")
     try:
-        active_objects = {entry.uri: entry for entry in manager.active_manifest().objects}
+        # ⚠️ The newest SERVABLE generation, not the active one. A refused promotion leaves its
+        # generation READY and never advances `active_generation_id`, so seeding from the active
+        # manifest made each upload silently drop every previous un-promoted upload's files.
+        #
+        # ⛔ **What may be dropped, and why the predicate is not `is_file()`.** `build` calls
+        # `reader.fetch(entry)` for EVERY manifest object with no skip path, and each entry pins a
+        # size and a digest that `fetch` verifies. So this decision has been wrong in both
+        # directions, and each wrong version was a fix for the previous one:
+        #
+        #   1. confined the reader to the staging directory and kept everything, so a wizard-built
+        #      corpus under `data_root` failed the whole upload;
+        #   2. dropped whatever the reader could not reach, which was worse: the upload then
+        #      SUCCEEDED with a truncated manifest and promotion put it live;
+        #   3. dropped on `is_file()`, which conflates "gone" with "cannot be stat-ed" (an offline
+        #      share, a path past the Windows limit, a permission-denied parent) AND carried an
+        #      edited file forward with its stale digest, so `fetch` raised, the generation went to
+        #      `failed`, and the next upload re-seeded the same stale entry, forever.
+        #
+        # `_carry_forward` asks what the manifest actually pinned. Five auditors reached this one
+        # rule by four different routes, which is what says it is the rule and not an edge case.
+        #
+        # ⚠️ **On the cost of getting it wrong, stated accurately.** Earlier versions of this
+        # comment said the superseded generation is deleted by `gc` "after the retention window",
+        # which overstates it: `gc` has one caller in this tree, the explicit `recall generation gc`
+        # command, and it also protects the two most recent retired generations for seven days, and
+        # `rollback` can restore the previous one. The real cost is that the corpus stops being
+        # SERVED and search silently degrades until somebody notices. That is bad enough to fix and
+        # not so bad that it needs exaggerating.
+        active_objects, carried_roots, vanished, restamped = _carry_forward(
+            {entry.uri: entry for entry in manager.servable_manifest().objects}
+        )
     except NoActiveGeneration:
         active_objects = {}
+        carried_roots = ()
+        vanished = 0
+        restamped = 0
 
     # Keep the active corpus and add only this job's files. In particular, do not scan sibling
     # job directories because a failed upload must not poison every later indexing attempt.
@@ -2127,43 +2313,358 @@ def generation_ingest(
     objects = sorted(active_objects.values(), key=lambda entry: entry.uri)
     manifest = IndexManifestV1(
         tenant_id=store.tenant,
-        corpus_version=f"desktop-{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
+        corpus_version=f"{_DESKTOP_CORPUS_PREFIX}{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
         objects=tuple(objects),
     )
-    chunker = chunk_code if category == "code" else chunk_text
-    pipeline = PipelineIdentity(
-        EmbedderIdentity(
-            provider="fastembed",
-            model=embedder.name,
-            dimension=embedder.dim,
-            unverified_reason="desktop local development build",
-        ),
-        ChunkerIdentity(
-            "recall.chunk_code" if category == "code" else "recall.chunk_text",
-            1,
-            {},
+    # ⚠️ **Verified when the weights can be hashed, honestly unverified when they cannot.**
+    # A desktop upload used to declare `unverified_reason` unconditionally, so `create` refused it
+    # under `RECALL_ENV=production` and no upload to a production tenant could ever succeed. Hashing
+    # the model's own snapshot directory is a real provenance claim: those are the bytes that
+    # produced these vectors. An embedder with no weights on disk still gets an unverified identity
+    # — the alternative would be inventing a digest to pass a gate, which is the one outcome worse
+    # than the refusal.
+    # ⚠️ NOT `digest`: that name is already bound in this function to each uploaded FILE's sha256,
+    # a few lines above. Two different digests under one name in one function is how the wrong one
+    # gets used later.
+    from recall.generation_build import BuildRequest, pipeline_for
+
+    embedder_digest = embedder_artifact_digest(embedder)
+    # ⛔ **Built through `pipeline_for`, not assembled here.** This function used to hardcode
+    # `provider="fastembed"` for every embedder and spell out its own `ChunkerIdentity`. Both were
+    # copies of rules that already exist in `recall/generation_build.py`, and the provider copy was
+    # wrong: `HashingEmbedder` is shipped in this repository and identifies itself as provider
+    # `recall` at revision `hashing-md5-bow-v1`, so a desktop upload recorded it as a fastembed
+    # artifact — false provenance written into an immutable lineage record, which is the one place
+    # a wrong value cannot later be corrected.
+    #
+    # It also silently disagreed about the CHUNKER's identity: this spelled `recall.chunk_text`
+    # with version 1 and empty params, while `chunker_for` records the real parameters. A generation
+    # built here and one built by `recall index` therefore carried different pipeline fingerprints
+    # for the same pipeline, which is exactly what makes a calibration resolve STALE.
+    chunker, pipeline = pipeline_for(
+        embedder,
+        BuildRequest(
+            chunker="code" if category == "code" else "text",
+            artifact_digest=embedder_digest,
+            unverified=not embedder_digest,
         ),
     )
-    generation = manager.create(manifest, pipeline, allow_unverified=True)
+    # ⚠️ Ask for the exemption only when it is actually needed. Passed unconditionally, a
+    # VERIFIED identity still requested `allow_unverified`, which production refuses outright —
+    # so hashing the weights above bought nothing and the upload failed one gate later with a
+    # message about a flag rather than about provenance. Measured end to end.
+    generation = manager.create(manifest, pipeline, allow_unverified=not pipeline.verified)
     try:
         stats = manager.build(
             generation.generation_id,
-            ExtractingLocalObjectReader((tenant_root,)),
+            # The staging directory PLUS the directories the carried-forward objects live in.
+            # Those are files a previous generation of this same tenant already indexed, so
+            # re-reading them is what carry-forward means; confining the reader to staging
+            # alone is what made the manifest lossy.
+            ExtractingLocalObjectReader((tenant_root, *carried_roots)),
             embedder,
             chunker,
         )
         manager.validate(generation.generation_id)
-        manager.promote(generation.generation_id, unsafe_development=True)
-    except Exception:
+        # A production-served tenant promotes only a CERTIFIED generation, so produce the
+        # certification rather than leaving the gate unreachable. See `_certify_upload`. The reason
+        # is threaded into the refusal message below rather than raised: `promote` will refuse for
+        # the same underlying fact a moment later, and the caller wants ONE message that says both
+        # what happened and what is left to do.
+        uncertified: str | None = None
+        if manager.certification_required:
+            uncertified = _certify_upload(
+                store._dsn, store.tenant, generation.generation_id, embedder
+            )
+        # ⚠️ Development-only flag; see `GenerationManager.promote`. A desktop upload to a
+        # production tenant now reaches the certification gate rather than being refused for
+        # carrying a flag, which is the whole point of the gate existing.
+        try:
+            manager.promote(
+                generation.generation_id,
+                unsafe_development=not manager.certification_required,
+            )
+        except UnsafePromotion as exc:
+            # ⚠️ **Reported as an outcome, not raised as a failure.** The upload WORKED: every file
+            # was read, chunked, embedded and written into a generation that validated. What did
+            # not happen is activation, because a production tenant serves only a certified
+            # generation — the gate doing its job, not the ingest failing.
+            #
+            # Raising here told the user their upload failed and invited them to retry it,
+            # rebuilding the same generation for the same refusal. Saying what is true, and what
+            # remains to be done, is the difference between a gate and a wall.
+            # ⛔ **Reclaim what this one supersedes.** A READY generation holds a full copy of the
+            # corpus's chunk rows and `gc` collects only `retired` and `failed`, so one per refused
+            # upload grows the database without bound. `abandon` exists precisely for this state and
+            # says so in its own docstring; `recall/wizard/pipeline.py::_fail` does the same thing on
+            # the same shape of failure. Returning success without it made the leak per-attempt.
+            #
+            # The NEWEST is kept, not abandoned: it carries the whole corpus forward and it is the
+            # one the message below tells the user to certify.
+            reclaimed = _release_superseded(manager, generation.generation_id)
+            return IndexResult(
+                files=stats.objects,
+                chunks=stats.chunks,
+                message=(
+                    f"Indexed {stats.chunks} chunk(s) from {stats.objects} file(s) into generation "
+                    f"{generation.generation_id}, which is built and validated but NOT yet live. "
+                    f"It carries forward everything previously uploaded"
+                    + _vanished_note(vanished)
+                    + _restamped_note(restamped)
+                    + (f"; {reclaimed} superseded build(s) released" if reclaimed else "")
+                    + f". {uncertified or exc}"
+                ),
+            )
+    except Exception as exc:
+        # ⛔ **This used to be `except Exception: raise`, which is a no-op wearing a policy's
+        # clothes** — and `_certify_upload`'s docstring reasoned about it as if it did something.
+        # After `validate()` the generation is READY, and READY is the one state `gc` cannot
+        # reclaim, so any failure that is not `UnsafePromotion` (a dropped connection during
+        # calibration, a binding error, an unexpected transition) stranded a full copy of the
+        # corpus forever. `recall/wizard/pipeline.py::_fail` does exactly this on the same shape of
+        # failure. The original error is re-raised untouched; the cleanup is best effort.
+        # ⛔ **`fail` FIRST, `abandon` only as the fallback.** This used to call `abandon` alone,
+        # and `abandon` raises `InvalidGenerationTransition` on anything but READY. `validate()` is
+        # what sets READY, so every failure inside `build()` — the longest and most failure-prone
+        # step — was refused, and `suppress` made the refusal silent. `gc` collects `retired` and
+        # `failed`, so those generations stranded a full corpus copy exactly as before the fix. This
+        # is the ladder `recall/wizard/pipeline.py::_fail` uses, and matching it is what the comment
+        # already claimed. The original error is re-raised untouched.
+        _reclaim_failed(manager, generation.generation_id, f"desktop upload failed: {exc}")
         raise
+
+    # ⛔ **The reclaim runs on the SUCCESS path too.** Confining it to the `UnsafePromotion` branch
+    # meant the leak reopened the moment an upload finally certified: every earlier refused build
+    # stayed READY forever, holding a full corpus copy `gc` collects only from `retired`/`failed`.
+    # Three auditors found this independently.
+    _release_superseded(manager, generation.generation_id)
     return IndexResult(
         files=stats.objects,
         chunks=stats.chunks,
         message=(
             f"Built and activated generation {generation.generation_id} with "
             f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
+            + _vanished_note(vanished)
+            + _restamped_note(restamped)
         ),
     )
+
+
+def _release_superseded(manager: GenerationManager, keep: str) -> int:
+    """Abandon the READY generations THIS path built and no longer needs. Returns how many.
+
+    A READY generation holds a full copy of the corpus's chunk rows and `gc` collects only
+    `retired` and `failed`, so one left behind per upload grows the database without bound.
+
+    ⛔ **`corpus_version_prefix` is what stops this destroying somebody else's work.** Without it
+    the selection is on state alone, and `abandon` does not protect a generation that was built and
+    deliberately never promoted — which is what a degraded wizard install leaves for an operator to
+    promote later.
+
+    Best effort by design: losing a reclaim must not lose the upload report, which is the only thing
+    telling the user what state they are in.
+
+    ⛔ **The LISTING is inside the try, not only the abandons.** It used to sit outside, and
+    `superseded_ready_generations` opens its own database connection, so a transient error there
+    escaped a function documented as best effort. That was destructive in both directions: on the
+    refusal path this is called from inside `generation_ingest`'s outer `try`, so the raise reached
+    the cleanup handler and ABANDONED the very generation the comment there promises is kept; on the
+    success path it sits outside every handler, so it reported an already-promoted, already-live
+    upload as a failure and invited the user to rebuild it. Four auditors found this.
+    """
+    reclaimed = 0
+    try:
+        stale_ids = tuple(
+            manager.superseded_ready_generations(
+                keep, corpus_version_prefix=_DESKTOP_CORPUS_PREFIX
+            )
+        )
+    except Exception:  # noqa: BLE001 - see the docstring; a failed reclaim is not a failed upload
+        return 0
+    for stale in stale_ids:
+        try:
+            manager.abandon(stale, "superseded by a later upload from the same desktop")
+        except Exception:  # noqa: BLE001 - see the docstring; a failed reclaim is not a failed upload
+            continue
+        reclaimed += 1
+    return reclaimed
+
+
+def _reclaim_failed(manager: GenerationManager, generation_id: str, reason: str) -> None:
+    """Move a generation to a state `gc` can collect, from whatever state it is in. Never raises.
+
+    `fail` accepts the in-flight states, `abandon` accepts READY, and between them they cover every
+    state a failed upload can be sitting in. Calling only one of the two leaves the other half
+    stranded holding a full copy of the corpus's chunk rows.
+    """
+    try:
+        manager.fail(generation_id, reason)
+        return
+    except InvalidGenerationTransition:
+        pass
+    except Exception:  # noqa: BLE001 - the original failure is what matters
+        return
+    with suppress(Exception):
+        manager.abandon(generation_id, reason)
+
+
+def _vanished_note(vanished: int) -> str:
+    """Name the carried-forward files whose bytes are gone, or say nothing when none are.
+
+    Never silent when the count is non-zero: a corpus that quietly shrank is the failure mode this
+    whole path has now been fixed for twice, and a number in the message is what makes the third
+    time visible.
+    """
+    if not vanished:
+        return ""
+    return (
+        f" ({vanished} file(s) from an earlier upload could not be re-read and are NOT in this "
+        f"build; re-upload them if you still need them)"
+    )
+
+
+def _restamped_note(restamped: int) -> str:
+    """Name the carried-forward files whose bytes CHANGED since the manifest pinned them.
+
+    The sibling of `_vanished_note`, and it exists because the pair was asymmetric: a drop was
+    counted and named, while a re-stamp silently rewrote the entry's `version_id`, `size` and
+    `sha256`. Nothing is lost and what gets served is correct, so this never blocked anything and
+    never will — which is the argument FOR saying it, not against. A change with no symptom is the
+    one the user cannot notice for themselves, and the corpus they last certified is no longer the
+    corpus they hold.
+
+    Phrased as an outcome rather than a warning, because re-reading an edited document is the right
+    thing to have done and needs no action from anyone.
+    """
+    if not restamped:
+        return ""
+    return f" ({restamped} file(s) changed since they were indexed and were re-read)"
+
+
+def _query_set_for(chunks: list[str]) -> tuple[list[dict[str, object]] | None, Exception | None]:
+    """The labelled query set for a corpus, asking for headroom before the floor.
+
+    Extracted so it can be DRIVEN rather than read. The test that used to cover this asserted the
+    AST shape of the loop header and said nothing about what `per_class` was bound to in the call,
+    so an auditor rebound it to `MIN_PER_CLASS` on both rungs — the exact pre-fix behaviour, which
+    refuses corpora whose true separability lies in roughly [0.950, 0.962) — and the suite stayed
+    green. That is the same keyword-name-not-value defect a previous round had already retired once.
+    """
+    from recall.wizard.queryset import (
+        DEFAULT_PER_CLASS,
+        MIN_PER_CLASS,
+        QuerySetError,
+        canonicalize,
+        generate_offline,
+    )
+
+    last: Exception | None = None
+    for per_class in (DEFAULT_PER_CLASS, MIN_PER_CLASS):
+        try:
+            return canonicalize(generate_offline(chunks, per_class=per_class)), None
+        except QuerySetError as exc:
+            last = exc
+    return None, last
+
+
+def _certify_upload(
+    dsn: str,
+    tenant: str,
+    generation_id: str,
+    embedder: Embedder,
+) -> str | None:
+    """Calibrate and publish a freshly built desktop upload. Returns why it could not, or `None`.
+
+    ⛔ **Without this step a production tenant could never accept an upload at all.** The gate on
+    `promote` requires a published, certified calibration, and nothing on the desktop path produced
+    one, so every upload ended READY-and-never-live and the only route to a live corpus was the CLI.
+    A gate with no reachable way through is a wall.
+
+    The query set comes from `recall.wizard.queryset.generate_offline`, the same generator the
+    installer uses, rather than from `_generated_calibration_queries` below. That helper's negatives
+    are a hardcoded list never checked against the corpus, and its positives are 500-character chunk
+    bodies rather than questions; `queryset` exists because a measurement
+    (`recall/eval/synthetic.py`) showed that unanswerable queries which are not genuinely off-topic
+    produce a set that is not separable at all. Two generators for one job would mean the installer's
+    corpora and the desktop's are judged by different evidence.
+
+    Failure is a RETURNED REASON, not an exception: an upload whose calibration does not certify has
+    still been built and validated, and the caller reports that state rather than losing the work.
+    """
+    from recall.calibration_v2 import (
+        CalibrationError,
+        CalibrationRepository,
+        CalibrationUncertified,
+    )
+
+    with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        rows = conn.execute(
+            # ⚠️ **No LIMIT, deliberately.** `generate_offline` picks its answerable chunks from
+            # this list, which a cap would only narrow harmlessly; but it also derives the gap class
+            # by asking which off-topic subjects are ABSENT from the corpus, and a truncated view
+            # would call a subject absent because it was cut off. That silently produces a
+            # non-disjoint gap class, which `recall/wizard/queryset.py` records as the one design
+            # constraint that is not negotiable: a non-disjoint set measured as not separable at all.
+            "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+            "ORDER BY chunk_id",
+            (tenant, generation_id),
+        ).fetchall()
+    chunks = [str(row[0]) for row in rows if str(row[0]).strip()]
+
+    # ⛔ **Ask for the HEADROOM and fall back to the floor, never ask for the floor.**
+    # `MIN_PER_CLASS` is the certification floor, not a generation target. Certification tests the
+    # LOWER bound of the Hanley-McNeil interval, and that bound tightens as the sample grows, so
+    # asking for exactly the floor refuses corpora that are genuinely separable. Measured:
+    #
+    #     separability_interval(0.95, 20, 20) -> lower 0.8786   REFUSED (bar is 0.90)
+    #     separability_interval(0.95, 40, 40) -> lower 0.9001   certified
+    #
+    # So every corpus whose true separability lies in roughly [0.950, 0.962) certifies through the
+    # installer and was refused here — leaving the upload READY-and-never-live, which is the exact
+    # wall `_certify_upload` exists to remove.
+    #
+    # The ladder is copied in shape from `recall/wizard/pipeline.py::_labelled_set`, which already
+    # does this correctly on the same generator: `generate_offline` REFUSES outright when the corpus
+    # has fewer distinct chunks than requested, so a flat bump to the headroom would turn "a small
+    # corpus certifies" into "a small corpus errors". Try the headroom, fall back to the floor.
+    #
+    # ⚠️ **Measured cost of the ladder, so nobody has to re-derive it: worst case 1.90x, and it is
+    # deliberately not optimised.** On an 18 MB / 9,226-chunk corpus where the headroom attempt
+    # fails the capacity check LATE, the two attempts tokenise the corpus twice: 15.2s against 8.0s
+    # for a single pass. The suggested fix is to hoist `offtopic_subjects_absent_from` and the
+    # document frequencies out of `generate_offline` and choose `per_class` up front, which changes
+    # that function's signature for every caller. Seven seconds against an upload that builds,
+    # embeds and validates a whole corpus is not where the time goes, so the API stays as it is.
+    #
+    # The case that is NOT slow, and that the obvious reading gets wrong: a corpus SMALLER than the
+    # headroom costs nothing extra, because `generate_offline` checks `len(chunks) < per_class`
+    # before it tokenises anything. Measured at 25 chunks: 0.000s for the failed 40-attempt.
+    entries, last = _query_set_for(chunks)
+    if entries is None:
+        # The commonest case by far, and it is about the CORPUS, not about the upload: a handful of
+        # files cannot produce MIN_PER_CLASS distinct answerable questions. Say the number.
+        return f"no certifiable query set could be generated from {len(chunks)} chunk(s): {last}"
+
+    repository = CalibrationRepository(dsn, tenant, actor="recall-desktop")
+    try:
+        artifact = repository.calibrate(generation_id, entries, embedder)
+    except CalibrationError as exc:
+        # ⛔ **A raise here still loses the upload REPORT, though no longer the corpus.**
+        # `generation_ingest`'s outer handler now reclaims the generation before re-raising, so a
+        # binding failure no longer strands a full corpus copy. What it would still cost is the one
+        # message telling the user what state they are in, which is why a domain failure is returned
+        # as a REASON. `CalibrationError` and not `Exception`: a bug is still a bug.
+        return f"calibration could not be measured: {type(exc).__name__}: {exc}"
+    try:
+        repository.publish(artifact.calibration_id)
+    except CalibrationUncertified as exc:
+        # Kept, not deleted: the artifact is the evidence of WHY it did not certify, and it is what
+        # an operator reads before deciding whether to promote deliberately.
+        return f"calibration {artifact.calibration_id} did not certify: {exc}"
+    except CalibrationError as exc:
+        return f"calibration {artifact.calibration_id} could not be published: {exc}"
+    return None
 
 
 def _generated_calibration_queries(store: PgVectorStore, generation_id: str) -> list[dict[str, object]]:

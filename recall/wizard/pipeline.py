@@ -253,6 +253,12 @@ def _degraded_reason(
     )
 
 
+#: Reserved for `recall_mcp/service.py`'s desktop upload path, which abandons superseded READY
+#: generations whose `corpus_version` starts with it. Defined here rather than imported to keep the
+#: wizard free of a dependency on the MCP service; the two are pinned equal by a test.
+_RESERVED_CORPUS_PREFIX = "desktop-"
+
+
 def run_corpus(
     spec: CorpusSpec,
     *,
@@ -295,6 +301,19 @@ def run_corpus(
         )
     if not corpus_version.strip():
         raise PipelineRefusal("corpus_version must be non-empty; the convention is an ISO date")
+    # ⛔ **`desktop-` is RESERVED, and the reservation is load-bearing for a destructive operation.**
+    # `recall_mcp/service.py::_release_superseded` selects generations to ABANDON by this prefix,
+    # precisely so a desktop upload never reclaims a corpus a wizard install built and deliberately
+    # left READY for an operator to promote. `corpus_version` reaches here straight from user config
+    # with no other validation, so a copy-pasted value starting with the prefix would opt a wizard
+    # corpus into that reclaim — abandon, then gc, then the chunk rows cascade away. Refusing at the
+    # only place it enters the system is cheaper than making the reclaim smarter.
+    if corpus_version.strip().startswith(_RESERVED_CORPUS_PREFIX):
+        raise PipelineRefusal(
+            f"corpus_version must not begin with {_RESERVED_CORPUS_PREFIX!r}: that prefix is "
+            "reserved for uploads made through the desktop app, which reclaims its own superseded "
+            "builds by matching on it. Use an ISO date, which is the convention."
+        )
 
     request = _identified_request(spec, embedder, project)
     # The SAME callable the build will bind, so the queries describe chunks that exist in the index.
@@ -384,7 +403,19 @@ def run_corpus(
     if certified:
         announce("promote")
         try:
-            manager.promote(generation_id, unsafe_development=True)
+            # ⚠️ The flag is a DEVELOPMENT requirement and a refusal wherever certification is
+            # required, so it cannot be passed unconditionally. `certification_required` is the one
+            # switch both sides read, so this cannot disagree with what `promote` will do.
+            #
+            # It reads the SERVING environment, which for every wizard corpus is production while
+            # the build runs under development. Before that distinction existed this expression was
+            # `manager.environment != "production"` and was therefore ALWAYS true here, so the gate
+            # never ran on an install and the `certified` check below was the only thing enforcing
+            # it. Two implementations of one rule, one of them untested.
+            manager.promote(
+                generation_id,
+                unsafe_development=not manager.certification_required,
+            )
         except BaseException as exc:
             _fail("promote", exc)
             raise

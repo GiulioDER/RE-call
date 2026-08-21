@@ -655,13 +655,25 @@ class _RealServices:
     ) -> CorpusOutcome:
         return run_corpus(
             spec,
-            # `development`, not the corpus's SERVING environment. A production build requires a
-            # verifiable embedder identity, which the wizard's embedders do not have, and `docs`
-            # is served in production; the two coexist because each MCP server gets its own env
-            # block. (This comment used to blame a file:// manifest. Nothing gates file:// on the
-            # environment — see `_BUILD_ENVIRONMENTS` in pipeline.py for the correction.)
+            # `development` for the BUILD, and the corpus's own value for SERVING. A production
+            # build requires a verifiable embedder identity, which the wizard's embedders do not
+            # have; a calibrated corpus is nonetheless served with `RECALL_ENV=production`, because
+            # that is the only environment that reads the generation store. The two coexist
+            # because each MCP server gets its own env block. (This comment used to blame a file://
+            # manifest. Nothing gates file:// on the environment — see `_BUILD_ENVIRONMENTS` in
+            # pipeline.py for the correction.)
+            #
+            # ⛔ **`serving_environment` is not cosmetic here: without it the certification gate ran
+            # on nothing the wizard produces.** `promote` keyed on the build environment, which is
+            # `development` for every corpus this installer creates, so every real first install
+            # took the ungated branch and was then served as production. Passing the spec's own
+            # value makes the installed path the gated one.
             manager=GenerationManager(
-                self.config.resolved_dsn, spec.tenant, actor="recall-wizard", environment="development"
+                self.config.resolved_dsn,
+                spec.tenant,
+                actor="recall-wizard",
+                environment="development",
+                serving_environment=spec.serving_environment,
             ),
             calibrations=CalibrationRepository(self.config.resolved_dsn, spec.tenant),
             embedder=self.embedder(),

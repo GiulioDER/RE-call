@@ -28,6 +28,8 @@ from recall.desktop.sources import (
     display_type,
 )
 from recall.desktop.github import GithubImport, download_repository
+from recall.desktop.jobs import CLOSE_WAIT_MS
+from recall.desktop.jobs import Job as _Worker
 from recall.store import scrub_dsn_secrets
 from recall.wizard.database import probe_database
 
@@ -35,7 +37,7 @@ from recall.wizard.database import probe_database
 _qt_widgets: Any = None
 try:
     _qt_widgets = importlib.import_module("PySide6.QtWidgets")
-    from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, QPoint, QRunnable, QThreadPool, QTimer, Qt, Signal
+    from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, QPoint, QThreadPool, QTimer, Qt, Signal
     from PySide6.QtGui import QColor, QPixmap, QPolygon
     from PySide6.QtWidgets import (
         QAbstractItemView,
@@ -267,57 +269,13 @@ if QApplication is not None:
             return bool(super().eventFilter(watched, event))
 
 
-    class _WorkerSignals(QObject):
-        done = Signal(object)
-        failed = Signal(str)
-
-
-    #: How long `closeEvent` waits for background work before closing anyway, in milliseconds.
-    #:
-    #: Two seconds is chosen against what it is racing: a quick worker finishing normally, not a
-    #: `docker compose up`. Anything long enough to be worth waiting for is long enough to look
-    #: frozen, and the window closing while work continues is both true and better than a window
-    #: that will not close.
-    _CLOSE_WAIT_MS = 2000
-
-
-    class _Worker(QRunnable):
-        def __init__(self, fn: Any) -> None:
-            super().__init__()
-            self.fn = fn
-            self.signals = _WorkerSignals()
-
-        def run(self) -> None:
-            """Run the job and report it, without ever raising out of the pool.
-
-            ⚠️ **The emit itself can fail, and it does so at shutdown.** Since `closeEvent` stopped
-            waiting for the pool, a worker outlives the window: it finishes, Qt has already deleted
-            the signal source, and `emit` raises `RuntimeError: Signal source has been deleted`.
-            The old shape then tried to report that on `failed`, which raised the same way from
-            inside the handler, and PySide printed
-            `Error calling Python override of QRunnable::run()` with a traceback — indistinguishable
-            from a crash, at the exact moment the user is closing the app. Observed live, not
-            theorised.
-
-            Also separates the JOB failing from the REPORT failing. The old form wrapped both in one
-            `try`, so anything that went wrong while emitting `done` was reported to the user as the
-            job having failed.
-            """
-            try:
-                result = self.fn()
-            except Exception as exc:  # noqa: BLE001 - a worker must never raise into the pool.
-                self._emit(self.signals.failed, str(exc))
-                return
-            self._emit(self.signals.done, result)
-
-        @staticmethod
-        def _emit(signal: Any, payload: Any) -> None:
-            try:
-                signal.emit(payload)
-            except RuntimeError:
-                # The window closed and Qt deleted the signal source before this finished. Nothing
-                # is listening any more, so there is nowhere to report and nothing to report to.
-                pass
+    # ⛔ **Moved to `recall/desktop/jobs.py`, not copied.** The graphical installer needs the same
+    # runnable with a progress channel, and the two properties that make a queued cross-thread
+    # signal actually arrive are a race when they are wrong — they work often enough to look
+    # correct, so a second copy would not fail visibly. The measurements and the reasoning live in
+    # that module's docstring; `_run` below still explains why it holds the reference, because that
+    # is where a reader of this file will look.
+    _CLOSE_WAIT_MS = CLOSE_WAIT_MS
 
 
     class MainWindow(QMainWindow):
@@ -2392,10 +2350,24 @@ if QApplication is not None:
                 event.accept()
 
 
-def run_app(profile: RuntimeProfile) -> int:
+def run_window(window: Any) -> int:
+    """Show `window` and run the application until it closes.
+
+    ⛔ **One launcher, because there are now two windows.** The graphical installer
+    (`recall/desktop/install_ui.py`) needs exactly this and nothing else, and a second copy of it
+    would be a second place that decides whether to reuse an existing `QApplication` — which is the
+    line that decides whether the installer can be opened from inside the running desktop app or
+    crashes with "A QApplication instance already exists".
+    """
     if QApplication is None:
         raise RuntimeErrorBase('The desktop extra is required. Install with: pip install "recall-rag[desktop]"')
     app = QApplication.instance() or QApplication([])
-    window = MainWindow(profile)
     window.show()
     return int(app.exec())
+
+
+def run_app(profile: RuntimeProfile) -> int:
+    """The main desktop window. Unchanged behaviour; the launcher underneath it is now shared."""
+    if QApplication is None:
+        raise RuntimeErrorBase('The desktop extra is required. Install with: pip install "recall-rag[desktop]"')
+    return run_window(MainWindow(profile))
