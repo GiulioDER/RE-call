@@ -166,6 +166,17 @@ def _retryable_status(status: int) -> bool:
 class OutputCeilingReached(RuntimeError):
     """The provider completed only because the configured output ceiling was reached."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        usage: dict[str, int],
+        returned_model: str | None,
+    ) -> None:
+        super().__init__(message)
+        self.usage = usage
+        self.returned_model = returned_model
+
 
 def generate_answer(
     *,
@@ -253,14 +264,6 @@ def generate_answer(
             choice = choices[0]
             if not isinstance(choice, dict):
                 raise RuntimeError("provider returned an invalid choice")
-            if choice.get("finish_reason") == "length":
-                raise OutputCeilingReached(
-                    "provider answer reached the configured output ceiling"
-                )
-            message = choice.get("message", {})
-            answer = _message_text(message.get("content") if isinstance(message, dict) else None)
-            if not answer:
-                raise RuntimeError("provider returned an empty answer")
             usage = body.get("usage", {}) if isinstance(body, dict) else {}
             usage_row = {
                 "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
@@ -268,7 +271,18 @@ def generate_answer(
                 "total_tokens": int(usage.get("total_tokens", 0) or 0),
             }
             returned_model = body.get("model") if isinstance(body, dict) else None
-            return answer, usage_row, str(returned_model) if returned_model else None
+            returned_model = str(returned_model) if returned_model else None
+            if choice.get("finish_reason") == "length":
+                raise OutputCeilingReached(
+                    "provider answer reached the configured output ceiling",
+                    usage=usage_row,
+                    returned_model=returned_model,
+                )
+            message = choice.get("message", {})
+            answer = _message_text(message.get("content") if isinstance(message, dict) else None)
+            if not answer:
+                raise RuntimeError("provider returned an empty answer")
+            return answer, usage_row, returned_model
         except OutputCeilingReached:
             raise
         except (subprocess.TimeoutExpired, ValueError, RuntimeError) as exc:
@@ -399,7 +413,7 @@ def run(args: argparse.Namespace) -> int:
         }
         returned_models: set[str] = set()
         for record in answer_records.values():
-            usage_total["calls"] += 1
+            usage_total["calls"] += int(record.get("provider_call_count", 1))
             for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
                 usage_total[key] += int(record["usage"][key])
             if record.get("returned_model"):
@@ -453,12 +467,27 @@ def run(args: argparse.Namespace) -> int:
             }
             used_truncation_retry = False
             generation_max_output_tokens = args.max_output_tokens
+            generation_attempts: list[dict[str, Any]] = []
             try:
                 answer, usage, returned_model = generate_answer(
                     **generation_kwargs,
                     max_output_tokens=args.max_output_tokens,
                 )
-            except OutputCeilingReached:
+                generation_attempts.append(
+                    {
+                        "max_output_tokens": args.max_output_tokens,
+                        "finish_reason": "stop",
+                        "usage": usage,
+                    }
+                )
+            except OutputCeilingReached as exc:
+                generation_attempts.append(
+                    {
+                        "max_output_tokens": args.max_output_tokens,
+                        "finish_reason": "length",
+                        "usage": exc.usage,
+                    }
+                )
                 retry_limit = args.truncation_retry_max_output_tokens
                 if retry_limit <= args.max_output_tokens:
                     raise
@@ -468,16 +497,29 @@ def run(args: argparse.Namespace) -> int:
                     **generation_kwargs,
                     max_output_tokens=retry_limit,
                 )
+                generation_attempts.append(
+                    {
+                        "max_output_tokens": retry_limit,
+                        "finish_reason": "stop",
+                        "usage": usage,
+                    }
+                )
+            combined_usage = {
+                key: sum(int(attempt["usage"][key]) for attempt in generation_attempts)
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+            }
             return (
                 position,
                 question["id"],
                 {"id": question["id"], "answer": answer},
-                usage,
+                combined_usage,
                 returned_model,
                 {
                     "requested_max_output_tokens": args.max_output_tokens,
                     "generation_max_output_tokens": generation_max_output_tokens,
                     "used_truncation_retry": used_truncation_retry,
+                    "provider_call_count": len(generation_attempts),
+                    "generation_attempts": generation_attempts,
                 },
             )
 
@@ -507,7 +549,7 @@ def run(args: argparse.Namespace) -> int:
             answer_records[question_id] = record
             _append_jsonl(answers_path, answer_row)
             answers[question_id] = answer_row
-            usage_total["calls"] += 1
+            usage_total["calls"] += int(generation_meta.get("provider_call_count", 1))
             for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
                 usage_total[key] += usage[key]
             if returned_model:
