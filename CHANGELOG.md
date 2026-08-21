@@ -8,6 +8,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.9.7]
+
 ### Added
 
 * **Production promotion works, gated on certification.** `generation promote` under

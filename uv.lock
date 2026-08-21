@@ -4093,7 +4093,7 @@ wheels = [
 
 [[package]]
 name = "recall-rag"
-version = "0.9.6"
+version = "0.9.7"
 source = { editable = "." }
 dependencies = [
     { name = "pgvector" },
