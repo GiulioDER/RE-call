@@ -452,7 +452,13 @@ def evaluate_drift(
 
     # Resolved HERE and nowhere earlier: every return above this line is a verdict reached without
     # a model, which is the property that makes running this after every rebuild affordable.
-    resolved = embedder() if callable(embedder) else embedder
+    #
+    # Discriminated by `embed`, the one method `Embedder` is defined by, rather than by
+    # `callable()`. No embedder in the tree defines `__call__` today, so both tests agree; but a
+    # `callable()` test says "this is not a factory" by elimination, and the day somebody adds
+    # `__call__` to an embedder it would silently start invoking the model as though it built one.
+    # Asking for the attribute that makes it an embedder cannot go wrong that way.
+    resolved = embedder if hasattr(embedder, "embed") else embedder()
     try:
         measured = _probe(repository, artifact, generation_id, resolved, max_error=max_error)
     except CalibrationError as exc:
