@@ -547,3 +547,61 @@ def test_a_failing_gui_install_still_reaches_the_shell(monkeypatch: pytest.Monke
         cli.main(["wizard", "--gui"])
 
     assert excinfo.value.code == 3, "the installer's failure must reach the shell"
+
+
+#: An obvious placeholder, never a realistic-looking string. These tests assert that a value does
+#: NOT reach the screen, so the value has to be greppable and unmistakably fake to whoever reads the
+#: failure output.
+_PLACEHOLDER_PASSWORD = "CHANGEME-placeholder-password"
+
+
+def test_a_probe_error_never_shows_the_password(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⛔ SEC-001: a driver error quotes the connection string back verbatim.
+
+    `probe_database` scrubs what it RETURNS and not what it RAISES, and the identical handler in
+    `recall/desktop/ui.py` already scrubs for a measured reason:
+    `ProgrammingError: missing "=" after "not-a-dsn://user:PASSWORD@x"`. I wrote a second copy of
+    that handler and left the scrubbing out. This is the surface most likely to hit it, because it
+    is where somebody types a connection string for the first time and it is what gets screenshotted.
+    """
+
+    def _leaky(dsn: str, expected_dimension: int | None) -> Any:
+        raise RuntimeError(f'missing "=" after "{dsn}"')
+
+    window = _installer(monkeypatch, tmp_path, prober=_leaky)
+    try:
+        window._fields["database"].set_value("existing")
+        window._fields["dsn"].set_value(f"postgresql://user:{_PLACEHOLDER_PASSWORD}@host/db")
+
+        window._test_dsn()
+
+        shown = window.form_status.text()
+        assert _PLACEHOLDER_PASSWORD not in shown, f"the password reached the screen: {shown!r}"
+    finally:
+        window.close()
+
+
+def test_an_install_failure_never_shows_the_password(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⛔ SEC-002: `run_headless` scrubs what it packages; an exception escaping it arrives raw.
+
+    The progress log is what a person screenshots when an install fails, and they reached that
+    screen by typing a connection string a moment earlier.
+    """
+    window = _installer(monkeypatch, tmp_path)
+    try:
+        window._fields["database"].set_value("existing")
+        window._fields["dsn"].set_value(f"postgresql://user:{_PLACEHOLDER_PASSWORD}@host/db")
+
+        window._failed(
+            f'connection to "postgresql://user:{_PLACEHOLDER_PASSWORD}@host/db" failed'
+        )
+
+        shown = window.log.toPlainText()
+        assert _PLACEHOLDER_PASSWORD not in shown, f"the password reached the log: {shown!r}"
+        assert "failed" in shown, "and the diagnosis must survive the scrubbing"
+    finally:
+        window.close()

@@ -34,6 +34,7 @@ arranged, and it is what lets every test below drive the real widgets without a 
 from __future__ import annotations
 
 import importlib
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -323,9 +324,17 @@ if QApplication is not None:
                     dsn, expected_dimension=_dimension_for(self._fields["embedder"].value())
                 )
             except Exception as exc:  # noqa: BLE001 - a probe failure is a result, not a crash
-                self.form_status.setText(f"Could not check that database: {exc}")
+                # ⛔ **Scrubbed, because a driver error quotes the DSN back verbatim.**
+                # `probe_database` scrubs what it RETURNS but not what it RAISES, and the identical
+                # handler in `recall/desktop/ui.py` already scrubs for a measured reason:
+                # `ProgrammingError: missing "=" after "not-a-dsn://user:PASSWORD@x"`. This is the
+                # surface most likely to hit it, because it is where somebody types a connection
+                # string for the first time, and it is what ends up in screenshots and bug reports.
+                self.form_status.setText(
+                    _scrubbed(f"Could not check that database: {exc}", dsn)
+                )
                 return
-            self.form_status.setText(report.render())
+            self.form_status.setText(_scrubbed(report.render(), dsn))
 
         # -- page 2 -------------------------------------------------------------------------
 
@@ -403,6 +412,32 @@ if QApplication is not None:
             job.signals.failed.connect(lambda _m=None, j=job: self._release(j))
             self.pool.start(job)
 
+        def closeEvent(self, event: Any) -> None:  # noqa: N802 - Qt's name
+            """Wait a bounded moment for the install, then close anyway.
+
+            ⛔ **`QThreadPool.waitForDone()` with no argument waits FOREVER**, and that is what a
+            parented pool's destructor calls. `MainWindow` was given a bounded `closeEvent` for
+            exactly this reason after closing during a first install froze the application for up to
+            half an hour; this window runs a strictly longer job — image pull, migrations, a
+            generation and a calibration per corpus — and shipped without one.
+
+            The bound is `CLOSE_WAIT_MS`, the same constant, chosen against a quick worker finishing
+            normally rather than against `docker compose up`. Closing while work continues is both
+            true and better than a window that will not close: the install runs in Docker and
+            survives this process.
+            """
+            from recall.desktop.jobs import CLOSE_WAIT_MS
+
+            if self._jobs and not self.pool.waitForDone(CLOSE_WAIT_MS):
+                # Said out loud rather than swallowed: the user is entitled to know the install did
+                # not stop just because the window did.
+                print(
+                    "recall-install: the install is still running in the background; "
+                    "it will finish on its own.",
+                    file=sys.stderr,
+                )
+            event.accept()
+
         def _release(self, job: Any) -> None:
             if job in self._jobs:
                 self._jobs.remove(job)
@@ -425,12 +460,34 @@ if QApplication is not None:
             # ⚠️ Appended, not substituted for the log. What ran before the failure is the only
             # thing that says HOW FAR it got, and on an installer that provisions a database and
             # applies migrations, how far it got is what decides what to do next.
-            self._append(f"\nfailed: {message}")
+            # Scrubbed against the DSN field: `run_headless` scrubs the errors it PACKAGES, but an
+            # exception propagating out of it (or out of `load_config`) arrives raw, and this log is
+            # what a person screenshots when an install fails.
+            self._append(_scrubbed(f"\nfailed: {message}", self._fields["dsn"].value()))
             self.close_button.setEnabled(True)
 
 else:  # pragma: no cover - no desktop extra installed
 
     InstallerWindow = None  # type: ignore[assignment,misc]
+
+
+def _scrubbed(message: str, dsn: str) -> str:
+    """`message` with `dsn`'s password removed, tolerating a blank or unparseable DSN.
+
+    One helper rather than two call sites reaching for `scrub_dsn_secrets` independently: the
+    defect this fixes was precisely a second copy of a handler that dropped the scrubbing its
+    original had.
+    """
+    if not dsn:
+        return message
+    from recall.store import scrub_dsn_secrets
+
+    try:
+        return str(scrub_dsn_secrets(message, dsn))
+    except Exception:  # noqa: BLE001 - a scrub that fails must not replace the error it was hiding
+        # Returning the raw message here would leak; returning nothing would lose the diagnosis.
+        # Say that something was suppressed instead.
+        return "the error could not be displayed safely because it may contain your password"
 
 
 def _default_writer() -> Any:

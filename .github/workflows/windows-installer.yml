@@ -173,7 +173,17 @@ jobs:
           $tool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
             Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
           if (-not $tool) { throw "signtool.exe not found on the runner" }
-          & $tool.FullName verify /pa /v dist-signed\recall-install\recall-install.exe
+          # ⚠️ **The layout is listed before it is assumed.** `upload-artifact` computes the
+          # artifact root as the least common ancestor of the matched files, so uploading
+          # `dist/recall-install` produces entries relative to THAT directory — the folder name is
+          # stripped. SignPath then extracts into `dist-signed`, and the exe is at
+          # `dist-signed/recall-install.exe`, not `dist-signed/recall-install/recall-install.exe`.
+          # This branch has never run (no credentials yet), so nothing has caught it; the listing
+          # makes the real shape visible in the log the first time it does.
+          Get-ChildItem -Recurse dist-signed | Select-Object -First 20 FullName | Format-Table -AutoSize
+          $exe = Get-ChildItem -Recurse dist-signed -Filter recall-install.exe | Select-Object -First 1
+          if (-not $exe) { throw "no recall-install.exe under dist-signed" }
+          & $tool.FullName verify /pa /v $exe.FullName
           if ($LASTEXITCODE -ne 0) { throw "the signature does not verify" }
 
       - name: Upload the signed bundle
@@ -181,7 +191,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: recall-install-windows
-          path: dist-signed/recall-install
+          # `dist-signed`, not `dist-signed/recall-install`: see the verify step above for why that
+          # directory level does not exist.
+          path: dist-signed
           if-no-files-found: error
 
       # ⛔ **Without this the tag path produced nothing a downloader could get.** Both steps above
@@ -200,6 +212,6 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $zip = "recall-install-$tag-windows-x64.zip"
-          Compress-Archive -Path dist-signed/recall-install -DestinationPath $zip -CompressionLevel Optimal
+          Compress-Archive -Path dist-signed/* -DestinationPath $zip -CompressionLevel Optimal
           gh release upload $tag $zip --clobber
           if ($LASTEXITCODE -ne 0) { throw "could not attach $zip to release $tag" }

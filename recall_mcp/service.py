@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+from contextlib import suppress
 import mimetypes
 import threading
 import time
@@ -37,7 +38,6 @@ from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, c
 from recall.lineage import IndexManifestV1, ManifestObjectV1
 from recall.manifest import ExtractingLocalObjectReader
 from recall.generations import (
-    GenerationError,
     GenerationManager,
     NoActiveGeneration,
     UnsafePromotion,
@@ -2132,11 +2132,15 @@ def generation_ingest(
 ) -> IndexResult:
     """Build and validate one local generation for a desktop upload, and activate it if allowed.
 
-    ⚠️ **Activation is no longer guaranteed, and the docstring said it was.** Under
-    `RECALL_ENV=production` promotion requires a CERTIFIED calibration, which a fresh upload does not
-    have, so the ordinary desktop path now ends with the generation READY and not live. That is
-    reported in the returned message rather than raised, because the upload itself succeeded: the
-    corpus is built, validated and carries forward every earlier upload's files.
+    ⚠️ **Activation is attempted, not guaranteed.** Where the tenant is served under production,
+    `_certify_upload` calibrates and publishes first, so an upload with enough content to produce a
+    certifiable query set goes live. One that cannot ends READY and not live, and that outcome is
+    REPORTED in the returned message rather than raised, because the upload itself succeeded: the
+    corpus is built, validated, and carries forward every earlier upload's files.
+
+    ⚠️ An earlier version of this sentence said the ordinary desktop path "now ends with the
+    generation READY and not live". That described the code one commit before `_certify_upload`
+    existed, and contradicted the changelog for the same release.
     """
     job_root = Path(staged_root)
     tenant_root = job_root.parent
@@ -2275,21 +2279,7 @@ def generation_ingest(
             #
             # The NEWEST is kept, not abandoned: it carries the whole corpus forward and it is the
             # one the message below tells the user to certify.
-            reclaimed = 0
-            # ⛔ Confined to this path's OWN generations. Without the prefix this reclaims
-            # every READY generation on the tenant, including one a degraded wizard install
-            # deliberately left for an operator to promote later — and `abandon` does not
-            # protect it, so `gc` would then delete a corpus this path never created.
-            for stale in manager.superseded_ready_generations(
-                generation.generation_id, corpus_version_prefix=_DESKTOP_CORPUS_PREFIX
-            ):
-                try:
-                    manager.abandon(stale, "superseded by a later upload that also awaits certification")
-                except GenerationError:
-                    # Best effort. Losing the reclaim must not lose the upload report, which is the
-                    # only thing telling the user what state they are in.
-                    continue
-                reclaimed += 1
+            reclaimed = _release_superseded(manager, generation.generation_id)
             return IndexResult(
                 files=stats.objects,
                 chunks=stats.chunks,
@@ -2301,8 +2291,23 @@ def generation_ingest(
                     + f". {uncertified or exc}"
                 ),
             )
-    except Exception:
+    except Exception as exc:
+        # ⛔ **This used to be `except Exception: raise`, which is a no-op wearing a policy's
+        # clothes** — and `_certify_upload`'s docstring reasoned about it as if it did something.
+        # After `validate()` the generation is READY, and READY is the one state `gc` cannot
+        # reclaim, so any failure that is not `UnsafePromotion` (a dropped connection during
+        # calibration, a binding error, an unexpected transition) stranded a full copy of the
+        # corpus forever. `recall/wizard/pipeline.py::_fail` does exactly this on the same shape of
+        # failure. The original error is re-raised untouched; the cleanup is best effort.
+        with suppress(Exception):
+            manager.abandon(generation.generation_id, f"desktop upload failed: {exc}")
         raise
+
+    # ⛔ **The reclaim runs on the SUCCESS path too.** Confining it to the `UnsafePromotion` branch
+    # meant the leak reopened the moment an upload finally certified: every earlier refused build
+    # stayed READY forever, holding a full corpus copy `gc` collects only from `retired`/`failed`.
+    # Three auditors found this independently.
+    _release_superseded(manager, generation.generation_id)
     return IndexResult(
         files=stats.objects,
         chunks=stats.chunks,
@@ -2311,6 +2316,32 @@ def generation_ingest(
             f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
         ),
     )
+
+
+def _release_superseded(manager: GenerationManager, keep: str) -> int:
+    """Abandon the READY generations THIS path built and no longer needs. Returns how many.
+
+    A READY generation holds a full copy of the corpus's chunk rows and `gc` collects only
+    `retired` and `failed`, so one left behind per upload grows the database without bound.
+
+    ⛔ **`corpus_version_prefix` is what stops this destroying somebody else's work.** Without it
+    the selection is on state alone, and `abandon` does not protect a generation that was built and
+    deliberately never promoted — which is what a degraded wizard install leaves for an operator to
+    promote later.
+
+    Best effort by design: losing a reclaim must not lose the upload report, which is the only thing
+    telling the user what state they are in.
+    """
+    reclaimed = 0
+    for stale in manager.superseded_ready_generations(
+        keep, corpus_version_prefix=_DESKTOP_CORPUS_PREFIX
+    ):
+        try:
+            manager.abandon(stale, "superseded by a later upload from the same desktop")
+        except Exception:  # noqa: BLE001 - see the docstring; a failed reclaim is not a failed upload
+            continue
+        reclaimed += 1
+    return reclaimed
 
 
 def _certify_upload(

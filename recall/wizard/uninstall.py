@@ -31,7 +31,9 @@ worse than asking.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
+from contextlib import suppress
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,8 +60,17 @@ _INSTALLER_FILES = (
     DOCKERFILE_NAME,
     "wizard.json",
     "wizard.state.json",
-    "runtime.json",
 )
+
+#: ⛔ **`runtime.json` is NOT in the list above, because it is not under `data_root`.** The
+#: installer writes it to the user's config directory (`%APPDATA%/RE-call/` on Windows, which is
+#: the platform this targets), and `recall/wizard/headless.py` says so outright: "written to the
+#: user's config directory, outside both data_root and project_root". Listing it as a
+#: `data_root`-relative name meant the entry NEVER matched on Windows, so every uninstall left the
+#: desktop app holding a profile pointing at a compose file that had just been deleted. The unit
+#: test fabricated the file under `data_root`, which is precisely why the mismatch was invisible.
+#:
+#: It is planned at its real location instead, and only when it names THIS install.
 
 
 class UninstallRefusal(RuntimeError):
@@ -162,8 +173,8 @@ def _run(command: Sequence[str], *, timeout: float = 60.0) -> tuple[int, str]:
     return completed.returncode, ((completed.stdout or "") + (completed.stderr or "")).strip()
 
 
-def _compose_project(compose_path: Path) -> tuple[str, tuple[str, ...]]:
-    """The project name and service names recorded in the stack file.
+def _compose_project(compose_path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """The project name, service names and DECLARED VOLUMES recorded in the stack file.
 
     Read from the FILE rather than recomputed from `data_root` and the project name. Recomputing
     would silently disagree with the running stack the moment the derivation changed, and the
@@ -177,6 +188,11 @@ def _compose_project(compose_path: Path) -> tuple[str, tuple[str, ...]]:
             "and the volume, so without it there is no safe way to tell this install's resources "
             "from another's. Remove them by hand, or restore the file."
         ) from exc
+    if not isinstance(document, dict):
+        raise UninstallRefusal(
+            f"the stack file at {compose_path} is not a JSON object, so it names no containers. "
+            "Refusing rather than guessing."
+        )
     name = document.get("name")
     services = document.get("services")
     if not isinstance(name, str) or not name:
@@ -187,7 +203,21 @@ def _compose_project(compose_path: Path) -> tuple[str, tuple[str, ...]]:
         )
     if not isinstance(services, dict):
         raise UninstallRefusal(f"the stack file at {compose_path} declares no services")
-    return name, tuple(str(key) for key in services)
+    # ⛔ The volumes are READ, not recomputed, for the same reason the project name is. Deriving
+    # `f"{project}_{DB_VOLUME}"` from a constant means a stack written by a release with a different
+    # volume name yields a name that stack never declared: `docker volume rm` reports "no such
+    # volume", `execute` counts that as removed, and the real volume holding the indexes survives
+    # while the report says it went. That is the one irreversible item in the plan.
+    declared = document.get("volumes")
+    volumes: list[str] = []
+    if isinstance(declared, dict):
+        for key, spec in declared.items():
+            if isinstance(spec, dict) and spec.get("external"):
+                # An external volume was not created by this stack and is not ours to remove.
+                continue
+            explicit = spec.get("name") if isinstance(spec, dict) else None
+            volumes.append(str(explicit) if explicit else f"{name}_{key}")
+    return name, tuple(str(key) for key in services), tuple(volumes)
 
 
 def _corpus_roots(data_root: Path) -> tuple[tuple[str, Path], ...]:
@@ -203,6 +233,8 @@ def _corpus_roots(data_root: Path) -> tuple[tuple[str, Path], ...]:
         document = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ()
+    if not isinstance(document, dict):
+        return ()
     roots: list[tuple[str, Path]] = []
     for key in ("docs_root", "code_root", "memory_root"):
         value = document.get(key)
@@ -216,6 +248,8 @@ def _configured_project_root(data_root: Path) -> Path | None:
     try:
         document = json.loads((data_root / "wizard.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        return None
+    if not isinstance(document, dict):
         return None
     value = document.get("project_root")
     return Path(value) if isinstance(value, str) and value else None
@@ -235,6 +269,8 @@ def _registrations(project_root: Path, config_path: Path) -> tuple[Removable, ..
     try:
         document = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        return ()
+    if not isinstance(document, dict):
         return ()
     projects = document.get("projects")
     if not isinstance(projects, dict):
@@ -264,6 +300,36 @@ def _registrations(project_root: Path, config_path: Path) -> tuple[Removable, ..
     return tuple(found)
 
 
+def _profile_for(data_root: Path) -> Path | None:
+    """The desktop runtime profile, but only when it points at THIS install.
+
+    Lives in the user's config directory rather than under `data_root`, so it has to be resolved
+    through the writer's own path function rather than assumed. Guarded by whose stack it names: a
+    second install's profile is not ours to remove, and there is exactly one profile file for the
+    machine.
+    """
+    try:
+        from recall.desktop.profiles import profile_path
+    except Exception:  # noqa: BLE001 - no desktop extra means no profile to remove
+        return None
+    try:
+        path = profile_path()
+        if not path.exists():
+            return None
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    compose = document.get("compose_file")
+    if not isinstance(compose, str) or not compose:
+        return None
+    try:
+        return path if Path(compose).resolve().parent == data_root.resolve() else None
+    except (OSError, ValueError):  # pragma: no cover - an unresolvable path names no install
+        return None
+
+
 def plan_uninstall(
     *,
     data_root: Path,
@@ -289,7 +355,7 @@ def plan_uninstall(
             "the data folder chosen during installation; it is recorded in that install's "
             "wizard.json."
         )
-    project_name, services = _compose_project(compose_path)
+    project_name, services, declared_volumes = _compose_project(compose_path)
 
     items: list[Removable] = []
 
@@ -311,29 +377,40 @@ def plan_uninstall(
             if name:
                 items.append(Removable("container", name, f"compose project {project_name}"))
     else:
+        # ⛔ `removing=False`. Reported as UNKNOWN rather than as a removal: a glob under "This
+        # will remove" reads as a name-pattern teardown, which is the one thing this module refuses
+        # to do, and `execute` would otherwise report the pseudo-name as removed while never naming
+        # the real containers.
         items.append(
             Removable(
                 "container",
                 f"{project_name}-*",
-                "docker could not be queried; the stack will be brought down by compose anyway",
+                "docker could not be queried, so the containers could not be listed; "
+                "compose will still bring the stack down",
+                removing=False,
             )
         )
 
-    items.append(
-        Removable(
-            "volume",
-            f"{project_name}_{DB_VOLUME}",
-            "the built indexes"
-            if purge_data
-            else "the built indexes; kept unless you pass --purge-data",
-            removing=purge_data,
+    for volume in declared_volumes or (f"{project_name}_{DB_VOLUME}",):
+        items.append(
+            Removable(
+                "volume",
+                volume,
+                "the built indexes"
+                if purge_data
+                else "the built indexes; kept unless you pass --purge-data",
+                removing=purge_data,
+            )
         )
-    )
 
     for filename in _INSTALLER_FILES:
         path = data_root / filename
         if path.exists():
             items.append(Removable("file", str(path), "written by the installer"))
+
+    profile = _profile_for(data_root)
+    if profile is not None:
+        items.append(Removable("file", str(profile), "the desktop app's handoff file"))
 
     project_root = _configured_project_root(data_root)
     if project_root is not None:
@@ -429,8 +506,25 @@ def execute(
                 else:
                     report.failed.append((item, failure))
 
+    # ⛔ The stack file is the ONLY thing that identifies this install's containers and volume, and
+    # `plan_uninstall` refuses without it. Deleting it after a failed teardown leaves resources that
+    # can no longer be named by the tool, and the refusal message tells the user to restore a file
+    # this function just removed.
+    teardown_failed = any(
+        item.kind in {"container", "volume"} for item, _reason in report.failed
+    )
     for item in plan.removing("file"):
         path = Path(item.name)
+        if teardown_failed and path.name in {COMPOSE_NAME, "wizard.json"}:
+            report.kept.append(
+                Removable(
+                    item.kind,
+                    item.name,
+                    "kept so the uninstall can be retried: something above could not be removed",
+                    removing=False,
+                )
+            )
+            continue
         try:
             path.unlink(missing_ok=True)
         except OSError as exc:
@@ -455,9 +549,12 @@ def _unregister(names: Sequence[str], project_root: Path, config_path: Path) -> 
     from recall.wizard.wiring import _written_by_this_project
 
     try:
-        document = json.loads(config_path.read_text(encoding="utf-8"))
+        original = config_path.read_text(encoding="utf-8")
+        document = json.loads(original)
     except (OSError, ValueError) as exc:
         return f"cannot read {config_path}: {exc}"
+    if not isinstance(document, dict):
+        return f"{config_path} is not a JSON object; refusing to rewrite it"
     projects = document.get("projects")
     if not isinstance(projects, dict):
         return None
@@ -475,7 +572,17 @@ def _unregister(names: Sequence[str], project_root: Path, config_path: Path) -> 
 
     temporary = config_path.with_name(config_path.name + ".tmp")
     try:
+        # ⛔ **A backup first, matching `register_local_scope`.** That function writes a
+        # `.recall-backup` before its own atomic replace; this one did not, so the REMOVAL
+        # direction — the one where a mistake is unrecoverable — had less protection than the
+        # addition direction. This file holds every project the MCP client tracks.
+        backup = config_path.with_name(config_path.name + ".recall-backup")
+        backup.write_text(original, encoding="utf-8", newline="\n")
         temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
+        # `replace` installs a fresh inode at the umask default, discarding a 0600 the user or the
+        # client may have set on a file that carries bearer tokens. Copy the mode across first.
+        with suppress(OSError, NotImplementedError):
+            shutil.copymode(config_path, temporary)
         temporary.replace(config_path)
     except OSError as exc:
         return f"cannot write {config_path}: {exc}"

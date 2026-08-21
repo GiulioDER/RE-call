@@ -166,20 +166,68 @@ def test_a_new_build_carries_forward_from_the_newest_servable_generation() -> No
     )
 
 
-def test_a_refused_upload_releases_the_builds_it_supersedes() -> None:
+def test_the_reclaim_runs_on_both_outcomes_and_is_confined() -> None:
     """⛔ A READY generation holds a full copy of the corpus and `gc` collects only retired/failed.
 
-    `abandon` exists for exactly this state and says so in its own docstring; `wizard/pipeline.py`
-    does the same on the same shape of failure. The refusal branch returned success without it, so
-    every retry left another unreclaimable copy behind.
+    Two defects, both found by three auditors independently:
 
-    The NEWEST is deliberately kept — it carries the whole corpus forward and is the one the message
-    tells the user to certify.
+    * The reclaim lived only inside `except UnsafePromotion`, so the leak reopened the moment an
+      upload finally certified — every earlier refused build stayed READY forever.
+    * It selected on STATE ALONE, so it could abandon a generation another path built and
+      deliberately left un-promoted. See
+      `test_generations.py::test_the_reclaim_never_touches_a_generation_another_path_built`.
 
-    ⚠️ **This assertion used to be a substring match on `inspect.getsource`, and three auditors
-    said why that was wrong: a source-text check cannot tell which BRANCH a call sits in.** It
-    could not see that the reclaim ran only inside `except UnsafePromotion`, it could not see what
-    the loop selected, and it broke the moment the call gained an argument. It is now parsed.
+    ⚠️ This assertion has now been rewritten twice. It began as a substring match on
+    `inspect.getsource`, which could not tell which BRANCH the call sat in — the exact reason the
+    first defect was invisible. It is parsed, and it walks the CALL GRAPH rather than one function,
+    because the reclaim is now a named helper and a source-scoped check would have missed that too.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    import recall_mcp.service as service
+
+    helper = ast.parse(textwrap.dedent(inspect.getsource(service._release_superseded)))
+    calls = [
+        node
+        for node in ast.walk(helper)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "superseded_ready_generations"
+    ]
+    assert calls, "the helper must ask which builds it supersedes"
+    assert any(
+        keyword.arg == "corpus_version_prefix" for call in calls for keyword in call.keywords
+    ), "and it must be confined to generations this path created"
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "abandon"
+        for node in ast.walk(helper)
+    ), "released means abandoned, so gc can reclaim the rows"
+
+    # ⛔ Both outcomes. One call site would put us back where we started.
+    ingest = ast.parse(textwrap.dedent(inspect.getsource(service.generation_ingest)))
+    sites = [
+        node
+        for node in ast.walk(ingest)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_release_superseded"
+    ]
+    assert len(sites) >= 2, (
+        f"the reclaim must run on the refusal path AND the success path, found {len(sites)} call(s)"
+    )
+
+
+def test_a_failure_after_validate_does_not_strand_a_generation() -> None:
+    """⛔ `except Exception: raise` is a no-op, and a docstring reasoned about it as if it were not.
+
+    After `validate()` the generation is READY, and READY is the one state `gc` cannot reclaim. Any
+    failure that is not `UnsafePromotion` — a dropped connection during calibration, a binding
+    error, an unexpected transition — stranded a full copy of the corpus forever.
+    `recall/wizard/pipeline.py::_fail` does exactly this on the same shape of failure.
     """
     import ast
     import inspect
@@ -188,28 +236,23 @@ def test_a_refused_upload_releases_the_builds_it_supersedes() -> None:
     import recall_mcp.service as service
 
     tree = ast.parse(textwrap.dedent(inspect.getsource(service.generation_ingest)))
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "superseded_ready_generations"
+    handlers = [node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)]
+    bare_reraise = [
+        handler
+        for handler in handlers
+        if len(handler.body) == 1 and isinstance(handler.body[0], ast.Raise)
+        and handler.body[0].exc is None
     ]
-    assert calls, "the refusal path must release the builds this one supersedes"
-
-    # ⛔ And it must be CONFINED. Called without a provenance filter it selects on state alone, and
-    # `abandon` does not protect a never-promoted generation — so it would destroy a corpus another
-    # path built. See test_generations.py::test_the_reclaim_never_touches_a_generation_another_path_built.
-    assert any(
-        keyword.arg == "corpus_version_prefix" for call in calls for keyword in call.keywords
-    ), "the reclaim must be confined to generations this path created"
-
+    assert not bare_reraise, (
+        "a handler whose entire body is `raise` implements nothing; either give it the cleanup its "
+        "docstring implies or remove it"
+    )
     assert any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "abandon"
         for node in ast.walk(tree)
-    ), "released means abandoned, so gc can reclaim the rows"
+    ), "the failure path must release the generation it created"
 
 
 # ----------------------------------------------------------------------------------------------
