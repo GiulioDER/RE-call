@@ -498,7 +498,17 @@ def _run_quickstart_recording_migrations(monkeypatch, apply) -> list[str]:
     monkeypatch.setattr(cli, "Indexer", lambda *a, **k: _StubIndexer())
     monkeypatch.setattr(cli, "_run_queries", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_entailment_judge", lambda: None)
-    cli.main(["quickstart", "--existing-dsn", "postgresql://example/db"])
+    # ⚠️ **`hashing`, NOT the default, and CI is the only place that shows why.** `quickstart`
+    # resolves an embedder before it touches the database, and the parent parser's default is
+    # `fastembed`, which lives behind an extra CI deliberately does not install. Locally this
+    # passed; on CI both of these died with `SystemExit: embedder 'fastembed': ImportError`.
+    # Nothing here needs real vectors (every collaborator below is stubbed) and only `.dim` is
+    # read, so the built-in embedder is both sufficient and the one that cannot depend on extras.
+    # Same shape as the launch-order test that assumed PySide6 was installed.
+    monkeypatch.delenv("RECALL_EMBEDDER", raising=False)
+    cli.main(
+        ["--embedder", "hashing", "quickstart", "--existing-dsn", "postgresql://example/db"]
+    )
     return migrated
 
 
