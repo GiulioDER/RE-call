@@ -947,6 +947,24 @@ def _fallback_profile_id(model_name: str, dimension: int, asymmetric: bool) -> s
 _log = get_logger("embeddings")
 
 
+#: Bad `RECALL_FASTEMBED_BATCH` values already reported. Deduplicated by VALUE, not by a single
+#: flag: a variable corrected mid-process should warn again for the new bad value.
+_WARNED_BATCH_VALUES: set[str] = set()
+
+
+def _warn_once(raw: str, problem: str) -> None:
+    """Report a bad batch setting the FIRST time it is seen, and not on every batch after.
+
+    `_batch_size_from_env` runs once per batch, so warning unconditionally produced hundreds of
+    identical lines during a single index and buried anything real. The docstring below claimed
+    "warns once" before the code did.
+    """
+    if raw in _WARNED_BATCH_VALUES:
+        return
+    _WARNED_BATCH_VALUES.add(raw)
+    _log.warning("RECALL_FASTEMBED_BATCH=%r %s; using the backend default", raw, problem)
+
+
 def _batch_size_from_env() -> int | None:
     """`RECALL_FASTEMBED_BATCH` as a positive int, or `None` for the backend's own default.
 
@@ -961,12 +979,10 @@ def _batch_size_from_env() -> int | None:
     try:
         size = int(raw)
     except ValueError:
-        _log.warning(
-            "RECALL_FASTEMBED_BATCH=%r is not an integer; using the backend default", raw
-        )
+        _warn_once(raw, "is not an integer")
         return None
     if size < 1:
-        _log.warning("RECALL_FASTEMBED_BATCH=%r is not positive; using the backend default", raw)
+        _warn_once(raw, "is not positive")
         return None
     return size
 

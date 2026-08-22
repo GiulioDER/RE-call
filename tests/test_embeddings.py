@@ -127,3 +127,32 @@ def test_a_junk_value_does_not_crash_an_index(monkeypatch):
     vectors = _embedder_with(model).embed_passages(["a", "b"])
 
     assert len(vectors) == 2
+
+
+def test_a_bad_batch_value_is_reported_once_not_once_per_batch(monkeypatch, caplog):
+    """⛔ `_batch_size_from_env` runs once per BATCH, so an unconditional warning is log spam.
+
+    During an index of a real corpus that is hundreds of identical lines, which buries anything
+    worth reading. The docstring claimed "warns once" while the code warned every time, which is
+    the mismatch this fix closes rather than the wording.
+    """
+    import logging
+
+    from recall.embeddings import _WARNED_BATCH_VALUES, _batch_size_from_env
+
+    _WARNED_BATCH_VALUES.clear()
+    monkeypatch.setenv("RECALL_FASTEMBED_BATCH", "not-a-number")
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(5):
+            assert _batch_size_from_env() is None
+
+    warnings = [r for r in caplog.records if "RECALL_FASTEMBED_BATCH" in r.getMessage()]
+    assert len(warnings) == 1, f"warned {len(warnings)} times for one bad value"
+
+    # A DIFFERENT bad value is still worth reporting: the setting may have been corrected badly.
+    monkeypatch.setenv("RECALL_FASTEMBED_BATCH", "-4")
+    with caplog.at_level(logging.WARNING):
+        assert _batch_size_from_env() is None
+    warnings = [r for r in caplog.records if "RECALL_FASTEMBED_BATCH" in r.getMessage()]
+    assert len(warnings) == 2
