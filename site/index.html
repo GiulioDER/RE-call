@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RE-call · Setup guide</title>
-<meta name="description" content="A beginner's guide to installing, configuring and running RE-call: the memory layer that abstains instead of guessing. Seven steps, every command, on Windows, macOS and Linux.">
+<meta name="description" content="Install, configure and run RE-call, the memory layer that abstains instead of guessing. See it work in two commands, then do the full install, on Windows, macOS and Linux.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
@@ -55,11 +55,20 @@
   <img class="hero-logo" src="assets/re_call_logo.png" alt="">
   <div class="shell hero-inner">
     <p class="eyebrow">Setup guide</p>
-    <h1>Get RE-call running in seven steps.</h1>
+    <h1>See it work in two commands.</h1>
     <hr class="rule">
-    <p class="hero-lede">A local memory layer for agents, with every command, expected result, and recovery path.</p>
+    <p class="hero-lede">A local memory layer for agents. The second command starts its own database, indexes a sample corpus and answers three questions, one of which it refuses.</p>
+    <div class="terminal terminal--command hero-terminal" data-shell="posix">
+      <div class="terminal-bar">
+        <span class="terminal-label">Terminal</span>
+        <button class="copy-button" type="button">Copy</button>
+      </div>
+      <div class="terminal-body"><pre><span class="line">pip install "recall-rag[fastembed]"</span>
+<span class="line">recall quickstart</span></pre></div>
+    </div>
+    <p class="hero-note">Needs Python 3.11+ and Docker. Nothing is calibrated and nothing is wired to an agent: it prints the next command for each. <code>recall quickstart --remove</code> deletes everything it created.</p>
     <div class="hero-actions">
-      <a class="button" href="start.html">Start the install</a>
+      <a class="button" href="start.html">Do the full install</a>
       <a class="button-ghost" href="download.html">Download the Windows installer (beta)</a>
     </div>
   </div>
@@ -81,14 +90,15 @@
       <p>When nothing matches with enough confidence, it abstains instead of handing you the nearest note.</p>
     </div>
     <div>
-      <p class="eyebrow eyebrow--signal">Asked something it has no answer to</p>
+      <p class="eyebrow eyebrow--signal">The third question <code>recall quickstart</code> asks</p>
       <div class="terminal terminal--output">
         <div class="terminal-bar"><span class="terminal-label">Output</span></div>
-        <div class="terminal-body"><pre><span class="warn">[ABSTAIN GAP] query='penguins on Mars?'</span>
-<span class="dim">  reason: no confident match in this corpus</span>
-<span class="dim">  evidence: rate-limits.md · confidence 0.30</span></pre></div>
+        <div class="terminal-body"><pre><span class="warn">[ABSTAIN GAP DEGRADED:INDEX_NOT_READY] query='who painted the mural in the town library'</span>
+<span class="dim">  reason: no hit above the calibrated confidence threshold (probable corpus gap)</span>
+<span class="dim">  low_confidence conf=0.25 cos=0.446  search_engine_v2.md</span>
+<span class="dim">  low_confidence conf=0.23 cos=0.440  rollout_flag_v2.md</span></pre></div>
       </div>
-      <p class="muted">A low-confidence match is shown as evidence, not presented as an answer.</p>
+      <p class="muted">Copied from a real run, trimmed to the first two of five hits. A low-confidence match is shown as evidence, not presented as an answer. <code>DEGRADED</code> is the sample corpus saying its threshold was never fitted to it, which is what <a href="calibration.html">calibration</a> fixes.</p>
     </div>
   </div>
 </section>
@@ -156,7 +166,7 @@
   <div class="shell split" data-reveal>
     <div>
       <p class="eyebrow eyebrow--signal">New, and in beta</p>
-      <h2>On Windows, a wizard can do all seven steps for you.</h2>
+      <h2>On Windows, a wizard can do the whole install for you.</h2>
       <p>One window asks a short list of questions, then brings up the database, indexes your folders and writes the Claude Code wiring while you watch the log.</p>
       <p>It is a beta and it is not code signed yet, so the download page says plainly which machines Windows will let it run on. I am looking for testers, and for comments on how it went.</p>
       <div class="hero-actions">
@@ -166,7 +176,7 @@
     <div>
       <p class="eyebrow">What you give up by using it</p>
       <p class="muted">Nothing that cannot be recovered. The wizard writes the same configuration file the terminal flow writes, and the install it produces is one you can re-run, inspect, or hand to somebody else.</p>
-      <p class="muted">The <a href="start.html">seven step install</a> stays the path on macOS and Linux, and the path to fall back to if the installer will not start.</p>
+      <p class="muted">The <a href="start.html">full install</a> stays the path on macOS and Linux, and the path to fall back to if the installer will not start.</p>
     </div>
   </div>
 </section>

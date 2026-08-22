@@ -116,9 +116,14 @@ recall quickstart --remove          # stops the database and destroys its volume
 ```
 
 Already running PostgreSQL with pgvector? `recall quickstart --existing-dsn <dsn>` skips Docker
-entirely. No Docker and no PostgreSQL? The setup below is the long form of the same thing.
+entirely.
 
-### The long form
+### The full install
+
+The quickstart is a demonstration, not an install: it answers questions about a sample corpus with
+an uncertified threshold, and it leaves your own notes untouched. What follows is the different and
+longer thing, which points RE-call at your memory, fits a threshold to it, and registers the MCP
+server with your agent.
 
 RE-call keeps memory in your own PostgreSQL with pgvector, so a database comes first.
 
