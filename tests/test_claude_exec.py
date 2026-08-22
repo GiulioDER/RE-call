@@ -46,6 +46,10 @@ def _stream(path: Path) -> str:
 
 def _config(**kwargs) -> ClaudeExecConfig:
     kwargs.setdefault("strict_mcp_config", False)
+    # Every config a test builds names an executable, so nothing here depends on Claude Code being
+    # installed. Setting it in the helper rather than at each call site is what makes that true for
+    # tests added later too: the CI runner has no `claude` on PATH.
+    kwargs.setdefault("executable", EXECUTABLE)
     return ClaudeExecConfig(**kwargs)
 
 
