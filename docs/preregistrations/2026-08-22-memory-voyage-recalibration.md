@@ -91,3 +91,54 @@ Searched memory before predicting.
   `gen_2aa43797` is a further step that must be checked, not assumed.
 - **Chunk-level `relevant_ids` are not validated by this metric.** The measurement uses top cosine
   per query, so a wrong `relevant_ids` would not fail loudly. It is recorded for other uses.
+
+---
+
+## Result (2026-08-22)
+
+**Status:** measured. **The prediction held: it did not certify.**
+
+```
+NOT certified - separability 0.937 clears 0.9 but its 95% interval
+[0.883, 0.992] does not: 45/28 samples cannot establish the bar.
+
+answerable   n= 45  min=0.373  p25=0.533  med=0.600  max=0.718
+unanswerable n= 28  min=0.254  p75=0.452  med=0.412  max=0.582
+separation (min answerable - max unanswerable): -0.209
+threshold: 0.4760   separability: 0.937   ci: (0.8827, 0.9919)
+leave-one-out: false-confident 0.214   false-abstain 0.133
+```
+
+| | predicted | measured | |
+|---|---|---|---|
+| certifies? | **no** | **no** | right |
+| CI lower bound | 0.88 to 0.91 | **0.8827** | inside the range |
+| point estimate | 0.93 to 0.95 | **0.937** | inside the range |
+
+**Gap: essentially none, which is itself the finding.** The interval narrowed exactly as the
+`1/sqrt(n)` model in the prediction said it would. Predicted shrink factor `sqrt(45/22) = 1.43`;
+measured `0.074 / 0.054 = 1.37`. The point estimate did not move (0.9383 to 0.937), so the
+certification failure was never about sample size alone, and doubling the class bought 0.019 of
+lower bound.
+
+**Extrapolating on the same model, now with two points instead of one: reaching a lower bound of
+0.9 needs the margin to fall from 0.054 to 0.037, a further factor of 1.46, so n x 2.13 - about 96
+answerable queries.** The pre-registered estimate was ~84 from a single point; 96 is the better
+number and both say the same thing, which is that this is not a labelling problem you finish in an
+afternoon.
+
+⛔ **The result that should stop the next attempt: leave-one-out false-confidence got WORSE, 0.179
+to 0.214.** More queries, a worse error rate. My 23 authored queries do not separate better than
+the original 22 - they separate slightly worse. So the point estimate will not climb toward the
+0.96 it needs by adding more of the same, and the honest reading is that **voyage:voyage-4 does not
+separate this corpus as cleanly as bge-large did** (0.937 against 0.9886, LOO 0.214/0.133 against
+0.036/0.045), rather than that the query set is merely small.
+
+**Confounds, revisited against the result.** The "author-side knowledge inflates answerability"
+confound predicted my queries would score too easily. The opposite happened, which retires that
+worry and raises a different one: phrasing a question the way a session actually asks it is
+genuinely harder for the encoder than quoting a memo. That is the realistic case, so 0.214 is
+probably the more honest error rate, not a pessimistic one.
+
+**Decision: `gen_2aa437979700456c8e0f8a3e48888272` stays `ready` and unpromoted.** Nothing changed
+about the corpus, the active generation, or what search returns today.
