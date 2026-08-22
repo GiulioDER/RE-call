@@ -148,8 +148,30 @@ def test_no_oracle_file_is_reachable_from_any_sandbox(tmp_path):
 #
 # The two that matter. Parametrised over every task so a new one cannot be added without evidence
 # that its checker separates the two answers.
+#
+# ⚠️ **Windows only, and that is a property of the benchmark rather than a gap in the tests.** Half
+# these tasks are built on facts that are only true on this machine: MSYS rewriting a /-prefixed
+# argument, `Path.write_text` translating newlines to CRLF, `bash` resolving to System32's WSL
+# launcher, `taskkill /T` being the only thing that reaches a grandchild. On ubuntu the checkers
+# either cannot run (`git_bash()` raises, correctly, rather than falling back to /bin/bash and
+# measuring something else) or the naive answer silently PASSES, because the hazard does not exist
+# there. Either way the assertion would be about the runner, not about the task.
+#
+# Skipped rather than made portable, because making them portable would mean weakening the
+# checkers until they agree with a platform the benchmark never runs on. The structural and
+# restoration tests above DO run everywhere and still catch a missing fixture, an unloadable
+# checker, a fixture that cannot be regenerated, or an oracle leaking into a sandbox.
+windows_only = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason=(
+        "the facts under test are properties of this Windows machine (MSYS path conversion, CRLF "
+        "translation, System32 bash, taskkill /T); on another platform these assertions would be "
+        "about the runner rather than about the task"
+    ),
+)
 
 
+@windows_only
 @pytest.mark.parametrize("task", TASKS, ids=lambda t: t.task_id)
 def test_the_naive_answer_fails_the_checker(task, tmp_path):
     workdir = tmp_path / f"{task.task_id}-naive"
@@ -160,6 +182,7 @@ def test_the_naive_answer_fails_the_checker(task, tmp_path):
     assert result.passed is False, f"{task.task_id}: naive answer PASSED -> {result.evidence}"
 
 
+@windows_only
 @pytest.mark.parametrize("task", TASKS, ids=lambda t: t.task_id)
 def test_the_informed_answer_passes_the_checker(task, tmp_path):
     workdir = tmp_path / f"{task.task_id}-informed"
@@ -170,6 +193,7 @@ def test_the_informed_answer_passes_the_checker(task, tmp_path):
     assert result.passed is True, f"{task.task_id}: informed answer FAILED -> {result.evidence}"
 
 
+@windows_only
 @pytest.mark.parametrize("task", TASKS, ids=lambda t: t.task_id)
 def test_doing_nothing_fails_the_checker(task, tmp_path):
     """A session that produces nothing must score as failure.
