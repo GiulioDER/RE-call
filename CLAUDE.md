@@ -213,6 +213,17 @@ guard. Add that assertion to any hook you write.
   reading, grepping or committing a message about a benchmark is untouched, and it enforces only
   "nothing is uncommitted"; it cannot verify a record exists for your specific question, and says
   so rather than implying otherwise. Escape: the bare word `ALLOW_UNREGISTERED_MEASUREMENT`.
+- **`git_clone_race_guard.py`** denies a commit onto the default branch, and a push of a branch
+  that is not the one checked out, because a second session sharing a clone can move the working
+  tree between your `checkout -b` and your `commit`. **A tag is exempt**: it names an object
+  directly and has no working tree to disagree with, and refusing one broke every signed release
+  until 2026-08-22. A name that is both a tag and a branch stays guarded, since git itself refuses
+  that push as ambiguous. Escape: a trailing `# RACE_GUARD_OK`.
+
+  ⚠️ It runs **before** the command, so creating and pushing a tag in one compound command is
+  still refused: at that moment the tag does not exist and the guard cannot tell it from a branch.
+  Tag in one command, push in the next.
+
 - **`test_receipt.py`** records what each test run in this session actually reported, and prints
   it back at `git push` time: counts, age, and the command. It does not block. It exists because
   "I ran the tests" and "the tests ran" have been different things here, and because a run with

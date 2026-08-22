@@ -358,6 +358,14 @@ jobs:
       - name: SessionEnd hook
         run: python scripts/session_end_hook_tests.py
 
+      # ⛔ This guard had no source and no tests until 2026-08-22: it lived only in
+      # `~/.claude/hooks/` while denying commits and pushes in every repository on the machine,
+      # and it refused EVERY tag push, which is how every signed release here is made. Its
+      # deployed-copy assertion is skipped on a runner, where nothing is deployed; the rest of
+      # the file is what CI is for.
+      - name: git clone race guard
+        run: python scripts/git_clone_race_guard_tests.py
+
       # Git Bash, which windows-latest ships. This suite covers session-space.sh,
       # the shell half of the same guard, including the claim-lock atomicity that
       # `set -C` silently failed to provide.
