@@ -102,5 +102,8 @@ Sizing by simulation from pilot variance, 80% power at a true +0.10.
 
 ## Where the new repo lives
 
-Local scaffold: `C:\Users\gde00\Documents\agent-memory-bench` (GitHub org and name await the
-user's confirmation before anything is pushed).
+🔁 Corrected 2026-08-22, same day: **public at https://github.com/GiulioDER/agent-memory-bench**,
+local checkout `C:\Users\gde00\Documents\agent-memory-bench`. The user chose their personal
+account over a neutral org, deliberately: a one-member org created for the purpose reads as
+astroturfing, and the README's disclosure paragraph is the honesty mechanism. This section
+previously said the org and name awaited confirmation.
