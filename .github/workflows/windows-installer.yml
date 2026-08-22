@@ -73,6 +73,12 @@ jobs:
       - name: Prove the bundle is complete
         # ⛔ Not `--help`, which exits at argparse before reaching a single lazily imported module.
         # This builds the window off-screen and imports the engine the first click would reach.
+        #
+        # 🔁 **And it now builds that window through the SHIPPED launcher, which it did not before.**
+        # 0.9.7 passed this step and then died on launch for every user: `install_main` constructed
+        # the window before the `QApplication` existed, Qt aborted the process, and the self-test
+        # never saw it because the self-test made its own application first. A check that rehearses
+        # its own launch sequence tests the rehearsal. See `recall/desktop/ui.py`.
         env:
           QT_QPA_PLATFORM: offscreen
         run: .\dist\recall-install\recall-install.exe --selftest
