@@ -131,6 +131,16 @@ Changelog = "https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md"
 recall = "recall.cli:main"
 recall-enterprise = "recall.enterprise_cli:main"
 recall-mcp = "recall_mcp.server:main"
+# The session hooks, as a script rather than only as `python -m recall_hooks`.
+#
+# ⚠️ This exists so the Claude Code PLUGIN can invoke them. A plugin's `hooks.json` is written
+# once and shipped to every user, so it cannot name an interpreter: `recall.claude_code`
+# hardcodes `sys.executable` at install time precisely because it knows the machine, and a plugin
+# never does. Bare `python` is not a substitute, since it resolves to whatever is first on PATH,
+# which on a machine with a venv is routinely an interpreter recall is not installed into.
+# A console script is placed beside `recall` and `recall-mcp` by the same installer, so if one of
+# those resolves this one does too.
+recall-hooks = "recall_hooks:main"
 recall-desktop = "recall.desktop.main:main"
 # The graphical installer. A separate script rather than a flag on `recall-desktop`, because the
 # person who needs it does not have an install yet and therefore has nothing for that app to open.

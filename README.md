@@ -345,6 +345,21 @@ Operational safety notes:
 
 ## MCP
 
+**On Claude Code, the plugin does all of this for you**, including the hooks and a skill that
+teaches Claude when to search:
+
+```
+/plugin marketplace add GiulioDER/RE-call
+/plugin install recall@re-call
+```
+
+It asks for a DSN, a tenant and a trust mode, and keeps the DSN in your OS keychain rather than in
+`settings.json`. You still need a database first, which is what `recall quickstart` above is for.
+See [plugin/README.md](plugin/README.md).
+
+The rest of this section is the manual wiring, for other clients and for anyone who wants to see
+what the plugin writes.
+
 The MCP server uses the default `chunks` table. Apply that schema for the embedder the server will
 run, then point the client at `recall_mcp.server`.
 
