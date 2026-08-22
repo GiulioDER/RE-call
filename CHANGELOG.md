@@ -8,6 +8,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.9.8] (2026-08-22)
+
 ### Added
 
 * **`recall calibration drift` says whether the corpus under a live calibration has moved far
@@ -80,6 +82,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   working directory, and the terminal interview reports it as a refusal instead of a traceback.
 - **`corpus_version` may no longer begin with `desktop-`.** That prefix decides which generations
   the desktop upload path abandons; a wizard corpus carrying it would have been reclaimed.
+
+
+
+* ⛔ **The graphical installer could not open its own window, and 0.9.7 shipped that way.**
+  `install_main` called `run_window(InstallerWindow(...))`. Python evaluates an argument before the
+  call, so the window was constructed before `run_window` had created the `QApplication` it needs.
+  Qt answers a widget built with no application by printing `QWidget: Must construct a QApplication
+  before a QWidget` and aborting the process on its fatal handler: one line of stderr, no window,
+  no dialog, exit `0xC0000409`. Every copy of the 0.9.7 installer did this, on every machine.
+  `run_app` had the identical call shape, so the main desktop window carried the same defect.
+
+  `run_window` now takes a **factory** rather than a window, so the application is created first and
+  the ordering cannot be decided at a call site. Passing an already-built widget raises a `TypeError`
+  naming the mistake instead of killing the process.
+
+* ⛔ **The self-test that exists to prove the bundle runs was green for that build, and now cannot
+  be.** `--selftest` constructed its own `QApplication` and then its own window, in the correct
+  order, which is not the order the entry point used. It rehearsed a launch sequence nothing ships.
+  Every desktop test in the suite had the same shape, and not by carelessness: once any test in a
+  pytest session creates a `QApplication` it cannot be unmade, so no in-process test can observe a
+  process that has none. The self-test now builds its window through `application_and_window`, the
+  same code the entry point orders its launch with, and `tests/test_desktop_launch_order.py` adds a
+  check that starts the real entry point in a **fresh interpreter** and asserts on the exit code,
+  which is the only thing here that reproduces a double-click.
 
 
 ## [0.9.7]
