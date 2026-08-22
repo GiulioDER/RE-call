@@ -114,7 +114,7 @@ def test_the_policy_declares_the_frozen_zone_and_its_marker_still_exists() -> No
     `frozen_line` raises in that case rather than checking the zone, and this asserts the declared
     markers are all still present, so the raise is a real backstop and not the normal path.
     """
-    exempt, zones = citations.load_policy()
+    exempt, zones, _per_citation = citations.load_policy()
     assert zones, "the frozen-zone declaration disappeared from docs/citation-policy.toml"
     for zone in zones:
         doc = REPO / zone["path"]
@@ -124,6 +124,36 @@ def test_the_policy_declares_the_frozen_zone_and_its_marker_still_exists() -> No
     assert exempt, "the exemption list disappeared"
     for rule in exempt:
         assert rule.get("reason"), f"exemption without a stated reason: {rule['path']}"
+
+
+def test_a_citation_the_policy_freezes_is_not_reported_while_its_neighbours_are() -> None:
+    """Per CITATION, not per file: the rest of the live zone must keep failing the build.
+
+    This is the case a whole-file exemption gets wrong. `2026-08-18-extraction-attestation.md`
+    tracks its own drift in a `| Cited | Was | Is now |` table, where the first column is the
+    pointer the prediction registered and the third is maintained. Freezing the document would
+    stop checking the third; freezing nothing forces an edit to the first.
+    """
+    rules = [{"path": "docs/example.md", "citations": ["recall/index.py:787"]}]
+    frozen = citations.frozen_citations_for("docs/example.md", rules)
+    assert "recall/index.py:787" in frozen
+    assert "recall/index.py:814" not in frozen
+    assert citations.frozen_citations_for("docs/other.md", rules) == frozenset()
+
+
+def test_every_frozen_citation_names_a_document_that_exists_and_a_reason() -> None:
+    """A policy entry for a renamed document silently protects nothing."""
+    _exempt, _zones, per_citation = citations.load_policy()
+    for rule in per_citation:
+        assert (REPO / rule["path"]).exists(), f"policy names a missing document: {rule['path']}"
+        assert rule.get("reason"), f"frozen citations without a stated reason: {rule['path']}"
+        assert rule.get("citations"), f"frozen_citations entry with no citations: {rule['path']}"
+        body = (REPO / rule["path"]).read_text(encoding="utf-8")
+        for cited in rule["citations"]:
+            assert f"`{cited}`" in body, (
+                f"{rule['path']} no longer contains the frozen citation `{cited}`; the policy "
+                "entry is stale and is protecting nothing"
+            )
 
 
 def test_a_vanished_marker_refuses_rather_than_passing() -> None:

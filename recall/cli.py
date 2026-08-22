@@ -28,6 +28,7 @@ from recall.index import (
     chunk_code,
     chunk_text,
 )
+from recall.index_lock import ConcurrentIndex
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.retriever import DocumentExpansionPolicy
@@ -1360,6 +1361,15 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="do not record the repository's HEAD on each chunk. The commit is what makes a stale "
              "chunk DETECTABLE rather than merely suspected, and it cannot be reconstructed later.",
+    )
+    p_index.add_argument(
+        "--batch-chunks",
+        type=int,
+        default=None,
+        help="chunks to embed per batch. Bounds the embedder's peak allocation: fastembed pads a "
+             "batch to its longest member, so a large batch of long chunks asks onnxruntime for "
+             "gigabytes and fails PARTWAY THROUGH a run. Defaults to RECALL_INDEX_BATCH_CHUNKS if "
+             "the host sets one, else 512.",
     )
     p_index.add_argument(
         "--allow-prune",
@@ -2883,11 +2893,16 @@ def main(argv: list[str] | None = None) -> None:
                 allow_prune=args.allow_prune,
                 project=args.project,
                 indexed_commit=commit,
+                batch_chunks=args.batch_chunks,
             )
             try:
                 stats = indexer.index_path(args.path, glob=args.glob)
             except PruneGuardTripped as exc:
                 # The message carries the recovery instructions; a traceback would bury them.
+                raise SystemExit(str(exc)) from exc
+            except ConcurrentIndex as exc:
+                # Same reasoning: this is an expected outcome of two sessions closing at once,
+                # not a defect, and its message names the holder and what to do about it.
                 raise SystemExit(str(exc)) from exc
             # `files` counts what was RE-indexed, not what is in the index, so an unchanged
             # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown

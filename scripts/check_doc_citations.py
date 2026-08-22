@@ -171,11 +171,38 @@ def dirty_paths() -> frozenset[str]:
     return frozenset(paths)
 
 
-def load_policy() -> tuple[list[dict], list[dict]]:
+def load_policy() -> tuple[list[dict], list[dict], list[dict]]:
     if not POLICY.exists():
-        return [], []
+        return [], [], []
     data = tomllib.loads(POLICY.read_text(encoding="utf-8"))
-    return data.get("exempt", []), data.get("frozen_above", [])
+    return (
+        data.get("exempt", []),
+        data.get("frozen_above", []),
+        data.get("frozen_citations", []),
+    )
+
+
+def frozen_citations_for(rel: str, rules: list[dict]) -> frozenset[str]:
+    """Individual citations in `rel` that are historical even though they sit in a live zone.
+
+    ⛔ **Why this is not simply "update the number".** A document can carry BOTH readings on the
+    same page. `docs/preregistrations/2026-08-18-extraction-attestation.md` tracks its own drift in
+    a `| Cited | Was | Is now |` table below the result marker: the first column IS the pointer the
+    prediction registered, and the third is the maintained one. The live-zone rule is right about
+    the third and wrong about the first, and the standing rule this project works under says which
+    way that resolves — "a gate must never be able to force an edit to an immutable record. If the
+    checker demands one, the checker gets an exemption and the record is left alone."
+
+    Declared in `docs/citation-policy.toml` rather than inline in the document, for the reason that
+    file opens with: recording the policy inside the record would mean editing the very records
+    that exist in order to stay unedited. It is per CITATION rather than per file, so the rest of
+    the live zone keeps failing the build.
+    """
+    frozen: set[str] = set()
+    for rule in rules:
+        if rule["path"] == rel:
+            frozen.update(rule.get("citations", []))
+    return frozenset(frozen)
 
 
 def frozen_line(doc: Path, rel: str, zones: list[dict]) -> int | None:
@@ -243,7 +270,7 @@ def resolve(old_line: int, hunks: list[tuple[int, int, int, int]]) -> int | None
 
 
 def check() -> tuple[list[Finding], list[str]]:
-    exempt, zones = load_policy()
+    exempt, zones, per_citation = load_policy()
     docs = sorted({p for p in (REPO / "docs").rglob("*.md")} | set(REPO.glob("*.md")))
     findings: list[Finding] = []
     skipped: list[str] = []
@@ -289,10 +316,13 @@ def check() -> tuple[list[Finding], list[str]]:
         if not base:
             continue  # never committed, or no history for it; nothing to compare against
 
+        frozen_here = frozen_citations_for(rel, per_citation)
         for doc_line, text in enumerate(doc.read_text(encoding="utf-8").splitlines(), start=1):
             if boundary is not None and doc_line < boundary:
                 continue  # registered predictions: their citations are history, not pointers
             for m in CITATION.finditer(text):
+                if m.group(0).strip("`") in frozen_here:
+                    continue  # named in the policy as historical; see `frozen_citations_for`
                 findings.extend(check_one(rel, doc_line, m, base, cache))
     return findings, skipped
 

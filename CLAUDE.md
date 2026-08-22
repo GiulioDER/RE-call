@@ -95,6 +95,62 @@ Consequences that follow from the rule:
 - A second `docker compose up` cannot work anyway: `docker-compose.yml` binds host port 5432, so
   only one such stack can exist at a time.
 
+## Embedding: on VPS2, one at a time, bounded
+
+**Standing instruction from the user, given 2026-08-22.** Three rules, and the reason each one is a
+mechanism rather than advice.
+
+### 1. Embedding runs on VPS2, not on this workstation
+
+The corpus the MCP servers answer from lives on VPS2, and until today the model ran HERE and only
+the rows crossed the network. That was a considered choice and it was wrong on the binding
+constraint: this workstation has 12 GB of RAM with roughly 5 GB free, VPS2 has 48 GB with 35 GB
+free (measured 2026-08-22, `ssh vps2 free -m`), and what actually killed a run was an onnxruntime
+`bad allocation` on the 987 memo store, not CPU. CPU was the thing the old note optimised for.
+
+```bash
+cd ~/.claude/recall-vps2 && bash sync_memstores.sh     # ship the files
+bash index_memory_vps2.sh                              # embed THERE, under the guards below
+```
+
+The one local corpus that stays local is the `recall-dogfood` container on port 5433, because its
+database is on this machine and shipping vectors to it from VPS2 would be the same trip backwards.
+It is small, and it is the exception that has to be named out loud rather than assumed.
+
+### 2. Never two indexers against one corpus, and the check comes first
+
+`recall.index_lock.single_writer` holds a session-scoped Postgres advisory lock keyed on
+`(table, tenant)` for the whole of `Indexer.index_path`, so every caller is covered: the CLI, the
+`SessionEnd` hook through `recall.setup.index_memory_directory`, and any script that builds its own
+`Indexer`. A second run polls for 20 seconds and then REFUSES, naming the holder's host and pid.
+
+It cannot go stale: a session lock dies with its backend, so a killed indexer leaves nothing behind
+and there is no `--force` to get wrong. Escape hatch, for two runs you have confirmed are disjoint:
+`RECALL_INDEX_ALLOW_CONCURRENT=1`, which logs a warning naming itself.
+
+Two indexers are not merely untidy. `index_path` reads "what is already indexed" once, decides what
+to skip, and prunes what is no longer on disk; interleave two of those and the second replaces rows
+the first has just written and decided to skip.
+
+### 3. Never two embedding processes on the embedding host
+
+The advisory lock serialises indexing into one corpus. It knows nothing about an embedding run that
+writes nowhere (a benchmark, a calibration), and those share the host's memory rather than the
+corpus. On VPS2 that is a `flock` on `~/recall-repos/.locks/embed.lock`, taken by
+`bin/index_memory.sh`, which reports who holds it rather than queueing behind them.
+
+### 4. What bounds the memory, since VPS2 also runs live trading services
+
+| Bound | Where | Why |
+|---|---|---|
+| `RECALL_INDEX_BATCH_CHUNKS=64` | VPS2's `~/recall-repos/.env` | fastembed pads a batch to its longest member, so 256 long chunks ask onnxruntime for 4.3 GB. 64 survived the longest documents in this corpus. |
+| `MemoryMax=8G`, `MemorySwapMax=0` | the `systemd-run --scope` in `bin/index_memory.sh` | a cgroup limit is enforced by the KERNEL against the whole process tree, so the job is killed rather than the host |
+| `CPUQuota=250%`, `nice -n 15` | same scope | thread caps do not work: `OMP_NUM_THREADS=3` still measured 515% CPU and `taskset -c 9-11` still measured 479%, because onnxruntime sizes its own pool and re-pins its own threads |
+
+⛔ `RECALL_FASTEMBED_BATCH` is named as the fix in older notes and is read NOWHERE in this package.
+Exporting it is a no-op. `RECALL_INDEX_BATCH_CHUNKS` is the knob that exists, and `recall index
+--batch-chunks` is its per-run form.
+
 ## MCP servers
 
 `scripts/session-mcp.sh` generates `.mcp.json` **and records the client's approval for it**. Run it

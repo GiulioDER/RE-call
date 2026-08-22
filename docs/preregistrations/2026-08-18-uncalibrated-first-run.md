@@ -123,7 +123,7 @@ this repository is not always true.
 
 ⚠️ Citations **above** this rule are left exactly as registered, because a prediction is a
 historical record and must not be edited. One of them has since moved: `recall/index.py` line 707, cited
-in "What I already know" for the metadata stamp, is `recall/index.py:861` at the time of writing.
+in "What I already know" for the metadata stamp, is `recall/index.py:924` at the time of writing.
 
 ## Reproducing any of this
 
@@ -146,12 +146,12 @@ throughout, which is *why* embedding was kept local, not evidence that it was.
 
 ### Verification census
 
-Every source read exactly as `recall/index.py:722` reads a markdown source
+Every source read exactly as `recall/index.py:785` reads a markdown source
 (`read_text(encoding="utf-8-sig")`, universal newlines, then `_strip_nul`, then
-`sha256(text.encode("utf-8"))` at `recall/index.py:741`). A `sha256sum` over raw bytes would have
+`sha256(text.encode("utf-8"))` at `recall/index.py:804`). A `sha256sum` over raw bytes would have
 been wrong for any file with CRLF or a BOM. **Every source in this corpus is markdown**, which
 matters because `bd582316` made the derivation media type dependent: a non markdown source is
-hashed as raw bytes instead (`recall/index.py:743`).
+hashed as raw bytes instead (`recall/index.py:806`).
 
 | Bucket | Sources | Chunks |
 |---|---:|---:|
@@ -235,7 +235,7 @@ track the model at all:
   `name='BAAI/bge-large-en-v1.5' dim=1024 profile_id='bge-small-symmetric-v1'`.
 
 `index_fingerprint` inherits the defect, because `_index_fingerprint` hashes
-`embedding_profile_id(embedder)` (`recall/index.py:477`). So **neither stored field can identify the
+`embedding_profile_id(embedder)` (`recall/index.py:515`). So **neither stored field can identify the
 model**, and two different unregistered models of equal width would compare equal.
 
 The consequence for the design is a promotion, not a retreat: the **pipeline attestation sample is
@@ -253,7 +253,7 @@ rows already written.
 🔁 **The second half was fixed the same day by #381**, and the sentence above about
 `_index_fingerprint` is now a record of the measured tree rather than of the code. It no longer
 hashes `embedding_profile_id(embedder)`: `79a0d6ed` widened it to
-`embedding_profile(embedder).fingerprint()` (`recall/index.py:477`), which covers `model_name` and
+`embedding_profile(embedder).fingerprint()` (`recall/index.py:515`), which covers `model_name` and
 `dimension`, so two different unregistered models of equal width no longer compare equal. The
 citation is kept pointing at that call site because it is the same position in the tuple, but the
 expression it names has changed, which is why this note exists rather than a silent renumber.
