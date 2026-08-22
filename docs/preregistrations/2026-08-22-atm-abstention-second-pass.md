@@ -178,3 +178,115 @@ else in the run is read.
 ## Result
 
 Not yet measured at the time this record was committed.
+
+---
+
+## Result (2026-08-22)
+
+**Status:** measured. Every prediction above is unedited. 170 provider calls, zero judge calls,
+zero dollars of judge credit. Both arms generated on the same day against the same model alias,
+over byte-identical evidence rebuilt by the packer of `6c0ec26b`.
+
+Apparatus verified before the outcome was read, all three checks passing: my scoring path
+reproduces the saved official per-question accuracy on all **499** deterministic questions with
+**zero mismatches**, per-type 0.7278 and 0.5983 as the record required; all **85** selected
+questions re-score to exactly 0.0000; **zero** of 85 rebuilt evidence blocks disagree with the
+identifiers in `retrieval.jsonl`.
+
+| arm | n | score | `number` | `list_recall` | re-abstention | over 200 chars | exactly right |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline | 85 | 0.0000 | 0.0000 | 0.0000 | 1.000 | 0.000 | 0 |
+| control | 85 | 0.1176 | 0.1132 | 0.1250 | 0.776 | 0.012 | 10 |
+| **treatment** | 85 | **0.2853** | 0.2453 | 0.3516 | **0.447** | 0.024 | 24 |
+
+**Treatment minus control: +0.1676, 95% paired bootstrap [+0.0853, +0.2559], which excludes zero.**
+16 questions improved, 1 worsened, 68 tied.
+
+### A registered falsifier fired, so the arm is not promotable as specified
+
+**Treatment re-abstention is 44.7% against a registered ceiling of 20%.** By the criteria written
+before the run, that invalidates the arm regardless of what the score did, and it is recorded here
+before the number that looks good.
+
+What the falsifier does **not** say, and what has to be stated beside it: re-abstention fell from
+100% at baseline and 77.6% in the control to 44.7%, so the mechanism moved by 33 points against its
+own control. The threshold I registered was an absolute level, and the informative version would
+have been relative to the control arm, which did not exist when the threshold was written. **The
+prediction stands as written and is not edited.** The lesson is about how the falsifier was framed,
+not about whether it fired.
+
+### Predicted against measured
+
+| Prediction | Predicted | Measured | Verdict |
+| --- | --- | ---: | --- |
+| Control mean score | 0.00 to 0.10 | **0.1176** | **falsified, high** |
+| Control re-abstention | above 70% | 77.6% | held |
+| Treatment mean score | 0.12 to 0.28 | **0.2853** | **falsified, high** |
+| Treatment minus control | +0.10 to +0.25 | **+0.1676** | **held** |
+| Treatment re-abstention | below 20% | **44.7%** | **falsified, and it is the registered falsifier** |
+| Treatment `number` | 0.10 to 0.25 | 0.2453 | held |
+| Treatment `list_recall` | 0.15 to 0.35 | 0.3516 | held, one thousandth outside |
+| Treatment answers over 200 chars | below 5% | 2.4% | held |
+
+**Two magnitudes were under-predicted, which has not happened before in this study.** The standing
+calibration note says every falsified magnitude here has been too high by two to four times, across
+eleven predictions. This is the first record in which the measured effect exceeded the registered
+band, and it did so on both arms at once. The band was derived from the 45-question answerability
+ceiling and a quarter-to-half discount; the discount was too aggressive for an intervention that
+changes a decision rather than a description.
+
+### The control arm earned its 85 calls
+
+It carries **0.1176 of the 0.2853 by itself, 41% of the raw gain**, without a single word of the
+treatment framing. Had the arm been run alone, as the research report proposed this morning, the
+whole +2.39 QS would have been attributed to the framing. The framing's own share is:
+
+| quantity | QS on the full 1,013 split |
+| --- | ---: |
+| treatment arm, total | +2.39 |
+| control alone, re-ask with the unchanged prompt | +0.99 |
+| **framing only** | **+1.41, CI [+0.72, +2.15]** |
+
+The control's own gain is not attributable here. Re-ask nondeterminism at temperature 0 with
+reasoning enabled, and drift in the moving `deepseek/deepseek-v4-pro` alias between 2026-08-21 and
+today, are both consistent with it and this design cannot separate them.
+
+### The mechanism check, which the falsifier does not cover
+
+Splitting the 85 by whether at least 80% of the gold answer's content tokens were inside the
+evidence block the model received:
+
+| | n | control | treatment | delta |
+| --- | ---: | ---: | ---: | ---: |
+| gold on screen | 46 | 0.1957 | 0.4565 | **+0.2609** |
+| gold not on screen | 39 | 0.0256 | 0.0833 | +0.0577 |
+
+**The gain is 4.5 times larger where the answer was actually available.** That is the difference
+between a system that decides and a system that guesses, and it was not a registered prediction.
+
+The second piece of the same evidence: the treatment committed to an answer on **47** of 85
+questions against the control's **19**, and the share of committed answers that are exactly right is
+**51.1% against 52.6%**. Volume rose by 2.5 times at unchanged precision. On the 32 `list_recall`
+questions, answers emitting no usable identifier fell from 26 to 15, exact set matches rose from 4
+to 11, and invented items fell from 36 to 27.
+
+### Cost
+
+| arm | calls | prompt tokens | completion tokens | truncations |
+| --- | ---: | ---: | ---: | ---: |
+| control | 85 | 199,055 | 45,689 | 0 |
+| treatment | 85 | 204,785 | 68,099 | 0 |
+
+### What this does and does not establish
+
+1. **It does not establish a promotable intervention.** A registered falsifier fired. The next
+   record must re-register the re-abstention criterion relative to a control, and must measure the
+   downside this arm structurally cannot see: all 23 gold-abstention questions are `open_end`, so
+   the 1.68 QS at risk was never exposed here.
+2. **The `qtype` confound is unresolved and bounds the QS figure.** The 85 were chosen by an
+   answer-side contract, but restricted to two types using the gold file. Every QS number above
+   assumes a question-form router that does not yet exist.
+3. **What it does establish** is that the largest measured mechanism on this benchmark responds to
+   an intervention at all, after two prompt-level attempts, H17 and H21, that produced nothing and
+   harm. The effect is present, its interval excludes zero, and it concentrates where the evidence
+   is, which is the shape a real effect has.
