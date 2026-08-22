@@ -80,7 +80,13 @@ def kill_tree(process: subprocess.Popen) -> None:
 
     if process.poll() is not None:
         return
-    if os.name == "nt":
+    # `sys.platform`, not `os.name`, and the difference is not stylistic: mypy narrows on
+    # `sys.platform` and so drops the POSIX branch when checking for Windows and the Windows
+    # branch when checking for Linux. With `os.name` it checks both everywhere and reports
+    # `os.killpg`, `os.getpgid` and `signal.SIGKILL` as missing on Windows, which is true and
+    # unfixable by an ignore comment: `warn_unused_ignores` would then fail the CI run, which
+    # type-checks on ubuntu where those attributes exist.
+    if sys.platform == "win32":
         subprocess.run(  # noqa: S603,S607 - argv list, no shell
             ["taskkill", "/T", "/F", "/PID", str(process.pid)],
             capture_output=True,
@@ -127,7 +133,7 @@ def run_bounded(
         text=True,
         encoding="utf-8",
         errors="replace",
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
     )
     timed_out = False
     try:

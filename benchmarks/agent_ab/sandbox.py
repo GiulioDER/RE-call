@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 
 from .checkers._run import git
@@ -40,7 +41,7 @@ ORACLES = PACKAGE_ROOT / "oracles"
 EXCLUDED = frozenset({".git", "__pycache__", ".pytest_cache", ".ruff_cache"})
 
 
-def _iter_files(root: Path):
+def _iter_files(root: Path) -> Iterator[Path]:
     for path in sorted(root.rglob("*")):
         if any(part in EXCLUDED for part in path.relative_to(root).parts):
             continue
