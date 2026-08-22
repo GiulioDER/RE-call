@@ -1,0 +1,161 @@
+{
+  "_provenance": {
+    "generation": "post-#81/#84",
+    "status": "current",
+    "note": "ATM-Bench full split, 1,013 questions, run 2026-08-21 on an isolated index (tenant atm-bench-voyage4-20260819). QS and the per-type accuracies are the official evaluator's own summary, copied verbatim; the retrieval figures are recomputed here from the run's retrieval.jsonl against the released ground truth, and reproduce the numbers reported at submission time exactly. The run commit 6c0ec26b is not yet on a public branch; see docs/ATM_BENCH.md.",
+    "backs": [
+      "docs/ATM_BENCH.md",
+      "README.md ATM-Bench row",
+      "docs/EVIDENCE.md ATM-Bench row"
+    ],
+    "superseded_by": null
+  },
+  "benchmark": "ATM-Bench",
+  "split": "full",
+  "run_date": "2026-08-21",
+  "run_id": "voyage4-deepseek-full-preregistered-final-20260821",
+  "question_count": 1013,
+  "corpus_items": 11034,
+  "cost_claims": [],
+  "official_score": {
+    "count": 1013,
+    "weighted_correct": 693.1595238095239,
+    "qs": 0.6842640906313168,
+    "qs_percent": 68.42640906313167,
+    "by_qtype": {
+      "number": {
+        "count": 360,
+        "weighted_correct": 262.0,
+        "qs": 0.7277777777777777,
+        "qs_percent": 72.77777777777777
+      },
+      "list_recall": {
+        "count": 139,
+        "weighted_correct": 83.15952380952379,
+        "qs": 0.5982699554641999,
+        "qs_percent": 59.826995546419994
+      },
+      "open_end": {
+        "count": 514,
+        "weighted_correct": 348.0,
+        "qs": 0.6770428015564203,
+        "qs_percent": 67.70428015564202
+      }
+    }
+  },
+  "llm_only_diagnostic": {
+    "count": 1013,
+    "weighted_correct": 694,
+    "qs": 0.6850937808489634,
+    "qs_percent": 68.50937808489634,
+    "by_qtype": {
+      "number": {
+        "count": 360,
+        "weighted_correct": 259.0,
+        "qs": 0.7194444444444444,
+        "qs_percent": 71.94444444444444
+      },
+      "list_recall": {
+        "count": 139,
+        "weighted_correct": 86.0,
+        "qs": 0.6187050359712231,
+        "qs_percent": 61.87050359712231
+      },
+      "open_end": {
+        "count": 514,
+        "weighted_correct": 349.0,
+        "qs": 0.6789883268482491,
+        "qs_percent": 67.89883268482491
+      }
+    }
+  },
+  "retrieval": {
+    "count": 1013,
+    "recall_at_10": 0.928923988153998,
+    "recall_at_10_percent": 92.8923988153998,
+    "recall_at_10gt": 0.8696939782823297,
+    "recall_at_10gt_percent": 86.96939782823297,
+    "by_qtype": {
+      "number": {
+        "count": 360,
+        "recall_at_10": 0.9305555555555556,
+        "recall_at_10_percent": 93.05555555555556,
+        "recall_at_10gt": 0.8666666666666667,
+        "recall_at_10gt_percent": 86.66666666666667
+      },
+      "list_recall": {
+        "count": 139,
+        "recall_at_10": 0.8992805755395683,
+        "recall_at_10_percent": 89.92805755395683,
+        "recall_at_10gt": 0.8345323741007195,
+        "recall_at_10gt_percent": 83.45323741007195
+      },
+      "open_end": {
+        "count": 514,
+        "recall_at_10": 0.9357976653696498,
+        "recall_at_10_percent": 93.57976653696498,
+        "recall_at_10gt": 0.8813229571984436,
+        "recall_at_10gt_percent": 88.13229571984436
+      }
+    }
+  },
+  "joint_at_10": 0.6356293280198115,
+  "joint_at_10_percent": 63.562932801981155,
+  "config": {
+    "embedder": "voyage:voyage-4-large",
+    "reranker": "voyage:rerank-2.5",
+    "sparse_backend": "lexical",
+    "candidate_k": 25,
+    "retrieval_k": 10,
+    "evidence_chars": 8192,
+    "answer_model": "deepseek/deepseek-v4-pro",
+    "answer_route": "https://openrouter.ai/api/v1",
+    "reasoning": {
+      "enabled": true,
+      "requested_effort": "medium",
+      "effective_deepseek_effort": "high"
+    },
+    "max_output_tokens": 1024,
+    "truncation_retry_max_output_tokens": 16384,
+    "truncation_retry_count": 69,
+    "recall_commit": "6c0ec26b",
+    "tenant": "atm-bench-voyage4-20260819"
+  },
+  "usage": {
+    "calls": 1082,
+    "prompt_tokens": 2422315,
+    "completion_tokens": 464532,
+    "total_tokens": 2886847
+  },
+  "judge": {
+    "evaluator": "memqa/utils/evaluator/evaluate_qa.py",
+    "evaluator_sha256": "5eba32982c55be525ca32cad5af2c1f63714c463b3d1f43a3d8eb304b91950d1",
+    "model": "openai/gpt-5-mini",
+    "fallback_model": "openai/gpt-4o-mini",
+    "fallback_rows_observed": 0,
+    "transport": "openrouter",
+    "transport_is_official": false,
+    "transport_disclosure": "The official evaluator, its prompt and the gpt-5-mini judge identity were kept unchanged; only the HTTP endpoint differed. Disclosed in the leaderboard pull request and not yet ruled on by the maintainers."
+  },
+  "submission": {
+    "leaderboard": "https://github.com/atmbench/atmbench.github.io",
+    "pull_request": "https://github.com/atmbench/atmbench.github.io/pull/2",
+    "opened": "2026-08-21",
+    "state_as_of_2026-08-22": "open",
+    "row_type": "RAG"
+  },
+  "data_sha256": {
+    "atm-bench.json": "ab6eaa9df62fb4162e0f5eecd98768a7e3ae721e32d2db2cf227ff41e3295762",
+    "batch_results.json": "88ed14ce32afde1a4d54d5b77a0e7f84305b543186307be6c9bc34119342727a",
+    "emails.json": "5c82c38e7f18923a9eba3af321663a8a5bd70e94e0d5e59e987141c71219a8af"
+  },
+  "package_sha256": {
+    "manifest.json": "a68242a844bde502fe515a97462a822d6563c1c38eb31a9de76c3bb4a3abbec3",
+    "answers.jsonl": "14c76abf8c25e35cbd82e36a6ecb3b82917fb4794fbe4a08ae9f31b6c9a64580",
+    "retrieval.jsonl": "2bbb7490cbbafb1db6d45382baf0c536a6366fe7036b031a6a84ac32d71a7270",
+    "official_eval/atm_openai_gpt-5-mini.json": "35cfee513cbe2df5b646d32ce7c0faa149548fc15d30148b661b2f98673f8dfc",
+    "official_eval/atm_openai_gpt-5-mini_summary.json": "b9e48ac95dc361f3c5f0fb7d4f65ab8706dedfdaef631c8d971516331d3f5073",
+    "official_eval/llm_judge_openai_gpt-5-mini.json": "c46fb55c601fdb8d3384f1e0c6419887f92e8f61640e3e95374bb81f02455228",
+    "official_eval/llm_judge_openai_gpt-5-mini_summary.json": "fdb3426ca1ea84895173bf5ca19a1cce980460066095861f001bae63d78717c1"
+  }
+}

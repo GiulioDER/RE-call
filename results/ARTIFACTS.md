@@ -109,6 +109,24 @@ in the same file scores as a miss.
 | `enterprise_rag/dense_floor_probe_width.json` | the evidence that `query_dense(k=1)` under-reports, which is why the artifact above was re-measured. One query vector per question, scored at k=1 and at k=200, over the same 100 questions as that artifact. `k=1` never trips the `hnsw.ef_search` widening in `recall/store.py`, so it walks at ef_search=40 while k=200 walks at 800, and the same file records 0.385 recall at 40 against 0.942 at 200. **31 of 100 disagree, worst under-report 0.2234, and 4 questions have their floor verdict flipped by probe width alone.** ⚠️ **The narrow probe is not stable either.** An earlier run of this same comparison, same vectors and same index, returned 25 disagreements and 3 flips rather than 31 and 4. Two draws of an unstable instrument, which is a stronger reason to widen it than the bias alone |
 | `store_latency/chunks_20k/splits.json` | the per-leg latency split behind the store-share figure — embed / dense / sparse / meta / fusion / rerank at 20,050 chunks, the evidence for whether a store backend swap could pay for itself. ⚠️ **SYNTHETIC corpus**, so the sparse leg does NOT generalise: `9a5165b` measured sparse median 496 ms on a real 72k-chunk corpus where this measures single-digit ms. Latency is the most host-dependent quantity here — read `stack` and `generated_at` before comparing it to anything. **Supersedes an earlier UNSTAMPED run of the same configuration**, whose figures (271.6 ms dense, 91.3%, 2.9%) appear in commit `66459ae`'s message and are reproducible from no file in the tree; superseded, not retracted — the shares agree to within 0.31 points |
 
+### ATM-Bench: the full split, scored by the benchmark's own evaluator
+
+| artifact | backs |
+|---|---|
+| `atm/atm_bench_full_20260821.json` | [`docs/ATM_BENCH.md`](../docs/ATM_BENCH.md), the README's ATM-Bench row and the ATM row in `docs/EVIDENCE.md`. QS **68.4264** and the three per-type accuracies are the official evaluator's own `atm_openai_gpt-5-mini_summary.json`, copied without edit; the retrieval figures (**Recall@10 92.8924**, Recall@10GT 86.9694) are recomputed from the run's `retrieval.jsonl` against the released ground truth and reproduce the submitted values to four decimals. ⚠️ **Three limits travel with these numbers and are recorded inside the file.** The judge kept the official prompt and the `gpt-5-mini` identity but ran over an **OpenRouter transport**, disclosed to the maintainers and not yet ruled on (`judge.transport_is_official` is `false`). The QS column is **not answer-model-matched** to the published baselines. And the leaderboard row is an **open pull request**, not an accepted placement. |
+
+The per-question payloads (`answers.jsonl`, `retrieval.jsonl`, the two full judge outputs) are
+archived outside this tree, per the policy at the top of this file. The artifact carries their
+SHA-256 checksums under `package_sha256`, the four dataset hashes under `data_sha256`, and the
+evaluator file hash under `judge.evaluator_sha256`, so an auditor handed the package can prove it is
+the one these numbers came from.
+
+⛔ **The commit that produced the run, `6c0ec26b`, is not on a public branch.** The configuration is
+fully recorded in `config`, and the harness is published on
+`claude/atm-answer-selection-public`, but its runner differs from the one used here. A byte-exact
+re-execution from public code is therefore not possible today, and the artifact says so in its
+`_provenance.note` rather than leaving a reader to discover it.
+
 ### The Mem0 head-to-head — the table that had no artifact until 2026-08-06
 
 This section is the one this file was missing. §9d, the five-row paired comparison against Mem0, is

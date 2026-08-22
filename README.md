@@ -79,6 +79,7 @@ Measured strengths:
 |---|---|
 | Lower memory-layer cost | The LOCOMO head-to-head records no RE-call memory-layer LLM calls, while the comparator pays for extraction calls. See [benchmarks/REVIEW.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md). |
 | External abstention check | On MTRAG, IBM's multi-turn RAG benchmark, RE-call is second on correct refusals among the recomputed systems and stays near the top answer-quality rows. See [docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md). |
+| Retrieval on a third-party personal-memory benchmark | On ATM-Bench, across 1,013 <!--@ atm/atm_bench_full_20260821.json # question_count --> questions of personal memory QA, the benchmark's own evaluator scores this run at Recall@10 **92.8924** <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10_percent --> and QS **68.4264** <!--@ atm/atm_bench_full_20260821.json # official_score.qs_percent -->. The leaderboard submission is open, not accepted, the answer model is not matched to the published baselines, and both limits are stated in [docs/ATM_BENCH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/ATM_BENCH.md). |
 | Validity beats nearest-match retrieval | Declared supersession makes the current memory win over stale but similar memory. The larger trust study is in [results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md). |
 | Stronger than a plain vector store | Returned hits carry verdicts, confidence, provenance, tenant scope, and validity metadata. Plain top-k retrieval returns neighbors and leaves trust to the caller. |
 | Clear limits | The evidence states where RE-call works, where it does not, and when a corpus-specific measurement is required. |
@@ -403,6 +404,7 @@ The short version:
 | Is retrieval quality universal? | No. Corpus shape dominates, and the measured recommendation is to benchmark your corpus before choosing an embedder. |
 | Is the Mem0 comparison apples-to-apples? | The published head-to-head uses the same LOCOMO questions, generator, judge, and paired tests, with reader-tier limits stated in the benchmark review. |
 | What does MTRAG add? | A third-party multi-turn benchmark with an official judge that gives full credit for correct refusal. RE-call does not top the benchmark, and that boundary is stated in [docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md). |
+| What does ATM-Bench add? | A third-party personal-memory QA benchmark over eleven thousand email, image and video items, scored by its own evaluator, where half the questions are graded deterministically rather than by a judge. RE-call's retrieval leads the published board by a wide margin; the answer score is not answer-model-matched and the submission has not been accepted yet. Both limits are stated in [docs/ATM_BENCH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/ATM_BENCH.md). |
 
 Important benchmark documents:
 
@@ -412,6 +414,7 @@ Important benchmark documents:
 | [results/RESULTS.md](https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md) | Complete result tables. |
 | [results/ARTIFACTS.md](https://github.com/GiulioDER/RE-call/blob/master/results/ARTIFACTS.md) | Checksum and artifact map for readers auditing a claim. |
 | [docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md) | MTRAG setup, results, and scope boundaries. |
+| [docs/ATM_BENCH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/ATM_BENCH.md) | ATM-Bench official results, comparability boundaries, and where the remaining loss is. |
 | [benchmarks/REVIEW.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md) | Adversarial review of the LOCOMO comparison. |
 | [benchmarks/PREREGISTRATION.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/PREREGISTRATION.md) | Pre-registered rules for the main memory benchmark. |
 | [benchmarks/archive/preregistrations/README.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/archive/preregistrations/README.md) | Archived preregistrations for follow-up benchmark arms. |
