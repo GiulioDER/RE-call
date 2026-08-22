@@ -12,6 +12,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* **ATM-Bench full-split results are published, with their limits attached.**
+  [`docs/ATM_BENCH.md`](docs/ATM_BENCH.md) records the 2026-08-21 run over the benchmark's 1,013
+  personal-memory questions, scored by ATM-Bench's own evaluator: QS 68.4264 and Recall@10 92.8924,
+  backed by the committed artifact `results/atm/atm_bench_full_20260821.json`. The retrieval figures
+  were recomputed for publication from the run's own retrieval records and reproduce the submitted
+  values exactly.
+
+  `benchmarks/atm_answer_diagnosis.py` decomposes the answer-side loss with **zero provider
+  calls**, by aggregating the official evaluator's own per-question judgements, and refuses to
+  write its artifact unless the replay reproduces the published score. Its output,
+  `results/atm/atm_answer_diagnosis_20260822.json`, backs section 5 of the document; the whole
+  document is under the claim gate, so CI checks those digits against it.
+
+  ⛔ **This is not announced as a leaderboard placement.** The submission is an open pull request
+  rather than an accepted row, the QS column is not answer-model-matched to the published baselines,
+  the judge ran over a disclosed non-official transport, and the run commit is not yet on a public
+  branch. All four are stated in the document and recorded in the artifact.
+
 * **`recall calibration drift` says whether the corpus under a live calibration has moved far
   enough to need refitting.** Until now the drift question could only be asked *after* a rebuild:
   `resolve` compares fingerprints and answers `STALE` on any mismatch, which is a yes/no about

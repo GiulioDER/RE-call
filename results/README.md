@@ -20,6 +20,7 @@ need to audit or reproduce a number.
 | [gap/](gap/) | Embedder gap and abstention threshold studies. |
 | [ladder/](ladder/) | Answerability ladder verdicts and compact artifacts. |
 | [mtrag/](mtrag/) and [mtrag_generation/](mtrag_generation/) | MTRAG probes and generation summaries. |
+| [atm/](atm/) | ATM-Bench full-split summary, the zero-cost answer-side decomposition, checksums for the archived run package, and the submission's disclosures. |
 | [promotion/](promotion/) | Generation promotion and parity artifacts. |
 | [scale/](scale/) and [scale-pressure/](scale-pressure/) | Scale and pressure measurements. |
 | [store_latency/](store_latency/) | Store latency measurements. |

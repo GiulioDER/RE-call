@@ -478,6 +478,44 @@ def test_the_registry_values_parse_as_floats_matching_their_own_precision() -> N
 #: count and the name count are different quantities and the first is the one the +1 comes from.
 #: Either way this is the existing treatment of a name the number regex cannot tell from a figure,
 #: not a new unbacked claim.
+#:
+#: 2544 -> 2555 (+11) on 2026-08-22, arming the gate over `docs/ATM_BENCH.md` in the same change
+#: that wrote it. Verified against a regeneration diff rather than by hand: exactly one row was
+#: ADDED, no existing row changed by a single occurrence, and the branch was rebased onto
+#: `origin/master` first so the regeneration ran against the merge result (master's one intervening
+#: commit touched `site/*.html` only, so it could not have moved a row either way).
+#:
+#: 🔑 The +11 is the SMALLEST arming event in this log, and deliberately so. The document scans to
+#: 132 numeric claims and 121 of them carry a marker, so the frozen 11 are structural without
+#: exception: seven section headings (`## 1.` to `## 7.`), two occurrences of `20260821` from the
+#: artifact filename inside a relative link path, the arXiv identifier `2603.01990`, and one `0`
+#: from the harness name `Mem0` in the comparison table -- the same name-versus-figure case the
+#: 2026-08-08 entry above describes, arriving for the same reason in a different document.
+#:
+#: Compare the 2026-08-07 arming of `docs/ENTERPRISE_RETRIEVAL.md`: +93 frozen, six marked. The
+#: ratio is inverted here because that document's numbers predated the artifact convention and no
+#: `results/*.json` retained them, whereas every RE-call figure in this one resolves to
+#: `results/atm/atm_bench_full_20260821.json`. Where a figure genuinely cannot resolve it is
+#: escalated with `citation-pending` and a stated reason, not frozen: the maintainers' own
+#: leaderboard rows, the judge-transport route comparison, and the zero-cost replay behind section 5.
+#:
+#: What arming it bought, stated as the defect it would have caught: the document shipped a
+#: `list_recall` retrieval-to-QS gap of `30.1010` for a value of `30.10106...`, truncated rather
+#: than rounded on its way out of a submission report. A human caught it. `retrieval_to_qs_gap` was
+#: added to the artifact in this commit, so that cell and the three beside it now resolve, and the
+#: next truncation of one fails `resolve()` instead of needing to be noticed.
+#:
+#: 2555 -> 2556 (+1) later the same day, committing `benchmarks/atm_answer_diagnosis.py` and its
+#: artifact so section 5 of that document could stop carrying `citation-pending` and start
+#: resolving. The whole +1 is one occurrence of `20260822`, the new artifact's datestamp inside a
+#: relative link path -- the same structural class as the two `20260821` occurrences already frozen
+#: beside it. Twenty-three figures moved from `citation-pending` to a resolving marker in the same
+#: commit, which does not appear in this total at all, because neither state is unmarked.
+#:
+#: ⚠️ That regeneration is also the one to read as a WARNING about this log's usefulness: the total
+#: moved by one while the document's evidence changed substantially, so the number in this line
+#: measures almost nothing about what happened. The row-level diff is the artefact worth checking,
+#: and it is the only thing anyone should ever regenerate against.
 
 
 def test_unmarked_counts_ignores_marked_numbers() -> None:

@@ -1,0 +1,120 @@
+{
+  "question_count": 1013,
+  "qs": 0.6842640906313167,
+  "qs_percent": 68.42640906313167,
+  "qs_by_qtype": {
+    "number": 0.7277777777777777,
+    "list_recall": 0.5982699554642,
+    "open_end": 0.6770428015564203
+  },
+  "recoverable_with_complete_evidence": {
+    "points_lost": 228.2404761904762,
+    "qs_points_lost": 22.53114276312697,
+    "by_qtype": {
+      "number": {
+        "count": 360,
+        "qs": 0.7277777777777777,
+        "complete_evidence_rate": 0.8666666666666667,
+        "qs_given_complete": 0.8076923076923077,
+        "qs_given_incomplete": 0.20833333333333334,
+        "points_lost": 60.0,
+        "qs_points_lost": 5.923000987166831
+      },
+      "list_recall": {
+        "count": 139,
+        "qs": 0.5982699554642,
+        "complete_evidence_rate": 0.8345323741007195,
+        "qs_given_complete": 0.6875821018062398,
+        "qs_given_incomplete": 0.14782608695652175,
+        "points_lost": 36.240476190476194,
+        "qs_points_lost": 3.5775396041931087
+      },
+      "open_end": {
+        "count": 514,
+        "qs": 0.6770428015564203,
+        "complete_evidence_rate": 0.8813229571984436,
+        "qs_given_complete": 0.7086092715231788,
+        "qs_given_incomplete": 0.4426229508196721,
+        "points_lost": 132.0,
+        "qs_points_lost": 13.030602171767029
+      }
+    }
+  },
+  "abstention": {
+    "abstentions": 156,
+    "abstention_rate": 0.1539980256663376,
+    "abstention_rate_percent": 15.399802566633761,
+    "correct_abstentions": 17,
+    "abstentions_on_gold_abstention_questions": 17,
+    "wrong_abstentions": 139,
+    "wrong_abstention_points_lost": 139.0,
+    "wrong_abstention_qs_points_lost": 13.721618953603159,
+    "wrong_abstentions_with_complete_evidence": 92,
+    "wrong_abstentions_with_answer_on_screen": 87,
+    "gold_abstention_questions": 23,
+    "by_qtype": {
+      "number": {
+        "count": 360,
+        "abstentions": 53,
+        "abstention_rate": 0.14722222222222223,
+        "mean_score_when_abstaining": 0.0,
+        "gold_abstention_questions": 0,
+        "wrong_abstentions": 53
+      },
+      "list_recall": {
+        "count": 139,
+        "abstentions": 31,
+        "abstention_rate": 0.22302158273381295,
+        "mean_score_when_abstaining": 0.0,
+        "gold_abstention_questions": 0,
+        "wrong_abstentions": 31
+      },
+      "open_end": {
+        "count": 514,
+        "abstentions": 72,
+        "abstention_rate": 0.14007782101167315,
+        "mean_score_when_abstaining": 0.2361111111111111,
+        "gold_abstention_questions": 23,
+        "wrong_abstentions": 55
+      }
+    }
+  },
+  "abstention_separability": {
+    "measurable": true,
+    "correct_n": 17,
+    "wrong_n": 139,
+    "p_correct_below_wrong": 0.49259415996614475,
+    "correct_median": 0.5191912055015601,
+    "wrong_median": 0.5228916562465329
+  },
+  "answered_wrong_with_evidence_on_screen": {
+    "count": 117,
+    "points_lost": 114.56666666666666,
+    "qs_points_lost": 11.309641329384666,
+    "by_qtype": {
+      "number": 24,
+      "list_recall": 15,
+      "open_end": 78
+    },
+    "on_screen_threshold": 0.8,
+    "on_screen_threshold_percent": 80.0
+  },
+  "modality_floor": {
+    "count": 18,
+    "points_lost": 18.0,
+    "qs_points_lost": 1.7769002961500493,
+    "coverage_threshold": 0.5
+  },
+  "reproduces_published_qs": true,
+  "published_qs": 0.6842640906313168,
+  "cost_claims": [],
+  "_provenance": {
+    "generation": "post-#81/#84",
+    "status": "current",
+    "note": "Decomposition of the answer-side loss on the 2026-08-21 ATM-Bench full run, computed with zero provider calls by aggregating the official evaluator's own per-question judgements. Abstention and tokenisation come from the evaluator's normalizer, not from a local reimplementation. Aggregates only: no question text, no gold answer and no model answer is copied into this file, because the corpus is third-party data.",
+    "backs": [
+      "docs/ATM_BENCH.md section 5"
+    ],
+    "superseded_by": null
+  }
+}

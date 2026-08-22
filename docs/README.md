@@ -52,6 +52,8 @@ want to audit a claim or reproduce a benchmark.
 | Document | Scope |
 |---|---|
 | [RESEARCH_PROTOCOL.md](RESEARCH_PROTOCOL.md) | Rules for benchmark runs, artifact retention, and post-run review. |
+| [ATM_BENCH.md](ATM_BENCH.md) | ATM-Bench full-split results from the benchmark's own evaluator, what the numbers may be compared against, and where the remaining loss is. |
+| [MTRAG_BENCHMARK.md](MTRAG_BENCHMARK.md) | MTRAG setup, the retrieval ladder, the abstention result, and the scope boundaries on it. |
 | [VISIBILITY_BENCHMARKS.md](VISIBILITY_BENCHMARKS.md) | Public leaderboard submission track for Kaggle AgentEval, EnterpriseRAG-Bench, LiveRAG, and CRAG. |
 | [ENTERPRISE_RAG_VAST.md](ENTERPRISE_RAG_VAST.md) | Vast.ai GPU runbook for the EnterpriseRAG-Bench SPLADE arm. |
 | [ENTERPRISE_RAG_SUBMISSION.md](ENTERPRISE_RAG_SUBMISSION.md) | EnterpriseRAG-Bench answer artifacts, score summaries, and reproduction steps for leaderboard review. |

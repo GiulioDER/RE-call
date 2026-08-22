@@ -1,15 +1,19 @@
 {
   "_note": "Retracted figures. A value here may never appear bare in a gated document and may never sit in CLAIMS_BASELINE.json. Values are the LITERAL digit string as published, not floats.",
   "0.945": {
-    "figure": "real-corpus recall@5 — used document headings as queries, which is known-item retrieval",
+    "figure": "real-corpus recall@5 \u2014 used document headings as queries, which is known-item retrieval",
     "retraction_ref": "docs/EVIDENCE.md 'Claims that were withdrawn'"
   },
   "0.615": {
-    "figure": "LOCOMO hit@5 pre-fix anchor — checkable since #111, still not evidence for the HNSW-build-noise claim it was used for",
+    "figure": "LOCOMO hit@5 pre-fix anchor \u2014 checkable since #111, still not evidence for the HNSW-build-noise claim it was used for",
     "retraction_ref": "docs/EVIDENCE.md 'Claims that were withdrawn'; results/FINDINGS.md 9a"
   },
   "0.5957": {
-    "figure": "pool-100 depth column — measured on a doubled corpus",
+    "figure": "pool-100 depth column \u2014 measured on a doubled corpus",
     "retraction_ref": "results/FINDINGS.md 9a retraction notice; results/wrrf/FINDINGS_pool100_contamination.md"
+  },
+  "1.97": {
+    "figure": "ATM-Bench modality-floor cost in QS points - counted two questions whose gold answer has no content tokens, where token coverage is unmeasurable, as coverage 0.0 via `(cov or 0)`, so an unmeasurable input was read as 'the answer was not on screen'. Corrected to 1.78 over 18 questions rather than 20",
+    "retraction_ref": "docs/ATM_BENCH.md section 5 correction notice"
   }
 }
