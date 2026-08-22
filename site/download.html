@@ -78,7 +78,7 @@
       <p class="notice-title">If you tried 0.9.7 and nothing happened, that was not your machine</p>
       <p>The first build published here could not start. It printed <code>QWidget: Must construct a QApplication before a QWidget</code> and the process was gone: no window, no error dialog. Every copy did it, on every machine, and the cause was one line in the launch path that built the window before the Qt application object it needs existed.</p>
       <p>0.9.8 fixes it, and the check that let it through is fixed too. The build test used to start the window in an order the shipped program never used, so it passed on a bundle that killed itself on launch. It now goes through the same launch path the exe does, and a second test starts the real program in a fresh process and fails on the exit code. That test is red against the build you downloaded.</p>
-      <p class="muted">Nothing on this page links to that build any more. Its file is still attached to the 0.9.7 release on GitHub, where the release notes now say what it does; if you have that zip, delete it, because it cannot be made to work.</p>
+      <p class="muted">That download has been deleted from the 0.9.7 release, so the link no longer resolves anywhere. If you already have the zip, delete it: it cannot be made to work.</p>
     </div>
   </div>
 </section>
