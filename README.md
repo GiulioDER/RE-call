@@ -158,6 +158,13 @@ working and gives you a labeled file to copy the shape of. Calibration is per em
 corpus, so a new model or a substantially changed corpus needs calibrating again, and a threshold
 fitted on the sample should not be used to judge your own memory.
 
+"Substantially changed" is a measurement rather than a judgement call. `recall calibration drift`
+compares your corpus against the one the serving calibration was fitted on, and where the corpus has
+been indexed it replays that calibration's own labeled queries to measure what the threshold now
+costs, per class. Set `RECALL_AUTO_CALIBRATE=auto` to have a rebuild re-establish the calibration by
+itself, within the same certification bar a manual one has to clear. See
+[docs/CALIBRATION.md](docs/CALIBRATION.md).
+
 A labeled file needs at least one answerable and one unanswerable query, and every entry needs a
 `query` and an `answerable` key. Calibration refuses the file rather than fitting a threshold to
 one-sided evidence.

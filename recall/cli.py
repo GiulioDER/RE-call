@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import sys
@@ -848,6 +849,78 @@ def _run_extract(args: argparse.Namespace) -> None:
             cache.close()
 
 
+
+def _report_drift_after_build(args: argparse.Namespace, generation_id: str) -> None:
+    """Say what the new generation did to the calibration serving this tenant, per policy.
+
+    Runs after a build reports success and **can never turn that success into a failure**. A build
+    that wrote every chunk correctly has succeeded whether or not the advisory afterwards can reach
+    a model, a query set or a database, so every failure here is logged and swallowed. The opposite
+    choice would make a corpus unbuildable because a monitor was misconfigured.
+
+    `RECALL_AUTO_CALIBRATE` decides how far this goes:
+
+    * `off` does nothing at all, including opening a connection;
+    * `warn`, the default, reports and leaves the decision to the operator;
+    * `auto` re-establishes the calibration by carrying the threshold forward, or refitting it on
+      the same stored labelled evidence when the threshold has to move.
+
+    ⚠️ **The probe runs here, and the screen alone would not be enough.** A build is exactly the
+    moment the new generation IS indexed, so the decisive check is available for the price of one
+    retrieval per labelled query; declining to spend that would report a screen result at the one
+    moment a real answer was cheap.
+    """
+    from recall.drift import AutoCalibrationMode
+
+    try:
+        mode = AutoCalibrationMode.from_env()
+    except ValueError as exc:
+        print(f"drift: {exc}", file=sys.stderr)
+        return
+    if mode is AutoCalibrationMode.OFF:
+        return
+
+    from recall.calibration_v2 import CalibrationRepository
+    from recall.drift import auto_recalibrate, evaluate_drift
+
+    # Memoised, and passed as a FACTORY rather than as an embedder. Two properties at once:
+    # `evaluate_drift` calls it only if it reaches the probe, so a build whose delta is under the
+    # screen loads no model at all; and when both the probe and the automatic recalibration below
+    # need one, they get the same instance rather than two loads of the same weights.
+    @functools.cache
+    def build_embedder() -> Embedder:
+        return _make_embedder(args.embedder)
+
+    repository = CalibrationRepository(args.dsn, args.tenant)
+    try:
+        report = evaluate_drift(
+            repository,
+            generation_id=generation_id,
+            embedder=build_embedder,
+        )
+    except Exception as exc:  # noqa: BLE001 - see the docstring: advice never fails a build
+        print(f"drift: could not measure drift for {generation_id}: {exc}", file=sys.stderr)
+        return
+    print()
+    print(report.format())
+    if mode is AutoCalibrationMode.WARN or not report.needs_action:
+        if report.needs_action:
+            print()
+            print(
+                "RECALL_AUTO_CALIBRATE=auto would re-establish this automatically; "
+                f"or run `recall --tenant {args.tenant} calibration auto "
+                f"--generation {generation_id}`"
+            )
+        return
+    try:
+        outcome = auto_recalibrate(repository, generation_id, build_embedder())
+    except Exception as exc:  # noqa: BLE001 - as above
+        print(f"drift: automatic recalibration failed for {generation_id}: {exc}", file=sys.stderr)
+        return
+    print()
+    print(f"auto-calibrate: {outcome.action} ({outcome.reason})")
+
+
 def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):  # clean UTF-8 output on Windows consoles
         # `errors=` as well as `encoding=`, because reconfiguring the encoding RESETS errors to
@@ -1452,6 +1525,108 @@ def main(argv: list[str] | None = None) -> None:
     p_cal_measure.add_argument("--generation", required=True)
     p_cal_measure.add_argument("--queries", dest="query_file", required=True)
     p_cal_measure.add_argument("--publish", action="store_true")
+    # Local to match how the rest of this file reaches `recall.calibration_v2`, NOT to defer a
+    # cost: `recall.store` is imported at module level and already pulls in psycopg and pgvector,
+    # so nothing is saved here and an earlier version of this comment claiming otherwise was
+    # wrong. The names bind for the whole of `main`, which is why the dispatch branch below does
+    # not import them again.
+    from recall.calibration_v2 import (
+        DEFAULT_MAX_CARRY_FORWARD_ERROR,
+        DEFAULT_MAX_CORPUS_DELTA,
+    )
+
+    p_cal_carry = calibration_sub.add_parser(
+        "carry-forward",
+        help="re-verify a published threshold against a rebuilt generation, without refitting it",
+    )
+    p_cal_carry.add_argument(
+        "--generation", required=True, help="the NEW generation to bind the threshold to"
+    )
+    p_cal_carry.add_argument(
+        "--from",
+        dest="parent_calibration_id",
+        default=None,
+        help="calibration to carry forward (default: this tenant's most recently published one "
+        "on another generation)",
+    )
+    p_cal_carry.add_argument(
+        "--max-corpus-delta",
+        type=float,
+        default=None,
+        help=f"refuse if more than this fraction of sources changed (default "
+        f"{DEFAULT_MAX_CORPUS_DELTA}). Lower it per tenant; the default is a ceiling on the "
+        f"mechanism, not a measured safe distance",
+    )
+    p_cal_carry.add_argument(
+        "--max-error",
+        type=float,
+        default=None,
+        help=f"reject if the inherited threshold misclassifies more than this fraction of either "
+        f"labelled class on the new generation (default {DEFAULT_MAX_CARRY_FORWARD_ERROR}). This "
+        f"is the check separability cannot make",
+    )
+    p_cal_carry.add_argument("--publish", action="store_true")
+
+    from recall.drift import DRIFT_SCREEN_DELTA
+
+    p_cal_drift = calibration_sub.add_parser(
+        "drift",
+        help="ask whether the corpus has moved far enough to need recalibrating",
+    )
+    # Exactly one of the two, enforced by argparse rather than by a runtime check, because the
+    # difference is not a preference: a generation can be probed and a directory cannot.
+    drift_target = p_cal_drift.add_mutually_exclusive_group(required=True)
+    drift_target.add_argument(
+        "--generation",
+        default=None,
+        help="an already-built generation to compare and, unless --no-probe, to re-score against",
+    )
+    drift_target.add_argument(
+        "--path",
+        default=None,
+        help="a live corpus directory. Compared, never probed: nothing has indexed it yet, so the "
+        "strongest verdict this can reach is a recommendation",
+    )
+    p_cal_drift.add_argument(
+        "--glob", default=None, help="glob for --path (default: the indexing default)"
+    )
+    p_cal_drift.add_argument(
+        "--screen-delta",
+        type=float,
+        default=None,
+        help=f"corpus delta below which no probe is spent (default {DRIFT_SCREEN_DELTA}). Low on "
+        f"purpose: firing costs one probe, staying quiet costs a threshold that has silently "
+        f"stopped deciding, and the smallest measured failure was at a delta of 0.945 "
+        f"(docs/preregistrations/2026-08-21-calibration-drift-trigger.md)",
+    )
+    p_cal_drift.add_argument(
+        "--no-probe",
+        dest="probe",
+        action="store_false",
+        help="screen only. Cheap enough for a post-index hook, and it can never reach a REQUIRED "
+        "verdict on error, only on delta",
+    )
+    p_cal_drift.add_argument("--json", action="store_true", help="machine-readable report")
+    p_cal_drift.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit 1 when recalibration is recommended or required, for use in CI",
+    )
+
+    p_cal_auto = calibration_sub.add_parser(
+        "auto",
+        help="re-establish a certified calibration on a rebuilt generation without asking for "
+        "labels: carry the threshold forward, or refit it on the same stored evidence",
+    )
+    p_cal_auto.add_argument("--generation", required=True)
+    p_cal_auto.add_argument(
+        "--no-publish",
+        dest="publish",
+        action="store_false",
+        help="write the artifact but leave it a draft, so an operator chooses when it serves",
+    )
+    p_cal_auto.add_argument("--json", action="store_true")
+
     calibration_sub.add_parser("list")
     p_cal_show = calibration_sub.add_parser("show")
     p_cal_show.add_argument("calibration_id")
@@ -2005,6 +2180,7 @@ def main(argv: list[str] | None = None) -> None:
             f"{generation_stats.chunks} chunks, {generation_stats.reused_objects} objects "
             f"reused; run `recall generation validate {generation_stats.generation_id}`"
         )
+        _report_drift_after_build(args, generation_stats.generation_id)
         return
 
     if args.cmd == "lint":  # pure filesystem check — no embedder, no DB
@@ -2193,6 +2369,124 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"pipeline: {artifact.pipeline_fingerprint}")
                 print(f"corpus: {artifact.corpus_fingerprint}")
                 print(f"queries: {artifact.query_set_digest}")
+            elif args.calibration_cmd == "carry-forward":
+                bound = (
+                    DEFAULT_MAX_CORPUS_DELTA
+                    if args.max_corpus_delta is None
+                    else args.max_corpus_delta
+                )
+                error_bound = (
+                    DEFAULT_MAX_CARRY_FORWARD_ERROR
+                    if args.max_error is None
+                    else args.max_error
+                )
+                artifact = repository.carry_forward(
+                    args.generation,
+                    _make_embedder(args.embedder),
+                    parent_calibration_id=args.parent_calibration_id,
+                    max_corpus_delta=bound,
+                    max_error=error_bound,
+                )
+                provenance = dict(artifact.carry_forward or {})
+                print(f"calibration: {artifact.calibration_id}")
+                print(f"status: {artifact.status.value}")
+                print(f"generation: {artifact.generation_id}")
+                print(f"carried forward from: {provenance.get('parent_calibration_id')}")
+                print(
+                    f"corpus delta: {provenance.get('corpus_delta'):.4f} "
+                    f"(+{provenance.get('sources_added')} "
+                    f"-{provenance.get('sources_removed')} "
+                    f"~{provenance.get('sources_modified')} "
+                    f"of {provenance.get('sources_union')} sources, bound {bound})"
+                )
+                print(f"inherited threshold: {artifact.threshold}")
+                # Printed next to the inherited number precisely because it is NOT applied. An
+                # operator watching these two diverge over a chain of rebuilds has the warning
+                # that the next carry-forward is the one that will fail.
+                print(f"a refit here would have chosen: {provenance.get('refit_threshold')}")
+                print(
+                    f"separability on this generation: {artifact.separability:.4f} "
+                    f"CI [{artifact.separability_ci[0]:.4f}, {artifact.separability_ci[1]:.4f}] "
+                    f"over {artifact.n_answerable} answerable / "
+                    f"{artifact.n_unanswerable} unanswerable"
+                )
+                # Printed beside separability because they answer a different question and can
+                # disagree with it: an ordering can stay perfect while the fixed cut stops
+                # deciding anything. Reading only the AUC is how that gets missed.
+                print(
+                    f"at the inherited threshold: false abstain "
+                    f"{provenance.get('false_abstain_rate', 0.0):.1%} of {artifact.n_answerable}, "
+                    f"false confirm {provenance.get('false_confirm_rate', 0.0):.1%} of "
+                    f"{artifact.n_unanswerable} (bound {error_bound:.1%})"
+                )
+                if not artifact.certified:
+                    print(f"NOT certified: {artifact.certification_reason}")
+                    raise SystemExit(
+                        "the inherited threshold no longer certifies on this generation; "
+                        "the evidence is retained as a rejected artifact. Recalibrate with "
+                        "`recall calibration calibrate`."
+                    )
+                if args.publish:
+                    artifact = repository.publish(artifact.calibration_id)
+                    print(f"published: {artifact.calibration_id}")
+            elif args.calibration_cmd == "drift":
+                from recall.drift import (
+                    DRIFT_SCREEN_DELTA,
+                    corpus_objects_for_directory,
+                    evaluate_drift,
+                )
+
+                screen = (
+                    DRIFT_SCREEN_DELTA if args.screen_delta is None else args.screen_delta
+                )
+                # A FACTORY, not an embedder. `evaluate_drift` calls it only if it reaches the
+                # probe, so a delta below the screen (the common case on a live corpus) costs no
+                # model load at all: seconds on a warm machine, a download on a cold one.
+                probing = args.probe and args.generation is not None
+                # `drift_report`, not `report`. `main()` is one long function and `report` is
+                # already bound to the wizard's `InventoryReport` further up, which is the same
+                # collision the `wizard_report` and `uninstall_report` names above exist to avoid.
+                drift_report = evaluate_drift(
+                    repository,
+                    generation_id=args.generation,
+                    corpus_objects=(
+                        corpus_objects_for_directory(args.path, args.glob)
+                        if args.path is not None
+                        else None
+                    ),
+                    candidate_label=args.path or args.generation,
+                    embedder=(lambda: _make_embedder(args.embedder)) if probing else None,
+                    screen_delta=screen,
+                    probe=args.probe,
+                )
+                print(
+                    json.dumps(drift_report.to_dict(), indent=2)
+                    if args.json
+                    else drift_report.format()
+                )
+                if args.strict and drift_report.needs_action:
+                    raise SystemExit(1)
+            elif args.calibration_cmd == "auto":
+                from recall.drift import auto_recalibrate
+
+                outcome = auto_recalibrate(
+                    repository,
+                    args.generation,
+                    _make_embedder(args.embedder),
+                    publish=args.publish,
+                )
+                if args.json:
+                    print(json.dumps(outcome.to_dict(), indent=2))
+                else:
+                    print(f"action: {outcome.action}")
+                    print(f"calibration: {outcome.calibration_id or 'none'}")
+                    print(f"published: {'yes' if outcome.published else 'no'}")
+                    print(f"reason: {outcome.reason}")
+                # `failed` is the only exit-1 case. `skipped` is a correct, expected outcome for a
+                # tenant whose first calibration has not been made yet, and exiting non-zero on it
+                # would make a post-index hook look broken on every fresh install.
+                if outcome.action == "failed":
+                    raise SystemExit(1)
             else:  # unreachable while argparse constrains the choices, but never guess a default
                 raise SystemExit(f"unknown calibration subcommand: {args.calibration_cmd}")
         except CalibrationError as exc:

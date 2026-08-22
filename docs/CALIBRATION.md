@@ -61,6 +61,143 @@ Publishing is explicit. Creating a certified draft does not make it active. Crea
 `--publish` first stores the measurement, then attempts publication, so failed certification still
 leaves inspectable evidence.
 
+## Carry a threshold across a rebuilt generation
+
+A calibration binds to one `generation_id`. Rebuild the generation to absorb new documents and the
+child has no artifact, so `resolve` returns `STALE`, strict policy refuses every query and
+development mode degrades every query. Without a way to re-verify, a corpus that grows at all costs
+a full manual recalibration, and the practical result is that live indexes stop being rebuilt.
+
+```bash
+recall --tenant acme --serving-dsn "$RECALL_SERVING_DSN" \
+  calibration carry-forward --generation gen_child --publish
+```
+
+**This is not a tolerance and it does not loosen the gate.** Nothing is carried because the corpus
+delta looked small. The parent's own stored labelled query set is re-scored against the child
+generation, and the inherited threshold must pass on those fresh scores. What is inherited is the
+threshold, not the certification.
+
+Two conditions must both hold, and the second exists because the first cannot see the failure that
+matters here.
+
+| Check | Question it answers |
+|---|---|
+| separability CI lower bound `>= MIN_SEPARABILITY` | are the two classes still ordered? |
+| false-abstain and false-confirm rates `<= --max-error` | is the fixed threshold still between them? |
+
+⛔ **Separability alone is not sufficient, and this is the whole reason carry-forward needs a rule
+`calibrate` does not.** Separability is threshold-free. Documents that lift every unanswerable
+score by the same amount leave the ordering perfect, so AUC stays at 1.00 and certification passes,
+while the entire unanswerable class slides above a threshold that is no longer allowed to move. A
+refit cannot be fooled that way because it puts the cut back between the classes. Carry-forward
+holds the cut still, so it has to check the cut. `tests/test_calibration_carry_forward.py` builds
+exactly that corpus and asserts the refusal.
+
+Three refusals happen before any embedding work:
+
+- **a different pipeline fingerprint**, refused outright at any delta. A threshold is a property of
+  an embedder's cosine regime: 2026-08-17 measured `voyage-4` at 0.269 to 0.413 on one corpus where
+  `voyage-code-3` returned 0.480 to 0.834 on another. No delta is small enough to make that safe.
+- **a delta above `--max-corpus-delta`** (default 0.25). Re-scoring a query set says nothing about
+  the queries nobody labelled, so past some point the labelled set describes a corpus that no
+  longer exists.
+- **an unchanged corpus fingerprint**, which means the caller named the generation the calibration
+  is already bound to.
+
+An uncertified or unpublished parent is refused too, so a draft threshold cannot acquire a
+certification by being copied forward.
+
+⚠️ **Both defaults are ceilings on the mechanism, not measured safe distances.** The only delta
+this has been measured at is recorded in
+`docs/preregistrations/2026-08-20-calibration-carry-forward.md`. Lower them per tenant; do not read
+the defaults as evidence.
+
+The artifact records where its threshold came from, inside the checksum, so provenance cannot be
+edited away afterwards. `calibration list` reports `threshold_was_measured_here`,
+`carried_forward_from` and `corpus_delta`, because after a chain of rebuilds an operator's real
+question is which of these thresholds anyone actually measured.
+
+The output also prints `refit_threshold`: what a fresh fit on these scores would have chosen. It
+**changes nothing**. It is there so that an operator watching the inherited number drift away from
+the data gets the warning before the drift is large enough to fail.
+
+## Watch for drift between rebuilds
+
+Carry-forward answers the drift question *after* a rebuild, and `resolve` answers it as a yes/no
+about identity. Neither can be asked the question an operator actually has: **the corpus on disk has
+moved on, is the threshold serving it still deciding anything?**
+
+```bash
+# a rebuilt generation: compared and re-scored
+recall --tenant acme calibration drift --generation gen_child
+
+# a live directory: compared only, because nothing has indexed it
+recall --tenant acme calibration drift --path ./docs --strict
+```
+
+Two tiers, and which one produced the verdict is always visible in the output.
+
+| Tier | Cost | What it establishes |
+|---|---|---|
+| **screen** `corpus_delta` over `(uri, sha256)` | a manifest comparison, no embedding, no retrieval, no model load | an upper bound on how much *could* have moved |
+| **probe** the calibration's own stored labelled query set, replayed | one retrieval per labelled query | what the frozen threshold costs now, per class |
+
+⛔ **The screen firing is never reported as a verdict.** Where the probe cannot run, the strongest
+verdict is `recalibrate_recommended`, and the report names the check that was not made. A directory
+therefore can never reach `recalibrate_required`, however total its delta, because nothing has
+scored it.
+
+### Why there is no delta at which recalibration is demanded outright
+
+An earlier draft demanded it past `--max-corpus-delta`, reasoning that the labelled set had stopped
+describing the corpus. **Measured 2026-08-21 over 57 snapshots of three real corpus histories**
+(`docs/preregistrations/2026-08-21-calibration-drift-trigger.md`,
+`results/calibration_drift_2026-08-21.json`), that reasoning is wrong:
+
+- the frozen threshold first crossed the 0.10 error bound at a corpus delta of **0.945**, and never
+  below it;
+- a delta-only rule at 0.25 fires on **56 of 57** snapshots and is right about **5**, a precision of
+  **0.09**;
+- the labels were durable where the argument assumed rot. At delta 0.981 only **27.5%** of the
+  answerable queries' original evidence chunks still existed, and false abstains were **0.025**;
+- what moved was the **false-confirm** rate, tracking corpus **growth** rather than change (Spearman
+  0.95 against growth on `docs`, where growth and delta are collinear at 0.98, so this measurement
+  cannot tell them apart). A top-1 cosine is a max over the index: added documents can only raise an
+  unanswerable query's score, and how much of a corpus was rewritten predicts nothing about that.
+
+⚠️ **This does not license raising `--max-corpus-delta` on carry-forward.** That bound governs
+whether a threshold may be *inherited*, on one repository, one embedder, generated queries and exact
+rather than approximate search. What the numbers above establish is that a delta is a poor alarm,
+not that a large delta is safe.
+
+### Automatic recalibration
+
+`RECALL_AUTO_CALIBRATE` decides how far a build is allowed to act on what it finds.
+
+| value | after a generation build |
+|---|---|
+| `off` | nothing, including opening a connection |
+| `warn` (default) | measure drift, print the report, leave the decision to the operator |
+| `auto` | additionally re-establish the calibration |
+
+Under `auto`, two paths are tried cheapest first, and **neither loosens certification**:
+
+1. **carry the threshold forward**, keeping an operating point the operator has already seen;
+2. **refit on the same stored labelled evidence** when the threshold has to move, which is exactly
+   the case carry-forward refuses.
+
+```bash
+recall --tenant acme calibration auto --generation gen_child
+```
+
+It **will not invent a first calibration**. A tenant with no published artifact reports `skipped`,
+because deciding what the labelled questions should be is not a decision to make unattended, and a
+post-build hook that failed on every fresh install is a hook that gets removed. For the same reason
+a missing calibration reports `unknown` rather than `stable`: an uncalibrated tenant has zero
+measured drift by every arithmetic definition, and calling that stable would say a threshold which
+does not exist is holding up fine.
+
 ## Inspect and transfer
 
 ```bash
@@ -136,7 +273,7 @@ for the library and for the MCP service. Omitting a policy cannot open the gate.
 | `LINEAGE_MISMATCH` | Generation pipeline or corpus fingerprint is not what the artifact bound | Recalibrate against the current generation |
 | `CALIBRATION_MISSING` | No artifact bound to this tenant and generation | Calibrate against a labelled query set and publish |
 | `CALIBRATION_UNCERTIFIED` | An artifact exists but was never certified | Certify and publish a replacement; the rejected evidence is retained |
-| `CALIBRATION_STALE` | A certified artifact no longer binds to the current lineage | Recalibrate (a rebuild or privacy erasure changed the corpus fingerprint) |
+| `CALIBRATION_STALE` | A certified artifact no longer binds to the current lineage | Try `calibration carry-forward` first: after an ordinary rebuild it re-verifies the existing threshold against the new generation and needs no new labels. Recalibrate if it refuses, or after a privacy erasure |
 | `DEPENDENCY_UNAVAILABLE` | A dependency the gate needs was unreachable | Retry once healthy |
 
 These are an API. Automating on them is the intended use, so their spelling is pinned by test.
