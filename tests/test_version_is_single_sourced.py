@@ -53,7 +53,25 @@ def test_every_hand_maintained_copy_of_the_version_is_accounted_for() -> None:
     """
     root = pathlib.Path(__file__).resolve().parent.parent
     declared = _declared()
-    known = {"pyproject.toml", "recall/__init__.py", "server.json", "CITATION.cff", "uv.lock"}
+    # `plugin/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` are the Claude Code
+    # plugin and the marketplace entry that distributes it. Both are checked by
+    # `tests/test_claude_code_plugin.py::test_plugin_and_marketplace_versions_track_the_package`,
+    # which asserts each equals `recall.__version__`, so they meet this list's bar: somebody checks
+    # that they agree.
+    #
+    # ⚠️ A stale copy here is worse than a stale one elsewhere, because a marketplace entry is
+    # CACHED by every user who has added the marketplace. `/plugin marketplace update` is the only
+    # thing that refreshes it, so a version this repository advertises wrongly keeps being served
+    # from other people's machines after the fix lands here.
+    known = {
+        "pyproject.toml",
+        "recall/__init__.py",
+        "server.json",
+        "CITATION.cff",
+        "uv.lock",
+        "plugin/.claude-plugin/plugin.json",
+        ".claude-plugin/marketplace.json",
+    }
 
     carrying: set[str] = set()
     for path in root.rglob("*"):
