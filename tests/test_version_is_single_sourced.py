@@ -19,9 +19,16 @@ the suite would have said so.
 from __future__ import annotations
 
 import pathlib
+import sys
 import tomllib
 
 import recall
+
+# `scripts/` on the path so the version SITES can be imported from the bumper rather than restated
+# here. See `test_the_known_set_is_the_bumpers_own_list`.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+
+from release import EXCLUDED, REGENERATED, SITES  # noqa: E402
 
 
 def _declared() -> str:
@@ -63,15 +70,11 @@ def test_every_hand_maintained_copy_of_the_version_is_accounted_for() -> None:
     # CACHED by every user who has added the marketplace. `/plugin marketplace update` is the only
     # thing that refreshes it, so a version this repository advertises wrongly keeps being served
     # from other people's machines after the fix lands here.
-    known = {
-        "pyproject.toml",
-        "recall/__init__.py",
-        "server.json",
-        "CITATION.cff",
-        "uv.lock",
-        "plugin/.claude-plugin/plugin.json",
-        ".claude-plugin/marketplace.json",
-    }
+    # DERIVED from `scripts/release.py`, not restated. Two lists of the same seven files is the
+    # failure this repository keeps paying for: the checker and the bumper drift, and the drift
+    # surfaces as a release that bumped six of seven. Now a file this guard accepts is exactly a
+    # file the bumper will rewrite, and adding one without teaching the bumper fails here.
+    known = {site.path for site in SITES} | set(REGENERATED)
 
     carrying: set[str] = set()
     for path in root.rglob("*"):
@@ -90,7 +93,7 @@ def test_every_hand_maintained_copy_of_the_version_is_accounted_for() -> None:
         # to bump a file that already says 0.9.8 and every session would pass for the wrong
         # reason. Not added to `known` above, because `known` means "somebody checks these agree"
         # and this one must NOT agree.
-        if relative == "scripts/agent_ab_build_workspaces.py":
+        if relative in EXCLUDED:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         # The quoted or `version:` form only. A bare `0.9.7` inside prose is a historical
@@ -118,3 +121,42 @@ def test_the_generated_dockerfile_pins_the_version_that_will_be_published() -> N
     assert f"=={_declared()}" in dockerfile_text(), (
         "the Dockerfile the installer writes must pin the version this project publishes"
     )
+
+
+def test_the_known_set_is_the_bumpers_own_list() -> None:
+    """⛔ The bumper and this guard must not be able to disagree.
+
+    `scripts/release.py` rewrites `SITES`; this test accepts `SITES`. Before they shared a
+    definition, adding a version copy meant editing two lists, and the failure mode was a release
+    that bumped six of seven with a green suite: the guard knew about the seventh, the bumper did
+    not, and nothing compared them.
+
+    So this asserts the property that makes the sharing real rather than decorative: every file the
+    guard tolerates is one the bumper will actually rewrite or regenerate.
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent
+    for site in SITES:
+        assert (root / site.path).is_file(), f"{site.path} is in SITES but not on disk"
+
+    accepted = {site.path for site in SITES} | set(REGENERATED)
+    assert "uv.lock" in accepted, "the lockfile carries the version and must stay accounted for"
+    assert not (accepted & EXCLUDED), (
+        "a file cannot be both bumped and deliberately excluded: "
+        f"{sorted(accepted & EXCLUDED)}"
+    )
+
+
+def test_the_bumper_recognises_the_version_actually_in_each_file() -> None:
+    """A pattern that stops matching is a site the bumper silently skips.
+
+    `plan()` raises on a wrong occurrence count, so this is really a test that the declared counts
+    still describe the files. It fails on the release where a file's shape changed, which is
+    exactly when a partial bump would otherwise ship.
+    """
+    from release import plan
+
+    rows = plan("999.999.999")
+    assert len(rows) == len(SITES)
+    for site, found, count in rows:
+        assert found == _declared(), f"{site.path} carries {found}, pyproject says {_declared()}"
+        assert count == site.occurrences
