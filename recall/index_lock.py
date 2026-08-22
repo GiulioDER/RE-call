@@ -110,7 +110,10 @@ def _holder(conn: "psycopg.Connection", key: str) -> str:
     """
     try:
         row = conn.execute(sql, (key,)).fetchone()
-    except psycopg.Error:  # pragma: no cover - diagnostics must never mask the refusal
+    except Exception:  # noqa: BLE001 - diagnostics must never REPLACE the refusal
+        # Deliberately wider than `psycopg.Error`. This runs inside the branch that is about to
+        # raise `ConcurrentIndex`, so anything raised here would take the place of the error the
+        # caller needs, and the caller would be told the wrong thing about their own run.
         return "another connection (the holder could not be looked up)"
     if row is None:
         # Reachable and not an error: the holder released between the failed acquire and this
@@ -144,8 +147,11 @@ def single_writer(
     now rather than discovered halfway through an embedding run.
     """
     dsn = getattr(store, "_dsn", None)
-    table = getattr(store, "_table", "chunks")
-    tenant = getattr(store, "_tenant", None) or getattr(store, "tenant", "default")
+    # `str(... or default)`: a store is duck-typed here on purpose (tests pass stubs, and the
+    # generation store is a subclass), so neither attribute is guaranteed to be a string. A `None`
+    # tenant reaching the key would build a lock name that reads plausibly and matches nothing.
+    table = str(getattr(store, "_table", None) or "chunks")
+    tenant = str(getattr(store, "_tenant", None) or getattr(store, "tenant", None) or "default")
     if not dsn:
         yield False
         return
