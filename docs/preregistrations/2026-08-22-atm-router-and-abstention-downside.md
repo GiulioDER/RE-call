@@ -141,3 +141,104 @@ which is the complement of the dev counts already recorded; the 72 selected ques
 ## Result
 
 Not yet measured at the time this record was committed.
+
+---
+
+## Result (2026-08-22)
+
+**Status:** measured. Predictions above unedited. 144 provider calls, **zero judge calls**. The test
+partition was read once, after this record was committed as `44a6979a`.
+
+Apparatus verified first, all four counts as the record required: the test partition holds 301
+questions and 42 `list_recall`; the selection holds 72 `open_end` abstentions of which 17 have a
+gold answer that `is_abstention` accepts.
+
+### Question 1, the router
+
+| | dev, the fitting set | **test, read once** | predicted | verdict |
+| --- | ---: | ---: | --- | --- |
+| precision | 0.8649 | **0.9048** | 0.78 to 0.90 | **falsified, high by 0.0048** |
+| recall | 0.9897 | **0.9048** | 0.92 to 1.00 | **falsified, low** |
+| fires on a gold-abstention question | n/a | **0 of 23** | 0 to 2 | held |
+
+Test counts: 38 true positives, 4 false positives, 4 false negatives on 42.
+
+**The recall drop from 0.9897 to 0.9048 is the fitting gap, and it landed exactly where I put my
+hands.** Two dev false negatives were fixed by adding an abbreviation rule and an imperative-head
+rule; the test partition produced four fresh ones. Neither registered falsifier fired, precision
+above 0.75 and recall above 0.90, the second by 0.0048.
+
+The safety row is the one that matters for the A2 fallback: the router does not fire on a single
+question where abstaining earns a point.
+
+### Question 2, the downside A1 could not see
+
+| arm | re-abstention on the 17 | commits on | pessimistic damage |
+| --- | ---: | ---: | ---: |
+| baseline | 1.0000 | 0 of 17 | 0.00 QS |
+| control | 0.9412 | 1 of 17 | 0.10 QS |
+| **treatment** | **0.9412** | **1 of 17** | **0.10 QS** |
+
+| Prediction | Predicted | Measured | Verdict |
+| --- | --- | ---: | --- |
+| Treatment re-abstention, the 17 | 0.50 to 0.80 | **0.9412** | **falsified, high** |
+| Control re-abstention, the 17 | above 0.80 | 0.9412 | held |
+| QS destroyed on the 17 | 0.34 to 0.84 | **0.10** | **falsified, low** |
+
+**The downside is a quarter of the bottom of my band, and the treatment does no more damage than
+the control.** The single question where the treatment commits is one the control commits on too,
+so it is a re-ask effect and not the framing. This is the strongest evidence in either record that
+the framing discriminates rather than pushes: on questions where the evidence genuinely does not
+support an answer it keeps refusing at 94%, while on the 85 deterministic questions where the
+evidence often does, it dropped its refusal rate from 100% to 44.7%.
+
+### Question 3, the upside on the 55 wrong `open_end` abstentions
+
+| arm | re-abstention | gold-token coverage | commits on | coverage among committed | median chars |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| baseline | 1.0000 | 0.0000 | 0 | n/a | n/a |
+| control | 0.8000 | 0.1447 | 11 of 55 | 0.6137 | 81 |
+| **treatment** | **0.4364** | **0.2864** | **31 of 55** | 0.4812 | 23 |
+
+| Prediction | Predicted | Measured | Verdict |
+| --- | --- | ---: | --- |
+| Treatment re-abstention | 0.35 to 0.60 | 0.4364 | held |
+| Treatment coverage | 0.25 to 0.50 | 0.2864 | held |
+| Control coverage | 0.05 to 0.20 | 0.1447 | held |
+
+**No registered falsifier fired in this record.** Coverage rises 0.1417 over control, above the
+0.10 the record demanded.
+
+⚠️ **A finding this record did not predict, and it is a caution rather than a win.** The
+treatment's committed answers cover LESS of the gold than the control's, 0.4812 against 0.6137, and
+are a third as long, 23 characters against 81. The extra twenty commitments are terse and
+thinner. On this run `open_end` answers under 20 characters score 0.5977 while those between 50 and
+100 score 0.8228, so the framing is buying commitment in exactly the shape the `open_end` judge
+penalises. **A1 and a completeness contract are not independent on this type, and combining them
+untested would be the mistake this study has already made twice.**
+
+### The net, with the part that is still unbought marked as such
+
+| component | n | measured | judge needed |
+| --- | ---: | ---: | --- |
+| framing, deterministic types | 85 | **+1.41 QS**, CI [+0.72, +2.15] | no |
+| damage on the gold abstentions | 17 | **-0.10 QS** | no |
+| upside on the wrong `open_end` abstentions | 55 | coverage +0.1417 over control | **yes, deferred** |
+| **net measured without a judge** | | **+1.31 QS** | |
+
+The `open_end` component is a mechanism, not a result. Arm E of the previous study raised
+`open_end` by 4.35 points while the coverage it claimed as its mechanism did not move at all, and
+this is the mirror image: the mechanism moved and the outcome is unbought. Both coverage figures
+also fall in the same bucket of the measured coverage-to-score mapping, 0.25 and 0.29 against
+bucket boundaries at 0.25 and 0.50, so the mapping does not resolve the gain either.
+
+### What the two records together now support
+
+1. **The intervention is real, small, and discriminating.** +1.31 QS measured without a judge, from
+   a mechanism that keeps refusing where refusing is right.
+2. **It is still not promotable**, because A1's registered re-abstention falsifier fired and has not
+   been re-registered in the relative form the result section argued for.
+3. **The router is usable for the A2 fallback** at precision 0.9048 with zero hits on the
+   gold-abstention set, and is NOT usable as a general `qtype` classifier, which it never claimed.
+4. **The next spend is a judge run on the 55**, and it is the only way to convert the largest
+   remaining component from a mechanism into a number.
