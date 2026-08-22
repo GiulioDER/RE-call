@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from benchmarks.codex_ab import (
+from benchmarks.agent_ab import (
     RECALL_OFF,
     RECALL_ON,
     SessionRecord,
@@ -12,7 +12,7 @@ from benchmarks.codex_ab import (
     run_paired,
     write_jsonl,
 )
-from benchmarks.codex_ab.summarize import summarize_pairs
+from benchmarks.agent_ab.summarize import summarize_pairs
 
 
 def test_session_record_round_trip_preserves_missing_measurements() -> None:

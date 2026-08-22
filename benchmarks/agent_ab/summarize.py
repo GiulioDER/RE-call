@@ -67,6 +67,40 @@ def _metric_values(
     return [(getter(on), getter(off)) for on, off in pairs]
 
 
+def summarize_recall_overhead(records: list[SessionRecord]) -> dict[str, Any]:
+    """Describe what the memory layer cost and how often it was used, on the on arm alone.
+
+    `recall_latency_ms` and `recall_call_count` cannot be paired deltas: the off arm has no RE-call
+    by construction, so every pair is incomplete and the paired row is permanently null. Reported
+    as a paired metric it looks like a measurement that failed rather than a question that does
+    not apply. These are one-armed statistics and are presented as such.
+
+    `used_rate` is the one that matters and is easy to forget: a session that had the tool and
+    never reached for it is a real result about discoverability, and it is included here rather
+    than excluded as a non-event.
+    """
+
+    on_arm = [record for record in records if record.variant == RECALL_ON]
+    if not on_arm:
+        return {"sessions": 0}
+    used = [record for record in on_arm if record.recall_call_count > 0]
+    latencies = [
+        record.recall_latency_ms for record in on_arm if record.recall_latency_ms is not None
+    ]
+    calls = [float(record.recall_call_count) for record in on_arm]
+    return {
+        "sessions": len(on_arm),
+        "sessions_that_searched": len(used),
+        "used_rate": len(used) / len(on_arm),
+        "calls_mean": mean(calls),
+        "calls_median": median(calls),
+        "latency_ms_mean": mean(latencies) if latencies else None,
+        "latency_ms_median": median(latencies) if latencies else None,
+        "latency_ms_total": sum(latencies) if latencies else None,
+        "latency_missing": len(on_arm) - len(latencies),
+    }
+
+
 def summarize_pairs(records: list[SessionRecord]) -> dict[str, Any]:
     """Summarize complete paired records and preserve incomplete task IDs."""
 

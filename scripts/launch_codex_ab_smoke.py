@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from benchmarks.codex_ab import (
+from benchmarks.agent_ab import (
     CodexExecConfig,
     RECALL_OFF,
     RECALL_ON,
@@ -29,7 +29,7 @@ RE-call search for the phrase `paired Codex benchmark adapter`. Do not quote or 
 memory content in your answer. If RE-call is unavailable, continue without it.
 Return exactly three short lines:
 1. The repository name.
-2. One existing file under benchmarks/codex_ab.
+2. One existing file under benchmarks/agent_ab.
 3. Whether pyproject.toml exists in the repository root.
 """
 

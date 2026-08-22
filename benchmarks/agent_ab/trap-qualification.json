@@ -1,0 +1,160 @@
+{
+  "static_memory_sources": [
+    "CLAUDE.md",
+    "MEMORY.md"
+  ],
+  "static_memory_chars": 17499,
+  "tenant": "memory",
+  "qualifications": [
+    {
+      "trap_id": "omp_threads",
+      "locus": "memory_only",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": false,
+      "declared_memo": "onnxruntime-ignores-thread-caps",
+      "retrieved_sources": [
+        "onnxruntime-ignores-thread-caps.md",
+        "the-citation-test-is-subprocess-bound.md",
+        "onnxruntime-ignores-thread-caps.md",
+        "vps2-postgres-maintenance-debt.md",
+        "verify-citations-after-rebase-not-before.md"
+      ]
+    },
+    {
+      "trap_id": "cairo_render",
+      "locus": "memory_only",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": false,
+      "declared_memo": "rendering-images-on-this-machine",
+      "retrieved_sources": [
+        "rendering-images-on-this-machine.md",
+        "rendering-images-on-this-machine.md",
+        "mcp-stdio-server-stderr-is-not-capturable.md",
+        "rendering-images-on-this-machine.md",
+        "mtrag-abstention-figure.md"
+      ]
+    },
+    {
+      "trap_id": "cast_conversion",
+      "locus": "memory_only",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": false,
+      "declared_memo": "cast-is-not-a-conversion",
+      "retrieved_sources": [
+        "cast-is-not-a-conversion.md",
+        "cast-is-not-a-conversion.md",
+        "feedback_index.md",
+        "cast-is-not-a-conversion.md",
+        "cast-is-not-a-conversion.md"
+      ]
+    },
+    {
+      "trap_id": "torch_install_unchecked",
+      "locus": "memory_only",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": false,
+      "declared_memo": "torch-torchvision-cpu-mismatch",
+      "retrieved_sources": [
+        "torch-torchvision-cpu-mismatch.md",
+        "project_index.md",
+        "torch-torchvision-cpu-mismatch.md",
+        "enterprise-rag-bench-visibility.md",
+        "an-exclusive-create-is-not-a-cas.md"
+      ]
+    },
+    {
+      "trap_id": "ruff_format",
+      "locus": "both",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": true,
+      "declared_memo": "ruff-format-is-not-this-repos-convention",
+      "retrieved_sources": [
+        "ruff-format-is-not-this-repos-convention.md",
+        "recall-rewrite-module-is-unlanded.md",
+        "mixing-embedders-in-one-tenant-is-silent.md",
+        "verify-the-commit-not-the-worktree.md",
+        "recall-mcp-servers-wrong-corpus.md"
+      ]
+    },
+    {
+      "trap_id": "shared_db",
+      "locus": "claude_md_only",
+      "eligible": true,
+      "in_memory": false,
+      "in_claude_md": true,
+      "declared_memo": "session-db-container-is-keyed-by-checkout-path",
+      "retrieved_sources": [
+        "concurrent-pytest-false-reds.md",
+        "concurrent-pytest-false-reds.md",
+        "concurrent-pytest-false-reds.md",
+        "feedback_index.md",
+        "concurrent-pytest-false-reds.md"
+      ]
+    },
+    {
+      "trap_id": "git_add_all",
+      "locus": "claude_md_only",
+      "eligible": true,
+      "in_memory": false,
+      "in_claude_md": true,
+      "declared_memo": null,
+      "retrieved_sources": [
+        "subagents-commit-to-wrong-worktree.md",
+        "mutation-scripts-revert-concurrent-edits.md",
+        "spawned-task-chips-duplicate-work.md",
+        "subagents-commit-to-wrong-worktree.md",
+        "another-session-may-be-building-the-same-feature.md"
+      ]
+    },
+    {
+      "trap_id": "local_master",
+      "locus": "both",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": true,
+      "declared_memo": "your-branch-may-already-be-upstream",
+      "retrieved_sources": [
+        "squash-merged-work-is-invisible-to-git-cherry.md",
+        "your-branch-may-already-be-upstream.md",
+        "your-branch-may-already-be-upstream.md",
+        "spawned-task-chips-duplicate-work.md",
+        "spawned-task-chips-duplicate-work.md"
+      ]
+    },
+    {
+      "trap_id": "stale_memo_count",
+      "locus": "both",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": true,
+      "declared_memo": "the-memory-store-has-concurrent-writers",
+      "retrieved_sources": [
+        "recall-env-development-bypasses-the-generation.md",
+        "MEMORY.md",
+        "the-memory-store-has-concurrent-writers.md",
+        "MEMORY.md",
+        "the-memory-store-has-concurrent-writers.md"
+      ]
+    },
+    {
+      "trap_id": "main_checkout",
+      "locus": "both",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": true,
+      "declared_memo": "another-session-may-be-building-the-same-feature",
+      "retrieved_sources": [
+        "another-session-may-be-building-the-same-feature.md",
+        "deleted-files-live-in-git-history.md",
+        "recall-repos-corpus-on-vps2.md",
+        "project_index.md",
+        "clean-automerge-is-the-dangerous-case.md"
+      ]
+    }
+  ]
+}

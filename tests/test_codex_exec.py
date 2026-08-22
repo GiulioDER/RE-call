@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-from benchmarks.codex_ab import (
+from benchmarks.agent_ab import (
     CodexExecConfig,
     parse_codex_jsonl,
 )
-from benchmarks.codex_ab.codex_exec import CodexTranscriptError, _transcript_fields
+from benchmarks.agent_ab.codex_exec import CodexTranscriptError, _transcript_fields
 
 
 def test_codex_config_builds_non_shell_command() -> None:
