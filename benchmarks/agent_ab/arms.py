@@ -268,6 +268,7 @@ def write_claude_md_recall_prompt(
     static_prompt: str | Path,
     server_name: str,
     tool_prefix: str,
+    instruction: str | None = None,
 ) -> Path:
     """Build the additive arm's single system prompt: the static bundle, then the RE-call sentence.
 
@@ -276,14 +277,18 @@ def write_claude_md_recall_prompt(
     exactly as the `claude_md` arm receives it byte for byte, then the instruction about the tool.
     Keeping the static half identical between the arms is what makes the difference between them
     the memory layer and nothing else, and the artifact keeps the file so that is checkable.
+
+    `instruction` is a template with `{server}` and `{tool}` placeholders; it defaults to the
+    one-sentence `RECALL_SYSTEM_PROMPT`. Making it a parameter is what lets an instruction-variant
+    run change ONLY this text: the static half and every other arm field stay byte-identical, so a
+    difference in behaviour between two runs on the same tasks is attributable to the instruction.
     """
 
     target = Path(destination)
     target.parent.mkdir(parents=True, exist_ok=True)
     static = Path(static_prompt).read_text(encoding="utf-8")
-    instruction = RECALL_SYSTEM_PROMPT.format(
-        server=server_name, tool=f"{tool_prefix}recall_search"
-    )
+    template = RECALL_SYSTEM_PROMPT if instruction is None else instruction
+    instruction = template.format(server=server_name, tool=f"{tool_prefix}recall_search")
     # ⚠️ The instruction goes FIRST, ahead of the static bundle, and this is load-bearing.
     #
     # Appended last it sits after 17,498 characters of CLAUDE.md, and the first additive smoke

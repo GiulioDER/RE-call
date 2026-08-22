@@ -30,18 +30,29 @@ It is the reason to search for the *hazard* rather than the *task*.
 
 ## How to search
 
-Before acting, ask what could go wrong with the thing you are about to do, and search for **that**,
-in the vocabulary of a symptom rather than of an intention.
+You cannot name a symptom you have not hit yet. What you can always name is the **operations** you
+are about to perform: the tools, file types and commands the task will actually touch. A memo about
+a failure names those same operations, because they are where the failure happened. So decompose
+the task into its operations, and search for each operation plus its failure:
 
+- Not "bump the version" but "python script edits a file", "file shows as modified with no change".
 - Not "how do I run the test suite here" but "test suite hangs", "tests pass locally fail in CI",
   "database tests silently skipped".
 - Not "add a dependency" but "dependency breaks the build", "lockfile conflict", "version pin".
 - Not "deploy the service" but "deploy failed", "migration locked the table", "rollback".
 
-Two or three short searches beat one long one. Symptom words, error text and file names retrieve
-well; a sentence describing your plan does not.
+The first example is the recorded miss above, solved: "version bump" appears nowhere in the memo,
+but "a file edited by a python script" is its title. The goal's vocabulary is unique to your task;
+the operations' vocabulary is shared with whoever paid for the memo.
+
+Two or three short searches with different words beat one long one. Symptom words, error text and
+file names retrieve well; a sentence describing your plan does not.
 
 ## When to do this
+
+The moment that matters is **before your first file edit or state-changing command in a task**, not
+after something breaks. A search after the failure can only explain it; a search before the first
+write is the only one that can prevent it. In particular:
 
 - Before a command that changes state: a build, a migration, a deploy, a release, a force push.
 - Before choosing a library, a pattern or an approach, where the project may have tried one and
