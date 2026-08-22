@@ -315,7 +315,7 @@ the control's does not, because an earlier run of this design completed and repo
 memory tools attached at all.
 
 **The primary endpoint uses no judge.** Deterministic checkers read the transcript for the known
-wrong action. Ragas scores only the answer-quality rows in §13c, with a judge from a different model
+wrong action. Ragas scores only §13's answer-quality rows, with a judge from a different model
 family than the agent under test, against references written before the run.
 
 ⚠️ **Two caveats that live in the artifact, not only here.** `agent-ab-additive-002`'s environment
