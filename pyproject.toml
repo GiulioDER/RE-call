@@ -290,6 +290,17 @@ module = [
     # Optional application-level evaluator. The adapter must type-check when Ragas is absent.
     "ragas",
     "ragas.*",
+    # ATM-Bench's official evaluator, which `benchmarks/atm_answer_diagnosis.py` imports for its
+    # `is_abstention` and tokeniser rather than reimplementing them. It is NOT a dependency and is
+    # never installed: the script takes `--atm-bench-root` and puts that checkout on `sys.path` at
+    # run time, because a local reimplementation would measure this repository instead of the thing
+    # the published score was computed with.
+    #
+    # This belongs here rather than on an inline `# type: ignore`, and `warn_unused_ignores = true`
+    # above is the reason: an inline ignore is UNUSED for anyone who does have the checkout
+    # importable, so it would fail exactly the developer best placed to run the script.
+    "memqa",
+    "memqa.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
