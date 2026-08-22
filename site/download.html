@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Download · RE-call installer (beta)</title>
-<meta name="description" content="The RE-call installation wizard for Windows. The 0.9.7 build is withdrawn because it could not start; this page says why, what the fix was, and how to install in the meantime.">
+<meta name="description" content="Download the RE-call installation wizard for Windows. A beta build, offered to beta testers who are willing to say what happened when they ran it.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
@@ -59,27 +59,27 @@
     <hr class="rule">
     <p class="hero-lede">One window asks a short list of questions, then builds the database, the index and the Claude Code wiring while you watch it happen. This is a beta, and I am looking for testers who will tell me how it went.</p>
     <div class="hero-actions">
-      <a class="button-ghost" href="#withdrawn">Why there is no download button right now</a>
+      <a class="button" href="https://github.com/GiulioDER/RE-call/releases/download/v0.9.8/recall-install-0.9.8-windows-x64-UNSIGNED.zip">Download for Windows</a>
       <a class="button-ghost" href="https://github.com/GiulioDER/RE-call/releases">All releases</a>
     </div>
   </div>
   <div class="shell hero-meta">
-    <span>Build <b>withdrawn</b></span>
-    <span>Fix <b>written</b>, not yet released</span>
-    <span>Meanwhile <b><a href="start.html">install from the terminal</a></b></span>
+    <span>Version <b>0.9.8</b></span>
+    <span>Windows <b>10 · 11</b>, 64-bit</span>
+    <span>Download <b>131 MB</b></span>
+    <span>Not <b>code signed</b></span>
   </div>
 </section>
 
-<!-- ============================================================ Withdrawn -->
-<section class="band" id="withdrawn">
+<!-- ============================================================ The previous build -->
+<section class="band" id="previous-build">
   <div class="shell" data-reveal>
-    <div class="notice notice--signal">
-      <p class="notice-title">The 0.9.7 installer does not start, and the download has been taken down</p>
-      <p>The first person to run it got one line, <code>QWidget: Must construct a QApplication before a QWidget</code>, and then nothing: no window, no error dialog, the process gone. That is not a fault of their machine and no amount of retrying would have helped. Every copy of that build does it.</p>
-      <p>The cause was a single line in the launch path. The window was constructed before the Qt application object it needs existed, and Qt answers that by killing the process immediately. The fix is written and covered by tests, including one that starts the real entry point in a fresh process, which is the check that was missing and the reason this shipped at all.</p>
-      <p>Until a corrected build is published, <a href="start.html">the seven step install</a> is the way in. It is unaffected and it reaches exactly the same place.</p>
+    <div class="notice">
+      <p class="notice-title">If you tried 0.9.7 and nothing happened, that was not your machine</p>
+      <p>The first build published here could not start. It printed <code>QWidget: Must construct a QApplication before a QWidget</code> and the process was gone: no window, no error dialog. Every copy did it, on every machine, and the cause was one line in the launch path that built the window before the Qt application object it needs existed.</p>
+      <p>0.9.8 fixes it, and the check that let it through is fixed too. The build test used to start the window in an order the shipped program never used, so it passed on a bundle that killed itself on launch. It now goes through the same launch path the exe does, and a second test starts the real program in a fresh process and fails on the exit code. That test is red against the build you downloaded.</p>
+      <p class="muted">Nothing on this page links to that build any more. Its file is still attached to the 0.9.7 release on GitHub, where the release notes now say what it does; if you have that zip, delete it, because it cannot be made to work.</p>
     </div>
-    <p class="muted">Everything below describes the installer as it is meant to work, and it stays here because the requirements and the questions it asks are unchanged. Only the download itself is on hold. If you want to be told when the fixed build is up, say so on <a href="https://github.com/GiulioDER/RE-call/issues">an issue</a>.</p>
   </div>
 </section>
 
@@ -116,7 +116,7 @@
     </div>
     <div class="fact">
       <dt>Size</dt>
-      <dd>233 MB<small>About 460 MB once unpacked</small></dd>
+      <dd>131 MB<small>278 MB once unpacked</small></dd>
     </div>
     <div class="fact">
       <dt>Python</dt>
@@ -135,7 +135,7 @@
     <div class="section-head">
       <p class="eyebrow">Read this before you download</p>
       <h2>This build carries no signature, and on some machines Windows will not run it.</h2>
-      <p class="muted">The filename says UNSIGNED, because that is the one warning a download page can give you that you cannot miss. Here is what it means, and how to find out which case you are in before spending 233 MB.</p>
+      <p class="muted">The filename says UNSIGNED, because that is the one warning a download page can give you that you cannot miss. Here is what it means, and how to find out which case you are in before spending 131 MB.</p>
     </div>
 
     <div class="notice notice--signal">
@@ -235,7 +235,7 @@
 
     <div class="notice">
       <p class="notice-title">You do not need Python</p>
-      <p>This is the one difference from the <a href="start.html">seven step install</a>. The interpreter, the database driver and the embedding runtime are all inside the bundle, which is why it is 233 MB rather than a few hundred kilobytes.</p>
+      <p>This is the one difference from the <a href="start.html">seven step install</a>. The interpreter, the database driver and the embedding runtime are all inside the bundle, which is why it is 131 MB rather than a few hundred kilobytes.</p>
     </div>
   </div>
 </section>
@@ -286,9 +286,9 @@
 <section class="band" id="verify">
   <div class="shell" data-reveal>
     <div class="section-head">
-      <p class="eyebrow">For when the download is back</p>
+      <p class="eyebrow">Optional, and reasonable</p>
       <h2>Check that you got the file I published.</h2>
-      <p class="muted">An unsigned download is exactly the sort of thing worth checking a hash on. The hash below belongs to the withdrawn 0.9.7 build and is kept only so anyone still holding that file can identify it. A corrected build will carry a different one.</p>
+      <p class="muted">An unsigned download is exactly the sort of thing worth checking a hash on. This is the SHA-256 GitHub recorded for the asset, and it matches the hash I took of the file before uploading it.</p>
     </div>
 
     <div class="terminal terminal--command" data-shell="powershell">
@@ -296,14 +296,14 @@
         <span class="terminal-label">PowerShell</span>
         <button class="copy-button" type="button">Copy</button>
       </div>
-      <div class="terminal-body"><pre><span class="line">Get-FileHash .\recall-install-0.9.7-windows-x64-UNSIGNED.zip -Algorithm SHA256</span></pre></div>
+      <div class="terminal-body"><pre><span class="line">Get-FileHash .\recall-install-0.9.8-windows-x64-UNSIGNED.zip -Algorithm SHA256</span></pre></div>
     </div>
 
     <div class="checkpoint">
-      <p class="checkpoint-title">The withdrawn 0.9.7 build hashes to</p>
+      <p class="checkpoint-title">The hash should be</p>
       <div class="terminal terminal--output">
         <div class="terminal-bar"><span class="terminal-label">Output</span></div>
-        <div class="terminal-body"><pre><span class="ok">37c1450e6dbc6fafea8a2c1d2e33e6cf47ffbce783fd465f11842202bfd5a206</span></pre></div>
+        <div class="terminal-body"><pre><span class="ok">812fc9f85c6c2e40ecb4d8c2e6e66611fd04f20ebfb14840850ef5da57df96a3</span></pre></div>
       </div>
       <p class="muted" style="font-size: 0.9375rem;">PowerShell prints it in capitals. Case is not part of the value.</p>
     </div>
@@ -346,9 +346,9 @@
 <!-- ============================================================ Closer -->
 <section class="closer">
   <div class="shell-narrow" data-reveal>
-    <h2>The download is on hold, and the install is not.</h2>
-    <p>0.9.7 could not open its own window. The fix is written; a corrected build has to be released before there is anything worth downloading here.</p>
-    <a class="button" href="start.html">Install from the terminal instead</a>
+    <h2>Download it, run it, tell me what happened.</h2>
+    <p>Version 0.9.8, Windows 64-bit, 131 MB, no signature yet.</p>
+    <a class="button" href="https://github.com/GiulioDER/RE-call/releases/download/v0.9.8/recall-install-0.9.8-windows-x64-UNSIGNED.zip">Download for Windows</a>
   </div>
 </section>
 
