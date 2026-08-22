@@ -36,6 +36,7 @@ from recall.store import (
     DEFAULT_TENANT,
     PgVectorStore,
     _env_opt_out,
+    redacted_dsn,
     require_secure_dsn,
     warn_if_insecure_dsn,
 )
@@ -286,7 +287,10 @@ def _cli_policy() -> "TrustPolicy":
 
 
 def _cli_trust(
-    embedder: Embedder, calibration: Calibration | None
+    embedder: Embedder,
+    calibration: Calibration | None,
+    *,
+    policy: "TrustPolicy | None" = None,
 ) -> tuple["TrustPolicy", Calibration | None]:
     """Resolve the CLI's policy, and in development mode announce the threshold it falls back to.
 
@@ -298,8 +302,13 @@ def _cli_trust(
     to fall back to invisibly; printing it is the entire difference. A CLI that quietly taught
     "0.50 is the threshold" is what requirement 14 removes, and a printed, explicitly uncertified
     threshold teaches the opposite lesson.
+
+    `policy` lets a caller state its posture instead of reading the environment. It does not
+    weaken anything: the announcement below is keyed off `policy.strict`, so a caller that passes
+    a development policy gets the uncertified-threshold notice printed exactly as an operator who
+    set `RECALL_TRUST_MODE` would. Passing None keeps the environment as the only source.
     """
-    policy = _cli_policy()
+    policy = policy or _cli_policy()
     if calibration is None and not policy.strict:
         from recall.calibration import Calibration as _Calibration
         from recall.guards import DEFAULT_GAP_THRESHOLD
@@ -341,8 +350,17 @@ def _run_queries(
     queries: list[str],
     calibration: Calibration | None,
     entailment: EntailmentJudge | None = None,
+    policy: "TrustPolicy | None" = None,
 ) -> None:
-    policy, calibration = _cli_trust(embedder, calibration)
+    """Run each query and print the result.
+
+    `policy` overrides the environment for callers that know their own trust posture. Exactly one
+    caller does: `_quickstart` provisions an uncalibrated corpus and is a demonstration by
+    definition, so inheriting the strict default means `trusted_search` refuses every one of its
+    three queries. See the note at the call site for why that is an override rather than a
+    changed default.
+    """
+    policy, calibration = _cli_trust(embedder, calibration, policy=policy)
     for q in queries:
         _print_result(
             trusted_search(
@@ -355,6 +373,155 @@ def _run_queries(
             )
         )
         print()
+
+
+def _quickstart(args: argparse.Namespace) -> None:
+    """`recall quickstart`: provision, index, answer, and say what to do next.
+
+    Kept out of `main()` deliberately. `main()` is one long function whose branches all share a
+    resolved DSN, a resolved embedder and a store; this command resolves its own DSN by creating
+    the database, so folding it into that flow would mean making three shared preconditions
+    conditional. It is also the one command whose whole value is the ORDER of what the reader
+    sees, and that order is much easier to keep right when it is readable in one screen.
+
+    Nothing here is calibrated. `_cli_trust` therefore prints its uncertified-threshold notice, and
+    that notice is a feature of this command rather than noise to be suppressed: the first thing a
+    reader should learn is that the threshold answering their queries is not a calibration, because
+    the second thing they will want is the command that fits a real one.
+    """
+    from recall.quickstart import (
+        DEMO_QUERIES,
+        QUICKSTART_TABLE,
+        QUICKSTART_TENANT,
+        demo_corpus,
+        docker_unavailable_reason,
+        next_steps,
+        provision,
+        remove_stack,
+    )
+    from recall.schema import SchemaTooOld, apply_migrations
+
+    if args.remove:
+        target = remove_stack()
+        print(
+            "removed the quickstart database and its volume"
+            if target
+            else "nothing to remove: no quickstart stack has been created on this machine"
+        )
+        return
+
+    provisioned = args.existing_dsn is None
+    if provisioned:
+        # Checked BEFORE anything is written. A reader without Docker should get advice, not a
+        # half-provisioned directory they then have to know to delete.
+        reason = docker_unavailable_reason()
+        if reason:
+            raise SystemExit(reason)
+
+    # Resolved before the database is touched: an unusable `--embedder` is a mistake the reader can
+    # fix in a second, and discovering it after a PostgreSQL image has been pulled wastes minutes
+    # on their first impression of this project. `dim` is also needed to apply the schema, and the
+    # schema's vector width is welded to the table.
+    embedder = _make_embedder(args.embedder)
+
+    if provisioned:
+        print("starting a throwaway PostgreSQL (first run pulls an image, later runs reuse it)")
+        dsn, port, compose_path, reused = provision()
+        print(f"  {'reused' if reused else 'started'} the quickstart database on 127.0.0.1:{port}")
+    else:
+        # `redacted_dsn`, because this one is the reader's and may carry a real password. The
+        # quickstart's own DSN is printed in full a few lines up, deliberately: see `next_steps`.
+        dsn, compose_path = args.existing_dsn, None
+        print(f"using the database you supplied: {redacted_dsn(dsn)}")
+
+    # ⛔ **Own table first, default target ONLY if the database demands it.**
+    #
+    # Two hazards pull in opposite directions and the order below is what satisfies both.
+    #
+    # On a FRESH database, `quickstart_chunks` alone raises `SchemaTooOld`: global generation
+    # migrations are recorded against `chunks` and no other table may be migrated before them.
+    # That is documented in the README and it is the state every new reader is in. Applying the
+    # default target unconditionally fixes it and was the first attempt.
+    #
+    # ⚠️ It was wrong, and `--existing-dsn` is where it bites. A reader pointing this at a database
+    # they already use has a `chunks` table at THEIR embedder's width, and an unconditional call
+    # asks for it at this command's width: `SchemaIncompatible: table 'chunks' uses vector(64),
+    # requested dimension is 384`. The quickstart would refuse to run against exactly the database
+    # its own flag invites, and its whole isolation story is that it never touches `chunks`.
+    #
+    # Attempting the quickstart table first distinguishes the two by asking the database rather
+    # than guessing: a `SchemaTooOld` means the globals are genuinely absent, which only happens on
+    # a database with no recall install to damage. Where `chunks` already exists at another width
+    # the globals are already applied, the first call succeeds, and `chunks` is never opened.
+    try:
+        apply_migrations(dsn, table=QUICKSTART_TABLE, dim=embedder.dim)
+    except SchemaTooOld:
+        apply_migrations(dsn, table=DEFAULT_TABLE, dim=embedder.dim)
+        apply_migrations(dsn, table=QUICKSTART_TABLE, dim=embedder.dim)
+    print(f"  applied the schema to {QUICKSTART_TABLE} at dim={embedder.dim}")
+
+    # ⚠️ Its own table AND its own tenant. These 22 documents are fiction about a fictional
+    # service; indexed into `chunks`/`default` they would be retrieved beside a reader's real
+    # memory the first time they pointed anything real at the same database.
+    with PgVectorStore(
+        dsn, dim=embedder.dim, table=QUICKSTART_TABLE, tenant=QUICKSTART_TENANT
+    ) as store:
+        store.check_schema()
+        stats = Indexer(store, embedder).index_path(demo_corpus())
+        # ⚠️ Report what the STORE holds, not only what this run wrote. Re-indexing skips a file
+        # whose content hash is unchanged, so the second run of the quickstart wrote nothing and
+        # printed "indexed 0 chunks from 0 files", which reads as a failed index rather than as a
+        # corpus that was already there. `stats` is still shown when it is non-zero, because
+        # "wrote 22" and "found 22 already present" are genuinely different events.
+        held = store.count()
+        if stats.chunks:
+            print(f"  indexed {stats.chunks} chunks from {stats.files} files\n")
+        else:
+            print(f"  corpus already indexed: {held} chunks present, nothing to re-read\n")
+        print("Three queries. The second one is the reason this project exists.\n")
+        # ⚠️ **Development trust, stated here rather than inherited, and this was a real crash.**
+        # `TrustPolicy.from_env` defaults to STRICT, and a strict policy refuses an uncalibrated
+        # corpus outright: every one of these three queries died with
+        # `TrustRefusal: INDEX_NOT_READY` and the reader's first run ended in a traceback. That is
+        # correct behaviour for the library and wrong for this command, because this corpus is
+        # uncalibrated BY CONSTRUCTION: calibration needs labelled queries the reader has not
+        # written yet, and demanding them here would rebuild the seven-step install this command
+        # exists to replace.
+        #
+        # Scoped to these three queries and never exported, so nothing the reader runs afterwards
+        # inherits a relaxed posture. `_cli_trust` still prints its uncertified-threshold notice,
+        # which is the honest half: the reader is told the number is not a calibration, and the
+        # next-steps block below tells them which command fits a real one.
+        _run_queries(
+            store,
+            embedder,
+            list(DEMO_QUERIES),
+            None,
+            _entailment_judge(),
+            policy=TrustPolicy.development(),
+        )
+
+    print("What just happened, in order:")
+    print("  1. an ordinary question, answered from the corpus;")
+    print(
+        "  2. a question whose nearest match is a RETRACTED claim. `cache_ttl_v2.md` supersedes "
+        "`cache_ttl_v1.md`, so the 15 minute answer is marked superseded and points at the 60 "
+        "second one that replaced it. A plain vector index returns the retracted answer here;"
+    )
+    print("  3. a question the corpus cannot answer, refused rather than answered.\n")
+    # Explained rather than hidden. Every result above carries `DEGRADED:INDEX_NOT_READY`, which a
+    # first-time reader reads as breakage and which is in fact the system declining to overstate
+    # what it knows. Suppressing the flag for the demo would be the exact dishonesty this project
+    # is about; leaving it unexplained loses the reader instead. So: say what it means, and name
+    # the command that clears it.
+    print(
+        "DEGRADED:INDEX_NOT_READY on every result above is not an error. It is this corpus telling "
+        "you its threshold was never fitted to it, so no verdict here is certified. That is the "
+        "state a strict deployment REFUSES to answer from, and it is why the demo had to ask for "
+        "development trust explicitly. `recall setup` fits a real one.\n"
+    )
+    for line in next_steps(dsn, provisioned=provisioned, compose_path=compose_path):
+        print(line)
 
 
 def _positive_int(value: str) -> int:
@@ -1442,6 +1609,45 @@ def main(argv: list[str] | None = None) -> None:
     p_rw_verify.add_argument("path")
     p_rw_verify.add_argument("--glob", default=DEFAULT_GLOB)
 
+    _quickstart_blurb = (
+        "start a throwaway database, index the bundled demo corpus and answer three queries"
+    )
+    p_quickstart = sub.add_parser(
+        "quickstart",
+        help=_quickstart_blurb,
+        description=(
+            f"{_quickstart_blurb}. One command from a fresh `pip install` to a real answer, "
+            "including the PostgreSQL it needs. Nothing is calibrated and nothing is registered "
+            "with an agent: this exists to show what the retrieval layer does, and prints the "
+            "next step for each. Remove everything it created with `recall quickstart --remove`."
+        ),
+    )
+    # ⚠️ **No `_opens_db=True`, and that is the point.** The flag drives `main()`'s DSN resolution,
+    # its secure-DSN guard and its .env refusal, all of which act on a DSN this command does not
+    # have yet: it PROVISIONS the database it is about to use. Declaring the flag would refuse the
+    # run over a configuration problem the quickstart exists to bypass, which is exactly the dead
+    # end the `setup` carve-out below already had to be written for once.
+    # ⚠️ `--existing-dsn`, NOT `--dsn`. The parent parser already owns `--dsn` (aliased from
+    # `--serving-dsn`, with a default), so a subparser option of the same name would be a second
+    # `--dsn` whose meaning depended on which side of the word `quickstart` the reader typed it,
+    # and only one of the two would be read. A distinct name cannot be given by accident.
+    p_quickstart.add_argument(
+        "--existing-dsn",
+        dest="existing_dsn",
+        default=None,
+        help=(
+            "use a PostgreSQL you already have instead of starting one. Needs the pgvector "
+            "extension available and a role that may create tables. Skips Docker entirely."
+        ),
+    )
+    p_quickstart.add_argument(
+        "--remove",
+        action="store_true",
+        help="stop the quickstart database and destroy its volume, then exit",
+    )
+    # No `--embedder` here: the parent parser's flag already covers it and already honours
+    # RECALL_EMBEDDER. A second one would shadow the first depending on argument order.
+
     sub.add_parser("demo", help="index corpus/ and run sample memory queries").set_defaults(
         _opens_db=True
     )
@@ -1743,6 +1949,12 @@ def main(argv: list[str] | None = None) -> None:
         # Pass the caller's table through: the wizard checks the chosen embedder's width against
         # it, and checking a different table than the one in use is worse than not checking.
         run_setup_wizard(dsn=args.dsn, migration_dsn=args.migration_dsn, table=args.table)
+        return
+
+    # Before every DSN-shaped guard above and below, because this command has no DSN to guard yet:
+    # it creates one. See the `_opens_db` note on its parser.
+    if args.cmd == "quickstart":
+        _quickstart(args)
         return
 
     if args.cmd == "uninstall":

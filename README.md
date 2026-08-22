@@ -91,6 +91,33 @@ the full interpretation and limits.
 
 ## Quickstart
 
+Two commands, and the second one starts its own database:
+
+```bash
+pip install "recall-rag[fastembed]"
+recall quickstart
+```
+
+That provisions a throwaway PostgreSQL with pgvector in Docker, indexes a small corpus that ships
+inside the package, and answers three questions: one it can answer, one whose nearest match is a
+claim that was later retracted, and one it refuses. The middle one is the point.
+
+Measured 2026-08-22 on one Windows machine with the pgvector image already pulled: **50 s** cold,
+**22 s** on a re-run that reuses the container. A machine without the image also pays for that
+pull, which is the largest and most variable part and is not included. Re-measure with
+`time recall quickstart`.
+
+Nothing is calibrated and nothing is registered with an agent. It prints the next command for each.
+
+```bash
+recall quickstart --remove          # stops the database and destroys its volume
+```
+
+Already running PostgreSQL with pgvector? `recall quickstart --existing-dsn <dsn>` skips Docker
+entirely. No Docker and no PostgreSQL? The setup below is the long form of the same thing.
+
+### The long form
+
 RE-call keeps memory in your own PostgreSQL with pgvector, so a database comes first.
 
 **Already running PostgreSQL with pgvector?** Skip ahead and point the DSN at it.
