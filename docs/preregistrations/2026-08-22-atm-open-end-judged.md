@@ -89,3 +89,93 @@ band is set below that arithmetic rather than at it.
 ## Result
 
 Not yet measured at the time this record was committed.
+
+---
+
+## Result (2026-08-22)
+
+**Status:** measured. Predictions above unedited. 144 judge calls through the disclosed transport,
+official prompt and parsing untouched.
+
+**Apparatus read first, as the record requires.** The 16 gold-abstention questions that re-abstained
+in both arms score **1.0000 in both**, 0 of 16 below. The judge reproduces its own 2026-08-21
+verdicts on those rows, so the comparison is interpretable.
+
+### The 55 `open_end` abstentions that were wrong
+
+| arm | judged score | committed on | share of committed judged true | gold-token coverage |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | 0.0000 | 0 of 55 | n/a | 0.0000 |
+| control | 0.0909 | 11 of 55 | 0.4545 | 0.1447 |
+| **treatment** | **0.3091** | 31 of 55 | **0.5484** | 0.2864 |
+
+**Treatment minus control: +0.2182, 95% paired bootstrap [+0.1091, +0.3273], excludes zero.**
+In QS on the full split: treatment +1.68, control +0.49, **framing only +1.18 [+0.59, +1.78]**.
+
+**No registered falsifier fired.**
+
+### The 17 gold abstentions, now judged rather than assumed
+
+| arm | score | points lost | damage |
+| --- | ---: | ---: | ---: |
+| baseline | 1.0000 | 0 of 17 | 0.00 QS |
+| control | 0.9412 | 1 of 17 | 0.10 QS |
+| treatment | 0.9412 | 1 of 17 | **0.10 QS** |
+
+The previous record's pessimistic bound assumed the one committed answer would score zero. It does.
+The bound was exact, and the damage is identical in both arms, so it is a re-ask effect rather than
+the framing.
+
+### Predicted against measured
+
+| Prediction | Predicted | Measured | Verdict |
+| --- | --- | ---: | --- |
+| Control judged score | 0.08 to 0.18 | 0.0909 | held |
+| Treatment judged score | 0.15 to 0.30 | **0.3091** | **falsified, high by 0.0091** |
+| Treatment minus control | +0.05 to +0.18 | **+0.2182** | **falsified, high** |
+| Share of the 31 committed judged true | 0.30 to 0.50 | **0.5484** | **falsified, high** |
+| The 16 re-abstained gold abstentions | 1.0000 | 1.0000 | held |
+
+### The caution from the previous record was wrong, and wrong in the useful direction
+
+That record flagged that the treatment's committed answers cover **less** gold than the control's,
+0.4812 against 0.6137, and are a third as long, and warned that the framing was buying commitment
+in the shape this judge punishes. **It is not.** The treatment's committed answers are judged true
+**54.84%** of the time against the control's **45.45%**: shorter, lower-coverage answers were judged
+correct more often, not less.
+
+So the gold-token coverage proxy **understated** this arm rather than overstating it, which is the
+opposite of the arm E failure the record was watching for. Coverage remains a mechanism worth
+reporting and is now measurably not a substitute for the judge in either direction.
+
+### The net across all three records
+
+Framing only, with the same-day control subtracted everywhere, which is the part attributable to
+the intervention rather than to re-asking:
+
+| component | n | QS | interval |
+| --- | ---: | ---: | --- |
+| deterministic types | 85 | **+1.41** | [+0.72, +2.15] |
+| wrong `open_end` abstentions | 55 | **+1.18** | [+0.59, +1.78] |
+| gold abstentions | 17 | **-0.10** | measured, not assumed |
+| **total** | **157** | **+2.50** | |
+
+Against the shipped baseline of **68.4264**, the attributable projection is **70.93**. The larger
+figure obtained by comparing the treatment to the baseline directly, **+3.97 QS to 72.40**, includes
+the re-ask and drift effect the control isolates, and **must not be quoted as the value of the
+intervention**: a control that gains 1.48 QS by re-asking with the unchanged prompt would gain it
+for the baseline too.
+
+### What is now established, and the one thing that still blocks promotion
+
+Established: the intervention is real on **both halves of the benchmark**, its interval excludes
+zero on each, it costs 0.10 QS where abstaining is correct, and it concentrates where the evidence
+is. That is three independent records, 458 provider calls and 144 judge calls, with the
+deterministic half free to re-check.
+
+Not established: A1's registered re-abstention falsifier fired at 44.7% against a ceiling of 20%
+and **has never been re-registered in the relative form its own result section argued for**. Until a
+record predicts that criterion relative to a control and it holds, this line is a measured effect
+without a passed pre-registration, and shipping it would set the precedent that a falsifier can be
+outrun by later evidence. The next record is that one, and it is cheap: the arms are already
+generated.
