@@ -114,3 +114,86 @@ mismatches.
 ## Result
 
 Not yet measured at the time this record was committed.
+
+---
+
+## Result (2026-08-22)
+
+**Status:** measured. Predictions above unedited. 157 provider calls, zero judge calls.
+
+**Design falsifier read first, as the record requires.** 95 of 157 replicated answers are identical
+to the first generation, a rate of **0.6051**, below the 0.90 that would have invalidated the test.
+The replication is a fresh sample and the criterion was not tested against a copy of the data that
+motivated it.
+
+| stratum | n | replication | control | **ratio** | first generation |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| deterministic | 85 | 0.4588 | 0.7765 | **0.591** | 0.4471 |
+| wrong `open_end` | 55 | 0.4000 | 0.8000 | **0.500** | 0.4364 |
+| gold abstentions | 17 | 0.8824 | 0.9412 | **0.938** | 0.9412 |
+
+Deterministic score on the 85: replication **0.2863**, first generation 0.2853, baseline 0.0000.
+
+### The criterion
+
+| clause | requirement | measured | |
+| --- | --- | ---: | --- |
+| C1 deterministic | ratio at most 0.70 | 0.591 | **pass** |
+| C1 `open_end` | ratio at most 0.70 | 0.500 | **pass** |
+| **C2 gold abstentions** | **ratio at least 0.95** | **0.938** | **FAIL** |
+| C3 deterministic score | at least 0.20 | 0.2863 | **pass** |
+
+**The criterion fails, on the discrimination clause.** The treatment re-abstains on 15 of 17
+questions where refusing is correct, against the control's 16. One question, and the criterion is
+written so that one question decides it.
+
+### Predicted against measured
+
+| Prediction | Predicted | Measured | Verdict |
+| --- | --- | ---: | --- |
+| Deterministic score | 0.24 to 0.33 | 0.2863 | held |
+| Re-abstention, deterministic | 0.38 to 0.52 | 0.4588 | held |
+| C1 ratio, deterministic | 0.49 to 0.67 | 0.591 | held |
+| Re-abstention, wrong `open_end` | 0.36 to 0.52 | 0.4000 | held |
+| C1 ratio, `open_end` | 0.45 to 0.65 | 0.500 | held |
+| **C2 ratio, gold abstentions** | 0.95 to 1.06 | **0.938** | **falsified, low** |
+| Identical-answer rate | 0.55 to 0.80 | 0.6051 | held |
+
+Six of seven held, and the miss is the one the record was written to decide. That is the first
+well-calibrated prediction set in this study, and it did not save the arm.
+
+### What the failure actually says, and what it does not
+
+**It does not say the effect is not real.** The deterministic score reproduced to within 0.001,
+0.2863 against 0.2853, on an independent generation with 60% answer overlap. Both C1 clauses passed
+with room. The +2.50 QS measured across the three earlier records stands.
+
+**It says the arm erodes correct refusals, slightly, and that the erosion cannot be bounded here.**
+Two of 17 in the replication against one of 17 in the first generation: measured damage moves from
+0.10 to 0.197 QS, and the difference between those two numbers is one question.
+
+⚠️ **The blocker is now the benchmark, not the arm.** ATM has **23 gold-abstention questions in
+1,013**, and 17 of them are in scope. On a stratum that size the finest distinction expressible is
+one question, worth 0.0588 of the ratio, so the C2 threshold of 0.95 was in effect a demand for
+exact parity with the control. Any threshold looser than parity would have passed an arm that
+commits on 2 of 17; any threshold at parity fails an arm that commits on 1. **There is no honest
+place to put that line on 17 questions**, and choosing one after seeing which side the data fell on
+is the failure this whole record exists to avoid.
+
+### Verdict for the A1 line
+
+**Measured, replicated, and not promoted.** Two registered falsifiers have now fired on it: A1's
+absolute re-abstention ceiling, and this record's discrimination clause. The effect is +2.50 QS
+attributable, the damage is between 0.10 and 0.20 QS, and both statements are supported by
+committed pre-registrations with their falsifiers reported above their scores.
+
+Promotion needs one of two things, and neither is a rerun of this:
+
+1. **A larger population of questions where refusing is correct.** ATM cannot supply it. A
+   different corpus, or a constructed unanswerable set held beside the benchmark, could.
+2. **A gate that does not rely on the emitted abstention alone.** The sufficiency classifier of
+   idea A13 is the candidate, and this line has now measured what it would have to beat: the
+   framing alone moves the decision at ratio 0.50 to 0.59 while costing between one and two of
+   seventeen correct refusals.
+
+The line closes here.
