@@ -257,12 +257,39 @@ def test_the_skip_reason_is_the_one_operators_are_told_to_act_on() -> None:
         and call.func.attr == "skip"
     ]
     assert len(skips) == 1, f"expected one skip in require_db, found {len(skips)}"
-    assert any(
+    # Either the constant itself, or the one helper allowed to extend it. The helper exists so a
+    # skip can name what the probe actually saw, a refusal reading differently from a timeout, and
+    # the assertion below keeps that helper honest so this stays a check against a HARDCODED COPY
+    # rather than a check against one particular spelling.
+    cites_constant = any(
         isinstance(arg, ast.Name) and arg.id == "DB_UNREACHABLE" for arg in skips[0].args
-    ), (
+    )
+    cites_helper = any(
+        isinstance(arg, ast.Call)
+        and isinstance(arg.func, ast.Name)
+        and arg.func.id == "db_unreachable_reason"
+        for arg in skips[0].args
+    )
+    assert cites_constant or cites_helper, (
         "require_db() skips with something other than DB_UNREACHABLE, so a DB-less run reports a "
         "different reason depending on how the test was skipped."
     )
+
+    if cites_helper:
+        # The helper must BUILD ON the constant, not replace it. Without this, routing the skip
+        # through a function would be a hole straight through the check above: any string at all
+        # could come back and the AST would still see an approved call.
+        helper = next(
+            n
+            for n in ast.walk(_conftest_tree())
+            if isinstance(n, AnyFunc) and n.name == "db_unreachable_reason"
+        )
+        assert any(
+            isinstance(n, ast.Name) and n.id == "DB_UNREACHABLE" for n in ast.walk(helper)
+        ), (
+            "db_unreachable_reason() does not mention DB_UNREACHABLE, so the reason operators are "
+            "told to act on has become a copy that can drift from the constant."
+        )
 
 
 def _only(source: str) -> AnyFunc:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import sys
@@ -169,12 +170,85 @@ def _reject_unsafe_test_dsn() -> None:
 _reject_unsafe_test_dsn()
 
 
+#: How long one probe waits, and how many probes are tried before the answer is believed.
+#:
+#: ⚠️ **What this replaces is a 2 second timeout tried once PER TEST, and its failure mode was a
+#: false GREEN.** `require_db()` re-probed on every test reaching a DB fixture, so on a loaded
+#: machine a probe that lost the race turned a database test into a SKIP. Nothing failed and
+#: nothing said so, which is the signature `CLAUDE.md` warns about under "read the skip count
+#: before calling a run green".
+#:
+#: Measured 2026-08-21, same commit, same machine, same container: a run with nothing else
+#: competing reported `6209 passed, 34 skipped`; a run sharing the host with a type check and a
+#: doc gate reported `6176 passed, 88 skipped`. 21 of that difference is tests added in between,
+#: and **54 is tests that had passed and now skipped**.
+#:
+#: Both numbers only apply when a DSN is CONFIGURED. With `RECALL_TEST_DSN` unset there is nothing
+#: to wait for: the probe goes to a reserved port, is refused immediately, and retrying a refusal
+#: three times would just triple a cost every DB-less run already pays.
+_PROBE_TIMEOUT_SECONDS = 10
+_PROBE_ATTEMPTS = 3
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """Did this connection attempt run out of time, as opposed to being refused outright?
+
+    Matched on the message as well as the class. `psycopg.errors.ConnectionTimeout` is the precise
+    type, and it is not the only way libpq reports the condition: a wrapped `OperationalError`
+    carrying "timeout expired" arrives from the same cause through a different path. Missing one
+    would silently turn the retry off for the exact case it exists to handle.
+    """
+    return isinstance(exc, psycopg.errors.ConnectionTimeout) or "timeout" in str(exc).lower()
+
+
+@functools.cache
+def _probe_database() -> str | None:
+    """`None` when the database answered, otherwise a one-line diagnosis of why it did not.
+
+    **Cached, and the cache is the fix rather than an optimisation.** The answer is decided once,
+    at conftest import, before the suite has had a chance to load the machine, so every test in a
+    run agrees about whether a database exists. Deciding it per test made the skip count a function
+    of what else the host happened to be doing at that second.
+
+    Retried, because one decision for a whole run must not itself be a coin flip.
+
+    The failure is RETURNED rather than swallowed. `_db_available()` reduces it to a boolean for
+    the callers that only need one, but the text reaches the skip reason, and that is the
+    difference between "nothing is listening" and "something is there and too slow to answer".
+    Those want opposite responses from whoever reads the report, and the old probe collapsed them.
+    """
+    # A shorter wait when nobody asked for a database. `_UNCONFIGURED_DSN` points at a reserved
+    # port so the answer is normally instant, but a host that DROPs rather than refuses turns that
+    # into a full wait, and every database-less run on every contributor's machine would pay it.
+    configured = os.environ.get("RECALL_TEST_DSN") is not None
+    timeout = _PROBE_TIMEOUT_SECONDS if configured else 2
+    failure = "no attempt was made"
+    for _attempt in range(_PROBE_ATTEMPTS):
+        try:
+            psycopg.connect(TEST_DSN, connect_timeout=timeout).close()
+            return None
+        except Exception as exc:  # noqa: BLE001 - any failure to connect is the same answer here
+            # The class name as well as the message: `str(exc)` is the empty string for several
+            # psycopg errors, and a reason ending in "Probe saw: " reads as a mechanism that ran
+            # and found nothing worth saying. Collapsed to one line because this text becomes a
+            # pytest skip reason, and psycopg's connection errors span lines, which would break the
+            # `-rs` report into fragments that no longer read as one cause.
+            failure = " ".join(f"{type(exc).__name__}: {exc}".split())
+            if not _is_timeout(exc):
+                # ⛔ Retry AMBIGUITY, never certainty. A refused connection is a complete answer:
+                # nothing is listening on that port, and asking twice more cannot change it. Only a
+                # timeout is the ambiguous case this retry exists for, and it is the only one a
+                # loaded host manufactures.
+                #
+                # Not merely tidy. `test_requires_db_coverage.py` deliberately runs a subprocess
+                # against a dead port and requires it to skip cleanly; retrying that refusal would
+                # triple the fixed cost of the guard that protects the whole fixture set.
+                break
+    return failure
+
+
 def _db_available() -> bool:
-    try:
-        psycopg.connect(TEST_DSN, connect_timeout=2).close()
-        return True
-    except Exception:
-        return False
+    return _probe_database() is None
 
 
 #: One wording, used by the collection-time mark and by every fixture that refuses at setup, so a
@@ -194,7 +268,20 @@ DB_UNREACHABLE = (
     "other's tables."
 )
 
-requires_db = pytest.mark.skipif(not _db_available(), reason=DB_UNREACHABLE)
+def db_unreachable_reason() -> str:
+    """`DB_UNREACHABLE`, plus what the probe actually saw.
+
+    The constant stays the PREFIX and is never rebuilt, because `test_requires_db_coverage.py`
+    compares it against a subprocess's output and the comment above explains why it must not branch
+    on the environment. What is appended is a diagnosis, not a second wording: a refused connection
+    and a connection that timed out are different states, and a report that spells both "not
+    reachable" cannot tell a machine with no database from a machine too busy to answer one.
+    """
+    probe = _probe_database()
+    return DB_UNREACHABLE if probe is None else f"{DB_UNREACHABLE} Probe saw: {probe}"
+
+
+requires_db = pytest.mark.skipif(not _db_available(), reason=db_unreachable_reason())
 
 
 def require_db() -> None:
@@ -211,7 +298,7 @@ def require_db() -> None:
     same protection.
     """
     if not _db_available():
-        pytest.skip(DB_UNREACHABLE)
+        pytest.skip(db_unreachable_reason())
 
 #: Fixtures below that hand a test access to the database. Each one REFUSES to run without a
 #: reachable DB, which is what makes `@requires_db` an optimisation (skip at collection, before the
