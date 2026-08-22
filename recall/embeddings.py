@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+
+from recall.observability import get_logger
 from typing import Literal, Protocol, TypeVar, runtime_checkable
 
 #: Return type of the callable `retry_with_backoff` wraps — it hands back whatever `fn` returns,
@@ -942,6 +944,33 @@ def _fallback_profile_id(model_name: str, dimension: int, asymmetric: bool) -> s
     return f"unregistered__{model_name.replace('/', '__')}__{dimension}__{kind}"
 
 
+_log = get_logger("embeddings")
+
+
+def _batch_size_from_env() -> int | None:
+    """`RECALL_FASTEMBED_BATCH` as a positive int, or `None` for the backend's own default.
+
+    ⚠️ **An unreadable value degrades rather than raising.** `int()` on a mistyped variable used to
+    raise `ValueError` out of the middle of an index run, after several projects had already been
+    written. A guard against running out of memory that instead kills the job on a typo is worse
+    than no guard. It warns once so the setting is not silently ignored either.
+    """
+    raw = os.environ.get("RECALL_FASTEMBED_BATCH")
+    if not raw:
+        return None
+    try:
+        size = int(raw)
+    except ValueError:
+        _log.warning(
+            "RECALL_FASTEMBED_BATCH=%r is not an integer; using the backend default", raw
+        )
+        return None
+    if size < 1:
+        _log.warning("RECALL_FASTEMBED_BATCH=%r is not positive; using the backend default", raw)
+        return None
+    return size
+
+
 class FastEmbedEmbedder:
     """Real local embeddings (no API key). Requires `pip install "recall-rag[fastembed]"`."""
 
@@ -1110,7 +1139,28 @@ class FastEmbedEmbedder:
         return [float(x) for x in next(iter(self._encoder(self._query_mode)([text])))]
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:
-        return [[float(x) for x in vec] for vec in self._encoder(self._passage_mode)(texts)]
+        # ⚠️ **`RECALL_FASTEMBED_BATCH` bounds the batch fastembed builds internally.** Unset, this
+        # behaves exactly as before. The default of 256 is too large for a 1024-dim model on long
+        # passages: bge-large asked onnxruntime for a single 1.24 GB buffer and the arena refused,
+        # which fails an index part-way through rather than merely running slowly.
+        #
+        # Passed as fastembed's OWN parameter rather than by slicing the list here. An earlier
+        # version sliced and called the encoder once per slice, and at size 16 that wedged: 152 of
+        # 208 files in, eight cores pinned, no database writes for three minutes, and every server
+        # connection idle in `ClientRead`, so the stall was in this process rather than on I/O.
+        encoder = self._encoder(self._passage_mode)
+        size = _batch_size_from_env()
+        if size is not None:
+            try:
+                return [
+                    [float(x) for x in vec]
+                    for vec in encoder(texts, batch_size=size)  # type: ignore[call-arg]
+                ]
+            except TypeError:
+                # This backend's encoder does not take the argument. Fall through rather than fail:
+                # the variable is a memory guard, not a contract.
+                pass
+        return [[float(x) for x in vec] for vec in encoder(texts)]
 
 
 SFR_CODE_EMBEDDER_MODEL = "Salesforce/SFR-Embedding-Code-2B_R"

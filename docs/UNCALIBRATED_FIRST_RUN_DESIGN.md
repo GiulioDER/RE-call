@@ -97,7 +97,7 @@ the tree this was measured against: the fallback returned the literal string
 carried a 384 dimensional profile's id.
 
 🔁 **Fixed upstream, 2026-08-18, by #370**, which this measurement prompted. `_fallback_profile_id`
-(`recall/embeddings.py:891`) now derives `unregistered__{model}__{dimension}__{kind}`
+(`recall/embeddings.py:944`) now derives `unregistered__{model}__{dimension}__{kind}`
 (`recall/embeddings.py:942`) instead of claiming a registry id it does not have.
 
 ⚠️ **That does NOT restore `embedding_profile` as an adoption check, and the design still must not
