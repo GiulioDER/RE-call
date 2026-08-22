@@ -8,6 +8,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Added
+
+* **`recall quickstart` goes from a fresh `pip install` to three answered queries in one command,
+  database included.** It starts a throwaway pgvector container on a free port, applies the schema,
+  indexes a corpus that ships inside the wheel, and runs three queries chosen to show the retrieval
+  contract rather than to flatter it: one answerable, one whose nearest match is a claim that was
+  later retracted, and one it refuses. `--remove` stops the stack and destroys its volume,
+  `--existing-dsn` skips Docker for anyone already running PostgreSQL.
+
+  It deliberately does NOT calibrate, register an MCP server, or build the `recall-wizard` image
+  the full installer builds. Those are the slow steps, and each is printed as a named next command
+  instead. Every result carries `DEGRADED:INDEX_NOT_READY`, which is explained in the output rather
+  than suppressed: the corpus genuinely has no calibration, and hiding that in the demo would
+  misrepresent the one property the project is about.
+
+  ⚠️ **`recall demo` is not a substitute and cannot be.** It indexes the relative path `corpus`,
+  which exists only in a git clone, so from a PyPI install it indexes nothing. `quickstart`
+  resolves its corpus from the installed package.
+
+### Fixed
+
+* **The unanswerable query in the demo corpus did not abstain.** `recall demo`'s "llamas on mars"
+  scores a top cosine of **0.505** against the 0.50 development threshold on `recall/eval/corpus`,
+  so it answers, out of `secrets_handling.md`. It was the obvious query to reuse for `quickstart`
+  and reusing it would have captioned an answer as a refusal. Replaced by measurement with one that
+  clears the threshold by 0.054, and `tests/test_quickstart.py` now asserts the margin rather than
+  the boolean, so drift toward the edge is visible before it flips. A query's absence from the
+  corpus does not imply abstention; only the cosine does.
+
 ## [0.9.8] (2026-08-22)
 
 ### Added
