@@ -64,6 +64,16 @@ def test_every_hand_maintained_copy_of_the_version_is_accounted_for() -> None:
             continue
         if relative.startswith(("tests/", "docs/", "results/", "benchmarks/")):
             continue
+        # Skipped for the same reason `benchmarks/` is, and it is only outside that tree because
+        # this repository keeps its scripts together. `agent_ab_build_workspaces.py` GENERATES a
+        # benchmark fixture whose whole task is "bump recall/version.py from 0.9.7 to 0.9.8", so
+        # the literal it carries is fixture DATA and must never track the package version: if the
+        # package reached 0.9.8 and something helpfully updated this, the task would ask an agent
+        # to bump a file that already says 0.9.8 and every session would pass for the wrong
+        # reason. Not added to `known` above, because `known` means "somebody checks these agree"
+        # and this one must NOT agree.
+        if relative == "scripts/agent_ab_build_workspaces.py":
+            continue
         text = path.read_text(encoding="utf-8", errors="replace")
         # The quoted or `version:` form only. A bare `0.9.7` inside prose is a historical
         # measurement — `recall/wizard/stack.py` is full of them — and rewriting those would

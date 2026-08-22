@@ -360,6 +360,22 @@ class StdioRecallSpec:
                 # the one it was given. `PYTHONPATH` makes the import independent of both, which
                 # is what a benchmark that runs sessions in a scratch directory needs.
                 "PYTHONPATH": str(Path(self.cwd).resolve()),
+                # ⛔ And PYTHONPATH alone is not enough once sessions run somewhere real.
+                #
+                # The server inherits the SESSION's working directory, and `python -m` puts that
+                # directory FIRST on sys.path, ahead of PYTHONPATH. The task-success benchmark runs
+                # each session in a sandbox restored from a fixture, and several of those fixtures
+                # contain their own `recall/` package, because the tasks are about this repository.
+                # So the fixture shadowed the real package and the server died on
+                # `ModuleNotFoundError: No module named 'recall.calibration'`.
+                #
+                # What that looks like from outside is the failure this whole harness is built to
+                # catch: `mcp_servers: [{"name": "recall-memory", "status": "failed"}]`, no recall
+                # tool in the session, and a perfectly ordinary-looking transcript. Measured
+                # 2026-08-21, cwd=sandbox fails and cwd=sandbox plus this variable gives 16 tools.
+                # PYTHONSAFEPATH drops the working directory from sys.path entirely, which is what
+                # a server that must not import from wherever its caller happens to stand wants.
+                "PYTHONSAFEPATH": "1",
             }
         )
         if self.trust_mode:

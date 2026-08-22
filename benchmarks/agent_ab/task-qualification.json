@@ -1,0 +1,165 @@
+{
+  "static_memory_sources": [
+    "CLAUDE.md"
+  ],
+  "static_memory_chars": 11773,
+  "tenant": "default",
+  "top_k": 5,
+  "transport": "stdio",
+  "trust_state": "trusted",
+  "calibrated": true,
+  "generation_id": "gen_f01fc522293d40c99032cd088500e11d",
+  "calibration_id": "cal_b40f2c6efa9443a3b5d727f71a92de77",
+  "qualifications": [
+    {
+      "trap_id": "ts-false-zero-search",
+      "locus": "memory_only",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": false,
+      "declared_memo": "msys-mangles-slash-patterns",
+      "retrieved_sources": [
+        "msys-mangles-slash-patterns.md",
+        "deleted-files-live-in-git-history.md",
+        "reference_index.md",
+        "artifacts-must-not-carry-server-paths.md",
+        "artifacts-must-not-carry-server-paths.md"
+      ]
+    },
+    {
+      "trap_id": "ts-lf-rewrite",
+      "locus": "memory_only",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": false,
+      "declared_memo": "python-write-text-crlf-churn",
+      "retrieved_sources": [
+        "python-write-text-crlf-churn.md",
+        "python-write-text-crlf-churn.md",
+        "shared-editable-install-across-worktrees.md",
+        "verify-citations-after-rebase-not-before.md",
+        "doc-citation-gate-skips-uncommitted-files.md"
+      ]
+    },
+    {
+      "trap_id": "ts-worktree-import",
+      "locus": "memory_only",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": false,
+      "declared_memo": "benchmark-scripts-import-the-main-checkout",
+      "retrieved_sources": [
+        "benchmark-scripts-import-the-main-checkout.md",
+        "shared-editable-install-across-worktrees.md",
+        "orphans-answers-a-different-question.md",
+        "session-db-container-is-keyed-by-checkout-path.md",
+        "recall-rewrite-module-is-unlanded.md"
+      ]
+    },
+    {
+      "trap_id": "ts-raise-on-missing",
+      "locus": "memory_only",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": false,
+      "declared_memo": "missing-input-becomes-a-clean-null",
+      "retrieved_sources": [
+        "feedback_index.md",
+        "missing-input-becomes-a-clean-null.md",
+        "MEMORY.md",
+        "verify-citations-after-rebase-not-before.md",
+        "an-empty-assertion-can-pass-vacuously-after-you-change-an-accumulator.md"
+      ]
+    },
+    {
+      "trap_id": "ts-bounded-runner",
+      "locus": "memory_only",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": false,
+      "declared_memo": "subprocess-timeout-does-not-bound-wall-clock",
+      "retrieved_sources": [
+        "project_index.md",
+        "subprocess-timeout-does-not-bound-wall-clock.md",
+        "subprocess-timeout-does-not-bound-wall-clock.md",
+        "the-citation-test-is-subprocess-bound.md",
+        "full-suite-takes-31-minutes-not-12.md"
+      ]
+    },
+    {
+      "trap_id": "ts-sample-covers-tail",
+      "locus": "memory_only",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": false,
+      "declared_memo": "sorted-sample-plus-early-stop-is-head-bias",
+      "retrieved_sources": [
+        "sorted-sample-plus-early-stop-is-head-bias.md",
+        "sorted-sample-plus-early-stop-is-head-bias.md",
+        "voyage-query-embeddings-are-not-deterministic.md",
+        "hnsw-returns-nothing-at-small-k.md",
+        "feedback_index.md"
+      ]
+    },
+    {
+      "trap_id": "ts-separator-canary",
+      "locus": "memory_only",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": false,
+      "declared_memo": "pasted-unicode-separators-rot",
+      "retrieved_sources": [
+        "pasted-unicode-separators-rot.md",
+        "shell-heredocs-collapse-backslashes.md",
+        "pasted-unicode-separators-rot.md",
+        "feedback_index.md",
+        "ruff-format-is-not-this-repos-convention.md"
+      ]
+    },
+    {
+      "trap_id": "ts-autouse-tmp-path",
+      "locus": "memory_only",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": false,
+      "declared_memo": "autouse-fixtures-must-not-write-into-tmp-path",
+      "retrieved_sources": [
+        "autouse-fixtures-must-not-write-into-tmp-path.md",
+        "autouse-fixtures-must-not-write-into-tmp-path.md",
+        "deleting-a-function-deletes-its-side-effects.md",
+        "deleting-a-function-deletes-its-side-effects.md",
+        "feedback_index.md"
+      ]
+    },
+    {
+      "trap_id": "ctl-lint-only-check",
+      "locus": "both",
+      "eligible": true,
+      "in_memory": true,
+      "in_claude_md": true,
+      "declared_memo": "ruff-format-is-not-this-repos-convention",
+      "retrieved_sources": [
+        "ruff-format-is-not-this-repos-convention.md",
+        "recall-rewrite-module-is-unlanded.md",
+        "mixing-embedders-in-one-tenant-is-silent.md",
+        "verify-the-commit-not-the-worktree.md",
+        "data-as-literals-becomes-corpus.md"
+      ]
+    },
+    {
+      "trap_id": "ctl-stage-by-pathspec",
+      "locus": "claude_md_only",
+      "eligible": true,
+      "in_memory": false,
+      "in_claude_md": true,
+      "declared_memo": null,
+      "retrieved_sources": [
+        "subagents-commit-to-wrong-worktree.md",
+        "never-scp-one-file-between-trees-of-unknown-version.md",
+        "mutation-scripts-revert-concurrent-edits.md",
+        "verify-citations-after-rebase-not-before.md",
+        "spawned-task-chips-duplicate-work.md"
+      ]
+    }
+  ]
+}
