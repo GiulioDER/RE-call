@@ -102,9 +102,11 @@ That provisions a throwaway PostgreSQL with pgvector in Docker, indexes a small 
 inside the package, and answers three questions: one it can answer, one whose nearest match is a
 claim that was later retracted, and one it refuses. The middle one is the point.
 
-Measured 2026-08-22 on one Windows machine with the pgvector image already pulled: **50 s** cold,
-**22 s** on a re-run that reuses the container. A machine without the image also pays for that
-pull, which is the largest and most variable part and is not included. Re-measure with
+Measured 2026-08-22 on one Windows machine with the pgvector image already pulled:
+about **50 seconds** <!--@ citation-pending: one machine, one hand-timed run, not backed by a committed results artifact -->
+cold, and about **22 seconds** <!--@ citation-pending: one machine, one hand-timed run, not backed by a committed results artifact -->
+on a re-run that reuses the container. A machine without the image also pays for that pull, which
+is the largest and most variable part and is not included here. Re-measure with
 `time recall quickstart`.
 
 Nothing is calibrated and nothing is registered with an agent. It prints the next command for each.
