@@ -255,12 +255,14 @@ p {
   color: var(--ink);
 }
 
-.masthead nav a[href="start.html"] {
+.masthead nav a[href="start.html"],
+.masthead nav a[href="download.html"] {
   color: var(--signal);
   font-weight: 600;
 }
 
-.masthead nav a[href="start.html"]:hover {
+.masthead nav a[href="start.html"]:hover,
+.masthead nav a[href="download.html"]:hover {
   color: var(--ink);
 }
 
