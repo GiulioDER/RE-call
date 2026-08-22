@@ -30,6 +30,12 @@ OUT="$ROOT/.mcp.json"
 #   RECALL_DSN=$DSN RECALL_EMBEDDER=fastembed python -m recall.cli index docs
 # Index each tenant SEPARATELY. Re-indexing prunes sources that have vanished from disk, so
 # pointing both corpora at one tenant deletes the other.
+#
+# ⚠️ This is the ONE corpus that is still embedded on this machine, and it is the named exception
+# to "embedding runs on VPS2" (CLAUDE.md). Its database is here, so embedding it there would ship
+# the vectors straight back. It is small; nothing else local should follow its example. The
+# single-writer lock still applies, so a second `recall index` against this corpus refuses rather
+# than interleaving.
 DOGFOOD_DSN="${RECALL_DOGFOOD_DSN:-postgresql://recall:recall@127.0.0.1:5433/recall}"
 
 # The .mcp.json this writes carries secrets. Refuse to create it at all unless the ignore rule is

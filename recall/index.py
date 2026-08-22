@@ -27,6 +27,7 @@ from recall.extraction import (
     extract_document,
 )
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
+from recall.index_lock import single_writer
 from recall.observability import get_logger
 from recall.sparse import SparseEncoderProtocol, store_sparse_vectors
 from recall.store import PgVectorStore
@@ -73,6 +74,19 @@ MIN_PIECE_DIVISOR = 8
 #: roughly one batch of chunks plus their vectors, instead of the whole corpus, and
 #: makes progress visible in the database while a long index is still running.
 DEFAULT_BATCH_CHUNKS = 512
+#: Machine-wide override for the above, read per-Indexer so a host can bound EVERY embedding run
+#: on it without every caller having to pass the argument.
+#:
+#: ⛔ This is the knob that exists. `RECALL_FASTEMBED_BATCH` is named as the fix in more than one
+#: operational note on this project and is read NOWHERE in this package: exporting it is a no-op,
+#: and the run it was supposed to protect died anyway. The default of 512 chunks reaches fastembed,
+#: which then embeds 256 at a time, and fastembed pads a batch to its LONGEST member — bge-large at
+#: sequence 512 costs `batch x 16 heads x 512 x 512 x 4 bytes` for the attention scores alone, so
+#: one long chunk in that batch asks onnxruntime for 4.3 GB and it refuses PARTWAY THROUGH, after
+#: some stores are already written. Measured 2026-08-22 on this project's memory corpus: the
+#: 987-memo store died at a 2.44 GB request while the 211-memo one completed, and 64 chunks per
+#: batch survived the longest documents in the corpus.
+ENV_BATCH_CHUNKS = "RECALL_INDEX_BATCH_CHUNKS"
 #: Refuse to prune when a single run would delete at least this fraction of the sources already
 #: indexed under the root. Re-indexing deletes rows for files that are gone from disk, which is
 #: correct when a memo was really deleted and catastrophic when the corpus merely wasn't there:
@@ -110,6 +124,30 @@ def _prune_fraction_from_env() -> float:
             "ignoring out-of-range RECALL_MAX_PRUNE_FRACTION=%r (expected 0 < f <= 1)", raw
         )
         return DEFAULT_MAX_PRUNE_FRACTION
+    return value
+
+
+def _batch_chunks_from_env() -> int:
+    """`RECALL_INDEX_BATCH_CHUNKS`, positive; anything malformed falls back to the default.
+
+    Read per-Indexer rather than at import, for the reason `_prune_fraction_from_env` is: a
+    long-lived process (and a test) can change it without reloading the module.
+
+    Malformed values are IGNORED rather than clamped, and logged. A host that sets this is bounding
+    an allocation, and silently substituting a different bound for the one that was configured is
+    how a machine ends up OOM-killed by a setting somebody believed was in force.
+    """
+    raw = os.environ.get(ENV_BATCH_CHUNKS)
+    if raw is None:
+        return DEFAULT_BATCH_CHUNKS
+    try:
+        value = int(raw)
+    except ValueError:
+        _log.warning("ignoring malformed %s=%r", ENV_BATCH_CHUNKS, raw)
+        return DEFAULT_BATCH_CHUNKS
+    if value < 1:
+        _log.warning("ignoring out-of-range %s=%r (expected >= 1)", ENV_BATCH_CHUNKS, raw)
+        return DEFAULT_BATCH_CHUNKS
     return value
 
 
@@ -532,7 +570,7 @@ class Indexer:
         embedder: Embedder,
         chunker: Chunker = chunk_text,
         cache: EmbeddingCache | None = None,
-        batch_chunks: int = DEFAULT_BATCH_CHUNKS,
+        batch_chunks: int | None = None,
         allow_prune: bool = False,
         context_policy: ContextPolicy = ContextPolicy(),
         shadow: ShadowIndexTarget | None = None,
@@ -544,7 +582,14 @@ class Indexer:
         self._embedder = embedder
         self._chunker = chunker
         self._cache = cache
-        if batch_chunks < 1:
+        #: `None` means "whatever this host allows" (`ENV_BATCH_CHUNKS`, else the default), so a
+        #: caller that never heard of the variable still gets the host's bound. An explicit value
+        #: WINS over the environment: a caller who names a batch is describing a run they have
+        #: sized, and having the environment silently override that would make the argument a
+        #: suggestion.
+        if batch_chunks is None:
+            batch_chunks = _batch_chunks_from_env()
+        elif batch_chunks < 1:
             raise ValueError("batch_chunks must be >= 1")
         self._batch_chunks = batch_chunks
         #: Set by a caller who has confirmed the files really are gone. Bypasses the guard for
@@ -617,6 +662,24 @@ class Indexer:
         return {**meta, **self.provenance}
 
     def index_path(
+        self, path: str | Path, glob: str | None = None, files: list[Path] | None = None
+    ) -> IndexStats:
+        """Index `path` while holding this corpus's single-writer lock. See `_index_path`.
+
+        The lock is taken HERE rather than at each entry point, because the callers that most
+        need it are the ones nobody is watching: the `SessionEnd` hook
+        (`recall.setup.index_memory_directory`), a scheduled refresh, a script that builds its own
+        `Indexer`. Every one of them arrives through this method, and a guard that each caller has
+        to remember to take is a guard that protects whichever call site was written first.
+
+        `recall.index_lock.single_writer` states what it does not cover: an embedding run that
+        writes to no corpus shares the host's memory rather than the corpus, and is bounded by a
+        host-level lock instead.
+        """
+        with single_writer(self._store):
+            return self._index_path(path, glob=glob, files=files)
+
+    def _index_path(
         self, path: str | Path, glob: str | None = None, files: list[Path] | None = None
     ) -> IndexStats:
         """Index one supported source, or a directory of supported sources, into the vector store.

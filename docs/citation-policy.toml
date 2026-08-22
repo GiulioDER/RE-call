@@ -126,3 +126,20 @@ reason = "cites a third party harness whose paths collide with this repository's
 path = "docs/preregistrations/2026-08-21-calibration-drift-trigger.md"
 marker = "## A note on line numbers below this rule"
 reason = "citations above this rule are registered predictions and are never updated"
+
+# Two citations that are historical even though they sit in a LIVE zone, which is the case no
+# whole-file entry above can express.
+#
+# `2026-08-18-extraction-attestation.md` tracks its own drift below the result marker, in a table
+# whose columns are `Cited | Was | Is now`. The first column is the pointer the PREDICTION
+# registered and must never move; the third is maintained, and the live-zone rule is right about
+# it. Freezing the document would stop checking the maintained column; freezing nothing forces an
+# edit to a registered one. So this freezes the two cells that are the record.
+#
+# Surfaced by a change that added 63 lines to `recall/index.py`. The standing rule it resolves
+# under is stated in `check_doc_citations.py`: a gate must never be able to force an edit to an
+# immutable record.
+[[frozen_citations]]
+path = "docs/preregistrations/2026-08-18-extraction-attestation.md"
+citations = ["recall/index.py:787", "recall/index.py:841"]
+reason = "the 'Cited' column of that document's drift table IS the registered pointer; only 'Is now' is maintained"
