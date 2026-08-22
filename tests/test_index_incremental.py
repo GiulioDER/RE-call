@@ -179,9 +179,12 @@ def test_writes_are_batched_rather_than_one_giant_transaction(tmp_path, store):
     calls: list[int] = []
     real_replace = store.replace_sources
 
-    def counting_replace(sources, chunks, embeddings):
+    def counting_replace(sources, chunks, embeddings, **identity):
+        # `**identity` forwards whatever keyword arguments the real method takes. A spy that pins
+        # the signature turns an added parameter into a failure of the TEST rather than of the
+        # code, which is noise: what this test is about is how many batches get written.
         calls.append(len(chunks))
-        return real_replace(sources, chunks, embeddings)
+        return real_replace(sources, chunks, embeddings, **identity)
 
     store.replace_sources = counting_replace  # type: ignore[method-assign]
     try:
@@ -279,3 +282,94 @@ def test_upserting_a_nul_byte_directly_fails_with_an_actionable_message(store):
 
     with pytest.raises(ValueError, match="NUL"):
         store.upsert([Chunk("bad", "s.md", "text with \x00 inside")], [[0.0] * DIM])
+
+
+@requires_db
+def test_a_declared_project_is_recognised_from_a_different_root(tmp_path, store):
+    """⛔ **The same memo, indexed from two paths, was indexed TWICE.**
+
+    Observed on a live corpus, not imagined. A memory store is embedded on a workstation and the
+    rows are shipped to a server; the corpus had first been indexed ON the server, so its rows
+    carried `/home/.../memory/<project>/<file>` while the workstation writes
+    `C:\\Users\\...\\memstores\\<project>\\<file>`. `source` is the key both the skip test and
+    `replace_sources` use, so nothing matched: every file was re-embedded and every row was
+    duplicated rather than replaced. Measured: 452 duplicate rows in one project and 615 in
+    another, and a search returning the same chunk twice.
+
+    The root-relative path is ALREADY carried in chunk metadata as `file`, with a comment saying
+    it is what identifies a file. It simply was not what the two decisions keyed on.
+
+    Scoped to a DECLARED project on purpose: with `--project` absent, two roots indexed into one
+    tenant may legitimately be different corpora with overlapping relative paths, and merging them
+    is not a guess this code is allowed to make.
+    """
+    first = tmp_path / "one"
+    second = tmp_path / "two"
+    for root in (first, second):
+        root.mkdir()
+        (root / "note.md").write_text("the same memory, in two places", encoding="utf-8")
+
+    emb = _CountingEmbedder()
+    Indexer(store, emb, project="acme").index_path(first)
+    assert len(emb.embedded) == 1
+
+    emb.embedded.clear()
+    stats = Indexer(store, emb, project="acme").index_path(second)
+
+    assert emb.embedded == [], (
+        "the same file under a different root was re-embedded: the skip test keyed on the "
+        "absolute path, which differs per machine"
+    )
+    assert stats.skipped == 1
+
+    rows = store.count()
+    assert rows == 1, f"the file was duplicated rather than recognised, {rows} rows for one memo"
+
+
+@requires_db
+def test_a_changed_file_replaces_its_rows_across_roots(tmp_path, store):
+    """And when the content HAS changed, the old rows must go rather than accumulate.
+
+    Recognising the file is only half of it. `replace_sources` deletes by absolute `source`, so
+    even a correctly detected change wrote the new rows beside the old ones instead of over them.
+    """
+    first = tmp_path / "one"
+    second = tmp_path / "two"
+    first.mkdir()
+    second.mkdir()
+    (first / "note.md").write_text("the original text", encoding="utf-8")
+    (second / "note.md").write_text("rewritten, and longer than it was before", encoding="utf-8")
+
+    emb = _CountingEmbedder()
+    Indexer(store, emb, project="acme").index_path(first)
+    Indexer(store, emb, project="acme").index_path(second)
+
+    rows = store.count()
+    assert rows >= 1
+    assert len(store.source_content_hashes()) == 1, (
+        "the same memo now exists under two identities; a search returns it twice and the stale "
+        "copy never leaves"
+    )
+
+
+@requires_db
+def test_without_a_project_the_old_behaviour_is_unchanged(tmp_path, store):
+    """⚠️ The control. No `--project` means no identity merge, exactly as before.
+
+    Two roots with the same relative layout may be two different corpora. Absent a declared
+    project there is nothing to distinguish those cases, and inventing one would silently merge
+    unrelated memories.
+    """
+    first = tmp_path / "one"
+    second = tmp_path / "two"
+    for root in (first, second):
+        root.mkdir()
+        (root / "note.md").write_text("same relative path, different corpus", encoding="utf-8")
+
+    emb = _CountingEmbedder()
+    Indexer(store, emb).index_path(first)
+    emb.embedded.clear()
+    stats = Indexer(store, emb).index_path(second)
+
+    assert emb.embedded, "without a project the second root must still be indexed"
+    assert stats.skipped == 0

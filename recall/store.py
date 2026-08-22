@@ -679,6 +679,31 @@ def _ef_search_multiplier() -> int:
     return mult
 
 
+def _chunk_identity(chunks: list[Chunk]) -> tuple[str | None, list[str]]:
+    """The project and root-relative file names a batch of chunks belongs to.
+
+    `(None, [])` when the chunks declare no project, which is what confines the identity delete to a
+    corpus whose owner declared one: two roots with the same relative layout and no project may be
+    different corpora, and merging them is not a guess this layer may make.
+
+    Also `(None, [])` if a batch ever mixed two projects, rather than guessing which one owns the
+    delete.
+    """
+    projects = {
+        value
+        for chunk in chunks
+        if isinstance(value := chunk.metadata.get("project"), str) and value
+    }
+    if len(projects) != 1:
+        return None, []
+    names: dict[str, None] = {}
+    for chunk in chunks:
+        name = chunk.metadata.get("file")
+        if isinstance(name, str) and name:
+            names.setdefault(name, None)
+    return projects.pop(), list(names)
+
+
 class PgVectorStore:
     """The single, production-grade vector store: PostgreSQL + pgvector."""
 
@@ -1819,6 +1844,18 @@ class PgVectorStore:
     ) -> int:
         """Atomically replace every row of `sources` with the given chunks.
 
+        ⛔ **A second delete, by `(project, root-relative file)`, reaches what `sources` cannot.**
+        Deleting by absolute path alone left the previous rows in place whenever the same file was
+        re-indexed from a different root, so the new chunks landed BESIDE the old ones rather than
+        over them. Measured on a live corpus: 452 duplicate rows in one project and 615 in another.
+        The two keys are ORed, never substituted, so this can only remove more, never less.
+
+        The identity is derived from `chunks` rather than passed in. Two reasons, and the second is
+        the one that changed the design: the rows deleted and the rows inserted then cannot describe
+        different files, because they come from one list; and a keyword argument here broke five
+        test doubles in three files, which is what an interface implemented in many places does when
+        it grows a parameter the callee could work out for itself.
+
         Delete + insert run in ONE transaction: a failure (or a concurrent reader) never
         observes the sources deleted without their replacement rows. Callers must compute
         `embeddings` BEFORE calling — an embedding failure then leaves the old rows intact.
@@ -1858,6 +1895,18 @@ class PgVectorStore:
                         f"DELETE FROM {self._table} "
                         f"WHERE tenant_id = %s AND source = ANY(%s)",
                         (self._tenant, sources),
+                    )
+                identity_project, identity_files = _chunk_identity(chunks)
+                if identity_project and identity_files:
+                    # Same transaction as the insert below, so a reader never sees the old rows
+                    # gone without their replacement. The project is a scalar because one index run
+                    # carries one project; PostgreSQL also refuses an anonymous composite as a
+                    # bound parameter, so the pair was never an option.
+                    conn.execute(
+                        f"DELETE FROM {self._table} "
+                        f"WHERE tenant_id = %s AND metadata->>'project' = %s "
+                        f"AND metadata->>'file' = ANY(%s)",
+                        (self._tenant, identity_project, identity_files),
                     )
                 if chunks:
                     self._upsert_in(conn, chunks, embeddings)  # savepoint, same commit
@@ -2154,6 +2203,33 @@ class PgVectorStore:
                 if source not in bucket:
                     bucket.append(source)
         return resolved
+
+    def project_file_hashes(self, project: str) -> dict[str, str]:
+        """`{root-relative file: content hash}` for one declared project.
+
+        ⛔ **Machine-independent, which `source` is not.** `source_content_hashes` keys on the
+        absolute path, so the same memo indexed from `/home/.../memory/acme/note.md` and from
+        `C:\\Users\\...\\memstores\\acme\\note.md` looks like two different files: the skip test
+        misses, every file is re-embedded, and `replace_sources` deletes nothing because it too
+        keys on `source`. Measured on a live corpus: 452 duplicate rows in one project, 615 in
+        another, and a search returning the same chunk twice.
+
+        Scoped to a DECLARED project. Without one, two roots indexed into a single tenant may be
+        different corpora that happen to share relative paths, and merging them is not a guess this
+        layer may make. `metadata->>'file'` is already the root-relative path and already documents
+        itself as the thing that identifies a file; it simply was not what the decisions used.
+        """
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT DISTINCT metadata->>'file', "
+                f"coalesce(metadata->>'index_fingerprint', metadata->>'content_hash', '') "
+                f"FROM {self._table} "
+                f"WHERE tenant_id = %s AND metadata->>'project' = %s "
+                f"AND metadata->>'file' IS NOT NULL",
+                (self._tenant, project),
+            ).fetchall()
+        )
+        return {name: digest for name, digest in rows}
 
     def source_content_hashes(self) -> dict[str, str]:
         """`{source: content_hash}` for this tenant — what the indexer compares against.

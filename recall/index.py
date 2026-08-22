@@ -680,6 +680,19 @@ class Indexer:
         rel = {f: (f.relative_to(root).as_posix() if root.is_dir() else f.name) for f in files}
 
         known = self._store.source_content_hashes()
+        # ⛔ **A second, machine-independent view of the same question.** `known` keys on the
+        # absolute path, so a corpus re-indexed from a different root matches nothing: every file
+        # is re-embedded and, because `replace_sources` keys the same way, the new rows land beside
+        # the old instead of over them. Measured on a live corpus that is embedded on a workstation
+        # and shipped to a server which had first indexed the same files under its own paths: 452
+        # duplicate rows in one project, 615 in another, and searches returning a chunk twice.
+        #
+        # Only for a DECLARED project. Two roots with the same relative layout and no project may
+        # be different corpora, and merging them is not a guess this layer may make.
+        project = self.provenance.get("project")
+        known_by_file = (
+            self._store.project_file_hashes(project) if project is not None else {}
+        )
         # The shadow's own record of what it holds. Read once per run, like the active one: it
         # decides whether a file can be skipped, and a file the ACTIVE generation already has is
         # not necessarily a file the shadow has.
@@ -787,8 +800,13 @@ class Indexer:
             # is a per-source yes/no from `sparse_covered_sources`, not a value to compare for
             # equality: there is no sparse fingerprint, only "is every chunk of this source in
             # the sidecar yet".
+            # Either key recognising the file is enough: this can only skip MORE than before,
+            # never less, and only within a declared project.
+            already_indexed = known.get(str(f)) == index_fingerprint or (
+                project is not None and known_by_file.get(rel[f]) == index_fingerprint
+            )
             if (
-                known.get(str(f)) == index_fingerprint
+                already_indexed
                 and (
                     shadow_fingerprint is None
                     or known_shadow.get(str(f)) == shadow_fingerprint
