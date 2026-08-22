@@ -504,6 +504,18 @@ def test_the_registry_values_parse_as_floats_matching_their_own_precision() -> N
 #: than rounded on its way out of a submission report. A human caught it. `retrieval_to_qs_gap` was
 #: added to the artifact in this commit, so that cell and the three beside it now resolve, and the
 #: next truncation of one fails `resolve()` instead of needing to be noticed.
+#:
+#: 2555 -> 2556 (+1) later the same day, committing `benchmarks/atm_answer_diagnosis.py` and its
+#: artifact so section 5 of that document could stop carrying `citation-pending` and start
+#: resolving. The whole +1 is one occurrence of `20260822`, the new artifact's datestamp inside a
+#: relative link path -- the same structural class as the two `20260821` occurrences already frozen
+#: beside it. Twenty-three figures moved from `citation-pending` to a resolving marker in the same
+#: commit, which does not appear in this total at all, because neither state is unmarked.
+#:
+#: ⚠️ That regeneration is also the one to read as a WARNING about this log's usefulness: the total
+#: moved by one while the document's evidence changed substantially, so the number in this line
+#: measures almost nothing about what happened. The row-level diff is the artefact worth checking,
+#: and it is the only thing anyone should ever regenerate against.
 
 
 def test_unmarked_counts_ignores_marked_numbers() -> None:

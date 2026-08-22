@@ -19,6 +19,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   were recomputed for publication from the run's own retrieval records and reproduce the submitted
   values exactly.
 
+  `benchmarks/atm_answer_diagnosis.py` decomposes the answer-side loss with **zero provider
+  calls**, by aggregating the official evaluator's own per-question judgements, and refuses to
+  write its artifact unless the replay reproduces the published score. Its output,
+  `results/atm/atm_answer_diagnosis_20260822.json`, backs section 5 of the document; the whole
+  document is under the claim gate, so CI checks those digits against it.
+
   ⛔ **This is not announced as a leaderboard placement.** The submission is an open pull request
   rather than an accepted row, the QS column is not answer-model-matched to the published baselines,
   the judge ran over a disclosed non-official transport, and the run commit is not yet on a public
