@@ -84,6 +84,26 @@ RESULTS_ROOT = REPO_ROOT / "results"
 #: four files was already gated as part of `README.md`, and leaving them out would have silently
 #: dropped that coverage in a commit whose stated purpose was editorial. That is why the same
 #: commit both moves the prose and arms the gate over its destination.
+#:
+#: `docs/ATM_BENCH.md` was added on 2026-08-22, in the same change that wrote it, for the reason
+#: `docs/ENTERPRISE_RETRIEVAL.md` was: a wrong number in it is a wrong external-benchmark claim, and
+#: the document publishes a leaderboard comparison a reader could act on. The motivating defect is
+#: recorded because it is the cheapest possible argument for arming this: the document shipped a
+#: `list_recall` retrieval-to-QS gap of `30.1010` for a value of `30.10106...`, carried forward from
+#: a submission report that truncated rather than rounded, and it was caught by hand rather than by
+#: anything mechanical. `retrieval_to_qs_gap` was added to the artifact in the same commit so that
+#: cell, and the three beside it, now resolve.
+#:
+#: 🔑 THE DOCUMENT WAS MARKED, NOT BASELINED, and that is the point of arming it. Scanning found 132
+#: numeric claims; 121 carry a marker and 11 are frozen. All 11 are structural: seven section
+#: headings (`## 1.` to `## 7.`), two occurrences of the artifact filename's datestamp inside a
+#: relative link path, the arXiv identifier, and the `0` in the harness name `Mem0`. Not one measured
+#: value is frozen. Contrast `docs/ENTERPRISE_RETRIEVAL.md`, where 93 were frozen and only six
+#: marked, because those numbers predated the artifact convention and no `results/*.json` retained
+#: them. Here every RE-call figure resolves to `results/atm/atm_bench_full_20260821.json`, and the
+#: three classes that cannot (the maintainers' own leaderboard rows, the judge-transport comparison,
+#: and the zero-cost replay behind section 5) carry `citation-pending` with the reason stated, which
+#: is the escalation this gate was built to force rather than a gap in it.
 GATED_DOCS: tuple[str, ...] = (
     "results/RESULTS.md",
     "results/FINDINGS.md",
@@ -94,6 +114,7 @@ GATED_DOCS: tuple[str, ...] = (
     "docs/PRODUCTION.md",
     "docs/PRIOR_ART.md",
     "docs/ENGINEERING.md",
+    "docs/ATM_BENCH.md",
 )
 
 #: Spans masked before numbers are extracted.

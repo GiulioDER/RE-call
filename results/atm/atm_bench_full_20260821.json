@@ -157,5 +157,15 @@
     "official_eval/atm_openai_gpt-5-mini_summary.json": "b9e48ac95dc361f3c5f0fb7d4f65ab8706dedfdaef631c8d971516331d3f5073",
     "official_eval/llm_judge_openai_gpt-5-mini.json": "c46fb55c601fdb8d3384f1e0c6419887f92e8f61640e3e95374bb81f02455228",
     "official_eval/llm_judge_openai_gpt-5-mini_summary.json": "fdb3426ca1ea84895173bf5ca19a1cce980460066095861f001bae63d78717c1"
-  }
+  },
+  "deterministic_question_count": 499,
+  "retrieval_to_qs_gap": {
+    "_note": "Recall@10 minus QS, in percentage points. The answer-side loss on questions whose evidence was retrieved.",
+    "overall": 24.46598975226813,
+    "number": 20.277777777777786,
+    "list_recall": 30.10106200753684,
+    "open_end": 25.875486381322958
+  },
+  "answer_count": 1013,
+  "blank_answers": 0
 }
