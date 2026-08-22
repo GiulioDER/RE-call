@@ -545,10 +545,24 @@ def test_the_reclaim_call_sites_are_both_reachable() -> None:
             for inner in ast.walk(node)
         )
 
-    top_level = [statement for statement in function.body if calls_reclaim(statement)]
-    assert any(isinstance(statement, ast.Expr) for statement in top_level), (
-        "the success-path reclaim must be an unconditional statement of the function body; nesting "
-        "it in a conditional makes it dead code that a call-site count cannot see"
+    # ⚠️ **Expectation changed deliberately, for the concurrent-ingest lock.** The body is now
+    # wrapped in `with manager.tenant_ingest_lock():`, so the success-path reclaim is no longer a
+    # direct child of the function body. The PROPERTY is unchanged and is what this still asserts:
+    # the call must be unconditional. A `with` block always executes its body, an `if` does not, so
+    # this descends through `With` and refuses to descend through `If` or an exception handler —
+    # which is exactly the distinction the auditor's `if False:` mutation exploited.
+    def unconditional(statements: list[ast.stmt]) -> list[ast.stmt]:
+        found: list[ast.stmt] = []
+        for statement in statements:
+            if isinstance(statement, ast.With | ast.AsyncWith):
+                found.extend(unconditional(statement.body))
+            elif calls_reclaim(statement):
+                found.append(statement)
+        return found
+
+    assert any(isinstance(statement, ast.Expr) for statement in unconditional(function.body)), (
+        "the success-path reclaim must be unconditional; nesting it in a conditional makes it dead "
+        "code that a call-site count cannot see"
     )
 
     handlers = [

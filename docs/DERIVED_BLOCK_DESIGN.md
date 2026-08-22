@@ -15,8 +15,15 @@ inference into the same namespace a human authors, where the trust layer reads i
 
 ## The hazard this design exists to prevent
 
-`content_hash` is computed over raw file bytes (`recall/index.py:741`). Writing a block changes the
-bytes, so the file re-indexes. If the block is chunked, the next extraction pass reads its own prior
+`content_hash` is computed over the file's content: for markdown, over the DECODED TEXT
+(`recall/index.py:754`), and for everything else over the raw bytes (`recall/index.py:756`). Writing
+a block changes both, so the file re-indexes either way.
+
+⚠️ The markdown branch is worth stating precisely, because "raw bytes" is the natural assumption and
+it is wrong for the format a memory corpus is actually made of. Comparing a file's bytes against a
+stored `content_hash` reports every file on a CRLF checkout as changed, since the decoded text
+carries LF. That misreading cost an hour and nearly triggered an unnecessary full re-embed of a
+1,000-file corpus. If the block is chunked, the next extraction pass reads its own prior
 output as evidence and amplifies: a proposal becomes a citation for the next proposal, and the
 corpus grows a self-referential belief no human ever stated.
 
@@ -191,7 +198,7 @@ isolation.
 | Site | Note |
 |---|---|
 | `recall/index.py:832` | `contextual_passages(raw, body, ...)` keeps taking the unstripped `raw` for `document_title`, which reads frontmatter and the first H1 — both above the block. The `body` argument becomes `human_body`. |
-| `recall/generations.py:603` | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused under `RECALL_ENV=production` (`recall/cli.py:2653`), so hooking only the index path leaves the one build path that runs in production uncovered. |
+| `recall/generations.py:667` | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused under `RECALL_ENV=production` (`recall/cli.py:2653`), so hooking only the index path leaves the one build path that runs in production uncovered. |
 | `recall/lint.py:177` | The only reader of `derived_text`. |
 | `recall/check.py:53` | `_ANY_REF` over the body would otherwise hand the author the machine's own values back as `supersedes:` candidates. |
 | `recall/semantic_lint.py:126` | Fixes the `is_closed_decision` collision: `_DECISION_STATUS` matches `status:\s*superseded`, which is exactly the shape of the block's own `status:` entry. This module reaches the corpus twice — here, and via `Indexer.index_path` at `:138`, which the `index.py` site covers. |
