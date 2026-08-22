@@ -172,7 +172,14 @@ def test_run_app_does_not_build_the_window_before_the_application(
             events.append("show")
 
     monkeypatch.setattr(ui, "QApplication", app_class)
-    monkeypatch.setattr(ui, "MainWindow", Window)
+    # ⚠️ **`raising=False`, because without PySide6 there is no `MainWindow` to replace.**
+    # `MainWindow` is defined inside `if QApplication is not None:`, so on a machine with no
+    # desktop extra the attribute does not exist at all and a plain `setattr` raises
+    # `AttributeError` before the test can assert anything. `InstallerWindow` has an explicit
+    # `= None` fallback and its sibling test does not need this; `MainWindow` does not.
+    # Caught by Linux CI, where the extra is absent, after passing on a Windows box where it is
+    # installed: exactly the platform-shaped blindness this file was written about.
+    monkeypatch.setattr(ui, "MainWindow", Window, raising=False)
 
     profile = RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://x@127.0.0.1/x")
 
