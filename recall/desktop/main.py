@@ -50,9 +50,13 @@ def install_main(argv: list[str] | None = None) -> int:
             '`pip install "recall-rag[desktop]"`, or run `recall wizard` to be asked the same '
             "questions in the terminal."
         )
-    return run_window(
-        InstallerWindow(default_root=Path(args.data_root) if args.data_root else None)
-    )
+    # ⛔ **A lambda, not `InstallerWindow(...)` directly, and the difference is the whole bug.**
+    # Python evaluates an argument before the call, so passing the window built it before
+    # `run_window` had created the QApplication. Qt aborts the process for that, which is what the
+    # published 0.9.7 installer did on first launch: one line of stderr and no window. The launcher
+    # now takes a factory so the ordering cannot be decided here. See `ui.application_and_window`.
+    default_root = Path(args.data_root) if args.data_root else None
+    return run_window(lambda: InstallerWindow(default_root=default_root))
 
 
 
@@ -118,12 +122,17 @@ def _selftest() -> int:
         return 1
 
     try:
-        from PySide6.QtWidgets import QApplication
+        # ⛔ **Built through the SHIPPED launcher, not by a sequence written here.**
+        # This block used to construct a `QApplication` and then a window itself, in that order.
+        # The order is right, and it is not the order `install_main` used, so this check passed
+        # against the 0.9.7 bundle that aborted the instant somebody double-clicked it: it
+        # rehearsed a launch nothing shipped. `application_and_window` is the code the entry point
+        # runs, minus the event loop, so a wrong ordering fails here instead of on a user's desktop.
+        from recall.desktop.ui import application_and_window
 
-        QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            window = InstallerWindow(default_root=root)
+            _app, window = application_and_window(lambda: InstallerWindow(default_root=root))
             try:
                 plan = question_plan(default_root=root)
                 if set(window._fields) != {question.key for question in plan}:
