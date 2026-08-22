@@ -122,6 +122,16 @@ def run_bounded(
     merged = dict(os.environ)
     if env:
         merged.update(env)
+    # A statement, not the ternary this used to be, and the difference is the whole fix. mypy
+    # treats the body of `if sys.platform == ...` as unreachable on the other platform and skips
+    # it; it does NOT skip the true-branch of a ternary, so
+    # `subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0` type-checks here and
+    # fails on the ubuntu runner, where that attribute does not exist. Verified both ways with
+    # `mypy --platform linux` and `mypy --platform win32`, which is the only way to see both halves
+    # from one machine.
+    creation_flags = 0
+    if sys.platform == "win32":
+        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
     start = time.monotonic()
     process = subprocess.Popen(  # noqa: S603 - argv list, no shell
         list(command),
@@ -133,7 +143,7 @@ def run_bounded(
         text=True,
         encoding="utf-8",
         errors="replace",
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+        creationflags=creation_flags,
     )
     timed_out = False
     try:
