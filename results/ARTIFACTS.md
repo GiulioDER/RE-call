@@ -293,3 +293,35 @@ exactly this key:
 Full run record: `/var/lib/recall-benchmarks/2026-08-06-context-mode-generation-parity/`.
 ⚠️ Regenerating a natively-stamped artifact now needs a **full four-arm re-index**, not a compare
 re-run: the generations were dropped once this work merged.
+
+### Agent A/B — what the agent did, not what the retriever returned
+
+| artifact | backs |
+|---|---|
+| `results/agent_ab/agent_ab_additive_2026-08-21.json` | every number in [`RESULTS.md` §13](RESULTS.md): the primary trap rate and its exact McNemar, the per-trap table and cluster CI, the control at p=1.0000, the Ragas quality rows, and the cost medians |
+| `docs/preregistrations/2026-08-21-claude-md-plus-recall-additive.md` | the predictions, committed before the run, and the result appended beneath them without editing anything above |
+| `benchmarks/agent_ab/trap-qualification.json` | where each trap's governing fact lives, measured against the real corpus and the real static prompt **before** any session ran |
+| `benchmarks/agent_ab/calibration/memory-query-set.json` | the 50 answerable and 50 unanswerable labelled queries the corpus threshold was fitted on |
+
+**What makes this artifact different from the twelve above it.** Everything else in `results/`
+measures retrieval quality against a fixed corpus. This one measures an agent's behaviour, so the
+things that can go wrong are different and two of them are recorded in the file rather than in prose.
+
+**The arms differ by one thing, and it is asserted rather than assumed.** Both sessions receive the
+same `CLAUDE.md` plus `MEMORY.md` byte for byte; the harness checks that the treated arm's prompt
+contains the control arm's verbatim and adds no more than 2,000 characters, and aborts otherwise. A
+pair is also discarded unless the treated session's own tool list contains a `mcp__recall*` tool and
+the control's does not, because an earlier run of this design completed and reported success with no
+memory tools attached at all.
+
+**The primary endpoint uses no judge.** Deterministic checkers read the transcript for the known
+wrong action. Ragas scores only the answer-quality rows in §13c, with a judge from a different model
+family than the agent under test, against references written before the run.
+
+⚠️ **Two caveats that live in the artifact, not only here.** `agent-ab-additive-002`'s environment
+record was **reconstructed from the saved transcripts** after the runner was stopped mid-run, so its
+per-session wall times come from each session's own `duration_ms` rather than from the runner timing
+the subprocess; the two measure slightly different spans and are never pooled. And the `shared_db`
+control trap was **excluded post hoc** because it stalled on a deliberately denied tool, which is
+recorded with its reasoning in the preregistration. It was a control the memory layer was expected
+to draw, not one it was expected to win.

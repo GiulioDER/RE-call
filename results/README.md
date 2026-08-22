@@ -14,6 +14,7 @@ need to audit or reproduce a number.
 
 | Directory | Scope |
 |---|---|
+| [agent_ab/](agent_ab/) | Agent A/B: what an agent DOES with and without the memory layer, rather than what the retriever returns. |
 | [head_to_head/](head_to_head/) | RE-call versus comparator memory benchmark artifacts. |
 | [locomo/](locomo/) and [locomo_rerank/](locomo_rerank/) | LOCOMO retrieval and reranking artifacts. |
 | [gap/](gap/) | Embedder gap and abstention threshold studies. |
