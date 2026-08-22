@@ -1,6 +1,6 @@
 # Pre-registration: does the second-pass commitment on `open_end` survive the judge
 
-**Date:** 2026-08-22   **Status:** predicted, not yet measured
+**Date:** 2026-08-22   **Status:** measured
 
 Third and last record of the A1 line. `2026-08-22-atm-router-and-abstention-downside.md` measured a
 coverage gain on the 55 `open_end` abstentions and deliberately deferred the judge, because

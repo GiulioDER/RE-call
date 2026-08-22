@@ -1,6 +1,6 @@
 # Pre-registration: the re-abstention criterion in relative form, tested on a fresh generation
 
-**Date:** 2026-08-22   **Status:** predicted, not yet measured
+**Date:** 2026-08-22   **Status:** measured
 
 Closing record of the A1 line. `2026-08-22-atm-abstention-second-pass.md` registered a re-abstention
 ceiling of 20% in absolute form, measured 44.7%, and the falsifier fired. Its result section argued

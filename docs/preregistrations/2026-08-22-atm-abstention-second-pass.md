@@ -1,6 +1,6 @@
 # Pre-registration: a second pass on ATM answers that carry no committed content
 
-**Date:** 2026-08-22   **Status:** predicted, not yet measured
+**Date:** 2026-08-22   **Status:** measured
 
 Arm A1 of the diagnosis recorded on 2026-08-22 against the submission package
 `submission/atm-benchmark-20260821/`. That diagnosis is descriptive and spent nothing; this record

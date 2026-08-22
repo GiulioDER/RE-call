@@ -1,6 +1,6 @@
 # Pre-registration: the question-form router, and the downside the A1 arm could not see
 
-**Date:** 2026-08-22   **Status:** predicted, not yet measured
+**Date:** 2026-08-22   **Status:** measured
 
 Follows `2026-08-22-atm-abstention-second-pass.md`, whose result section closed with two named gaps.
 This record measures both, and nothing else.
