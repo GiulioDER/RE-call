@@ -9,7 +9,7 @@ published here that falls outside them.
 
 | tier | means | sections |
 |---|---|---|
-| **📦 artifact** | a committed JSON/markdown result file in `results/` you can diff against the table | §6, §7, §11, §12 |
+| **📦 artifact** | a committed JSON/markdown result file in `results/` you can diff against the table | §6, §7, §11, §12, §13 |
 | **▶️ reproducible** | no committed artifact, but the corpus is public or ships here and one command regenerates it | §1, §2, §3, §4 (PEPs), §7, §9 |
 | **🔒 private** | measured on a corpus that cannot be published; the aggregates are all that exist | §4 (memory corpus), §5, §8 |
 
@@ -558,4 +558,133 @@ FINDINGS §10c quotes as 0.70–0.90 against 0.51–0.64.
 python -m recall.eval.locomo      --data locomo10.json          # indexes locomo_chunks
 python -m recall.eval.cosine_dump --data locomo10.json \
     --out results/cosine/distributions.json --chart-dir results/cosine
+```
+
+## 13. Agent A/B — does adding RE-call to CLAUDE.md change what an agent does 📦 <!--@ citation-pending: section ordinal, not a measured value -->
+
+The other twelve sections measure retrieval. This one measures an **agent doing work**, because a
+retriever that retrieves well is not the same claim as a developer being better off.
+
+Two Claude Code sessions, same model and same tasks. Both load the repository's `CLAUDE.md` and
+`MEMORY.md` **byte for byte**, asserted by the harness at the start of every run. Both run `--bare`,
+so hooks, plugins and auto-loaded context cannot smuggle in a difference. One session also gets
+RE-call's search tools. That is the only difference, which is what makes the comparison additive
+rather than a trade of one memory for another.
+
+> **Provenance.** Measured against a calibrated generation: threshold
+> **0.731** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#configuration.calibration.threshold -->,
+> separability **0.980** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#configuration.calibration.separability -->
+> over **50** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#configuration.calibration.n_answerable -->
+> answerable and **50** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#configuration.calibration.n_unanswerable -->
+> unanswerable labelled queries, served `trusted` over stdio under the strict trust policy. Agent
+> `anthropic/claude-haiku-4.5`, judge `openai/gpt-4.1-mini`, both via OpenRouter. Predictions were
+> committed **before** the run in
+> [the preregistration](../docs/preregistrations/2026-08-21-claude-md-plus-recall-additive.md), and
+> the result appended there without editing them.
+
+Each task hides a hazard this project met once and wrote down. A deterministic checker reads the
+transcript and decides whether the agent walked into it, so the primary endpoint involves no judge.
+Traps are classified by **where the governing fact lives**, measured against the real corpus and the
+real static prompt before any session ran: `memory_only` is where RE-call can help, and the rest are
+controls where it should not.
+
+### Primary endpoint — traps whose fact is in memory and not in `CLAUDE.md`
+
+| | +RE-call | `CLAUDE.md` alone |
+|---|---|---|
+| trap hit rate | **0.000** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_trap_hit_rate_memory_only.on_mean --> | 0.525 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_trap_hit_rate_memory_only.off_mean --> |
+| paired pairs | **40** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_trap_hit_rate_memory_only.n_pairs --> | |
+| paired difference | **-0.525** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_trap_hit_rate_memory_only.delta_mean --> | |
+| 95% CI <!--@ citation-pending: the confidence level is the convention this table uses, not a measured value --> | [-0.675 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_trap_hit_rate_memory_only.delta_ci_low -->, -0.375 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_trap_hit_rate_memory_only.delta_ci_high -->] | |
+| exact McNemar | **0.00000095** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_trap_hit_rate_memory_only.p_value --> | |
+| discordant pairs | on-only **0** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_trap_hit_rate_memory_only.discordant_on_only -->, off-only **21** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_trap_hit_rate_memory_only.discordant_off_only --> | |
+
+The memory arm triggered no trap in any pair, and never once hit a hazard the baseline avoided.
+
+Per trap, repetitions collapsed, which is the conservative reading of a repeated-measures design:
+
+| trap | +RE-call | `CLAUDE.md` | delta |
+|---|---|---|---|
+| `omp_threads` | 0.000 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.by_trap.omp_threads.on_rate --> | 0.900 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.by_trap.omp_threads.off_rate --> | -0.900 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.by_trap.omp_threads.delta --> |
+| `cairo_render` | 0.000 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.by_trap.cairo_render.on_rate --> | 0.800 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.by_trap.cairo_render.off_rate --> | -0.800 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.by_trap.cairo_render.delta --> |
+| `torch_install` | 0.000 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.by_trap.torch_install.on_rate --> | 0.400 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.by_trap.torch_install.off_rate --> | -0.400 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.by_trap.torch_install.delta --> |
+| `cast_conversion` | 0.000 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.by_trap.cast_conversion.on_rate --> | 0.000 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.by_trap.cast_conversion.off_rate --> | 0.000 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.by_trap.cast_conversion.delta --> |
+
+**3** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.improved --> of
+**4** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.n_tasks --> traps improved,
+mean **-0.525** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.mean_delta -->,
+cluster interval
+[**-0.850** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.cluster_ci_low -->,
+**-0.200** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#primary_by_task.cluster_ci_high -->]
+resampling **traps** rather than repetitions.
+
+⚠️ **No p-value is reported for the per-task view, and that is a property of the design.** With four
+distinct traps a sign test cannot reach significance at any effect size, so a null there would
+describe the trap count rather than the treatment. The per-pair McNemar above is the consistency
+check, and it **overstates confidence** because repetitions of one trap are correlated.
+
+### Controls — traps whose fact is already in `CLAUDE.md`
+
+Both arms hold the file, so both should avoid these and the memory layer should add nothing.
+
+| pairs | +RE-call | `CLAUDE.md` | exact McNemar | discordant |
+|---|---|---|---|---|
+| **12** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#controls.both_continuation.n_pairs --> | 0.083 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#controls.both_continuation.on_mean --> | 0.083 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#controls.both_continuation.off_mean --> | **1.0000** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#controls.both_continuation.p_value --> | **1** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#controls.both_continuation.discordant_on_only --> and **1** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#controls.both_continuation.discordant_off_only --> |
+
+This row is the reason the section above is worth reading: the effect appears exactly where memory
+holds something the file does not, and vanishes where it does not.
+
+### Answer quality — Ragas, judged against references written in advance
+
+`AnswerCorrectness` with the embedding half switched off, so an answer is not rewarded for
+*sounding* like the reference, plus `FactualCorrectness`. The judge is a different model family from
+the agent under test. **120** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#ragas.scored_both_runs -->
+responses scored across both runs, **0** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#ragas.failed_both_runs -->
+failed.
+
+| metric | +RE-call | `CLAUDE.md` | p |
+|---|---|---|---|
+| answer correctness | **0.337** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#answer_quality.answer_correctness.on_mean --> | 0.149 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#answer_quality.answer_correctness.off_mean --> | **0.00018** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#answer_quality.answer_correctness.p_value --> |
+| factual correctness | **0.506** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#answer_quality.factual_correctness.on_mean --> | 0.272 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#answer_quality.factual_correctness.off_mean --> | **0.0000053** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#answer_quality.factual_correctness.p_value --> |
+
+On the control pairs the same metrics show no significant difference, so the quality gain sits where
+the memory holds the fact rather than everywhere.
+
+### Cost — it is not free, and the mean lies about it
+
+| metric | delta mean | delta median | p |
+|---|---|---|---|
+| input tokens | -2293.1 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#cost.input_tokens.delta_mean --> | **+14,904** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#cost.input_tokens.delta_median --> | 0.1724 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#cost.input_tokens.p_value --> |
+| wall time, ms | -33034.9 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#cost.wall_time_ms.delta_mean --> | **+1,703** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#cost.wall_time_ms.delta_median --> | 0.9473 <!--@ agent_ab/agent_ab_additive_2026-08-21.json#cost.wall_time_ms.p_value --> |
+
+⚠️ **The mean and the median disagree in sign on three of four cost metrics.** Reading the means
+alone would claim RE-call is cheaper and faster. It is typically **dearer and slightly slower**, and
+occasionally saves a great deal because the baseline goes exploring; the rank-based p-values follow
+the median and neither is significant. On the control traps, where retrieval cannot help, the on arm
+is significantly slower. Median retrieval latency was
+**425.5 ms** <!--@ agent_ab/agent_ab_additive_2026-08-21.json#recall_overhead.latency_ms_median -->.
+
+### What this does not establish
+
+- **Four distinct hazards.** The claim generalises to the population those four represent, and no
+  further.
+- It shows a specific expensive mistake class eliminated and answers about the project made more
+  correct. It does **not** show an agent made generally smarter, and the control proves that
+  directly.
+- It does **not** show the *work* succeeds more often: every task asks for a recommendation and
+  scores whether the recommendation is right. None writes code or runs a test suite. That is a
+  separate benchmark, specified in
+  [`benchmarks/agent_ab/NEXT-BENCHMARK-TASK-SUCCESS.md`](../benchmarks/agent_ab/NEXT-BENCHMARK-TASK-SUCCESS.md).
+- This run was **not blind**: the outcome of an earlier substitutional run was known. No prediction
+  was revised, and the disclosure is in the preregistration.
+- The full limitation list, including a post-hoc control exclusion and a salvaged environment
+  record, is in the artifact's `limitations` array.
+
+```bash
+python scripts/agent_ab_build_corpus.py --dsn "$RECALL_AB_DSN"        # calibrated corpus
+python scripts/agent_ab_gate.py                                       # prove the arms differ correctly
+python scripts/agent_ab_run.py --run-id <id> --comparison additive \
+    --tasks benchmarks/agent_ab/tasks/traps-deep.jsonl
+python scripts/agent_ab_analyze.py --run-id <id> \
+    --tasks benchmarks/agent_ab/tasks/traps-deep.jsonl
 ```

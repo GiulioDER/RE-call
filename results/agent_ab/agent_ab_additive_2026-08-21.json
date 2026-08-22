@@ -1,0 +1,324 @@
+{
+  "_provenance": {
+    "generation": "agent_ab additive, runs agent-ab-additive-002 and 002c",
+    "status": "current",
+    "stack": "Claude Code 2.1.238, anthropic/claude-haiku-4.5 and openai/gpt-4.1-mini via OpenRouter, RE-call over stdio under RECALL_ENV=production, calibrated generation gen_f01fc522, PostgreSQL 18 / pgvector",
+    "generated_at": "2026-08-21",
+    "backs": [
+      "RESULTS \u00a713a \u2014 trap hit rate 0.000 against 0.525, CI [-0.675, -0.375], exact McNemar p<0.0001, discordant 0 and 21",
+      "RESULTS \u00a713a \u2014 per-trap deltas and the cluster CI [-0.850, -0.200] resampling traps",
+      "RESULTS \u00a713b \u2014 the control at 0.083 against 0.083, p=1.0000",
+      "RESULTS \u00a713c \u2014 answer correctness 0.337 against 0.149 and factual correctness 0.506 against 0.272",
+      "RESULTS \u00a713d \u2014 the cost medians, +14,904 input tokens and +1,703 ms"
+    ],
+    "note": "The primary endpoint is decided by deterministic transcript checkers, not by a judge; Ragas scores only the answer-quality rows. The two arms receive identical static memory, asserted per run. Limitations, including a post-hoc control exclusion and a salvaged environment record, are in the `limitations` array of this file."
+  },
+  "benchmark": "agent_ab additive",
+  "question": "Does adding RE-call to an existing CLAUDE.md reduce known-hazard mistakes and improve answer correctness?",
+  "measured_on": "2026-08-21",
+  "arms": {
+    "off": "claude_md: CLAUDE.md + MEMORY.md in the system prompt, no memory tools",
+    "on": "claude_md_recall: the SAME static bytes plus RE-call search tools"
+  },
+  "runs": {
+    "agent-ab-additive-002": {
+      "pairs": 48,
+      "role": "primary endpoint + 2 controls",
+      "excluded": {
+        "gate_discarded": 0,
+        "errored": 0,
+        "unpaired": 0
+      }
+    },
+    "agent-ab-additive-002c": {
+      "pairs": 12,
+      "role": "3 further control traps",
+      "excluded": {
+        "gate_discarded": 0,
+        "errored": 0,
+        "unpaired": 0
+      }
+    }
+  },
+  "configuration": {
+    "agent": "anthropic/claude-haiku-4.5",
+    "judge": "openai/gpt-4.1-mini",
+    "judge_provider": "openrouter",
+    "claude_code_version": "2.1.238 (Claude Code)",
+    "recall_transport": "stdio",
+    "recall_trust_state": "trusted",
+    "recall_calibrated": true,
+    "generation_id": "gen_f01fc522293d40c99032cd088500e11d",
+    "calibration_id": "cal_b40f2c6efa9443a3b5d727f71a92de77",
+    "calibration": {
+      "threshold": 0.731,
+      "separability": 0.98,
+      "separability_ci": [
+        0.952,
+        1.0
+      ],
+      "n_answerable": 50,
+      "n_unanswerable": 50
+    },
+    "repetitions": {
+      "memory_only_traps": 10,
+      "control_traps": 4
+    }
+  },
+  "primary_trap_hit_rate_memory_only": {
+    "n_pairs": 40,
+    "on_mean": 0.0,
+    "off_mean": 0.525,
+    "delta_mean": -0.525,
+    "delta_median": -1.0,
+    "delta_ci": [
+      -0.675,
+      -0.375
+    ],
+    "p_value": 9.5367431640625e-07,
+    "test": "mcnemar_exact",
+    "note": "discordant pairs: on-only=0, off-only=21",
+    "discordant_on_only": 0,
+    "discordant_off_only": 21,
+    "delta_ci_low": -0.675,
+    "delta_ci_high": -0.375
+  },
+  "primary_by_task": {
+    "tasks": [
+      {
+        "task": "trap-cairo-render",
+        "n_reps": 10,
+        "on_rate": 0.0,
+        "off_rate": 0.8,
+        "delta": -0.8
+      },
+      {
+        "task": "trap-cast-conversion",
+        "n_reps": 10,
+        "on_rate": 0.0,
+        "off_rate": 0.0,
+        "delta": 0.0
+      },
+      {
+        "task": "trap-omp-threads",
+        "n_reps": 10,
+        "on_rate": 0.0,
+        "off_rate": 0.9,
+        "delta": -0.9
+      },
+      {
+        "task": "trap-torch-install",
+        "n_reps": 10,
+        "on_rate": 0.0,
+        "off_rate": 0.4,
+        "delta": -0.4
+      }
+    ],
+    "n_tasks": 4,
+    "mean_delta": -0.525,
+    "improved": 3,
+    "worsened": 0,
+    "unchanged": 1,
+    "cluster_ci": [
+      -0.8500000000000001,
+      -0.2
+    ],
+    "note": "descriptive: 4 distinct traps. A sign test over this many cannot reach p<0.05 at any effect size, so no p-value is reported for this view.",
+    "cluster_ci_low": -0.8500000000000001,
+    "cluster_ci_high": -0.2,
+    "by_trap": {
+      "cairo_render": {
+        "n_reps": 10,
+        "on_rate": 0.0,
+        "off_rate": 0.8,
+        "delta": -0.8
+      },
+      "cast_conversion": {
+        "n_reps": 10,
+        "on_rate": 0.0,
+        "off_rate": 0.0,
+        "delta": 0.0
+      },
+      "omp_threads": {
+        "n_reps": 10,
+        "on_rate": 0.0,
+        "off_rate": 0.9,
+        "delta": -0.9
+      },
+      "torch_install": {
+        "n_reps": 10,
+        "on_rate": 0.0,
+        "off_rate": 0.4,
+        "delta": -0.4
+      }
+    }
+  },
+  "controls": {
+    "both_continuation": {
+      "n_pairs": 12,
+      "on_mean": 0.08333333333333333,
+      "off_mean": 0.08333333333333333,
+      "delta_mean": 0.0,
+      "delta_median": 0.0,
+      "delta_ci": [
+        -0.25,
+        0.25
+      ],
+      "p_value": 1.0,
+      "test": "mcnemar_exact",
+      "note": "discordant pairs: on-only=1, off-only=1",
+      "discordant_on_only": 1,
+      "discordant_off_only": 1,
+      "delta_ci_low": -0.25,
+      "delta_ci_high": 0.25
+    },
+    "both_main_run": {
+      "n_pairs": 4,
+      "on_mean": 0.0,
+      "off_mean": 0.0,
+      "delta_mean": null,
+      "delta_median": null,
+      "delta_ci": null,
+      "p_value": null,
+      "test": "mcnemar_exact",
+      "note": "only 4 pairs; below 6 no split of the discordant pairs can reach p < 0.05, so a p-value here would describe the sample size, not the effect"
+    },
+    "claude_md_only_main_run": {
+      "n_pairs": 4,
+      "on_mean": 0.0,
+      "off_mean": 0.0,
+      "delta_mean": null,
+      "delta_median": null,
+      "delta_ci": null,
+      "p_value": null,
+      "test": "mcnemar_exact",
+      "note": "only 4 pairs; below 6 no split of the discordant pairs can reach p < 0.05, so a p-value here would describe the sample size, not the effect"
+    }
+  },
+  "answer_quality": {
+    "answer_correctness": {
+      "n_pairs": 48,
+      "on_mean": 0.33712074416771426,
+      "off_mean": 0.14877970643955707,
+      "delta_mean": 0.18834103772815716,
+      "delta_median": 0.19904692082111436,
+      "delta_ci": [
+        0.10326792085942711,
+        0.2680809174066407
+      ],
+      "p_value": 0.00018045092849696776,
+      "test": "wilcoxon_signed_rank",
+      "note": "",
+      "delta_ci_low": 0.10326792085942711,
+      "delta_ci_high": 0.2680809174066407
+    },
+    "factual_correctness": {
+      "n_pairs": 48,
+      "on_mean": 0.5060416666666666,
+      "off_mean": 0.27166666666666667,
+      "delta_mean": 0.234375,
+      "delta_median": 0.28500000000000003,
+      "delta_ci": [
+        0.15729166666666666,
+        0.3077083333333333
+      ],
+      "p_value": 5.319835188268639e-06,
+      "test": "wilcoxon_signed_rank",
+      "note": "",
+      "delta_ci_low": 0.15729166666666666,
+      "delta_ci_high": 0.3077083333333333
+    }
+  },
+  "cost": {
+    "input_tokens": {
+      "n_pairs": 48,
+      "on_mean": 52938.395833333336,
+      "off_mean": 55231.520833333336,
+      "delta_mean": -2293.125,
+      "delta_median": 14904.0,
+      "delta_ci": [
+        -29116.541666666668,
+        23463.770833333332
+      ],
+      "p_value": 0.1724308501683851,
+      "test": "wilcoxon_signed_rank",
+      "note": ""
+    },
+    "output_tokens": {
+      "n_pairs": 48,
+      "on_mean": 1207.7291666666667,
+      "off_mean": 1357.8125,
+      "delta_mean": -150.08333333333334,
+      "delta_median": -38.5,
+      "delta_ci": [
+        -442.5625,
+        112.83333333333333
+      ],
+      "p_value": 0.9150317491067099,
+      "test": "wilcoxon_signed_rank",
+      "note": ""
+    },
+    "wall_time_ms": {
+      "n_pairs": 48,
+      "on_mean": 23343.854166666668,
+      "off_mean": 56378.729166666664,
+      "delta_mean": -33034.875,
+      "delta_median": 1703.0,
+      "delta_ci": [
+        -64122.9375,
+        -5576.4375
+      ],
+      "p_value": 0.947340221793219,
+      "test": "wilcoxon_signed_rank",
+      "note": ""
+    },
+    "model_turns": {
+      "n_pairs": 48,
+      "on_mean": 4.1875,
+      "off_mean": 4.958333333333333,
+      "delta_mean": -0.7708333333333334,
+      "delta_median": 0.5,
+      "delta_ci": [
+        -2.5833333333333335,
+        0.8125
+      ],
+      "p_value": 0.8556243636689399,
+      "test": "wilcoxon_signed_rank",
+      "note": ""
+    }
+  },
+  "recall_overhead": {
+    "sessions": 48,
+    "sessions_that_searched": 38,
+    "used_rate": 0.7916666666666666,
+    "calls_mean": 1.4375,
+    "calls_median": 2.0,
+    "latency_ms_mean": 560.2368421052631,
+    "latency_ms_median": 425.5,
+    "latency_ms_total": 21289.0,
+    "latency_missing": 10
+  },
+  "ragas": {
+    "version": "0.4.4.dev8+g298b68274",
+    "metrics": {
+      "answer_correctness": "weights=[1.0, 0.0], factual half only",
+      "factual_correctness": "default"
+    },
+    "judge_max_tokens": 8192,
+    "scored_this_run": 96,
+    "failed_this_run": 0,
+    "scored_both_runs": 120,
+    "failed_both_runs": 0
+  },
+  "limitations": [
+    "4 distinct memory_only traps: the per-task view cannot reach p<0.05 at any effect size, so it is reported descriptively with a trap-level bootstrap.",
+    "claude_md_only retains ONE trap after the shared_db post-hoc exclusion, recorded in the preregistration.",
+    "Controls are spliced across two runs (002 and 002c); the primary endpoint sits entirely in 002.",
+    "The generation was built --unverified-development: fit for a benchmark, not for a trust claim.",
+    "Run 002 was NOT blind: run 001's outcome was known. Predictions were not revised, but this is a replication check rather than a blind forecast.",
+    "agent-ab-additive-002's environment.json was reconstructed from transcripts after the runner was stopped mid-run; per-session records were salvaged from the saved streams.",
+    "total_cost_usd from the CLI is not reported: measured about 6x wrong through the OpenRouter gateway."
+  ],
+  "preregistration": "docs/preregistrations/2026-08-21-claude-md-plus-recall-additive.md",
+  "harness": "benchmarks/agent_ab/"
+}
