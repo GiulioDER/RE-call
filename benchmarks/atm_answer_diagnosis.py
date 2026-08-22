@@ -48,6 +48,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from benchmarks.artifact_contract import load_published_artifact
+
 #: The three ATM-Bench question types, in the order the official summary reports them.
 QTYPES: tuple[str, ...] = ("number", "list_recall", "open_end")
 
@@ -416,7 +418,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # QS then every decomposition below it is describing a different run, and the right outcome is
     # to refuse rather than to publish a plausible table.
     if args.run_artifact is not None:
-        published = json.loads(args.run_artifact.read_text(encoding="utf-8"))["official_score"]["qs"]
+        # `load_published_artifact`, never a bare `json.loads`. `benchmarks.run` marks an artifact
+        # it REFUSED to publish in band, and a refused file is byte-identical to a real measurement
+        # to anything that does not honour the mark -- so reading it directly would let a
+        # quarantined run silently become the baseline this decomposition validates itself against.
+        published = load_published_artifact(args.run_artifact)["official_score"]["qs"]
         if abs(published - summary["qs"]) > 5e-5:
             raise SystemExit(
                 f"replay does not reproduce the published score: {summary['qs']:.6f} against "

@@ -11,6 +11,8 @@ red with the corresponding line of the source broken on purpose.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from benchmarks.atm_answer_diagnosis import (
@@ -261,3 +263,43 @@ def test_summarise_reproduces_the_mean_score_as_qs() -> None:
     assert out["qs"] == pytest.approx(0.5)
     assert out["qs_percent"] == pytest.approx(50.0)
     assert out["question_count"] == 2
+
+
+# --- the run artifact is read through the publication check ---------------------------------
+
+
+def test_a_quarantined_run_artifact_is_refused_as_the_apparatus_baseline(tmp_path) -> None:
+    """`benchmarks.run` marks an artifact it REFUSED to publish in band, and a refused file is
+    byte-identical to a real measurement to anything that ignores the mark.
+
+    This decomposition validates itself against the run's published QS, so reading that file with a
+    bare `json.loads` would let a quarantined run become the baseline the check passes against --
+    turning the apparatus check into a rubber stamp exactly when it matters. Caught by
+    `test_no_benchmark_tool_reads_a_run_artifact_without_the_publication_check`, which is a
+    package-wide guard; this pins the behaviour rather than the import.
+    """
+    from benchmarks.atm_answer_diagnosis import load_published_artifact
+
+    quarantined = tmp_path / "run.json"
+    quarantined.write_text(
+        json.dumps(
+            {
+                "unpublished": True,
+                "unpublished_reason": "provider returned a partial run",
+                "official_score": {"qs": 0.9999},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="REFUSED publication"):
+        load_published_artifact(quarantined)
+
+
+def test_a_published_run_artifact_is_accepted(tmp_path) -> None:
+    """The positive half: without the mark the same read must succeed, or the guard above would be
+    satisfied by a function that refuses everything."""
+    from benchmarks.atm_answer_diagnosis import load_published_artifact
+
+    good = tmp_path / "run.json"
+    good.write_text(json.dumps({"official_score": {"qs": 0.5}}), encoding="utf-8")
+    assert load_published_artifact(good)["official_score"]["qs"] == 0.5
