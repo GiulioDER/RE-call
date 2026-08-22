@@ -151,6 +151,22 @@ corpus. On VPS2 that is a `flock` on `~/recall-repos/.locks/embed.lock`, taken b
 Exporting it is a no-op. `RECALL_INDEX_BATCH_CHUNKS` is the knob that exists, and `recall index
 --batch-chunks` is its per-run form.
 
+### 5. Which model, and when the bounds above bind anything
+
+The memory corpus is built with **`voyage:voyage-4`**, a hosted model, since 2026-08-22. Not for
+speed: the corpus and the server that answers from it must agree, and they did not. The tenant held
+`bge-small` and `bge-large` rows while the client queried it with `voyage-4`, and **nothing raised,
+because all three emit 1024 dimensions** — pgvector computes a cosine happily and returns a
+confidently ranked list that means nothing. It converged on voyage-4 rather than on bge-large
+because the sibling tenants already use it, and because the alternative puts a 1.4 GB ONNX model
+inside every stdio server session on that host, resident, with a cold start on the first query.
+
+**So the bounds in the table above bind nothing on a hosted run**, where the batch is a request size
+rather than an allocation. They are kept because they are what stands between a local-model run and
+the host, and that is not hypothetical there: VPS2's main Postgres cluster has been down since
+2026-08-19, `Result: oom-kill`. A dimension match is not a model match, and free memory today is not
+a memory bound.
+
 ## MCP servers
 
 `scripts/session-mcp.sh` generates `.mcp.json` **and records the client's approval for it**. Run it
