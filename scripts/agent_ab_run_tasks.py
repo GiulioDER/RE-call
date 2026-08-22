@@ -117,6 +117,13 @@ async def preflight(config_env: dict[str, str], model: str) -> None:
         raise SystemExit(f"preflight produced no response; error={record.error!r}")
     if "401" in text or "revoked" in text.lower():
         raise SystemExit(f"preflight came back with an auth failure: {text[:200]}")
+    # Any API error, not just 401. Measured 2026-08-22: an exhausted OpenRouter balance answers
+    # the preflight with "API Error: 402 This request requires more credits", which this check's
+    # 401-only predecessor printed as the preflight RESPONSE and carried on, spending the whole
+    # smoke on sessions that each died with the same 402. The admission gate caught it downstream
+    # ("No admitted pairs"), but the gate is the last line, not the first.
+    if text.startswith("API Error") or record.error:
+        raise SystemExit(f"preflight came back with an API failure: {text[:200]}")
     print(f"preflight: {text[:60]!r}, {record.input_tokens} input tokens\n")
 
 
