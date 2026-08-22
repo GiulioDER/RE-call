@@ -402,6 +402,22 @@ p {
   margin-bottom: 2.5rem;
 }
 
+/* The two commands, in the hero, because they are the shortest true description of the product.
+   Narrower than the band so the second line does not wrap on a laptop: both commands have to be
+   readable as one unit or the "two commands" claim is not visible at a glance. */
+.hero-terminal {
+  max-width: 44rem;
+  margin-bottom: 1.25rem;
+}
+
+.hero-note {
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  max-width: 52ch;
+  margin-bottom: 2.25rem;
+}
+
 .hero-actions {
   display: flex;
   align-items: center;
@@ -1278,11 +1294,17 @@ td {
   animation: rise 0.7s var(--ease) both;
 }
 
+/* ⚠️ One delay per hero child, and the list must stay as long as the hero is.
+   `.hero-inner > *` gives EVERY child `animation: rise ... both`, so a child past the end of this
+   list animates with delay 0 and therefore arrives BEFORE the eyebrow above it. Adding the command
+   block and its note to the hero without extending this ran the stagger backwards. */
 .hero-inner > :nth-child(1) { animation-delay: 0.05s; }
 .hero-inner > :nth-child(2) { animation-delay: 0.12s; }
 .hero-inner > :nth-child(3) { animation-delay: 0.22s; }
 .hero-inner > :nth-child(4) { animation-delay: 0.3s; }
 .hero-inner > :nth-child(5) { animation-delay: 0.38s; }
+.hero-inner > :nth-child(6) { animation-delay: 0.46s; }
+.hero-inner > :nth-child(7) { animation-delay: 0.54s; }
 
 .hero .rule {
   transform-origin: left;
