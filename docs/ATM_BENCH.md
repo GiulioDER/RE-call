@@ -137,7 +137,7 @@ not reported because the run reused an existing index rather than building one.
 | type | Recall@10 | Recall@10GT | QS | gap |
 |---|---:|---:|---:|---:|
 | `number` | 93.0556 | 86.6667 | 72.7778 | 20.2778 |
-| `list_recall` | 89.9281 | 83.4532 | 59.8270 | 30.1010 |
+| `list_recall` | 89.9281 | 83.4532 | 59.8270 | 30.1011 |
 | `open_end` | 93.5798 | 88.1323 | 67.7043 | 25.8755 |
 | **overall** | **92.8924** | **86.9694** | **68.4264** | **24.4660** |
 
