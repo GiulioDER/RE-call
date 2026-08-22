@@ -6,7 +6,7 @@ validate` passes on all of them, because they are not schema errors. They are re
 at nothing.
 
 **`${user_config.KEY}` fails SILENTLY when KEY is misspelled.** The substitution resolves to an
-empty string rather than erroring, so a typo in `.mcp.json` launches the MCP server with
+empty string rather than erroring, so a typo in the manifest launches the MCP server with
 `RECALL_SERVING_DSN=""`, and the user sees a server that starts and then cannot connect. That is
 the same symptom as a wrong DSN, a stopped database and a missing pgvector extension, so it is
 diagnosed last.
@@ -35,7 +35,6 @@ import recall
 REPO = Path(__file__).resolve().parent.parent
 PLUGIN = REPO / "plugin"
 MANIFEST = PLUGIN / ".claude-plugin" / "plugin.json"
-MCP_CONFIG = PLUGIN / ".mcp.json"
 HOOKS = PLUGIN / "hooks" / "hooks.json"
 MARKETPLACE = REPO / ".claude-plugin" / "marketplace.json"
 
@@ -71,7 +70,7 @@ def test_every_user_config_reference_names_a_declared_key() -> None:
     """
     declared = set(_json(MANIFEST).get("userConfig", {}))
     referenced = set()
-    for path in (MCP_CONFIG, HOOKS, MANIFEST):
+    for path in (MANIFEST, HOOKS):
         referenced |= set(re.findall(r"\$\{user_config\.([A-Za-z0-9_]+)\}", path.read_text("utf-8")))
 
     assert referenced, "no ${user_config.*} references found; the DSN is no longer being passed"
@@ -87,7 +86,7 @@ def test_declared_user_config_is_actually_used() -> None:
     """
     declared = set(_json(MANIFEST).get("userConfig", {}))
     referenced = set()
-    for path in (MCP_CONFIG, HOOKS):
+    for path in (MANIFEST, HOOKS):
         referenced |= set(re.findall(r"\$\{user_config\.([A-Za-z0-9_]+)\}", path.read_text("utf-8")))
 
     unused = declared - referenced
@@ -232,8 +231,53 @@ def test_the_mcp_server_env_keys_are_ones_recall_actually_reads() -> None:
     """
     from recall.trust_policy import TrustPolicy
 
-    env = _json(MCP_CONFIG)["mcpServers"]["memory"]["env"]
+    env = _json(MANIFEST)["mcpServers"]["memory"]["env"]
     assert set(env) == {"RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_TRUST_MODE"}
 
     assert TrustPolicy.from_env({"RECALL_TRUST_MODE": "development"}).strict is False
     assert TrustPolicy.from_env({}).strict is True
+
+
+def test_every_plugin_file_is_tracked_by_git() -> None:
+    """⛔ The bug this exists for: a gitignore rule silently swallowed the plugin's `.mcp.json`.
+
+    This repository ignores `.mcp.json` outright, because the generated one at the root carries
+    bearer tokens and internal host addresses for a different project. That rule is a security
+    control, and it matched `plugin/.mcp.json` as well. The file existed on disk, `claude plugin
+    validate` passed, every test in this file passed, and it was absent from the commit: users
+    would have installed a plugin with no MCP server.
+
+    The fix was to move `mcpServers` inline into the manifest rather than add a
+    `!plugin/.mcp.json` exception, because widening a secrets rule so a feature works is the wrong
+    trade, and the exception would have covered any future file at that path too.
+
+    Reading from disk is what every other test here does and is exactly what could not see this.
+    Ask git instead.
+    """
+    import subprocess
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", "plugin", ".claude-plugin"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
+    ).stdout.split()
+    on_disk = {
+        path.relative_to(REPO).as_posix()
+        for path in list(PLUGIN.rglob("*")) + list((REPO / ".claude-plugin").rglob("*"))
+        if path.is_file()
+    }
+
+    untracked = sorted(on_disk - set(tracked))
+    assert not untracked, f"present on disk but not in git, so users never receive them: {untracked}"
+
+
+def test_the_manifest_carries_the_mcp_server_itself() -> None:
+    """Inline, because `plugin/.mcp.json` is unshippable here. See the test above."""
+    assert not (PLUGIN / ".mcp.json").exists(), (
+        "a plugin/.mcp.json is gitignored by this repository's secrets rule and would not ship"
+    )
+    assert "memory" in _json(MANIFEST)["mcpServers"]

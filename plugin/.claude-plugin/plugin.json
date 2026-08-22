@@ -19,6 +19,16 @@
     "postgresql",
     "abstention"
   ],
+  "mcpServers": {
+    "memory": {
+      "command": "recall-mcp",
+      "env": {
+        "RECALL_SERVING_DSN": "${user_config.serving_dsn}",
+        "RECALL_TENANT": "${user_config.tenant}",
+        "RECALL_TRUST_MODE": "${user_config.trust_mode}"
+      }
+    }
+  },
   "userConfig": {
     "serving_dsn": {
       "type": "string",
