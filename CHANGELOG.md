@@ -8,6 +8,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.10.0] (2026-08-23)
+
 ### Security
 
 * **Right-to-erasure now reaches the learned-sparse sidecar.** `delete_sources`,
