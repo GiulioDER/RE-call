@@ -71,6 +71,9 @@ Rules:
 - Keep every detail the question asks about (names, dates, counts, places, order of events).
 - When excerpts carry session dates, keep the dates that matter for the question.
 - Output only the digest, no preamble. One to three short sentences.
+- Write complete declarative sentences that name what they describe ("The user's name is \
+Marcus Chen."), never a bare fragment ("Marcus Chen."): the reader of your digest sees it \
+without the question and must still understand what each fact is about.
 - If the excerpts contain nothing relevant, output the most nearly relevant facts they do \
 contain, verbatim. Do not say the information is missing.
 
@@ -159,6 +162,13 @@ class RecallAdapter(BaseAdapter):
             self._sparse_encoder = SpladeEncoder.from_pretrained(self._sparse_model)
         if self._synth_model != "none" and not os.environ.get("OPENROUTER_API_KEY"):
             raise RuntimeError("RECALL_BENCHD_SYNTH requires OPENROUTER_API_KEY")
+
+        # Global generation migrations only apply through the default table, so a fresh
+        # database must bootstrap `chunks` before any custom bench table (recall/schema.py).
+        bootstrap = PgVectorStore(dsn, dim=self._embedder.dim, tenant=TENANT)
+        bootstrap.__enter__()
+        bootstrap.ensure_schema()
+        bootstrap.close()
 
         self._store = PgVectorStore(
             dsn, dim=self._embedder.dim, tenant=TENANT, table=self._table
