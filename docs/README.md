@@ -21,6 +21,7 @@ want to audit a claim or reproduce a benchmark.
 | [SECURITY_MODEL.md](SECURITY_MODEL.md) | Detailed threat model behind the root security policy. |
 | [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) | MCP setup and tool behavior. |
 | [REASONING_OPERATIONS.md](REASONING_OPERATIONS.md) | Opt-in reasoning commands, MCP tools, failure behavior, review policy, and metrics. |
+| [DECISION_LEDGER.md](DECISION_LEDGER.md) | Opt-in append-only records of every search decision: trigger, evidence, verdicts, governing calibration, and refusals. |
 | [BETA_RECRUITING.md](BETA_RECRUITING.md) | Compliant beta recruiting from public discussions without harvesting emails. |
 
 ## Architecture

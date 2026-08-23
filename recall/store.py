@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import uuid4
 from ipaddress import ip_address
 from urllib.parse import unquote, urlsplit
@@ -15,6 +15,7 @@ from urllib.parse import unquote, urlsplit
 import psycopg
 from pgvector import SparseVector, Vector
 from pgvector.psycopg import register_vector
+from psycopg.types.json import Jsonb
 
 from recall.frontmatter import supersedes_key
 from recall.observability import METRICS, get_logger
@@ -1253,6 +1254,66 @@ class PgVectorStore:
                     for c, e in zip(chunks, embeddings)
                 ],
             )
+
+    def append_audit_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        generation_id: str | None = None,
+        source_uri: str | None = None,
+        actor: str = "serving",
+        event_id: str | None = None,
+    ) -> str:
+        """Append one event to this tenant's audit ledger (``recall_audit_events``).
+
+        The write side (generation and calibration lifecycle) has appended to that table since
+        migration 0008 through its own repositories; this is the read side's pen, used by
+        `recall.decision_ledger` to witness search decisions. It runs on the store's own
+        tenant-scoped connections, so the row satisfies the table's RLS policy exactly when
+        every other statement here does. Append is the ONLY verb on this surface — no update or
+        delete exists, because a ledger that can be edited in place is a draft, not a record.
+
+        ``ON CONFLICT DO NOTHING`` makes the append idempotent PER EVENT ID, which is not a
+        loophole in append-only (nothing is ever updated) but the honest answer to the
+        indeterminate-commit window: `_with_retry` re-runs the INSERT when the connection dies
+        after the server committed but before the client heard, and the pre-generated id means
+        the collision can only be this call's own earlier success. Without it, that window
+        reported a failure for a row that exists, so the failure counter disagreed with the
+        table. A caller passing an explicit ``event_id`` twice gets one row and two successes,
+        by the same rule.
+
+        The write inherits the store's single reconnect-retry, so under a degraded connection
+        it can cost the caller up to two attempts of latency before failing — a deliberate
+        trade for a best-effort caller that shares the search path's connection anyway.
+
+        Raises on failure (a schema predating 0008, a connection dead after the retry): whether
+        the write is load-bearing is the CALLER's decision, and `DecisionLedger` decides it is
+        not by catching here.
+        """
+        if not isinstance(event_type, str) or not event_type:
+            raise ValueError("event_type must be a non-empty str")
+        event_id = event_id or f"evt_{uuid4().hex}"
+
+        def _op(conn: "psycopg.Connection") -> None:
+            conn.execute(
+                "INSERT INTO recall_audit_events "
+                "(tenant_id, event_id, event_type, actor, generation_id, source_uri, payload) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (tenant_id, event_id) DO NOTHING",
+                (
+                    self._tenant,
+                    event_id,
+                    event_type,
+                    actor,
+                    generation_id,
+                    source_uri,
+                    Jsonb(dict(payload)),
+                ),
+            )
+
+        self._with_retry(_op)
+        return event_id
 
     def analyze(self) -> bool:
         """Refresh the planner's statistics for this table. Best-effort; never raises.

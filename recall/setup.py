@@ -1466,6 +1466,9 @@ def run_setup_wizard(
         "RECALL_EMBEDDER": embedder.value,
         "RECALL_SPARSE": "fts",
         "RECALL_ENTAILMENT": "0",
+        # Seeded off, like RECALL_ENTAILMENT: the generated .env advertises the knob so the
+        # decision ledger is discoverable without the wizard asking about it.
+        "RECALL_DECISION_LEDGER": "0",
     }
     if reranker.value == "RECALL_RERANK=1":
         values["RECALL_RERANK"] = "1"

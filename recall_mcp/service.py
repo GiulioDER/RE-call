@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
 from recall.calibration_v2 import CalibrationRepository
+from recall.decision_ledger import DecisionLedger
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall.embedding_registry import (
     RegisteredProfile,
@@ -999,6 +1000,11 @@ def _retrieve_trusted(
                 retrieval_profile=profile.name,
                 index_generation=generation,
                 policy=policy,
+                # RECALL_DECISION_LEDGER=1 appends this decision (answered, abstained, or
+                # refused) to the tenant's audit table. Resolved per call because the env is
+                # process state and the store is not; construction is allocation-only, and a
+                # malformed value warns once and stays off rather than refusing the search.
+                ledger=DecisionLedger.from_env(store, actor="mcp-service"),
             )
     # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
     # counted as a rejection and NOTHING else. Shedding is the design working: the request did no

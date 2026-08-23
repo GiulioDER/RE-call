@@ -26,6 +26,7 @@ from recall.observability import METRICS
 from recall.promotion import reviewed_promotion_is_trusted_metadata
 
 if TYPE_CHECKING:  # avoid a runtime import cycle: entailment imports trust's abstain wording
+    from recall.decision_ledger import DecisionLedger
     from recall.entailment import EntailmentJudge
 
 from recall.calibration import Calibration
@@ -653,7 +654,7 @@ def order_promoted(
     return replace(trusted, hits=ok + rest)
 
 
-def trusted_search(
+def _trusted_search(
     store: PgVectorStore,
     embedder: Embedder,
     query: str,
@@ -673,23 +674,18 @@ def trusted_search(
     successor_expansion: SuccessorExpansionPolicy | None = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
-    """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
+    """The implementation of `trusted_search`, minus the decision-ledger wrapper.
 
-    `entailment` is OFF by default: when a judge is passed, verdict-ok hits that do not entail
-    an answer to the query are demoted to ``not_entailed`` (see `recall.entailment`) — the
-    near-miss guard the cosine threshold cannot provide. Costs one judge pass per ok hit.
-
-    `candidate_k` is the per-leg pool size handed to the retriever (default the library's own
-    ``DEFAULT_CANDIDATE_K``). It is exposed so a caller that widened the pool for its other
-    retrievals — e.g. an eval sweep — can hold this call to the SAME pool, rather than silently
-    reverting to the default here.
+    The generation-snapshot recursion below re-enters HERE, not the public function, so one call
+    is witnessed once: the wrapper records the final outcome, and an inner retry or snapshot
+    re-entry never writes a record of its own.
     """
     if k < 1:
         raise ValueError("k must be >= 1")
     snapshot = getattr(store, "snapshot", None)
     if _generation_snapshot and callable(snapshot):
         with snapshot():
-            return trusted_search(
+            return _trusted_search(
                 store,
                 embedder,
                 query,
@@ -938,3 +934,78 @@ def trusted_search(
 
         trusted = apply_entailment(trusted, entailment)
     return trusted
+
+
+def trusted_search(
+    store: PgVectorStore,
+    embedder: Embedder,
+    query: str,
+    k: int = 5,
+    source: str | None = None,
+    calibration: Calibration | None = None,
+    reranker: Reranker | None = None,
+    now: datetime | None = None,
+    known_as_of: datetime | None = None,
+    entailment: EntailmentJudge | None = None,
+    candidate_k: int = DEFAULT_CANDIDATE_K,
+    retrieval_profile: str = "legacy",
+    index_generation: str = "legacy",
+    policy: TrustPolicy | None = None,
+    document_expansion: DocumentExpansionPolicy | None = None,
+    structural_expansion: StructuralExpansionPolicy | None = None,
+    successor_expansion: SuccessorExpansionPolicy | None = None,
+    ledger: "DecisionLedger | None" = None,
+    _generation_snapshot: bool = True,
+) -> TrustedResult:
+    """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
+
+    `entailment` is OFF by default: when a judge is passed, verdict-ok hits that do not entail
+    an answer to the query are demoted to ``not_entailed`` (see `recall.entailment`) — the
+    near-miss guard the cosine threshold cannot provide. Costs one judge pass per ok hit.
+
+    `candidate_k` is the per-leg pool size handed to the retriever (default the library's own
+    ``DEFAULT_CANDIDATE_K``). It is exposed so a caller that widened the pool for its other
+    retrievals — e.g. an eval sweep — can hold this call to the SAME pool, rather than silently
+    reverting to the default here.
+
+    `ledger` is OFF by default: when a `recall.decision_ledger.DecisionLedger` is passed, the
+    call's final outcome — the answered or abstained result, or the strict `TrustRefusal` — is
+    appended to the tenant's audit table as one decision record, best-effort, AFTER the decision
+    is complete. The ledger is a witness at this boundary, never part of it: it cannot change a
+    verdict, a refusal, or an ordering, and a failed write costs a counter and a log line, not
+    the search. Everything it records is what this function was about to return anyway; the only
+    thing enabling it changes is that the record now outlives the stack frame.
+    """
+    # ONE argument list, built once. Two verbatim copies of a 17-argument pass-through (plus the
+    # two signatures) meant a new parameter needed four synchronized edits with nothing checking
+    # they agree; a parameter silently dropped from one copy would surface only as the ledger
+    # branch behaving differently from the plain one.
+    forwarded: dict[str, object] = dict(
+        k=k,
+        source=source,
+        calibration=calibration,
+        reranker=reranker,
+        now=now,
+        known_as_of=known_as_of,
+        entailment=entailment,
+        candidate_k=candidate_k,
+        retrieval_profile=retrieval_profile,
+        index_generation=index_generation,
+        policy=policy,
+        document_expansion=document_expansion,
+        structural_expansion=structural_expansion,
+        successor_expansion=successor_expansion,
+        _generation_snapshot=_generation_snapshot,
+    )
+    if ledger is None:
+        return _trusted_search(store, embedder, query, **forwarded)  # type: ignore[arg-type]
+    try:
+        result = _trusted_search(store, embedder, query, **forwarded)  # type: ignore[arg-type]
+    except TrustRefusal as refusal:
+        # The refusal is recorded and then propagates UNCHANGED. Recording before the raise
+        # completes would be the witness inserting itself into the enforcement path; recording
+        # instead of re-raising would be the witness overruling it.
+        ledger.record_refusal(refusal, query=query, k=k, known_as_of=known_as_of)
+        raise
+    ledger.record_decision(result, k=k, valid_time=now, known_as_of=known_as_of)
+    return result
