@@ -1,0 +1,56 @@
+{
+  "_provenance": {
+    "generation": "post-#81/#84",
+    "status": "current",
+    "note": "Publication record for the ATM-Bench harness, written 2026-08-23. It records WHICH files were published and proves they are byte-identical to run commit 6c0ec26b. It measures nothing about retrieval or answer quality: those figures are in atm_bench_full_20260821.json, which this record does not touch.",
+    "backs": [
+      "docs/ATM_BENCH.md section 6"
+    ],
+    "superseded_by": null
+  },
+  "benchmark": "ATM-Bench",
+  "record": "harness publication",
+  "published_date": "2026-08-23",
+  "run": {
+    "run_id": "voyage4-deepseek-full-preregistered-final-20260821",
+    "run_date": "2026-08-21",
+    "recall_commit": "6c0ec26b",
+    "results_artifact": "results/atm/atm_bench_full_20260821.json",
+    "leaderboard_pull_request": "https://github.com/atmbench/atmbench.github.io/pull/2"
+  },
+  "harness_files": {
+    "benchmarks/atm_full_run.py": {
+      "sha256": "d15cc745790a9d2309980fda0ae477c303b161cbb42b0913b9e827901fdfbace",
+      "bytes": 28481,
+      "git_blob": "32d663fd3ad8b631495f96fcde0a80cd1d9c9664",
+      "git_blob_at_run_commit": "32d663fd3ad8b631495f96fcde0a80cd1d9c9664",
+      "identical_to_run_commit": true
+    },
+    "benchmarks/atm_bench.py": {
+      "sha256": "88cde31a0e50256c8a05ac8f0404593a615583678ec171292de5c5fabd9aef7b",
+      "bytes": 19080,
+      "git_blob": "841402e704571c7fb8418618d5387a105806d900",
+      "git_blob_at_run_commit": "841402e704571c7fb8418618d5387a105806d900",
+      "identical_to_run_commit": true
+    }
+  },
+  "library": {
+    "master_head_at_publication": "ec6ab9a0",
+    "ported_from_run_commit": [
+      "recall.types.RetrievalDiagnostics.max_dense_score"
+    ],
+    "ported_reason": "The frozen runner records diagnostics.max_dense_score per question and the field was never on master: it was added on the run's own private branch. Without the port the published harness raises AttributeError on its first retrieval record, so publishing the file alone would not have made the run re-executable.",
+    "recall_diff_run_commit_to_master": {
+      "files_changed": 49,
+      "insertions": 14462,
+      "deletions": 344,
+      "command": "git diff --stat 6c0ec26b ec6ab9a0 -- recall/"
+    }
+  },
+  "reproduction_limits": [
+    "The published files reproduce the HARNESS, not the run. The library moved by the diff recorded above between the run commit and this publication, so a re-execution today runs the same driver over a different recall.",
+    "deepseek/deepseek-v4-pro is a moving alias, so the answer model of 2026-08-21 is not addressable by name today.",
+    "The ATM-Bench dataset files are inputs and are not in this repository; their SHA-256 sums are recorded in atm_bench_full_20260821.json."
+  ],
+  "verification_command": "python -m pytest tests/test_atm_runner_published.py -q"
+}

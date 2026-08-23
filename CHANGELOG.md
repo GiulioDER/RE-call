@@ -10,6 +10,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* **The ATM-Bench harness that produced the published run is now in this repository, byte for
+  byte.** `benchmarks/atm_full_run.py` and `benchmarks/atm_bench.py` are copied from the run's own
+  commit without a character changed, hashed in `results/atm/atm_harness_20260823.json`, and pinned
+  by `tests/test_atm_runner_published.py`, which fails on a single changed byte. The leaderboard
+  submission had pointed at a commit that was on no public branch, so the code behind a published
+  number could not be read, let alone checked.
+
+  Both files are exempt from `ruff` and `mypy` with the reasons stated beside the exemptions: a
+  style fix would make the published harness a different program from the one that ran.
+
+  ⚠️ **This publishes the harness, not the run.** `recall/` has moved since, the answer model is a
+  moving alias, and the dataset stays outside this tree, so a re-execution reproduces the method
+  rather than the last decimal. `docs/ATM_BENCH.md` section 6 states all three.
+
 * **`recall quickstart` goes from a fresh `pip install` to three answered queries in one command,
   database included.** It starts a throwaway pgvector container on a free port, applies the schema,
   indexes a corpus that ships inside the wheel, and runs three queries chosen to show the retrieval
@@ -28,6 +42,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   resolves its corpus from the installed package.
 
 ### Fixed
+
+* **`RetrievalDiagnostics` reports `max_dense_score`.** The published ATM harness records
+  the best dense cosine per question, and that field had only ever existed on the run's own private
+  branch: publishing the harness without it would have published a program that raises
+  `AttributeError` on its first retrieval record. Additive, defaulted to `None`, and populated at
+  both of the retriever's construction sites.
 
 * **The unanswerable query in the demo corpus did not abstain.** `recall demo`'s "llamas on mars"
   scores a top cosine of **0.505** against the 0.50 development threshold on `recall/eval/corpus`,
