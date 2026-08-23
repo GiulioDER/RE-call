@@ -125,3 +125,17 @@ have happened, one of which was red.** That red is explained and fixed at its ca
 retried, but the honest position is that this is one green run, not five, and the fifth is the
 one that decides whether a shared gate has become intermittent. Anyone merging this should watch
 the next few runs rather than treat 3:55 as settled.
+
+### Run 3 (2026-08-23, after rebasing onto `4eea6aa9`)
+
+Run `32648568667`, every job green: **`test` 3:52, `floor` 2:59, coverage 79.82%**, 6462 passed
+and 150 skipped. Reproduces run 2 within seconds on a different base, which is what says the 3:55
+was the change rather than a lucky runner.
+
+**Three runs now: one red (the pool race, fixed at its cause), two green.** The falsifier asks for
+five before a shared gate is called stable, and that count is deliberately not being rounded up.
+
+The local suite on the same rebased branch: **6606 passed, 34 skipped, exit 0** at `-n 4`, in
+18:31 rather than the 14:05 measured earlier, on a machine that was busier. Same tests, same
+verdict, four minutes of spread: further evidence for the record's own warning that anything under
+about 1.3× here is noise.
