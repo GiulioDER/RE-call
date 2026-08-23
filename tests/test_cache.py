@@ -56,3 +56,19 @@ def test_cache_key_separates_embedders_and_dims():
     assert cache_key(a, 2, "hello") != cache_key(b, 2, "hello")
     assert cache_key(a, 2, "hello") != cache_key(a, 3, "hello")
     assert cache_key(a, 2, "hello") == cache_key(a, 2, "hello")
+
+
+def test_a_short_embedder_batch_raises_instead_of_shrinking_the_result(tmp_path):
+    """A hosted embedder dropping one item must fail HERE, naming the embedder, not two
+    layers later as a length mismatch after the spend."""
+    import pytest
+
+    class _Short:
+        dim = 2
+        name = "short-embedder"
+
+        def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts[:-1]]  # drops the last item
+
+    with pytest.raises(RuntimeError, match="short-embedder"):
+        embed_with_cache(_Short(), ["a", "b", "c"], EmbeddingCache(tmp_path / "emb.sqlite"))

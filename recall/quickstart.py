@@ -268,10 +268,10 @@ def write_compose(path: Path, document: dict[str, object]) -> None:
     """
     import json
 
+    from recall.atomic_write import atomic_write_bytes
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
-    temporary.replace(path)
+    atomic_write_bytes(path, (json.dumps(document, indent=2) + "\n").encode("utf-8"))
 
 
 def provision(root: Path | None = None) -> tuple[str, int, Path, bool]:

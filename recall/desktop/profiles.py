@@ -34,16 +34,21 @@ def load_profile(path: Path | None = None) -> RuntimeProfile | None:
 
 
 def _write_json_atomically(target: Path, payload: object) -> Path:
-    """Write `payload` to `target` through a sibling temporary, then rename over it.
+    """Write `payload` to `target` through `recall.atomic_write` (LF, bytes, fsync'd).
 
     One implementation, because there were two and they had already diverged: `save_profile` wrote
     platform newlines and `save_pipelines` pinned LF, so on Windows two files in the same directory
     written by the same module disagreed. LF wins, matching every writer in the install path.
+
+    Delegating to `atomic_write_bytes` fixed two more defects the local version carried: the
+    temp name was `target.with_suffix(".tmp")`, which REPLACES the extension, so every save of
+    `runtime.json` shared one `runtime.tmp` and two concurrent saves could promote each other's
+    half-written JSON; and nothing was fsync'd, so a crash could publish an empty rename.
     """
+    from recall.atomic_write import atomic_write_bytes
+
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
-    temporary.replace(target)
+    atomic_write_bytes(target, (json.dumps(payload, indent=2) + "\n").encode("utf-8"))
     return target
 
 

@@ -740,7 +740,11 @@ class Indexer:
         # same basename in different directories (a/notes.md, b/notes.md) must not collide in the
         # supersession map or in provenance. Mirrors recall.lint's `rel` keying. A single-file
         # index has no root to relativize against, so it falls back to the basename.
-        rel = {f: (f.relative_to(root).as_posix() if root.is_dir() else f.name) for f in files}
+        # One stat, hoisted: evaluated inside the comprehension it was N syscalls for a
+        # loop-invariant answer, and a root vanishing mid-comprehension could split one corpus
+        # across both keying schemes — the exact collision this comment exists to prevent.
+        root_is_dir = root.is_dir()
+        rel = {f: (f.relative_to(root).as_posix() if root_is_dir else f.name) for f in files}
 
         known = self._store.source_content_hashes()
         # ⛔ **A second, machine-independent view of the same question.** `known` keys on the

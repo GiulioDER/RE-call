@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
@@ -161,20 +162,28 @@ class FallbackReranker:
         self.fallback = fallback
         self.fallback_count = 0
         self.served_by: str | None = None
+        # `+=` is a non-atomic read-modify-write and this instance is cached process-wide
+        # (`_RERANKERS`) while tool bodies run on worker threads — the same reason
+        # `recall.pool` guards `reset_discards` with its own lock. A Voyage outage burst is
+        # exactly when the counter matters and exactly when it raced.
+        self._counter_lock = threading.Lock()
 
     def rerank(self, query: str, hits: list[ScoredChunk]) -> list[ScoredChunk]:
         try:
             out = self.primary.rerank(query, hits)
-            self.served_by = "primary"
+            with self._counter_lock:
+                self.served_by = "primary"
             return out
         except Exception as exc:
             from recall.observability import get_logger
 
-            self.fallback_count += 1
-            self.served_by = "fallback"
+            with self._counter_lock:
+                self.fallback_count += 1
+                count = self.fallback_count
+                self.served_by = "fallback"
             get_logger("rerank").warning(
                 "primary reranker failed, falling back (%d so far this process): %s",
-                self.fallback_count,
+                count,
                 exc,
             )
             return self.fallback.rerank(query, hits)

@@ -1603,3 +1603,14 @@ def test_no_settings_failure_puts_the_password_on_the_label(
         assert marker not in window.database_status.text(), window.database_status.text()
     finally:
         window.close()
+
+
+def test_an_update_without_a_digest_is_refused_not_silently_unverified() -> None:
+    """A release whose metadata carries no sha256 used to be staged as if verified. An
+    unverifiable installer is a refusal, indistinguishable from nothing else."""
+    from recall.desktop.models import ReleaseInfo
+    from recall.desktop.updates import UpdateError, download_and_verify
+
+    release = ReleaseInfo(version="9.9.9", url="https://example.test/x.exe", sha256=None, asset_name="x.exe")
+    with pytest.raises(UpdateError, match="no sha256"):
+        download_and_verify(release, Path("unused-dir"))

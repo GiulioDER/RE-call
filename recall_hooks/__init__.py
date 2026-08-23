@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -88,10 +89,26 @@ def refresh_stats(config: dict[str, Any] | None = None) -> int:
         statement = sql.SQL("SELECT count(*) FROM {} WHERE tenant_id = %s").format(
             sql.Identifier(str(config.get("table", "chunks")))
         )
-        with psycopg.connect(dsn, connect_timeout=3) as conn:
+        try:
+            connection = psycopg.connect(dsn, connect_timeout=3)
+        except Exception:
+            # CONNECT failed: the database is down or unreachable, which is transient by
+            # nature. Fail open with the cached count — the documented behaviour.
+            return int(config.get("chunks", 0) or 0)
+        with connection as conn:
             row = conn.execute(statement, (str(config.get("tenant", "default")),)).fetchone()
         count = int(row[0]) if row else 0
-    except Exception:
+    except Exception as exc:
+        # The QUERY was refused on a live connection: a dropped table, a revoked role, a
+        # renamed tenant column. That is configuration rot, not an outage, and serving the
+        # cached count forever would advertise a corpus this hook can never reach again.
+        # Still fail open for this session, but say so once, to stderr, where hook output
+        # goes; a silent stale number was the audited defect here.
+        print(
+            f"recall-hooks: chunk count query refused ({type(exc).__name__}); "
+            f"the cached figure may be stale until the config is fixed",
+            file=sys.stderr,
+        )
         return int(config.get("chunks", 0) or 0)
 
     _save_config({**config, "chunks": count})
@@ -110,11 +127,19 @@ def _save_config(config: dict[str, Any]) -> None:
     imported: it lives in the `recall` package, whose `__init__` costs about a second, and this
     module is on the critical path of every session launch. That trade is the whole reason this
     package exists, so the duplication is intentional rather than an oversight to be tidied away.
+
+    `mkstemp`, not a fixed temp name. The fixed `.recall-hook.json.tmp` this used was shared by
+    every concurrent writer — `SessionEnd` runs async and `PreCompact` writes the same file — so
+    writer A could promote writer B's half-written bytes over the real config. Because a corrupt
+    config loads as `{}` and `refresh_stats` then returns early with no dsn, that corruption was
+    PERMANENT and silent: the one shape of loss this function exists to prevent.
     """
     path = config_path()
-    tmp = path.with_name(f".{path.name}.tmp")
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
     try:
-        tmp.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(config, indent=2) + "\n")
         os.replace(tmp, path)  # atomic on POSIX and on Windows for a same-directory target
     except OSError:
         try:

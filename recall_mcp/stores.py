@@ -268,18 +268,25 @@ class StoreRegistry:
             self._closed = True
             stores = list(self._stores.items())
             self._stores.clear()
-        self._listener_stop.set()
-        if self._listener is not None:
-            self._listener.join(timeout=6.0)
-        for (tenant, generation), store in stores:
-            try:
-                store.close()
-            except Exception:  # pragma: no cover - best effort on shutdown
-                _log.warning(
-                    "error closing store for tenant %r generation %r",
-                    tenant, generation, exc_info=True,
-                )
-        # Those stores are views over the shared pool and own no connections, so their `close()`
-        # is a no-op on the sockets. The registry owns the pool, so shutdown is this line — and
-        # omitting it would leak the pool's background maintenance thread for the process's life.
-        self._shared.close()
+        try:
+            self._listener_stop.set()
+            if self._listener is not None:
+                self._listener.join(timeout=6.0)
+                if self._listener.is_alive():
+                    # Not silent: a listener that outlives its 6s grace keeps running with
+                    # its own connection against a registry that believes itself shut down.
+                    _log.warning("route listener did not stop within 6s; abandoning it")
+            for (tenant, generation), store in stores:
+                try:
+                    store.close()
+                except Exception:  # pragma: no cover - best effort on shutdown
+                    _log.warning(
+                        "error closing store for tenant %r generation %r",
+                        tenant, generation, exc_info=True,
+                    )
+        finally:
+            # Those stores are views over the shared pool and own no connections, so their
+            # `close()` is a no-op on the sockets. The registry owns the pool, so shutdown is
+            # this line — in a `finally`, because omitting it (or skipping it via a raise
+            # above) leaks the pool's background maintenance thread for the process's life.
+            self._shared.close()

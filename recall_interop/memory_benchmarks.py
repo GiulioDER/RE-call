@@ -340,19 +340,28 @@ class RecallBackend:
 
     async def delete_user(self, user_id: str) -> bool:
         """Drop everything indexed for `user_id`. True on success, False if unknown."""
-        if user_id not in self._scopes:
-            return False
 
         def work() -> bool:
-            scope = self._scopes.pop(user_id)
-            sources = sorted({c.source for c in scope.store.iter_chunks()})
-            if sources:
-                scope.store.delete_sources(sources)
-            scope.store.close()
+            # Look up first, pop only after the work succeeds: the old pop-first shape lost
+            # the scope object on a mid-delete failure, leaving a live connection with no
+            # handle left to close or retry through. The store close lives in `finally` for
+            # the same reason.
+            scope = self._scopes.get(user_id)
+            if scope is None:
+                return False
+            try:
+                sources = sorted({c.source for c in scope.store.iter_chunks()})
+                if sources:
+                    scope.store.delete_sources(sources)
+            finally:
+                scope.store.close()
+            del self._scopes[user_id]
             if not self._keep_workspace:
                 shutil.rmtree(scope.workspace, ignore_errors=True)
             return True
 
+        # Membership is decided INSIDE the lock: checked outside it, two concurrent deletes
+        # of one user both passed the check and the second pop raised KeyError.
         async with self._lock:
             return await asyncio.to_thread(work)
 

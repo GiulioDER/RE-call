@@ -246,7 +246,13 @@ def _dimension_for(embedder: str) -> int | None:
 
 
 def write_config(document: dict[str, object], path: Path) -> Path:
-    """Write the answers where the headless installer can read them back."""
+    """Write the answers where the headless installer can read them back.
+
+    Atomic (this was a plain `write_text`): the file is the input to a later install run, and
+    a crash mid-write used to leave truncated JSON the headless wizard would refuse.
+    """
+    from recall.atomic_write import atomic_write_bytes
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
+    atomic_write_bytes(path, (json.dumps(document, indent=2) + "\n").encode("utf-8"))
     return path
