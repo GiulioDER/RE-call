@@ -189,9 +189,19 @@ def test_coverage_refuses_an_overcounted_sidecar_and_names_the_cause(make_store)
     store_sparse_vectors(
         store, encoder, [("a", "aardvark"), ("b", "beta"), ("c", "gamma")]
     )
-    # Orphan the sidecar: remove one chunk row with no sidecar cleanup, exactly as
-    # `delete_sources` does today (a later task fixes that; this test only needs the state).
-    store.delete_sources(["/c/c.md"])
+    # Orphan the sidecar by DIRECT SQL, bypassing the store: `delete_sources` scrubs the
+    # sidecar in the same transaction now, so the store can no longer produce this state
+    # itself. It still occurs in the wild — corpora encoded before the scrub landed, or a
+    # row removed by hand — which is exactly what the overcount branch exists to catch.
+    import psycopg as _psycopg
+
+    from tests.conftest import TEST_DSN as _DSN
+
+    with _psycopg.connect(_DSN, autocommit=True) as conn:
+        conn.execute(
+            f"DELETE FROM {store.table} WHERE source = %s",
+            ("/c/c.md",),
+        )
 
     assert store.sparse_row_count(PROFILE_ID) == 3
     assert store.count() == 2

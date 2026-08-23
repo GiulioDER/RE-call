@@ -105,19 +105,22 @@ def test_selecting_splade_without_an_encoder_is_refused(make_store) -> None:
 
 
 @requires_db
-def test_the_learned_sparse_leg_refuses_to_run_in_production(make_store, monkeypatch) -> None:
-    """The sidecar has no FOREIGN KEY and the erasure paths cannot see it.
+@pytest.mark.parametrize("spelling", ["production", "Production", " production "])
+def test_the_learned_sparse_leg_refuses_to_run_in_production(
+    make_store, monkeypatch, spelling
+) -> None:
+    """The sidecar has no FOREIGN KEY, so nothing cascades on Postgres's side.
 
-    `recall_sparse_v1` cannot cascade from its parent (the parent table is a column VALUE), and
-    generations.forget / control_plane.erase_sources_from_pending were written before it existed.
-    SPLADE weights over the vocabulary are partially reconstructable content, so an un-erased row
-    is a compliance hole rather than a tidiness problem. Until erasure is wired, production is
-    refused outright rather than served with a caveat in a docstring nobody reads.
+    Erasure is wired now (the delete paths scrub `recall_sparse_v1` in the same transaction),
+    but a corpus encoded before that fix may carry orphaned rows, and SPLADE weights over the
+    vocabulary are partially reconstructable content. Until an orphan sweep exists, production
+    stays refused. Every spelling of "production" must refuse: the old bare compare meant
+    `RECALL_ENV=Production` silently DISABLED this gate through a capital letter.
     """
-    monkeypatch.setenv("RECALL_ENV", "production")
+    monkeypatch.setenv("RECALL_ENV", spelling)
     store = make_store(64)
 
-    with pytest.raises(RuntimeError, match="erasure"):
+    with pytest.raises(RuntimeError, match="orphan"):
         HybridRetriever(
             store, StubEmbedder(), sparse_backend="splade",
             sparse_encoder=KeywordSparseEncoder({"aardvark": 7}),

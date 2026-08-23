@@ -147,6 +147,31 @@ def _body_rule_changed(media_type: str, text: str) -> bool:
     return media_type in _MARKDOWN_MEDIA_TYPES and legacy_pairing_differs(text)
 
 
+def _scrub_sparse_rows(
+    conn: psycopg.Connection, tenant_id: str, chunk_table: str, chunk_ids: list[str]
+) -> int:
+    """Delete the learned-sparse sidecar rows for chunks an erasure just removed.
+
+    A deliberate duplicate of `PgVectorStore._scrub_sparse_rows` rather than an import: this
+    module must not depend on the store (see the store helper for the full rationale). Same
+    contract: same transaction as the chunk delete, every profile's rows die together, and
+    the table name is a bound VALUE against the sidecar's `chunk_table` column.
+    """
+    if not chunk_ids:
+        return 0
+    sidecar = conn.execute("SELECT to_regclass('recall_sparse_v1')").fetchone()
+    if not (sidecar and sidecar[0]):
+        return 0
+    return (
+        conn.execute(
+            "DELETE FROM recall_sparse_v1 "
+            "WHERE tenant_id = %s AND chunk_table = %s AND id = ANY(%s)",
+            (tenant_id, chunk_table, chunk_ids),
+        ).rowcount
+        or 0
+    )
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
@@ -1364,12 +1389,15 @@ class GenerationManager:
                 )
             removed = 0
             if selected:
-                result = conn.execute(
+                rows = conn.execute(
                     "DELETE FROM recall_chunks_v1 WHERE tenant_id = %s "
-                    "AND generation_id = ANY(%s) AND source_uri = %s",
+                    "AND generation_id = ANY(%s) AND source_uri = %s RETURNING chunk_id",
                     (self.tenant_id, list(selected), source_uri),
+                ).fetchall()
+                removed = len(rows)
+                _scrub_sparse_rows(
+                    conn, self.tenant_id, "recall_chunks_v1", [row[0] for row in rows]
                 )
-                removed = result.rowcount
             if legacy_table is not None:
                 # Migration 0008 adopts a v0.8 install's rows in place: they stay in the legacy
                 # table and remain readable through the legacy API. Erasing only
@@ -1382,11 +1410,16 @@ class GenerationManager:
                     "SELECT to_regclass(%s) IS NOT NULL", (legacy_table,)
                 ).fetchone()
                 if exists and exists[0]:
-                    legacy = conn.execute(
-                        f"DELETE FROM {legacy_table} WHERE tenant_id = %s AND source = %s",
+                    legacy_rows = conn.execute(
+                        psycopg.sql.SQL(
+                            "DELETE FROM {} WHERE tenant_id = %s AND source = %s RETURNING id"
+                        ).format(psycopg.sql.Identifier(legacy_table)),
                         (self.tenant_id, source_uri),
+                    ).fetchall()
+                    removed += len(legacy_rows)
+                    _scrub_sparse_rows(
+                        conn, self.tenant_id, legacy_table, [row[0] for row in legacy_rows]
                     )
-                    removed += legacy.rowcount
             return ErasureResult(source_uri, tuple(sorted(selected)), removed, event_id)
 
     def gc(

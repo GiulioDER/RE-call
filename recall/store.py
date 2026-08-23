@@ -1628,6 +1628,29 @@ class PgVectorStore:
 
     # ── Learned sparse (SPLADE) sidecar ──────────────────────────────────────────────────────
 
+    def _scrub_sparse_rows(
+        self, conn: "psycopg.Connection", chunk_table: str, chunk_ids: list[str]
+    ) -> int:
+        """Delete every profile's sidecar rows for chunks that were just removed.
+
+        Same transaction as the chunk delete: the sidecar holds partially reconstructable
+        content (term weights over a 30,522-term vocabulary), so a commit that removes the
+        chunk and strands its weights is an erasure that did not happen. `profile_id` is
+        deliberately absent from the WHERE — a dead chunk's rows die under every profile.
+        Tenant-filtered, so unlike `drop_table`'s DELETE this is RLS-safe under a
+        non-BYPASSRLS role. `chunk_table` travels as a bound VALUE: it is a column value in
+        the sidecar, never an identifier here.
+        """
+        if not chunk_ids:
+            return 0
+        sidecar = conn.execute("SELECT to_regclass(%s)", (SPARSE_TABLE,)).fetchone()
+        if not (sidecar and sidecar[0]):
+            return 0  # pre-0012 install: no sidecar exists to scrub
+        statement = psycopg.sql.SQL(
+            "DELETE FROM {} WHERE tenant_id = %s AND chunk_table = %s AND id = ANY(%s)"
+        ).format(psycopg.sql.Identifier(SPARSE_TABLE))
+        return conn.execute(statement, (self._tenant, chunk_table, chunk_ids)).rowcount or 0
+
     def upsert_sparse(self, profile_id: str, vectors: dict[str, dict[int, float]]) -> int:
         """Write learned sparse vectors for `vectors`' chunk ids under `profile_id`.
 
@@ -1888,6 +1911,7 @@ class PgVectorStore:
                 # there is no conflict and the re-inserted chunk would claim it was first written
                 # now. That is the whole re-index defect, and this is the path that causes it.
                 preserved: dict[str, datetime] = {}
+                removed_ids: set[str] = set()
                 if sources:
                     # COALESCE to the row's OWN `indexed_at`, not `now()`. Two bugs deep here.
                     # First: a NULL key was still PRESENT, so the restore wrote that NULL back
@@ -1908,10 +1932,13 @@ class PgVectorStore:
                         ).fetchall()
                         if first is not None
                     }
-                    conn.execute(
-                        f"DELETE FROM {self._table} "
-                        f"WHERE tenant_id = %s AND source = ANY(%s)",
-                        (self._tenant, sources),
+                    removed_ids.update(
+                        row[0]
+                        for row in conn.execute(
+                            f"DELETE FROM {self._table} "
+                            f"WHERE tenant_id = %s AND source = ANY(%s) RETURNING id",
+                            (self._tenant, sources),
+                        ).fetchall()
                     )
                 identity_project, identity_files = _chunk_identity(chunks)
                 if identity_project and identity_files:
@@ -1919,12 +1946,22 @@ class PgVectorStore:
                     # gone without their replacement. The project is a scalar because one index run
                     # carries one project; PostgreSQL also refuses an anonymous composite as a
                     # bound parameter, so the pair was never an option.
-                    conn.execute(
-                        f"DELETE FROM {self._table} "
-                        f"WHERE tenant_id = %s AND metadata->>'project' = %s "
-                        f"AND metadata->>'file' = ANY(%s)",
-                        (self._tenant, identity_project, identity_files),
+                    removed_ids.update(
+                        row[0]
+                        for row in conn.execute(
+                            f"DELETE FROM {self._table} "
+                            f"WHERE tenant_id = %s AND metadata->>'project' = %s "
+                            f"AND metadata->>'file' = ANY(%s) RETURNING id",
+                            (self._tenant, identity_project, identity_files),
+                        ).fetchall()
                     )
+                # Before the upsert: a re-inserted chunk id's old sparse vector is stale for the
+                # new text anyway, and the indexer's sparse hook re-encodes in the same run when
+                # an encoder is configured. Re-indexing WITHOUT an encoder therefore shrinks
+                # sidecar coverage, and `assert_sparse_coverage` refuses loudly (undercount)
+                # instead of silently serving stale vectors for changed text — the intended
+                # direction.
+                self._scrub_sparse_rows(conn, self._table, sorted(removed_ids))
                 if chunks:
                     self._upsert_in(conn, chunks, embeddings)  # savepoint, same commit
                     restore = [
@@ -1960,16 +1997,23 @@ class PgVectorStore:
         if not sources:
             return 0
         self._supersession_cache = None
-        # Read `rowcount` INSIDE the borrow, not from an escaped cursor: in pooled mode
-        # `_with_retry` returns from within `with self._pool.connection()`, so a returned cursor
-        # outlives its lease and belongs to a connection another thread may already hold.
-        return self._with_retry(
-            lambda conn: conn.execute(
-                f"DELETE FROM {self._table} WHERE tenant_id = %s AND source = ANY(%s)",
-                (self._tenant, sources),
-            ).rowcount
-            or 0
-        )
+
+        # An explicit transaction, where a single statement used to suffice: the chunk delete
+        # and the sidecar scrub MUST share one commit, or a failure between them leaves term
+        # weights for text the caller was told is gone. The row count is computed inside the
+        # borrow for the reason the old comment gave: in pooled mode `_with_retry` returns from
+        # within `with self._pool.connection()`, so nothing from the cursor may escape it.
+        def _op(conn: "psycopg.Connection") -> int:
+            with conn.transaction():
+                rows = conn.execute(
+                    f"DELETE FROM {self._table} "
+                    f"WHERE tenant_id = %s AND source = ANY(%s) RETURNING id",
+                    (self._tenant, sources),
+                ).fetchall()
+                self._scrub_sparse_rows(conn, self._table, [row[0] for row in rows])
+                return len(rows)
+
+        return self._with_retry(_op)
 
     def delete_sources_across(self, tables: list[str], sources: list[str]) -> int:
         """Atomically erase tenant sources from active and shadow generation tables."""
@@ -1993,10 +2037,15 @@ class PgVectorStore:
             removed = 0
             with conn.transaction():
                 for table in unique_tables:
-                    removed += conn.execute(
-                        f"DELETE FROM {table} WHERE tenant_id = %s AND source = ANY(%s)",
+                    rows = conn.execute(
+                        f"DELETE FROM {table} "
+                        f"WHERE tenant_id = %s AND source = ANY(%s) RETURNING id",
                         (self._tenant, sources),
-                    ).rowcount or 0
+                    ).fetchall()
+                    # Under THAT table's name: the sidecar keys shadow-table rows by the
+                    # chunk_table column, so each table scrubs its own.
+                    self._scrub_sparse_rows(conn, table, [row[0] for row in rows])
+                    removed += len(rows)
             return removed
 
         return self._with_retry(_op)

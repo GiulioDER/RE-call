@@ -6,7 +6,7 @@ from contextlib import suppress
 import mimetypes
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -588,6 +588,13 @@ class ForgetResult(BaseModel):
         "sources. -1 means the chunk deletion succeeded but the scrub FAILED and must be "
         "re-run before the next replay. On an irreversible path the receipt has to name "
         "every store that was swept, so that 'not consulted' cannot read as 'clean'.",
+    )
+    staged_files_removed: int = Field(
+        default=0,
+        description="Staged upload files (under the index root's uploads/ tree) unlinked "
+        "because their sources were erased. -1 means the chunk deletion succeeded but the "
+        "file cleanup FAILED: the original text may survive on the server's disk, inside "
+        "the indexable root, until this forget is re-run.",
     )
 
 
@@ -2019,6 +2026,17 @@ def forget_memory(
             # instead, and keep it in the receipt.
             _log.exception("outbox scrub failed after chunk deletion for tenant %r", store.tenant)
             outbox_events_scrubbed = -1
+    # Same union as the outbox scrub, for the same reason: after a crash the identifier the
+    # caller supplied may be the only surviving handle on the staged file. And it is what makes
+    # the erasure STICK — a staged file left behind is re-ingested by the next index run over
+    # the uploads tree, resurrecting content the caller was told is gone.
+    try:
+        staged_files_removed = _delete_staged_sources(
+            str(store.tenant), sorted({*requested, *to_delete})
+        )
+    except Exception:
+        _log.exception("staged-file cleanup failed after chunk deletion for tenant %r", store.tenant)
+        staged_files_removed = -1
     if found and not_found:
         message = (
             f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s); "
@@ -2035,13 +2053,67 @@ def forget_memory(
         )
     elif outbox_events_scrubbed:
         message += f" Scrubbed {outbox_events_scrubbed} pending replay record(s)."
+    if staged_files_removed < 0:
+        message += (
+            " WARNING: the chunk deletion succeeded but removing the staged upload file(s) "
+            "failed; the original text may survive on the server's disk until this forget is "
+            "re-run."
+        )
+    elif staged_files_removed:
+        message += f" Removed {staged_files_removed} staged upload file(s)."
     return ForgetResult(
         chunks_removed=chunks_removed,
         sources_removed=found,
         sources_not_found=not_found,
         message=message,
         outbox_events_scrubbed=outbox_events_scrubbed,
+        staged_files_removed=staged_files_removed,
     )
+
+
+def _delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:
+    """Unlink staged upload files whose DB rows were just erased. Returns files removed.
+
+    Without this, "permanently delete" left the original text on the server filesystem,
+    inside the index root, where the next index run over `uploads/` would re-ingest exactly
+    the content the caller was told is gone. Best effort by design (the DB delete is already
+    committed), and hard-confined to `RECALL_INDEX_ROOT/uploads/<tenant>/`: a forgotten
+    source indexed from the user's own directory must NEVER delete the user's file.
+
+    Accepts both source spellings: `file://` URIs (generation-mode manifests) and plain
+    absolute paths (the legacy `source` column).
+    """
+    from urllib.parse import urlsplit
+    from urllib.request import url2pathname
+
+    uploads_root = (
+        Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve() / "uploads" / tenant
+    )
+    removed = 0
+    touched_dirs: set[Path] = set()
+    for source in sources:
+        raw = str(source)
+        if raw.startswith("file://"):
+            raw = url2pathname(urlsplit(raw).path)
+        try:
+            path = Path(raw).resolve()
+        except (OSError, ValueError):
+            continue
+        if not path.is_relative_to(uploads_root):
+            continue
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            _log.warning("could not remove staged file for a forgotten source: %s", path)
+            continue
+        removed += 1
+        touched_dirs.add(path.parent)
+    for directory in touched_dirs:
+        with suppress(OSError):
+            directory.rmdir()  # only succeeds when empty, which is the point
+    return removed
 
 
 def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -> MemoryStatsResult:

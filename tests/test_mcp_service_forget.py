@@ -140,3 +140,65 @@ def test_search_source_filter_matches_the_relative_file_identifier(make_store):
     )
     hits = store.query_dense([1.0, 0.0, 0.0], k=5, source="notes.md")
     assert [h.chunk.metadata["file"] for h in hits] == ["notes.md"]
+
+
+@requires_db
+def test_forget_unlinks_the_staged_upload_file_of_an_erased_source(make_store, monkeypatch, tmp_path):
+    """The erasure has to stick: a staged file left under the index root is re-ingested by
+    the next index run, resurrecting content the caller was told is gone."""
+    import base64
+
+    from recall.desktop.uploads import stage_uploads
+    from recall_mcp.service import index_memory
+
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(tmp_path))
+    store = make_store(64)
+    payload = base64.b64encode(b"secret memo body").decode("ascii")
+    _job, root, _total = stage_uploads(str(store.tenant), [{"name": "memo.md", "content_b64": payload}])
+
+    class _E:
+        dim = 64
+        name = "e"
+
+        def embed(self, texts):
+            return [[1.0] + [0.0] * 63 for _ in texts]
+
+    index_memory(store, _E(), str(root))
+    staged_file = root / "memo.md"
+    assert staged_file.exists(), "the staged tree must persist after a successful ingest"
+
+    sources = store.sources_for_identifiers(["memo.md"])
+    assert sources.get("memo.md"), "the indexed source must resolve from its identifier"
+    result = forget_memory(store, ["memo.md"])
+
+    assert result.chunks_removed >= 1
+    assert result.staged_files_removed == 1
+    assert not staged_file.exists(), "the staged copy must not survive a forget"
+
+
+@requires_db
+def test_forget_never_deletes_a_file_outside_the_uploads_tree(make_store, monkeypatch, tmp_path):
+    """A source indexed from the user's own directory is the user's file. Forget erases the
+    DB rows and must leave the file alone."""
+    from recall_mcp.service import index_memory
+
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(tmp_path))
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    users_file = corpus / "memo.md"
+    users_file.write_text("the user's own note", encoding="utf-8")
+
+    class _E:
+        dim = 64
+        name = "e"
+
+        def embed(self, texts):
+            return [[1.0] + [0.0] * 63 for _ in texts]
+
+    store = make_store(64)
+    index_memory(store, _E(), str(corpus))
+    result = forget_memory(store, ["memo.md"])
+
+    assert result.chunks_removed >= 1
+    assert result.staged_files_removed == 0
+    assert users_file.exists(), "forget must never delete a file outside uploads/"

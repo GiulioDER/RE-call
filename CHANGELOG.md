@@ -10,6 +10,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Security
 
+* **Right-to-erasure now reaches the learned-sparse sidecar.** `delete_sources`,
+  `delete_sources_across`, `replace_sources` and `generations.forget` scrub
+  `recall_sparse_v1` in the same transaction as the chunk delete (`DELETE ... RETURNING id`
+  feeds the scrub, so the ids come from the delete itself). Before, a forgotten chunk's
+  SPLADE term weights — partially reconstructable content over a 30,522-term vocabulary —
+  survived every erasure path except `drop_table`. The `RECALL_ENV=production` refusal on
+  the splade backend stays until an orphan sweep exists for corpora encoded before this
+  fix, and that gate now also matches `Production` and ` production ` (the bare compare
+  meant a capital letter silently disabled it).
+* **Forgetting a source now also unlinks its staged upload file.** `recall_forget` erased
+  the DB rows and left the original text under `RECALL_INDEX_ROOT/uploads/`, where the next
+  index run would re-ingest it. Cleanup is best-effort after the committed delete, reported
+  in the result (`staged_files_removed`, -1 on failure with a warning in the message), and
+  hard-confined to the uploads tree: a source indexed from the user's own directory is
+  never deleted.
 * **BREAKING: `recall_calibration_publish` now requires the `recall:admin` scope.** Publication
   changes the serve/abstain decision for every query a tenant runs — the blast radius the admin
   scope was defined for, and until now no tool enforced it: any write token could publish. An
