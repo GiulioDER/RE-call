@@ -46,6 +46,11 @@ OPENROUTER_API_KEY=
 # RECALL_INDEX_ROOT=/srv/recall/corpus  # corpus-only root for the MCP recall_index tool
 # Legacy RECALL_CALIBRATION files are import-only evidence; v1 search resolves calibration from Postgres.
 
+# Appends one record per search decision (answered, abstained, or refused) to the tenant's
+# audit table, best-effort. Off unless enabled; a malformed value warns once and stays off
+# rather than refusing searches. See docs/DECISION_LEDGER.md.
+# RECALL_DECISION_LEDGER=0
+
 # --- MCP transport & authentication (see docs/AUTH.md) ---
 # Default is stdio: a private pipe to one client, which needs no authentication.
 # The HTTP transports open a socket and REFUSE TO START without either a token file or an OIDC

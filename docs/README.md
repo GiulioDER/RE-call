@@ -31,6 +31,7 @@ manual step-by-step for anyone who wants to see each command the wizard runs.
 | [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) | MCP setup and tool behavior. |
 | [ENTERPRISE_RETRIEVAL.md](ENTERPRISE_RETRIEVAL.md) | The enterprise control plane: routes, profiles, and multi-store serving. |
 | [REASONING_OPERATIONS.md](REASONING_OPERATIONS.md) | Opt-in reasoning commands, MCP tools, failure behavior, review policy, and metrics. |
+| [DECISION_LEDGER.md](DECISION_LEDGER.md) | Opt-in append-only records of every search decision: trigger, evidence, verdicts, governing calibration, and refusals. |
 
 ## Architecture
 

@@ -93,7 +93,13 @@ class QueryKeyedStore:
             metadata={"file": file, "ord": int(ordinal)},
         )
 
-    def query_dense(self, vector, k, source=None):
+    def _scripted_rows(self) -> list[tuple[str, float]]:
+        """Every row scripted for the query now in flight — this store's entire corpus.
+
+        Shared by the two dense readers so they cannot drift: `query_dense` truncates to `k` and
+        `top_cosine` does not, and if those ever disagreed about WHICH rows exist, a fleet member's
+        closed form would move without its script changing.
+        """
         query = self._embedder.last_query
         if query not in self._script:
             raise KeyError(
@@ -101,10 +107,28 @@ class QueryKeyedStore:
                 f"asks about: an unscripted query returning no rows would score as a total "
                 f"retrieval failure, which is a fixture bug that reads exactly like a defect."
             )
+        return self._script[query]
+
+    def query_dense(self, vector, k, source=None):
         return [
             ScoredChunk(chunk=self._chunk(cid), score=score)
-            for cid, score in self._script[query][:k]
+            for cid, score in self._scripted_rows()[:k]
         ]
+
+    def top_cosine(self, vector):
+        """The exact best cosine in scope, which for a scripted store is over the WHOLE script.
+
+        Deliberately not `query_dense(vector, k=1)[0].score`. On the real store those two differ —
+        `ORDER BY ... LIMIT 1` may be served by an approximate index while an aggregate cannot be,
+        which is the defect `recall.eval.calibrate.measure_top_cosines` now avoids by calling this.
+        A double that computed its maximum by taking the first of its own top-k would model the
+        approximate reading rather than the exact one, and would go on passing if the real store
+        regressed to it.
+
+        `default=0.0` matches `PgVectorStore.top_cosine` on an empty scope: a scripted query with
+        no rows scores zero, exactly as a query that retrieved nothing did before.
+        """
+        return max((score for _, score in self._scripted_rows()), default=0.0)
 
     def query_sparse(self, text, k, source=None, vec=None):
         return []

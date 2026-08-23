@@ -14,7 +14,16 @@ from pathlib import Path
 from typing import Callable, Literal, Sequence
 
 from recall.calibration import Calibration, from_samples, save
-from recall.claude_code import claude_code_detected, install_hooks, register_mcp_server
+from recall.claude_code import (
+    PLUGIN_INSTALL_LINES,
+    SKILL_NAME,
+    claude_code_detected,
+    install_hooks,
+    install_user_skill,
+    plugin_skill_source,
+    register_mcp_server,
+    user_skill_dir,
+)
 from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 from recall.seed import plan_seed, seed_corpus
@@ -1382,13 +1391,31 @@ def run_setup_wizard(
     # Scaffolding tells Claude HOW to use recall; this step is what gives it the tools at all.
     # Only offered when there is a client on this machine to wire up: asking someone to register
     # an MCP server with a program they do not have is noise dressed up as a choice.
+    claude_detected = claude_code_detected()
     claude_wiring_requested = False
-    if claude_code_detected():
+    if claude_detected:
         claude_wiring_requested = _ask_yes_no(
             input_fn,
             print_fn,
             "Register the recall MCP server with Claude Code and install session hooks?",
             default=True,
+        )
+
+    # The plugin step's only question. The guidance itself is print-only and needs no consent,
+    # but copying the skill writes into the user's own `~/.claude/skills`, which every project's
+    # sessions load, so it is asked for and never done silently. Default no, because the plugin
+    # install printed alongside it is the route that keeps the skill updated; this copy is a
+    # snapshot for people who want the skill without the plugin. The offer only exists where the
+    # source file does: an installed wheel does not carry `plugin/`, and there the guidance says
+    # the plugin is how the skill arrives.
+    skill_source = plugin_skill_source() if claude_detected else None
+    skill_copy_requested = False
+    if skill_source is not None:
+        skill_copy_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            f"Copy the {SKILL_NAME} skill into {user_skill_dir()} for a user-level install?",
+            default=False,
         )
 
     # Deferred to right before each return, after `.env` is written: `scaffold_claude_md` and
@@ -1443,6 +1470,36 @@ def run_setup_wizard(
             print_fn=print_fn,
         )
 
+    def _run_plugin_step() -> None:
+        """Print the plugin install lines, and copy the skill only if that was accepted.
+
+        Best effort like the wiring: the copy writes into a directory the client owns, so a
+        filesystem refusal there must cost a printed line, never the setup run that is already
+        persisted in `.env` by the time this executes.
+        """
+        if not claude_detected:
+            return
+        print_fn(
+            "The RE-call plugin for Claude Code bundles the MCP server, the session hooks and "
+            f"the {SKILL_NAME} skill. Install it from inside Claude Code with:"
+        )
+        for line in PLUGIN_INSTALL_LINES:
+            print_fn(f"  {line}")
+        if skill_source is None:
+            print_fn(
+                f"The {SKILL_NAME} skill ships inside that plugin; installing it is how a pip "
+                "install of recall gets the skill."
+            )
+        elif skill_copy_requested:
+            try:
+                install_user_skill(skill_source, print_fn=print_fn)
+            except Exception as exc:
+                print_fn(
+                    f"Could not copy the skill: {exc}\n"
+                    f"Copy {skill_source} into {user_skill_dir() / SKILL_NAME} by hand, or "
+                    "install the plugin with the lines above."
+                )
+
     def _run_post_setup() -> None:
         # Order is the point, not an accident. Seeding runs before the hooks, because a first
         # session that searches an empty corpus teaches the user that recall finds nothing, and
@@ -1460,6 +1517,9 @@ def run_setup_wizard(
             _run_seed()
         if claude_wiring_requested:
             _run_claude_wiring()
+        # The plugin guidance is truly last, so the install lines are the note left on screen
+        # when the wizard exits, where they can be typed into Claude Code next.
+        _run_plugin_step()
 
     values: dict[str, str] = {
         "RECALL_DSN": dsn,
@@ -1467,6 +1527,9 @@ def run_setup_wizard(
         "RECALL_EMBEDDER": embedder.value,
         "RECALL_SPARSE": "fts",
         "RECALL_ENTAILMENT": "0",
+        # Seeded off, like RECALL_ENTAILMENT: the generated .env advertises the knob so the
+        # decision ledger is discoverable without the wizard asking about it.
+        "RECALL_DECISION_LEDGER": "0",
     }
     if reranker.value == "RECALL_RERANK=1":
         values["RECALL_RERANK"] = "1"

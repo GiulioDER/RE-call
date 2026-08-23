@@ -117,6 +117,13 @@ async def preflight(config_env: dict[str, str], model: str) -> None:
         raise SystemExit(f"preflight produced no response; error={record.error!r}")
     if "401" in text or "revoked" in text.lower():
         raise SystemExit(f"preflight came back with an auth failure: {text[:200]}")
+    # Any API error, not just 401. Measured 2026-08-22: an exhausted OpenRouter balance answers
+    # the preflight with "API Error: 402 This request requires more credits", which this check's
+    # 401-only predecessor printed as the preflight RESPONSE and carried on, spending the whole
+    # smoke on sessions that each died with the same 402. The admission gate caught it downstream
+    # ("No admitted pairs"), but the gate is the last line, not the first.
+    if text.startswith("API Error") or record.error:
+        raise SystemExit(f"preflight came back with an API failure: {text[:200]}")
     print(f"preflight: {text[:60]!r}, {record.input_tokens} input tokens\n")
 
 
@@ -191,7 +198,13 @@ def load_loci() -> dict[str, str]:
     return {entry["trap_id"]: entry["locus"] for entry in payload["qualifications"]}
 
 
-def environment_capture(model: str, spec: StdioRecallSpec, check: dict[str, Any]) -> dict[str, Any]:
+def environment_capture(
+    model: str,
+    spec: StdioRecallSpec,
+    check: dict[str, Any],
+    *,
+    instruction_file: str | None = None,
+) -> dict[str, Any]:
     def run(*command: str) -> str:
         try:
             return subprocess.run(  # noqa: S603 - argv list, no shell
@@ -216,6 +229,10 @@ def environment_capture(model: str, spec: StdioRecallSpec, check: dict[str, Any]
         "recall_generation_id": check.get("generation_id"),
         "recall_calibration_id": check.get("calibration_id"),
         "write_tools": list(WRITE_TOOLS),
+        # Which instruction the on arm ran under. The formatted text itself is already kept in the
+        # artifact as static-plus-recall-prompt.txt; this names the committed source it came from,
+        # so two runs differing only here can be told apart without diffing prompt files.
+        "instruction_file": instruction_file or "arms.RECALL_SYSTEM_PROMPT",
     }
 
 
@@ -229,6 +246,17 @@ async def main() -> int:
     parser.add_argument("--reps", type=int, default=None, help="override every task's reps")
     parser.add_argument("--pair-concurrency", type=int, default=1)
     parser.add_argument("--timeout-s", type=float, default=1800.0)
+    parser.add_argument(
+        "--instruction-file",
+        default=None,
+        help=(
+            "COMMITTED file holding the on arm's RE-call instruction template, with {server} and "
+            "{tool} placeholders. Default: the one-sentence RECALL_SYSTEM_PROMPT. This is the one "
+            "field an instruction-variant run changes; everything else stays identical, so a "
+            "behavioural difference against a baseline run on the same tasks is attributable to "
+            "the instruction text and to nothing else."
+        ),
+    )
     parser.add_argument(
         "--resume",
         action="store_true",
@@ -278,11 +306,18 @@ async def main() -> int:
     static_prompt = write_claude_md_prompt(
         artifacts / "static-memory-prompt.txt", STATIC_MEMORY_SOURCES, repo_root=REPO_ROOT
     )
+    instruction_template: str | None = None
+    if args.instruction_file:
+        instruction_path = Path(args.instruction_file)
+        if not instruction_path.is_file():
+            raise SystemExit(f"--instruction-file does not exist: {instruction_path}")
+        instruction_template = instruction_path.read_text(encoding="utf-8")
     combined = write_claude_md_recall_prompt(
         artifacts / "static-plus-recall-prompt.txt",
         static_prompt=static_prompt,
         server_name=spec.server_name,
         tool_prefix=spec.tool_prefix(),
+        instruction=instruction_template,
     )
     static_text = static_prompt.read_text(encoding="utf-8").rstrip()
     combined_text = combined.read_text(encoding="utf-8")
@@ -399,7 +434,7 @@ async def main() -> int:
     for name, payload in (
         ("admission.json", report.summary()),
         ("recall-overhead.json", summarize_recall_overhead(admitted)),
-        ("environment.json", environment_capture(args.model, spec, check)),
+        ("environment.json", environment_capture(args.model, spec, check, instruction_file=args.instruction_file)),
         ("digest-parity.json", {"failures": parity_failures}),
     ):
         (artifacts / name).write_text(

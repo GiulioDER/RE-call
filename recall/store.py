@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import uuid4
 from ipaddress import ip_address
 from urllib.parse import unquote, urlsplit
@@ -15,6 +15,7 @@ from urllib.parse import unquote, urlsplit
 import psycopg
 from pgvector import SparseVector, Vector
 from pgvector.psycopg import register_vector
+from psycopg.types.json import Jsonb
 
 from recall.frontmatter import supersedes_key
 from recall.observability import METRICS, get_logger
@@ -1271,6 +1272,66 @@ class PgVectorStore:
                 ],
             )
 
+    def append_audit_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        generation_id: str | None = None,
+        source_uri: str | None = None,
+        actor: str = "serving",
+        event_id: str | None = None,
+    ) -> str:
+        """Append one event to this tenant's audit ledger (``recall_audit_events``).
+
+        The write side (generation and calibration lifecycle) has appended to that table since
+        migration 0008 through its own repositories; this is the read side's pen, used by
+        `recall.decision_ledger` to witness search decisions. It runs on the store's own
+        tenant-scoped connections, so the row satisfies the table's RLS policy exactly when
+        every other statement here does. Append is the ONLY verb on this surface — no update or
+        delete exists, because a ledger that can be edited in place is a draft, not a record.
+
+        ``ON CONFLICT DO NOTHING`` makes the append idempotent PER EVENT ID, which is not a
+        loophole in append-only (nothing is ever updated) but the honest answer to the
+        indeterminate-commit window: `_with_retry` re-runs the INSERT when the connection dies
+        after the server committed but before the client heard, and the pre-generated id means
+        the collision can only be this call's own earlier success. Without it, that window
+        reported a failure for a row that exists, so the failure counter disagreed with the
+        table. A caller passing an explicit ``event_id`` twice gets one row and two successes,
+        by the same rule.
+
+        The write inherits the store's single reconnect-retry, so under a degraded connection
+        it can cost the caller up to two attempts of latency before failing — a deliberate
+        trade for a best-effort caller that shares the search path's connection anyway.
+
+        Raises on failure (a schema predating 0008, a connection dead after the retry): whether
+        the write is load-bearing is the CALLER's decision, and `DecisionLedger` decides it is
+        not by catching here.
+        """
+        if not isinstance(event_type, str) or not event_type:
+            raise ValueError("event_type must be a non-empty str")
+        event_id = event_id or f"evt_{uuid4().hex}"
+
+        def _op(conn: "psycopg.Connection") -> None:
+            conn.execute(
+                "INSERT INTO recall_audit_events "
+                "(tenant_id, event_id, event_type, actor, generation_id, source_uri, payload) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (tenant_id, event_id) DO NOTHING",
+                (
+                    self._tenant,
+                    event_id,
+                    event_type,
+                    actor,
+                    generation_id,
+                    source_uri,
+                    Jsonb(dict(payload)),
+                ),
+            )
+
+        self._with_retry(_op)
+        return event_id
+
     def analyze(self) -> bool:
         """Refresh the planner's statistics for this table. Best-effort; never raises.
 
@@ -1518,6 +1579,66 @@ class PgVectorStore:
         else:
             rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._rows_to_hits(rows)
+
+    def top_cosine(self, vector: list[float]) -> float:
+        """The BEST cosine any chunk in scope has with `vector`, computed EXACTLY.
+
+        Not `query_dense(k=1)[0].score`, and the difference is the whole point. That is an
+        `ORDER BY embedding <=> v LIMIT 1`, which Postgres may serve from the HNSW index — an
+        APPROXIMATE structure whose walk is filter-blind, so a tenant- or generation-scoped query
+        can return a row that is merely reachable rather than nearest, or no row at all. Whether
+        that happens is decided by the planner from table size and statistics, so the SAME corpus
+        yields a different "best cosine" depending on how much unrelated data shares the table.
+
+        An aggregate has no ORDER BY and no LIMIT, so the ordering index cannot serve it at all
+        and the scan is exact by construction. That is the property this method exists for, not a
+        preference for aggregates.
+
+        ⛔ `1 - min(distance)`, NOT `max(1 - distance)`, and the two are not interchangeable. A
+        zero-norm embedding makes pgvector's cosine distance NaN, and Postgres orders NaN as
+        LARGER than every number in an aggregate but LAST in an ascending sort. So `max(1 - d)`
+        returns NaN for a corpus holding one degenerate row, where the `ORDER BY d LIMIT 1` this
+        replaces returns the real nearest neighbour. Taking the minimum DISTANCE reproduces the
+        sort's semantics exactly: NaN is never the minimum unless every row is NaN, in which case
+        both forms agree. Verified 2026-08-23 against pgvector on all four cases (no degenerate
+        row, one, all, and an empty scope).
+
+        That matters more than it looks. A NaN would flow into the calibration sample lists, and
+        `NaN >= threshold` is false, so it would be counted as a correct abstention and lower
+        `false_confirm_rate` — the same direction as the defect this method exists to remove.
+
+        Measured 2026-08-22 on a 60,000-chunk generation, one query, same slice, same session:
+        `query_dense(k=1)` reported **0.000000** where the true maximum was **0.707107** — the
+        planner picked `recall_chunks_v1_embedding_idx` unprompted, because 60k chunks in one
+        tenant is an ordinary corpus rather than an extreme. Cost of exactness there: 29.9 ms
+        against 7.75 ms, on a path that runs once per labelled query at calibration time.
+
+        Callers are measurement code (`recall.eval.calibrate.measure_top_cosines`, and through it
+        `calibrate`, `carry_forward` and drift monitoring), where the number IS the finding. The
+        serving path deliberately keeps the approximate search: a search may be approximate, but a
+        measurement of whether a threshold still separates two classes may not be.
+
+        Returns 0.0 for an empty scope, matching what `measure_top_cosines` recorded for a query
+        that retrieved nothing.
+
+        ⛔ Deliberately NOT in `TIMED_PUBLIC_METHODS`, and therefore deliberately safe for a
+        subclass to override by this name — the opposite of the rule that tuple states, because
+        the reason behind that rule does not reach here. `STORE_QUERY_METRIC` attributes cost on
+        the QUERY path, and its legs exist so an operator can see what fusion costs; this runs at
+        calibration time over a whole generation and would put 30 ms full-slice scans into a
+        distribution that is read as serving latency. If a timer is ever wanted here it needs its
+        own leg in `STORE_QUERY_LEGS`, not one of the serving ones — and at that point this method
+        must gain a private `_top_cosine` twin and move into `TIMED_PUBLIC_METHODS`, or
+        `GenerationStore`'s override silently drops the series for the third time.
+        """
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT 1 - min(embedding <=> %(vec)s) FROM {self._table} "
+                "WHERE tenant_id = %(tenant)s",
+                {"vec": Vector(vector), "tenant": self._tenant},
+            ).fetchone()
+        )
+        return 0.0 if row is None or row[0] is None else float(row[0])
 
     def query_sparse(
         self, text: str, k: int, source: str | None = None, vec: list[float] | None = None

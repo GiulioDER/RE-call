@@ -222,7 +222,22 @@ target-version = "py311"
 # tree is how the checker tells which tool the agent reached for. Linting them here would either
 # fail CI or force a fix that destroys the measurement. Excluded rather than noqa'd, because the
 # noqa comments would themselves be visible to the agent being measured.
-extend-exclude = ["benchmarks/agent_ab/workspaces", "benchmarks/agent_ab/oracles"]
+#
+# `benchmarks/atm_full_run.py` and `benchmarks/atm_bench.py` are FROZEN ARTIFACTS, not maintained
+# source. They are byte-identical to the code that produced the published ATM-Bench run, and that
+# is their entire value: the leaderboard submission points at them as the reproduction pointer, so
+# a lint fix would quietly make the published harness a different program from the one that ran.
+# They arrive with 8 findings (six `E402`, two `F841`), all of them stylistic and none of them
+# reachable as a defect. Excluded rather than `noqa`'d, because a `noqa` comment is itself an edit
+# to the bytes this repository promises are frozen.
+# `tests/test_atm_runner_published.py` pins both files by SHA-256, so removing them from this list
+# fails a test with the reason rather than producing a silent lint failure.
+extend-exclude = [
+    "benchmarks/agent_ab/workspaces",
+    "benchmarks/agent_ab/oracles",
+    "benchmarks/atm_full_run.py",
+    "benchmarks/atm_bench.py",
+]
 
 [tool.ruff.lint]
 # Ruff 0.16 expands the implicit default rule set from 59 rules to 413. RE-call keeps the previous
@@ -263,7 +278,17 @@ files = ["recall", "recall_mcp", "recall_interop", "recall_consistency", "benchm
 # `recall/`. That directory is gitignored, so CI never sees it and only a local `mypy` breaks,
 # which is worse rather than better: the gate would pass on the runner and fail for whoever tried
 # to reproduce it.
-exclude = "^benchmarks/(agent_ab/(workspaces|oracles)|artifacts)/"
+#
+# `benchmarks/atm_(full_run|bench).py` are the frozen ATM-Bench harness, excluded for the reason
+# ruff's `extend-exclude` states above: they are byte-identical to the published run's code and a
+# fix is a falsification of the reproduction pointer, not an improvement. They arrive with six
+# errors, and it is worth writing down what they are rather than leaving "excluded" to imply
+# "clean": two are a `str | None` reaching a parameter typed `str`, two an `int()` over a value
+# typed `object`, one an `Embedder` assigned to a `VoyageEmbedder` name, and one an attribute the
+# library had never had on `master` until this same change ported it over. The last one is a real
+# incompatibility and is fixed in the LIBRARY, where the fix belongs; the other five are the type
+# checker seeing dynamic JSON, and the run they produced is the evidence they did not fire.
+exclude = "^benchmarks/(agent_ab/(workspaces|oracles)|artifacts)/|^benchmarks/atm_(full_run|bench)\\.py$"
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 warn_return_any = true

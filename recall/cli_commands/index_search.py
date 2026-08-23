@@ -380,6 +380,10 @@ def _cmd_search(args: argparse.Namespace) -> None:
     with store_context as store:
         store.check_schema()
         _search_policy, _search_calibration = _cli_trust(embedder, calibration)
+        # RECALL_DECISION_LEDGER=1 appends this decision (or its refusal) to the tenant's
+        # audit table. Off unless the operator asked; a malformed value warns and stays off.
+        from recall.decision_ledger import DecisionLedger
+
         _search_result = trusted_search(
             store,
             embedder,
@@ -395,6 +399,7 @@ def _cmd_search(args: argparse.Namespace) -> None:
             document_expansion=(
                 DocumentExpansionPolicy(enabled=True) if args.expand_documents else None
             ),
+            ledger=DecisionLedger.from_env(store, actor="cli"),
         )
         _print_result(_search_result)
         if args.locale:

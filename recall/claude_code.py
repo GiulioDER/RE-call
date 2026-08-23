@@ -79,6 +79,18 @@ HOOK_MODULE = "recall_hooks"
 #: make a broken database look like a hung client.
 SESSION_START_TIMEOUT_SECONDS = 15
 
+#: The commands that install the Claude Code plugin, exactly as `plugin/README.md` states them.
+#: They are typed into Claude Code itself, not a shell, which is why the wizard prints them
+#: rather than running them: there is nothing on this machine they could be executed against.
+PLUGIN_INSTALL_LINES = (
+    "/plugin marketplace add GiulioDER/RE-call",
+    "/plugin install recall@re-call",
+)
+
+#: The one skill the plugin ships. The name is the directory name Claude Code loads it by, both
+#: in `plugin/skills/` here and under the user's `~/.claude/skills/`.
+SKILL_NAME = "check-memory-before-acting"
+
 
 def client_config_path() -> Path:
     """Where Claude Code keeps `.claude.json`, honouring `CLAUDE_CONFIG_DIR`.
@@ -220,6 +232,56 @@ def register_mcp_server(
         f"in {result.config_path} keyed to {keys}"
     )
     return "registered"
+
+
+# --------------------------------------------------------------------------------------------
+# The plugin, and the user-level skill
+# --------------------------------------------------------------------------------------------
+
+
+def plugin_skill_source() -> Path | None:
+    """The repository's copy of the skill, or None under an installed wheel.
+
+    The wheel ships `recall`, `recall_hooks` and `recall_mcp` only (pyproject's
+    `[tool.hatch.build.targets.wheel]`), so `plugin/` exists on disk for a checkout or an
+    editable install and for nothing else. None rather than an exception, because a pip install
+    is not a broken state: it is the case where the plugin itself is how the skill arrives, and
+    the wizard still has the install lines to print.
+    """
+    source = Path(__file__).resolve().parent.parent / "plugin" / "skills" / SKILL_NAME / "SKILL.md"
+    return source if source.is_file() else None
+
+
+def user_skill_dir() -> Path:
+    """Where Claude Code loads user-level skills from, honouring `CLAUDE_CONFIG_DIR`."""
+    return claude_config_home() / "skills"
+
+
+def install_user_skill(
+    source: Path,
+    *,
+    print_fn: Callable[..., None] = print,
+) -> None:
+    """Copy the skill into the user's skills directory, saying what actually happened.
+
+    A single file, because the skill IS a single `SKILL.md` today; if it ever grows supporting
+    files, `plugin_skill_source` and this copy both have to learn about them, and the test that
+    resolves the real repository copy is what will notice.
+
+    User level rather than project level on purpose: the caller offered this as the alternative
+    to installing the plugin, and a user-level skill is the only form that follows the user into
+    projects where `recall setup` was never run.
+    """
+    content = source.read_text(encoding="utf-8")
+    dest = user_skill_dir() / SKILL_NAME / "SKILL.md"
+    if dest.exists() and dest.read_text(encoding="utf-8") == content:
+        print_fn(f"The {SKILL_NAME} skill at {dest} is already current, left unchanged.")
+        return
+    replaced = dest.exists()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(dest, content.encode("utf-8"))
+    verb = "Replaced" if replaced else "Installed"
+    print_fn(f"{verb} the {SKILL_NAME} skill at {dest}. It loads in every project's sessions.")
 
 
 # --------------------------------------------------------------------------------------------
