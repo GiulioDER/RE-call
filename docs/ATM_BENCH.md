@@ -1,10 +1,11 @@
 # ATM-Bench: personal memory QA, scored by the benchmark's own evaluator
 
 > **The one-line summary: the official evaluator scores this run at QS 68.4264 <!--@ atm/atm_bench_full_20260821.json # official_score.qs_percent -->
-> and Recall@10 92.8924 <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10_percent --> on the full 1,013 <!--@ atm/atm_bench_full_20260821.json # question_count -->-question split, which would be first on both columns of the public
-> board. Three things stop that from being a clean "state of the art" claim, and all three are
-> below: the answer model is not matched to the baselines, the judge ran over a non-official
-> transport, and the leaderboard pull request is open rather than merged.**
+> and Recall@10 92.8924 <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10_percent --> on the full 1,013 <!--@ atm/atm_bench_full_20260821.json # question_count -->-question split, which is first on both columns of the public
+> board. The row is merged: [pull request #2](https://github.com/atmbench/atmbench.github.io/pull/2)
+> against the leaderboard, opened 2026-08-21, was merged 2026-08-23 by the benchmark's maintainer.
+> Two things still stop that from being a clean "state of the art" claim, and both are below: the
+> answer model is not matched to the baselines, and the judge ran over a non-official transport.**
 
 This document is under the claim gate, so every RE-call figure in it resolves to a committed
 artifact and CI checks the digits against it.
@@ -114,7 +115,7 @@ The board's own rows, full split, memory and RAG systems:
 \* the board marks Memexa's QS as measured with a `DeepSeek-V4-flash` judge rather than
 `gpt-5-mini`, so it is shown for reference and is not directly comparable. Its Recall is.
 
-⛔ **Four boundaries, and none of them is a footnote.**
+⛔ **Three boundaries, and none of them is a footnote.**
 
 1. **The answer model is not matched.** Most baselines answer with `Qwen3-VL-8B-Instruct`; this run
    answers with `DeepSeek V4 Pro`. So the QS column compares *systems as configured*, not retrieval
@@ -132,10 +133,11 @@ The board's own rows, full split, memory and RAG systems:
    agreed on 56 <!--@ citation-pending: measured 2026-08-20 by re-judging an existing answer file over both routes; the per-question output is not retained in this repository --> of 59 <!--@ citation-pending: measured 2026-08-20 by re-judging an existing answer file over both routes; the per-question output is not retained in this repository --> verdicts and ran about 1.7 <!--@ citation-pending: measured 2026-08-20 by re-judging an existing answer file over both routes; the per-question output is not retained in this repository --> points lower
    on that type, which is roughly 0.86 <!--@ citation-pending: measured 2026-08-20 by re-judging an existing answer file over both routes; the per-question output is not retained in this repository --> QS at its population share. That spread cannot be separated from the judge's own run-to-run
    variance, so treat it as an upper bound on route fidelity rather than a correction.
-4. **The submission is open, not accepted.** The row exists as
-   [pull request #2](https://github.com/atmbench/atmbench.github.io/pull/2) against the leaderboard,
-   opened 2026-08-21 and unreviewed as of 2026-08-22. Until it merges, "first on the board" is a
-   claim about arithmetic, not a placement.
+
+**The submission is merged**, not merely open: [pull request #2](https://github.com/atmbench/atmbench.github.io/pull/2)
+against the leaderboard, opened 2026-08-21, was merged 2026-08-23 by `JingbiaoMei`, one of the
+benchmark's maintainers. "First on the board" is now a placement rather than only a claim about
+arithmetic, still subject to the three comparability limits above.
 
 Two smaller scope limits: the 31 <!--@ citation-pending: a property of the ATM-Bench dataset as published by its maintainers, not a RE-call measurement; no artifact in this repository retains it -->-question **ATM-Bench-Hard** split was not run, and `index_time` is
 not reported because the run reused an existing index rather than building one.
