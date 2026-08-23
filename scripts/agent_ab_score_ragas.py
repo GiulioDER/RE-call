@@ -1,10 +1,17 @@
 """Score a completed run's answers with Ragas, as a separate cost surface.
 
-⚠️ **This script does NOT run on the repository's own Python.** Ragas pulls in HuggingFace
-`datasets`, which imports `pyarrow.parquet`, whose extension DLL is blocked on this machine by a
-Windows Application Control policy. Only pyarrow 25 publishes a cp314 wheel and that is the blocked
-one, so on Python 3.14 there is no version of the dependency that loads. Nothing here tries to work
-around the policy; the scorer simply runs on a Python where a permitted wheel exists.
+⚠️ **This script runs in its own venv, `.ragas-venv`, not on the repository's own Python.** The
+reason is the langchain pins described below: this copy of Ragas needs `langchain<0.3`, and that
+constraint cannot be imposed on the repository's own environment.
+
+🔁 **Corrected 2026-08-23.** This used to say the venv existed because `pyarrow.parquet` is blocked
+here by a Windows Application Control policy, and that "only pyarrow 25 publishes a cp314 wheel".
+Both halves were wrong. 22.0.0, 23.0.1, 24.0.0 and 25.0.0 all publish a plain cp314 wheel, and
+25.0.1 imports fine on this repository's 3.14. The block was Smart App Control's cached reputation
+verdict against one *copy* of the file, not against the build: an identical SHA-256 was refused in
+one directory and loaded from another in the same minute, and it cleared with no change to the
+install. It is intermittent, so treat a recurrence as something to re-measure rather than to pin
+around. The `pyarrow==18.1.0` pin below is simply what suits the 3.12 interpreter.
 
 Build the interpreter once:
 
