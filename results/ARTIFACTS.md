@@ -117,17 +117,28 @@ in the same file scores as a miss.
 
 | `atm/atm_answer_diagnosis_20260822.json` | [`docs/ATM_BENCH.md`](../docs/ATM_BENCH.md) section 5, the answer-side decomposition. Produced by `benchmarks/atm_answer_diagnosis.py` from the archived package with **zero provider calls**, by aggregating the official evaluator's own per-question judgements, so unlike the run above it can be regenerated at any time rather than trusted. The script **refuses to write this file unless the replay reproduces the published QS**, because a decomposition that does not reproduce the score is describing a different run. Abstention and tokenisation come from the evaluator's own normalizer, never a local reimplementation. Aggregates only: no question text, no gold answer, no model answer, no per-question row, because the corpus is third-party data. 🔁 **Its modality-floor figure supersedes a published 1.97 QS over 20 questions**, which counted two questions whose token coverage is *unmeasurable* as coverage 0.0 through `(cov or 0)`; the corrected figure is 1.78 over 18, and the retraction is registered in `WITHDRAWN.json`. |
 
+| `atm/atm_harness_20260823.json` | [`docs/ATM_BENCH.md`](../docs/ATM_BENCH.md) section 6, the reproduction section. It records WHICH files were published as the ATM-Bench harness and proves they are byte-identical to run commit `6c0ec26b`: `SHA-256`, byte length and git blob id for each, beside the size of the `recall/` drift between that commit and this publication. It measures nothing about retrieval or answer quality and deliberately does not touch the run artifact above, because a published measurement is appended to rather than edited. Verified by `tests/test_atm_runner_published.py`, which also fails if the library stops supplying an attribute the frozen harness reads. |
+
 The per-question payloads (`answers.jsonl`, `retrieval.jsonl`, the two full judge outputs) are
 archived outside this tree, per the policy at the top of this file. The artifact carries their
 SHA-256 checksums under `package_sha256`, the four dataset hashes under `data_sha256`, and the
 evaluator file hash under `judge.evaluator_sha256`, so an auditor handed the package can prove it is
 the one these numbers came from.
 
-⛔ **The commit that produced the run, `6c0ec26b`, is not on a public branch.** The configuration is
-fully recorded in `config`, and the harness is published on
-`claude/atm-answer-selection-public`, but its runner differs from the one used here. A byte-exact
-re-execution from public code is therefore not possible today, and the artifact says so in its
-`_provenance.note` rather than leaving a reader to discover it.
+🔁 **Corrected 2026-08-23: the harness is public now, and the gap that remains is a different
+one.** This used to read that commit `6c0ec26b` is on no public branch and that a byte-exact
+re-execution was therefore impossible. The first half is still true of the commit, and it no longer
+decides the question: the two files that produced the run,
+`benchmarks/atm_full_run.py` and `benchmarks/atm_bench.py`, are committed here byte for byte from
+that commit, hashed in `atm/atm_harness_20260823.json`, and pinned by
+`tests/test_atm_runner_published.py`, which fails on one changed byte.
+
+What is left is the library rather than the harness, and it is worth stating in its own words
+because it is the part a reader would otherwise assume away: `recall/` has moved since the run, so
+the published driver reproduces the **method** and not the last decimal of the **numbers**. Landing
+the harness also surfaced that the run depended on a `recall` field, `max_dense_score`, that had
+never existed on `master`, which is the sharpest available evidence that a frozen script is not by
+itself a reproduction pointer.
 
 ### The Mem0 head-to-head — the table that had no artifact until 2026-08-06
 

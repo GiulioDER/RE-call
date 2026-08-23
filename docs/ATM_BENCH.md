@@ -189,7 +189,7 @@ And there is a floor. On 18 <!--@ atm/atm_answer_diagnosis_20260822.json # modal
 
 ---
 
-## 6. Reproduction, and the gap in it
+## 6. Reproduction, and what is left of the gap in it
 
 The offline run package (`manifest.json`, `answers.jsonl`, `retrieval.jsonl` and the four official
 evaluator outputs) is archived outside this tree, and its `SHA-256` checksums, the dataset hashes and
@@ -197,13 +197,53 @@ the evaluator file hash are recorded inside
 [`results/atm/atm_bench_full_20260821.json`](../results/atm/atm_bench_full_20260821.json). The
 evaluator is ATM-Bench's own `memqa/utils/evaluator/evaluate_qa.py`, run with `--metrics atm`.
 
-⚠️ **The exact commit that produced this run, `6c0ec26b`, is not on a public branch.** The ATM
-harness and its pre-registrations are published on
-[`claude/atm-answer-selection-public`](https://github.com/GiulioDER/RE-call/tree/claude/atm-answer-selection-public),
-but that branch carries later answer-selection work and its runner differs from the one used here.
-So the artifacts are checksummed and the configuration is fully stated, and a byte-exact
-re-execution is **not** currently possible from public code. That is a reproduction gap, not a
-disclosure choice, and closing it means landing the runner on `master`.
+### The harness is now in this repository, byte for byte
+
+Landed 2026-08-23. Both files are copied from run commit `6c0ec26b` without a character changed,
+and their hashes are recorded in
+`results/atm/atm_harness_20260823.json`:
+
+| File | What it does | `SHA-256` prefix |
+|---|---|---|
+| [`benchmarks/atm_full_run.py`](../benchmarks/atm_full_run.py) | retrieve, rerank, answer, checkpoint; produced `answers.jsonl` and `retrieval.jsonl` | `d15cc745790a9d23` |
+| [`benchmarks/atm_bench.py`](../benchmarks/atm_bench.py) | the retrieval-only driver, and the corpus builder the runner imports | `88cde31a0e50256c` |
+
+They are frozen rather than maintained, and the freeze is mechanical rather than a note: the pin in
+`tests/test_atm_runner_published.py` fails on a single changed byte, and both files are exempt from
+`ruff` and `mypy` because a style fix is a falsification of this pointer and not an improvement.
+The eight lint findings and six type findings they carry are listed, with their reasons, beside the
+exemptions in `pyproject.toml`.
+
+### One library change was required, and it says something about the run
+
+The frozen runner records `diagnostics.max_dense_score` for every question. That field was added on
+the run's own private branch and had **never existed on `master`**, so publishing the runner alone
+would have published a program that raises `AttributeError` on its first retrieval record. It is
+ported back in the same change, populated at both of the retriever's construction sites, and pinned
+by a test that a `None` default cannot satisfy.
+
+The general point is worth more than the field: freezing a file does not freeze the library it
+calls, and the reproduction pointer is only as good as the binding between them.
+
+### What still stands between this and a byte-exact re-execution
+
+1. **The library moved.** Between the run commit and this publication, `recall/` changed by
+   49 <!--@ atm/atm_harness_20260823.json # library.recall_diff_run_commit_to_master.files_changed -->
+   files, 14,462 <!--@ atm/atm_harness_20260823.json # library.recall_diff_run_commit_to_master.insertions -->
+   insertions and 344 <!--@ atm/atm_harness_20260823.json # library.recall_diff_run_commit_to_master.deletions -->
+   deletions. So a re-execution today runs the same driver over a different `recall`, which
+   reproduces the **method** and is not expected to reproduce the **numbers** to the last decimal.
+2. **The answer model is a moving alias.** `deepseek/deepseek-v4-pro` on 2026-08-21 is not
+   addressable by name today, and the same limit applies to the judge.
+3. **The dataset is an input, not a file here.** ATM-Bench's own corpus and question files stay
+   outside this repository, as every benchmark's do; their `SHA-256` sums are in the run artifact.
+
+What has closed is the part that was ours to close: the code is public, it is provably the code
+that ran, and the claim can be checked rather than taken on trust.
+
+```bash
+python -m pytest tests/test_atm_runner_published.py -q
+```
 
 ---
 
