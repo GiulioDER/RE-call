@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import os
 from collections import Counter
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -263,9 +264,19 @@ class DecisionLedger:
         return cls(store, actor=actor)
 
     def _append(
-        self, event_type: str, payload: dict[str, Any], generation_id: str | None
+        self,
+        event_type: str,
+        build: "Callable[[], tuple[dict[str, Any], str | None]]",
     ) -> str | None:
+        """Build the payload and write it, under ONE protective boundary.
+
+        The payload builders are pure and total over well-formed inputs, but the inputs are
+        duck-typed in adapters and tests, and an ill-formed result must fail the WRITE, not the
+        search. Building outside this try was the bug: a broken `staleness` object would have
+        raised out of the witness — the exact failure mode this class exists to rule out.
+        """
         try:
+            payload, generation_id = build()
             event_id = self._store.append_audit_event(
                 event_type,
                 payload,
@@ -298,10 +309,13 @@ class DecisionLedger:
         known_as_of: datetime | None = None,
     ) -> str | None:
         """Witness one completed decision. Returns the event id, or None if the write failed."""
-        payload = decision_payload(
-            result, k=k, valid_time=valid_time, known_as_of=known_as_of
+        return self._append(
+            SEARCH_DECISION_EVENT,
+            lambda: (
+                decision_payload(result, k=k, valid_time=valid_time, known_as_of=known_as_of),
+                result.generation_id,
+            ),
         )
-        return self._append(SEARCH_DECISION_EVENT, payload, result.generation_id)
 
     def record_refusal(
         self,
@@ -312,5 +326,10 @@ class DecisionLedger:
         known_as_of: datetime | None = None,
     ) -> str | None:
         """Witness one strict refusal. Returns the event id, or None if the write failed."""
-        payload = refusal_payload(refusal, query=query, k=k, known_as_of=known_as_of)
-        return self._append(SEARCH_REFUSAL_EVENT, payload, refusal.generation_id)
+        return self._append(
+            SEARCH_REFUSAL_EVENT,
+            lambda: (
+                refusal_payload(refusal, query=query, k=k, known_as_of=known_as_of),
+                refusal.generation_id,
+            ),
+        )

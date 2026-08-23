@@ -166,6 +166,20 @@ def test_missing_audit_surface_is_a_write_failure_not_an_error():
     assert ledger.record_decision(_result([_hit("ok", "a.md", 0.7)])) is None
 
 
+def test_an_ill_formed_result_fails_the_write_not_the_caller():
+    """Payload building happens under the same protective boundary as the insert.
+
+    Adapters and tests duck-type results, so the builder can meet an object whose fields are
+    broken. That must lose the audit row, never raise out of the witness: building the payload
+    OUTSIDE the try was a real bug caught in review.
+    """
+    from dataclasses import replace
+
+    ledger = DecisionLedger(_RecordingStore())
+    broken = replace(_result([_hit("ok", "a.md", 0.7)]), staleness=object())
+    assert ledger.record_decision(broken) is None
+
+
 def test_from_env_defaults_off_and_rejects_gibberish():
     store = _RecordingStore()
     assert DecisionLedger.from_env(store, env={}) is None
