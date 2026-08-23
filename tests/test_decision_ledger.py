@@ -87,7 +87,13 @@ def test_decision_payload_records_losing_evidence_and_no_corpus_text():
     assert loser["cosine"] == 0.8
     # References only: the serialized record must not contain a byte of chunk text.
     assert SECRET_TEXT not in json.dumps(payload)
-    assert payload["staleness"] == {"stale": True, "age_seconds": 3 * 86400.0}
+    # max_age_seconds is the bound the stale flag was computed against (NUM-003): without it,
+    # identical ages carry opposite flags across tenants and nothing in the row explains why.
+    assert payload["staleness"] == {
+        "stale": True,
+        "age_seconds": 3 * 86400.0,
+        "max_age_seconds": 86400.0,
+    }
     assert payload["calibration_id"] == "cal_abc"
     assert payload["generation_id"] == "gen_1"
 
@@ -159,6 +165,79 @@ def test_caller_instants_are_recorded_with_the_offset_enforcement_used():
     )
     ref = refusal_payload(refusal, query="q", known_as_of=naive)
     assert ref["known_as_of"] == "2026-01-01T12:00:00+00:00"
+
+
+def test_nonfinite_and_foreign_scores_become_null_not_poison():
+    """A NaN cosine serialized raw would make jsonb reject EVERY decision containing that
+    chunk; a numpy scalar would fail json.dumps. Both become null, and finite scores are
+    recorded raw, unrounded, so the row can never sit on the other side of the calibration
+    threshold from the verdict it explains."""
+
+    class _FakeNumpyFloat:
+        def __float__(self):
+            return 0.6199999
+
+    hits = [
+        _hit("ok", "a.md", float("nan")),
+        _hit("low_confidence", "b.md", 0.6199999),
+    ]
+    payload = decision_payload(
+        TrustedResult(
+            query="q",
+            hits=[hits[0], TrustedHit(
+                chunk=hits[1].chunk,
+                cosine=_FakeNumpyFloat(),  # type: ignore[arg-type]
+                confidence=0.5,
+                verdict="low_confidence",
+                provenance=hits[1].provenance,
+                validity=hits[1].validity,
+            )],
+            abstained=False,
+            reason="",
+            gap_warning=False,
+            staleness=_result([]).staleness,
+        )
+    )
+    recorded = {h["file"]: h["cosine"] for h in payload["hits"]}
+    assert recorded["a.md"] is None
+    assert recorded["b.md"] == 0.6199999  # raw, not rounded to the threshold's side
+    json.dumps(payload)
+
+
+def test_corpus_identifiers_are_bounded_in_the_record():
+    """One degenerate file name must not control the row size (SEC-003/STAKES-002)."""
+    from recall.decision_ledger import MAX_REF_CHARS_RECORDED
+
+    huge = "x" * (MAX_REF_CHARS_RECORDED + 1000) + ".md"
+    payload = decision_payload(_result([_hit("ok", huge, 0.7)]))
+    entry = payload["hits"][0]
+    assert len(entry["file"]) == MAX_REF_CHARS_RECORDED + 1  # bound plus the ellipsis
+    assert entry["file"].endswith("…")
+
+
+def test_failure_log_carries_the_headline_not_the_payload(caplog):
+    """Driver error text can quote the payload, and the payload holds the query — the one
+    string the module keeps out of log lines (SEC-002). Only a bounded first line is logged."""
+    import logging
+
+    class _LeakyStore:
+        def append_audit_event(self, *a, **k):
+            raise RuntimeError("insert failed\nCONTEXT: JSON data: {\"query\": \"SECRETQ\"}")
+
+    import recall.decision_ledger as dl
+
+    monkey_warned = set(dl._WARNED)
+    dl._WARNED.clear()
+    try:
+        with caplog.at_level(logging.WARNING, logger="recall.decision_ledger"):
+            assert DecisionLedger(_LeakyStore()).record_decision(
+                _result([_hit("ok", "a.md", 0.7)])
+            ) is None
+        assert "SECRETQ" not in caplog.text
+        assert "insert failed" in caplog.text
+    finally:
+        dl._WARNED.clear()
+        dl._WARNED.update(monkey_warned)
 
 
 def test_refusal_payload_carries_code_and_query():
@@ -446,20 +525,18 @@ def test_append_audit_event_validates_and_returns_id(make_store):
     with pytest.raises(ValueError):
         store.append_audit_event("", {})
     event_id = store.append_audit_event(
-        "test_event", {"probe": True}, actor="test", generation_id=None
+        "test_event", {"probe": True, "query": "probe-row"}, actor="test", generation_id=None
     )
     try:
         assert event_id.startswith("evt_")
+        # Idempotent per event id (BUG-001/DAT-002): the indeterminate-commit retry re-runs the
+        # INSERT with the same pre-generated id, and that must read as success, not a failure
+        # for a row that exists. ON CONFLICT DO NOTHING: one row, two successful returns.
+        again = store.append_audit_event(
+            "test_event", {"probe": True, "query": "probe-row"}, actor="test", event_id=event_id
+        )
+        assert again == event_id
+        rows = _audit_rows(store, "test_event", "probe-row")
+        assert [r[0] for r in rows] == [event_id]
     finally:
-        import psycopg
-
-        from tests.conftest import TEST_DSN
-
-        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-            conn.execute(
-                "SELECT set_config('recall.tenant_id', %s, false)", (store.tenant,)
-            )
-            conn.execute(
-                "DELETE FROM recall_audit_events WHERE tenant_id = %s AND event_id = %s",
-                (store.tenant, event_id),
-            )
+        _delete_events(store, [event_id])

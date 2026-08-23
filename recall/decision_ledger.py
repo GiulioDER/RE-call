@@ -34,6 +34,7 @@ stamped by the database on the row itself.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from collections import Counter
@@ -58,10 +59,17 @@ SEARCH_REFUSAL_EVENT = "search_refusal"
 RECORD_VERSION = 1
 
 #: Longest query recorded verbatim. The query is the trigger and belongs in the record, but the
-#: record must stay bounded: an unbounded caller string is an unbounded row, and the CLI (unlike
-#: the MCP service) never clamps query length. Truncation is declared in the payload rather than
-#: silent — `query_chars` keeps the true length.
+#: record must stay bounded: an unbounded caller string is an unbounded row. The MCP service
+#: REFUSES queries over its own 4096-char limit (it never truncates), while the CLI accepts any
+#: length, so the ledger bounds the recorded copy itself. Truncation is declared in the payload
+#: rather than silent — `query_chars` keeps the true length.
 MAX_QUERY_CHARS_RECORDED = 2000
+
+#: Longest corpus-controlled identifier (source, file, successor) recorded per hit. These are
+#: paths chosen by whoever can write a file into the corpus, so without a bound one degenerate
+#: file name controls the row size — the same reasoning `MAX_QUERY_CHARS_RECORDED` states for
+#: the caller's string, applied to the corpus author's.
+MAX_REF_CHARS_RECORDED = 512
 
 #: The env flag `from_env` reads, and the values it accepts. Same vocabulary as
 #: `RECALL_ENTAILMENT` so operators learn one boolean dialect.
@@ -81,6 +89,19 @@ def _warn_once(kind: str, message: str, *args: object) -> None:
         return
     _WARNED.add(kind)
     _log.warning(message, *args)
+
+
+def _terse(exc: Exception) -> str:
+    """The exception's first line, bounded — the shape safe to put in a log.
+
+    Driver error text can quote payload fragments: a jsonb parse failure's CONTEXT line carries
+    the JSON data, and a unique-violation DETAIL quotes key values. The payload holds the
+    query, which is the one string this module's own rules keep out of log lines, so the log
+    gets the error's headline and the metric gets the count — nothing an operator needs is in
+    the tail this drops.
+    """
+    lines = str(exc).splitlines() or [""]
+    return lines[0][:200]
 
 
 class _AuditStore(Protocol):
@@ -126,6 +147,32 @@ def _iso_instant(value: datetime | None) -> str | None:
 #: a caller who embeds one in the query chooses to be unrecorded, on the refusal path where the
 #: search itself never touches the database. Replaced, not passed through.
 _JSONB_UNSTORABLE = re.compile("[\x00\ud800-\udfff]")
+
+
+def _score(value: Any) -> float | None:
+    """A score as a plain, storable float — or None where no storable number exists.
+
+    Raw, not rounded: `round(x, 6)` could move the recorded score to the other side of the
+    calibration threshold the verdict was decided on, so the row contradicted its own decision
+    at exactly the boundary a drift study inspects. JSON carries the full double; precision
+    costs nothing and ambiguity bought nothing. `float()` also collapses numpy scalars from
+    duck-typed stores into JSON-native floats, and a non-finite value (a NaN cosine from a
+    degenerate vector) becomes None rather than a token PostgreSQL's jsonb parser rejects —
+    left in, it would silently drop EVERY decision containing that chunk, not one row once.
+    """
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _bounded_ref(value: str | None) -> str | None:
+    """A corpus-controlled identifier, bounded the way the query is. Truncation appends an
+    ellipsis so a cut name cannot silently impersonate a complete one."""
+    if value is None or len(value) <= MAX_REF_CHARS_RECORDED:
+        return value
+    return value[:MAX_REF_CHARS_RECORDED] + "…"
 
 
 def _bounded_query(query: str) -> dict[str, Any]:
@@ -188,6 +235,10 @@ def decision_payload(
             "age_seconds": (
                 staleness.age.total_seconds() if staleness.age is not None else None
             ),
+            # The bound beside the measurement: `stale` is `age > max_age`, and a row keeping
+            # the numerator while discarding the bound records a verdict nobody can re-derive —
+            # identical ages carry opposite flags across tenants with different configurations.
+            "max_age_seconds": staleness.max_age.total_seconds(),
         },
         "valid_time": _iso_instant(valid_time),
         "known_as_of": _iso_instant(known_as_of),
@@ -203,13 +254,13 @@ def decision_payload(
         "hits": [
             {
                 "chunk_id": hit.chunk.id,
-                "source": hit.provenance.source,
-                "file": hit.provenance.file,
+                "source": _bounded_ref(hit.provenance.source),
+                "file": _bounded_ref(hit.provenance.file),
                 "ord": hit.provenance.ord,
-                "cosine": round(hit.cosine, 6),
-                "confidence": round(hit.confidence, 6),
+                "cosine": _score(hit.cosine),
+                "confidence": _score(hit.confidence),
                 "verdict": hit.verdict,
-                "superseded_by": hit.validity.superseded_by,
+                "superseded_by": _bounded_ref(hit.validity.superseded_by),
                 "valid_from": _iso(hit.validity.valid_from),
                 "valid_until": _iso(hit.validity.valid_until),
                 "indexed_at": _iso(hit.provenance.indexed_at),
@@ -288,8 +339,10 @@ class DecisionLedger:
         if raw in _FALSE:
             return None
         if raw not in _TRUE:
+            # Keyed on a CONSTANT, not the raw value: the docstring promises once per process,
+            # and a key domain the caller controls would grow _WARNED without bound.
             _warn_once(
-                f"env:{raw}",
+                "env",
                 "%s=%r is not a boolean, so the decision ledger stays OFF. Use one of %s to "
                 "enable it.",
                 LEDGER_ENV,
@@ -319,22 +372,30 @@ class DecisionLedger:
                 generation_id=generation_id,
                 actor=self._actor,
             )
+            # INSIDE the boundary, so the contract has no three-line gap at the end: a metrics
+            # registry that failed here (however unlikely) would otherwise turn an
+            # already-computed answer into an error.
+            METRICS.increment("recall_ledger_records_total", event=event_type)
+            return event_id
         except Exception as exc:
             # Any failure, including AttributeError from a store without the audit surface.
             # The search result is already computed and correct; losing one audit row must not
-            # turn it into an error. Counted every time, said once per failure kind.
-            METRICS.increment("recall_ledger_write_failures_total", event=event_type)
-            _warn_once(
-                f"write:{type(exc).__name__}",
-                "decision ledger write failed (%s: %s) — the search still answered; further "
-                "failures of this kind are counted in recall_ledger_write_failures_total "
-                "without this warning",
-                type(exc).__name__,
-                exc,
-            )
+            # turn it into an error. Counted every time, said once per failure kind — and the
+            # bookkeeping itself is guarded, because a raise from inside this clause would
+            # escape the witness on exactly the path that promises it cannot.
+            try:
+                METRICS.increment("recall_ledger_write_failures_total", event=event_type)
+                _warn_once(
+                    f"write:{type(exc).__name__}",
+                    "decision ledger write failed (%s: %s) — the search still answered; "
+                    "further failures of this kind are counted in "
+                    "recall_ledger_write_failures_total without this warning",
+                    type(exc).__name__,
+                    _terse(exc),
+                )
+            except Exception:  # pragma: no cover - bookkeeping must not out-enforce the witness
+                pass
             return None
-        METRICS.increment("recall_ledger_records_total", event=event_type)
-        return event_id
 
     def record_decision(
         self,

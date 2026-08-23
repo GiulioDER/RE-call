@@ -57,7 +57,9 @@ The JSONB payload (`record_version: 1`) carries:
   `failure_code`;
 - **the evidence, winners and losers**: every hit's chunk id, source, file, ord, cosine,
   confidence, verdict, validity window, successor, and last-index timestamp (`indexed_at`; the
-  first-write axis, `first_indexed_at`, is not recorded in record version 1). The demoted
+  first-write axis, `first_indexed_at`, is not recorded in record version 1). Scores are stored
+  raw (unrounded, non-finite becomes null), and corpus-controlled identifiers are bounded at 512
+  characters, the same reasoning as the query bound applied to the corpus author. The demoted
   hits are recorded on purpose — a ledger showing only supporting evidence is justification,
   not audit;
 - **both time axes**: `valid_time` (the `now` the verdicts were judged against) and
@@ -80,6 +82,12 @@ RECALL_DECISION_LEDGER=1 python -m recall.cli search "your question"
 
 A malformed value warns once and stays off: raising would turn a typo in an env var into a
 refusal of every search, which is enforcement, and the one thing the witness must not do.
+
+For a **stdio MCP server**, set the variable in the client's `env` block for that server (the
+`.mcp.json` entry `scripts/session-mcp.sh` generates), not in your shell: a stdio server
+launched with an explicit `env` does not inherit exported variables, and an absent variable is
+simply "off", with no warning — the same silent mismatch this repository already met once with
+`RECALL_TRUST_MODE`.
 
 Per call, from the typed API:
 
@@ -112,6 +120,11 @@ The table is tenant-isolated by row-level security, so read through a connection
 - **No cryptographic custody.** Append-only is enforced by the code surface (the store exposes
   no update or delete for audit events) and by grants, not by hashes or signatures. A superuser
   can rewrite history.
+- **The write is synchronous, on the search path.** It runs after the decision completes and
+  before the call returns — in the MCP service, inside the admission slot — so with the flag on,
+  ledger latency is search latency: one INSERT per request when healthy, and up to the store's
+  single reconnect-retry when the database is degraded. Failure cannot fail the search; slowness
+  is the cost that remains.
 - **The table grows without bound while the ledger is on.** One row per search, typically a few
   KB of JSONB plus two index entries, in the same `recall_audit_events` table the generation and
   calibration lifecycle writes to. The library ships no retention mechanism on purpose (append is
