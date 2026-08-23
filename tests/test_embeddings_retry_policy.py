@@ -33,8 +33,8 @@ openai = pytest.importorskip("openai")
 
 # `voyageai` is NOT imported here, and the fixture that imports it explains why:
 # `tests/conftest.py::voyageai_sdk`. The short version is that the import drags `transformers`
-# and `torch` behind it for ~75s, and paying that at module scope billed it to the COLLECTION of
-# every `pytest` run in this repository, selected or not.
+# and `torch` behind it, and paying that at module scope billed 44 of the 45 seconds it took to
+# COLLECT this one file.
 # `importorskip` is still not an option: voyage is an optional extra, and skipping this module for
 # its absence would also skip the OpenAI-compatible tests below, which cover the live defect. The
 # fixture skips the ONE test that needs the SDK.

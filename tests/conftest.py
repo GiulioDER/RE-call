@@ -710,18 +710,34 @@ def cli_table() -> Iterator[str]:
 def voyageai_sdk() -> Any:
     """The `voyageai` package, imported on demand and NEVER during collection.
 
-    ⚠️ **Importing this costs ~75s cold, and the module that pays it is not the one you expect.**
-    `voyageai/__init__.py` imports `voyageai.chunking`, which imports `langchain_text_splitters`,
-    which imports `transformers`, which imports `torch`. Measured 2026-08-23 with
-    `python -X importtime`: 74.8s cumulative for `voyageai`, of which 31.4s is `transformers`.
+    ⚠️ **Importing this costs ~44s warm and ~75s cold, and the module that pays it is not the one
+    you expect.** `voyageai/__init__.py` imports `voyageai.chunking`, which imports
+    `langchain_text_splitters`, which imports `transformers`, which imports `torch`. Measured
+    2026-08-23 with `python -X importtime`: 74.8s cumulative for `voyageai` on a cold cache, of
+    which 31.4s is `transformers`.
 
     Three test modules used to pay that at MODULE scope, and each carried a comment explaining
     why: an `import` inside a test is billed to that test's 120s timeout, and one of them had
-    already timed out that way. The reasoning was right about the timeout and wrong about the
-    price, because "collection is not clocked" is only true of a serial run. Measured on this
-    commit: whole-suite collection took **154.1s, of which 86.9s was one of those three modules**,
-    and every `pytest` invocation paid it — including `pytest tests/test_cli.py`, which shares
-    nothing with any of them. Under `pytest -n`, every WORKER pays it again.
+    already timed out that way. That reasoning is still right, which is why the four tests using
+    this fixture carry `@pytest.mark.timeout(300)`.
+
+    What it cost, measured back to back against this branch's base and warm, so that the two
+    halves are comparable:
+
+    | | with the module-scope import | with this fixture |
+    |---|---|---|
+    | `pytest tests/test_embeddings_retry_after.py --collect-only` | **45.33s** | **1.04s** |
+    | whole-suite collection | 55.6 / 59.6 / 59.1s | 50.9 / 54.8 / 50.0 / 51.3s |
+
+    So the win is on the SINGLE-FILE run, which is what you do while working on this file. It
+    nearly vanishes from the whole-suite figure because a module collected earlier has already
+    pulled `transformers` in, and voyageai then only adds its margin.
+
+    🔁 This docstring first claimed 154.1s of collection falling to 75.1s, and that "every
+    `pytest` invocation paid it, including `pytest tests/test_cli.py`". Both were wrong. The pair
+    compared a cold cache against a warm one, and pytest imports only the modules it COLLECTS, so
+    an unrelated single-file run never touched `voyageai` at all.
+    `docs/preregistrations/2026-08-23-test-suite-wall-clock.md` carries the full correction.
 
     A session-scoped fixture keeps both halves: the import happens once per session, and only if
     one of the four tests that actually need the SDK is selected. Those four carry

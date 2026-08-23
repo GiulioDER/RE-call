@@ -30,12 +30,13 @@ from tests.provider_stub_helpers import EMBEDDINGS_OK, provider_stub
 
 openai = pytest.importorskip("openai")
 
-# `voyageai` is NOT imported here. It drags `transformers` and `torch` in behind it and takes
-# ~75s cold, and this module's module-scope import was measured at 86.9s of the whole suite's
-# 154.1s collection — a cost every `pytest` invocation paid, whether or not it selected a single
-# test from this file, and one every `pytest -n` worker paid again. It comes from the
-# session-scoped `voyageai_sdk` fixture in `tests/conftest.py` instead, which is why the two tests
-# below take that fixture and carry a 300s timeout: whichever runs first is billed for the import.
+# `voyageai` is NOT imported here. It drags `transformers` and `torch` in behind it, and with the
+# module-scope import this file took **45.33s to COLLECT on its own, against 1.04s now** (measured
+# back to back, warm, 2026-08-23). That is what you paid every time you ran this one file while
+# working on it. It comes from the session-scoped `voyageai_sdk` fixture in `tests/conftest.py`
+# instead, which is why the two tests below take that fixture and carry a 300s timeout: whichever
+# runs first is billed for the import. The fixture's docstring carries the whole-suite figure,
+# which is much smaller, and the correction to an earlier claim that it was much larger.
 
 
 def _rate_limited_with(headers: dict[str, str]) -> Exception:
