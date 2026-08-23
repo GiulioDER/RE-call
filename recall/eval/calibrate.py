@@ -55,14 +55,26 @@ def measure_top_cosines(
 
     Single source of the sampling rule for both `calibrate()` and the trust evaluation —
     validity-sensitive (`trust`) queries carry no answerable label and are skipped.
+
+    "Best" means the exact maximum over the scope, not the top hit of an approximate search. See
+    the comment in the loop, and `PgVectorStore.top_cosine` for the measurement that guarantees it.
     """
     ans: list[float] = []
     unans: list[float] = []
     for q in queries:
         if q.get("trust"):
             continue
-        hits = store.query_dense(embed_query(embedder, q["query"]), k=1)
-        top = hits[0].score if hits else 0.0
+        # `top_cosine`, not `query_dense(k=1)`. Both mean "the best cosine in scope", but only one
+        # of them computes it: `ORDER BY ... LIMIT 1` may be served from the HNSW index, whose walk
+        # is filter-blind, so a tenant- or generation-scoped query can return a merely-reachable
+        # row instead of the nearest one. Measured 2026-08-22 on a 60,000-chunk generation:
+        # `query_dense(k=1)` reported 0.000000 against a true maximum of 0.707107, with the planner
+        # choosing the index unprompted. Every number this function returns is EVIDENCE — it fits
+        # the abstention threshold, and `CalibrationRepository.carry_forward` re-scores a parent's
+        # query set against a child generation to decide whether that threshold still separates.
+        # Under-measuring the unanswerable class lowers `false_confirm_rate`, which is precisely
+        # the direction that makes a broken threshold certify.
+        top = store.top_cosine(embed_query(embedder, q["query"]))
         (ans if q["answerable"] else unans).append(top)
     return ans, unans
 
