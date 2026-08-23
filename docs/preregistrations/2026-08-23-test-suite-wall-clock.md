@@ -93,3 +93,73 @@ parallelism rather than surgery.
 - **`-n` changes ordering, not just timing.** A test that passes serially because a neighbour ran
   first will fail under xdist for a reason that was always a latent bug, and counting it against
   parallelism would be wrong.
+
+## Result (2026-08-23)
+
+**Status:** measured
+
+All runs on `ec6ab9a0` plus the changes this record predicted, one container
+(`recall-sess-4d6c7b06`, port 5614), 6,563 tests collected, back to back on the same afternoon.
+Wall clock is `time` around the whole invocation; pytest's own line is given beside it because it
+excludes interpreter start and collection differs between the two.
+
+| Run | pytest clock | wall | passed | failed | skipped |
+|---|---|---|---|---|---|
+| serial, before any change | 49:58 | 52:27 | 6529 | 0 | 34 |
+| `-n 6`, before worker isolation was right | 16:45 | 17:36 | 6510 | 6 + 10 errors | 37 |
+| `-n 6`, after | 21:08 | 22:27 | 6523 | 3 | 37 |
+| `-n 4`, after | 14:05 | 14:20 | 6525 | 1 | 37 |
+| `-n 4`, after, repeat | 13:36 | — | 6525 | 1 | 37 |
+
+Collection alone: **154.10s → 75.14s**.
+
+1. **Collection. Predicted 55 to 75s, measured 75.1s.** Right, at the edge of the interval and on
+   the pessimistic side of it, which is the direction I do not usually miss in.
+   ([[i-over-predict-effect-magnitudes]] is about the other direction.) The removed cost was 79.0s
+   against a predicted 80 to 95s: the `voyageai` chain is 74.8s of it and the rest was already
+   shared with modules that import `openai`.
+2. **Serial with the voyage fix only: not measured, and deliberately not.** It would have cost 50
+   minutes to confirm a 3% cut that the collection number already gives directly. Recorded as a
+   gap rather than estimated, because a number in this table has to have been measured.
+3. **Parallel. Predicted 11 to 16 minutes at `-n 6` and a 2.5× to 3.5× speed-up. Measured 14:20
+   at `-n 4`, a 3.66× speed-up, with `-n 6` SLOWER than `-n 4` in both of its runs.**
+   The wall-clock prediction lands inside its interval and the speed-up lands just above the top
+   of its, but the worker count is wrong, and that is the part worth keeping: `-n 6` measured
+   17:36 and 22:27, a 4.9 minute spread on identical work, and **killed a worker in both runs**
+   (`node down: Not properly terminated`, different test each time, which is the signature of the
+   box running out of memory rather than of a test). The pre-registered reasoning for predicting
+   under the ceiling (commit limit, shared database, other sessions) was right about the cause and
+   wrong about which knob it would show up in: it did not scale the speed-up down smoothly, it put
+   a hard stop between four workers and six.
+4. **Correctness. Predicted 5 to 40 tests failing under `-n 6`, and zero after isolation.**
+   Measured **16** on the first parallel run, inside the interval, and the mechanism was NOT the
+   one predicted. The shared `chunks` table and the `recall_rls_probe` role never failed anything:
+   a database per worker removed both before they could. What failed was the **shape of the DSN**
+   the isolation handed back. `psycopg.conninfo.make_conninfo` returns libpq keyword form, and
+   five tests take `TEST_DSN` apart as a URL, producing
+   `invalid connection option "//recall_serve_x:pw@None:5432/user"`. Rewriting the URL's path
+   instead fixed all six failures. The remaining ten errors were a real cross-worker collision of
+   exactly the predicted kind, in a place the prediction did not look: a module-scoped
+   `xfer_guard_db`, dropped `WITH (FORCE)` on both sides of every test in
+   `tests/test_beam_transfer_index_guards.py`, which is now named after the worker.
+
+   **After both fixes, zero failures are attributable to parallelism**, as predicted.
+
+5. **Falsification check on the skip count.** The record says a skip count differing by more than
+   the documented 34 has to be explained. It differs: **37, in every parallel run**, and one test
+   also fails. Both are the same cause and it is not parallelism. `pyarrow` began raising
+   `ImportError: DLL load failed while importing lib: An Application Control policy has blocked
+   this file` on this machine some time between 12:41 and 15:20 today, with no commit in between.
+   It fails `test_the_shipped_local_reranker_is_reachable_without_a_cloud_call`, because
+   `pytest.importorskip` deliberately refuses to skip a module that is installed and broken, and
+   it skips three `sentence-transformers` tests whose own guards catch `ImportError`.
+   **Verified by re-running both serially, alone**: the failure and all three skips reproduce with
+   one worker. The confound named in the record as "a hosted-model or network test can fail for
+   reasons unrelated to this change" was the right shape and the wrong dependency.
+
+### What the apparatus check found
+
+Predicting the outcome does not reveal a broken harness, so: the parallel runs were checked for
+the false-green signature this repository already documents. 6,525 passed against 6,529 serially,
+with all four differences accounted for above and each reproduced serially. The `-n 4` run was
+repeated and returned the identical triple, so the counts are not a scheduling artefact.
