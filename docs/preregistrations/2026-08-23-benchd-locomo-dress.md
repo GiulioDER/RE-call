@@ -49,3 +49,19 @@ loader; every scored question is answerable.
 - The n=49 sample is small; per-dimension counts are tiny (single digits for some types).
 - LoCoMo conversations are ~10x larger corpora than LongMemEval oracle items, so top_k=10
   covers a far smaller fraction; the hit-rate regime differs from the tuning slice.
+
+## Result (2026-08-23)
+**Status:** measured
+
+Measured: **89.8** (44/49), against their leaderboard cell's LlamaIndex 54.8 and LLM baseline
+50.4. Per dimension: temporal 10/10, reasoning 27/30, recall 7/9. Exactly 10 conversation
+ingests across 49 items (tenant cache verified), 0 synthesis fallbacks, mean recall 33.1
+tokens, 36.9 tokens per correct (their leader: 37.7), mean latency 4.2s. Estimated BMI 92.8
+against their 68.3.
+Predicted: 58 to 68.
+**Gap: under-predicted by 22 points.** The prediction assumed cross-benchmark transfer loss;
+instead LoCoMo plays to the champion config's strengths, because its session dates are
+available to the adapter (unlike LongMemEval, where the loader drops them) and the digest step
+does explicit date arithmetic with them: temporal went 10/10 where the tuning slice's temporal
+was the weakest dimension. The five failures are three "likely yes/no" inference questions the
+digest declines to speculate on and two partial-detail recalls.
