@@ -33,7 +33,7 @@ a **tenant**.
 | Claim | Site | Verdict |
 |---|---|---|
 | Server builds `GenerationStore` only in production | `recall_mcp/server.py:661` | confirmed |
-| Missing `generation_id` degrades to `"legacy"` | `recall_mcp/service.py:271` | confirmed. A second site uses the same default but maps it to `None` immediately after, so the two do not behave identically |
+| Missing `generation_id` degrades to `"legacy"` | `recall_mcp/service.py:272` | confirmed. A second site uses the same default but maps it to `None` immediately after, so the two do not behave identically |
 | `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:1067` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
 | `calibration = None` is deliberate, and names an open design question | `recall/cli_commands/index_search.py:346-358` | confirmed |
@@ -104,8 +104,8 @@ carried a 384 dimensional profile's id.
 use it.** Every corpus indexed *before* #370 carries the old literal, which is exactly the
 population an adoption path exists to read. A fix to the writer does not retroactively repair rows
 already written. Only `content_hash` is load bearing here, and the accessor that returns it is
-`PgVectorStore.source_raw_hashes` (`recall/store.py:2318`), **not** `source_content_hashes`
-(`recall/store.py:2300`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
+`PgVectorStore.source_raw_hashes` (`recall/store.py:2324`), **not** `source_content_hashes`
+(`recall/store.py:2306`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
 
 ⚠️ **`content_hash` is media type dependent since `bd582316`.** A markdown source is hashed as
 decoded, newline normalised, `_strip_nul` text re encoded as UTF-8 (`recall/index.py:822`
@@ -123,7 +123,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 
 `RECALL_ENV` is one string carrying at least six unrelated policies:
 
-1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:1103`, `recall/cli_commands/index_search.py:205`).
+1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:1104`, `recall/cli_commands/index_search.py:205`).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:376`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
    `recall_mcp/server.py:661`, `recall/cli_commands/index_search.py:256`, and the `generation_mode` parameter threaded
