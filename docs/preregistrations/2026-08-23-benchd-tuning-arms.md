@@ -88,3 +88,34 @@ case whose plumbing failures are visible.
   hash-clearing fix in e4808a1b and by the smoke run, whose items each ingest distinct turns.
 - **Provider routing.** OpenRouter may route deepseek-v4-pro to different backends between
   arms; single-provider pinning is available if A3's variance looks anomalous.
+
+## Result (2026-08-23)
+**Status:** measured (A2 SPLADE arm still running on VPS2; appended when it lands)
+
+All on the same 60-question seed-42 slice, nuance overall out of 100:
+
+| Arm | Config | Score | Paired vs baseline arm |
+|---|---|---|---|
+| A0 | voyage-4 + lexical, k=10 | 30.0 | predicted 60 ± 5. **Gap: 30 points over-predicted.** |
+| A1 | + rerank-2.5 | 35.0 | +5/-2 flips vs A0 (predicted +2 to +5: in band) |
+| A3 | + synthesis, reasoning on, max_tokens 120 | 51.7 | +11/-1 vs A1 (predicted +3 to +8: UNDER-predicted 2x) |
+| A4 | A3 with k=20 | 41.7 | contaminated: 41/60 silent synth fallbacks |
+| A5 | A3 with max_tokens 2000 | 66.7 | fallbacks 33 to 2 |
+| A6 | A5 with extended thinking off | **75.0** | +7/-2 vs A5, temporal 13 to 18 of 25 |
+| A7 | A6 with k=20 | 70.0 | k=10 confirmed better with working synthesis |
+
+What the A0 gap taught: the score is conversion-limited, not retrieval-limited. A0's retrieval
+hit rate was 48% against the leaderboard leader's 45%, but raw-transcript recall strings made
+the locked answerer refuse 38/60 questions. Two apparatus bugs found and fixed mid-experiment,
+both visible only in traces: the synthesis fallback leaked raw memories on provider failure
+(fixed with retries), and deepseek-v4-pro's reasoning tokens starved a 120-token completion
+budget into empty content (fixed with budget 2000; extended thinking then measured 8.3 points
+WORSE than plain mode because its digests hedge, so it is off in the champion).
+
+Champion (A6) versus the leaderboard: accuracy 75.0 on n=60 against LlamaIndex/LangChain 59.0
+on the full 500 (not directly comparable until our full run); tokens per correct 46.9 against
+their 51.5; estimated BMI 82 against their 72. Mean latency 5.9s against their 1.6s.
+
+Costs, measured: the whole tuning session (9 judged runs including smokes) moved the OpenRouter
+meter by well under $1; voyage-4 embedding spend not separately metered (estimated low single
+cents per arm at ~340k tokens).

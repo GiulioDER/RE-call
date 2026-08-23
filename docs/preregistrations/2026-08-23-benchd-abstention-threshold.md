@@ -47,3 +47,15 @@ sees the evidence.
   different range, so the abstention rate measures threshold miscalibration as much as
   abstention policy. That is the point of the measurement: it is the number that justifies
   calibrating rather than inheriting the default.
+
+## Result (2026-08-23)
+**Status:** measured
+
+Measured: 26/60 abstentions (43%), zero of them correct, score 48.3 against A6's 75.0, a 26.7
+point cost.
+Predicted: 6 to 18 abstentions, 5 to 15 point cost.
+**Gap:** direction right, magnitude under-predicted; the default 0.50 threshold is even more
+miscalibrated for voyage-4 cosine geometry than predicted. The registered conclusion stands
+and is now load-bearing: the official run uses threshold 0.0 with abstention suppressed, stated
+openly in the artifact; a corpus calibration on all-answerable questions would converge on the
+same near-zero operating point.
