@@ -118,3 +118,21 @@ alongside. The falsification threshold (at or below 54.8) was not approached.
 
 Cumulative OpenRouter spend for the entire campaign, tuning through both officials including
 the void run: $6.64 by meter (558.217 to 564.857).
+
+## Correction (2026-08-23, pre-submission audit): the registered metric is not the number quoted above
+
+The two Result sections quote the console's flat pass rate (67.2 = 336/500 and 77.3 =
+1190/1540). The registered metric was `scores.nuance.overall`, which the harness computes as
+the unweighted mean of the three dimension rates, and which is what their leaderboard rows
+show. Under the registered metric, verified by independent recomputation from the raw traces:
+
+- **LongMemEval 500: 69.0** (dimension mean of 85.3 recall, 52.6 temporal, 69.2 reasoning).
+  Inside the predicted 68 to 75 band after all; the "0.8 below the floor" gap note above
+  applied to the wrong statistic. Leaderboard margin: +10.0 over 59.0.
+- **LoCoMo full: 71.6** (dimension mean of 67.0 recall, 62.3 temporal, 85.5 reasoning).
+  Further below the predicted 82 to 90 band than the flat rate suggested; the dimension mean
+  down-weights LoCoMo's large, strong reasoning population (937 of 1540) relative to the flat
+  rate. Leaderboard margin: +16.8 over 54.8.
+
+Both earlier Result sections stay as written, per the no-edit rule. These are the numbers the
+leaderboard will show.
