@@ -96,3 +96,47 @@ paired; the paired structure inside this run serves predictions 5 and 7.
    failure modes) is real and bounded only by the task set's diversity.
 4. **Prediction 4 has n=6.** It is stated because run 001 made `ts-lf-rewrite` the clean miss, and
    a mechanism that cannot move its cleanest case is not the mechanism I think it is.
+
+---
+
+## Result (2026-08-23)
+
+**Status:** measured. Run `agent-ab-skill-001`, 112 sessions, **54 pairs admitted, 2 discarded**
+(both `ts-autouse-tmp-path` reps whose stdio server reported `failed`, so RE-call was never
+available; the gate worked). Predictions above are untouched; this section is appended.
+
+| # | Predicted | Measured | Verdict |
+|---|---|---|---|
+| 1 | reach 0.45 to 0.55 | **31/46 = 0.674**, one-sided Fisher p = 0.0006 vs 15/47 | direction confirmed, band UNDER-predicted |
+| 2 | search rate 0.65 to 0.80 | **46/46 = 1.000**, p < 0.0001 vs 25/47 | direction confirmed, band UNDER-predicted |
+| 3 | memo given searched 0.65 to 0.78 | **31/46 = 0.674**, p = 0.356 vs 15/25 = 0.600 | in band, and NOT distinguishable from baseline |
+| 4 | ts-lf-rewrite reach >= 2 of 6 | **0 of 6**, with 6 of 6 searching | **FALSIFIED** |
+| 5 | success delta +0.10 to +0.25 (exploratory) | per-task **+0.208**, cluster CI [-0.021, +0.458], sign p = 0.375; per-pair +0.196, p = 0.022 | in band, headline still not significant, as stated |
+| 6 | cost above +55,959 by up to +20,000 | median **+106,946** input tokens, +36.5 s wall | direction confirmed, band UNDER-predicted by ~2.5x |
+| 7 | control unchanged | 1.000 vs 1.000, no discordant pairs | confirmed |
+
+**What the decomposition says.** The instruction closed the initiation gap completely and did not
+significantly move the formulation gap: reach doubled (0.319 to 0.674) almost entirely because
+every session now searches, while the hit rate among searchers moved 0.600 to 0.674 with p = 0.356.
+Confound 1 of this record (length or salience rather than content) therefore stands unresolved for
+the initiation effect, and the content-specific claim, that operation vocabulary retrieves what
+goal vocabulary misses, FAILED its cleanest test: all six `ts-lf-rewrite` on-arm sessions searched
+and every query was still goal vocabulary ("version bump release script", "recall/version.py
+format"). The agent does not perceive "a python script will edit a file" as an operation distinct
+from its goal; instruction text alone did not induce that reframing where the goal's pull is
+strongest. `ts-worktree-import` shows the same shape (6 of 6 searched, 1 of 6 reached).
+
+**Task success** moved from run 001's +0.154 to +0.208 per-task, and the per-pair view crossed into
+significance (p = 0.022, labelled as overstating confidence by design). The 8-task design still
+cannot certify the headline, exactly as the limitation section predicted. One task went negative
+(`ts-sample-covers-tail`, -0.33, reach 3/6), which run 001 did not have.
+
+**Cost of the treatment as shipped: roughly double the baseline instruction's.** Median +106,946
+input tokens and +36.5 s per session against the baseline's +55,959 and +24.5 s. The magnitude
+lesson in [[i-over-predict-effect-magnitudes]] holds in both directions here: two benefit bands
+under-predicted for a decision-changing intervention, and a cost band under-predicted even after
+applying the times-five correction to the previous surprise.
+
+**What follows, not measured here:** the initiation problem is solved by instruction; the
+formulation problem is not, and the next lever is retrieval-side (query expansion, or indexing
+memos under operation vocabulary), not more prompt text.
