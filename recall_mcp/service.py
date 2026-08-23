@@ -34,6 +34,7 @@ from recall.embeddings import (
 from recall.guards import staleness
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
+from recall.desktop.uploads import delete_staged_sources
 from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_text
 from recall.lineage import IndexManifestV1, ManifestObjectV1
 from recall.manifest import ExtractingLocalObjectReader
@@ -2072,48 +2073,14 @@ def forget_memory(
 
 
 def _delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:
-    """Unlink staged upload files whose DB rows were just erased. Returns files removed.
+    """Delegates to `recall.desktop.uploads.delete_staged_sources`.
 
-    Without this, "permanently delete" left the original text on the server filesystem,
-    inside the index root, where the next index run over `uploads/` would re-ingest exactly
-    the content the caller was told is gone. Best effort by design (the DB delete is already
-    committed), and hard-confined to `RECALL_INDEX_ROOT/uploads/<tenant>/`: a forgotten
-    source indexed from the user's own directory must NEVER delete the user's file.
-
-    Accepts both source spellings: `file://` URIs (generation-mode manifests) and plain
-    absolute paths (the legacy `source` column).
+    recall_mcp is documented (and AST-checked by tests/test_mcp_rewrite_plan.py) as making
+    ZERO direct file-write calls, which is why `stage_uploads` lives outside this package
+    too. The erasure semantics and the uploads-tree confinement are documented on the
+    implementation.
     """
-    from urllib.parse import urlsplit
-    from urllib.request import url2pathname
-
-    uploads_root = (
-        Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve() / "uploads" / tenant
-    )
-    removed = 0
-    touched_dirs: set[Path] = set()
-    for source in sources:
-        raw = str(source)
-        if raw.startswith("file://"):
-            raw = url2pathname(urlsplit(raw).path)
-        try:
-            path = Path(raw).resolve()
-        except (OSError, ValueError):
-            continue
-        if not path.is_relative_to(uploads_root):
-            continue
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            continue
-        except OSError:
-            _log.warning("could not remove staged file for a forgotten source: %s", path)
-            continue
-        removed += 1
-        touched_dirs.add(path.parent)
-    for directory in touched_dirs:
-        with suppress(OSError):
-            directory.rmdir()  # only succeeds when empty, which is the point
-    return removed
+    return delete_staged_sources(tenant, sources)
 
 
 def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -> MemoryStatsResult:

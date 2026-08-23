@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import json
-import shutil
 import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -81,7 +80,7 @@ from recall_mcp.translation import (
     render_evidence_response,
     render_search_response,
 )
-from recall.desktop.uploads import stage_uploads
+from recall.desktop.uploads import discard_staging, stage_uploads
 
 #: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
 #: is metered the moment it declares a scope — there is no separate table to remember to update,
@@ -1366,7 +1365,7 @@ def build_server() -> MCPServer:
             try:
                 limiter.check(store.tenant, "index_bytes", float(total_bytes))
             except BaseException:
-                shutil.rmtree(root, ignore_errors=True)
+                discard_staging(root)
                 raise
         try:
             with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
@@ -1379,7 +1378,7 @@ def build_server() -> MCPServer:
             # servable manifest references this job's files (the UnsafePromotion case
             # RETURNS and never reaches here). Legacy mode: partially indexed rows become
             # prunable, which is consistent with "the upload failed".
-            shutil.rmtree(root, ignore_errors=True)
+            discard_staging(root)
             raise
         payload = json.loads(result.model_dump_json())
         payload.update({"job_id": job_id, "state": "completed", "category": category})

@@ -3,14 +3,72 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import shutil
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
+
+
+_LOG = logging.getLogger("recall.desktop.uploads")
 
 
 class UploadError(ValueError):
     """Raised when a desktop upload is malformed or exceeds its safety limits."""
+
+
+def delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:
+    """Unlink staged upload files whose DB rows were just erased. Returns files removed.
+
+    Without this, "permanently delete" left the original text on the server filesystem,
+    inside the index root, where the next index run over `uploads/` would re-ingest exactly
+    the content the caller was told is gone. Best effort by design (the DB delete is already
+    committed), and hard-confined to `RECALL_INDEX_ROOT/uploads/<tenant>/`: a forgotten
+    source indexed from the user's own directory must NEVER delete the user's file.
+
+    Accepts both source spellings: `file://` URIs (generation-mode manifests) and plain
+    absolute paths (the legacy `source` column). Lives HERE beside `stage_uploads` because
+    recall_mcp is documented, and AST-checked, as making zero direct file-write calls.
+    """
+    from urllib.parse import urlsplit
+    from urllib.request import url2pathname
+
+    uploads_root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve() / "uploads" / tenant
+    removed = 0
+    touched_dirs: set[Path] = set()
+    for source in sources:
+        raw = str(source)
+        if raw.startswith("file://"):
+            raw = url2pathname(urlsplit(raw).path)
+        try:
+            path = Path(raw).resolve()
+        except (OSError, ValueError):
+            continue
+        if not path.is_relative_to(uploads_root):
+            continue
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            _LOG.warning("could not remove staged file for a forgotten source: %s", path)
+            continue
+        removed += 1
+        touched_dirs.add(path.parent)
+    for directory in touched_dirs:
+        try:
+            directory.rmdir()  # only succeeds when empty, which is the point
+        except OSError:
+            pass
+    return removed
+
+
+def discard_staging(root: Path) -> None:
+    """Remove one job's staging tree, best effort. The failure-path counterpart of
+    `stage_uploads`: a refused or failed ingest must not leave content inside the index
+    root for a later index run to resurrect."""
+    shutil.rmtree(root, ignore_errors=True)
 
 
 _MAX_TOTAL_BYTES = 50 * 1024 * 1024
