@@ -170,7 +170,7 @@ def test_proposal_provider_exception_returns_provider_failure() -> None:
     assert response.provider_failures[0].message == "TimeoutError"
     assert "query leaked here" not in json.dumps(response.to_dict())
 
-    from recall.cli import _reasoning_trace_export
+    from recall.cli_commands.reasoning_cmd import _reasoning_trace_export
 
     try:
         _reasoning_trace_export(response)

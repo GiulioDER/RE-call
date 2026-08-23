@@ -122,7 +122,9 @@ def _run_build(
         patch.setattr(GenerationManager, "create", fake_create)
         patch.setattr(GenerationManager, "build", fake_build)
         if resolved is not None:
-            patch.setattr("recall.cli._make_embedder", lambda name: resolved)
+            patch.setattr(
+                "recall.cli_commands.generation_cmd._make_embedder", lambda name: resolved
+            )
 
         cli_main(
             [

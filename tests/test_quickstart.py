@@ -439,9 +439,10 @@ def test_cli_does_not_declare_that_it_opens_a_database(monkeypatch) -> None:
     second definition free to agree with this test while disagreeing with the CLI.
     """
     from recall import cli
+    from recall.cli_commands import setup_wizard
 
     captured: dict[str, object] = {}
-    monkeypatch.setattr(cli, "_quickstart", lambda args: captured.update(args=args))
+    monkeypatch.setattr(setup_wizard, "_quickstart", lambda args: captured.update(args=args))
     cli.main(["quickstart"])
 
     args = captured["args"]
@@ -457,9 +458,10 @@ def test_cli_existing_dsn_is_a_distinct_flag_from_the_global_one(monkeypatch) ->
     side of the word `quickstart` the reader typed it, and only one of the two would ever be read.
     """
     from recall import cli
+    from recall.cli_commands import setup_wizard
 
     captured: dict[str, object] = {}
-    monkeypatch.setattr(cli, "_quickstart", lambda args: captured.update(args=args))
+    monkeypatch.setattr(setup_wizard, "_quickstart", lambda args: captured.update(args=args))
     cli.main(
         [
             "--dsn",
@@ -478,13 +480,15 @@ def test_cli_existing_dsn_is_a_distinct_flag_from_the_global_one(monkeypatch) ->
 def _run_quickstart_recording_migrations(monkeypatch, apply) -> list[str]:
     """Drive `recall quickstart --existing-dsn` with `apply_migrations` replaced, reporting calls.
 
-    ⚠️ Patched on `recall.schema`, NOT on `recall.cli`. `_quickstart` imports the name locally
-    (`from recall.schema import ...`), so that import rebinds it inside the function on every call
-    and a patch on the `cli` module attribute is never consulted. The first version of this test
-    did exactly that, and its "stub" reached a real `psycopg.connect`.
+    ⚠️ Patched on `recall.schema`, NOT on `recall.cli_commands.setup_wizard`. `_quickstart`
+    imports the name locally (`from recall.schema import ...`), so that import rebinds it inside
+    the function on every call and a patch on the command module's attribute is never consulted.
+    The first version of this test did exactly that, and its "stub" reached a real
+    `psycopg.connect`.
     """
     import recall.schema
     from recall import cli
+    from recall.cli_commands import setup_wizard
 
     migrated: list[str] = []
 
@@ -494,10 +498,10 @@ def _run_quickstart_recording_migrations(monkeypatch, apply) -> list[str]:
 
     monkeypatch.setattr(recall.schema, "apply_migrations", _apply)
     monkeypatch.setattr(Q, "provision", lambda *a, **k: pytest.fail("must not provision"))
-    monkeypatch.setattr(cli, "PgVectorStore", lambda *a, **k: _StubStore())
-    monkeypatch.setattr(cli, "Indexer", lambda *a, **k: _StubIndexer())
-    monkeypatch.setattr(cli, "_run_queries", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "_entailment_judge", lambda: None)
+    monkeypatch.setattr(setup_wizard, "PgVectorStore", lambda *a, **k: _StubStore())
+    monkeypatch.setattr(setup_wizard, "Indexer", lambda *a, **k: _StubIndexer())
+    monkeypatch.setattr(setup_wizard, "_run_queries", lambda *a, **k: None)
+    monkeypatch.setattr(setup_wizard, "_entailment_judge", lambda: None)
     # ⚠️ **`hashing`, NOT the default, and CI is the only place that shows why.** `quickstart`
     # resolves an embedder before it touches the database, and the parent parser's default is
     # `fastembed`, which lives behind an extra CI deliberately does not install. Locally this
