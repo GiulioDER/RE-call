@@ -21,6 +21,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
+from typing import Any
 
 import pytest
 
@@ -29,13 +30,12 @@ from tests.provider_stub_helpers import EMBEDDINGS_OK, provider_stub
 
 openai = pytest.importorskip("openai")
 
-#: Module scope for the same reason as in `test_embeddings_retry_policy`: `voyageai` drags
-#: `transformers` in behind it and takes ~75s cold, which is most of the 120s per-test timeout,
-#: and collection is not clocked. `importorskip` would skip the whole module for its absence.
-try:
-    import voyageai.error
-except ImportError:  # pragma: no cover - exercised only without the extra
-    voyageai = None  # type: ignore[assignment]
+# `voyageai` is NOT imported here. It drags `transformers` and `torch` in behind it and takes
+# ~75s cold, and this module's module-scope import was measured at 86.9s of the whole suite's
+# 154.1s collection — a cost every `pytest` invocation paid, whether or not it selected a single
+# test from this file, and one every `pytest -n` worker paid again. It comes from the
+# session-scoped `voyageai_sdk` fixture in `tests/conftest.py` instead, which is why the two tests
+# below take that fixture and carry a 300s timeout: whichever runs first is billed for the import.
 
 
 def _rate_limited_with(headers: dict[str, str]) -> Exception:
@@ -136,7 +136,8 @@ def test_a_malformed_retry_after_falls_back_to_the_jittered_draw() -> None:
     assert delays[0] <= 2.0
 
 
-def test_a_voyage_error_is_paced_too_though_it_carries_no_response() -> None:
+@pytest.mark.timeout(300)  # the `voyageai_sdk` import, if this is the first to ask
+def test_a_voyage_error_is_paced_too_though_it_carries_no_response(voyageai_sdk: Any) -> None:
     """The second cloud embedder must not be quietly left out of its own fix.
 
     ``voyageai`` hangs the headers straight off the exception (``VoyageError.headers``) and has
@@ -150,11 +151,9 @@ def test_a_voyage_error_is_paced_too_though_it_carries_no_response() -> None:
     free to become case-sensitive without anything going red — which is the live risk, since the
     reader looks up lowercase keys only.
     """
-    if voyageai is None:
-        pytest.skip('needs the voyage extra (pip install "recall-rag[voyage]")')
     from requests.structures import CaseInsensitiveDict
 
-    exc = voyageai.error.RateLimitError(
+    exc = voyageai_sdk.error.RateLimitError(
         "rate limit exceeded", headers=CaseInsensitiveDict({"Retry-After": "20"})
     )
 
@@ -164,7 +163,8 @@ def test_a_voyage_error_is_paced_too_though_it_carries_no_response() -> None:
     assert delays[0] >= 20.0
 
 
-def test_a_header_value_that_is_not_a_string_falls_back_instead_of_raising() -> None:
+@pytest.mark.timeout(300)  # the `voyageai_sdk` import, if this is the first to ask
+def test_a_header_value_that_is_not_a_string_falls_back_instead_of_raising(voyageai_sdk: Any) -> None:
     """The reader duck-types, so it must survive a mapping that is not ``httpx.Headers``.
 
     The reader duck-types whatever mapping it is handed, and an SDK's ``headers`` can hold a
@@ -174,9 +174,7 @@ def test_a_header_value_that_is_not_a_string_falls_back_instead_of_raising() -> 
     ``retry_with_backoff``'s ``except Exception`` block it would replace the provider's error, so
     an indexing run dies on a stdlib string-method error instead of retrying.
     """
-    if voyageai is None:
-        pytest.skip('needs the voyage extra (pip install "recall-rag[voyage]")')
-    exc = voyageai.error.RateLimitError("rate limit exceeded", headers={"retry-after": ["20"]})
+    exc = voyageai_sdk.error.RateLimitError("rate limit exceeded", headers={"retry-after": ["20"]})
 
     delays = _delays(exc)
 

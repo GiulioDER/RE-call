@@ -225,9 +225,58 @@ place, rather than writing it and warning afterwards.
 
 ```bash
 eval "$(scripts/session-db.sh up)"
-python -m pytest tests/ -q
+python -m pytest tests/ -q -n 4          # or: make test
 scripts/session-db.sh down
 ```
+
+- 🔁 **Corrected 2026-08-23: run it in PARALLEL. Serial is 50 minutes; `-n 4` is 14.**
+  Measured that day on this workstation, same commit (`ec6ab9a0`), same container, back to back,
+  at 6,563 tests: **serial 49:58** (52:27 of wall clock, collection and interpreter start
+  included), **`-n 4` 14:05** (14:20 wall), and `-n 6` **twice, at 16:45 and 21:08, with a worker
+  killed both times**. So four workers is **3.7× faster** on wall clock, and six is not reliably
+  faster than four while being reliably less stable on a 12 GB machine: that is why `make test`
+  defaults to four rather than to `auto`, which would ask for twelve.
+
+  ⚠️ **Those three numbers are one run each, on a box that is not idle.** `\Processor(_Total)\%
+  Processor Time` read 47% with nothing of mine running, three other session containers were up,
+  and the two `-n 6` runs differ by 4.5 minutes from each other. Treat anything under about 1.3×
+  as noise. Re-measure with `time` around the whole invocation rather than reading pytest's line,
+  which excludes interpreter start.
+
+  **`pytest-xdist` is now in the `dev` extra, and `tests/conftest.py::_isolate_xdist_worker` is
+  what makes it safe.** Every worker gets a DATABASE of its own inside this checkout's container,
+  because the workers are separate processes sharing one database otherwise, and three things
+  collide there silently: the shared `chunks` table, the migration ledger, and the cluster-wide
+  `recall_rls_probe` role. Read that docstring before changing the worker count or the DSN shape;
+  the first parallel run failed six tests purely because the rewritten DSN was in libpq keyword
+  form and five tests take `TEST_DSN` apart as a URL.
+
+  ⚠️ **Parallel is for a green run, serial is for reading a red one.** `-n` interleaves the output
+  of four workers, and a failure's traceback arrives detached from the progress line above it.
+  `make test-serial` is the ordered form; a single failing file is faster to re-run on its own
+  either way.
+
+- 🔁 **Corrected 2026-08-23: collection alone was 154s of every run, and 87s of it was ONE module.**
+  `tests/test_embeddings_retry_after.py` imported `voyageai` at module scope, which imports
+  `langchain_text_splitters`, which imports `transformers` and `torch`: 74.8s cumulative by
+  `python -X importtime`, paid by every `pytest` invocation in this repository whether or not it
+  selected a single test from that file, and paid AGAIN by every xdist worker. Three modules did
+  it, each with a comment explaining that collection is not clocked, which was true of a serial
+  run and false of everything else. They now take the session-scoped `voyageai_sdk` fixture in
+  `tests/conftest.py`. **Collection is 75.1s.** Re-measure:
+
+  ```bash
+  python -m pytest tests/ -q --collect-only | tail -1
+  ```
+
+- ⚠️ **`pyarrow` is blocked on this machine as of 2026-08-23** with `ImportError: DLL load failed
+  while importing lib: An Application Control policy has blocked this file`, which fails
+  `tests/test_bench_beam_candidate_k.py::test_the_shipped_local_reranker_is_reachable_without_a_cloud_call`.
+  It is NOT a parallelism regression and not a code regression: it passed in the serial baseline
+  that started 12:41 and failed serially, on its own, at 15:20 the same day, with no commit in
+  between. `pytest.importorskip` deliberately does not skip
+  it, because a module that is installed and broken is not a module that is absent. Check
+  `python -c "import pyarrow"` before reading that failure as anything else.
 
 - 🔁 **Corrected 2026-08-20: the full suite takes 30 to 40 minutes with a database, not 12.**
   Three runs on this machine that day, on an otherwise idle box: **37:13, 39:20 and 29:45**, at

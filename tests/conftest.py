@@ -170,6 +170,92 @@ def _reject_unsafe_test_dsn() -> None:
 _reject_unsafe_test_dsn()
 
 
+def _isolate_xdist_worker(dsn: str) -> str:
+    """Give each `pytest -n` worker its own DATABASE inside the checkout's own container.
+
+    Parallel workers are separate processes with separate pytest sessions, so every guarantee this
+    file makes about isolation holds WITHIN a worker and none of it holds ACROSS workers. Three
+    things collide otherwise, and all three are silent:
+
+    1. `chunks`. The session bootstrap below creates it once per session, which under `-n` means
+       once per worker against the same database, and `tests/test_wizard_database.py` DROPs and
+       rebuilds it mid-run because `wizard.database.probe_database` inspects it by name. A worker
+       reading `chunks` while another rebuilds it fails with `relation "chunks" does not exist`,
+       in a test that has nothing to do with the wizard.
+    2. The migration ledger. `apply_migrations` is idempotent by consulting it, so two workers
+       racing on the same row can leave a table unbuilt and no error behind.
+    3. `recall_rls_probe`, provisioned by `unprivileged_dsn`. A role is CLUSTER-wide, so a
+       check-then-create in two workers at once raises `DuplicateObject` in one of them.
+
+    A database per worker removes all three at once, rather than fixing them one at a time and
+    waiting to discover the fourth. It is cheap: `CREATE DATABASE` off the empty template, with
+    `CREATE EXTENSION IF NOT EXISTS vector` arriving in migration 0001 like everywhere else.
+
+    ⚠️ **`RECALL_TEST_DSN` is rewritten in the environment too, not just here.** ~30 tests spawn a
+    subprocess (`python -m recall.cli`, the MCP server) that reads the variable itself, and a
+    subprocess left on the shared database would reintroduce exactly the collisions above, from
+    the one place this module cannot see.
+
+    The per-worker databases are left behind on purpose. They live in a container this checkout
+    started and `scripts/session-db.sh down` removes, so dropping them per run would buy nothing
+    and would need a connection-terminating `DROP DATABASE` that could hit a worker still finishing.
+    """
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker or not os.environ.get("RECALL_TEST_DSN"):
+        return dsn
+
+    from urllib.parse import urlsplit, urlunsplit
+
+    # `gw0`, `gw1`, ... from xdist. Sanitised rather than trusted: it lands in DDL that cannot be
+    # parameterised, and a database name is not a place to find out what xdist calls its workers.
+    suffix = "".join(c for c in worker if c.isalnum())[:16] or "w"
+
+    # ⚠️ **Rewritten as a URL, NOT through `psycopg.conninfo.make_conninfo`.** Both spellings are
+    # valid libpq and psycopg accepts either, but the suite does not: five tests take
+    # `TEST_DSN` apart with `urlsplit`, `rsplit("/", 1)` or an f-string to build a DSN for a role
+    # or a database of their own, and a keyword-form DSN turns those into
+    # `invalid connection option "//recall_serve_x:pw@None:5432/user"` — a failure that names the
+    # test's own string handling and says nothing about the worker isolation that caused it.
+    # Measured: exactly that, in `test_schema_migrations`, `test_tenancy`, `test_store` and
+    # `test_beam_transfer_index_guards`, on the first parallel run.
+    split = urlsplit(dsn)
+    if not split.scheme.startswith("postgres"):
+        return dsn
+    base = (split.path or "/recall").lstrip("/") or "recall"
+    isolated_db = f"{base}_{suffix}"
+
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s", (isolated_db,)
+            ).fetchone()
+            if not exists:
+                conn.execute(f'CREATE DATABASE "{isolated_db}"')
+    except psycopg.errors.DuplicateDatabase:  # pragma: no cover - two workers, same instant
+        pass
+    except psycopg.errors.InsufficientPrivilege as exc:
+        # Deliberately fatal, and deliberately NOT a fallback to the shared database. Falling back
+        # would hand every worker the same database and reintroduce the collisions this exists to
+        # prevent, as a green run with occasional inexplicable failures. Serial needs no such
+        # privilege, so the fix is to drop `-n` or to use a role that has CREATEDB.
+        raise RuntimeError(
+            f"the RECALL_TEST_DSN role cannot CREATE DATABASE, which `pytest -n` needs so that "
+            f"worker {worker} does not share one with the others. Run the suite serially, or "
+            f"point RECALL_TEST_DSN at a role with CREATEDB."
+        ) from exc
+    except psycopg.OperationalError:
+        # No database reachable at all. Hand back the DSN unchanged and let `require_db` skip with
+        # its own message, which names the reason; failing here would replace it with a worse one.
+        return dsn
+
+    isolated = urlunsplit(split._replace(path=f"/{isolated_db}"))
+    os.environ["RECALL_TEST_DSN"] = isolated
+    return isolated
+
+
+TEST_DSN = _isolate_xdist_worker(TEST_DSN)
+
+
 #: How long one probe waits, and how many probes are tried before the answer is believed.
 #:
 #: ⚠️ **What this replaces is a 2 second timeout tried once PER TEST, and its failure mode was a
@@ -618,6 +704,35 @@ def cli_table() -> Iterator[str]:
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute(f"DROP TABLE IF EXISTS {name}")
         conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (name,))
+
+
+@pytest.fixture(scope="session")
+def voyageai_sdk() -> Any:
+    """The `voyageai` package, imported on demand and NEVER during collection.
+
+    ⚠️ **Importing this costs ~75s cold, and the module that pays it is not the one you expect.**
+    `voyageai/__init__.py` imports `voyageai.chunking`, which imports `langchain_text_splitters`,
+    which imports `transformers`, which imports `torch`. Measured 2026-08-23 with
+    `python -X importtime`: 74.8s cumulative for `voyageai`, of which 31.4s is `transformers`.
+
+    Three test modules used to pay that at MODULE scope, and each carried a comment explaining
+    why: an `import` inside a test is billed to that test's 120s timeout, and one of them had
+    already timed out that way. The reasoning was right about the timeout and wrong about the
+    price, because "collection is not clocked" is only true of a serial run. Measured on this
+    commit: whole-suite collection took **154.1s, of which 86.9s was one of those three modules**,
+    and every `pytest` invocation paid it — including `pytest tests/test_cli.py`, which shares
+    nothing with any of them. Under `pytest -n`, every WORKER pays it again.
+
+    A session-scoped fixture keeps both halves: the import happens once per session, and only if
+    one of the four tests that actually need the SDK is selected. Those four carry
+    `@pytest.mark.timeout(300)` because whichever of them runs first is billed for the import.
+    """
+    try:
+        import voyageai
+        import voyageai.error  # noqa: F401  # the submodule the error-shape tests read
+    except ImportError:
+        pytest.skip('needs the voyage extra (pip install "recall-rag[voyage]")')
+    return voyageai
 
 
 def dev_search(*args: Any, **kwargs: Any) -> TrustedResult:

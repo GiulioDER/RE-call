@@ -21,6 +21,7 @@ transport.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -30,16 +31,13 @@ from tests.provider_stub_helpers import EMBEDDINGS_OK, ProviderStub, provider_st
 
 openai = pytest.importorskip("openai")
 
-#: Imported at module scope, not inside the test that needs it. `voyageai` pulls `transformers`
-#: behind it and takes ~75s to import cold, which is most of this suite's 120s per-test timeout;
-#: and `timeout_method = "thread"` takes the whole session down rather than one test. Collection
-#: is not timed, so paying for it here is both faster and safer. `importorskip` cannot be used:
-#: voyage is an optional extra, and skipping the module for its absence would also skip the
-#: OpenAI-compatible tests below, which are the ones covering the live defect.
-try:
-    import voyageai
-except ImportError:  # pragma: no cover - exercised only without the extra
-    voyageai = None  # type: ignore[assignment]
+# `voyageai` is NOT imported here, and the fixture that imports it explains why:
+# `tests/conftest.py::voyageai_sdk`. The short version is that the import drags `transformers`
+# and `torch` behind it for ~75s, and paying that at module scope billed it to the COLLECTION of
+# every `pytest` run in this repository, selected or not.
+# `importorskip` is still not an option: voyage is an optional extra, and skipping this module for
+# its absence would also skip the OpenAI-compatible tests below, which cover the live defect. The
+# fixture skips the ONE test that needs the SDK.
 
 
 @pytest.fixture
@@ -139,8 +137,10 @@ def test_a_success_costs_exactly_one_request_per_batch(instant_backoff: None) ->
         assert vectors == [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]
 
 
+@pytest.mark.timeout(300)  # the `voyageai_sdk` import, if this is the first to ask
 def test_the_voyage_client_is_built_with_the_sdk_retry_layer_off(
     monkeypatch: pytest.MonkeyPatch,
+    voyageai_sdk: Any,
 ) -> None:
     """Voyage's SDK defaults ``max_retries`` to 0, so this pins a default rather than fixing a
     live bug. Pinning it means a future SDK release that starts retrying cannot silently
@@ -149,8 +149,6 @@ def test_the_voyage_client_is_built_with_the_sdk_retry_layer_off(
     A fake client is honest here in a way it would not be above: the assertion is about the
     keyword this repository passes, not about what the transport underneath does with it.
     """
-    if voyageai is None:
-        pytest.skip('needs the voyage extra (pip install "recall-rag[voyage]")')
     seen: dict[str, object] = {}
 
     class _FakeClient:
@@ -160,7 +158,7 @@ def test_the_voyage_client_is_built_with_the_sdk_retry_layer_off(
         def embed(self, texts: list[str], model: str | None = None) -> object:
             return SimpleNamespace(embeddings=[[0.0, 1.0]])
 
-    monkeypatch.setattr(voyageai, "Client", _FakeClient)
+    monkeypatch.setattr(voyageai_sdk, "Client", _FakeClient)
 
     VoyageEmbedder(api_key="k")
 
