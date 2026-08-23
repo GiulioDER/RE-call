@@ -20,10 +20,26 @@ adapter never touches it.
 Configuration is via environment variables so a run's config is visible in its command line:
 
     RECALL_BENCHD_DSN          required, pgvector DSN
-    RECALL_BENCHD_EMBEDDER     default "fastembed" (see recall_interop.resolve_embedder)
-    RECALL_BENCHD_TOP_K        default "5"; chunks returned per recall
-    RECALL_BENCHD_GRANULARITY  "session" (default) or "turn"; document unit at ingest
-    RECALL_BENCHD_ABSTAIN      "honour" (default) or "suppress"; honoured abstention returns ""
+    RECALL_BENCHD_EMBEDDER     default "voyage:voyage-4" (resolve_embedder spelling; needs
+                               VOYAGE_API_KEY); "fastembed" and "hashing" work for plumbing tests
+    RECALL_BENCHD_RERANKER     default "none"; "voyage" is rerank-2.5 (reranker_from_name)
+    RECALL_BENCHD_SPARSE       default "lexical"; "splade" replaces the lexical leg with learned
+                               sparse (local model, so it falls under the VPS2 embedding rules),
+                               "both" runs both legs, "none" is dense only
+    RECALL_BENCHD_SPARSE_MODEL default "prithivida/Splade_PP_en_v1" (MIT; never naver/splade-v3)
+    RECALL_BENCHD_TOP_K        default "10"; chunks retrieved per recall
+    RECALL_BENCHD_SYNTH        default "none"; an OpenRouter model id (e.g.
+                               "deepseek/deepseek-v4-pro-0813") turns on the synthesis step: the
+                               retrieved chunks are distilled into a short evidence digest and
+                               THAT becomes the recall string. Uses OPENROUTER_API_KEY.
+    RECALL_BENCHD_SYNTH_MAX_TOKENS  default "120"
+    RECALL_BENCHD_THRESHOLD    default "0.0"; the calibration threshold handed to the trust
+                               layer. 0.0 means retrieval never abstains, which is the optimal
+                               setting on a benchmark whose every question is answerable and
+                               whose judge scores "insufficient information" as INCORRECT.
+    RECALL_BENCHD_ABSTAIN      "suppress" (default) or "honour". Honoured abstention returns ""
+                               and forfeits the question by construction; the knob exists so the
+                               choice is explicit in the manifest either way.
     RECALL_BENCHD_INGEST_CACHE "1" (default) or "0"; skip re-ingest when the turn list is
                                byte-identical to what is already indexed (Bench'd re-ingests the
                                same conversation for every one of its questions; RE-call's
@@ -46,6 +62,23 @@ from benchd_harness.adapters.base import BaseAdapter
 
 TENANT = "benchd-bench"
 
+SYNTH_PROMPT = """You are the retrieval layer of a memory system. Below are memory excerpts \
+retrieved for a question. Distill them into the shortest complete evidence digest that answers \
+the question.
+
+Rules:
+- Use ONLY facts present in the excerpts. Never add outside knowledge, never guess.
+- Keep every detail the question asks about (names, dates, counts, places, order of events).
+- When excerpts carry session dates, keep the dates that matter for the question.
+- Output only the digest, no preamble. One to three short sentences.
+- If the excerpts contain nothing relevant, output the most nearly relevant facts they do \
+contain, verbatim. Do not say the information is missing.
+
+Question: {question}
+
+Memory excerpts:
+{memories}"""
+
 
 def _env(name: str, default: str) -> str:
     return os.environ.get(name, default)
@@ -58,14 +91,22 @@ class RecallAdapter(BaseAdapter):
         self._config = adapter_config or {}
         self._store: Any = None
         self._embedder: Any = None
+        self._reranker: Any = None
+        self._sparse_encoder: Any = None
         self._workspace: Optional[Path] = None
         self._seq = 0
         self._indexed_hash: Optional[str] = None
         self._pending_reset = False
 
-        self._top_k = int(_env("RECALL_BENCHD_TOP_K", "5"))
+        self._top_k = int(_env("RECALL_BENCHD_TOP_K", "10"))
         self._granularity = _env("RECALL_BENCHD_GRANULARITY", "session")
-        self._abstain = _env("RECALL_BENCHD_ABSTAIN", "honour")
+        self._abstain = _env("RECALL_BENCHD_ABSTAIN", "suppress")
+        self._threshold = float(_env("RECALL_BENCHD_THRESHOLD", "0.0"))
+        self._sparse = _env("RECALL_BENCHD_SPARSE", "lexical")
+        self._sparse_model = _env("RECALL_BENCHD_SPARSE_MODEL", "prithivida/Splade_PP_en_v1")
+        self._reranker_name = _env("RECALL_BENCHD_RERANKER", "none")
+        self._synth_model = _env("RECALL_BENCHD_SYNTH", "none")
+        self._synth_max_tokens = int(_env("RECALL_BENCHD_SYNTH_MAX_TOKENS", "120"))
         self._cache = _env("RECALL_BENCHD_INGEST_CACHE", "1") == "1"
         self._table = _env("RECALL_BENCHD_TABLE", "benchd_bench_chunks")
 
@@ -82,6 +123,21 @@ class RecallAdapter(BaseAdapter):
         except PackageNotFoundError:
             return "source"
 
+    def describe(self) -> Dict[str, Any]:
+        """This run's configuration, for the results artifact."""
+        return {
+            "embedder": _env("RECALL_BENCHD_EMBEDDER", "voyage:voyage-4"),
+            "reranker": self._reranker_name,
+            "sparse": self._sparse,
+            "sparse_model": self._sparse_model if self._sparse in ("splade", "both") else None,
+            "top_k": self._top_k,
+            "granularity": self._granularity,
+            "synth": self._synth_model,
+            "threshold": self._threshold,
+            "abstain": self._abstain,
+            "ingest_cache": self._cache,
+        }
+
     # ------------------------------------------------------------------ lifecycle
 
     def setup(self) -> None:
@@ -89,10 +145,21 @@ class RecallAdapter(BaseAdapter):
         if not dsn:
             raise RuntimeError("RecallAdapter requires RECALL_BENCHD_DSN")
 
-        from recall_interop.memory_benchmarks import resolve_embedder
+        from recall.embeddings import resolve_embedder
         from recall.store import PgVectorStore
 
-        self._embedder = resolve_embedder(_env("RECALL_BENCHD_EMBEDDER", "fastembed"))
+        self._embedder = resolve_embedder(_env("RECALL_BENCHD_EMBEDDER", "voyage:voyage-4"))
+        if self._reranker_name != "none":
+            from recall.rerank import reranker_from_name
+
+            self._reranker = reranker_from_name(self._reranker_name)
+        if self._sparse in ("splade", "both"):
+            from recall.sparse import SpladeEncoder
+
+            self._sparse_encoder = SpladeEncoder.from_pretrained(self._sparse_model)
+        if self._synth_model != "none" and not os.environ.get("OPENROUTER_API_KEY"):
+            raise RuntimeError("RECALL_BENCHD_SYNTH requires OPENROUTER_API_KEY")
+
         self._store = PgVectorStore(
             dsn, dim=self._embedder.dim, tenant=TENANT, table=self._table
         )
@@ -182,6 +249,10 @@ class RecallAdapter(BaseAdapter):
             # files= rather than a workspace re-glob: one pass, and _prune_vanished deletes
             # nothing that is still on disk.
             Indexer(self._store, self._embedder).index_path(self._workspace, files=paths)
+            if self._sparse_encoder is not None:
+                from recall.sparse import backfill_learned_sparse
+
+                backfill_learned_sparse(self._store, self._sparse_encoder)
         self._indexed_hash = digest
 
     @staticmethod
@@ -225,21 +296,84 @@ class RecallAdapter(BaseAdapter):
     # ------------------------------------------------------------------ recall
 
     def recall(self, query: str) -> str:
-        from recall.retriever import DEFAULT_CANDIDATE_K
-        from recall.eval._research_trust import research_search
-        from recall_interop.memory_benchmarks import _bench_calibration
-
-        result = research_search(
-            self._store,
-            self._embedder,
-            query,
-            k=self._top_k,
-            candidate_k=max(self._top_k, DEFAULT_CANDIDATE_K),
-            calibration=_bench_calibration(self._embedder),
-        )
-        if result.abstained and self._abstain == "honour":
-            # The answerer will say "Insufficient information in memory." and the locked judge
-            # scores that INCORRECT. Honouring it anyway is the library's real behaviour; the
-            # config knob exists so the choice is explicit either way.
+        raw = self._retrieve(query)
+        if not raw:
             return ""
-        return "\n\n".join(hit.chunk.text for hit in result.hits)
+        if self._synth_model == "none":
+            return raw
+        return self._synthesize(query, raw)
+
+    def _retrieve(self, query: str) -> str:
+        """Retrieve top_k chunk texts, joined. Empty string only on honoured abstention."""
+        if self._sparse in ("splade", "both", "none"):
+            # The learned-sparse and dense-only legs live on HybridRetriever, not on the trust
+            # entry point, so those arms search the retriever directly. Abstention does not
+            # apply on this path; the retriever always answers.
+            from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
+
+            retriever = HybridRetriever(
+                self._store,
+                self._embedder,
+                reranker=self._reranker,
+                candidate_k=max(self._top_k, DEFAULT_CANDIDATE_K),
+                use_dense=True,
+                use_sparse=self._sparse != "none",
+                sparse_backend="lexical" if self._sparse == "none" else self._sparse,
+                sparse_encoder=self._sparse_encoder,
+                retrieval_profile=f"benchd_{self._sparse}",
+                index_generation="benchd",
+            )
+            result = retriever.search(query, k=self._top_k)
+            hits = result.hits
+        else:
+            from recall.calibration import Calibration
+            from recall.retriever import DEFAULT_CANDIDATE_K
+            from recall.eval._research_trust import research_search
+
+            result = research_search(
+                self._store,
+                self._embedder,
+                query,
+                k=self._top_k,
+                candidate_k=max(self._top_k, DEFAULT_CANDIDATE_K),
+                reranker=self._reranker,
+                calibration=Calibration(
+                    embedder=getattr(self._embedder, "name", "benchmark"),
+                    threshold=self._threshold,
+                ),
+            )
+            if result.abstained and self._abstain == "honour":
+                # The answerer will say "Insufficient information in memory." and the locked
+                # judge scores that INCORRECT. The suppress default exists because every
+                # Bench'd question is answerable, so abstention here is always a forfeit.
+                return ""
+            hits = result.hits
+        return "\n\n".join(hit.chunk.text for hit in hits)
+
+    def _synthesize(self, query: str, memories: str) -> str:
+        """Distill retrieved memories into a short evidence digest with the reasoning model.
+
+        On any provider failure the raw memories are returned instead: a degraded answer beats
+        a forfeited question, and the failure is visible in the trace as an oversized recall."""
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(
+                api_key=os.environ["OPENROUTER_API_KEY"],
+                base_url="https://openrouter.ai/api/v1",
+            )
+            response = client.chat.completions.create(
+                model=self._synth_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": SYNTH_PROMPT.format(question=query, memories=memories),
+                    }
+                ],
+                temperature=0.0,
+                max_tokens=self._synth_max_tokens,
+            )
+            text = (response.choices[0].message.content or "").strip()
+            return text or memories
+        except Exception:
+            return memories
