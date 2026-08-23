@@ -71,6 +71,15 @@ print(json.dumps({"path": str(path),
                   "bytes": path.stat().st_size}))
 EOF
 
+if [ "${RECALL_BENCHD_DRYRUN:-0}" = "1" ]; then
+  echo "DRY RUN OK: pins verified, meter snapshotted, dataset hashed. Stopping before spend."
+  echo "  recall:  $RECALL_SHA"
+  echo "  harness: $HARNESS_SHA"
+  echo "  adapter: $ADAPTER_REPO_SHA"
+  cat "$OUT/dataset.json"
+  exit 0
+fi
+
 # ---- the run ---------------------------------------------------------------
 cd "$HARNESS_DIR"
 benchd run -a re-call -b "$BENCH" --judge --key ./keys/private.key \
