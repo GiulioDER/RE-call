@@ -69,6 +69,24 @@ and the site states that every verified score is publicly verifiable. The rows I
 against above, Graphiti and LlamaIndex, are the ones whose manifests exist and whose
 arithmetic checks out.
 
+## Two more things the artifacts say, checked before publishing this
+
+First, the trust page states that authenticity means "the signature was produced by a key
+published on this page", and it publishes two key fingerprints. The key that signed the
+Community-Verified LlamaIndex manifests shipped in the harness repository (in-manifest
+fingerprint 903aeda1ceae56b1) matches neither published fingerprint under any standard
+derivation I tried: SHA256 of the raw key bytes, of the SSH wire encoding, or of the hex
+string. It is possible they use some other derivation, and I would genuinely like to be shown
+which one, because as published, their own leaderboard manifests cannot be traced to a key on
+their own trust page. My manifests state their key fingerprint and ship the public key inline,
+so the same check takes one line against mine.
+
+Second, the trust page states that Bench'd "does not accept investment, sponsorship, or
+payment from any vendor whose product appears on the leaderboard", and the pricing page sells
+vendor verification, with a leaderboard badge, at $299 to $3,999.99 per month, paid by
+vendors. I am quoting both pages as they stood on 2026-08-23; they cannot both be true as
+written, and I hope the resolution is a wording fix rather than anything worse.
+
 ## Why this is not on their leaderboard yet
 
 Two reasons, both documented in the open. First, their submission endpoint caps uploads at
