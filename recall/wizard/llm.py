@@ -572,6 +572,10 @@ _SCHEMA: dict[str, Any] = {
 #: Only one configuration agrees exactly, and it also catches 4 of 4 genuinely on-topic questions.
 #: A larger fraction admits MORE words as subject matter and therefore rejects more, which is the
 #: opposite of the intuition that a looser ceiling is safer.
+#:
+#: The ceiling alone also drops the corpus's own core topic words, which grow as frequent as the
+#: connective tissue precisely because the corpus is about them; `_TOPICAL_REPETITION_FLOOR`
+#: below is what keeps those.
 _UBIQUITOUS_DF_FRACTION = 0.05
 
 #: Floor for the ceiling above, so a small corpus does not filter itself into silence. At 5% with
@@ -581,9 +585,35 @@ _UBIQUITOUS_DF_FRACTION = 0.05
 #: test that feeds it a large corpus still passes.
 _MIN_DF_CEILING = 3
 
+#: A word above the df ceiling is still SUBJECT MATTER if chunks that mention it repeat it this
+#: often (total occurrences / chunks containing it). The ceiling alone conflates two kinds of
+#: frequent word: a corpus is ubiquitous in its OWN topic, so on a corpus about abstention the
+#: word "abstention" is everywhere for the opposite reason "rather" is — and dropping it accepts
+#: a model-generated gap question about the very thing the corpus discusses. What separates the
+#: two is repetition within a chunk: a chunk ABOUT a topic names it several times, while
+#: connective tissue appears once per chunk everywhere.
+#:
+#: 1.3, measured 2026-08-23 on this repository's `docs/` (2,916 chunks), where the two
+#: populations barely overlap: among the 121 words the ceiling dropped, connective tissue tops
+#: out at 1.19 ("three", "still", "measured") while the product's subject matter runs 1.30+
+#: ("recall" 1.69, "generation" 1.67, "corpus" 1.50, "threshold" 1.50, "calibration" 1.39).
+#: Swept 1.3 / 1.4 / 1.5 / 1.6 / 1.8: every floor keeps the pool agreement exact (80 rejects,
+#: 0 disagreements), and 1.3 alone restores >=4 matches on all four canned on-topic
+#: questions, against a margin of ZERO before the exemption ("abstention" sat at df 144 under a
+#: ceiling of 145, one ordinary new doc from being dropped). Headings were measured as the
+#: alternative topicality signal and failed: this corpus writes discursive headings, so "work"
+#: and "first" are heading words here, and every heading floor produced the same 18 false
+#: rejections of certified-disjoint pool questions ("how does baroque counterpoint actually
+#: work").
+#:
+#: The scale of the ratio is tied to `chunk_text`-sized chunks (~800 characters): longer chunks
+#: would lift connective words above 1 occurrence per chunk and close the gap.
+_TOPICAL_REPETITION_FLOOR = 1.3
+
 
 def _corpus_subject_words(chunks: Sequence[str]) -> set[str]:
-    """The corpus's SUBJECT vocabulary: prose words that are not stopwords and not ubiquitous.
+    """The corpus's SUBJECT vocabulary: prose words that are not stopwords and not ubiquitous —
+    unless the corpus is ABOUT them, which within-chunk repetition is what detects.
 
     The first version intersected against every token in the corpus, filtered only by
     `len(w) > 4`. Measured on this repository's `docs/` (1815 chunks, 8853 word types), that
@@ -599,10 +629,17 @@ def _corpus_subject_words(chunks: Sequence[str]) -> set[str]:
 
     total = max(1, len(chunks))
     df: Counter[str] = Counter()
+    tf: Counter[str] = Counter()
     for chunk in chunks:
-        df.update({w for w in word_tokens([chunk]) if _is_prose(w) and w not in _STOPWORDS})
+        words = [w for w in word_tokens([chunk]) if _is_prose(w) and w not in _STOPWORDS]
+        df.update(set(words))
+        tf.update(words)
     ceiling = max(_MIN_DF_CEILING, int(total * _UBIQUITOUS_DF_FRACTION))
-    subject_words = {word for word, count in df.items() if count <= ceiling}
+    subject_words = {
+        word
+        for word, count in df.items()
+        if count <= ceiling or tf[word] / count >= _TOPICAL_REPETITION_FLOOR
+    }
     if not subject_words and df:
         # Every term looked ubiquitous, which happens on a corpus whose chunks are near-copies of
         # each other. Returning the empty set would silently disable the filter, so fall back to
