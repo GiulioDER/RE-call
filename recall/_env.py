@@ -119,3 +119,17 @@ def truthy(raw: str | None) -> bool:
     purpose and say so in place.
     """
     return raw is not None and raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_is_production(env: "dict[str, str] | None" = None) -> bool:
+    """True when RECALL_ENV names production, normalised with strip+lower.
+
+    The `.strip()` is the point: production-gate sites were split between `.lower()` and
+    `.strip().lower()`, so a padded value (a trailing space from a systemd EnvironmentFile or
+    a Windows `set`) read as production at some gates and development at others — one
+    deployment across two policy sets. One helper keeps every gate reading the same value.
+    """
+    import os
+
+    source = env if env is not None else os.environ
+    return source.get("RECALL_ENV", "development").strip().lower() == "production"

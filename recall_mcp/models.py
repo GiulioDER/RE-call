@@ -296,9 +296,12 @@ class ForgetResult(BaseModel):
     staged_files_removed: int = Field(
         default=0,
         description="Staged upload files (under the index root's uploads/ tree) unlinked "
-        "because their sources were erased. -1 means the chunk deletion succeeded but the "
-        "file cleanup FAILED: the original text may survive on the server's disk, inside "
-        "the indexable root, until this forget is re-run.",
+        "because their sources were erased. -1 means the whole cleanup call raised; the "
+        "original text may survive on the server's disk, inside the indexable root, until "
+        "this forget is re-run. A SINGLE file that could not be unlinked (a permission "
+        "error on one path) is logged server-side and not reflected in this count, so a "
+        "non-negative value is 'no fatal cleanup error', not a guarantee every staged file "
+        "was removed.",
     )
 
 

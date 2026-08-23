@@ -26,7 +26,7 @@ from recall.embeddings import embedding_profile_id
 from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
-from recall._env import truthy
+from recall._env import env_is_production, truthy
 from recall.store import DEFAULT_TENANT, PgVectorStore, redacted_dsn
 from recall.trust_policy import TrustPolicy
 from recall_mcp.auth import (
@@ -669,7 +669,7 @@ def _make_lifespan(
         registry: StoreRegistry | None = None
         try:
             embedder = make_embedder(EMBEDDER_NAME)
-            generation_mode = os.environ.get("RECALL_ENV", "development").lower() == "production"
+            generation_mode = env_is_production()
             # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
             # database the extension deliberately does not exist yet; reporting "migrations
             # pending" is more useful than leaking the driver's missing-type error. This path is
@@ -1450,8 +1450,13 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     ) -> str:
         """Publish one certified calibration artifact for the caller's tenant.
 
-        Requires the `recall:admin` scope: publication changes the serve/abstain decision
-        for every query the tenant runs, which is deliberately not implied by write.
+        Requires the `recall:admin` scope: publishing an ARBITRARY existing calibration
+        changes the serve/abstain decision for every query the tenant runs, which is
+        deliberately not implied by write. Note the invariant this enforces is exactly that
+        and no wider: a write-scoped `recall_ingest` in generation mode can still
+        certify-and-activate the calibration for ITS OWN upload (via `_certify_upload`), so
+        write scope is not "can never change what the tenant serves" — it is "cannot publish
+        a calibration the caller did not just produce".
         """
         store = _require(SCOPE_ADMIN, ctx, tenant)
         result = await _to_thread(lambda: publish_calibration(store, calibration_id))

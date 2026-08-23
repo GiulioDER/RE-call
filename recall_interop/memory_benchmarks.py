@@ -342,20 +342,21 @@ class RecallBackend:
         """Drop everything indexed for `user_id`. True on success, False if unknown."""
 
         def work() -> bool:
-            # Look up first, pop only after the work succeeds: the old pop-first shape lost
-            # the scope object on a mid-delete failure, leaving a live connection with no
-            # handle left to close or retry through. The store close lives in `finally` for
-            # the same reason.
+            # Look up first, remove-and-close only after the work succeeds. On a mid-delete
+            # failure the scope stays in `self._scopes` with its store still OPEN, so a retry
+            # re-runs `iter_chunks`/`delete_sources` against a live connection. Closing in a
+            # `finally` (the previous shape) stranded a CLOSED store in the map, so every retry
+            # failed instantly against the closed connection — the opposite of retryable. The
+            # store is closed on the success path here and, for a scope never deleted, by
+            # `close()` on the whole registry.
             scope = self._scopes.get(user_id)
             if scope is None:
                 return False
-            try:
-                sources = sorted({c.source for c in scope.store.iter_chunks()})
-                if sources:
-                    scope.store.delete_sources(sources)
-            finally:
-                scope.store.close()
+            sources = sorted({c.source for c in scope.store.iter_chunks()})
+            if sources:
+                scope.store.delete_sources(sources)
             del self._scopes[user_id]
+            scope.store.close()
             if not self._keep_workspace:
                 shutil.rmtree(scope.workspace, ignore_errors=True)
             return True

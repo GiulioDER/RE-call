@@ -1993,6 +1993,12 @@ class PgVectorStore:
         """Delete every chunk belonging to the given `source` values; returns rows removed.
 
         Standalone removal API (the Indexer uses the atomic `replace_sources` instead).
+
+        ⚠️ The returned count can UNDERCOUNT after a reconnect-retry. The delete and its sidecar
+        scrub now share a transaction whose COMMIT runs inside the retried op, so a connection
+        lost at commit time has an indeterminate outcome: the retry re-runs, finds the rows
+        already gone, and returns 0 for an erasure that in fact happened. On the right-to-erasure
+        path the deletion is still real; only the receipt may say fewer rows than it removed.
         """
         if not sources:
             return 0

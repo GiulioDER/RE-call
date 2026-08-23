@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,6 +11,7 @@ from typing import TYPE_CHECKING
 from recall.store import PgVectorStore
 
 from recall.cli_commands._shared import _cli_trust, _make_embedder
+from recall._env import env_is_production
 
 if TYPE_CHECKING:
     from recall.reasoning import ReasoningResponse
@@ -107,7 +107,7 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
         reasoning_query,
     )
 
-    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+    if env_is_production():
         reasoning_store_context: PgVectorStore = GenerationStore(
             args.dsn, embedder.dim, tenant=args.tenant
         )

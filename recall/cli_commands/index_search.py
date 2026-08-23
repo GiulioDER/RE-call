@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from dataclasses import asdict
 from pathlib import Path
 
@@ -30,6 +29,7 @@ from recall.cli_commands._shared import (
     _print_result,
     _run_queries,
 )
+from recall._env import env_is_production
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -200,7 +200,7 @@ def _print_evidence(
 
 def _cmd_index(args: argparse.Namespace) -> None:
     embedder = _make_embedder(args.embedder)
-    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+    if env_is_production():
         raise SystemExit(
             "local filesystem indexing is development-only; build from an immutable S3 "
             "manifest in production"
@@ -249,7 +249,7 @@ def _cmd_forget(args: argparse.Namespace) -> None:
     from recall.generations import NoActiveGeneration
 
     embedder = _make_embedder(args.embedder)
-    generation_mode = os.environ.get("RECALL_ENV", "development").lower() == "production"
+    generation_mode = env_is_production()
     # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
     # exists only on the subclass, and narrowing here is what lets the type checker see it.
     gen_store: GenerationStore | None = (
@@ -367,7 +367,7 @@ def _cmd_search(args: argparse.Namespace) -> None:
     # RECALL_ENTAILMENT_MODEL/_REVISION — the defect this block exists to fix. `recall
     # setup` writes RECALL_ENTAILMENT="0", so the forcing path is the common one.
     entail_judge = _entailment_judge(force=True) if args.entail else _entailment_judge()
-    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+    if env_is_production():
         from recall.generation_store import GenerationStore
 
         store_context: PgVectorStore = GenerationStore(
@@ -411,7 +411,7 @@ def _cmd_demo(args: argparse.Namespace) -> None:
     embedder = _make_embedder(args.embedder)
     # Never auto-loaded; see the note beside `calibration = None` in `_cmd_search` above.
     calibration = None
-    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+    if env_is_production():
         raise SystemExit("the filesystem demo is unavailable in production")
     # Resolved BEFORE the store opens and the corpus is indexed: a bad
     # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
@@ -445,7 +445,7 @@ def _cmd_code(args: argparse.Namespace) -> None:
     embedder = _make_embedder(args.embedder)
     # Never auto-loaded; see the note beside `calibration = None` in `_cmd_search` above.
     calibration = None
-    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+    if env_is_production():
         raise SystemExit("local source indexing is unavailable in production")
     # index recall's own package source (content-agnostic engine, code-aware chunking)
     src = Path(__file__).resolve().parents[1]

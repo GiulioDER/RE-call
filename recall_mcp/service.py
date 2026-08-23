@@ -119,6 +119,7 @@ from recall_mcp.models import (  # noqa: F401 — re-exported
     SearchHit,
     SearchResult,
 )
+from recall._env import env_is_production
 
 _log = get_logger("mcp.service")
 
@@ -1107,7 +1108,7 @@ def index_memory(
     tree itself: a second walk is a second answer, and the one that bills must be the one that
     runs.
     """
-    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+    if env_is_production():
         raise ValueError(
             "local filesystem indexing is development-only; production ingestion requires an "
             "immutable S3 manifest"
@@ -1367,6 +1368,11 @@ class JobLedger:
     record by id. Entries here are keyed by job id but carry their tenant, and `get` refuses
     a caller whose tenant does not match. Eviction is by count and by age, oldest first, so
     the ledger cannot become the process's slow leak.
+
+    The bounds (1000 entries, 24h TTL) are deliberately fixed, not env-configurable: this is a
+    best-effort status cache, not durable state — a job whose record is evicted simply reports
+    `unknown`, and the ingest it described already completed or failed on its own. A knob would
+    invite tuning a cache whose only failure mode is a slightly staler status read.
     """
 
     def __init__(
