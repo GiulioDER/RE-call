@@ -603,8 +603,11 @@ _MIN_DF_CEILING = 3
 #: ceiling of 145, one ordinary new doc from being dropped). Headings were measured as the
 #: alternative topicality signal and failed: this corpus writes discursive headings, so "work"
 #: and "first" are heading words here, and every heading floor produced the same 18 false
-#: rejections of certified-disjoint pool questions ("how does baroque counterpoint actually
-#: work").
+#: rejections of certified-disjoint pool questions, every one matched on template words like
+#: "first" and "work" rather than on anything about its subject. The subjects themselves are
+#: deliberately not quoted here: a pool word written under `recall/` joins every code corpus
+#: rooted at this repository and disqualifies its subject, which
+#: `test_no_distinctive_pool_word_appears_in_recall_source` enforces.
 #:
 #: The scale of the ratio is tied to `chunk_text`-sized chunks (~800 characters): longer chunks
 #: would lift connective words above 1 occurrence per chunk and close the gap.
