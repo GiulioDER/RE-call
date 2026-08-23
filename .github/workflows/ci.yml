@@ -98,8 +98,21 @@ jobs:
       # below the observed number so a normal PR never trips it on noise, and raised deliberately
       # when a real jump lands. A gate nobody fails on drifts down one PR at a time; a gate pinned
       # to the exact current number fails on the first unlucky rounding.
+      # `-n auto`: one worker per vCPU, four on a standard runner. The suite is LARGE rather than
+      # slow (6,563 tests, no hotspot worth removing), so parallelism is the only lever on its
+      # wall clock, and `tests/conftest.py::_isolate_xdist_worker` is what makes it safe against
+      # one shared database: each worker gets a database of its own, which the `postgres` image's
+      # superuser role can create. Read that docstring before changing this line.
+      #
+      # ⚠️ `auto` is right HERE and wrong locally, where it asks for twelve workers on a 12 GB
+      # machine and kills one. `make test` pins four for that reason; the runner has four vCPU and
+      # `auto` asks for exactly the number a person would choose.
+      #
+      # `pytest-cov` combines the workers' data itself, so `--cov-fail-under` still gates the
+      # whole run. If that combination ever breaks, coverage collapses rather than drifting, which
+      # is the failure mode you want from a gate.
       - name: Test (pytest on real pgvector, with coverage)
-        run: pytest -q --cov=recall --cov=recall_mcp --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+        run: pytest -q -n auto --cov=recall --cov=recall_mcp --cov-report=term-missing --cov-report=xml --cov-fail-under=70
 
   # Static typing, in its own job: it needs no database, so a type error surfaces in ~30s instead
   # of behind the full integration suite, and a red DB service never hides a red type check.
@@ -471,8 +484,11 @@ jobs:
       - name: Show what actually resolved
         run: uv pip list --system
 
+      # Parallel for the same reason as the job above, and with one difference worth naming:
+      # `--resolution lowest-direct` resolves `pytest-xdist` to its DECLARED floor, so this job is
+      # also the only place the suite runs against the oldest xdist anyone may have installed.
       - name: Test (pytest on real pgvector)
-        run: pytest -q
+        run: pytest -q -n auto
 
   # Every `path:line` citation in docs/**/*.md still points at the code it claims.
   #
