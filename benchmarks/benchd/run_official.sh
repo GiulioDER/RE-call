@@ -15,7 +15,7 @@ set -euo pipefail
 
 HARNESS_DIR=${1:?harness dir}
 BENCH=${2:?benchmark slug (longmemeval-v1 | locomo-v1)}
-WORKERS=${3:-6}
+WORKERS=${3:-4}  # measured 2026-08-23: 2.4x at 4 workers, score stable 12/13/12 across 1/4/8
 REPO_DIR=$(cd "$(dirname "$0")/../.." && pwd)
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 OUT="$HARNESS_DIR/runs-official/$BENCH-$STAMP"
