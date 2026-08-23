@@ -160,9 +160,11 @@ artifacts = ["recall/py.typed", "recall_mcp/py.typed"]
 # the comment beside it in `[project.optional-dependencies].dev` explains that a test which
 # fails to terminate "reads as 'still running', not as a regression", and that was exactly the
 # state the suite was in. CI runs bare `pytest -q`, so a hang burned the job's full timeout
-# instead of failing. 120s is far above the slowest test here (the whole suite runs in ~3
-# minutes) and far below anything anyone would wait for; a test with a legitimate reason to
-# take longer can raise its own with `@pytest.mark.timeout(n)`.
+# instead of failing. 120s is far above the slowest single test (measured 2026-08-20: 72s of
+# setup; the whole DB-backed suite takes 30 to 40 minutes at 6,088 tests — re-measure with
+# `python -m pytest tests/ -q --durations=30`) and far below anything anyone would wait for;
+# a test with a legitimate reason to take longer can raise its own with
+# `@pytest.mark.timeout(n)`.
 #
 # `thread` rather than `signal`: signal-based timeouts do not work on Windows, and this suite is
 # developed there and run on Linux in CI.
