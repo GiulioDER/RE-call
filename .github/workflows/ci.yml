@@ -525,6 +525,26 @@ jobs:
       - name: Verify path:line citations in docs/
         run: python scripts/check_citation_anchors.py
 
+  # Validate the MCP registry manifest on every PR, using the SAME `mcp-publisher validate` the
+  # Publish MCP Registry workflow runs. Added 2026-08-23: the 0.10.0 release published to PyPI
+  # fine but the registry dispatch 422'd on a server.json description of 198 chars against the
+  # registry's `<= 100` cap -- a metadata break that reached publish time because nothing checked
+  # it on the PR. `validate` needs no auth and hits the registry's schema, so it catches that
+  # class here instead. Network-dependent by nature (it is the registry's own validator); a
+  # registry outage will fail it, which is the honest signal for "we could not confirm".
+  mcp-metadata:
+    name: MCP registry manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Validate server.json against the registry schema
+        run: ./mcp-publisher validate server.json
+
   # Dependency vulnerability scan against the committed uv.lock. Runs independently of the
   # test job (no DB needed) so a CVE advisory never blocks the functional suite and vice versa.
   audit:
