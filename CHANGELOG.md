@@ -67,6 +67,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `except RecallError` and had to enumerate families or catch built-ins. Every family keeps its
   historical `RuntimeError`/`ValueError` base first, so existing handlers keep working, and a
   structural test walks both packages so a new family cannot silently opt out.
+
+* **The ATM-Bench row was accepted onto the public leaderboard on 2026-08-23**, under `RAG`, and
+  it leads both columns. Five documents and the run artifact said "open, not accepted"; they now
+  say what happened, and the artifact keeps its `state_as_of_2026-08-22: open` key beside a new
+  `state_as_of_2026-08-23: merged` rather than overwriting it.
+
+  ⚠️ **Acceptance retires two of the three limits and not the third.** The judge transport was
+  ruled admissible and the placement is real, but the QS column is still not answer-model-matched:
+  the board lists this row as answering with DeepSeek V4 Pro beside baselines answering with
+  `Qwen3-VL-8B-Instruct`. Recall@10 remains the like-for-like column, and every document that
+  quotes QS still says so.
+
 * **The ATM-Bench harness that produced the published run is now in this repository, byte for
   byte.** `benchmarks/atm_full_run.py` and `benchmarks/atm_bench.py` are copied from the run's own
   commit without a character changed, hashed in `results/atm/atm_harness_20260823.json`, and pinned
