@@ -563,13 +563,14 @@ def test_a_cached_reranker_failure_does_not_grow_a_traceback_per_request() -> No
     accumulating it.
     """
     import recall_mcp.service as service
+    import recall_mcp.factories as factories
 
     def failing_factory(env=None):
         raise RuntimeError("model artifact checksum mismatch")
 
     service._reset_reranker_cache()
-    original = service._new_reranker
-    service._new_reranker = failing_factory
+    original = factories._new_reranker
+    factories._new_reranker = failing_factory
     depths = []
     try:
         for _ in range(5):
@@ -583,7 +584,7 @@ def test_a_cached_reranker_failure_does_not_grow_a_traceback_per_request() -> No
                     tb = tb.tb_next
                 depths.append(depth)
     finally:
-        service._new_reranker = original
+        factories._new_reranker = original
         service._reset_reranker_cache()
     # The first call raises through the factory and is one frame deeper; every call after it is
     # served from the cache and must be identical to the one before. Growth is the defect: the
@@ -600,6 +601,7 @@ def test_an_interrupt_during_a_cold_build_does_not_poison_the_reranker_forever()
     into a permanent verdict would take a transient event and make it a process-lifetime outage.
     """
     import recall_mcp.service as service
+    import recall_mcp.factories as factories
 
     attempts = []
 
@@ -610,8 +612,8 @@ def test_an_interrupt_during_a_cold_build_does_not_poison_the_reranker_forever()
         return None
 
     service._reset_reranker_cache()
-    original = service._new_reranker
-    service._new_reranker = interrupted_then_fine
+    original = factories._new_reranker
+    factories._new_reranker = interrupted_then_fine
     try:
         with pytest.raises(KeyboardInterrupt):
             service._build_reranker()
@@ -625,7 +627,7 @@ def test_an_interrupt_during_a_cold_build_does_not_poison_the_reranker_forever()
             pytest.fail(f"a transient interrupt poisoned the cache: {exc!r}")
         assert rebuilt is None  # retried, not poisoned
     finally:
-        service._new_reranker = original
+        factories._new_reranker = original
         service._reset_reranker_cache()
     assert len(attempts) == 2
 
@@ -638,6 +640,7 @@ def test_a_failed_reranker_construction_is_not_retried_on_every_request() -> Non
     misconfigured quality server turned each request into a multi-hundred-megabyte disk read.
     """
     import recall_mcp.service as service
+    import recall_mcp.factories as factories
 
     calls = []
 
@@ -646,14 +649,14 @@ def test_a_failed_reranker_construction_is_not_retried_on_every_request() -> Non
         raise RuntimeError("model artifact checksum mismatch")
 
     service._reset_reranker_cache()
-    original = service._new_reranker
-    service._new_reranker = failing_factory
+    original = factories._new_reranker
+    factories._new_reranker = failing_factory
     try:
         for _ in range(3):
             with pytest.raises(RuntimeError, match="checksum mismatch"):
                 service._build_reranker()
     finally:
-        service._new_reranker = original
+        factories._new_reranker = original
         service._reset_reranker_cache()
     assert len(calls) == 1, f"the failed construction was retried {len(calls)} times"
 

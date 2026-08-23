@@ -14,6 +14,10 @@ from benchmarks.agent_ab import (
 )
 from benchmarks.agent_ab.summarize import summarize_pairs
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def test_session_record_round_trip_preserves_missing_measurements() -> None:
     record = SessionRecord(

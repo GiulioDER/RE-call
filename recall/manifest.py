@@ -19,9 +19,10 @@ from recall.extraction import (
     extraction_path_for,
 )
 from recall.lineage import IndexManifestV1, LineageError, ManifestObjectV1
+from recall.errors import RecallError
 
 
-class ManifestVerificationError(RuntimeError):
+class ManifestVerificationError(RuntimeError, RecallError):
     """An object disappeared or no longer matches its immutable manifest entry."""
 
 

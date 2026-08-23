@@ -6,13 +6,27 @@ surfaced closed decision (that isn't a `gap_warning`) tells it to back off inste
 
 Works with **Claude Code** and **Claude Desktop** — both take the same MCP server block.
 
+**On Claude Code, the plugin is the short path** — it wires the server, the session hooks and a
+skill that teaches Claude when to search, and keeps the DSN in your OS keychain:
+
+```
+/plugin marketplace add GiulioDER/RE-call
+/plugin install recall@re-call
+```
+
+You still need a database first (`recall quickstart` makes a throwaway one). See
+[plugin/README.md](../plugin/README.md). Everything below is the manual wiring, for other
+clients and for anyone who wants to see what the plugin writes.
+
 ## 1. Install & run
 
 ```bash
-pip install -e ".[fastembed,mcp]"
+pip install "recall-rag[fastembed,mcp]"
 python -m recall.cli --migration-dsn "$RECALL_MIGRATION_DSN" schema --dim 384 apply
 python -m recall_mcp.server        # stdio server (Claude launches this for you via the config below)
 ```
+
+(Contributors working from a clone use `pip install -e ".[fastembed,mcp]"` instead.)
 
 The migration command is a deployment/provisioning step, not part of server startup. Use a
 schema-owner DSN for it and an unprivileged `RECALL_SERVING_DSN` for the server; see
@@ -146,6 +160,10 @@ generation identity, `stale`, `gap_warning`, `advice`, and hits carrying `verdic
 `confidence`, `superseded_by`, `valid_until`, and `indexed_at`. `calibrated` is true only for a
 certified exact generation binding. When `abstained` is true, say you do not know and do not answer
 from the hits.
+
+For non-English presentation, pass `locale` to `recall_search` or `recall_evidence` after enabling
+the optional translation endpoint; localized text is additive and never replaces canonical
+evidence (configuration in [ENVIRONMENT.md](ENVIRONMENT.md)).
 
 `recall_evidence` uses the same retrieval path, but admits only passages cleared by the trust layer.
 Reasoning tools are additive and opt in; `recall_search` and `recall_evidence` keep the same

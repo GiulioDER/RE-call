@@ -44,6 +44,10 @@ from benchmarks.llm import EmptyCompletion, OpenRouterLLM
 from recall._chat_content import assistant_text
 from recall.truth_extraction._openai_engine import _text_of
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 #: Every shape the reader must handle, and the reading all three clients must agree on.
 #:
 #: ⛔ The last four are the ones the first version of this file missed. `dict text=None` and

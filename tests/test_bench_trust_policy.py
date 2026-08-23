@@ -33,6 +33,10 @@ from pathlib import Path
 
 import pytest
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 #: Repo root, resolved from this file so the scan does not depend on the working directory.
 _BENCHMARKS = Path(__file__).resolve().parent.parent / "benchmarks"
 

@@ -45,18 +45,19 @@ def test_recall_forget_tool_returns_json_matching_forget_result(make_store):
         sources=["f.md"],
     )
     payload = json.loads(out)
-    # `outbox_events_scrubbed` is new, and the expectation is updated deliberately rather than
-    # loosened: the erasure receipt now has to say whether the migration outbox was swept, because
-    # "the outbox was clean" and "the outbox was never consulted" were previously indistinguishable
-    # to the caller on an irreversible path. Still an EXACT comparison, so a further field cannot
-    # appear unnoticed. 0 here is the correct value and is itself the assertion: this store has no
-    # control plane, so there is no outbox to scrub.
+    # `outbox_events_scrubbed` and `staged_files_removed` are deliberate expectation updates
+    # rather than loosenings: the erasure receipt has to name every store that was swept,
+    # because "it was clean" and "it was never consulted" were previously indistinguishable
+    # to the caller on an irreversible path. Still an EXACT comparison, so a further field
+    # cannot appear unnoticed. Both zeros are themselves assertions: this store has no
+    # control plane (no outbox to scrub) and `f.md` was never a staged upload.
     assert payload == {
         "chunks_removed": 1,
         "sources_removed": ["f.md"],
         "sources_not_found": [],
         "message": "Forgot 1 chunk(s) from 1 source(s).",
         "outbox_events_scrubbed": 0,
+        "staged_files_removed": 0,
     }
     assert store.count() == 0
 

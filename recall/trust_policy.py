@@ -37,6 +37,7 @@ from enum import StrEnum
 from typing import Any
 
 from recall.calibration_v2 import CalibrationStatus
+from recall.errors import RecallError
 
 
 class TrustMode(StrEnum):
@@ -189,7 +190,7 @@ class TrustPolicy:
                    TrustMode.STRICT)
 
 
-class TrustRefusal(Exception):
+class TrustRefusal(RecallError):
     """Strict mode refused to answer. Carries identity and a code, never corpus bytes.
 
     The payload is built only from fields the *system* controls: the code, the calibration status,

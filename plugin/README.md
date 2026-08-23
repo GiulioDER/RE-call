@@ -63,25 +63,29 @@ every session searched instead of half, and the governing memo reached the agent
 sessions against 0.319 (p = 0.0006), at roughly double the token overhead. What it did not fix is
 query vocabulary itself, which is retrieval-side work, and the record says so.
 
-## Honest limits
+## What it measurably does, and honest limits
 
-- **It needs PostgreSQL with pgvector.** There is no embedded mode.
-- **`recall quickstart`'s corpus is uncalibrated**, so every result carries
-  `DEGRADED:INDEX_NOT_READY`. That is the store saying its threshold was never fitted to this
-  corpus, not an error. `recall setup` fits a real one.
-- **Adding memory to a good `CLAUDE.md` helps; replacing it does not.** Measured over 40 pairs:
-  additive gave a hazard rate of 0.000 against 0.525 and roughly doubled answer correctness, while
-  substituting memory for the hand-written file did neither.
-  ([record](https://github.com/GiulioDER/RE-call/blob/master/docs/preregistrations/2026-08-21-claude-md-plus-recall-additive.md))
+The measured claim first: **adding this memory to a good `CLAUDE.md` reliably stops a known
+hazard being repeated.** Over 40 pairs, additive memory gave a hazard rate of 0.000 against
+0.525 and roughly doubled answer correctness
+([record](https://github.com/GiulioDER/RE-call/blob/master/docs/preregistrations/2026-08-21-claude-md-plus-recall-additive.md)).
+That is the reason to install it. The limits:
+
+- **Replacing `CLAUDE.md` with memory does not work.** The measured win above is additive only;
+  substituting memory for the hand-written file gave neither effect.
 - **It does not make ordinary work come out better.** A second measurement, on tasks scored by
   running the agent's output against an oracle rather than by a judge, found **no significant
   uplift**: 54 admitted pairs over 8 tasks, delta +0.154 with the cluster interval crossing zero,
   sign test p=1.0. It also costs about 56,000 extra input tokens and 25 seconds per session.
   ([record](https://github.com/GiulioDER/RE-call/blob/master/docs/preregistrations/2026-08-21-task-success-executable-endpoint.md))
+- **It needs PostgreSQL with pgvector.** There is no embedded mode.
+- **`recall quickstart`'s corpus is uncalibrated**, so every result carries
+  `DEGRADED:INDEX_NOT_READY`. That is the store saying its threshold was never fitted to this
+  corpus, not an error. `recall setup` fits a real one.
 
-  Those two results are not in tension, and together they are the honest pitch: **this layer
-  reliably stops a known hazard being repeated, and does not reliably make ordinary work come out
-  better.** Both are published, including the one that did not work.
+Those results are not in tension, and together they are the honest pitch: **this layer reliably
+stops a known hazard being repeated, and does not reliably make ordinary work come out
+better.** Both are published, including the one that did not work.
 
 ## Links
 

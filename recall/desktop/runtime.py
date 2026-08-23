@@ -23,9 +23,10 @@ from recall.desktop.models import (
 )
 from recall.desktop.profiles import read_token
 from recall.desktop.updates import latest_release
+from recall.errors import RecallError
 
 
-class RuntimeErrorBase(RuntimeError):
+class RuntimeErrorBase(RuntimeError, RecallError):
     """Base error surfaced by a runtime adapter."""
 
 

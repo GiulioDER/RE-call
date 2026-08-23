@@ -20,6 +20,10 @@ from benchmarks.agent_ab.stats import (
     wilcoxon_signed_rank,
 )
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 #: Only the Wilcoxon path needs scipy. The McNemar tests below run everywhere, which is
 #: deliberate: the primary endpoint must be verifiable on a runner with no extras.

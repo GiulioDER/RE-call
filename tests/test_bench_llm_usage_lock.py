@@ -29,6 +29,10 @@ import pytest
 
 from benchmarks.llm import CompletionTruncated, OpenRouterLLM
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 class _LockAssertingDict(dict):
     """A dict that refuses to be written to unless `lock` is held."""

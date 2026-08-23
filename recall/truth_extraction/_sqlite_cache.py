@@ -31,6 +31,7 @@ from pathlib import Path
 
 from recall.truth_extraction._serialize import extraction_from_json, extraction_to_json
 from recall.truth_extraction.types import FileExtraction
+from recall.errors import RecallError
 
 #: Bumped when the stored shape changes. Stored per ROW rather than in a `user_version` pragma,
 #: so a store written across a bump degrades entry by entry instead of being condemned whole.
@@ -58,7 +59,7 @@ _COLUMNS = (
 )
 
 
-class ExtractionCacheRefused(Exception):
+class ExtractionCacheRefused(RecallError):
     """The path given to `--cache` cannot serve as a cache. Raised only at open."""
 
 

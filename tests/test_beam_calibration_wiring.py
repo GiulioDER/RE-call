@@ -34,6 +34,10 @@ import pytest
 
 from benchmarks.beam.systems import BeamRecallSystem
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 class _Calibration:
     """Stands in for `recall.calibration.Calibration` — identity is what is asserted on."""

@@ -91,14 +91,24 @@ that cannot authenticate, or worse, one that authenticates into the wrong tenant
 
 Scopes mirror the risk each tool actually carries, rather than collapsing into read/write:
 
+The full, authoritative tool→scope list is in [API.md](API.md); the read row below is abbreviated
+to the ones an operator sizes a token against.
+
 | Scope | Tools | Why separate |
 |---|---|---|
-| `recall:read` | `recall_search`, `recall_evidence`, `recall_stats` | |
-| `recall:write` | `recall_index` | Indexing burns embedding spend — with a paid embedder that is real money. |
+| `recall:read` | `recall_search`, `recall_evidence`, `recall_stats`, and the reasoning/inspection tools (`recall_tenants`, `recall_job_status`, `recall_calibration_status`, `recall_rewrite_plan`, `recall_reasoning_*`) | |
+| `recall:write` | `recall_index`, `recall_ingest`, `recall_calibration_run` | Indexing burns embedding spend — with a paid embedder that is real money. |
 | `recall:forget` | `recall_forget` | Deletion is irreversible. |
+| `recall:admin` | `recall_calibration_publish` | Publication changes the serve/abstain decision for the whole tenant. Deliberately NOT implied by write: a principal that may add memory should not be able to change what every query trusts. |
 
 A principal holding only `recall:read` gets a `PermissionError` from `recall_index`, and the
 denial is logged with the principal name.
+
+From the release that introduces the `recall:admin` scope (the next minor after 0.9.8),
+publishing a calibration requires it; a write token that published before must be re-provisioned
+with the extra scope (static tokens: add it to `scopes` in the token file; OIDC: grant it in the
+identity provider's role). The full tenant inventory from `recall_tenants` is also admin-only now
+— a plain read principal sees only its own tenant.
 
 ## Running it
 

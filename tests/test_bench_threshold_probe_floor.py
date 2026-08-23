@@ -14,6 +14,12 @@ from __future__ import annotations
 from benchmarks.beam.threshold_probe import ABSOLUTE_FLOORS
 from recall.guards import DEFAULT_GAP_THRESHOLD
 
+import pytest
+
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def test_the_baseline_floor_is_the_one_the_library_ships() -> None:
     assert ABSOLUTE_FLOORS[0] == DEFAULT_GAP_THRESHOLD, (

@@ -21,13 +21,14 @@ from recall.store import (
     resolve_supersession_candidates,
 )
 from recall.types import Chunk, ScoredChunk
+from recall.errors import RecallError
 
 if TYPE_CHECKING:
     from recall.calibration_v2 import CalibrationResolution
     from recall.pool import SharedPool
 
 
-class ImmutableGenerationError(RuntimeError):
+class ImmutableGenerationError(RuntimeError, RecallError):
     pass
 
 

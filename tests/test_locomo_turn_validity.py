@@ -22,6 +22,10 @@ from recall.eval.locomo import _turn_document, parse_session_date
 from recall.frontmatter import parse_frontmatter, validity_bounds
 from recall.trust import _verdict
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 TURN = {"speaker": "Caroline", "text": "The Sprint 1 deadline is February 15, 2024."}
 
 

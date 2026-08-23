@@ -719,7 +719,7 @@ def main() -> int:
     # that is discovered hours later. Refuse here instead, in seconds. This mirrors the
     # retriever's condition minimally rather than duplicating its policy, so the two cannot drift
     # on WHETHER to refuse, only on when.
-    if wants_learned and os.environ.get("RECALL_ENV") == "production":
+    if wants_learned and os.environ.get("RECALL_ENV", "").strip().lower() == "production":
         raise RuntimeError(
             "refusing before anything is paid for: the learned sparse leg is not available "
             "under RECALL_ENV=production (see HybridRetriever.__init__ in recall/retriever.py "

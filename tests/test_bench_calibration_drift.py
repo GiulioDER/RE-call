@@ -24,6 +24,10 @@ from benchmarks.calibration_drift import (
 )
 from recall.calibration_v2 import corpus_delta
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def _snapshot(**sources: bytes) -> Snapshot:
     return Snapshot("s", dict(sources))

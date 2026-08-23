@@ -14,6 +14,8 @@ from pathlib import Path
 
 from recall.observability import get_logger
 from typing import Literal, Protocol, TypeVar, runtime_checkable
+from recall.errors import RecallError
+from recall._env import truthy
 
 #: Return type of the callable `retry_with_backoff` wraps — it hands back whatever `fn` returns,
 #: so the retry is transparent to the caller's type rather than widening it to `object`.
@@ -36,7 +38,7 @@ _TRANSIENT_MARKERS = (
 )
 
 
-class NonTransientError(Exception):
+class NonTransientError(RecallError):
     """Marker: ``retry_with_backoff`` must never retry this, whatever the message happens to say.
 
     ``_is_transient`` classifies by heuristic, and its last resort is substring-matching the
@@ -1185,7 +1187,7 @@ REMOTE_MODEL_CODE_OPT_IN = "RECALL_ACCEPT_REMOTE_MODEL_CODE"
 
 
 def _truthy_env(value: str | None) -> bool:
-    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
+    return truthy(value)
 
 
 def _require_research_model_opt_in(source: Mapping[str, str], model: str) -> None:

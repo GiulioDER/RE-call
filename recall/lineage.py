@@ -11,6 +11,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, TypeAlias
 from urllib.parse import urlsplit
+from recall.errors import RecallError
 
 JsonPrimitive: TypeAlias = str | int | float | bool | None
 FrozenJson: TypeAlias = JsonPrimitive | tuple["FrozenJson", ...] | Mapping[str, "FrozenJson"]
@@ -22,7 +23,7 @@ DEFAULT_FTS_CONFIGURATION: Mapping[str, FrozenJson] = MappingProxyType(
 )
 
 
-class LineageError(ValueError):
+class LineageError(ValueError, RecallError):
     """An identity is mutable, malformed, or cannot be canonicalised safely."""
 
 

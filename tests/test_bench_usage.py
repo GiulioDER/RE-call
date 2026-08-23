@@ -7,6 +7,10 @@ import pytest
 
 from benchmarks import usage
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 @pytest.fixture(autouse=True)
 def _clean_counter() -> Any:

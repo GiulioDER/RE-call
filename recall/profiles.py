@@ -5,6 +5,7 @@ import os
 import threading
 from dataclasses import dataclass
 from typing import Literal
+from recall.errors import RecallError
 
 RetrievalProfileName = Literal["legacy", "fast", "quality", "code"]
 
@@ -179,7 +180,7 @@ def resolve_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
     )
 
 
-class RetrievalOverloaded(RuntimeError):
+class RetrievalOverloaded(RuntimeError, RecallError):
     """The process has no safe capacity to begin another retrieval.
 
     ``reason`` is a stable machine-readable slug, not prose:

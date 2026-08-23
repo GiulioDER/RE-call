@@ -35,6 +35,7 @@ from datetime import datetime
 
 from recall.frontmatter import supersedes_key
 from recall.lineage import canonical_sha256
+from recall.errors import RecallError
 
 #: Alone on a line. `.strip()` is used for the comparison, so an indented fence still counts —
 #: the read path errs toward stripping MORE, never less.
@@ -111,7 +112,7 @@ INDENT = "  "
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
-class DerivedBlockError(ValueError):
+class DerivedBlockError(ValueError, RecallError):
     """A derived block is malformed, forbidden, or disagrees with its digest."""
 
 

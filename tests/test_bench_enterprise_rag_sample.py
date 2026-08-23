@@ -20,6 +20,10 @@ from benchmarks.enterprise_rag_sample import (
     strata_of,
 )
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 @dataclass(frozen=True)
 class Q:

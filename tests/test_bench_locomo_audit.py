@@ -27,6 +27,10 @@ from benchmarks.locomo_audit import (
     verified_mapping,
 )
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REAL_LOCOMO = REPO_ROOT / "locomo10.json"
 VENDORED_AUDIT = REPO_ROOT / "benchmarks" / "audit_data" / "locomo_errors.json"

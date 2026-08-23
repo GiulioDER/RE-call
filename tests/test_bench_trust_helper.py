@@ -13,6 +13,10 @@ import pytest
 
 from recall.trust_policy import TrustMode, TrustPolicy
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 class _FakeEmbedder:
     """Minimal embedder: `embedding_profile_id` falls through to `name` when there is no profile."""

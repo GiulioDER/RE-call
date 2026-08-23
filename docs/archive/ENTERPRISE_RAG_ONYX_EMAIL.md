@@ -6,7 +6,8 @@ homogeneous judge configuration.
 
 ## Recipient
 
-`joachim@onyx.app`
+The benchmark maintainer's address (removed from the tree; a personal email does not belong in a
+public repository).
 
 ## Subject
 

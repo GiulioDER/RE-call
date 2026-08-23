@@ -21,6 +21,7 @@ from psycopg.types.json import Jsonb
 from recall.calibration import Calibration, from_samples, separability
 from recall.embeddings import Embedder
 from recall.lineage import PipelineIdentity, canonical_json, canonical_sha256
+from recall.errors import RecallError
 
 ARTIFACT_VERSION = 2
 
@@ -36,7 +37,7 @@ class CalibrationStatus(StrEnum):
     LEGACY_UNBOUND = "legacy_unbound"
 
 
-class CalibrationError(RuntimeError):
+class CalibrationError(RuntimeError, RecallError):
     pass
 
 

@@ -16,6 +16,10 @@ from benchmarks.pipeline import (
     run_question,
 )
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def test_is_abstention_exact_token() -> None:
     assert is_abstention(NO_ANSWER) is True

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass
+import time
 from datetime import datetime
 from enum import Enum
 import math
@@ -49,6 +50,7 @@ from recall.provider_metadata import ProviderMetadata
 from recall.reasoning_proposals import InferenceProposal, ProposalProtocolReport, ProviderFailure
 from recall.types import TrustedResult
 from recall.trust import is_trusted
+from recall.errors import RecallError
 
 REASONING_API_VERSION = 1
 
@@ -61,7 +63,7 @@ ReasoningPolicyName = Literal[
 ReasoningOutcome = Literal["answered", "abstained", "needs_clarification", "needs_review"]
 
 
-class ReasoningValidationError(ValueError):
+class ReasoningValidationError(ValueError, RecallError):
     """The reasoning request crossed a trust, tenant, generation, or provider boundary."""
 
 
@@ -221,7 +223,9 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
     its own retrieval, graph, proposal, and answer implementations while sharing the same trust
     and citation checks.
     """
-    started = datetime.now().timestamp()
+    # Monotonic, not wall-clock: an NTP step or DST shift between the two readings used
+    # to produce a negative interval that the max() clamp recorded as a silent zero.
+    started = time.perf_counter()
     if not request.query.strip():
         empty_bundle = _empty_bundle(request)
         response = _response(
@@ -1074,7 +1078,7 @@ def _response(
         trust_state=bundle.trust_state,
         refusal_reason=refusal_reason,
         diagnostics=ReasoningDiagnostics(
-            latency_ms=max(0, int((datetime.now().timestamp() - started) * 1000)),
+            latency_ms=max(0, int((time.perf_counter() - started) * 1000)),
             budget=request.budget,
             budget_used=plan.budget_used if plan is not None else None,
             retrieval_stage_ms=bundle_stage_ms(retrieval),

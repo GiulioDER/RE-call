@@ -26,9 +26,11 @@ from recall.embeddings import embedding_profile_id
 from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
+from recall._env import env_is_production, truthy
 from recall.store import DEFAULT_TENANT, PgVectorStore, redacted_dsn
 from recall.trust_policy import TrustPolicy
 from recall_mcp.auth import (
+    SCOPE_ADMIN,
     SCOPE_FORGET,
     SCOPE_READ,
     SCOPE_WRITE,
@@ -38,7 +40,12 @@ from recall_mcp.auth import (
     authorize,
     token_registry_from_env,
 )
-from recall_mcp.limits import limiter_from_env
+from recall_mcp.limits import (
+    FailedAuthThrottle,
+    INDEX_BYTES_BUDGET,
+    failed_auth_throttle_from_env,
+    limiter_from_env,
+)
 from recall_mcp.oidc import (
     ENV_AUDIENCE,
     ENV_ISSUER,
@@ -56,6 +63,7 @@ from recall_mcp.service import (
     generation_ingest,
     index_memory,
     calibration_status,
+    JobLedger,
     job_status,
     make_embedder,
     make_profile_embedder,
@@ -78,12 +86,22 @@ from recall_mcp.translation import (
     render_evidence_response,
     render_search_response,
 )
-from recall.desktop.uploads import stage_uploads
+from recall.desktop.uploads import discard_staging, stage_uploads
 
 #: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
 #: is metered the moment it declares a scope — there is no separate table to remember to update,
 #: and an unmetered tool would be one that also skipped authorisation.
-_SCOPE_BUDGETS = {SCOPE_READ: "read", SCOPE_WRITE: "write", SCOPE_FORGET: "forget"}
+_SCOPE_BUDGETS = {
+    SCOPE_READ: "read",
+    SCOPE_WRITE: "write",
+    SCOPE_FORGET: "forget",
+    SCOPE_ADMIN: "admin",
+}
+
+#: `_meta` key under which a tool advertises a required scope the annotation hints cannot
+#: express. Published to clients in tools/list, so a downgrade has to lie publicly; the
+#: authorisation test imports this constant rather than restating the literal.
+_META_REQUIRED_SCOPE = "recall/requiredScope"
 
 DEFAULT_DSN = os.environ.get(
     "RECALL_SERVING_DSN",
@@ -207,12 +225,20 @@ class RecallTokenVerifier:
     with a caller whose scope string is parsed as a tenant name.
     """
 
-    def __init__(self, registry: TokenRegistry) -> None:
+    def __init__(self, registry: TokenRegistry, throttle: FailedAuthThrottle | None = None) -> None:
         self._registry = registry
+        self._throttle = throttle if throttle is not None else failed_auth_throttle_from_env()
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        # No pre-verification gate here, deliberately. Verifying a static token is a
+        # constant-cost digest lookup, so there is no expensive work for a throttle to
+        # protect — and gating BEFORE the lookup would refuse VALID tokens whenever a
+        # failure storm had drained the shared bucket, since `allow()` cannot tell a valid
+        # token from garbage. The throttle exists to cap the OIDC path's JWKS/RSA work; on
+        # this cheap path a failed lookup is recorded (so the signal exists) but never gates.
         principal = self._registry.verify(token)
         if principal is None:
+            self._throttle.record_failure()
             # No token material in the log line — only the fact of a rejection. A logged prefix
             # is enough to shrink a brute-force search space, and logs travel further than
             # anyone expects.
@@ -241,10 +267,22 @@ class OidcTokenVerifier:
     "somebody is forging tokens" call for opposite responses and both arrive here as a refusal.
     """
 
-    def __init__(self, validator: OidcValidator) -> None:
+    def __init__(self, validator: OidcValidator, throttle: FailedAuthThrottle | None = None) -> None:
         self._validator = validator
+        self._throttle = throttle if throttle is not None else failed_auth_throttle_from_env()
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        if not self._throttle.allow():
+            # Gated here, unlike the static path, because validation is EXPENSIVE — a JWKS
+            # fetch and an RSA verify — and capping that work is what stops a forgery wave
+            # from driving the CPU and the provider round-trips. The cost of the gate is that
+            # during a sustained storm a VALID OIDC token is refused too: `allow()` cannot
+            # tell it from garbage without doing the very work the gate defers. That is a
+            # deliberate availability-for-integrity trade on this path, not a property the
+            # throttle can avoid; the per-source ASGI middleware named in FailedAuthThrottle
+            # is the way to narrow the blast radius, and it is not built yet.
+            _log.warning("refusing unverified tokens: failed-authentication throttle is closed")
+            return None
         try:
             # OFF THE LOOP (PERF-001). `validate` is synchronous, and on a cache miss it makes
             # two blocking HTTPS calls — discovery, then JWKS — each bounded by a 10s timeout.
@@ -264,6 +302,10 @@ class OidcTokenVerifier:
             )
             return None
         except TokenRejected as exc:
+            # Debited here and in the validator_error branch, NOT for an IdP outage above: an
+            # unreachable provider is our failure, and letting it close the gate would slow
+            # every rejection during exactly the window an operator is debugging.
+            self._throttle.record_failure()
             # `exc.reason` is a stable slug and never contains token material; the exception's
             # detail is deliberately not logged, and neither is the token.
             _log.warning("rejected a bearer token (reason=%s)", exc.reason)
@@ -273,6 +315,7 @@ class OidcTokenVerifier:
             # resolves to a TokenRejected, but this is the boundary where a breach of it turns a
             # 401 into a 500: the SDK does not wrap `verify_token`. A failure to authenticate
             # must fail CLOSED as a refusal, never as a stack trace.
+            self._throttle.record_failure()
             _log.warning("rejected a bearer token (reason=validator_error)", exc_info=True)
             return None
         return AccessToken(
@@ -626,7 +669,7 @@ def _make_lifespan(
         registry: StoreRegistry | None = None
         try:
             embedder = make_embedder(EMBEDDER_NAME)
-            generation_mode = os.environ.get("RECALL_ENV", "development").lower() == "production"
+            generation_mode = env_is_production()
             # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
             # database the extension deliberately does not exist yet; reporting "migrations
             # pending" is more useful than leaking the driver's missing-type error. This path is
@@ -639,12 +682,7 @@ def _make_lifespan(
                 raise SchemaTooOld(
                     f"database migrations pending: {pending}; run `recall schema apply`"
                 )
-            enterprise = os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE", "").lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
+            enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
             if enterprise and token_registry is None:
                 raise RuntimeError("enterprise control plane requires authenticated tenant routing")
             if token_registry is None:
@@ -826,84 +864,32 @@ def ingest_into_serving_store(
     )
 
 
-def build_server() -> MCPServer:
-    """Construct the recall_mcp MCP server with its tools registered."""
-    verifier, auth_settings, token_registry = build_auth()
-    mcp = MCPServer(
-        "recall_mcp",
-        lifespan=_make_lifespan(token_registry),
-        token_verifier=verifier,
-        auth=auth_settings,
-    )
 
-    def _current_tenant(state: dict) -> str | None:
-        """The authenticated caller's tenant, or None when running unauthenticated (stdio).
+class _Require(Protocol):
+    """The authorise-and-debit choke point `build_server` constructs per process."""
 
-        Read from the access token rather than threaded down from `_require`, so it cannot go
-        stale or be passed the wrong value by a future caller.
-        """
-        if state.get("stores") is None:
-            return None
-        token = get_access_token()
-        if token is None:  # pragma: no cover - `_require` has already rejected this
-            return None
-        return (token.claims or {}).get("tenant")
+    def __call__(
+        self, scope: str, ctx: Context[dict, object], requested_tenant: str | None = None
+    ) -> PgVectorStore: ...
 
-    def _state(ctx: Context[dict, object]) -> dict:
-        state = ctx.request_context.lifespan_context
-        if not isinstance(state, dict) or "embedder" not in state:
-            raise RuntimeError(
-                "recall_mcp lifespan context is not initialized — tools must be invoked within "
-                "the running server (store/embedder are opened in the lifespan)."
-            )
-        return state
 
-    def _require(
-        scope: str,
-        ctx: Context[dict, object],
-        requested_tenant: str | None = None,
-    ) -> PgVectorStore:
-        """Authorise this call and return the store for the caller's OWN tenant.
+@dataclass(frozen=True)
+class _ToolDeps:
+    """What a tool body needs from `build_server`'s closures.
 
-        Every tool body goes through here. The store it hands back is the only one that tool can
-        reach, so a missing scope check cannot leak data across tenants — at worst it lets a
-        principal do the wrong thing inside its own namespace.
+    The three callables close over `build_auth()`'s results, so they cannot be module
+    globals; passing them explicitly is what lets each tool family register from a
+    module-level function while the bodies stay byte-identical.
+    """
 
-        This is also where the per-tenant call budget is debited, for the same reason: one choke
-        point that a new tool cannot forget to call, because it cannot get a store without it.
-        """
-        state = _state(ctx)
-        registry: StoreRegistry | None = state.get("stores")
-        if registry is None:
-            # Unauthenticated stdio: one caller, one tenant, a private pipe. There is no principal
-            # to charge and no one to protect the local user from but themselves, so the budget
-            # does not apply — matching how auth itself is scoped.
-            store: PgVectorStore = state["store"]
-            return store
+    require: _Require
+    state: Callable[[Context[dict, object]], dict]
+    current_tenant: Callable[[dict], str | None]
 
-        token = get_access_token()
-        if token is None:
-            # The SDK's bearer middleware rejects unauthenticated HTTP requests before a tool
-            # runs, so this is unreachable through the normal path. It stays because the
-            # alternative — falling through to some default store — would turn any future gap in
-            # that middleware into a silent full-corpus read.
-            raise PermissionError("this server requires authentication")
-        try:
-            tenant = authorize(token.scopes, token.claims, scope)
-        except PermissionError:
-            principal = (token.claims or {}).get("principal", token.client_id)
-            _log.warning("principal %r denied for scope %s", principal, scope)
-            raise
-        if requested_tenant is not None and requested_tenant != tenant:
-            raise PermissionError(
-                f"the authenticated token is scoped to tenant {tenant!r}, not {requested_tenant!r}"
-            )
-        # After authorisation, so an unauthorised caller cannot burn the tenant's budget by
-        # hammering a scope it does not hold.
-        limiter = state.get("limiter")
-        if limiter is not None:
-            limiter.check(tenant, _SCOPE_BUDGETS[scope])
-        return registry.get(tenant)
+
+def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+    _require = deps.require
+    _state = deps.state
 
     @mcp.tool(
         name="recall_search",
@@ -1047,6 +1033,11 @@ def build_server() -> MCPServer:
                     result, locale, state.get("translation_provider") or provider_from_env()
                 )
             )
+
+
+def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+    _require = deps.require
+    _state = deps.state
 
     @mcp.tool(
         name="recall_reasoning_query",
@@ -1200,6 +1191,12 @@ def build_server() -> MCPServer:
                 )
             )
 
+
+def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+    _require = deps.require
+    _state = deps.state
+    _current_tenant = deps.current_tenant
+
     @mcp.tool(
         name="recall_index",
         annotations=ToolAnnotations(
@@ -1260,7 +1257,7 @@ def build_server() -> MCPServer:
             actually costs money, and it runs pre-flight — a refusal here has spent nothing.
             """
             if limiter is not None and tenant is not None:
-                limiter.check(tenant, "index_bytes", float(total_bytes))
+                limiter.check(tenant, INDEX_BYTES_BUDGET, float(total_bytes))
 
         with METRICS.timer("recall_tool_latency_ms", tool="index"):
             return await _to_thread(
@@ -1286,15 +1283,23 @@ def build_server() -> MCPServer:
         ),
     )
     async def recall_tenants(ctx: Context[dict, object]) -> str:
-        """Return the tenant scopes provisioned for this MCP deployment."""
+        """Return the tenant scopes visible to this caller.
+
+        An authenticated principal sees its own tenant; the full provisioned inventory is
+        admin-only, because in a multi-tenant deployment tenant ids are often customer
+        names and one tenant reading the customer list is cross-tenant disclosure.
+        """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
         registry: StoreRegistry | None = state.get("stores")
-        tenants = (
-            sorted(getattr(registry, "allowed_tenants", {store.tenant}))
-            if registry is not None
-            else [store.tenant]
-        )
+        if registry is None:
+            tenants: list[str] = [store.tenant]
+        else:
+            token = get_access_token()
+            if token is not None and SCOPE_ADMIN in (token.scopes or ()):
+                tenants = sorted(getattr(registry, "allowed_tenants", {store.tenant}))
+            else:
+                tenants = [store.tenant]
         return json.dumps(tenant_scopes(store, tenants), indent=2)
 
     @mcp.tool(
@@ -1318,14 +1323,46 @@ def build_server() -> MCPServer:
         store = _require(SCOPE_WRITE, ctx, tenant)
         if category not in {"documents", "code", "memory"}:
             raise ValueError("category must be documents, code, or memory")
-        job_id, root = stage_uploads(store.tenant, files)
-        with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
-            result = await _to_thread(
-                lambda: ingest_into_serving_store(state, store, str(root), category)
-            )
+        job_id, root, total_bytes = stage_uploads(store.tenant, files)
+        # Same quota `recall_index` debits, for the same reason and at the same moment:
+        # after per-request caps, before any embedding spend. Without this debit an upload
+        # loop under the 50 MiB per-request cap ingests unmetered.
+        limiter = state.get("limiter")
+        if limiter is not None:
+            try:
+                limiter.check(store.tenant, INDEX_BYTES_BUDGET, float(total_bytes))
+            except BaseException:
+                discard_staging(root)
+                raise
+        try:
+            with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
+                result = await _to_thread(
+                    lambda: ingest_into_serving_store(state, store, str(root), category)
+                )
+        except Exception:
+            # Legacy mode ONLY discards here: the staged tree fed an ingest that failed, and
+            # partially indexed rows become prunable, consistent with "the upload failed".
+            #
+            # Generation mode does NOT discard. The staged files are pinned by the manifest,
+            # and a promote() that commits its transaction and then raises on the way out (a
+            # commit-ack loss) leaves an ACTIVE, servable generation whose manifest still
+            # points at this tree — `_reclaim_failed` cannot reclaim an ACTIVE generation, so
+            # deleting the tree here would erase the source of a generation the tenant is now
+            # serving, and the next upload's carry-forward would drop it permanently. Leaving
+            # a rare failed-generation staging tree behind is a small, forget-cleanable leak;
+            # deleting a servable generation's source is not. `except Exception`, not
+            # `BaseException`: a cancellation is deferred by anyio's shielded worker thread,
+            # so it cannot land mid-promote here.
+            if not state.get("generation_mode"):
+                discard_staging(root)
+            raise
         payload = json.loads(result.model_dump_json())
         payload.update({"job_id": job_id, "state": "completed", "category": category})
-        state.setdefault("desktop_jobs", {})[job_id] = payload
+        ledger = state.get("desktop_jobs")
+        if not isinstance(ledger, JobLedger):
+            ledger = JobLedger()
+            state["desktop_jobs"] = ledger
+        ledger.put(job_id, store.tenant, payload)
         return json.dumps(payload, indent=2)
 
     @mcp.tool(
@@ -1344,6 +1381,11 @@ def build_server() -> MCPServer:
         store = _require(SCOPE_READ, ctx)
         result = job_status(store, job_id, state.get("desktop_jobs", {}))
         return json.dumps(result, indent=2)
+
+
+def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+    _require = deps.require
+    _state = deps.state
 
     @mcp.tool(
         name="recall_calibration_status",
@@ -1396,16 +1438,35 @@ def build_server() -> MCPServer:
             idempotent_hint=False,
             open_world_hint=False,
         ),
+        # Publishing flips what the whole tenant serves — the blast radius the admin scope
+        # was written for (auth.py SCOPE_ADMIN). The annotation hints cannot express an
+        # escalation above write, so it travels in _meta where clients can read it.
+        meta={_META_REQUIRED_SCOPE: SCOPE_ADMIN},
     )
     async def recall_calibration_publish(
         calibration_id: str,
         ctx: Context[dict, object],
         tenant: str | None = None,
     ) -> str:
-        """Publish one certified calibration artifact for the caller's tenant."""
-        store = _require(SCOPE_WRITE, ctx, tenant)
+        """Publish one certified calibration artifact for the caller's tenant.
+
+        Requires the `recall:admin` scope: publishing an ARBITRARY existing calibration
+        changes the serve/abstain decision for every query the tenant runs, which is
+        deliberately not implied by write. Note the invariant this enforces is exactly that
+        and no wider: a write-scoped `recall_ingest` in generation mode can still
+        certify-and-activate the calibration for ITS OWN upload (via `_certify_upload`), so
+        write scope is not "can never change what the tenant serves" — it is "cannot publish
+        a calibration the caller did not just produce".
+        """
+        store = _require(SCOPE_ADMIN, ctx, tenant)
         result = await _to_thread(lambda: publish_calibration(store, calibration_id))
         return json.dumps(result, indent=2, default=str)
+
+
+def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+    _require = deps.require
+    _state = deps.state
+    _current_tenant = deps.current_tenant
 
     @mcp.tool(
         name="recall_forget",
@@ -1467,6 +1528,92 @@ def build_server() -> MCPServer:
         store = _require(SCOPE_READ, ctx)
         return await _to_thread(lambda: memory_stats(store).model_dump_json(indent=2))
 
+
+def build_server() -> MCPServer:
+    """Construct the recall_mcp MCP server with its tools registered."""
+    verifier, auth_settings, token_registry = build_auth()
+    mcp = MCPServer(
+        "recall_mcp",
+        lifespan=_make_lifespan(token_registry),
+        token_verifier=verifier,
+        auth=auth_settings,
+    )
+
+    def _current_tenant(state: dict) -> str | None:
+        """The authenticated caller's tenant, or None when running unauthenticated (stdio).
+
+        Read from the access token rather than threaded down from `_require`, so it cannot go
+        stale or be passed the wrong value by a future caller.
+        """
+        if state.get("stores") is None:
+            return None
+        token = get_access_token()
+        if token is None:  # pragma: no cover - `_require` has already rejected this
+            return None
+        return (token.claims or {}).get("tenant")
+
+    def _state(ctx: Context[dict, object]) -> dict:
+        state = ctx.request_context.lifespan_context
+        if not isinstance(state, dict) or "embedder" not in state:
+            raise RuntimeError(
+                "recall_mcp lifespan context is not initialized — tools must be invoked within "
+                "the running server (store/embedder are opened in the lifespan)."
+            )
+        return state
+
+    def _require(
+        scope: str,
+        ctx: Context[dict, object],
+        requested_tenant: str | None = None,
+    ) -> PgVectorStore:
+        """Authorise this call and return the store for the caller's OWN tenant.
+
+        Every tool body goes through here. The store it hands back is the only one that tool can
+        reach, so a missing scope check cannot leak data across tenants — at worst it lets a
+        principal do the wrong thing inside its own namespace.
+
+        This is also where the per-tenant call budget is debited, for the same reason: one choke
+        point that a new tool cannot forget to call, because it cannot get a store without it.
+        """
+        state = _state(ctx)
+        registry: StoreRegistry | None = state.get("stores")
+        if registry is None:
+            # Unauthenticated stdio: one caller, one tenant, a private pipe. There is no principal
+            # to charge and no one to protect the local user from but themselves, so the budget
+            # does not apply — matching how auth itself is scoped.
+            store: PgVectorStore = state["store"]
+            return store
+
+        token = get_access_token()
+        if token is None:
+            # The SDK's bearer middleware rejects unauthenticated HTTP requests before a tool
+            # runs, so this is unreachable through the normal path. It stays because the
+            # alternative — falling through to some default store — would turn any future gap in
+            # that middleware into a silent full-corpus read.
+            raise PermissionError("this server requires authentication")
+        try:
+            tenant = authorize(token.scopes, token.claims, scope)
+        except PermissionError:
+            principal = (token.claims or {}).get("principal", token.client_id)
+            _log.warning("principal %r denied for scope %s", principal, scope)
+            raise
+        if requested_tenant is not None and requested_tenant != tenant:
+            raise PermissionError(
+                f"the authenticated token is scoped to tenant {tenant!r}, not {requested_tenant!r}"
+            )
+        # After authorisation, so an unauthorised caller cannot burn the tenant's budget by
+        # hammering a scope it does not hold.
+        limiter = state.get("limiter")
+        if limiter is not None:
+            limiter.check(tenant, _SCOPE_BUDGETS[scope])
+        return registry.get(tenant)
+
+    deps = _ToolDeps(require=_require, state=_state, current_tenant=_current_tenant)
+    _register_search_tools(mcp, deps)
+    _register_reasoning_tools(mcp, deps)
+    _register_ingest_tools(mcp, deps)
+    _register_calibration_tools(mcp, deps)
+    _register_memory_admin_tools(mcp, deps)
     return mcp
 
 

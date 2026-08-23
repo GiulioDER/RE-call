@@ -6,7 +6,7 @@ reasoning arm, which is being built separately.
 ## Why
 
 The reasoning layer has no model configuration of any kind. `grep -rn "RECALL_REASONING" .` returns
-nothing, `ReasoningProviderPorts.answer_provider` is never passed by `recall_mcp/service.py:1739`,
+nothing, `ReasoningProviderPorts.answer_provider` is never passed by `recall_mcp/service.py:1740`,
 and every shipped provider implementation is deterministic. A user who wants a model backed
 reasoning arm today has no supported way to say which model, which provider, or which key.
 

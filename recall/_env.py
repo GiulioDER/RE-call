@@ -105,3 +105,31 @@ def load_dotenv(path: str | Path = ".env") -> None:
         pending[key] = val
     for key, val in pending.items():
         os.environ[key] = val
+
+
+def truthy(raw: str | None) -> bool:
+    """The one affirmative-boolean vocabulary for environment values.
+
+    `{"1", "true", "yes", "on"}` after strip+lower, and nothing else. This literal set was
+    re-implemented at least eleven times across the product packages; sites with the plain
+    semantics delegate here so the vocabulary cannot fork. Sites that deliberately differ —
+    `recall.store._env_opt_out` (a security opt-out that must not read a typo as consent),
+    the strict-raising readers in `recall.entailment` and `recall.truth_extraction`, and
+    `recall_mcp.factories`' two-sided TRUE/FALSE pair — keep their own definitions on
+    purpose and say so in place.
+    """
+    return raw is not None and raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_is_production(env: "dict[str, str] | None" = None) -> bool:
+    """True when RECALL_ENV names production, normalised with strip+lower.
+
+    The `.strip()` is the point: production-gate sites were split between `.lower()` and
+    `.strip().lower()`, so a padded value (a trailing space from a systemd EnvironmentFile or
+    a Windows `set`) read as production at some gates and development at others — one
+    deployment across two policy sets. One helper keeps every gate reading the same value.
+    """
+    import os
+
+    source = env if env is not None else os.environ
+    return source.get("RECALL_ENV", "development").strip().lower() == "production"

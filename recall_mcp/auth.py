@@ -54,6 +54,7 @@ from pathlib import Path
 
 from recall.observability import get_logger
 from recall.store import DEFAULT_TENANT
+from recall.errors import RecallError
 
 _log = get_logger("mcp.auth")
 
@@ -85,7 +86,7 @@ _ENV_TOKENS_FILE = "RECALL_AUTH_TOKENS_FILE"
 ENV_TOKENS_FILE = _ENV_TOKENS_FILE
 
 
-class AuthConfigError(RuntimeError):
+class AuthConfigError(RuntimeError, RecallError):
     """Raised when the auth configuration is absent, malformed, or unsafe.
 
     Always fatal at startup and never downgraded to a warning: every path that raises this would
@@ -252,6 +253,15 @@ def _digest_for_entry(entry: dict, *, who: str) -> str:
             int(digest, 16)
         except ValueError as exc:
             raise AuthConfigError(f"{who}: 'token_sha256' is not hex") from exc
+        # One line per digest entry, so an operator auditing the boot log sees exactly which
+        # principals carry a length no one can verify.
+        _log.warning(
+            "%s: provisioned by token_sha256 digest — the %d-char minimum length cannot be "
+            "verified against a hash; confirm the plaintext came from "
+            "secrets.token_urlsafe(32) or better",
+            who,
+            MIN_TOKEN_LENGTH,
+        )
         return digest.lower()
     if not isinstance(plaintext, str):
         raise AuthConfigError(f"{who}: 'token' must be a string")

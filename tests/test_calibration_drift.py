@@ -449,9 +449,9 @@ def _cli_embedder(monkeypatch):
     `evaluate_drift` behind a mutually-exclusive group that refuses both arguments is a feature
     nobody can run.
     """
-    from recall import cli
+    from recall.cli_commands import calibration_cmd
 
-    monkeypatch.setattr(cli, "_make_embedder", lambda _name: _CarryEmbedder())
+    monkeypatch.setattr(calibration_cmd, "_make_embedder", lambda _name: _CarryEmbedder())
     monkeypatch.setenv("RECALL_TRUST_MODE", "development")
 
 

@@ -60,6 +60,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from recall.observability import get_logger
+from recall.errors import RecallError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import psycopg
@@ -78,7 +79,7 @@ DEFAULT_MIN_POOL_SIZE = 2
 DEFAULT_MAX_POOL_SIZE = 20
 
 
-class TenantContextLeak(RuntimeError):
+class TenantContextLeak(RuntimeError, RecallError):
     """A pooled connection was about to be reused with a tenant still set on it.
 
     This should be unreachable: `SET LOCAL` is discarded by the database at transaction end. It

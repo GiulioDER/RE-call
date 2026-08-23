@@ -8,8 +8,63 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Security
+
+* **Right-to-erasure now reaches the learned-sparse sidecar.** `delete_sources`,
+  `delete_sources_across`, `replace_sources` and `generations.forget` scrub
+  `recall_sparse_v1` in the same transaction as the chunk delete (`DELETE ... RETURNING id`
+  feeds the scrub, so the ids come from the delete itself). Before, a forgotten chunk's
+  SPLADE term weights — partially reconstructable content over a 30,522-term vocabulary —
+  survived every erasure path except `drop_table`. The `RECALL_ENV=production` refusal on
+  the splade backend stays until an orphan sweep exists for corpora encoded before this
+  fix, and that gate now also matches `Production` and ` production ` (the bare compare
+  meant a capital letter silently disabled it).
+* **Forgetting a source now also unlinks its staged upload file.** `recall_forget` erased
+  the DB rows and left the original text under `RECALL_INDEX_ROOT/uploads/`, where the next
+  index run would re-ingest it. Cleanup is best-effort after the committed delete, reported
+  in the result (`staged_files_removed`, -1 on failure with a warning in the message), and
+  hard-confined to the uploads tree: a source indexed from the user's own directory is
+  never deleted.
+* **BREAKING: `recall_calibration_publish` now requires the `recall:admin` scope.** Publication
+  changes the serve/abstain decision for every query a tenant runs — the blast radius the admin
+  scope was defined for, and until now no tool enforced it: any write token could publish. An
+  HTTP deployment whose write token publishes calibrations must add `"recall:admin"` to that
+  principal's `scopes` (static token file) or grant it in the IdP role (OIDC). Stdio and the
+  desktop-local runtime are unaffected. `recall_calibration_run` stays on write: it produces a
+  draft and changes nothing served. The requirement is advertised to clients in the tool's
+  `_meta` (`recall/requiredScope`), and admin calls draw on their own `admin` call budget
+  (`RECALL_RATE_ADMIN_PER_MIN`, default 10/min).
+* **`recall_ingest` now debits the same per-tenant `index_bytes` quota as `recall_index`.**
+  Before, only the 50 MiB per-request cap and the write call budget bounded uploads, so a loop
+  under the per-request cap could ingest roughly 300× the intended hourly embedding spend
+  unmetered. The debit lands after staging and before any embedding, so a refusal costs nothing;
+  a refused or failed ingest also removes its staged files instead of leaving them inside the
+  index root for a later index run to pick up.
+* **`recall_tenants` no longer hands the full tenant inventory to every read token.** In a
+  multi-tenant deployment tenant ids are often customer names. An authenticated principal now
+  sees its own tenant; the full provisioned list requires `recall:admin`.
+* **`recall_job_status` is tenant-scoped and the job ledger is bounded.** A foreign tenant
+  probing a job id gets the same `unknown` shape as a nonexistent one, and completed jobs are
+  evicted by count and age instead of accumulating for the life of the process.
+* **Failed bearer-token authentication is throttled before any hashing or JWKS work.**
+  A process-global failure budget (`RECALL_RATE_AUTH_FAILURES_PER_MIN`, default 60/min, `off`
+  supported) closes the gate against a brute-force or forgery storm. Valid tokens never touch
+  it, and an identity-provider outage deliberately does not debit it. Token-file entries
+  provisioned by `token_sha256` digest are now named in the boot log, since their length can
+  never be verified against the 32-character floor.
+* **`host.docker.internal` no longer counts as a local host for the default-credentials guard.**
+  From inside a container it reaches the container HOST, which can be a shared machine. The
+  compose quickstart keeps working: the guard warns instead of refusing for exactly this host.
+* **Duplicate file names in one `recall_ingest` upload are refused** instead of last-writer-wins,
+  and an oversized entry is refused from its encoded length before being decoded into memory.
+
 ### Added
 
+* **`recall.errors.RecallError` is the common base of every deliberate exception.** Sixty-five
+  exception classes existed with no shared root, so a consumer could not write
+  `except RecallError` and had to enumerate families or catch built-ins. Every family keeps its
+  historical `RuntimeError`/`ValueError` base first, so existing handlers keep working, and a
+  structural test walks both packages so a new family cannot silently opt out.
 * **The ATM-Bench harness that produced the published run is now in this repository, byte for
   byte.** `benchmarks/atm_full_run.py` and `benchmarks/atm_bench.py` are copied from the run's own
   commit without a character changed, hashed in `results/atm/atm_harness_20260823.json`, and pinned
@@ -23,6 +78,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   ⚠️ **This publishes the harness, not the run.** `recall/` has moved since, the answer model is a
   moving alias, and the dataset stays outside this tree, so a re-execution reproduces the method
   rather than the last decimal. `docs/ATM_BENCH.md` section 6 states all three.
+
+### Changed
+
+* **The wheel no longer ships the one-off research drivers.** `recall/eval` keeps its
+  load-bearing slice (the wizard's calibration engine, the documented `labelled` CLI, query
+  generation, and the sample corpus and labels the README points the wizard at) and drops the
+  session scripts, benchmark drivers and result fixtures that never worked from a wheel;
+  `recall/wizard/llm.py` (a preregistered experiment arm imported by nothing but its test)
+  stays repo-only until that experiment resolves. Working from a clone is unaffected.
+* **Benchmark-harness tests carry a `benchharness` marker** (1,011 of 6,591), so a
+  product-only run is `pytest -m 'not benchharness'`. CI behavior is unchanged.
 
 * **`recall quickstart` goes from a fresh `pip install` to three answered queries in one command,
   database included.** It starts a throwaway pgvector container on a free port, applies the schema,
@@ -429,7 +495,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   refused before any engine call, a corrupt row is a miss and is re-paid, and a failed write is
   counted and reported rather than discarding the files already extracted. `--cache` was briefly
   a boolean because an earlier version accepted a PATH and ignored it; the flag came back when
-  the persistence did. See [docs/EXTRACTION_CACHE_DESIGN.md](docs/EXTRACTION_CACHE_DESIGN.md).
+  the persistence did. See [docs/archive/EXTRACTION_CACHE_DESIGN.md](docs/archive/EXTRACTION_CACHE_DESIGN.md).
 
 ### Fixed
 
@@ -469,7 +535,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   "switched off" and "never configured" stay distinguishable in `.env`. The shipped reasoning
   tools do not read these variables yet; this writes the settings for a port the reasoning arm
   will use once it is built. See
-  [docs/REASONING_MODEL_SELECTION_DESIGN.md](docs/REASONING_MODEL_SELECTION_DESIGN.md).
+  [docs/archive/REASONING_MODEL_SELECTION_DESIGN.md](docs/archive/REASONING_MODEL_SELECTION_DESIGN.md).
 
 ### Fixed
 

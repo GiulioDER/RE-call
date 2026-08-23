@@ -182,6 +182,32 @@ def test_refuses_without_a_changelog_section(sandbox) -> None:
         release.check_preconditions("999.0.0", allow_dirty=True)
 
 
+def test_refuses_a_breaking_change_shipped_as_a_patch_bump(sandbox) -> None:
+    """A BREAKING note under [Unreleased] plus a patch bump is refused: pre-1.0 the break goes
+    in the MINOR, or the registry pin ships it to clients disguised as a patch."""
+    current = release.current_version()  # 0.9.8 from the copied pyproject
+    major, minor, patch = (int(p) for p in current.split("."))
+    patch_bump = f"{major}.{minor}.{patch + 1}"
+    (sandbox / "CHANGELOG.md").write_text(
+        f"# Changelog\n\n## [Unreleased]\n\n### Security\n\n* **BREAKING: a scope now required.**\n\n"
+        f"## [{patch_bump}] - 2026-01-01\n\n- the section\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    with pytest.raises(release.Refusal, match="BREAKING"):
+        release.check_preconditions(patch_bump, allow_dirty=True)
+
+    # The same BREAKING note is fine on a minor bump.
+    minor_bump = f"{major}.{minor + 1}.0"
+    (sandbox / "CHANGELOG.md").write_text(
+        f"# Changelog\n\n## [Unreleased]\n\n### Security\n\n* **BREAKING: a scope now required.**\n\n"
+        f"## [{minor_bump}] - 2026-01-01\n\n- the section\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert release.check_preconditions(minor_bump, allow_dirty=True) is not None
+
+
 def test_a_non_master_branch_is_a_note_and_not_a_refusal(sandbox) -> None:
     """⚠️ Deliberately advisory. A hotfix cut from a branch is legitimate, and refusing it would
     make the script something you work around rather than something you use."""

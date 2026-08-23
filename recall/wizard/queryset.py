@@ -41,6 +41,7 @@ from recall.eval.vocab import word_tokens
 from recall.index import chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
+from recall.errors import RecallError
 
 _log = get_logger("wizard.queryset")
 
@@ -94,7 +95,7 @@ _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
 _CODE_SPAN = re.compile(r"`[^`]*`")
 
 
-class QuerySetError(ValueError):
+class QuerySetError(ValueError, RecallError):
     """A query set that certification would refuse, refused earlier and with a reason."""
 
 

@@ -25,6 +25,10 @@ from benchmarks.beam.systems import (
 )
 from recall.index import chunk_text
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 @dataclass
 class _Chunk:

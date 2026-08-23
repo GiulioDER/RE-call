@@ -21,6 +21,10 @@ from benchmarks.token_f1 import (
     token_f1,
 )
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def _outcome(
     question_id: str,

@@ -336,7 +336,9 @@ def test_calibration_cli_create_publish_inspect_and_export(
     generation_id = _ready(manager, embedder, b"answer corpus", "v1")
     query_path = tmp_path / "queries.json"
     query_path.write_text(json.dumps(_labels()), encoding="utf-8")
-    monkeypatch.setattr("recall.cli._make_embedder", lambda _name: embedder)
+    monkeypatch.setattr(
+        "recall.cli_commands.calibration_cmd._make_embedder", lambda _name: embedder
+    )
     base = ["--serving-dsn", TEST_DSN, "--tenant", tenant]
 
     cli_main(

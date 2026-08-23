@@ -11,6 +11,10 @@ import pytest
 
 from recall.types import Chunk, RetrievalResult, ScoredChunk, StalenessReport
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 class _StubRetriever:
     """Returns hits in RRF (fusion) order — NOT sorted by cosine — so hits[0].score != max."""

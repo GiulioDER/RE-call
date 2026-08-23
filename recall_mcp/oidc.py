@@ -81,6 +81,8 @@ from jwt.algorithms import RSAAlgorithm
 
 from recall.observability import get_logger
 from recall_mcp.auth import ALL_SCOPES, AuthConfigError, Principal
+from recall.errors import RecallError
+from recall._env import truthy
 
 _log = get_logger("mcp.oidc")
 
@@ -102,7 +104,7 @@ _HTTP_TIMEOUT_S = 10
 _FORCED_REFRESH_DIVISOR = 10
 
 
-class TokenRejected(Exception):
+class TokenRejected(RecallError):
     """A token was refused. `reason` is a stable slug; the message never contains the token."""
 
     def __init__(self, reason: str, detail: str = "") -> None:
@@ -934,7 +936,7 @@ def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator 
         algorithms = DEFAULT_ALGORITHMS
 
     subject_tenants = _parse_subject_tenants(source.get(ENV_SUBJECT_TENANTS, "").strip())
-    trusts_claim = source.get(ENV_TRUST_TENANT_CLAIM, "").strip().lower() in {"1", "true", "yes", "on"}
+    trusts_claim = truthy(source.get(ENV_TRUST_TENANT_CLAIM))
     if subject_tenants is not None and trusts_claim:
         raise AuthConfigError(
             f"{ENV_SUBJECT_TENANTS} and {ENV_TRUST_TENANT_CLAIM} are both set, and they answer "

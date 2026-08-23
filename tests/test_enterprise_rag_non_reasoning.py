@@ -6,6 +6,12 @@ from pathlib import Path
 from scripts.enterprise_rag_experiment import build_plan
 from scripts.enterprise_rag_posthoc_metrics import score
 
+import pytest
+
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def test_posthoc_metrics_reads_gold_only_after_answers_exist(tmp_path: Path) -> None:
     questions = tmp_path / "questions.jsonl"

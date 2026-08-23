@@ -373,6 +373,37 @@ def test_delete_user_and_close_are_both_idempotent(table, tmp_path):
 
 
 @requires_db
+def test_a_failed_delete_user_leaves_the_scope_retryable(table, tmp_path):
+    """A mid-delete failure must leave the user's scope in place with its store still OPEN,
+    so a retry can actually run. The old `finally: close()` stranded a closed store in the
+    map, so every retry failed instantly against the closed connection."""
+
+    async def scenario():
+        be = backend(table, tmp_path)
+        await be.add(turn("Diego: keep this until the retry."), "u1", timestamp=MAY_2023)
+        scope = be._scopes["u1"]
+        original = scope.store.delete_sources
+        calls = {"n": 0}
+
+        def flaky(sources):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient delete failure")
+            return original(sources)
+
+        scope.store.delete_sources = flaky  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="transient"):
+            await be.delete_user("u1")
+        # The scope survived and its store is still usable — the retry succeeds.
+        assert "u1" in be._scopes
+        assert await be.delete_user("u1") is True
+        await be.close()
+        return calls["n"]
+
+    assert asyncio.run(scenario()) == 2
+
+
+@requires_db
 def test_describe_reports_the_configuration_and_no_dsn(table, tmp_path):
     """The artifact has to say which embedder, which pool and which version produced a number —
     and must not carry the DSN, which may embed a password."""

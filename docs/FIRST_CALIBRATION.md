@@ -1,5 +1,9 @@
 # Your first calibrated corpus
 
+> **When to prefer this page:** the canonical install is `recall setup`, which runs every step
+> below for you; `recall wizard --headless` is its scriptable form ([WIZARD.md](WIZARD.md)). This
+> page is the manual path, for anyone who wants to run and understand each command themselves.
+
 `docs/CALIBRATION.md` is the reference. This is the walkthrough: everything between "I have a
 folder of markdown" and "the server answers and says `trusted`", with the traps named at the point
 you hit them.
@@ -126,8 +130,19 @@ the legacy table no matter which generation is active. Design notes in
 
 ## The labelled query set
 
-`--queries` takes a JSON array of `{query, answerable, relevant_ids}`. Two things decide whether
-your calibration certifies.
+`--queries` takes a JSON array of `{query, answerable, relevant_ids}`. A file needs at least one
+answerable and one unanswerable query, and every entry needs a `query` and an `answerable` key;
+calibration refuses the file rather than fitting a threshold to one-sided evidence. A calibration
+fitted on the sample set that ships in the wheel belongs to that sample, not to your data:
+calibration is per embedder and per corpus, so a new model or a substantially changed corpus needs
+calibrating again. "Substantially changed" is a measurement rather than a judgement call —
+`recall calibration drift` compares your corpus against the one the serving calibration was
+fitted on and, where the corpus has been indexed, replays that calibration's own labeled queries
+to measure what the threshold now costs, per class. `RECALL_AUTO_CALIBRATE=auto` lets a rebuild
+re-establish the calibration by itself, within the same certification bar a manual one has to
+clear (see [CALIBRATION.md](CALIBRATION.md)).
+
+Two things decide whether your calibration certifies.
 
 **At least 20 answerable AND 20 unanswerable queries.**
 

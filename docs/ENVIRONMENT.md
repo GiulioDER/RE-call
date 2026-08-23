@@ -92,14 +92,20 @@ OPENROUTER_API_KEY=
 # RECALL_INDEX_MAX_FILES=2000        # per request: candidate file count
 # RECALL_INDEX_MAX_BYTES=20000000    # per request: candidate bytes (~20 MB)
 # RECALL_RATE_READ_PER_MIN=120       # per tenant: recall_search / recall_evidence / recall_stats calls
-# RECALL_RATE_WRITE_PER_MIN=20       # per tenant: recall_index calls
+# RECALL_RATE_WRITE_PER_MIN=20       # per tenant: recall_index / recall_ingest / recall_calibration_run calls
 # RECALL_RATE_FORGET_PER_MIN=10      # per tenant: recall_forget calls
+# RECALL_RATE_ADMIN_PER_MIN=10       # per tenant: recall_calibration_publish calls
 # RECALL_INDEX_BYTES_PER_HOUR=209715200  # per tenant: aggregate indexed bytes (200 MiB).
 #                                    # Keep this >= RECALL_INDEX_MAX_BYTES, or requests between
 #                                    # the two sizes can never succeed.
-# Each of the four budgets takes a number or the literal `off`. A malformed value, a non-finite
-# one, or one too small to yield a non-zero rate falls back to its default rather than being read
-# as "unlimited" — only `off` disables a limit.
+# Each of the five call budgets takes a number or the literal `off`. A malformed value, a
+# non-finite one, or one too small to yield a non-zero rate falls back to its default rather than
+# being read as "unlimited" — only `off` disables a limit.
+# RECALL_RATE_AUTH_FAILURES_PER_MIN=60   # PROCESS-GLOBAL (not per tenant): the pre-auth failure
+#                                    # throttle that caps a forgery storm's JWKS/RSA work on the
+#                                    # OIDC path. `off` disables it. A sustained storm above this
+#                                    # rate refuses valid OIDC tokens too (see docs/AUTH.md); the
+#                                    # static token path is never gated by it.
 # Read once at startup: changing a budget takes effect on restart.
 
 # --- Optional presentation localization ---

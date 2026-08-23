@@ -4,6 +4,12 @@ from __future__ import annotations
 import inspect
 import os
 
+import pytest
+
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def test_locomo_reuses_labelled_make_embedder() -> None:  # CODE-002
     from recall.eval import labelled, locomo

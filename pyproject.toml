@@ -13,7 +13,8 @@ license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Giulio D'Erme" }]
 keywords = [
-    "rag", "retrieval-augmented-generation", "agent-memory", "pgvector", "postgresql",
+    "rag", "retrieval-augmented-generation", "agent-memory", "memory", "long-term-memory",
+    "ai-agents", "semantic-search", "claude", "pgvector", "postgresql",
     "hybrid-search", "vector-search", "reranking", "mcp", "model-context-protocol",
     "abstention", "calibration", "llm-agents",
 ]
@@ -121,6 +122,7 @@ desktop = ["PySide6>=6.7", "keyring>=25", "mcp>=2,<3"]
 # reparent whatever followed it.
 [project.urls]
 Homepage = "https://github.com/GiulioDER/RE-call"
+Documentation = "https://giulioder.github.io/RE-call/"
 Source = "https://github.com/GiulioDER/RE-call"
 Issues = "https://github.com/GiulioDER/RE-call/issues"
 Changelog = "https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md"
@@ -152,20 +154,55 @@ recall-uninstall = "recall.desktop.main:uninstall_main"
 [tool.hatch.build.targets.wheel]
 packages = ["recall", "recall_hooks", "recall_mcp"]
 artifacts = ["recall/py.typed", "recall_mcp/py.typed"]
+# recall/eval ships only its load-bearing slice: calibrate/metrics (the wizard's calibration),
+# labelled and its deps (a documented CLI), synthetic/vocab (query generation), and the sample
+# corpus + labels the README points the wizard at. The one-off benchmark drivers and session
+# scripts below are repo-only, like recall_interop — they never worked from a wheel (several
+# index relative clone paths) and 671K of research artifacts does not belong in an install.
+# recall/wizard/llm.py is a preregistered experiment arm imported by nothing but its own test
+# (docs/preregistrations/2026-08-16-generated-calibration-query-sets.md); it stays out of the
+# wheel until that experiment resolves.
+exclude = [
+  "recall/eval/reasoning_session*",
+  "recall/eval/locomo*.py",
+  "recall/eval/longmemeval*.py",
+  "recall/eval/beir.py",
+  "recall/eval/gap_run.py",
+  "recall/eval/gap_study.py",
+  "recall/eval/hostload.py",
+  "recall/eval/scale.py",
+  "recall/eval/cosine_dump.py",
+  "recall/eval/_show_ids.py",
+  "recall/eval/arm_check.py",
+  "recall/eval/resume.py",
+  "recall/eval/harness.py",
+  "recall/eval/__main__.py",
+  "recall/eval/promotion",
+  "recall/eval/provenance.py",
+  "recall/eval/near_miss.json",
+  "recall/eval/peps_questions.json",
+  "recall/eval/peps_trust_queries.json",
+  "recall/wizard/llm.py",
+]
 
 [tool.pytest.ini_options]
 # `pytest-timeout` was a declared dependency with nothing configuring it, which made it inert:
 # the comment beside it in `[project.optional-dependencies].dev` explains that a test which
 # fails to terminate "reads as 'still running', not as a regression", and that was exactly the
 # state the suite was in. CI runs bare `pytest -q`, so a hang burned the job's full timeout
-# instead of failing. 120s is far above the slowest test here (the whole suite runs in ~3
-# minutes) and far below anything anyone would wait for; a test with a legitimate reason to
-# take longer can raise its own with `@pytest.mark.timeout(n)`.
+# instead of failing. 120s is far above the slowest single test (measured 2026-08-20: 72s of
+# setup; the whole DB-backed suite takes 30 to 40 minutes at 6,088 tests — re-measure with
+# `python -m pytest tests/ -q --durations=30`) and far below anything anyone would wait for;
+# a test with a legitimate reason to take longer can raise its own with
+# `@pytest.mark.timeout(n)`.
 #
 # `thread` rather than `signal`: signal-based timeouts do not work on Windows, and this suite is
 # developed there and run on Linux in CI.
 timeout = 120
 timeout_method = "thread"
+markers = [
+  "benchharness: benchmark-harness coverage rather than product coverage; deselect with -m 'not benchharness' for a product-only run",
+]
 
 # Collect ONLY `tests/`. Two analysis scripts under `results/` are named `paired_rerank_test.py`
 # ("paired rerank test" as in the statistical test, not a unit test); neither defines a single

@@ -1637,3 +1637,103 @@ def test_the_lock_is_released_when_the_ingest_raises(manager: GenerationManager)
     # Immediately re-acquirable: if the finally did not fire, this refuses.
     with manager.tenant_ingest_lock(wait_seconds=1.0):
         pass
+
+
+def test_forget_scrubs_the_learned_sparse_sidecar_rows(manager) -> None:
+    """Erasure reaches the sidecar for generation chunks too: `GenerationManager.forget` is
+    the path `GenerationStore.delete_sources` routes through, and before this it removed the
+    chunk rows while their SPLADE term weights stayed addressable under recall_chunks_v1."""
+    embedder = _Embedder(1)
+    data = b"---\nstatus: current\n---\nthe memo to erase"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    generation = _ready(
+        manager, manifest, _pipeline("model-a"), _reader(manifest, data), embedder
+    )
+    manager.promote(generation, unsafe_development=True)
+    memo_uri = manifest.objects[0].uri
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        chunk_ids = [
+            row[0]
+            for row in conn.execute(
+                "SELECT chunk_id FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+                (manager.tenant_id, memo_uri),
+            ).fetchall()
+        ]
+        assert chunk_ids, "the promoted generation must hold the memo's chunks"
+        for chunk_id in chunk_ids:
+            conn.execute(
+                "INSERT INTO recall_sparse_v1 (tenant_id, chunk_table, profile_id, id, vec, nnz) "
+                "VALUES (%s, 'recall_chunks_v1', 'test-splade', %s, %s::sparsevec, 1)",
+                (manager.tenant_id, chunk_id, "{7:1.0}/30522"),
+            )
+
+    result = manager.forget(memo_uri)
+    assert result.chunks_removed >= 1
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        remaining = conn.execute(
+            "SELECT count(*) FROM recall_sparse_v1 WHERE tenant_id = %s AND id = ANY(%s)",
+            (manager.tenant_id, chunk_ids),
+        ).fetchone()[0]
+    assert remaining == 0, "the forgotten chunks' sidecar rows must not survive"
+
+
+def test_gc_scrubs_the_sidecar_rows_of_collected_generations(manager) -> None:
+    """gc() deletes generations and lets chunks cascade; the learned-sparse sidecar has no
+    cascade, so before this fix a collected generation's term-weight rows orphaned
+    permanently. Red before the fix: `first`'s sidecar row survived gc as an orphan.
+
+    Three generations so `first` is neither the active nor the previous generation (gc always
+    protects both); with retain_previous=0 it is then collectable, each with distinct content
+    so its chunk_ids are unique to it and genuinely cascade away."""
+    pipeline = _pipeline("model-a")
+    ids: list[str] = []
+    for ordinal, body in enumerate((b"first content", b"second content", b"third content")):
+        manifest = _manifest(manager.tenant_id, body, version=f"v{ordinal}")
+        generation = _ready(
+            manager, manifest, pipeline, _reader(manifest, body), _Embedder(1)
+        )
+        manager.promote(generation, unsafe_development=True)
+        ids.append(generation)
+    first = ids[0]
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        chunk_ids = [
+            row[0]
+            for row in conn.execute(
+                "SELECT chunk_id FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
+                (manager.tenant_id, first),
+            ).fetchall()
+        ]
+        assert chunk_ids, "the generation to collect must hold chunks"
+        for chunk_id in chunk_ids:
+            conn.execute(
+                "INSERT INTO recall_sparse_v1 (tenant_id, chunk_table, profile_id, id, vec, nnz) "
+                "VALUES (%s, 'recall_chunks_v1', 'test-splade', %s, %s::sparsevec, 1) "
+                "ON CONFLICT DO NOTHING",
+                (manager.tenant_id, chunk_id, "{7:1.0}/30522"),
+            )
+
+    collected = manager.gc(
+        now=datetime.now(timezone.utc) + timedelta(days=1),
+        retention_days=0,
+        retain_previous=0,
+    )
+    assert first in collected, "the test needs `first` actually collected to exercise the scrub"
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        gone = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND chunk_id = ANY(%s)",
+            (manager.tenant_id, chunk_ids),
+        ).fetchone()[0]
+        assert gone == 0, "gc must cascade-delete the collected generation's chunks"
+        orphaned = conn.execute(
+            "SELECT count(*) FROM recall_sparse_v1 WHERE tenant_id = %s AND id = ANY(%s)",
+            (manager.tenant_id, chunk_ids),
+        ).fetchone()[0]
+    assert orphaned == 0, "gc left sidecar rows for chunks it cascade-deleted"

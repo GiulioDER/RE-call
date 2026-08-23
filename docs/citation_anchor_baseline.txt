@@ -32,4 +32,4 @@
 #
 # The rise 17 -> 33 is that document becoming answerable again, not a regression: 33 of its
 # citations move out of FROZEN and into the live count, where they can only fall from here.
-33
+29

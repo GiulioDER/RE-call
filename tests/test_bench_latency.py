@@ -15,6 +15,10 @@ import pytest
 
 from benchmarks import latency as latency_module
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 class _RecordingSystem:
     """A `MemorySystem` that logs the teardown-relevant calls in order."""

@@ -30,6 +30,10 @@ from benchmarks.agent_ab.traps import (
     unabsolved_trap,
 )
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def record(
     *commands: str,

@@ -37,9 +37,10 @@ from recall.truth_extraction.types import (
     SupersessionClaim,
     ValidityClaim,
 )
+from recall.errors import RecallError
 
 
-class ExtractionPayloadInvalid(ValueError):
+class ExtractionPayloadInvalid(ValueError, RecallError):
     """A stored payload is not something this module wrote.
 
     Raised for bad JSON, an unknown claim kind, a field set that is not exactly right, or a

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import threading
 
 import psycopg
+from recall.errors import RecallError
 
 if TYPE_CHECKING:
     from recall.store import PgVectorStore
@@ -122,11 +123,11 @@ class MigrationEvent:
     shadow_count: int
 
 
-class ConcurrentControlPlaneMigrator(RuntimeError):
+class ConcurrentControlPlaneMigrator(RuntimeError, RecallError):
     """Another process holds the control-plane migration advisory lock."""
 
 
-class ConcurrentOutboxDrain(RuntimeError):
+class ConcurrentOutboxDrain(RuntimeError, RecallError):
     """Another process is replaying or scrubbing this tenant's migration outbox."""
 
 

@@ -29,9 +29,10 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Literal
 from xml.etree import ElementTree
+from recall.errors import RecallError
 
 
-class DocumentExtractionError(ValueError):
+class DocumentExtractionError(ValueError, RecallError):
     """Raised when a supported file cannot produce a searchable text view."""
 
 

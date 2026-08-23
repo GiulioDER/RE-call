@@ -21,6 +21,10 @@ import pytest
 
 from benchmarks.llm import DEFAULT_MAX_TOKENS, CompletionTruncated, OpenRouterLLM
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def _install_fake_openai(
     monkeypatch: pytest.MonkeyPatch, *, content: str = "ok", finish_reason: str | None = "stop"

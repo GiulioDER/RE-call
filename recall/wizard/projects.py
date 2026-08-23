@@ -32,6 +32,7 @@ from recall.wizard.stack import (
     existing_tenants,
     host_dsn,
 )
+from recall.errors import RecallError
 
 #: The kinds every project gets, matching what `corpora.default_plan` builds for the install path.
 #: A project that arrived with fewer would be a second class of project, and the difference would
@@ -56,7 +57,7 @@ class AddedProject:
         return bool(self.tenants)
 
 
-class ProjectRefusal(ValueError):
+class ProjectRefusal(ValueError, RecallError):
     """The project cannot be added, with a reason a user can act on."""
 
 

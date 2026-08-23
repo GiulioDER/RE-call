@@ -11,6 +11,10 @@ import pytest
 from benchmarks.labelling.build_beam_labelling import build
 from benchmarks.labelling.score_beam_labels import mcnemar_exact, read_verdict, score
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 OURS = [
     {"question_id": "1M_0_q0_abstention", "question_type": "abstention", "question": "Q0?",
      "rubric": ["no info about X"], "generated_answer": "I don't know.", "score": 1.0},

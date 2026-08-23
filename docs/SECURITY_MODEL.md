@@ -110,8 +110,9 @@ chunk text. This is the default. `recall_mcp/server.py` now accepts the same
 `recall.embeddings.resolve_embedder` spellings as the CLI, so cloud egress through `RECALL_EMBEDDER`
 is possible only when the operator names a cloud backend and installs the matching optional package
 such as `recall-rag[voyage]` or `recall-rag[openai]`. Both `make eval` and `python -m recall.eval`
-run the local embedder unconditionally and only add the Voyage row when `VOYAGE_API_KEY` is present in
-the environment — the key-free path is the one that never leaves the host.
+(the eval harness runs from a git clone; it is not shipped in the wheel) run the local embedder
+unconditionally and only add the Voyage row when `VOYAGE_API_KEY` is present in the environment —
+the key-free path is the one that never leaves the host.
 
 **Choosing to embed with a cloud backend is documented, intended behaviour** when you opt into that
 backend, not a vulnerability to report. What we do want reported: any place a cloud path is reached
@@ -300,7 +301,7 @@ are now refused before the embedder or the database is touched. Both are refusal
 truncations: silently searching a prefix answers a question the caller did not ask.
 
 **Deletion is exposed; retention is mechanism, not schedule.**
-`PgVectorStore.delete_sources()` (`recall/store.py:2059`) is now wired into `recall forget` (CLI,
+`PgVectorStore.delete_sources()` (`recall/store.py:2113`) is now wired into `recall forget` (CLI,
 dry-run by default — pass `--yes` to actually delete) and into the `recall_forget` MCP tool
 (`recall_mcp/server.py`, delegating to `forget_memory` in `recall_mcp/service.py`), both
 tenant-scoped like every other write path. That closes the original gap — there is a supported

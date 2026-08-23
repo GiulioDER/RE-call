@@ -65,6 +65,7 @@ from recall.wizard.queryset import (
     generate_offline,
     require_balance,
 )
+from recall.errors import RecallError
 
 __all__ = ["CorpusOutcome", "PipelineRefusal", "run_corpus"]
 
@@ -83,7 +84,7 @@ __all__ = ["CorpusOutcome", "PipelineRefusal", "run_corpus"]
 _BUILD_ENVIRONMENTS = ("development", "test")
 
 
-class PipelineRefusal(ValueError):
+class PipelineRefusal(ValueError, RecallError):
     """A refusal raised BEFORE anything expensive or irreversible has happened.
 
     Nothing was built, nothing was promoted, and there is no artifact to clean up. A `ValueError`

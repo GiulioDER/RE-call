@@ -47,6 +47,7 @@ from recall.frontmatter import (
 )
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
+from recall.errors import RecallError
 
 _log = get_logger("fix")
 
@@ -81,7 +82,7 @@ _ACTIVE_RE = re.compile(
 )
 
 
-class UnreadableMemo(ValueError):
+class UnreadableMemo(ValueError, RecallError):
     """`apply_proposal` was pointed at a memo it will not rewrite, and said which and why."""
 
 

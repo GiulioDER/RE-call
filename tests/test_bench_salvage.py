@@ -32,6 +32,10 @@ from benchmarks.salvage import (
 )
 from benchmarks.systems import MemorySystem
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 #: Shape-valid, obviously fake. The completer is patched out in every test that reaches one.
 _FAKE_KEY = "sk-or-v1-unused-by-the-fake-completer"
 

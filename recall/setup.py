@@ -28,6 +28,7 @@ from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 from recall.seed import plan_seed, seed_corpus
 from recall.store import scrub_dsn_secrets
+from recall._env import env_is_production
 
 SETUP_BEGIN = "# recall setup begin"
 SETUP_END = "# recall setup end"
@@ -1141,7 +1142,7 @@ def index_memory_directory(
     instead: the index succeeded, reported success, and put the rows where nothing would look for
     them. `None` keeps the historical defaults, so existing callers are unaffected.
     """
-    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+    if env_is_production():
         print_fn(
             f"Skipping auto-index: RECALL_ENV is production. Index {memory_dir} via your "
             "production build pipeline instead."

@@ -12,6 +12,10 @@ import pytest
 from benchmarks.rerank_finetune import _arm
 from benchmarks.rerank_pool_arms import _ceiling, _hit_at, _paired_bootstrap, _summarise
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 class TestHitAt:
     def test_hit_when_gold_inside_cutoff(self) -> None:
