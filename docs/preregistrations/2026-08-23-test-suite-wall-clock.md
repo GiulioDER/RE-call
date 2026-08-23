@@ -163,3 +163,61 @@ Predicting the outcome does not reveal a broken harness, so: the parallel runs w
 the false-green signature this repository already documents. 6,525 passed against 6,529 serially,
 with all four differences accounted for above and each reproduced serially. The `-n 4` run was
 repeated and returned the identical triple, so the counts are not a scheduling artefact.
+
+## Correction (2026-08-23, same day): the collection number was not a like-for-like pair
+
+**Nothing above is edited, including the numbers that are wrong. This is what replaces them.**
+
+The result section reports collection going from **154.10s to 75.14s** and attributes 79s of
+saving to moving `voyageai` out of module scope. **That pair is invalid.** The 154.10s was the
+first collect of the day, on a cold page cache, and the 75.14s was taken hours later with
+`transformers` and `torch` resident. I compared a cold master against a warm branch and read the
+difference as the fix.
+
+Re-measured properly this evening: same machine, same container, **the two revisions back to back
+in both orders**, master pinned at `99e52d13`, which is exactly this branch's base, so both
+collect the same 6,599 tests.
+
+| Revision | full-suite collection |
+|---|---|
+| master `99e52d13` | 55.61s, 59.62s, 59.09s |
+| this branch | 50.92s, 54.78s, 49.99s, 51.34s |
+
+**The fix saves about 6 to 8 seconds of whole-suite collection, not 79.** That is roughly 13%,
+and it is inside shouting distance of the run-to-run spread.
+
+### Why the mechanism was real and the accounting was not
+
+Collecting the one module ALONE, the two revisions measured back to back in the same minute:
+
+| Revision | `pytest tests/test_embeddings_retry_after.py --collect-only` |
+|---|---|
+| master `99e52d13` | **45.33s** |
+| this branch | **1.04s** |
+
+So the import genuinely costs ~44s warm (74.8s cold, by `importtime` this morning). It nearly
+vanishes from the whole-suite figure because by the time pytest reaches a file named
+`test_e…`, another module has already pulled `transformers` and `torch` in, and voyageai's
+marginal cost is only what it adds on top.
+
+### The claim that was simply wrong
+
+The result section and the fixture's own docstring say the cost was paid by "every `pytest`
+invocation in this repository, including `pytest tests/test_cli.py`". **It was not.** pytest
+imports only the modules it collects, so a single-file run of an unrelated file never touched
+`voyageai`. What paid it was collecting the whole suite, and running that one file, which is
+exactly what you do while iterating on it: **45.3s to 1.0s**, and that is the win worth keeping.
+
+### What this does and does not change
+
+- **The parallelism result is untouched.** Serial 52:27, `-n 4` 14:20, measured as a proper pair
+  on the same commit, same container, back to back. That is the whole speed-up and it stands.
+- **The voyage change stays**, on its merits rather than its headline: 44 seconds off a
+  single-file run, a smaller cold-start cost, and one less 2 GB import at collection under `-n`.
+  It is not the reason the suite got faster.
+- 🔑 **The lesson is about the apparatus, not the number.** The record's own rules say to verify
+  the apparatus rather than the outcome, and I verified the outcome. A before/after taken hours
+  apart on a machine with a page cache is not a measurement of the change; it is a measurement of
+  the cache. **Take both halves of a pair back to back, in both orders, or do not report a pair.**
+  This one survived into a commit message, `CLAUDE.md`, a memory memo and a pull request before
+  anything caught it, and what caught it was re-running master by accident for an unrelated reason.
