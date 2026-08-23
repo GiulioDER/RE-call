@@ -5,8 +5,10 @@
 <!-- mcp-name: io.github.GiulioDER/re-call -->
 
 <p align="center">
-  <b>Memory that knows what it no longer believes.</b><br>
-  RE-call is the retrieval engine I extracted from a research agent that had been running for months, after its memory outgrew its context window and it started confidently repeating conclusions it had already disproved.
+  <b>Memory that abstains instead of guessing.</b><br>
+  RE-call is agent memory on your own PostgreSQL with pgvector: every hit carries a verdict,
+  confidence and provenance, a retracted claim comes back marked <code>superseded</code>, and a
+  question the corpus cannot answer is refused rather than answered from the nearest neighbour.
 </p>
 
 <p align="center">
@@ -16,6 +18,20 @@
   <img src="docs/postgresql-badge.svg" alt="PostgreSQL + pgvector">
   <img src="https://img.shields.io/badge/CI-real%20pgvector%20·%20types%20·%20audit-brightgreen" alt="CI: real pgvector, types, audit">
   <a href="https://glama.ai/mcp/servers/GiulioDER/RE-call"><img src="https://glama.ai/mcp/servers/GiulioDER/RE-call/badges/score.svg" alt="RE-call MCP server"></a>
+</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/launch/terminal-video/out/re-call-terminal-demo-preview.gif" alt="Terminal demo: a stale rate-limit memo outranks its correction on cosine, RE-call marks it superseded, and an unanswerable query is refused" width="720">
+</p>
+
+<p align="center">
+  ATM-Bench Recall@10 <b>92.8924</b> <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10_percent -->
+  against 79.09 <!--@ citation-pending: the board's published Memexa row, reproduced in docs/ATM_BENCH.md, not a RE-call measurement -->
+  for the best published row (<a href="https://github.com/GiulioDER/RE-call/blob/master/docs/ATM_BENCH.md">limits</a>)
+  &nbsp;·&nbsp;
+  second of ten on MTRAG correct refusals (<a href="https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md">limits</a>)
+  &nbsp;·&nbsp;
+  zero memory-layer LLM calls to build memory, where Mem0 pays one per session (<a href="https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md">limits</a>)
 </p>
 
 <p align="center">
@@ -48,14 +64,32 @@ tuning problem. A ranker with no notion of validity has no way to prefer the cor
 RE-call came out of a production, long-running trading-research agent: months of operation,
 792 <!--@ citation-pending: measured in docs/CASE_STUDY.md, not backed by a committed results artifact -->
 typed memos, 6,469 <!--@ citation-pending: measured in docs/CASE_STUDY.md, not backed by a committed results artifact -->
-chunks, re-indexed daily by a session-end hook. Every guard in this repository
+chunks, re-indexed daily by a session-end hook (counts from the private corpus behind the case
+study, so no committed artifact backs them). Every guard in this repository
 exists because that agent failed a specific way without it. See
 [docs/CASE_STUDY.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CASE_STUDY.md).
 
 It is for teams putting agent memory behind real applications, where a stale or unsupported memory
 is worse than no memory: keep the memory layer local by default, attach policy to every hit,
 calibrate the refusal threshold on your corpus, and let the application decide what to do with a
-result that is not trustworthy enough to answer from.
+result that is not trustworthy enough to answer from. Memory that knows what it no longer
+believes, and says so.
+
+How that compares to the usual choices (feature rows; the only measured column is Mem0, from the
+paired head-to-head in
+[benchmarks/REVIEW.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md)):
+
+| | RE-call | Mem0 | Zep / hosted memory | Plain pgvector / Chroma |
+|---|---|---|---|---|
+| LLM calls to build memory | none | one extraction call per session (measured: 272 <!--@ citation-pending: metered in benchmarks/REVIEW.md's cost table; no committed artifact retains the raw usage log --> calls for the LOCOMO corpus RE-call built at zero) | provider-dependent | none |
+| Runs on your own database | yes, PostgreSQL + pgvector | self-host or SaaS | SaaS first | yes |
+| Supersession and validity | declared in frontmatter, enforced per hit | no equivalent | no equivalent | none |
+| Explicit abstention | calibrated threshold, refusal with a reason | no | no | no, top-k always answers |
+| Trust metadata per hit | verdict, confidence, cosine, provenance, tenant | score | score | score |
+| License | Apache 2.0 | Apache 2.0 | proprietary SaaS / OSS core | Apache 2.0 / MIT |
+
+The rows for Zep and plain vector stores are feature comparisons, not measurements; nothing here
+claims a benchmark against them.
 
 The vocabulary that carries that validity, `supersedes`, `valid_from` and `valid_until` in a
 document's frontmatter, is published separately as
@@ -97,6 +131,10 @@ Two commands, and the second one starts its own database:
 pip install "recall-rag[fastembed]"
 recall quickstart
 ```
+
+The distribution is `recall-rag`; the import and the command are `recall`. The name `recall` on
+PyPI belongs to an unrelated package, so `pip install recall` gets you something else entirely.
+Do not install both into the same environment.
 
 That provisions a throwaway PostgreSQL with pgvector in Docker, indexes a small corpus that ships
 inside the package, and answers three questions: one it can answer, one whose nearest match is a
@@ -188,24 +226,12 @@ wizard those two paths and calibration runs end to end. Sources:
 [recall/eval/queries.json](https://github.com/GiulioDER/RE-call/blob/master/recall/eval/queries.json)
 and [recall/eval/corpus/](https://github.com/GiulioDER/RE-call/tree/master/recall/eval/corpus).
 
-A calibration fitted that way belongs to that sample, not to your data. It shows the mechanism
-working and gives you a labeled file to copy the shape of. Calibration is per embedder and per
-corpus, so a new model or a substantially changed corpus needs calibrating again, and a threshold
-fitted on the sample should not be used to judge your own memory.
-
-"Substantially changed" is a measurement rather than a judgement call. `recall calibration drift`
-compares your corpus against the one the serving calibration was fitted on, and where the corpus has
-been indexed it replays that calibration's own labeled queries to measure what the threshold now
-costs, per class. Set `RECALL_AUTO_CALIBRATE=auto` to have a rebuild re-establish the calibration by
-itself, within the same certification bar a manual one has to clear. See
+A calibration fitted that way belongs to that sample, not to your data: it shows the mechanism
+working and gives you a labeled file to copy the shape of. What makes a calibration valid, when a
+changed corpus needs a new one (`recall calibration drift` measures that), and what a labeled
+file must contain are covered in
+[docs/FIRST_CALIBRATION.md](docs/FIRST_CALIBRATION.md) and
 [docs/CALIBRATION.md](docs/CALIBRATION.md).
-
-A labeled file needs at least one answerable and one unanswerable query, and every entry needs a
-`query` and an `answerable` key. Calibration refuses the file rather than fitting a threshold to
-one-sided evidence.
-
-The distribution is `recall-rag`; the import is `recall`. The name `recall` on PyPI belongs to an
-unrelated package, so do not install both into the same environment.
 
 Working from a clone:
 
@@ -357,46 +383,11 @@ It asks for a DSN, a tenant and a trust mode, and keeps the DSN in your OS keych
 `settings.json`. You still need a database first, which is what `recall quickstart` above is for.
 See [plugin/README.md](plugin/README.md).
 
-The rest of this section is the manual wiring, for other clients and for anyone who wants to see
-what the plugin writes.
-
-The MCP server uses the default `chunks` table. Apply that schema for the embedder the server will
-run, then point the client at `recall_mcp.server`.
-
-```bash
-python -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall \
-  schema --dim 384 apply
-```
-
-If an existing `chunks` table was created with another vector dimension, use a fresh database or an
-embedder with the matching dimension. The MCP stdio server does not take a `--table` flag.
-
-```json
-{
-  "mcpServers": {
-    "recall": {
-      "command": "python",
-      "args": ["-m", "recall_mcp.server"],
-      "env": {
-        "RECALL_SERVING_DSN": "postgresql://...",
-        "RECALL_TENANT": "acme",
-        "RECALL_TRUST_MODE": "development"
-      }
-    }
-  }
-}
-```
-
-Omit `RECALL_TRUST_MODE` in production after you have built, calibrated, and promoted a generation.
-Local uncalibrated MCP work needs the explicit development setting because it has not gone through
-production calibration.
-
-Tools: `recall_search`, `recall_evidence`, `recall_index`, `recall_forget`, and `recall_stats`.
-For non-English presentation, pass `locale` to `recall_search` or `recall_evidence` after enabling
-the optional translation endpoint. Localized text is additive and never replaces canonical
-evidence. The configuration is documented in [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).
-
-Full guide: [docs/USING_WITH_CLAUDE.md](https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md).
+For every other MCP client, the manual wiring (schema, server block, trust mode) is in
+[docs/USING_WITH_CLAUDE.md](https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md).
+Core tools include `recall_search`, `recall_evidence`, `recall_index`, `recall_forget` and
+`recall_stats`; the authoritative list of all tools is
+[docs/API.md](https://github.com/GiulioDER/RE-call/blob/master/docs/API.md).
 Authentication and tenancy: [docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md).
 
 ## LangChain and LlamaIndex
@@ -467,20 +458,6 @@ Important benchmark documents:
 | [benchmarks/REVIEW.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md) | Adversarial review of the LOCOMO comparison. |
 | [benchmarks/PREREGISTRATION.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/PREREGISTRATION.md) | Pre-registered rules for the main memory benchmark. |
 | [benchmarks/archive/preregistrations/README.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/archive/preregistrations/README.md) | Archived preregistrations for follow-up benchmark arms. |
-
-## When not to use RE-call
-
-Use something else if you need managed hosting, per-chunk ACLs, automatic truth extraction from
-prose, or a memory system that rewrites facts for you. RE-call is a retrieval library over your
-PostgreSQL database, not a hosted memory platform.
-
-## What this does not do
-
-RE-call is a retrieval library with an opt-in reasoning layer, not a general reasoning system. It
-does not infer every missing supersession edge, prove that an on-topic memory answers a near-miss
-question, promote proposals into corpus truth, or replace database operations with a managed
-service. It returns the trust signals the caller needs, and it refuses to pretend that a nearest
-match is always usable evidence.
 
 ## Reproduce
 
