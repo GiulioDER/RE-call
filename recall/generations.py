@@ -1469,5 +1469,23 @@ class GenerationManager:
                     "AND generation_id = ANY(%s)",
                     (self.tenant_id, delete),
                 )
+                # The chunk rows die by ON DELETE CASCADE, which reaches no _scrub_sparse_rows,
+                # so the learned-sparse sidecar would orphan term-weight rows (partially
+                # reconstructable content) for every chunk_id unique to a collected generation.
+                # Anti-join scrub in the same transaction: delete sidecar rows for this table
+                # whose chunk_id no longer exists in ANY surviving generation. `_reuse_source`
+                # shares a chunk_id across generations, so a chunk still held by the active
+                # generation still exists here and its row is correctly kept. Guarded, like the
+                # other scrubs, so a pre-0012 install has nothing to fail against.
+                sidecar = conn.execute("SELECT to_regclass('recall_sparse_v1')").fetchone()
+                if sidecar and sidecar[0]:
+                    conn.execute(
+                        "DELETE FROM recall_sparse_v1 s "
+                        "WHERE s.tenant_id = %s AND s.chunk_table = 'recall_chunks_v1' "
+                        "AND NOT EXISTS ("
+                        "  SELECT 1 FROM recall_chunks_v1 c "
+                        "  WHERE c.tenant_id = s.tenant_id AND c.chunk_id = s.id)",
+                        (self.tenant_id,),
+                    )
                 self._audit(conn, "generation_gc", payload={"generation_ids": delete})
             return tuple(delete)

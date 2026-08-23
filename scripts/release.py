@@ -165,6 +165,18 @@ def check_preconditions(version: str, *, allow_dirty: bool) -> list[str]:
             "Release body from it, and without one the release ships auto-generated notes."
         )
 
+    # A BREAKING change may not ship as a patch bump. Pre-1.0 SemVer puts breaks in the MINOR,
+    # so if the notes staged under `## [Unreleased]` say BREAKING and this bump moves only the
+    # patch component, refuse: an operator upgrading `0.9.8 -> 0.9.9` reads that as safe, and
+    # the MCP registry pins the exact version, so the break arrives disguised as a patch.
+    if _unreleased_has_breaking() and _is_patch_bump(current, version):
+        raise Refusal(
+            f"CHANGELOG's [Unreleased] section is marked BREAKING, but {current} -> {version} is a "
+            "patch bump. Pre-1.0, a break goes in the MINOR (e.g. 0.10.0), or the registry pin "
+            "ships it to clients as a patch. Bump the minor, or move the BREAKING note if it is "
+            "not actually breaking."
+        )
+
     branch = _git("rev-parse", "--abbrev-ref", "HEAD")
     if branch != "master":
         notes.append(f"on branch {branch!r}, not master. Releases are cut from master.")
@@ -180,6 +192,24 @@ def _compare(left: str, right: str) -> int:
 def _changelog_section(version: str) -> bool:
     text = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
     return f"## [{version}]" in text
+
+
+def _unreleased_has_breaking() -> bool:
+    """True when the CHANGELOG's `## [Unreleased]` section contains a BREAKING marker."""
+    text = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    start = text.find("## [Unreleased]")
+    if start == -1:
+        return False
+    nxt = text.find("\n## [", start + 1)
+    section = text[start : nxt if nxt != -1 else len(text)]
+    return "BREAKING" in section
+
+
+def _is_patch_bump(current: str, version: str) -> bool:
+    """True when only the patch component changes (same major and minor)."""
+    cur = tuple(int(p) for p in current.split("."))
+    new = tuple(int(p) for p in version.split("."))
+    return cur[:2] == new[:2] and new[2] != cur[2]
 
 
 def plan(version: str) -> list[tuple[Site, str, int]]:

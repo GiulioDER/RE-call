@@ -40,7 +40,12 @@ from recall_mcp.auth import (
     authorize,
     token_registry_from_env,
 )
-from recall_mcp.limits import FailedAuthThrottle, failed_auth_throttle_from_env, limiter_from_env
+from recall_mcp.limits import (
+    FailedAuthThrottle,
+    INDEX_BYTES_BUDGET,
+    failed_auth_throttle_from_env,
+    limiter_from_env,
+)
 from recall_mcp.oidc import (
     ENV_AUDIENCE,
     ENV_ISSUER,
@@ -225,11 +230,12 @@ class RecallTokenVerifier:
         self._throttle = throttle if throttle is not None else failed_auth_throttle_from_env()
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        if not self._throttle.allow():
-            # Fails CLOSED: garbage is rejected without even being hashed, and a valid token
-            # never lands here because success paths never debit the throttle.
-            _log.warning("refusing unverified tokens: failed-authentication throttle is closed")
-            return None
+        # No pre-verification gate here, deliberately. Verifying a static token is a
+        # constant-cost digest lookup, so there is no expensive work for a throttle to
+        # protect — and gating BEFORE the lookup would refuse VALID tokens whenever a
+        # failure storm had drained the shared bucket, since `allow()` cannot tell a valid
+        # token from garbage. The throttle exists to cap the OIDC path's JWKS/RSA work; on
+        # this cheap path a failed lookup is recorded (so the signal exists) but never gates.
         principal = self._registry.verify(token)
         if principal is None:
             self._throttle.record_failure()
@@ -267,8 +273,14 @@ class OidcTokenVerifier:
 
     async def verify_token(self, token: str) -> AccessToken | None:
         if not self._throttle.allow():
-            # Same fail-closed gate as the static verifier, and here it additionally caps the
-            # JWKS fetches and RSA verifications a forgery wave can drive.
+            # Gated here, unlike the static path, because validation is EXPENSIVE — a JWKS
+            # fetch and an RSA verify — and capping that work is what stops a forgery wave
+            # from driving the CPU and the provider round-trips. The cost of the gate is that
+            # during a sustained storm a VALID OIDC token is refused too: `allow()` cannot
+            # tell it from garbage without doing the very work the gate defers. That is a
+            # deliberate availability-for-integrity trade on this path, not a property the
+            # throttle can avoid; the per-source ASGI middleware named in FailedAuthThrottle
+            # is the way to narrow the blast radius, and it is not built yet.
             _log.warning("refusing unverified tokens: failed-authentication throttle is closed")
             return None
         try:
@@ -1245,7 +1257,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             actually costs money, and it runs pre-flight — a refusal here has spent nothing.
             """
             if limiter is not None and tenant is not None:
-                limiter.check(tenant, "index_bytes", float(total_bytes))
+                limiter.check(tenant, INDEX_BYTES_BUDGET, float(total_bytes))
 
         with METRICS.timer("recall_tool_latency_ms", tool="index"):
             return await _to_thread(
@@ -1318,7 +1330,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         limiter = state.get("limiter")
         if limiter is not None:
             try:
-                limiter.check(store.tenant, "index_bytes", float(total_bytes))
+                limiter.check(store.tenant, INDEX_BYTES_BUDGET, float(total_bytes))
             except BaseException:
                 discard_staging(root)
                 raise
@@ -1327,13 +1339,22 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 result = await _to_thread(
                     lambda: ingest_into_serving_store(state, store, str(root), category)
                 )
-        except BaseException:
-            # The staged tree exists only to feed the ingest that just failed. Generation
-            # mode: every raise out of generation_ingest passes _reclaim_failed, so no
-            # servable manifest references this job's files (the UnsafePromotion case
-            # RETURNS and never reaches here). Legacy mode: partially indexed rows become
-            # prunable, which is consistent with "the upload failed".
-            discard_staging(root)
+        except Exception:
+            # Legacy mode ONLY discards here: the staged tree fed an ingest that failed, and
+            # partially indexed rows become prunable, consistent with "the upload failed".
+            #
+            # Generation mode does NOT discard. The staged files are pinned by the manifest,
+            # and a promote() that commits its transaction and then raises on the way out (a
+            # commit-ack loss) leaves an ACTIVE, servable generation whose manifest still
+            # points at this tree — `_reclaim_failed` cannot reclaim an ACTIVE generation, so
+            # deleting the tree here would erase the source of a generation the tenant is now
+            # serving, and the next upload's carry-forward would drop it permanently. Leaving
+            # a rare failed-generation staging tree behind is a small, forget-cleanable leak;
+            # deleting a servable generation's source is not. `except Exception`, not
+            # `BaseException`: a cancellation is deferred by anyio's shielded worker thread,
+            # so it cannot land mid-promote here.
+            if not state.get("generation_mode"):
+                discard_staging(root)
             raise
         payload = json.loads(result.model_dump_json())
         payload.update({"job_id": job_id, "state": "completed", "category": category})

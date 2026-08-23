@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import threading
 
+from recall._env import truthy
 from recall.embedding_registry import (
     RegisteredProfile,
     find_registered_profile,
@@ -268,7 +269,7 @@ def _positive_env(values: dict[str, str], name: str, default: int) -> int:
 
 
 def _remote_model_code_enabled(values: dict[str, str]) -> bool:
-    return values.get(REMOTE_MODEL_CODE_OPT_IN, "").strip().lower() in {"1", "true", "yes", "on"}
+    return truthy(values.get(REMOTE_MODEL_CODE_OPT_IN))
 
 
 def _require_remote_model_code_enabled(values: dict[str, str], model: str) -> None:
@@ -350,8 +351,6 @@ def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pr
     if model == COREB_CODE_RERANKER_MODEL:
         raise ValueError("coreb-code requires RECALL_RETRIEVAL_PROFILE=code")
     from recall.rerank import CrossEncoderReranker
-
-    model, revision = spec
 
     # Voyage primary, local cross-encoder fallback. The fallback is not politeness: a Voyage outage
     # would otherwise take retrieval down entirely, and reranking is the largest single measured

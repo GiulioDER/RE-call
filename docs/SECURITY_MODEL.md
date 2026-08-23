@@ -110,8 +110,9 @@ chunk text. This is the default. `recall_mcp/server.py` now accepts the same
 `recall.embeddings.resolve_embedder` spellings as the CLI, so cloud egress through `RECALL_EMBEDDER`
 is possible only when the operator names a cloud backend and installs the matching optional package
 such as `recall-rag[voyage]` or `recall-rag[openai]`. Both `make eval` and `python -m recall.eval`
-run the local embedder unconditionally and only add the Voyage row when `VOYAGE_API_KEY` is present in
-the environment — the key-free path is the one that never leaves the host.
+(the eval harness runs from a git clone; it is not shipped in the wheel) run the local embedder
+unconditionally and only add the Voyage row when `VOYAGE_API_KEY` is present in the environment —
+the key-free path is the one that never leaves the host.
 
 **Choosing to embed with a cloud backend is documented, intended behaviour** when you opt into that
 backend, not a vulnerability to report. What we do want reported: any place a cloud path is reached

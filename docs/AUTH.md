@@ -101,10 +101,11 @@ Scopes mirror the risk each tool actually carries, rather than collapsing into r
 A principal holding only `recall:read` gets a `PermissionError` from `recall_index`, and the
 denial is logged with the principal name.
 
-Since 0.10.0, publishing a calibration requires `recall:admin`; a write token that published
-before must be re-provisioned with the extra scope (static tokens: add it to `scopes` in the
-token file; OIDC: grant it in the identity provider's role). The full tenant inventory from
-`recall_tenants` is also admin-only now — a plain read principal sees only its own tenant.
+From the release that introduces the `recall:admin` scope (the next minor after 0.9.8),
+publishing a calibration requires it; a write token that published before must be re-provisioned
+with the extra scope (static tokens: add it to `scopes` in the token file; OIDC: grant it in the
+identity provider's role). The full tenant inventory from `recall_tenants` is also admin-only now
+— a plain read principal sees only its own tenant.
 
 ## Running it
 

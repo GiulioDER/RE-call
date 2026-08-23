@@ -3,20 +3,35 @@
 from __future__ import annotations
 
 import base64
-import logging
 import os
 import shutil
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
+
 from recall.errors import RecallError
+from recall.observability import get_logger
 
+_LOG = get_logger("desktop.uploads")
 
-_LOG = logging.getLogger("recall.desktop.uploads")
+_MAX_TOTAL_BYTES = 50 * 1024 * 1024
+_MAX_MIB = _MAX_TOTAL_BYTES // (1024 * 1024)
+_OVERSIZE_MSG = f"upload exceeds the {_MAX_MIB} MiB request limit"
 
 
 class UploadError(ValueError, RecallError):
     """Raised when a desktop upload is malformed or exceeds its safety limits."""
+
+
+def _tenant_uploads_root(tenant: str) -> Path:
+    """Where one tenant's staged uploads live. The single source of this path.
+
+    Staging (`stage_uploads`) and erasure (`delete_staged_sources`) both derive it: if they
+    ever disagreed, `delete_staged_sources`'s confinement check would silently skip every
+    file and erasure would stop happening while still reporting success. One helper makes
+    that divergence impossible.
+    """
+    return Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve() / "uploads" / tenant
 
 
 def delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:
@@ -35,7 +50,7 @@ def delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:
     from urllib.parse import urlsplit
     from urllib.request import url2pathname
 
-    uploads_root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve() / "uploads" / tenant
+    uploads_root = _tenant_uploads_root(tenant)
     removed = 0
     touched_dirs: set[Path] = set()
     for source in sources:
@@ -72,9 +87,6 @@ def discard_staging(root: Path) -> None:
     shutil.rmtree(root, ignore_errors=True)
 
 
-_MAX_TOTAL_BYTES = 50 * 1024 * 1024
-
-
 def stage_uploads(tenant: str, files: list[dict[str, str]]) -> tuple[str, Path, int]:
     """Decode a bounded upload into the configured server-side staging root.
 
@@ -88,7 +100,7 @@ def stage_uploads(tenant: str, files: list[dict[str, str]]) -> tuple[str, Path, 
     if not files or len(files) > 500:
         raise UploadError("files must contain between 1 and 500 entries")
     job_id = uuid.uuid4().hex
-    root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve() / "uploads" / tenant / job_id
+    root = _tenant_uploads_root(tenant) / job_id
     total = 0
     seen: set[str] = set()
     root.mkdir(parents=True, exist_ok=True)
@@ -108,16 +120,16 @@ def stage_uploads(tenant: str, files: list[dict[str, str]]) -> tuple[str, Path, 
             # size without decoding. The post-decode check below stays as the
             # exact enforcement.
             if (len(encoded) // 4) * 3 > _MAX_TOTAL_BYTES - total:
-                raise UploadError("upload exceeds the 50 MiB request limit")
+                raise UploadError(_OVERSIZE_MSG)
             try:
                 data = base64.b64decode(encoded, validate=True)
             except Exception as exc:
                 raise UploadError(f"invalid base64 content for {name!r}") from exc
             total += len(data)
             if total > _MAX_TOTAL_BYTES:
-                raise UploadError("upload exceeds the 50 MiB request limit")
+                raise UploadError(_OVERSIZE_MSG)
             (root / name).write_bytes(data)
     except BaseException:
-        shutil.rmtree(root, ignore_errors=True)
+        discard_staging(root)
         raise
     return job_id, root, total

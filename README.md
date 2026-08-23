@@ -463,6 +463,8 @@ Important benchmark documents:
 
 ## Reproduce
 
+From a git clone (the eval harness is repo-only; it is not shipped in the `recall-rag` wheel):
+
 ```bash
 make eval
 python -m recall.eval.scale --embedder hashing --filler 50000

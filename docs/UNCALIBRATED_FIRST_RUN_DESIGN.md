@@ -108,8 +108,8 @@ already written. Only `content_hash` is load bearing here, and the accessor that
 (`recall/store.py:2300`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
 
 ⚠️ **`content_hash` is media type dependent since `bd582316`.** A markdown source is hashed as
-decoded, newline normalised, NUL stripped text re encoded as UTF-8 (`recall/index.py:822` and
-`:798`); any other media type is hashed as **raw bytes** (`:819`). Any adoption path must branch the
+decoded, newline normalised, `_strip_nul` text re encoded as UTF-8 (`recall/index.py:822`
+and `recall/index.py:803`); any other media type is hashed as raw `source_bytes` (`recall/index.py:824`). Any adoption path must branch the
 same way, or it will refuse every markdown file with CRLF or a BOM.
 
 **F4. The first run wizard is half built and already solves the hardest part.**
@@ -132,7 +132,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:516`). <!-- cite-anchor: wants_learned -->
 5. **Promotion permission.** Production once refused `promote()` outright; it now requires a published, certified, still-bound calibration (`recall/generations.py:1067`) <!-- cite-anchor: def promote -->. 🔁 Updated 2026-08-20.
 6. **Generation creation.** Production requires a verified pipeline identity and refuses
-   `allow_unverified` (`recall/generations.py:347`, `:321`), which an adopted generation cannot satisfy with
+   `allow_unverified` (`recall/generations.py:347`, `recall/generations.py:358`), which an adopted generation cannot satisfy with
    an unpinned default embedder.
 
 Policies 1, 2 and 4 are genuinely process wide: they are about what this deployment is allowed to
@@ -275,8 +275,8 @@ is that the legacy metadata was written at embed time and can be checked against
 1. Read `metadata->>'content_hash'` via `source_raw_hashes`. Absent means **not adoptable**.
 2. Read the file at `metadata->>'file'`. Missing or unreadable means not adoptable.
 3. Re derive the hash **exactly as the indexer does for that media type**: decoded, newline
-   normalised, NUL stripped text for markdown (`recall/index.py:822`, `:798`), raw bytes otherwise
-   (`:819`). Not equal means the file changed since indexing: not adoptable.
+   normalised, `_strip_nul` text for markdown (`recall/index.py:822`, `recall/index.py:803`), raw
+   `source_bytes` otherwise (`recall/index.py:824`). Not equal means the file changed since indexing: not adoptable.
 4. 🔁 **Corrected 2026-08-18 by measurement.** This step originally compared
    `metadata->>'embedding_profile'` to the configured embedder's profile id. **That check does not
    work** (F3), and `index_fingerprint` inherits the defect because `_index_fingerprint` hashes the

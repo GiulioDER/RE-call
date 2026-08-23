@@ -103,12 +103,17 @@ def refresh_stats(config: dict[str, Any] | None = None) -> int:
         # renamed tenant column. That is configuration rot, not an outage, and serving the
         # cached count forever would advertise a corpus this hook can never reach again.
         # Still fail open for this session, but say so once, to stderr, where hook output
-        # goes; a silent stale number was the audited defect here.
-        print(
-            f"recall-hooks: chunk count query refused ({type(exc).__name__}); "
-            f"the cached figure may be stale until the config is fixed",
-            file=sys.stderr,
-        )
+        # goes; a silent stale number was the audited defect here. The print itself is
+        # guarded: on a daemonised host stderr may be closed, and a fail-open path must not
+        # turn into a crash because it tried to warn.
+        try:
+            print(
+                f"recall-hooks: chunk count query refused ({type(exc).__name__}); "
+                f"the cached figure may be stale until the config is fixed",
+                file=sys.stderr,
+            )
+        except Exception:
+            pass
         return int(config.get("chunks", 0) or 0)
 
     _save_config({**config, "chunks": count})
@@ -135,13 +140,22 @@ def _save_config(config: dict[str, Any]) -> None:
     PERMANENT and silent: the one shape of loss this function exists to prevent.
     """
     path = config_path()
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    except OSError:
+        # Missing directory or unwritable parent — nothing to clean up, and this hook must not
+        # raise into a session launch. The config simply is not updated this run.
+        return
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(config, indent=2) + "\n")
         os.replace(tmp, path)  # atomic on POSIX and on Windows for a same-directory target
-    except OSError:
+    except Exception:
+        # `Exception`, not just `OSError`: a non-serialisable config raises TypeError from
+        # json.dumps, which under `except OSError` would leak the temp file AND crash the hook.
+        # Fail open (leave the old config in place) and clean the temp; a session launch must
+        # not die because a stats write went wrong.
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
