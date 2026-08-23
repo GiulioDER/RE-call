@@ -28,6 +28,15 @@ a tree configured for LF, which is exactly what the memo warns about.
 ⛔ **You cannot look up a hazard you do not know exists.** That is not a reason to skip the search.
 It is the reason to search for the *hazard* rather than the *task*.
 
+This guidance has since been measured directly (run `agent-ab-skill-001`, 54 pairs, 2026-08-23,
+against the one-sentence baseline above): searching before acting went from half of sessions to
+**every session**, and the governing memo reached the agent in **0.674** of sessions against the
+baseline's 0.319 (p = 0.0006). The honest half of the result: the gain came from *searching at
+all*, not from better queries. The hit rate among sessions that searched moved only 0.600 to 0.674
+(not significant), and on the hardest task every session still asked in goal vocabulary and missed.
+So follow the recipe below deliberately; the reflex it corrects is strong enough to survive being
+told about it.
+
 ## How to search
 
 You cannot name a symptom you have not hit yet. What you can always name is the **operations** you
