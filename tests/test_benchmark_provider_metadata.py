@@ -7,6 +7,10 @@ import pytest
 from benchmarks.artifact_contract import reject_unauditable_cost_claims
 from recall.provider_metadata import ProviderMetadata
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def test_benchmark_cost_claim_rejects_missing_provider_metadata() -> None:
     with pytest.raises(ValueError, match="provider_metadata"):

@@ -17,6 +17,10 @@ from benchmarks.mtrag.late_interaction import (
 from benchmarks.mtrag.rerank_offload import score_delta
 from recall.rerank import LateInteractionReranker
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def _by_name(name: str) -> LateArm:
     return next(a for a in LATE_ARMS if a.name == name)

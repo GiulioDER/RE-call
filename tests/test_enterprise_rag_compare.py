@@ -5,6 +5,12 @@ from pathlib import Path
 
 from scripts.enterprise_rag_compare import compare
 
+import pytest
+
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def _write(path: Path, rows: list[dict[str, object]]) -> None:
     path.write_text(json.dumps({"questions": rows}), encoding="utf-8")

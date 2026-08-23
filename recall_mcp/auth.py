@@ -54,6 +54,7 @@ from pathlib import Path
 
 from recall.observability import get_logger
 from recall.store import DEFAULT_TENANT
+from recall.errors import RecallError
 
 _log = get_logger("mcp.auth")
 
@@ -85,7 +86,7 @@ _ENV_TOKENS_FILE = "RECALL_AUTH_TOKENS_FILE"
 ENV_TOKENS_FILE = _ENV_TOKENS_FILE
 
 
-class AuthConfigError(RuntimeError):
+class AuthConfigError(RuntimeError, RecallError):
     """Raised when the auth configuration is absent, malformed, or unsafe.
 
     Always fatal at startup and never downgraded to a warning: every path that raises this would

@@ -9,12 +9,13 @@ import shutil
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
+from recall.errors import RecallError
 
 
 _LOG = logging.getLogger("recall.desktop.uploads")
 
 
-class UploadError(ValueError):
+class UploadError(ValueError, RecallError):
     """Raised when a desktop upload is malformed or exceeds its safety limits."""
 
 

@@ -14,9 +14,10 @@ from pathlib import Path
 
 from recall.desktop.models import SourceCategory
 from recall.desktop.sources import collect_files
+from recall.errors import RecallError
 
 
-class GithubImportError(RuntimeError):
+class GithubImportError(RuntimeError, RecallError):
     """Raised when a repository cannot be safely downloaded or reviewed."""
 
 

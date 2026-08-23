@@ -12,6 +12,10 @@ import pytest
 
 from recall.types import Chunk, Provenance, TrustedHit, Validity
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 _INDEXED_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 

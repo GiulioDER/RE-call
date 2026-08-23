@@ -9,6 +9,10 @@ import pytest
 from benchmarks.voyage_rerank import VoyageReranker
 from recall.types import Chunk, ScoredChunk
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 class _FakeResult:
     def __init__(self, indices: list[int]) -> None:

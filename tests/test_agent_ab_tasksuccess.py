@@ -34,6 +34,10 @@ from benchmarks.agent_ab.tasksuccess import (
     check_workspace,
 )
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 

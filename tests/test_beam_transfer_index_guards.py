@@ -26,6 +26,10 @@ psycopg = pytest.importorskip("psycopg")
 
 from benchmarks.beam import transfer_index as ti  # noqa: E402
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 #: Admin DSN used only to create the throwaway database these tests own.
 ADMIN_DSN = os.environ.get("RECALL_TEST_DSN", "postgresql://recall:recall@localhost:55432/recall")
 TEST_DB = "xfer_guard_db"

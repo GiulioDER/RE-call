@@ -38,6 +38,7 @@ from recall.wizard.questions import (
     question_plan,
     visible_questions,
 )
+from recall.errors import RecallError
 
 __all__ = [
     "InteractiveRefusal",
@@ -47,7 +48,7 @@ __all__ = [
 ]
 
 
-class InteractiveRefusal(RuntimeError):
+class InteractiveRefusal(RuntimeError, RecallError):
     """Raised when the flow cannot sensibly continue. Carries a sentence a user can act on."""
 
 

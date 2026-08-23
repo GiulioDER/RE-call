@@ -8,9 +8,10 @@ import urllib.request
 from pathlib import Path
 
 from recall.desktop.models import ReleaseInfo
+from recall.errors import RecallError
 
 
-class UpdateError(RuntimeError):
+class UpdateError(RuntimeError, RecallError):
     pass
 
 

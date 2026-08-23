@@ -26,6 +26,7 @@ from recall.embeddings import embedding_profile_id
 from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
+from recall._env import truthy
 from recall.store import DEFAULT_TENANT, PgVectorStore, redacted_dsn
 from recall.trust_policy import TrustPolicy
 from recall_mcp.auth import (
@@ -669,12 +670,7 @@ def _make_lifespan(
                 raise SchemaTooOld(
                     f"database migrations pending: {pending}; run `recall schema apply`"
                 )
-            enterprise = os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE", "").lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
+            enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
             if enterprise and token_registry is None:
                 raise RuntimeError("enterprise control plane requires authenticated tenant routing")
             if token_registry is None:

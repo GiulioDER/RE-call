@@ -5,6 +5,12 @@ from pathlib import Path
 
 from scripts.enterprise_rag_retrieval_compare import compare
 
+import pytest
+
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def test_retrieval_compare_reports_exact_and_extra_deltas(tmp_path: Path) -> None:
     questions = tmp_path / "questions.jsonl"

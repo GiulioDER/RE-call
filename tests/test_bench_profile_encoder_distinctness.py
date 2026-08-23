@@ -30,6 +30,10 @@ from benchmarks.check_profile_encoder_distinctness import (
     rotate,
 )
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 DIM = 384
 
 

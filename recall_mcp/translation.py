@@ -16,6 +16,8 @@ from http.client import IncompleteRead
 from typing import TYPE_CHECKING, Protocol
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from recall.errors import RecallError
+from recall._env import truthy
 
 if TYPE_CHECKING:
     from recall_mcp.service import EvidenceResult, SearchResult
@@ -29,7 +31,7 @@ _DEFAULT_MAX_TEXT_CHARS = 20_000
 _DEFAULT_MAX_RESPONSE_BYTES = 2_000_000
 
 
-class TranslationError(RuntimeError):
+class TranslationError(RuntimeError, RecallError):
     """A provider failed or returned a response that cannot be trusted."""
 
 
@@ -66,7 +68,7 @@ def normalize_locale(locale: str | None) -> str | None:
 
 
 def _read_bool(env: dict[str, str], name: str) -> bool:
-    return env.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+    return truthy(env.get(name))
 
 
 def _read_positive_float(

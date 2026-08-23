@@ -8,6 +8,10 @@ import pytest
 
 from benchmarks.llm import Completer, EmptyCompletion, OpenRouterLLM, _usage_cost_usd
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def _identity_completer(system: str, user: str) -> str:
     # a plain function satisfies the injected-LLM seam used everywhere downstream

@@ -30,6 +30,10 @@ from benchmarks.beam.run import (
     score_question,
 )
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def _question() -> Question:
     return Question(

@@ -36,6 +36,10 @@ from recall.cache import EmbeddingCache
 from recall.types import ScoredChunk
 from recall.types import Chunk
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def test_loads_enterprise_release_shapes_from_zip(tmp_path: Path) -> None:
     archive = tmp_path / "docs.zip"

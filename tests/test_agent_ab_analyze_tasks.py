@@ -19,6 +19,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.agent_ab_analyze_tasks import sign_test, success_by_task  # noqa: E402
 
+import pytest  # noqa: E402
+
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def test_a_task_the_on_arm_wins_is_reported_as_improved():
     """The one that matters. On passes 4 of 4, off passes 0 of 4."""

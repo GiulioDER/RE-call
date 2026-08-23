@@ -25,6 +25,10 @@ import pytest
 
 from benchmarks.beam import embed_parity as ep
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 DIM = 16
 
 

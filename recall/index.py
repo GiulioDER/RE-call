@@ -32,6 +32,7 @@ from recall.observability import get_logger
 from recall.sparse import SparseEncoderProtocol, store_sparse_vectors
 from recall.store import PgVectorStore
 from recall.types import Chunk
+from recall.errors import RecallError
 
 DEFAULT_MAX_CHARS = 800  # target chunk size in characters; paragraphs are packed up to this
 DEFAULT_OVERLAP_CHARS = 80  # chars shared between adjacent pieces of a force-split oversized block
@@ -151,7 +152,7 @@ def _batch_chunks_from_env() -> int:
     return value
 
 
-class PruneGuardTripped(RuntimeError):
+class PruneGuardTripped(RuntimeError, RecallError):
     """A re-index would have deleted most of the corpus, so nothing was deleted.
 
     Deliberately NOT a ValueError: the caller passed a perfectly valid path. What is wrong is the

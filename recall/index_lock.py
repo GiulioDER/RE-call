@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 import psycopg
 
 from recall.observability import get_logger
+from recall.errors import RecallError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from recall.store import PgVectorStore
@@ -64,7 +65,7 @@ DEFAULT_WAIT_SECONDS = 20.0
 _POLL_SECONDS = 0.25
 
 
-class ConcurrentIndex(RuntimeError):
+class ConcurrentIndex(RuntimeError, RecallError):
     """Another process is indexing this corpus. Carries the holder's identity in its message."""
 
 

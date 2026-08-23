@@ -13,6 +13,10 @@ import pytest
 
 from benchmarks.beam.run import _coverage, _load_published
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def _published(tmp_path: Path, cells: dict[str, dict]) -> Path:
     path = tmp_path / "beam_1m_results.json"

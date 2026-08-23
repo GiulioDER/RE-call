@@ -5,6 +5,12 @@ from pathlib import Path
 
 from scripts.enterprise_rag_make_slices import make_slices
 
+import pytest
+
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def test_make_slices_is_deterministic_and_disjoint(tmp_path: Path) -> None:
     questions = tmp_path / "questions.jsonl"

@@ -154,6 +154,36 @@ recall-uninstall = "recall.desktop.main:uninstall_main"
 [tool.hatch.build.targets.wheel]
 packages = ["recall", "recall_hooks", "recall_mcp"]
 artifacts = ["recall/py.typed", "recall_mcp/py.typed"]
+# recall/eval ships only its load-bearing slice: calibrate/metrics (the wizard's calibration),
+# labelled and its deps (a documented CLI), synthetic/vocab (query generation), and the sample
+# corpus + labels the README points the wizard at. The one-off benchmark drivers and session
+# scripts below are repo-only, like recall_interop — they never worked from a wheel (several
+# index relative clone paths) and 671K of research artifacts does not belong in an install.
+# recall/wizard/llm.py is a preregistered experiment arm imported by nothing but its own test
+# (docs/preregistrations/2026-08-16-generated-calibration-query-sets.md); it stays out of the
+# wheel until that experiment resolves.
+exclude = [
+  "recall/eval/reasoning_session*",
+  "recall/eval/locomo*.py",
+  "recall/eval/longmemeval*.py",
+  "recall/eval/beir.py",
+  "recall/eval/gap_run.py",
+  "recall/eval/gap_study.py",
+  "recall/eval/hostload.py",
+  "recall/eval/scale.py",
+  "recall/eval/cosine_dump.py",
+  "recall/eval/_show_ids.py",
+  "recall/eval/arm_check.py",
+  "recall/eval/resume.py",
+  "recall/eval/harness.py",
+  "recall/eval/__main__.py",
+  "recall/eval/promotion",
+  "recall/eval/provenance.py",
+  "recall/eval/near_miss.json",
+  "recall/eval/peps_questions.json",
+  "recall/eval/peps_trust_queries.json",
+  "recall/wizard/llm.py",
+]
 
 [tool.pytest.ini_options]
 # `pytest-timeout` was a declared dependency with nothing configuring it, which made it inert:
@@ -170,6 +200,9 @@ artifacts = ["recall/py.typed", "recall_mcp/py.typed"]
 # developed there and run on Linux in CI.
 timeout = 120
 timeout_method = "thread"
+markers = [
+  "benchharness: benchmark-harness coverage rather than product coverage; deselect with -m 'not benchharness' for a product-only run",
+]
 
 # Collect ONLY `tests/`. Two analysis scripts under `results/` are named `paired_rerank_test.py`
 # ("paired rerank test" as in the statistical test, not a unit test); neither defines a single

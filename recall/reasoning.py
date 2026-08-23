@@ -50,6 +50,7 @@ from recall.provider_metadata import ProviderMetadata
 from recall.reasoning_proposals import InferenceProposal, ProposalProtocolReport, ProviderFailure
 from recall.types import TrustedResult
 from recall.trust import is_trusted
+from recall.errors import RecallError
 
 REASONING_API_VERSION = 1
 
@@ -62,7 +63,7 @@ ReasoningPolicyName = Literal[
 ReasoningOutcome = Literal["answered", "abstained", "needs_clarification", "needs_review"]
 
 
-class ReasoningValidationError(ValueError):
+class ReasoningValidationError(ValueError, RecallError):
     """The reasoning request crossed a trust, tenant, generation, or provider boundary."""
 
 

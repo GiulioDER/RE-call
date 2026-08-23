@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any, Protocol
 import hashlib
+from recall.errors import RecallError
 
 
 def _package_version(package: str) -> str:
@@ -472,7 +473,7 @@ def store_sparse_vectors(
     return SparseIndexResult(written=written, empty_ids=empty_ids)
 
 
-class SparseCoverageError(RuntimeError):
+class SparseCoverageError(RuntimeError, RecallError):
     """The sidecar disagrees with the corpus under a profile, in either direction.
 
     Fewer sidecar rows than chunks: the retrieval leg would answer, thinly and silently. More
@@ -598,7 +599,7 @@ DEFAULT_REQUIRED_VRAM_MB = 2048
 SPARSE_DEVICES = ("auto", "cpu", "cuda")
 
 
-class SparseDeviceError(RuntimeError):
+class SparseDeviceError(RuntimeError, RecallError):
     """A device was asked for by name and cannot be used."""
 
 

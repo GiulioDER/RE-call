@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Literal
+from recall.errors import RecallError
 
 #: Per file ceiling. A model returning more than this has stopped extracting and started
 #: narrating; the whole file's output is refused rather than truncated, because a truncated
@@ -216,7 +217,7 @@ class FileExtraction:
     cached: bool = False
 
 
-class ExtractionBatchRejected(ValueError):
+class ExtractionBatchRejected(ValueError, RecallError):
     """The file's whole output is refused. Carries the ladder rung that refused it."""
 
     def __init__(self, rung: str, reason: str) -> None:

@@ -30,6 +30,7 @@ from recall.lineage import (
 )
 from recall.manifest import ObjectReader
 from recall.types import Chunk
+from recall.errors import RecallError
 
 Chunker = Callable[[str], list[str]]
 
@@ -40,7 +41,7 @@ DEFAULT_TABLE_MAX_CHARS = 800
 DEFAULT_TABLE_OVERLAP = 80
 
 
-class GenerationError(RuntimeError):
+class GenerationError(RuntimeError, RecallError):
     """A generation lifecycle invariant was violated."""
 
 

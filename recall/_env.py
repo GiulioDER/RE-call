@@ -105,3 +105,17 @@ def load_dotenv(path: str | Path = ".env") -> None:
         pending[key] = val
     for key, val in pending.items():
         os.environ[key] = val
+
+
+def truthy(raw: str | None) -> bool:
+    """The one affirmative-boolean vocabulary for environment values.
+
+    `{"1", "true", "yes", "on"}` after strip+lower, and nothing else. This literal set was
+    re-implemented at least eleven times across the product packages; sites with the plain
+    semantics delegate here so the vocabulary cannot fork. Sites that deliberately differ —
+    `recall.store._env_opt_out` (a security opt-out that must not read a typo as consent),
+    the strict-raising readers in `recall.entailment` and `recall.truth_extraction`, and
+    `recall_mcp.factories`' two-sided TRUE/FALSE pair — keep their own definitions on
+    purpose and say so in place.
+    """
+    return raw is not None and raw.strip().lower() in {"1", "true", "yes", "on"}

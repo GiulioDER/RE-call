@@ -18,6 +18,10 @@ import pytest
 
 from benchmarks.beam.dedup_probe import DEDUP_COSINES, collapse, similarity_matrix
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def _reference_cosine(a: list[float], b: list[float]) -> float:
     """The original inline implementation, kept here as the oracle."""

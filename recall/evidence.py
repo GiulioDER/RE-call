@@ -9,6 +9,7 @@ import re
 from typing import Literal, Protocol
 
 from recall.types import TrustedHit, TrustedResult
+from recall.errors import RecallError
 
 
 class Tokenizer(Protocol):
@@ -129,7 +130,7 @@ class GenerationResult:
     citations_normalized: bool = False
 
 
-class EvidenceValidationError(ValueError):
+class EvidenceValidationError(ValueError, RecallError):
     """A generator returned malformed or structurally unsupported output."""
 
 

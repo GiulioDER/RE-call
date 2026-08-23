@@ -28,6 +28,10 @@ import pytest
 
 from benchmarks.llm import OpenRouterLLM
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 openai = pytest.importorskip("openai")
 
 #: A minimal but complete `/v1/chat/completions` success body, parsed by the SDK into a real

@@ -34,6 +34,10 @@ from benchmarks.enterprise_rag_contract import (
     write_dense_floor_artifact,
 )
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT = ROOT / "results" / "enterprise_rag" / "dense_floor_strat100.retrieval.json"
 #: A committed judge summary carries the benchmark's own per-type counts, so the population weights

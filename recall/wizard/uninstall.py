@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Literal
 
 from recall.wizard.stack import COMPOSE_NAME, DB_VOLUME, DOCKERFILE_NAME
+from recall.errors import RecallError
 
 __all__ = [
     "Removable",
@@ -78,7 +79,7 @@ _INSTALLER_FILES = (
 # `UninstallRefusal`, which has its own docstring.
 
 
-class UninstallRefusal(RuntimeError):
+class UninstallRefusal(RuntimeError, RecallError):
     """Raised when the install cannot be identified. Carries a sentence a person can act on."""
 
 

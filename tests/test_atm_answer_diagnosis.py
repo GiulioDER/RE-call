@@ -28,6 +28,10 @@ from benchmarks.atm_answer_diagnosis import (
     token_coverage,
 )
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def rec(
     qid: str = "q",

@@ -51,6 +51,10 @@ from benchmarks.llm import (
     TRANSIENT_ERRORS,
 )
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 #: A ceiling that cannot match anything by luck, and that `_is_transient` reads as NON-transient on
 #: its own (it contains no marker). Asserting it is ABSENT from the two new messages is evidence
 #: they do not hand back truncation's advice.

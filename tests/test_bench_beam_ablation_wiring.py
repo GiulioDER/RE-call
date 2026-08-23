@@ -31,6 +31,10 @@ from benchmarks.beam.dataset import Conversation, Question
 from benchmarks.beam.run import build_parser
 from benchmarks.beam.systems import BeamRecallSystem
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 #: A shape-valid but obviously fake key. No `.complete()` call is ever made in these tests — the
 #: expensive stage (`_run_pool`) is monkeypatched away — so the value is never sent anywhere.
 _FAKE_KEY = "sk-or-v1-unused-by-the-fake-pool"

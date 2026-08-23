@@ -15,6 +15,7 @@ benchmarks, migrations, or experiments, and can change more freely.
 | pgvector store | `recall.store.PgVectorStore` | Local indexing and retrieval over PostgreSQL plus pgvector. |
 | LangChain | `recall.integrations.langchain.RecallRetriever` | Use RE-call as a LangChain retriever. |
 | LlamaIndex | `recall.integrations.llamaindex.RecallRetriever` | Use RE-call as a LlamaIndex retriever. |
+| Errors | `recall.errors.RecallError` | Common base of every deliberate recall/recall_mcp exception. Each family also keeps its historical built-in base (`RuntimeError` or `ValueError`), so existing handlers keep working. |
 
 The expected application pattern is to call `trusted_search`, check `result.abstained`, and answer
 only from returned hits whose verdict and provenance satisfy the caller's policy.

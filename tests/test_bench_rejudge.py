@@ -15,6 +15,10 @@ import pytest
 
 from benchmarks.rejudge import main, rejudge_document, rejudge_outcomes, to_outcome
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def _record(
     question_id: str,

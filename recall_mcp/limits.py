@@ -35,6 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from recall.observability import get_logger
+from recall.errors import RecallError
 
 _log = get_logger("limits")
 
@@ -62,7 +63,7 @@ _SECONDS_PER_HOUR = 3600.0
 OFF = "off"
 
 
-class RateLimited(RuntimeError):
+class RateLimited(RuntimeError, RecallError):
     """A tenant exceeded its budget. Carries the wait so a caller can be told when to retry."""
 
     def __init__(self, message: str, *, retry_after_seconds: float) -> None:

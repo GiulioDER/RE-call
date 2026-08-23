@@ -60,6 +60,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* **`recall.errors.RecallError` is the common base of every deliberate exception.** Sixty-five
+  exception classes existed with no shared root, so a consumer could not write
+  `except RecallError` and had to enumerate families or catch built-ins. Every family keeps its
+  historical `RuntimeError`/`ValueError` base first, so existing handlers keep working, and a
+  structural test walks both packages so a new family cannot silently opt out.
+
+### Changed
+
+* **The wheel no longer ships the one-off research drivers.** `recall/eval` keeps its
+  load-bearing slice (the wizard's calibration engine, the documented `labelled` CLI, query
+  generation, and the sample corpus and labels the README points the wizard at) and drops the
+  session scripts, benchmark drivers and result fixtures that never worked from a wheel;
+  `recall/wizard/llm.py` (a preregistered experiment arm imported by nothing but its test)
+  stays repo-only until that experiment resolves. Working from a clone is unaffected.
+* **Benchmark-harness tests carry a `benchharness` marker** (1,011 of 6,591), so a
+  product-only run is `pytest -m 'not benchharness'`. CI behavior is unchanged.
+
 * **`recall quickstart` goes from a fresh `pip install` to three answered queries in one command,
   database included.** It starts a throwaway pgvector container on a free port, applies the schema,
   indexes a corpus that ships inside the wheel, and runs three queries chosen to show the retrieval
