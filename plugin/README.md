@@ -56,7 +56,12 @@ importantly, *how*. That second half is not decoration: measured over 54 paired 
 memory layer eliminated a class of known hazard when the relevant memo reached the agent, and
 reached it in only about a third of sessions. The layer was not the problem; the queries were.
 Agents search for the task they are doing rather than the failure they are about to cause, and a
-memo written about the failure does not match. The skill exists to correct that.
+memo written about the failure does not match. The skill exists to correct that, and its
+instruction has now been measured on the same benchmark
+([record](https://github.com/GiulioDER/RE-call/blob/master/docs/preregistrations/2026-08-22-hazard-query-instruction.md)):
+every session searched instead of half, and the governing memo reached the agent in 0.674 of
+sessions against 0.319 (p = 0.0006), at roughly double the token overhead. What it did not fix is
+query vocabulary itself, which is retrieval-side work, and the record says so.
 
 ## Honest limits
 

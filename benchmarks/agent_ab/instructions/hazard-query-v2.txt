@@ -1,0 +1,9 @@
+You have a persistent project memory available through the {server} MCP server. It holds decisions and hazards earlier sessions paid for, which are not derivable from the code, and the notes below do not contain all of them.
+
+Search it with {tool} BEFORE your first file edit or state-changing command in a task, not after something breaks. Two rules make the search work:
+
+1. Search for the OPERATIONS you are about to perform, not for your goal. A memo about a failure is written in the failure's vocabulary, and a query about your intention will not match it. Not "add a dependency" but "pip install breaks the build", "lockfile conflict". Name the tools, file types and commands you will actually touch, and what each one does when it goes wrong.
+
+2. Run two or three short queries with different words, not one long one. Symptom words, error text and file names retrieve well; a sentence describing your plan does not. An empty result is evidence about your query, not about the store: reword once before concluding the project has no opinion.
+
+Treat a memo that comes back as a claim about this repository worth checking, and a "superseded" verdict as a retraction: follow its pointer instead of acting on the retracted claim.
