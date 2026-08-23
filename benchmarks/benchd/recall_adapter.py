@@ -125,6 +125,12 @@ class RecallAdapter(BaseAdapter):
 
     @property
     def version(self) -> Optional[str]:
+        # RECALL_BENCHD_VERSION_TAG pins the manifest to an exact commit: the official run
+        # script sets it to "<package-version>+<recall-sha>+<adapter-sha256-prefix>" so anyone
+        # reading the signed manifest can check out the code that produced it.
+        tag = os.environ.get("RECALL_BENCHD_VERSION_TAG")
+        if tag:
+            return tag
         from importlib.metadata import PackageNotFoundError, version
 
         try:

@@ -235,3 +235,54 @@ Then a 20-question dress rehearsal on the real target
 (`benchd run -a re-call -b longmemeval-v1 -n 20 --judge ...`) to check dataset download,
 per-dimension behaviour, and the token projection, before pre-registering and paying for the
 full 500.
+
+## 9. Official run protocol (prepared 2026-08-23)
+
+`run_official.sh` is the only way an official number gets produced. It refuses a dirty
+working tree, refuses an adapter that differs from the committed one, pins the RE-call SHA,
+the harness fork SHA, the adapter SHA256 and the dataset SHA256 into `run-record.json`,
+snapshots the OpenRouter meter before and after, runs with the champion configuration baked
+in, verifies the Ed25519 signature, and recounts tokens from the manifest.
+
+```bash
+VOYAGE_API_KEY=... OPENROUTER_API_KEY=... RECALL_BENCHD_DSN=postgresql://... \
+  bash benchmarks/benchd/run_official.sh <harness-dir> longmemeval-v1
+```
+
+Champion configuration (tuned and pre-registered, results under
+`docs/preregistrations/2026-08-23-benchd-*.md`): voyage-4 dense + lexical fusion, Voyage
+rerank-2.5, DeepSeek v4 pro synthesis via OpenRouter with extended thinking off, top_k=10,
+session granularity, threshold 0.0 with abstention suppressed, ingest cache on.
+
+Design choices a reviewer will ask about, answered in advance:
+
+- **The synthesis step.** The recall string is the memory system's output, and running an LLM
+  inside the memory layer is how several leaderboard systems already work (Mem0's extraction,
+  Cognee's graph building). Ours runs at recall time, temperature 0, on a third-party model
+  (`deepseek/deepseek-v4-pro-0813`), with the prompt committed in the adapter, and the raw
+  digest is preserved verbatim in every trace. The answerer and judge are the harness's locked
+  defaults, untouched.
+- **The oracle flag.** LongMemEval turns carry `metadata.has_answer`; the adapter provably
+  never reads it: `tests/test_benchd_adapter.py` pins that documents and cache keys are
+  identical with the flag flipped, and the string appears in the adapter source only in the
+  comment saying it is excluded.
+- **The ingest cache.** The protocol's per-item sequence is reset, ingest, recall. The adapter
+  honours the semantics: after every reset, recall() can only see the corpus its own item
+  ingested (tenant-per-conversation, active-tenant scoping; pinned by test). What the cache
+  skips is re-EMBEDDING a byte-identical conversation, which is deterministic document
+  construction (pinned by test) plus embedding, and it can be disabled with
+  `RECALL_BENCHD_INGEST_CACHE=0` for anyone who wants the slow identical result.
+- **Abstention.** Suppressed, openly: every scored question is answerable by construction
+  (LoCoMo category 5 is excluded upstream), and the locked judge scores "insufficient
+  information" as INCORRECT, so abstention on this benchmark is a forfeit, not a virtue. The
+  measured cost of honouring it at the uncalibrated default threshold is 26.7 points
+  (`2026-08-23-benchd-abstention-threshold.md`).
+- **The workers patch.** Our harness fork adds one flag, `--workers N`
+  (`harness-workers.patch`, 2 files, +58/-8 on upstream `bd4824fe`): a thread pool over items
+  with one adapter instance per worker, traces kept in item order. The per-item pipeline,
+  prompts, models, scoring and manifest format are byte-identical to upstream; a sequential
+  rerun of any slice must reproduce the same verdicts up to provider variance, and the smoke
+  suite passes identically at workers 1 and 4.
+- **Version pinning.** The manifest's `system.version` carries
+  `recall-rag+<recall-sha>+adapter-<sha256>`, so the exact code behind the number is checkable
+  from the manifest alone.
