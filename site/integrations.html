@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Integrations · RE-call</title>
+<meta name="description" content="Use RE-call from LangChain or LlamaIndex: retrievers that return trust-evaluated memories with verdict, confidence and provenance, or nothing at all when the corpus cannot answer.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
+<script src="translate.js" defer></script>
+<style>
+  .integrations { max-width: 44rem; }
+  .integrations h2 { font-size: 1.5rem; margin-top: 3rem; margin-bottom: 0.85rem; }
+  .integrations p, .integrations li { max-width: 65ch; }
+  .integrations table { border-collapse: collapse; font-size: 0.9rem; margin: 1.25rem 0; }
+  .integrations th, .integrations td { text-align: left; padding: 0.5rem 1rem 0.5rem 0; border-bottom: 1px solid rgba(127,127,127,.25); vertical-align: top; }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="index.html"><img class="wordmark-mark" src="assets/re_call_logo.png" alt=""><span class="wordmark-name">RE-call</span><span>Integrations</span></a>
+    <nav>
+      <a href="download.html">Download</a>
+      <a href="readme.html">README</a>
+      <a href="start.html">Install</a>
+      <a href="corpus.html">Your memory</a>
+      <a href="claude-code.html">Claude Code</a>
+      <a href="calibration.html">Calibration</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <a href="blog/index.html">Blog</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="shell integrations" style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(4rem, 9vw, 7rem);">
+
+  <p class="eyebrow">LangChain · LlamaIndex · MCP</p>
+  <h1 style="font-size: clamp(2rem, 5vw, 3.25rem); max-width: 22ch; margin-bottom: 1rem;">Use RE-call from your framework</h1>
+  <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
+  <p class="lede">RE-call ships retrievers for LangChain and LlamaIndex, and an MCP server for any MCP client. All three return the same thing: trust-evaluated memories carrying verdict, confidence, cosine and provenance, or an explicit abstention when the corpus cannot answer. The adapters depend only on each framework's core package.</p>
+
+  <p>Every integration sits on the same store: your own PostgreSQL with pgvector. Set one up first with the <a href="start.html">install guide</a>, or in one command with <code>recall quickstart</code>.</p>
+
+  <h2 id="langchain">LangChain</h2>
+
+  <div class="terminal terminal--command">
+    <div class="terminal-bar"><span class="terminal-label">Shell</span><button class="copy-button" type="button">Copy</button></div>
+    <div class="terminal-body"><pre><span class="line">pip install "recall-rag[langchain,fastembed]"</span></pre></div>
+  </div>
+
+  <div class="terminal terminal--command">
+    <div class="terminal-bar"><span class="terminal-label">Python</span><button class="copy-button" type="button">Copy</button></div>
+    <div class="terminal-body"><pre><span class="line">from recall.embeddings import FastEmbedEmbedder</span>
+<span class="line">from recall.generation_store import GenerationStore</span>
+<span class="line">from recall.integrations.langchain import RecallRetriever</span>
+<span class="line"></span>
+<span class="line">emb = FastEmbedEmbedder()</span>
+<span class="line">store = GenerationStore(DSN, dim=emb.dim, tenant="acme")</span>
+<span class="line">retriever = RecallRetriever.from_store(store, emb, k=5)</span>
+<span class="line">docs = retriever.invoke("what is the rate limit?")</span></pre></div>
+  </div>
+
+  <p>Each returned <code>Document</code> carries the trust signal in metadata: <code>recall_verdict</code>, <code>recall_confidence</code>, <code>recall_cosine</code>, supersession details and provenance. When the trust layer abstains, the retriever returns no documents by default, so a chain built on it does not paraphrase a nearest neighbour into an answer. The adapter depends only on <code>langchain-core</code>.</p>
+
+  <h2 id="llamaindex">LlamaIndex</h2>
+
+  <div class="terminal terminal--command">
+    <div class="terminal-bar"><span class="terminal-label">Shell</span><button class="copy-button" type="button">Copy</button></div>
+    <div class="terminal-body"><pre><span class="line">pip install "recall-rag[llamaindex,fastembed]"</span></pre></div>
+  </div>
+
+  <div class="terminal terminal--command">
+    <div class="terminal-bar"><span class="terminal-label">Python</span><button class="copy-button" type="button">Copy</button></div>
+    <div class="terminal-body"><pre><span class="line">from recall.integrations.llamaindex import RecallRetriever</span>
+<span class="line"></span>
+<span class="line">retriever = RecallRetriever.from_store(store, emb, k=5)</span>
+<span class="line">nodes = retriever.retrieve("what is the rate limit?")</span></pre></div>
+  </div>
+
+  <p>Nodes carry the same trust metadata. One option matters in production: constructed with <code>return_abstention_reason=True</code>, an abstention returns a single empty node whose metadata carries <code>recall_abstained</code> and <code>recall_reason</code>, so an application can tell "the corpus cannot answer this" apart from "retrieval broke" and say so, instead of debugging a silent empty response. The adapter depends only on <code>llama-index-core</code>.</p>
+
+  <h2 id="mcp">MCP, for every other agent</h2>
+
+  <p>The MCP server exposes <code>recall_search</code>, <code>recall_evidence</code>, <code>recall_index</code>, <code>recall_forget</code>, <code>recall_stats</code> and the rest of the tool surface over stdio or token-scoped HTTP. On Claude Code the <a href="claude-code.html">plugin</a> wires it in two lines; for any other MCP client the manual configuration is in the <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md">MCP guide</a>.</p>
+
+  <h2>What all of them share</h2>
+
+  <table>
+    <tr><th>Behaviour</th><th>Meaning</th></tr>
+    <tr><td>Verdicts per hit</td><td>A superseded, expired, not-yet-valid or low-confidence memory is surfaced as such, not flattened into an ordinary result.</td></tr>
+    <tr><td>Explicit abstention</td><td>Below the calibrated threshold the caller gets a refusal with a reason, never the nearest neighbour.</td></tr>
+    <tr><td>Local by default</td><td>Memory builds and answers on your PostgreSQL with local embeddings; no memory layer LLM call.</td></tr>
+    <tr><td>Tenancy</td><td>Tenant scoping enforced with row-level security in the database, not in adapter code.</td></tr>
+  </table>
+
+  <p>API reference for both adapters: <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/API.md">docs/API.md</a>.</p>
+
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="shell footer-inner">
+    <nav>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+      <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
+    </nav>
+    <small>Apache 2.0</small>
+  </div>
+</footer>
+
+</body>
+</html>
