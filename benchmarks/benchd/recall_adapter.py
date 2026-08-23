@@ -155,6 +155,10 @@ class RecallAdapter(BaseAdapter):
         if self._pending_reset:
             self._wipe()
             self._pending_reset = False
+        # Cleared before indexing, set after: if index_path raises mid-item, the runner records
+        # the item as an adapter error and moves on, and the next item on the same conversation
+        # must see a cache miss, not a hash that claims the partial index is complete.
+        self._indexed_hash = None
 
         docs = (
             self._docs_by_session(turns)
