@@ -37,8 +37,14 @@ def no_machine_dependent_prompts(monkeypatch):
     suite uses Claude Code, or on which directory they ran pytest from.
 
     Tests that exercise either prompt turn it back on explicitly.
+
+    `plugin_skill_source` is pinned to None for the same reason: the skill-copy prompt appears
+    only when Claude Code is detected AND the repository's `plugin/` directory is on disk, and
+    this suite always runs from a checkout where it is. Left unpinned, every test that turns
+    detection back on would grow an extra prompt here and never under an installed wheel.
     """
     monkeypatch.setattr("recall.setup.claude_code_detected", lambda: False)
+    monkeypatch.setattr("recall.setup.plugin_skill_source", lambda: None)
     monkeypatch.setattr(
         "recall.setup.plan_seed",
         lambda root, **kw: SeedPlan(root=Path(root), files=(), total_bytes=0),
@@ -1827,6 +1833,140 @@ def test_a_failed_wiring_step_does_not_lose_the_completed_interview(tmp_path, mo
     assert "RECALL_EMBEDDER=fastembed" in env
     assert "Could not wire up Claude Code" in output
     assert "USING_WITH_CLAUDE.md" in output
+
+
+def test_the_plugin_install_lines_are_the_wizards_last_words(tmp_path, monkeypatch):
+    """Print-only guidance, gated on a detected client and printed after everything else, so the
+    two slash commands are the note left on screen for the user to type into Claude Code."""
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+
+    _, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        ["y", "2", "1", "1", "n", "n", "n", "n"],  # ...wiring n, calibrate n
+    )
+
+    assert "/plugin marketplace add GiulioDER/RE-call" in output
+    assert "/plugin install recall@re-call" in output
+    # The fixture pins the skill source to None, which is the installed-wheel case: no copy
+    # prompt appeared (the script above has no answer for one), and the guidance says the
+    # plugin is how the skill arrives instead of offering a copy that would fail.
+    assert "ships inside that plugin" in output
+    assert output.rstrip().endswith("gets the skill.")
+
+
+def test_no_plugin_guidance_when_claude_code_is_absent(tmp_path, monkeypatch):
+    """Telling someone to type slash commands into a client they do not have is noise."""
+    _, output = _run_wizard(tmp_path, monkeypatch, ["y", "2", "1", "1", "n", "n", "n"])
+    assert "/plugin" not in output
+
+
+def test_accepting_the_skill_copy_installs_it_under_the_config_home(tmp_path, monkeypatch):
+    source = tmp_path / "SKILL.md"
+    source.write_text("---\nname: check-memory-before-acting\n---\n\nSearch first.\n", encoding="utf-8")
+    config_home = tmp_path / "claude-home"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_home))
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr("recall.setup.plugin_skill_source", lambda: source)
+
+    _, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        ["y", "2", "1", "1", "n", "n", "n", "y", "n"],  # ...wiring n, copy the skill y, calibrate n
+    )
+
+    dest = config_home / "skills" / "check-memory-before-acting" / "SKILL.md"
+    assert dest.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
+    assert "Installed the check-memory-before-acting skill" in output
+
+
+def test_declining_the_skill_copy_writes_nothing(tmp_path, monkeypatch):
+    """The copy lands in a directory every project's sessions load, so silence means no."""
+    source = tmp_path / "SKILL.md"
+    source.write_text("skill body\n", encoding="utf-8")
+    config_home = tmp_path / "claude-home"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_home))
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr("recall.setup.plugin_skill_source", lambda: source)
+
+    _, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        ["y", "2", "1", "1", "n", "n", "n", "n", "n"],  # ...wiring n, copy the skill n, calibrate n
+    )
+
+    assert not (config_home / "skills").exists()
+    # The install lines still print: declining the copy is not declining the guidance.
+    assert "/plugin install recall@re-call" in output
+
+
+def test_a_failed_skill_copy_does_not_lose_the_completed_interview(tmp_path, monkeypatch):
+    """Same contract as the wiring step: `.env` is written before this runs, so a filesystem
+    refusal costs a printed line carrying the by-hand alternative."""
+    source = tmp_path / "vanished" / "SKILL.md"  # never written, so the copy raises
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr("recall.setup.plugin_skill_source", lambda: source)
+
+    env, output = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        ["y", "2", "1", "1", "n", "n", "n", "y", "n"],
+    )
+
+    assert "RECALL_EMBEDDER=fastembed" in env
+    assert "Could not copy the skill" in output
+    assert "by hand" in output
+
+
+def test_the_repo_copy_of_the_skill_is_where_the_wizard_looks_for_it():
+    """Ties `plugin_skill_source` to the real tree: if `plugin/skills/` moves, this is the test
+    that says the wizard's copy offer silently became the installed-wheel path everywhere."""
+    from recall.claude_code import plugin_skill_source
+
+    source = plugin_skill_source()
+    assert source is not None
+    assert source.name == "SKILL.md"
+    # The skill's name is its directory, which is what Claude Code loads it by; the file's own
+    # frontmatter carries only a description, so the path is the thing to pin.
+    assert source.parent.name == "check-memory-before-acting"
+    assert "memory" in source.read_text(encoding="utf-8")
+
+
+def test_install_user_skill_leaves_an_identical_copy_unchanged(tmp_path, monkeypatch):
+    from recall.claude_code import install_user_skill
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "home"))
+    source = tmp_path / "SKILL.md"
+    source.write_text("same content\n", encoding="utf-8")
+    lines: list[str] = []
+
+    install_user_skill(source, print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))))
+    dest = tmp_path / "home" / "skills" / "check-memory-before-acting" / "SKILL.md"
+    before = dest.stat().st_mtime_ns
+
+    install_user_skill(source, print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))))
+
+    assert dest.stat().st_mtime_ns == before
+    assert any("Installed" in line for line in lines)
+    assert any("left unchanged" in line for line in lines)
+
+
+def test_install_user_skill_replaces_a_stale_copy_and_says_so(tmp_path, monkeypatch):
+    from recall.claude_code import install_user_skill
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "home"))
+    dest = tmp_path / "home" / "skills" / "check-memory-before-acting" / "SKILL.md"
+    dest.parent.mkdir(parents=True)
+    dest.write_text("old content\n", encoding="utf-8")
+    source = tmp_path / "SKILL.md"
+    source.write_text("new content\n", encoding="utf-8")
+    lines: list[str] = []
+
+    install_user_skill(source, print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))))
+
+    assert dest.read_text(encoding="utf-8") == "new content\n"
+    assert any("Replaced" in line for line in lines)
 
 
 def test_choosing_openrouter_and_deepseek_writes_all_four_keys(tmp_path, monkeypatch):
