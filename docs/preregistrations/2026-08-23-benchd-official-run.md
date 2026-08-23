@@ -82,3 +82,7 @@ Proven at 2x the limit before rerun: 200-item hashing run, 197 tenants, zero ada
 New pins for the valid runs, replacing the ones named above (the prediction ranges and
 falsification criteria are unchanged): RE-call `1cb2eb2` (LRU commit), harness fork
 `ade275a2`, adapter SHA256 `f83a2e22...`.
+
+Correction, same day: the amendment above names RE-call `1cb2eb2`; that SHA does not exist.
+The LRU commit is `4500e7af`. Left wrong above per the no-edit rule; the run-record.json of
+each valid run carries the authoritative SHA.
