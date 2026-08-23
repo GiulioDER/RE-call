@@ -251,6 +251,7 @@ def test_a_concurrent_first_request_storm_builds_exactly_one_reranker(monkeypatc
     together is an out-of-memory event at exactly the moment the process is busiest.
     """
     import recall_mcp.service as service
+    import recall_mcp.factories as factories
 
     built = []
     lock = threading.Lock()
@@ -262,7 +263,9 @@ def test_a_concurrent_first_request_storm_builds_exactly_one_reranker(monkeypatc
             built.append(instance)
         return instance
 
-    monkeypatch.setattr(service, "_new_reranker", slow_factory)
+    # Patched on recall_mcp.factories, where _build_reranker resolves it since the split;
+    # patching the service re-export would be inert.
+    monkeypatch.setattr(factories, "_new_reranker", slow_factory)
     service._reset_reranker_cache()
     monkeypatch.setenv("RECALL_RETRIEVAL_PROFILE", "quality")
     monkeypatch.delenv("RECALL_RERANK", raising=False)

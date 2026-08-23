@@ -856,84 +856,32 @@ def ingest_into_serving_store(
     )
 
 
-def build_server() -> MCPServer:
-    """Construct the recall_mcp MCP server with its tools registered."""
-    verifier, auth_settings, token_registry = build_auth()
-    mcp = MCPServer(
-        "recall_mcp",
-        lifespan=_make_lifespan(token_registry),
-        token_verifier=verifier,
-        auth=auth_settings,
-    )
 
-    def _current_tenant(state: dict) -> str | None:
-        """The authenticated caller's tenant, or None when running unauthenticated (stdio).
+class _Require(Protocol):
+    """The authorise-and-debit choke point `build_server` constructs per process."""
 
-        Read from the access token rather than threaded down from `_require`, so it cannot go
-        stale or be passed the wrong value by a future caller.
-        """
-        if state.get("stores") is None:
-            return None
-        token = get_access_token()
-        if token is None:  # pragma: no cover - `_require` has already rejected this
-            return None
-        return (token.claims or {}).get("tenant")
+    def __call__(
+        self, scope: str, ctx: Context[dict, object], requested_tenant: str | None = None
+    ) -> PgVectorStore: ...
 
-    def _state(ctx: Context[dict, object]) -> dict:
-        state = ctx.request_context.lifespan_context
-        if not isinstance(state, dict) or "embedder" not in state:
-            raise RuntimeError(
-                "recall_mcp lifespan context is not initialized — tools must be invoked within "
-                "the running server (store/embedder are opened in the lifespan)."
-            )
-        return state
 
-    def _require(
-        scope: str,
-        ctx: Context[dict, object],
-        requested_tenant: str | None = None,
-    ) -> PgVectorStore:
-        """Authorise this call and return the store for the caller's OWN tenant.
+@dataclass(frozen=True)
+class _ToolDeps:
+    """What a tool body needs from `build_server`'s closures.
 
-        Every tool body goes through here. The store it hands back is the only one that tool can
-        reach, so a missing scope check cannot leak data across tenants — at worst it lets a
-        principal do the wrong thing inside its own namespace.
+    The three callables close over `build_auth()`'s results, so they cannot be module
+    globals; passing them explicitly is what lets each tool family register from a
+    module-level function while the bodies stay byte-identical.
+    """
 
-        This is also where the per-tenant call budget is debited, for the same reason: one choke
-        point that a new tool cannot forget to call, because it cannot get a store without it.
-        """
-        state = _state(ctx)
-        registry: StoreRegistry | None = state.get("stores")
-        if registry is None:
-            # Unauthenticated stdio: one caller, one tenant, a private pipe. There is no principal
-            # to charge and no one to protect the local user from but themselves, so the budget
-            # does not apply — matching how auth itself is scoped.
-            store: PgVectorStore = state["store"]
-            return store
+    require: _Require
+    state: Callable[[Context[dict, object]], dict]
+    current_tenant: Callable[[dict], str | None]
 
-        token = get_access_token()
-        if token is None:
-            # The SDK's bearer middleware rejects unauthenticated HTTP requests before a tool
-            # runs, so this is unreachable through the normal path. It stays because the
-            # alternative — falling through to some default store — would turn any future gap in
-            # that middleware into a silent full-corpus read.
-            raise PermissionError("this server requires authentication")
-        try:
-            tenant = authorize(token.scopes, token.claims, scope)
-        except PermissionError:
-            principal = (token.claims or {}).get("principal", token.client_id)
-            _log.warning("principal %r denied for scope %s", principal, scope)
-            raise
-        if requested_tenant is not None and requested_tenant != tenant:
-            raise PermissionError(
-                f"the authenticated token is scoped to tenant {tenant!r}, not {requested_tenant!r}"
-            )
-        # After authorisation, so an unauthorised caller cannot burn the tenant's budget by
-        # hammering a scope it does not hold.
-        limiter = state.get("limiter")
-        if limiter is not None:
-            limiter.check(tenant, _SCOPE_BUDGETS[scope])
-        return registry.get(tenant)
+
+def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+    _require = deps.require
+    _state = deps.state
 
     @mcp.tool(
         name="recall_search",
@@ -1077,6 +1025,11 @@ def build_server() -> MCPServer:
                     result, locale, state.get("translation_provider") or provider_from_env()
                 )
             )
+
+
+def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+    _require = deps.require
+    _state = deps.state
 
     @mcp.tool(
         name="recall_reasoning_query",
@@ -1229,6 +1182,12 @@ def build_server() -> MCPServer:
                     indent=2
                 )
             )
+
+
+def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+    _require = deps.require
+    _state = deps.state
+    _current_tenant = deps.current_tenant
 
     @mcp.tool(
         name="recall_index",
@@ -1406,6 +1365,11 @@ def build_server() -> MCPServer:
         result = job_status(store, job_id, state.get("desktop_jobs", {}))
         return json.dumps(result, indent=2)
 
+
+def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+    _require = deps.require
+    _state = deps.state
+
     @mcp.tool(
         name="recall_calibration_status",
         annotations=ToolAnnotations(
@@ -1476,6 +1440,12 @@ def build_server() -> MCPServer:
         result = await _to_thread(lambda: publish_calibration(store, calibration_id))
         return json.dumps(result, indent=2, default=str)
 
+
+def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+    _require = deps.require
+    _state = deps.state
+    _current_tenant = deps.current_tenant
+
     @mcp.tool(
         name="recall_forget",
         annotations=ToolAnnotations(
@@ -1536,6 +1506,92 @@ def build_server() -> MCPServer:
         store = _require(SCOPE_READ, ctx)
         return await _to_thread(lambda: memory_stats(store).model_dump_json(indent=2))
 
+
+def build_server() -> MCPServer:
+    """Construct the recall_mcp MCP server with its tools registered."""
+    verifier, auth_settings, token_registry = build_auth()
+    mcp = MCPServer(
+        "recall_mcp",
+        lifespan=_make_lifespan(token_registry),
+        token_verifier=verifier,
+        auth=auth_settings,
+    )
+
+    def _current_tenant(state: dict) -> str | None:
+        """The authenticated caller's tenant, or None when running unauthenticated (stdio).
+
+        Read from the access token rather than threaded down from `_require`, so it cannot go
+        stale or be passed the wrong value by a future caller.
+        """
+        if state.get("stores") is None:
+            return None
+        token = get_access_token()
+        if token is None:  # pragma: no cover - `_require` has already rejected this
+            return None
+        return (token.claims or {}).get("tenant")
+
+    def _state(ctx: Context[dict, object]) -> dict:
+        state = ctx.request_context.lifespan_context
+        if not isinstance(state, dict) or "embedder" not in state:
+            raise RuntimeError(
+                "recall_mcp lifespan context is not initialized — tools must be invoked within "
+                "the running server (store/embedder are opened in the lifespan)."
+            )
+        return state
+
+    def _require(
+        scope: str,
+        ctx: Context[dict, object],
+        requested_tenant: str | None = None,
+    ) -> PgVectorStore:
+        """Authorise this call and return the store for the caller's OWN tenant.
+
+        Every tool body goes through here. The store it hands back is the only one that tool can
+        reach, so a missing scope check cannot leak data across tenants — at worst it lets a
+        principal do the wrong thing inside its own namespace.
+
+        This is also where the per-tenant call budget is debited, for the same reason: one choke
+        point that a new tool cannot forget to call, because it cannot get a store without it.
+        """
+        state = _state(ctx)
+        registry: StoreRegistry | None = state.get("stores")
+        if registry is None:
+            # Unauthenticated stdio: one caller, one tenant, a private pipe. There is no principal
+            # to charge and no one to protect the local user from but themselves, so the budget
+            # does not apply — matching how auth itself is scoped.
+            store: PgVectorStore = state["store"]
+            return store
+
+        token = get_access_token()
+        if token is None:
+            # The SDK's bearer middleware rejects unauthenticated HTTP requests before a tool
+            # runs, so this is unreachable through the normal path. It stays because the
+            # alternative — falling through to some default store — would turn any future gap in
+            # that middleware into a silent full-corpus read.
+            raise PermissionError("this server requires authentication")
+        try:
+            tenant = authorize(token.scopes, token.claims, scope)
+        except PermissionError:
+            principal = (token.claims or {}).get("principal", token.client_id)
+            _log.warning("principal %r denied for scope %s", principal, scope)
+            raise
+        if requested_tenant is not None and requested_tenant != tenant:
+            raise PermissionError(
+                f"the authenticated token is scoped to tenant {tenant!r}, not {requested_tenant!r}"
+            )
+        # After authorisation, so an unauthorised caller cannot burn the tenant's budget by
+        # hammering a scope it does not hold.
+        limiter = state.get("limiter")
+        if limiter is not None:
+            limiter.check(tenant, _SCOPE_BUDGETS[scope])
+        return registry.get(tenant)
+
+    deps = _ToolDeps(require=_require, state=_state, current_tenant=_current_tenant)
+    _register_search_tools(mcp, deps)
+    _register_reasoning_tools(mcp, deps)
+    _register_ingest_tools(mcp, deps)
+    _register_calibration_tools(mcp, deps)
+    _register_memory_admin_tools(mcp, deps)
     return mcp
 
 
