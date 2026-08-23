@@ -30,6 +30,7 @@ import json
 import os
 import sys
 import urllib.request
+from typing import Callable
 
 ANSWERER_PROMPT = """You are answering a question using ONLY the retrieved memories below.
 
@@ -68,7 +69,7 @@ Then on the next line, briefly explain your reasoning in one sentence."""
 CHAT_OVERHEAD_TOKENS = 7
 
 
-def _make_counter():
+def _make_counter() -> "tuple[Callable[[str], int], str]":
     try:
         import tiktoken
 
@@ -164,7 +165,7 @@ def main() -> int:
     po.set_defaults(func=cmd_openrouter)
 
     args = p.parse_args()
-    return args.func(args)
+    return int(args.func(args))
 
 
 if __name__ == "__main__":

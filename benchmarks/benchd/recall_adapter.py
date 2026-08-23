@@ -63,7 +63,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from benchd_harness.adapters.base import BaseAdapter
+from benchd_harness.adapters.base import BaseAdapter  # type: ignore[import-not-found]
 
 TENANT = "benchd-bench"
 
@@ -218,9 +218,10 @@ class RecallAdapter(BaseAdapter):
         answered from a corpus its item did not ingest."""
         self._active = None
 
-    def _open_store(self, digest: str):
+    def _open_store(self, digest: str) -> Any:
         from recall.store import PgVectorStore
 
+        assert self._dsn is not None  # setup() ran first
         tenant = f"benchd-{self._run_ns}-{digest[:12]}"
         store = PgVectorStore(
             self._dsn, dim=self._embedder.dim, tenant=tenant, table=self._table
@@ -229,7 +230,7 @@ class RecallAdapter(BaseAdapter):
         store.ensure_schema()
         return store
 
-    def _checkout_store(self, digest: str):
+    def _checkout_store(self, digest: str) -> Any:
         """The open store for a known corpus, reopening its tenant if it was evicted.
 
         Open connections are an LRU capped at RECALL_BENCHD_STORE_CAP (default 12, enough to
@@ -380,6 +381,7 @@ class RecallAdapter(BaseAdapter):
         if self._active is None or self._active not in self._tenants:
             return ""
         store = self._checkout_store(self._active)
+        hits: List[Any]  # ScoredChunk on the retriever path, TrustedHit on the trust path
         if self._sparse in ("splade", "both", "none"):
             # The learned-sparse and dense-only legs live on HybridRetriever, not on the trust
             # entry point, so those arms search the retriever directly. Abstention does not
@@ -398,8 +400,7 @@ class RecallAdapter(BaseAdapter):
                 retrieval_profile=f"benchd_{self._sparse}",
                 index_generation="benchd",
             )
-            result = retriever.search(query, k=self._top_k)
-            hits = result.hits
+            hits = list(retriever.search(query, k=self._top_k).hits)
         else:
             from recall.calibration import Calibration
             from recall.retriever import DEFAULT_CANDIDATE_K
@@ -422,7 +423,7 @@ class RecallAdapter(BaseAdapter):
                 # judge scores that INCORRECT. The suppress default exists because every
                 # Bench'd question is answerable, so abstention here is always a forfeit.
                 return ""
-            hits = result.hits
+            hits = list(result.hits)
         return "\n\n".join(hit.chunk.text for hit in hits)
 
     def _synthesize(self, query: str, memories: str) -> str:
