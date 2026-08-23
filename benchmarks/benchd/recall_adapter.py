@@ -363,27 +363,37 @@ class RecallAdapter(BaseAdapter):
     def _synthesize(self, query: str, memories: str) -> str:
         """Distill retrieved memories into a short evidence digest with the reasoning model.
 
-        On any provider failure the raw memories are returned instead: a degraded answer beats
-        a forfeited question, and the failure is visible in the trace as an oversized recall."""
-        try:
-            from openai import OpenAI
+        After three failed attempts the raw memories are returned instead: a degraded answer
+        beats a forfeited question, and the failure is visible in the trace as an oversized
+        recall. The retries exist because the A3 tuning run measured intermittent provider
+        failures leaking raw fallbacks into 771-token recalls the answerer then refused."""
+        from openai import OpenAI
 
-            client = OpenAI(
-                api_key=os.environ["OPENROUTER_API_KEY"],
-                base_url="https://openrouter.ai/api/v1",
-            )
-            response = client.chat.completions.create(
-                model=self._synth_model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": SYNTH_PROMPT.format(question=query, memories=memories),
-                    }
-                ],
-                temperature=0.0,
-                max_tokens=self._synth_max_tokens,
-            )
-            text = (response.choices[0].message.content or "").strip()
-            return text or memories
-        except Exception:
-            return memories
+        client = OpenAI(
+            api_key=os.environ["OPENROUTER_API_KEY"],
+            base_url="https://openrouter.ai/api/v1",
+            timeout=60.0,
+        )
+        for attempt in range(3):
+            try:
+                response = client.chat.completions.create(
+                    model=self._synth_model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": SYNTH_PROMPT.format(question=query, memories=memories),
+                        }
+                    ],
+                    temperature=0.0,
+                    max_tokens=self._synth_max_tokens,
+                )
+                text = (response.choices[0].message.content or "").strip()
+                if text:
+                    return text
+            except Exception:
+                pass
+            if attempt < 2:
+                import time
+
+                time.sleep(2.0 * (attempt + 1))
+        return memories
