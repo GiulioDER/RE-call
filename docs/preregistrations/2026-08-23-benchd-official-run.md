@@ -100,3 +100,21 @@ Predicted: 68 to 75.
 high end of expectation: 75.0 on the tuned 60 became 67.2 on the full 500. Against the
 leaderboard: 8.2 points above the current top (59.0). The falsification threshold (at or below
 59.0) was not approached.
+
+## Result: LoCoMo full (2026-08-23)
+**Status:** measured; both official runs complete
+
+Measured: **77.3** (1190/1540), run_49bfa2142bd1, signature VERIFIED, fingerprint
+92dae5232b5c8af6, 0 adapter errors, 0 abstentions, 5/1540 synthesis fallbacks. Per dimension:
+reasoning 801/937 (85%), recall 189/282 (67%), temporal 200/321 (62%). Efficiency: 52.4
+tokens per correct, mean latency 3.9s. Spend, metered: $4.01 OpenRouter. Wall: 44 minutes at
+workers=4. Estimated BMI 83.9 against LlamaIndex's 68.3 on their n=49 cell.
+Predicted: 82 to 90.
+**Gap: 4.7 below the band's floor.** The prediction leaned on the n=49 dress (89.8), and the
+registered confound ("per-dimension counts are tiny") is the explanation: the dress's temporal
+went 10/10 on a sample whose full-population rate is 62%. Against the leaderboard: 22.5 points
+above their published cell (54.8), and the dress manifest for the exact n=49 cell is retained
+alongside. The falsification threshold (at or below 54.8) was not approached.
+
+Cumulative OpenRouter spend for the entire campaign, tuning through both officials including
+the void run: $6.64 by meter (558.217 to 564.857).
