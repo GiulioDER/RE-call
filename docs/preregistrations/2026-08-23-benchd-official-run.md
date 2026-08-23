@@ -66,3 +66,19 @@ leaderboard: LongMemEval 59.0 (LlamaIndex, LangChain), LoCoMo n=49 cell 54.8 (Ll
 - **Duplicate conversation ingests under workers**: each worker adapter builds its own tenant
   for a conversation it encounters, so up to workers x conversations ingests on LoCoMo; costs
   cents and changes no result (tenants are namespaced per adapter instance).
+
+## Amendment (2026-08-23, before the valid runs): first LongMemEval attempt VOID
+
+The first official LongMemEval invocation (run_e00dcde48e15, 16:30Z) is void under the
+registered void condition: 402 of 500 items returned adapter errors ("sorry, too many clients
+already") because the tenant cache held one Postgres connection per conversation and the full
+run has ~500 conversations against a ~100 connection server limit. The tuning slices (n<=60)
+could not have surfaced this. Reported, not hidden: the manifest is kept, its score (14.4)
+measures the crash, not the system.
+
+Fix: an LRU cap on open stores (RECALL_BENCHD_STORE_CAP=12), rows persist across eviction.
+Proven at 2x the limit before rerun: 200-item hashing run, 197 tenants, zero adapter errors.
+
+New pins for the valid runs, replacing the ones named above (the prediction ranges and
+falsification criteria are unchanged): RE-call `1cb2eb2` (LRU commit), harness fork
+`ade275a2`, adapter SHA256 `f83a2e22...`.
