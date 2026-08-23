@@ -55,11 +55,18 @@ fastembed = ["fastembed>=0.3,<1"]
 #
 # PYSEC-2026-3046 / GHSA-95ww-475f-pr4f (SSRF via the multi-modal faithfulness module)
 # affects 0.2.3 through 0.4.3, and 0.4.3 is the LATEST release: there is no fixed version
-# to pin to. Declaring it here would ship a known-vulnerable dependency to everyone who
-# installs this package, to no purpose, because Ragas cannot run on this project's Python
-# anyway: it pulls HuggingFace `datasets`, which needs a `pyarrow.parquet` extension that
-# has no cp314 wheel. The scorer therefore runs in its own interpreter, and
-# `scripts/agent_ab_score_ragas.py` carries the install command for that venv.
+# to pin to. Declaring it here would ship a known-vulnerable dependency, with no fixed
+# version to move to, into every install of this package. That is reason enough on its
+# own: the scorer is a benchmarking tool, and nobody installing this package needs it.
+# It therefore runs in its own interpreter, and `scripts/agent_ab_score_ragas.py` carries
+# the install command for that venv.
+#
+# 🔁 Corrected 2026-08-23. This used to add "to no purpose, because Ragas cannot run on
+# this project's Python anyway: pyarrow.parquet has no cp314 wheel". False in both halves.
+# pyarrow 22.0.0, 23.0.1, 24.0.0, 25.0.0 and 25.0.1 all publish a plain cp314 wheel, and
+# 25.0.1 imports fine here. Do not restore that clause: it made a security decision look
+# like a free one, so the day the convenience argument expired the whole rationale would
+# have read as expired with it. The security argument has to carry this alone, and does.
 #
 # The benchmark never reaches the vulnerable path: it uses AnswerCorrectness and
 # FactualCorrectness, not the multi-modal collections module. That is a reason the tool is
