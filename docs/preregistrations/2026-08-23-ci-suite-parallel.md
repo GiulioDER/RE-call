@@ -73,3 +73,55 @@ the number I would have chosen anyway.
   must not be quoted as one.
 - **The `floor` job resolves `pytest-xdist` to its declared floor**, 3.6.0, not to the 3.8.0
   measured locally. A scheduling bug fixed between them would show up only there.
+
+## Result (2026-08-23)
+
+**Status:** measured
+
+Run `32645204630` on `claude/recall-test-suite-speed-14a62d`, against run `32641788574` on master
+as the before. Both on GitHub standard runners.
+
+| | before | after | predicted |
+|---|---|---|---|
+| `test` job | 8:55 | **3:55** | 4:00 to 6:00 |
+| `floor` job | 7:23 | **3:01** | 3:30 to 5:00 |
+| whole workflow | 8:59 | **7:04** | 5:00 to 6:30 |
+| coverage | 79.56% | **79.59%** | unchanged within 0.5 |
+| test counts | 6421 passed, 150 skipped | 6429 passed, 150 skipped | agreement |
+
+1. **`test`: predicted 4:00 to 6:00, measured 3:55.** Just under the optimistic end, so the
+   prediction was right in shape and slightly pessimistic in size. pytest's own clock went 8:00 to
+   3:08, a 2.6× cut on 4 vCPU.
+2. **`floor`: predicted 3:30 to 5:00, measured 3:01.** Also under. Both jobs beat the interval by
+   a similar margin, which suggests the thing I under-weighted was the same in both: install and
+   checkout are a larger fixed share of these jobs than I assumed, so the parallel part shrank
+   more than the job total implied.
+3. **Whole workflow: predicted 5:00 to 6:30, measured 7:04. FALSIFIED, and the cause is not
+   parallelism.** The bound named in the record was `Clean install (wizard)` at 4:59, and it
+   still finished at 4:59. What set 7:04 was `Desktop UI`, which **queued for five minutes**
+   before starting (14:26:58 against the workflow's 14:21:56) and then ran for two. Runner
+   availability, not work. So the test jobs are no longer the critical path, which was the point,
+   and the workflow's remaining minutes are now somebody else's queue.
+4. **Coverage: 79.56% to 79.59%, +0.03 points**, well inside the 0.5 predicted, with
+   `--cov-fail-under=70` passing. `pytest-cov` combines the workers' data correctly. This was the
+   check with a sharp edge and it held.
+5. **Counts: +8 passed, skips identical.** Not a discrepancy: the master baseline run predates
+   two merges (#480, #481) that this branch was rebased onto, and #481 adds exactly 8 tests to
+   `tests/test_setup.py`. Verified by diffing the collected node ids between the two revisions,
+   not by assuming.
+6. **Green, but not on the first attempt, and the first attempt is the useful part.** Run
+   `32644567899` failed `floor` with
+   `test_a_poisoned_connection_is_discarded_through_the_real_return_path`: `assert 0 == 1` on
+   `pool.reset_discards`. The counter is incremented inside `_reset`, which **psycopg_pool runs on
+   a worker thread**, so the test was asserting that a thread had already been scheduled. It won
+   every time on an idle machine and lost the first time four workers shared four vCPU.
+   **A pre-existing race in the test, not in the pool, and not caused by the isolation**;
+   parallelism stopped hiding it. Fixed with a bounded wait that leaves the assertion at `== 1`.
+
+### The falsifier that has not been discharged
+
+The record says "a flake rate above zero across the first five runs" disqualifies this. **Two runs
+have happened, one of which was red.** That red is explained and fixed at its cause rather than
+retried, but the honest position is that this is one green run, not five, and the fifth is the
+one that decides whether a shared gate has become intermittent. Anyone merging this should watch
+the next few runs rather than treat 3:55 as settled.
