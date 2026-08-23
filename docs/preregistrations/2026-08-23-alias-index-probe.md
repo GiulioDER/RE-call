@@ -100,3 +100,39 @@ python -u scripts/agent_ab_probe_alias_index.py --archive ~/.claude/archive/agen
    build verdict.
 5. **Alias sections change chunking.** A memo whose alias section lands in its retrieving chunk
    may also SHIFT what that chunk says; retention is the endpoint that watches the damage.
+
+---
+
+## Result (2026-08-23)
+
+**Status: measured, and VOID by the registered apparatus gate.** Control rebuild: misses
+reproduced **15/15** (gate >= 13, passed), hits reproduced **26/31** (gate >= 28, **failed**). Per
+the rule above, no verdict is read from the aliased arm, and none of the decision-rule branches
+applies.
+
+**The gate failure localizes completely, which is the gate working.** All five lost hits are the
+same session family, `ts-raise-on-missing`, whose governing memo `missing-input-becomes-a-clean-null`
+is the ONE governing memo among the 20 sources that had to be reconstructed from chunks (the
+recovery report showed the chunker transforms text: no joiner reproduced any sha-verified file, so
+every reconstruction was known-approximate). The other 174 sources were bit-exact, and every one of
+their sessions reproduced, misses and hits alike. Chunk counts: original 1,006, control rebuild
+1,016, the drift again localized to the 20 reconstructions.
+
+**Observation, labelled as unregistered because the probe is void:** within the rebuilt
+instrument, which is internally valid (same builder, same sources, differing only in the alias
+sections), **control and aliased agree on 46 of 46 sessions**. Zero rescues, zero losses. The
+alias sections, which read exactly as intended ("Update repository files programmatically using
+Python" appended to the CRLF memo), had no measurable effect on any recorded query's top-5 in
+either direction. Two candidate mechanisms, undecided here: the appended section merges into an
+existing chunk and dilutes rather than creating a retrievable target; and uniform augmentation
+raises every memo's goal-vocabulary similarity together, cancelling in the ranking. Deciding
+between them belongs to a new record, if one is ever worth writing.
+
+**What a follow-up would need, recorded so the void is not quietly re-run:** exact recovery of
+`missing-input-becomes-a-clean-null` (or registered exclusion of its five sessions with the gate
+rewritten accordingly), and a design answer to the 46/46 null: separate alias DOCUMENTS pointing
+at the memo, rather than appended sections, is the variant the dilution mechanism predicts would
+behave differently. Given that both generation-side directions have now measured at or near zero
+(query-side 3/15, index-side 0 effect within-instrument), the prior on prompt-generated vocabulary
+bridging this gap at current model quality is low, and the record says so rather than proposing a
+third variant by reflex.
