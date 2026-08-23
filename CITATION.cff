@@ -1,7 +1,8 @@
 cff-version: 1.2.0
 message: "If you use this software or describe it publicly, please cite RE-call and credit Giulio D'Erme."
-title: "RE-call: Retrieval-Augmented Self-Recall"
+title: "RE-call"
 version: 0.9.8
+date-released: 2026-08-22
 abstract: >-
   RE-call is a retrieval engine for an AI agent's own memory that returns confidence, provenance,
   and validity with every hit — instead of the closest vector match alone — and prefers an explicit
@@ -10,5 +11,6 @@ abstract: >-
   windows, and confidence for each result.
 authors:
   - name: "Giulio D'Erme"
+url: "https://giulioder.github.io/RE-call/"
 repository-code: "https://github.com/GiulioDER/RE-call"
 license: Apache-2.0

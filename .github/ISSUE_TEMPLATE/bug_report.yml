@@ -13,8 +13,8 @@ body:
     id: recall-version
     attributes:
       label: recall version
-      description: "`pip show recall` or the commit SHA if installed from source."
-      placeholder: "0.5.0"
+      description: "`pip show recall-rag` (the distribution is recall-rag, not recall) or the commit SHA if installed from source."
+      placeholder: "the Version line from pip show recall-rag"
     validations:
       required: true
 

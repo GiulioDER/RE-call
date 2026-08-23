@@ -78,6 +78,11 @@
     <span>Windows <b>·</b> macOS <b>·</b> Linux</span>
     <span>Runs <b>offline</b></span>
   </div>
+  <div class="shell hero-meta">
+    <span>ATM-Bench Recall@10 <b>92.89</b> vs 79.09 best published (<a href="https://github.com/GiulioDER/RE-call/blob/master/docs/ATM_BENCH.md">limits</a>)</span>
+    <span>MTRAG correct refusals <b>second of ten</b> (<a href="https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md">limits</a>)</span>
+    <span><b>Zero</b> memory-layer LLM calls to build memory (<a href="https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md">limits</a>)</span>
+  </div>
 </section>
 
 <!-- ============================================================ What it is -->
@@ -90,15 +95,14 @@
       <p>When nothing matches with enough confidence, it abstains instead of handing you the nearest note.</p>
     </div>
     <div>
-      <p class="eyebrow eyebrow--signal">The third question <code>recall quickstart</code> asks</p>
+      <p class="eyebrow eyebrow--signal">The middle question <code>recall quickstart</code> asks</p>
       <div class="terminal terminal--output">
         <div class="terminal-bar"><span class="terminal-label">Output</span></div>
-        <div class="terminal-body"><pre><span class="warn">[ABSTAIN GAP DEGRADED:INDEX_NOT_READY] query='who painted the mural in the town library'</span>
-<span class="dim">  reason: no hit above the calibrated confidence threshold (probable corpus gap)</span>
-<span class="dim">  low_confidence conf=0.25 cos=0.446  search_engine_v2.md</span>
-<span class="dim">  low_confidence conf=0.23 cos=0.440  rollout_flag_v2.md</span></pre></div>
+        <div class="terminal-body"><pre><span class="line">query='how many requests per second can a client make?'</span>
+<span class="line">  ok           conf=1.00  cos=0.784  rate_limits_v2.md</span>
+<span class="warn">  superseded   conf=1.00  cos=0.806  rate_limits_v1.md -&gt; use rate_limits_v2.md</span></pre></div>
       </div>
-      <p class="muted">Copied from a real run, trimmed to the first two of five hits. A low-confidence match is shown as evidence, not presented as an answer. <code>DEGRADED</code> is the sample corpus saying its threshold was never fitted to it, which is what <a href="calibration.html">calibration</a> fixes.</p>
+      <p class="muted">Copied from a real run against the sample corpus. Look at the cosines: the <b>stale</b> memory scores <b>higher</b> (0.806 against 0.784), so plain vector search returns the limit that no longer exists. RE-call flags it <code>superseded</code>, points at its successor, and puts the current memory on top; the third question, which the corpus cannot answer, is refused. Until you fit a threshold to your own corpus every line also carries <code>DEGRADED</code>, which is what <a href="calibration.html">calibration</a> fixes.</p>
     </div>
   </div>
 </section>

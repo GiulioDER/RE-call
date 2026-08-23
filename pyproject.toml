@@ -13,7 +13,8 @@ license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Giulio D'Erme" }]
 keywords = [
-    "rag", "retrieval-augmented-generation", "agent-memory", "pgvector", "postgresql",
+    "rag", "retrieval-augmented-generation", "agent-memory", "memory", "long-term-memory",
+    "ai-agents", "semantic-search", "claude", "pgvector", "postgresql",
     "hybrid-search", "vector-search", "reranking", "mcp", "model-context-protocol",
     "abstention", "calibration", "llm-agents",
 ]
@@ -121,6 +122,7 @@ desktop = ["PySide6>=6.7", "keyring>=25", "mcp>=2,<3"]
 # reparent whatever followed it.
 [project.urls]
 Homepage = "https://github.com/GiulioDER/RE-call"
+Documentation = "https://giulioder.github.io/RE-call/"
 Source = "https://github.com/GiulioDER/RE-call"
 Issues = "https://github.com/GiulioDER/RE-call/issues"
 Changelog = "https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md"

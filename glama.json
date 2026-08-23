@@ -1,4 +1,8 @@
 {
   "$schema": "https://glama.ai/mcp/schemas/server.json",
-  "maintainers": ["GiulioDER"]
+  "maintainers": ["GiulioDER"],
+  "name": "RE-call",
+  "description": "Agent memory on your own Postgres that flags superseded facts and abstains instead of guessing. Verdict, confidence and provenance per hit; calibrated refusal when nothing clears the threshold.",
+  "homepage": "https://giulioder.github.io/RE-call/",
+  "keywords": ["agent-memory", "rag", "pgvector", "postgresql", "abstention", "mcp"]
 }
