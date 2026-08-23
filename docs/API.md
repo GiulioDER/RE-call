@@ -21,36 +21,56 @@ only from returned hits whose verdict and provenance satisfy the caller's policy
 
 ## Command Line
 
+Every `recall` subcommand, in `recall --help` order. `tests/test_api_doc_drift.py` diffs this
+table against the registered parsers, so a command cannot ship undocumented or linger here after
+removal.
+
 | Command | Purpose |
 |---|---|
 | `recall setup` | Guided local setup: embedder/reranker/entailment choices, optional per-corpus calibration, and optional CLAUDE.md/memory scaffolding. |
-| `recall schema` | Apply, inspect, and plan PostgreSQL schema migrations. |
+| `recall wizard` | The same install as a scriptable pipeline: `--headless --config` drives every corpus to a calibrated, promoted generation ([WIZARD.md](WIZARD.md)). |
+| `recall uninstall` | Remove what setup installed: MCP registrations, hooks, and optionally the database stack. |
+| `recall schema` | Apply, inspect, and plan PostgreSQL schema migrations (`status`, `plan`, `apply`, `grants`). |
+| `recall manifest` | Build and verify index manifests (`create`, `inventory`, `verify`). |
+| `recall generation` | Immutable generation lifecycle (`build`, `validate`, `promote`, `abandon`, `rollback`, `list`, `gc`). |
 | `recall index` | Index a markdown corpus. |
+| `recall forget` | Permanently erase indexed sources; the right-to-erasure path. |
 | `recall search` | Query an indexed corpus through the trust layer. |
-| `recall reasoning` | Inspect projections, proposals, traces, audits, and opt-in reasoning queries without changing ordinary retrieval behavior. |
-| `recall extract` | Extract structured truth claims from memo prose. Reads only; writes nothing. Off unless `RECALL_TRUTH_EXTRACTION=1`. |
-| `recall rewrite` | Review extracted claims and declare accepted ones in corpus frontmatter. Dry run by default; `--reviewer` and `--note` are required. |
+| `recall reasoning` | Inspect projections, proposals, traces, audits, and opt-in reasoning queries without changing ordinary retrieval behavior (`projection`, `proposals`, `query`, `trace`, `audit`). |
+| `recall extract` | Extract structured truth claims from memo prose (`run`, `show`). Reads only; writes nothing. Off unless `RECALL_TRUTH_EXTRACTION=1`. |
+| `recall rewrite` | Review extracted claims and declare accepted ones in corpus frontmatter (`plan`, `apply`, `reject`, `verify`). Dry run by default; `--reviewer` and `--note` are required. |
+| `recall quickstart` | One command from a fresh install to three answered queries: throwaway database, bundled corpus, and the printed next steps. |
+| `recall demo` | Run the bundled product example against an existing database (needs a git clone; `quickstart` is the from-PyPI form). |
+| `recall code` | Index and search a code corpus with the code chunker. |
 | `recall lint` | Validate memo frontmatter and corpus shape. |
 | `recall check` | Validate one memo, optionally in strict mode. |
-| `recall demo` | Run the bundled five-minute product example. |
+| `recall calibrate` | Fit an abstention threshold from a labeled query file (legacy single-shot form). |
+| `recall calibration` | Calibration artifact lifecycle (`calibrate`, `carry-forward`, `drift`, `auto`, `list`, `show`, `export`, `import`). |
 | `recall-enterprise` | Manage generation routing and readiness for production deployments. |
 
 ## MCP
 
-The MCP server is `python -m recall_mcp.server`. Its supported tools are:
+The MCP server is `python -m recall_mcp.server`. Every registered tool, in `tools/list` order;
+the same drift test diffs this table against the `@mcp.tool` registrations:
 
 | Tool | Purpose |
 |---|---|
 | `recall_search` | Search trusted memory. |
 | `recall_evidence` | Return evidence for a query. |
-| `recall_index` | Index allowed files beneath `RECALL_INDEX_ROOT`. |
-| `recall_forget` | Erase indexed source material. |
-| `recall_stats` | Report counters and operational state. |
 | `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `expand_retrieval=true` only when the cheap expansion provider is configured. |
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
-| `recall_reasoning_audit` | Report reasoning integration state and diagnostics. |
 | `recall_rewrite_plan` | Report which key a proposal would declare, in which file. Writes nothing. |
+| `recall_reasoning_audit` | Report reasoning integration state and diagnostics. |
+| `recall_index` | Index allowed files beneath `RECALL_INDEX_ROOT`. |
+| `recall_tenants` | Return the tenant scopes visible to this caller (the full inventory needs `recall:admin`). |
+| `recall_ingest` | Upload bounded source files and index them, debiting the tenant's byte quota. |
+| `recall_job_status` | Return the state of one ingest job, scoped to the caller's tenant. |
+| `recall_calibration_status` | Return the latest calibration artifact bound to the caller's generation. |
+| `recall_calibration_run` | Create a draft calibration artifact for the active generation. |
+| `recall_calibration_publish` | Publish one certified calibration artifact. Requires `recall:admin`: publication changes what the whole tenant serves. |
+| `recall_forget` | Erase indexed source material, including its staged upload files. |
+| `recall_stats` | Report counters and operational state. |
 
 `recall_search` and `recall_evidence` also accept an optional `locale` argument for presentation
 localization. When supplied, the response gains an additive `localized` object containing display
