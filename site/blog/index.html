@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blog · RE-call</title>
+<meta name="description" content="Technical notes on RE-call: trustworthy agent memory on PostgreSQL and pgvector. Validity, supersession, calibration and abstention, measured rather than asserted.">
+<link rel="alternate" type="application/atom+xml" title="RE-call blog" href="feed.xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="../styles.css">
+<script src="../app.js" defer></script>
+<script src="../translate.js" defer></script>
+<style>
+  .post-list { list-style: none; padding: 0; margin: 2rem 0 0; max-width: 44rem; }
+  .post-list li { border-top: 1px solid var(--line, rgba(127,127,127,.3)); padding: 1.5rem 0; }
+  .post-list a { text-decoration: none; }
+  .post-list h2 { font-size: 1.4rem; margin: 0 0 0.4rem; }
+  .post-list time { font-family: "Geist Mono", monospace; font-size: 0.78rem; opacity: 0.7; }
+  .post-list p { margin: 0.5rem 0 0; max-width: 65ch; }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="../index.html"><img class="wordmark-mark" src="../assets/re_call_logo.png" alt=""><span class="wordmark-name">RE-call</span><span>Blog</span></a>
+    <nav>
+      <a href="../download.html">Download</a>
+      <a href="../readme.html">README</a>
+      <a href="../start.html">Install</a>
+      <a href="../corpus.html">Your memory</a>
+      <a href="../claude-code.html">Claude Code</a>
+      <a href="../calibration.html">Calibration</a>
+      <a href="../troubleshooting.html">Troubleshooting</a>
+      <a href="index.html" aria-current="page">Blog</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="shell" style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(4rem, 9vw, 7rem);">
+  <p class="eyebrow">Notes from the workbench</p>
+  <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 20ch; margin-bottom: 1.5rem;">Memory you can defend, measured in public.</h1>
+  <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
+  <p class="lede" style="max-width: 65ch;">Technical notes on building trustworthy agent memory on PostgreSQL and pgvector: validity, supersession, calibration, abstention, and the measurements behind each claim. Subscribe with the <a href="feed.xml">Atom feed</a>.</p>
+
+  <ul class="post-list">
+    <li>
+      <a href="the-retracted-claim-is-the-nearer-match.html">
+        <time datetime="2026-08-23">2026-08-23</time>
+        <h2>The retracted claim is the nearer match</h2>
+        <p>Agent memory that keeps its history holds both the claim and the correction, and on cosine similarity the retracted claim often wins. One pair of memos from the shipped demo corpus shows the failure exactly, and why no ranker fixes it.</p>
+      </a>
+    </li>
+  </ul>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="shell footer-inner">
+    <nav>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+      <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
+      <a href="feed.xml">Atom feed</a>
+    </nav>
+    <small>Apache 2.0</small>
+  </div>
+</footer>
+
+</body>
+</html>
