@@ -217,6 +217,20 @@ python /path/to/recall/benchmarks/benchd/count_tokens.py openrouter   # usage sn
 python /path/to/recall/benchmarks/benchd/count_tokens.py manifest ./runs/run_*/manifest.signed.json --project 500
 ```
 
+Operational lessons from the first smoke runs (2026-08-23, all fixed in the adapter or noted):
+
+- **One database per embedder dimension.** The default `chunks` table is dimension-typed at
+  first `ensure_schema`; switching hashing (64) to voyage-4 (1024) in one database fails with
+  "table 'chunks' uses vector(64)". Wipe the schema between embedder switches, or use a fresh
+  session container per configuration.
+- The adapter must bootstrap the default `chunks` table before its bench table: global
+  generation migrations refuse to apply through a custom table first.
+- The synthesis digest must be complete declarative sentences. A bare "Marcus Chen." digest
+  made the locked answerer answer "Insufficient information in memory.", which the judge
+  scores INCORRECT. The prompt now forbids fragments; smoke went 10/10 with mean recall 45
+  tokens per question.
+- Arms share one tenant and table, so tuning runs are strictly sequential per database.
+
 Then a 20-question dress rehearsal on the real target
 (`benchd run -a re-call -b longmemeval-v1 -n 20 --judge ...`) to check dataset download,
 per-dimension behaviour, and the token projection, before pre-registering and paying for the
