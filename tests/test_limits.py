@@ -230,7 +230,7 @@ def test_defaults_apply_when_nothing_is_configured(monkeypatch):
     monkeypatch.delenv("RECALL_INDEX_BYTES_PER_HOUR", raising=False)
 
     limits = limiter_from_env().limits()
-    assert set(limits) == {"read", "write", "forget", "index_bytes"}
+    assert set(limits) == {"read", "write", "forget", "admin", "index_bytes"}
     assert limits["read"].capacity == DEFAULT_CALLS_PER_MIN["read"]
 
 
@@ -296,3 +296,26 @@ def test_rate_from_env_reports_disabled_as_none(monkeypatch):
     assert _rate_from_env("X", 10.0, 60.0) is None
     monkeypatch.setenv("X", "OFF")  # case-insensitive
     assert _rate_from_env("X", 10.0, 60.0) is None
+
+
+def test_the_failed_auth_throttle_closes_after_a_failure_storm_and_reopens():
+    """N failures close the gate; elapsed time reopens it. Successes never touch it."""
+    from recall_mcp.limits import FailedAuthThrottle
+
+    clock = [0.0]
+    throttle = FailedAuthThrottle(Rate(capacity=3.0, per_second=1.0), clock=lambda: clock[0])
+    assert throttle.allow()
+    for _ in range(3):
+        throttle.record_failure()
+    assert not throttle.allow(), "three failures against a capacity of three must close the gate"
+    clock[0] += 1.5
+    assert throttle.allow(), "refill at 1/s reopens the gate after 1.5s"
+
+
+def test_the_failed_auth_throttle_disabled_is_always_open():
+    from recall_mcp.limits import FailedAuthThrottle
+
+    throttle = FailedAuthThrottle(None)
+    for _ in range(1000):
+        throttle.record_failure()
+    assert throttle.allow()

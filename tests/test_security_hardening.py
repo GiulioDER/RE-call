@@ -224,3 +224,18 @@ def test_the_setup_refusal_does_not_offer_a_remedy_that_does_not_work(tmp_path, 
     # The two remedies that do work must both survive.
     assert "password" in message
     assert "RECALL_ALLOW_INSECURE_DSN=1" in message
+
+
+def test_docker_internal_warns_but_does_not_refuse(caplog):
+    """`host.docker.internal` reaches the container HOST, which can be a shared machine, so it
+    no longer counts as local — but refusing it would break the documented compose quickstart,
+    so the guard warns and lets it through."""
+    import logging
+
+    dsn = "postgresql://recall:recall@host.docker.internal:5432/recall"
+    with caplog.at_level(logging.WARNING):
+        assert warn_if_insecure_dsn(dsn) is None  # no message returned: require_secure_dsn passes
+    assert any("container HOST" in rec.message for rec in caplog.records), (
+        "the demotion must still be audible in the log"
+    )
+    require_secure_dsn(dsn)  # must not raise

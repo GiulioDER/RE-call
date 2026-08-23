@@ -252,6 +252,15 @@ def _digest_for_entry(entry: dict, *, who: str) -> str:
             int(digest, 16)
         except ValueError as exc:
             raise AuthConfigError(f"{who}: 'token_sha256' is not hex") from exc
+        # One line per digest entry, so an operator auditing the boot log sees exactly which
+        # principals carry a length no one can verify.
+        _log.warning(
+            "%s: provisioned by token_sha256 digest — the %d-char minimum length cannot be "
+            "verified against a hash; confirm the plaintext came from "
+            "secrets.token_urlsafe(32) or better",
+            who,
+            MIN_TOKEN_LENGTH,
+        )
         return digest.lower()
     if not isinstance(plaintext, str):
         raise AuthConfigError(f"{who}: 'token' must be a string")

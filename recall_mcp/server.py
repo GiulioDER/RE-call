@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import shutil
 import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -29,6 +30,7 @@ from recall.observability import METRICS, configure_logging, get_logger
 from recall.store import DEFAULT_TENANT, PgVectorStore, redacted_dsn
 from recall.trust_policy import TrustPolicy
 from recall_mcp.auth import (
+    SCOPE_ADMIN,
     SCOPE_FORGET,
     SCOPE_READ,
     SCOPE_WRITE,
@@ -38,7 +40,7 @@ from recall_mcp.auth import (
     authorize,
     token_registry_from_env,
 )
-from recall_mcp.limits import limiter_from_env
+from recall_mcp.limits import FailedAuthThrottle, failed_auth_throttle_from_env, limiter_from_env
 from recall_mcp.oidc import (
     ENV_AUDIENCE,
     ENV_ISSUER,
@@ -56,6 +58,7 @@ from recall_mcp.service import (
     generation_ingest,
     index_memory,
     calibration_status,
+    JobLedger,
     job_status,
     make_embedder,
     make_profile_embedder,
@@ -83,7 +86,17 @@ from recall.desktop.uploads import stage_uploads
 #: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
 #: is metered the moment it declares a scope — there is no separate table to remember to update,
 #: and an unmetered tool would be one that also skipped authorisation.
-_SCOPE_BUDGETS = {SCOPE_READ: "read", SCOPE_WRITE: "write", SCOPE_FORGET: "forget"}
+_SCOPE_BUDGETS = {
+    SCOPE_READ: "read",
+    SCOPE_WRITE: "write",
+    SCOPE_FORGET: "forget",
+    SCOPE_ADMIN: "admin",
+}
+
+#: `_meta` key under which a tool advertises a required scope the annotation hints cannot
+#: express. Published to clients in tools/list, so a downgrade has to lie publicly; the
+#: authorisation test imports this constant rather than restating the literal.
+_META_REQUIRED_SCOPE = "recall/requiredScope"
 
 DEFAULT_DSN = os.environ.get(
     "RECALL_SERVING_DSN",
@@ -207,12 +220,19 @@ class RecallTokenVerifier:
     with a caller whose scope string is parsed as a tenant name.
     """
 
-    def __init__(self, registry: TokenRegistry) -> None:
+    def __init__(self, registry: TokenRegistry, throttle: FailedAuthThrottle | None = None) -> None:
         self._registry = registry
+        self._throttle = throttle if throttle is not None else failed_auth_throttle_from_env()
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        if not self._throttle.allow():
+            # Fails CLOSED: garbage is rejected without even being hashed, and a valid token
+            # never lands here because success paths never debit the throttle.
+            _log.warning("refusing unverified tokens: failed-authentication throttle is closed")
+            return None
         principal = self._registry.verify(token)
         if principal is None:
+            self._throttle.record_failure()
             # No token material in the log line — only the fact of a rejection. A logged prefix
             # is enough to shrink a brute-force search space, and logs travel further than
             # anyone expects.
@@ -241,10 +261,16 @@ class OidcTokenVerifier:
     "somebody is forging tokens" call for opposite responses and both arrive here as a refusal.
     """
 
-    def __init__(self, validator: OidcValidator) -> None:
+    def __init__(self, validator: OidcValidator, throttle: FailedAuthThrottle | None = None) -> None:
         self._validator = validator
+        self._throttle = throttle if throttle is not None else failed_auth_throttle_from_env()
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        if not self._throttle.allow():
+            # Same fail-closed gate as the static verifier, and here it additionally caps the
+            # JWKS fetches and RSA verifications a forgery wave can drive.
+            _log.warning("refusing unverified tokens: failed-authentication throttle is closed")
+            return None
         try:
             # OFF THE LOOP (PERF-001). `validate` is synchronous, and on a cache miss it makes
             # two blocking HTTPS calls — discovery, then JWKS — each bounded by a 10s timeout.
@@ -264,6 +290,10 @@ class OidcTokenVerifier:
             )
             return None
         except TokenRejected as exc:
+            # Debited here and in the validator_error branch, NOT for an IdP outage above: an
+            # unreachable provider is our failure, and letting it close the gate would slow
+            # every rejection during exactly the window an operator is debugging.
+            self._throttle.record_failure()
             # `exc.reason` is a stable slug and never contains token material; the exception's
             # detail is deliberately not logged, and neither is the token.
             _log.warning("rejected a bearer token (reason=%s)", exc.reason)
@@ -273,6 +303,7 @@ class OidcTokenVerifier:
             # resolves to a TokenRejected, but this is the boundary where a breach of it turns a
             # 401 into a 500: the SDK does not wrap `verify_token`. A failure to authenticate
             # must fail CLOSED as a refusal, never as a stack trace.
+            self._throttle.record_failure()
             _log.warning("rejected a bearer token (reason=validator_error)", exc_info=True)
             return None
         return AccessToken(
@@ -1286,15 +1317,23 @@ def build_server() -> MCPServer:
         ),
     )
     async def recall_tenants(ctx: Context[dict, object]) -> str:
-        """Return the tenant scopes provisioned for this MCP deployment."""
+        """Return the tenant scopes visible to this caller.
+
+        An authenticated principal sees its own tenant; the full provisioned inventory is
+        admin-only, because in a multi-tenant deployment tenant ids are often customer
+        names and one tenant reading the customer list is cross-tenant disclosure.
+        """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
         registry: StoreRegistry | None = state.get("stores")
-        tenants = (
-            sorted(getattr(registry, "allowed_tenants", {store.tenant}))
-            if registry is not None
-            else [store.tenant]
-        )
+        if registry is None:
+            tenants: list[str] = [store.tenant]
+        else:
+            token = get_access_token()
+            if token is not None and SCOPE_ADMIN in (token.scopes or ()):
+                tenants = sorted(getattr(registry, "allowed_tenants", {store.tenant}))
+            else:
+                tenants = [store.tenant]
         return json.dumps(tenant_scopes(store, tenants), indent=2)
 
     @mcp.tool(
@@ -1318,14 +1357,37 @@ def build_server() -> MCPServer:
         store = _require(SCOPE_WRITE, ctx, tenant)
         if category not in {"documents", "code", "memory"}:
             raise ValueError("category must be documents, code, or memory")
-        job_id, root = stage_uploads(store.tenant, files)
-        with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
-            result = await _to_thread(
-                lambda: ingest_into_serving_store(state, store, str(root), category)
-            )
+        job_id, root, total_bytes = stage_uploads(store.tenant, files)
+        # Same quota `recall_index` debits, for the same reason and at the same moment:
+        # after per-request caps, before any embedding spend. Without this debit an upload
+        # loop under the 50 MiB per-request cap ingests unmetered.
+        limiter = state.get("limiter")
+        if limiter is not None:
+            try:
+                limiter.check(store.tenant, "index_bytes", float(total_bytes))
+            except BaseException:
+                shutil.rmtree(root, ignore_errors=True)
+                raise
+        try:
+            with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
+                result = await _to_thread(
+                    lambda: ingest_into_serving_store(state, store, str(root), category)
+                )
+        except BaseException:
+            # The staged tree exists only to feed the ingest that just failed. Generation
+            # mode: every raise out of generation_ingest passes _reclaim_failed, so no
+            # servable manifest references this job's files (the UnsafePromotion case
+            # RETURNS and never reaches here). Legacy mode: partially indexed rows become
+            # prunable, which is consistent with "the upload failed".
+            shutil.rmtree(root, ignore_errors=True)
+            raise
         payload = json.loads(result.model_dump_json())
         payload.update({"job_id": job_id, "state": "completed", "category": category})
-        state.setdefault("desktop_jobs", {})[job_id] = payload
+        ledger = state.get("desktop_jobs")
+        if not isinstance(ledger, JobLedger):
+            ledger = JobLedger()
+            state["desktop_jobs"] = ledger
+        ledger.put(job_id, store.tenant, payload)
         return json.dumps(payload, indent=2)
 
     @mcp.tool(
@@ -1396,14 +1458,22 @@ def build_server() -> MCPServer:
             idempotent_hint=False,
             open_world_hint=False,
         ),
+        # Publishing flips what the whole tenant serves — the blast radius the admin scope
+        # was written for (auth.py SCOPE_ADMIN). The annotation hints cannot express an
+        # escalation above write, so it travels in _meta where clients can read it.
+        meta={_META_REQUIRED_SCOPE: SCOPE_ADMIN},
     )
     async def recall_calibration_publish(
         calibration_id: str,
         ctx: Context[dict, object],
         tenant: str | None = None,
     ) -> str:
-        """Publish one certified calibration artifact for the caller's tenant."""
-        store = _require(SCOPE_WRITE, ctx, tenant)
+        """Publish one certified calibration artifact for the caller's tenant.
+
+        Requires the `recall:admin` scope: publication changes the serve/abstain decision
+        for every query the tenant runs, which is deliberately not implied by write.
+        """
+        store = _require(SCOPE_ADMIN, ctx, tenant)
         result = await _to_thread(lambda: publish_calibration(store, calibration_id))
         return json.dumps(result, indent=2, default=str)
 

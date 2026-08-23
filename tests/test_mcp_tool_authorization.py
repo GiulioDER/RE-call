@@ -62,7 +62,7 @@ import pytest
 
 import recall_mcp.server as server_module
 import recall_mcp.service as service_module
-from recall_mcp.auth import SCOPE_FORGET, SCOPE_READ, SCOPE_WRITE
+from recall_mcp.auth import SCOPE_ADMIN, SCOPE_FORGET, SCOPE_READ, SCOPE_WRITE
 from recall_mcp.limits import RateLimited
 from recall_mcp.server import build_server
 
@@ -87,14 +87,16 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
     "recall_index": (SCOPE_WRITE, "write", {"path": "corpus"}),
     "recall_ingest": (SCOPE_WRITE, "write", {"files": [{"name": "memo.md", "content_b64": "bWVtb3J5"}]}),
     "recall_calibration_run": (SCOPE_WRITE, "write", {}),
-    "recall_calibration_publish": (SCOPE_WRITE, "write", {"calibration_id": "cal-1"}),
+    # ADMIN, not write: publishing flips what the whole tenant serves. `run` stays write
+    # because it produces a draft and changes nothing served.
+    "recall_calibration_publish": (SCOPE_ADMIN, "admin", {"calibration_id": "cal-1"}),
     "recall_forget": (SCOPE_FORGET, "forget", {"sources": ["f.md"]}),
 }
 CASES = [pytest.param(name, id=name) for name in TOOLS]
 
 #: A scope that is never the right one for any tool, used to prove each refuses a wrong scope
 #: without depending on which other scopes a token happens to carry.
-_ALL_SCOPES = {SCOPE_READ, SCOPE_WRITE, SCOPE_FORGET}
+_ALL_SCOPES = {SCOPE_READ, SCOPE_WRITE, SCOPE_FORGET, SCOPE_ADMIN}
 
 #: The tenant every test authenticates as. Named so the assertion messages read as English.
 _CALLER = "acme"
@@ -341,10 +343,27 @@ def _scope_advertised_by(tool) -> str:
         f"{tool.name} advertises itself as both read-only and destructive"
     )
     if destructive:
-        return SCOPE_FORGET
-    if read_only:
-        return SCOPE_READ
-    return SCOPE_WRITE
+        base = SCOPE_FORGET
+    elif read_only:
+        base = SCOPE_READ
+    else:
+        base = SCOPE_WRITE
+    # A tool may ESCALATE above write via published _meta (the hints cannot express admin).
+    # The claim still has to be public — a client reads it in tools/list — and it may only
+    # escalate: a tool advertising itself read-only or destructive while claiming admin is a
+    # contradiction, and a meta scope outside the known set is a typo, not a policy.
+    meta = getattr(tool, "meta", None) or {}
+    claimed = meta.get(server_module._META_REQUIRED_SCOPE)
+    if claimed is not None:
+        assert claimed in _ALL_SCOPES, (
+            f"{tool.name} advertises unknown required scope {claimed!r} in _meta"
+        )
+        assert base == SCOPE_WRITE, (
+            f"{tool.name} advertises {claimed!r} in _meta but its hints imply {base!r}; "
+            f"_meta may only escalate a write-shaped tool"
+        )
+        return str(claimed)
+    return base
 
 
 @pytest.mark.parametrize("name", CASES)
@@ -419,8 +438,15 @@ def test_a_tool_debits_its_own_budget_for_the_callers_own_tenant(name, monkeypat
     with pytest.raises(_ReachedService):
         _invoke(name, _state(registry, limiter), token, monkeypatch, stop_at_service=True)
 
-    assert limiter.debits == [(_CALLER, budget)], (
-        f"{name} debited {limiter.debits!r}; it must charge the {budget!r} budget exactly once"
+    # `recall_ingest` charges the byte quota IN THE TOOL BODY, before any embedding spend, so
+    # unlike `recall_index` (whose byte debit lives in the stubbed service call) it shows both
+    # debits here. That second debit is the fix for the upload path bypassing the index-bytes
+    # quota entirely; this assertion is its regression test.
+    expected = [(_CALLER, budget)]
+    if name == "recall_ingest":
+        expected.append((_CALLER, "index_bytes"))
+    assert limiter.debits == expected, (
+        f"{name} debited {limiter.debits!r}; expected exactly {expected!r}"
     )
 
 
@@ -675,3 +701,94 @@ def test_this_file_still_collects_under_an_operators_deployment_env() -> None:
     assert "test_a_tool_refuses_a_token_without_its_own_scope" in result.stdout, (
         f"pytest exited 0 but collected none of this file's tests:\n{result.stdout[-3000:]}"
     )
+
+
+def test_ingest_refused_by_the_byte_quota_cleans_its_staging_and_never_ingests(
+    monkeypatch, tmp_path
+) -> None:
+    """The upload-path quota fix, end to end at the tool layer.
+
+    A write-scoped caller whose index_bytes budget refuses must (a) never reach the service,
+    (b) leave no staged files behind for a later index run to pick up, and (c) surface the
+    RateLimited to the client.
+    """
+    registry = _Registry()
+
+    class _ByteRefusingLimiter(_Limiter):
+        """Admits the call budget so the refusal under test is the BYTE quota's."""
+
+        def check(self, tenant: str, key: str, cost: float = 1.0) -> None:
+            self.debits.append((tenant, key))
+            if key == "index_bytes":
+                raise RateLimited("byte budget exhausted", retry_after_seconds=1.5)
+
+    limiter = _ByteRefusingLimiter()
+    token = _Token([SCOPE_WRITE], {"tenant": _CALLER})
+
+    with pytest.raises(RateLimited):
+        _invoke(
+            "recall_ingest", _state(registry, limiter), token, monkeypatch, stop_at_service=True
+        )
+
+    assert ("acme", "index_bytes") in limiter.debits, "the byte quota was never consulted"
+    uploads_root = tmp_path / "index-root" / "uploads"
+    staged = [p for p in uploads_root.rglob("*") if p.is_file()] if uploads_root.exists() else []
+    assert staged == [], f"a refused ingest left staged files behind: {staged}"
+
+
+def test_ingest_failure_removes_the_jobs_staged_tree(monkeypatch, tmp_path) -> None:
+    """An ingest that raises must not leave its upload on disk inside the index root."""
+    registry, limiter = _Registry(), _Limiter()
+    token = _Token([SCOPE_WRITE], {"tenant": _CALLER})
+
+    with pytest.raises(_ReachedService):
+        _invoke(
+            "recall_ingest", _state(registry, limiter), token, monkeypatch, stop_at_service=True
+        )
+
+    uploads_root = tmp_path / "index-root" / "uploads"
+    staged = list(uploads_root.rglob("*.md")) if uploads_root.exists() else []
+    assert staged == [], f"a failed ingest left staged files behind: {staged}"
+
+
+def test_job_status_does_not_serve_another_tenants_job(monkeypatch) -> None:
+    """A foreign tenant probing a job id gets the same `unknown` as a nonexistent one."""
+    from recall_mcp.service import JobLedger, job_status
+
+    ledger = JobLedger()
+    ledger.put("job-1", _OTHER, {"job_id": "job-1", "state": "completed", "files": 3})
+
+    result = job_status(_Store(_CALLER), "job-1", ledger)
+    assert result == {"job_id": "job-1", "state": "unknown"}
+
+    owned = job_status(_Store(_OTHER), "job-1", ledger)
+    assert owned["state"] == "completed"
+
+
+def test_the_job_ledger_evicts_by_count_and_age() -> None:
+    from recall_mcp.service import JobLedger
+
+    clock = [0.0]
+    ledger = JobLedger(max_entries=2, ttl_seconds=100.0, clock=lambda: clock[0])
+    ledger.put("a", "t", {"job_id": "a"})
+    ledger.put("b", "t", {"job_id": "b"})
+    ledger.put("c", "t", {"job_id": "c"})  # evicts the oldest
+    assert ledger.get("a", "t") is None
+    assert ledger.get("b", "t") is not None
+    clock[0] = 200.0
+    assert ledger.get("b", "t") is None, "an expired entry must not be served"
+
+
+def test_tenants_listing_is_scoped_to_the_caller_without_admin(monkeypatch) -> None:
+    """A read principal learns its own tenant, not the provisioned customer list."""
+    import json as _json
+
+    registry, limiter = _Registry(), _Limiter()
+    token = _Token([SCOPE_READ], {"tenant": _CALLER})
+    result = _invoke("recall_tenants", _state(registry, limiter), token, monkeypatch)
+    assert _json.loads(result)["tenants"] == [_CALLER]
+
+    registry.allowed_tenants = {_CALLER, _OTHER}
+    admin_token = _Token([SCOPE_READ, SCOPE_ADMIN], {"tenant": _CALLER})
+    result = _invoke("recall_tenants", _state(registry, limiter), admin_token, monkeypatch)
+    assert set(_json.loads(result)["tenants"]) >= {_CALLER, _OTHER}

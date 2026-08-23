@@ -30,7 +30,12 @@ _DEFAULT_CREDS = ("recall", "recall")
 _NUMERIC_TOKEN_RE = re.compile(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)?%?(?![\w.])")
 #: "" covers a hostless/unix-socket DSN. Bracketed IPv6 is absent on purpose: urlsplit strips
 #: the brackets. All of 127.0.0.0/8 is handled numerically by `_is_local_host`.
-_LOCAL_HOSTS = ("", "localhost", "::1", "0.0.0.0", "host.docker.internal")
+_LOCAL_HOSTS = ("", "localhost", "::1", "0.0.0.0")
+#: Hosts that get a WARNING but not a refusal. `host.docker.internal` used to sit in
+#: `_LOCAL_HOSTS`, which was wrong in one direction: from inside a container it reaches the
+#: container HOST, which can be a shared, network-reachable machine. It stays out of the
+#: refusal so the compose quickstart keeps working, and the warning says what it reaches.
+_WARN_ONLY_HOSTS = ("host.docker.internal",)
 
 
 def _numeric_query_terms(text: str) -> list[str]:
@@ -336,7 +341,19 @@ def warn_if_insecure_dsn(dsn: str) -> str | None:
     # "recall" and must not slip past the comparison
     if (unquote(parts.username or ""), unquote(parts.password or "")) != _DEFAULT_CREDS:
         return None
-    if _is_local_host((parts.hostname or "").lower()):
+    host = (parts.hostname or "").lower()
+    if _is_local_host(host):
+        return None
+    if host in _WARN_ONLY_HOSTS:
+        # Warn without returning a message: `require_secure_dsn` raises on any returned
+        # message, and this host must warn rather than block (it is the documented way a
+        # containerised quickstart reaches its database).
+        _log.warning(
+            "recall: WARNING — default 'recall:recall' credentials against %r, which reaches "
+            "the container HOST, not this container. Fine for a local quickstart; set a strong "
+            "password if that machine is shared.",
+            parts.hostname,
+        )
         return None
     msg = (
         f"recall: WARNING — using the default 'recall:recall' credentials against non-local host "

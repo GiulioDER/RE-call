@@ -2061,10 +2061,66 @@ def tenant_scopes(store: PgVectorStore, tenants: Sequence[str]) -> dict[str, obj
     return {"tenants": sorted({str(store.tenant), *(str(value) for value in tenants)})}
 
 
-def job_status(store: PgVectorStore, job_id: str, jobs: dict[str, object]) -> dict[str, object]:
-    """Return one job record after the caller has been authorized for its tenant."""
-    del store
-    value = jobs.get(job_id)
+class JobLedger:
+    """Tenant-scoped, bounded record of ingest jobs.
+
+    The previous shape — one bare dict on the lifespan state — had two defects: it grew for
+    the life of the process, and any authenticated principal could read any tenant's job
+    record by id. Entries here are keyed by job id but carry their tenant, and `get` refuses
+    a caller whose tenant does not match. Eviction is by count and by age, oldest first, so
+    the ledger cannot become the process's slow leak.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_entries: int = 1000,
+        ttl_seconds: float = 86400.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._max_entries = max_entries
+        self._ttl_seconds = ttl_seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._entries: dict[str, tuple[str, float, dict[str, object]]] = {}
+
+    def put(self, job_id: str, tenant: str, payload: dict[str, object]) -> None:
+        now = self._clock()
+        with self._lock:
+            expired = [k for k, (_, stamp, _p) in self._entries.items() if now - stamp > self._ttl_seconds]
+            for key in expired:
+                del self._entries[key]
+            while len(self._entries) >= self._max_entries:
+                del self._entries[next(iter(self._entries))]
+            self._entries[job_id] = (tenant, now, payload)
+
+    def get(self, job_id: str, tenant: str) -> dict[str, object] | None:
+        now = self._clock()
+        with self._lock:
+            entry = self._entries.get(job_id)
+            if entry is None:
+                return None
+            owner, stamp, payload = entry
+            if now - stamp > self._ttl_seconds:
+                del self._entries[job_id]
+                return None
+            if owner != tenant:
+                return None
+            return payload
+
+
+def job_status(store: PgVectorStore, job_id: str, jobs: JobLedger | dict[str, object]) -> dict[str, object]:
+    """Return one job record, scoped to the authenticated caller's tenant.
+
+    A wrong-tenant, expired, and unknown job id all return the same `unknown` shape, so a
+    foreign tenant cannot even probe whether a job id exists.
+    """
+    if isinstance(jobs, JobLedger):
+        value: object = jobs.get(job_id, str(store.tenant))
+    else:
+        # Legacy dict shape, kept so an in-flight state built before this change still answers.
+        candidate = jobs.get(job_id)
+        value = candidate if isinstance(candidate, dict) and candidate.get("tenant") in (None, str(store.tenant)) else None
     return value if isinstance(value, dict) else {"job_id": job_id, "state": "unknown"}
 
 

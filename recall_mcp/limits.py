@@ -45,6 +45,9 @@ DEFAULT_CALLS_PER_MIN: dict[str, float] = {
     "read": 120.0,
     "write": 20.0,
     "forget": 10.0,
+    # Admin actions (calibration publish) change what a whole tenant serves; they are rare by
+    # nature and share nobody else's budget, so a runaway publish loop cannot starve indexing.
+    "admin": 10.0,
 }
 #: Aggregate embedding spend, in bytes of source text per hour per tenant. 200 MB is ~10x the
 #: 20 MB single-request cap, so an ordinary re-index of a large corpus fits comfortably while a
@@ -219,6 +222,53 @@ def _rate_from_env(name: str, default: float, window_seconds: float) -> Rate | N
                 )
                 value = default
     return Rate(capacity=value, per_second=value / window_seconds)
+
+
+class FailedAuthThrottle:
+    """Slows an online brute force without ever touching authenticated traffic.
+
+    The SDK's TokenVerifier protocol hands a verifier only the token string — no request
+    object, no remote address — so this throttle is process-global, and the docstring states
+    that honestly rather than pretending per-client fairness: a failure storm from one
+    address briefly delays UNVERIFIED-token rejections for everyone, and never delays a
+    valid token, because success paths never consult it. The per-IP upgrade path is an ASGI
+    middleware in front of the SDK's bearer middleware; revisit before serving a fleet.
+
+    `allow()` consults without debiting; `record_failure()` debits one. Splitting the two is
+    what keeps valid clients unthrottleable: only actual failures close the gate.
+    """
+
+    def __init__(self, rate: Rate | None, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._rate = rate
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._bucket: _Bucket | None = None
+
+    def allow(self) -> bool:
+        if self._rate is None:
+            return True
+        with self._lock:
+            now = self._clock()
+            if self._bucket is None:
+                self._bucket = _Bucket(self._rate, now)
+            # Peek: refill for elapsed time via a zero-cost take, then read the level.
+            self._bucket.take(0.0, now)
+            return self._bucket._tokens >= 1.0
+
+    def record_failure(self) -> None:
+        if self._rate is None:
+            return
+        with self._lock:
+            now = self._clock()
+            if self._bucket is None:
+                self._bucket = _Bucket(self._rate, now)
+            self._bucket.take(1.0, now)
+
+
+def failed_auth_throttle_from_env() -> FailedAuthThrottle:
+    """Build the pre-auth failure throttle from `RECALL_RATE_AUTH_FAILURES_PER_MIN`."""
+    rate = _rate_from_env("RECALL_RATE_AUTH_FAILURES_PER_MIN", 60.0, _SECONDS_PER_MIN)
+    return FailedAuthThrottle(rate)
 
 
 def limiter_from_env() -> RateLimiter:

@@ -19,7 +19,7 @@ from recall.desktop.sources import (
     scan_files,
 )
 from recall.desktop.updates import is_newer
-from recall.desktop.uploads import stage_uploads
+from recall.desktop.uploads import UploadError, stage_uploads
 
 
 class FakeGateway:
@@ -212,10 +212,52 @@ def test_staging_follows_the_configured_index_root_and_never_the_checkout() -> N
     )
 
     payload = base64.b64encode(b"memory").decode("ascii")
-    job_id, staged = stage_uploads("acme", [{"name": "memo.md", "content_b64": payload}])
+    job_id, staged, total_bytes = stage_uploads("acme", [{"name": "memo.md", "content_b64": payload}])
 
     assert staged == root / "uploads" / "acme" / job_id
     assert (staged / "memo.md").read_bytes() == b"memory"
+    assert total_bytes == len(b"memory")
+
+
+def test_a_refused_upload_leaves_no_partial_staging_behind() -> None:
+    """A rejected batch removes its own staging directory.
+
+    Before this guard, file 1 of a batch whose file 2 had bad base64 stayed on disk under the
+    index root, where the next index run over `uploads/` would happily ingest it — content the
+    server told the caller it refused.
+    """
+    root = Path(os.environ["RECALL_INDEX_ROOT"]).resolve()
+    good = base64.b64encode(b"kept?").decode("ascii")
+    before = set((root / "uploads" / "acme").glob("*")) if (root / "uploads" / "acme").exists() else set()
+    with pytest.raises(UploadError):
+        stage_uploads(
+            "acme",
+            [
+                {"name": "first.md", "content_b64": good},
+                {"name": "second.md", "content_b64": "not-base64!!"},
+            ],
+        )
+    after = set((root / "uploads" / "acme").glob("*")) if (root / "uploads" / "acme").exists() else set()
+    assert after == before, "the refused job's staging directory survived the refusal"
+
+
+def test_duplicate_upload_names_are_refused_not_last_writer_wins() -> None:
+    payload = base64.b64encode(b"one").decode("ascii")
+    with pytest.raises(UploadError, match="duplicate"):
+        stage_uploads(
+            "acme",
+            [
+                {"name": "memo.md", "content_b64": payload},
+                {"name": "memo.md", "content_b64": payload},
+            ],
+        )
+
+
+def test_an_oversized_entry_is_refused_before_it_is_decoded() -> None:
+    """The encoded length bounds the decoded size, so the cap fires without materialising it."""
+    oversized = "A" * (68 * 1024 * 1024)  # decodes to ~51 MiB, over the 50 MiB cap
+    with pytest.raises(UploadError, match="50 MiB"):
+        stage_uploads("acme", [{"name": "big.bin", "content_b64": oversized}])
 
 
 def test_runtime_factory_and_calibration_status() -> None:

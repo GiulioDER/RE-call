@@ -8,6 +8,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Security
+
+* **BREAKING: `recall_calibration_publish` now requires the `recall:admin` scope.** Publication
+  changes the serve/abstain decision for every query a tenant runs — the blast radius the admin
+  scope was defined for, and until now no tool enforced it: any write token could publish. An
+  HTTP deployment whose write token publishes calibrations must add `"recall:admin"` to that
+  principal's `scopes` (static token file) or grant it in the IdP role (OIDC). Stdio and the
+  desktop-local runtime are unaffected. `recall_calibration_run` stays on write: it produces a
+  draft and changes nothing served. The requirement is advertised to clients in the tool's
+  `_meta` (`recall/requiredScope`), and admin calls draw on their own `admin` call budget
+  (`RECALL_RATE_ADMIN_PER_MIN`, default 10/min).
+* **`recall_ingest` now debits the same per-tenant `index_bytes` quota as `recall_index`.**
+  Before, only the 50 MiB per-request cap and the write call budget bounded uploads, so a loop
+  under the per-request cap could ingest roughly 300× the intended hourly embedding spend
+  unmetered. The debit lands after staging and before any embedding, so a refusal costs nothing;
+  a refused or failed ingest also removes its staged files instead of leaving them inside the
+  index root for a later index run to pick up.
+* **`recall_tenants` no longer hands the full tenant inventory to every read token.** In a
+  multi-tenant deployment tenant ids are often customer names. An authenticated principal now
+  sees its own tenant; the full provisioned list requires `recall:admin`.
+* **`recall_job_status` is tenant-scoped and the job ledger is bounded.** A foreign tenant
+  probing a job id gets the same `unknown` shape as a nonexistent one, and completed jobs are
+  evicted by count and age instead of accumulating for the life of the process.
+* **Failed bearer-token authentication is throttled before any hashing or JWKS work.**
+  A process-global failure budget (`RECALL_RATE_AUTH_FAILURES_PER_MIN`, default 60/min, `off`
+  supported) closes the gate against a brute-force or forgery storm. Valid tokens never touch
+  it, and an identity-provider outage deliberately does not debit it. Token-file entries
+  provisioned by `token_sha256` digest are now named in the boot log, since their length can
+  never be verified against the 32-character floor.
+* **`host.docker.internal` no longer counts as a local host for the default-credentials guard.**
+  From inside a container it reaches the container HOST, which can be a shared machine. The
+  compose quickstart keeps working: the guard warns instead of refusing for exactly this host.
+* **Duplicate file names in one `recall_ingest` upload are refused** instead of last-writer-wins,
+  and an oversized entry is refused from its encoded length before being decoded into memory.
+
 ### Added
 
 * **`recall quickstart` goes from a fresh `pip install` to three answered queries in one command,
