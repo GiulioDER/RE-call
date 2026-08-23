@@ -97,14 +97,14 @@ class RecallAdapter(BaseAdapter):
 
     def __init__(self, adapter_config: Optional[Dict[str, Any]] = None) -> None:
         self._config = adapter_config or {}
-        self._store: Any = None
+        self._dsn: Optional[str] = None
         self._embedder: Any = None
         self._reranker: Any = None
         self._sparse_encoder: Any = None
         self._workspace: Optional[Path] = None
-        self._seq = 0
-        self._indexed_hash: Optional[str] = None
-        self._pending_reset = False
+        self._stores: Dict[str, Any] = {}
+        self._active: Optional[str] = None
+        self._run_ns = ""
 
         self._top_k = int(_env("RECALL_BENCHD_TOP_K", "10"))
         self._granularity = _env("RECALL_BENCHD_GRANULARITY", "session")
@@ -153,6 +153,7 @@ class RecallAdapter(BaseAdapter):
         dsn = self._config.get("dsn") or os.environ.get("RECALL_BENCHD_DSN")
         if not dsn:
             raise RuntimeError("RecallAdapter requires RECALL_BENCHD_DSN")
+        self._dsn = dsn
 
         from recall.embeddings import resolve_embedder
         from recall.store import PgVectorStore
@@ -176,41 +177,47 @@ class RecallAdapter(BaseAdapter):
         bootstrap.ensure_schema()
         bootstrap.close()
 
-        self._store = PgVectorStore(
-            dsn, dim=self._embedder.dim, tenant=TENANT, table=self._table
-        )
-        self._store.__enter__()
-        self._store.ensure_schema()
-        self._wipe()  # a fresh run must not inherit a previous run's rows
+        # One tenant per distinct conversation, namespaced by a per-run id so no run can
+        # inherit another's rows. Bench'd re-ingests the same conversation for every one of
+        # its questions AND interleaves conversations (the stratified sampler), so a
+        # single-slot cache thrashes; a tenant per content hash makes the cache an index.
+        # recall() only ever searches the ACTIVE tenant, so item isolation is preserved
+        # exactly as a wipe would preserve it.
+        import uuid
+
+        self._run_ns = uuid.uuid4().hex[:8]
+        self._stores = {}
+        self._active = None
         self._workspace = Path(tempfile.mkdtemp(prefix="benchd-recall-"))
 
     def teardown(self) -> None:
-        if self._store is not None:
+        for store in getattr(self, "_stores", {}).values():
             try:
-                self._store.close()
-            finally:
-                self._store = None
+                store.close()
+            except Exception:
+                pass
+        self._stores = {}
+        self._active = None
         if self._workspace is not None:
             shutil.rmtree(self._workspace, ignore_errors=True)
             self._workspace = None
 
     def reset(self) -> None:
-        """Bench'd resets before every item. With the cache on, the wipe is deferred to
-        ingest(), which skips it when the incoming turn list is identical to what is indexed."""
-        if self._cache:
-            self._pending_reset = True
-        else:
-            self._wipe()
-            self._indexed_hash = None
+        """Bench'd resets before every item. The active tenant is cleared; the next ingest
+        selects (or builds) the tenant for its conversation, so a question can never be
+        answered from a corpus its item did not ingest."""
+        self._active = None
 
-    def _wipe(self) -> None:
-        sources = sorted({c.source for c in self._store.iter_chunks()})
-        if sources:
-            self._store.delete_sources(sources)
-        if self._workspace is not None:
-            for f in self._workspace.glob("*.md"):
-                f.unlink()
-        self._seq = 0
+    def _open_store(self, digest: str):
+        from recall.store import PgVectorStore
+
+        tenant = f"benchd-{self._run_ns}-{digest[:12]}"
+        store = PgVectorStore(
+            self._dsn, dim=self._embedder.dim, tenant=tenant, table=self._table
+        )
+        store.__enter__()
+        store.ensure_schema()
+        return store
 
     # ------------------------------------------------------------------ ingest
 
@@ -232,16 +239,17 @@ class RecallAdapter(BaseAdapter):
         )
         digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
-        if self._cache and self._pending_reset and digest == self._indexed_hash:
-            self._pending_reset = False
+        if digest in self._stores:
+            self._active = digest
             return
-        if self._pending_reset:
-            self._wipe()
-            self._pending_reset = False
-        # Cleared before indexing, set after: if index_path raises mid-item, the runner records
-        # the item as an adapter error and moves on, and the next item on the same conversation
-        # must see a cache miss, not a hash that claims the partial index is complete.
-        self._indexed_hash = None
+        if not self._cache and self._active and self._active in self._stores:
+            # Cache disabled: drop the previous conversation's rows before building the next,
+            # so storage stays bounded to one corpus at a time.
+            old = self._stores.pop(self._active)
+            sources = sorted({c.source for c in old.iter_chunks()})
+            if sources:
+                old.delete_sources(sources)
+            old.close()
 
         docs = (
             self._docs_by_session(turns)
@@ -250,26 +258,34 @@ class RecallAdapter(BaseAdapter):
         )
 
         assert self._workspace is not None
+        workspace = self._workspace / digest[:12]
+        workspace.mkdir(parents=True, exist_ok=True)
         paths: List[Path] = []
-        for body in docs:
-            if not body.strip():
-                continue
-            self._seq += 1
-            path = self._workspace / f"m{self._seq:06d}.md"
+        for seq, body in enumerate(d for d in docs if d.strip()):
+            path = workspace / f"m{seq:06d}.md"
             path.write_text(body, encoding="utf-8")
             paths.append(path)
 
-        if paths:
-            from recall.index import Indexer
+        store = self._open_store(digest)
+        try:
+            if paths:
+                from recall.index import Indexer
 
-            # files= rather than a workspace re-glob: one pass, and _prune_vanished deletes
-            # nothing that is still on disk.
-            Indexer(self._store, self._embedder).index_path(self._workspace, files=paths)
-            if self._sparse_encoder is not None:
-                from recall.sparse import backfill_learned_sparse
+                # files= rather than a workspace re-glob: one pass, and _prune_vanished
+                # deletes nothing that is still on disk.
+                Indexer(store, self._embedder).index_path(workspace, files=paths)
+                if self._sparse_encoder is not None:
+                    from recall.sparse import backfill_learned_sparse
 
-                backfill_learned_sparse(self._store, self._sparse_encoder)
-        self._indexed_hash = digest
+                    backfill_learned_sparse(store, self._sparse_encoder)
+        except Exception:
+            # A partial index must not be reachable: the runner records this item as an
+            # adapter error and moves on, and the next item on the same conversation must
+            # rebuild from scratch.
+            store.close()
+            raise
+        self._stores[digest] = store
+        self._active = digest
 
     @staticmethod
     def _line(t: Dict[str, Any]) -> str:
@@ -321,6 +337,9 @@ class RecallAdapter(BaseAdapter):
 
     def _retrieve(self, query: str) -> str:
         """Retrieve top_k chunk texts, joined. Empty string only on honoured abstention."""
+        if self._active is None or self._active not in self._stores:
+            return ""
+        store = self._stores[self._active]
         if self._sparse in ("splade", "both", "none"):
             # The learned-sparse and dense-only legs live on HybridRetriever, not on the trust
             # entry point, so those arms search the retriever directly. Abstention does not
@@ -328,7 +347,7 @@ class RecallAdapter(BaseAdapter):
             from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
 
             retriever = HybridRetriever(
-                self._store,
+                store,
                 self._embedder,
                 reranker=self._reranker,
                 candidate_k=max(self._top_k, DEFAULT_CANDIDATE_K),
@@ -347,7 +366,7 @@ class RecallAdapter(BaseAdapter):
             from recall.eval._research_trust import research_search
 
             result = research_search(
-                self._store,
+                store,
                 self._embedder,
                 query,
                 k=self._top_k,
