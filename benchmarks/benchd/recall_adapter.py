@@ -32,7 +32,12 @@ Configuration is via environment variables so a run's config is visible in its c
                                "deepseek/deepseek-v4-pro-0813") turns on the synthesis step: the
                                retrieved chunks are distilled into a short evidence digest and
                                THAT becomes the recall string. Uses OPENROUTER_API_KEY.
-    RECALL_BENCHD_SYNTH_MAX_TOKENS  default "120"
+    RECALL_BENCHD_SYNTH_MAX_TOKENS  default "2000": v4 pro is a reasoning model, and its
+                               reasoning tokens count against this budget. 120 made it return
+                               empty content on real prompts, which the A3/A4 runs measured as
+                               a 55 to 68% silent fallback rate.
+    RECALL_BENCHD_SYNTH_REASONING   "on" (default) or "off"; off sends reasoning.enabled=false,
+                               which measured 7x faster on the probe
     RECALL_BENCHD_THRESHOLD    default "0.0"; the calibration threshold handed to the trust
                                layer. 0.0 means retrieval never abstains, which is the optimal
                                setting on a benchmark whose every question is answerable and
@@ -109,7 +114,8 @@ class RecallAdapter(BaseAdapter):
         self._sparse_model = _env("RECALL_BENCHD_SPARSE_MODEL", "prithivida/Splade_PP_en_v1")
         self._reranker_name = _env("RECALL_BENCHD_RERANKER", "none")
         self._synth_model = _env("RECALL_BENCHD_SYNTH", "none")
-        self._synth_max_tokens = int(_env("RECALL_BENCHD_SYNTH_MAX_TOKENS", "120"))
+        self._synth_max_tokens = int(_env("RECALL_BENCHD_SYNTH_MAX_TOKENS", "2000"))
+        self._synth_reasoning = _env("RECALL_BENCHD_SYNTH_REASONING", "on") == "on"
         self._cache = _env("RECALL_BENCHD_INGEST_CACHE", "1") == "1"
         self._table = _env("RECALL_BENCHD_TABLE", "benchd_bench_chunks")
 
@@ -386,6 +392,9 @@ class RecallAdapter(BaseAdapter):
                     ],
                     temperature=0.0,
                     max_tokens=self._synth_max_tokens,
+                    extra_body=(
+                        None if self._synth_reasoning else {"reasoning": {"enabled": False}}
+                    ),
                 )
                 text = (response.choices[0].message.content or "").strip()
                 if text:
