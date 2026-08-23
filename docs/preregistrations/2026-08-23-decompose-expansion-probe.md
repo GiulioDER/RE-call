@@ -80,3 +80,41 @@ and every retrieval verbatim, so the vocabulary claim is auditable after the fac
 3. **Union dilution is not measured.** Expansion adds results the agent must wade through; whether
    that costs more than it buys is a feature-run question, not a probe question, and the decision
    rule above only commits to BUILDING, not to shipping.
+
+---
+
+## Result (2026-08-23)
+
+**Status:** measured. One prompt, one run, as registered.
+
+| # | Predicted | Measured | Verdict |
+|---|---|---|---|
+| 1 | 5 to 9 of 15 rescued | **3 of 15** | not met; above the 2-or-fewer falsifier, so the decision rule has a hole it did not state, resolved below |
+| 2 | ts-lf-rewrite >= 3 of 6 | **0 of 6** | **FALSIFIED** |
+| 3 | ts-worktree-import at most 2 of 5 | 2 of 5 | in band, though my claim that it would be the HARDEST was wrong: it beat ts-lf-rewrite |
+
+Per task: ts-raise-on-missing 1/1, ts-worktree-import 2/5, ts-sample-covers-tail 0/3,
+ts-lf-rewrite 0/6.
+
+**Decision: do not build read-side expansion.** The registered rule was "build at 5 or more, do
+not build at 2 or fewer", and 3 sits in the gap the rule failed to cover. Resolving it against
+building, because the build bar was the stated bar and 3 does not clear it; the gap itself is
+recorded as a lesson in writing decision rules, not as licence to argue.
+
+**Why it failed, which the artifact shows verbatim.** The decomposition model fell into the same
+gravity well as the agent. Asked to decompose "version bump script" into operations, it produced
+failures OF THE GOAL, not mechanical operations: "script wrote wrong version number to file",
+"git tag creation failed", "release artifact upload missing". Every expansion stays inside the
+version-release frame; none reaches "a python script writes a text file" or anything about file
+encoding, and the retrievals land on release-flavoured memos accordingly. ⛔ **"You cannot look up
+a hazard you do not know exists" applies to the expansion model too.** A query-side rewriter has
+exactly the information the agent had, so it reproduces the agent's blind spot with more words.
+
+**What this points at, stated for the next record rather than smuggled into this one:** the
+asymmetry is informational. At QUERY time nobody knows the hazard; at INDEX time the memo IS the
+hazard, fully stated. Generation should therefore run memo-to-goals, not query-to-operations: at
+indexing, derive from each memo the task-intent queries that would PRECEDE its failure ("version
+bump script" is mechanically derivable from a memo about a python script writing CRLF into a
+versioned file, in a way the reverse never was). That is the index-side lever, it needs its own
+probe with its own preregistration, and its risk is different: alias text lives in the corpus, so
+dilution and supersession semantics become corpus questions rather than latency ones.
