@@ -103,8 +103,10 @@ class RecallAdapter(BaseAdapter):
         self._sparse_encoder: Any = None
         self._workspace: Optional[Path] = None
         self._stores: Dict[str, Any] = {}
+        self._tenants: Dict[str, str] = {}
         self._active: Optional[str] = None
         self._run_ns = ""
+        self._store_cap = int(_env("RECALL_BENCHD_STORE_CAP", "12"))
 
         self._top_k = int(_env("RECALL_BENCHD_TOP_K", "10"))
         self._granularity = _env("RECALL_BENCHD_GRANULARITY", "session")
@@ -193,6 +195,7 @@ class RecallAdapter(BaseAdapter):
 
         self._run_ns = uuid.uuid4().hex[:8]
         self._stores = {}
+        self._tenants = {}
         self._active = None
         self._workspace = Path(tempfile.mkdtemp(prefix="benchd-recall-"))
 
@@ -203,6 +206,7 @@ class RecallAdapter(BaseAdapter):
             except Exception:
                 pass
         self._stores = {}
+        self._tenants = {}
         self._active = None
         if self._workspace is not None:
             shutil.rmtree(self._workspace, ignore_errors=True)
@@ -225,6 +229,31 @@ class RecallAdapter(BaseAdapter):
         store.ensure_schema()
         return store
 
+    def _checkout_store(self, digest: str):
+        """The open store for a known corpus, reopening its tenant if it was evicted.
+
+        Open connections are an LRU capped at RECALL_BENCHD_STORE_CAP (default 12, enough to
+        hold every LoCoMo conversation). Without the cap, LongMemEval's 500 one-conversation
+        items each held a Postgres connection until teardown, and the first full official run
+        died at the server's connection limit: 402 of 500 items failed with "sorry, too many
+        clients already" after item ~96. Rows persist across eviction; reopening is only a
+        reconnect, never a re-ingest. Each worker has its own adapter instance, so this LRU is
+        single-threaded by construction and eviction can never close a store mid-item."""
+        store = self._stores.pop(digest, None)
+        if store is None:
+            store = self._open_store(digest)
+        self._stores[digest] = store  # most recently used at the end
+        while len(self._stores) > self._store_cap:
+            oldest = next(iter(self._stores))
+            if oldest == digest:
+                break
+            evicted = self._stores.pop(oldest)
+            try:
+                evicted.close()
+            except Exception:
+                pass
+        return store
+
     # ------------------------------------------------------------------ ingest
 
     def ingest(self, turns: List[Dict[str, Any]]) -> None:
@@ -245,17 +274,20 @@ class RecallAdapter(BaseAdapter):
         )
         digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
-        if digest in self._stores:
+        if digest in self._tenants:
+            self._checkout_store(digest)
             self._active = digest
             return
-        if not self._cache and self._active and self._active in self._stores:
+        if not self._cache and self._active and self._active in self._tenants:
             # Cache disabled: drop the previous conversation's rows before building the next,
             # so storage stays bounded to one corpus at a time.
-            old = self._stores.pop(self._active)
+            old = self._checkout_store(self._active)
             sources = sorted({c.source for c in old.iter_chunks()})
             if sources:
                 old.delete_sources(sources)
             old.close()
+            self._stores.pop(self._active, None)
+            self._tenants.pop(self._active, None)
 
         docs = (
             self._docs_by_session(turns)
@@ -290,7 +322,9 @@ class RecallAdapter(BaseAdapter):
             # rebuild from scratch.
             store.close()
             raise
+        self._tenants[digest] = f"benchd-{self._run_ns}-{digest[:12]}"
         self._stores[digest] = store
+        self._checkout_store(digest)  # enforce the cap now that one more store is open
         self._active = digest
 
     @staticmethod
@@ -343,9 +377,9 @@ class RecallAdapter(BaseAdapter):
 
     def _retrieve(self, query: str) -> str:
         """Retrieve top_k chunk texts, joined. Empty string only on honoured abstention."""
-        if self._active is None or self._active not in self._stores:
+        if self._active is None or self._active not in self._tenants:
             return ""
-        store = self._stores[self._active]
+        store = self._checkout_store(self._active)
         if self._sparse in ("splade", "both", "none"):
             # The learned-sparse and dense-only legs live on HybridRetriever, not on the trust
             # entry point, so those arms search the retriever directly. Abstention does not
