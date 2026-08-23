@@ -459,7 +459,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   refused before any engine call, a corrupt row is a miss and is re-paid, and a failed write is
   counted and reported rather than discarding the files already extracted. `--cache` was briefly
   a boolean because an earlier version accepted a PATH and ignored it; the flag came back when
-  the persistence did. See [docs/EXTRACTION_CACHE_DESIGN.md](docs/EXTRACTION_CACHE_DESIGN.md).
+  the persistence did. See [docs/archive/EXTRACTION_CACHE_DESIGN.md](docs/archive/EXTRACTION_CACHE_DESIGN.md).
 
 ### Fixed
 
@@ -499,7 +499,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   "switched off" and "never configured" stay distinguishable in `.env`. The shipped reasoning
   tools do not read these variables yet; this writes the settings for a port the reasoning arm
   will use once it is built. See
-  [docs/REASONING_MODEL_SELECTION_DESIGN.md](docs/REASONING_MODEL_SELECTION_DESIGN.md).
+  [docs/archive/REASONING_MODEL_SELECTION_DESIGN.md](docs/archive/REASONING_MODEL_SELECTION_DESIGN.md).
 
 ### Fixed
 

@@ -62,7 +62,7 @@ authors who have never seen this repository.
 | A third state for "the verifier was down", because binary admit and reject collapses exactly when the checker fails (A6 Rule 2) | `unverified` is exactly this verdict, and its docstring makes the same argument for why it must not be folded into `low_confidence` | `recall/types.py` (`Verdict`) |
 | The unverified path fails closed (A6 Rule 3) | Strict mode raises `TrustRefusal` and produces no result object at all | `recall/types.py`, `recall/trust.py` |
 | Cap what retrieval injects; five facts, not fifty (A2, A3) | `k` defaults to 5 and is clamped down by the process profile, never raised per request | `recall_mcp/server.py` (`recall_search`) |
-| Connecting a memory tool does not make an agent use it; the fix is a standing instruction in the project rules (A1, presented as the single most valuable takeaway in that article) | `recall setup` scaffolds a `CLAUDE.md` section and a starter `memory/MEMORY.md`, then indexes it | `docs/CLAUDE_MD_MEMORY_SCAFFOLD_DESIGN.md`, status implemented 2026-08-12 |
+| Connecting a memory tool does not make an agent use it; the fix is a standing instruction in the project rules (A1, presented as the single most valuable takeaway in that article) | `recall setup` scaffolds a `CLAUDE.md` section and a starter `memory/MEMORY.md`, then indexes it | `docs/archive/CLAUDE_MD_MEMORY_SCAFFOLD_DESIGN.md`, status implemented 2026-08-12 |
 | Keep the store human-inspectable as a plain list, because reading the memories is the only reliable way anyone has found to catch poisoning (A2) | Memories are files. Reading them is `cat` | by construction |
 
 The last row deserves more weight than it looks like it deserves, and Part 6 returns to it.
@@ -131,7 +131,7 @@ item 2 and item 5 below an item that did not exist when I started ranking.
 
 ### Item 0: make the scaffold write validity metadata, and measure whether it survives
 
-The scaffold already exists and already writes memory files (`docs/CLAUDE_MD_MEMORY_SCAFFOLD_DESIGN.md`).
+The scaffold already exists and already writes memory files (`docs/archive/CLAUDE_MD_MEMORY_SCAFFOLD_DESIGN.md`).
 It does not teach the format that makes those files trustworthy. Extending it to emit `valid_from`
 and a `supersedes` convention, and to instruct the agent to close a memo rather than replace it, is
 a small change to a shipped feature.

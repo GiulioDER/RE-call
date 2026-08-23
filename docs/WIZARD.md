@@ -1,5 +1,10 @@
 # The installation wizard
 
+> **When to prefer this page:** the canonical interactive install is `recall setup` (the README's
+> "full install"). This page is for the scriptable form of the same install — CI, provisioning,
+> or a config you want to review before it runs. For the manual command-by-command path instead,
+> see [FIRST_CALIBRATION.md](FIRST_CALIBRATION.md).
+
 `recall wizard` takes a JSON config and drives every corpus from a directory to a calibrated,
 promoted generation, then writes the MCP servers that serve them. It exists because the calibrated
 path has enough load-bearing ordering in it that assembling it by hand is a research project:
