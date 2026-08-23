@@ -455,6 +455,12 @@ def test_every_db_fixture_skips_when_asked_for_without_a_database(
     # `_reject_unsafe_test_dsn` refuses when the two DSNs are equal, which would surface here as a
     # confusing collection error rather than a clear message.
     env.pop("RECALL_DSN", None)
+    # The probe is a PLAIN pytest session and must be told so. Under `pytest -n` this test runs
+    # inside a worker, whose `PYTEST_XDIST_*` variables the subprocess would otherwise inherit —
+    # and `tests/conftest.py::_isolate_xdist_worker` reads one of them, so the probe would try to
+    # provision a per-worker database against the closed port this test exists to point at.
+    for key in [k for k in env if k.startswith("PYTEST_XDIST")]:
+        env.pop(key, None)
     try:
         # Written inside the try, so an interrupt between creating and deleting it still cleans up.
         tmp.write_text(body + "\n", encoding="utf-8", newline="\n")

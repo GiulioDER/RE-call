@@ -13,19 +13,16 @@ on, its prompt embedding a whole memo body; `benchmarks/llm.py` is the same shap
 retrieved context `benchmarks/pipeline.py` builds.
 """
 
+from typing import Any
+
 import pytest
 
 from recall.embeddings import _TRANSIENT_MARKERS, _is_transient, retry_with_backoff
 
-#: Module scope, matching `test_embeddings_retry_after`: `voyageai` drags `transformers` in
-#: behind it and takes ~75s cold, which is most of the 120s per-test timeout. An `importorskip`
-#: INSIDE a test bills that import to the test and times it out on a cold cache; collection is
-#: not clocked, so paying it here is free. Observed, not theorised — the test below timed out
-#: exactly once this way before the import was moved.
-try:
-    import voyageai.error
-except ImportError:  # pragma: no cover - exercised only without the extra
-    voyageai = None  # type: ignore[assignment]
+# `voyageai` is NOT imported here, and the fixture that imports it explains why:
+# `tests/conftest.py::voyageai_sdk`. The short version is that the import drags `transformers`
+# and `torch` behind it, and paying that at module scope billed 44 of the 45 seconds it took to
+# COLLECT this one file.
 
 
 class _StatusError(Exception):
@@ -346,16 +343,15 @@ def test_a_permanent_status_spelled_http_status_is_still_refused() -> None:
     assert _attempts_used(exc) == 1
 
 
-def test_the_real_voyage_errors_reach_the_numeric_branch() -> None:
+@pytest.mark.timeout(300)  # the `voyageai_sdk` import, if this is the first to ask
+def test_the_real_voyage_errors_reach_the_numeric_branch(voyageai_sdk: Any) -> None:
     """Pins the stubs above against the SDK that actually raises these.
 
     A hand-built stub proves only that the stub matches itself; this is what would notice if
     voyageai renamed `http_status`. Both wordings are deliberately ones the text markers do NOT
     match, so a pass here means the numeric branch answered.
     """
-    if voyageai is None:
-        pytest.skip('needs the voyage extra (pip install "recall-rag[voyage]")')
-    voyageai_error = voyageai.error
+    voyageai_error = voyageai_sdk.error
 
     server = voyageai_error.ServerError(
         "the server failed to process the request.", http_status=500

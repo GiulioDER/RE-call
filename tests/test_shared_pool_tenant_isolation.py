@@ -14,6 +14,7 @@ to fire is a hypothesis.
 from __future__ import annotations
 
 import threading
+import time
 
 import psycopg
 import pytest
@@ -288,4 +289,23 @@ class TestConnectionsAreActuallyReused:
         with pool.tenant_transaction("globex") as conn:
             assert conn.execute("SELECT pg_backend_pid()").fetchone()[0] != poisoned_pid
             assert _tenant_now(conn) == "globex"
+
+        # ⚠️ **Waited for, not asserted immediately, because `_reset` runs on one of
+        # psycopg_pool's WORKER threads** and not on this one. `recall/pool.py` says so where the
+        # counter's lock is declared, and `TestTheResetGuardCanActuallyFire` above can assert the
+        # counter directly only because it calls `_reset` by hand. Here the whole point is to go
+        # through the real return path, so the increment lands whenever that thread is scheduled.
+        #
+        # A bare `assert` won every time on an idle machine and lost on a loaded one: this failed
+        # in CI's `floor` job the first time the suite ran under `pytest -n auto`, with four
+        # workers on a four-vCPU runner, `assert 0 == 1`. That is a race in the TEST, not in the
+        # pool, and it was always there; parallelism only made the scheduler stop being generous.
+        #
+        # The assertion itself is unchanged, `== 1` rather than `>= 1`, so a double discard still
+        # fails. Five seconds is far past any scheduling delay and far short of the 120s timeout,
+        # and the loop exits the moment the counter moves, so the healthy path costs a
+        # millisecond.
+        deadline = time.monotonic() + 5.0
+        while pool.reset_discards < 1 and time.monotonic() < deadline:
+            time.sleep(0.001)
         assert pool.reset_discards == 1

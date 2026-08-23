@@ -225,9 +225,84 @@ place, rather than writing it and warning afterwards.
 
 ```bash
 eval "$(scripts/session-db.sh up)"
-python -m pytest tests/ -q
+python -m pytest tests/ -q -n 4          # or: make test
 scripts/session-db.sh down
 ```
+
+- 🔁 **Corrected 2026-08-23: run it in PARALLEL. Serial is 50 minutes; `-n 4` is 14.**
+  Measured that day on this workstation, same commit (`ec6ab9a0`), same container, back to back,
+  at 6,563 tests: **serial 49:58** (52:27 of wall clock, collection and interpreter start
+  included), **`-n 4` 14:05** (14:20 wall), and `-n 6` **twice, at 16:45 and 21:08, with a worker
+  killed both times**. So four workers is **3.7× faster** on wall clock, and six is not reliably
+  faster than four while being reliably less stable on a 12 GB machine: that is why `make test`
+  defaults to four rather than to `auto`, which would ask for twelve.
+
+  ⚠️ **Those three numbers are one run each, on a box that is not idle.** `\Processor(_Total)\%
+  Processor Time` read 47% with nothing of mine running, three other session containers were up,
+  and the two `-n 6` runs differ by 4.5 minutes from each other. Treat anything under about 1.3×
+  as noise. Re-measure with `time` around the whole invocation rather than reading pytest's line,
+  which excludes interpreter start.
+
+  **`pytest-xdist` is now in the `dev` extra, and `tests/conftest.py::_isolate_xdist_worker` is
+  what makes it safe.** Every worker gets a DATABASE of its own inside this checkout's container,
+  because the workers are separate processes sharing one database otherwise, and three things
+  collide there silently: the shared `chunks` table, the migration ledger, and the cluster-wide
+  `recall_rls_probe` role. Read that docstring before changing the worker count or the DSN shape;
+  the first parallel run failed six tests purely because the rewritten DSN was in libpq keyword
+  form and five tests take `TEST_DSN` apart as a URL.
+
+  ⚠️ **Parallel is for a green run, serial is for reading a red one.** `-n` interleaves the output
+  of four workers, and a failure's traceback arrives detached from the progress line above it.
+  `make test-serial` is the ordered form; a single failing file is faster to re-run on its own
+  either way.
+
+- **Moving `voyageai` out of module scope buys 44 seconds on ONE file and about 7 on the suite.**
+  `tests/test_embeddings_retry_after.py` imported it at module scope, and it imports
+  `langchain_text_splitters`, which imports `transformers` and `torch`. Three modules did this;
+  they now take the session-scoped `voyageai_sdk` fixture in `tests/conftest.py`.
+
+  Measured back to back against `99e52d13`, warm, same 6,599 tests:
+
+  | | master | branch |
+  |---|---|---|
+  | that one file, alone | **45.33s** | **1.04s** |
+  | whole-suite collection | 55.6 / 59.6 / 59.1s | 50.9 / 54.8 / 50.0 / 51.3s |
+
+  So it is worth having when you are ITERATING on that file, and close to noise on a full run,
+  because by the time pytest reaches a file named `test_e…` another module has already pulled
+  `transformers` in and voyageai only adds its margin.
+
+  🔁 **Corrected the same day it was written. This first said "collection was 154s and is now
+  75.1s", a 79 second saving, and that pair was invalid**: 154.10s was the first collect of the
+  day on a cold page cache, and 75.14s was hours later with `torch` resident. A cold master
+  against a warm branch measures the cache, not the change. It also said the cost was paid by
+  "every `pytest` invocation ... including `pytest tests/test_cli.py`", which is simply false:
+  pytest imports only the modules it collects. **Take both halves of a before/after back to back,
+  in both orders, or do not report a pair.** Full accounting:
+  `docs/preregistrations/2026-08-23-test-suite-wall-clock.md`.
+
+  ```bash
+  python -m pytest tests/ -q --collect-only | tail -1
+  ```
+
+- ⚠️ **Windows Smart App Control can block `pyarrow` for a few hours and then stop, with nothing
+  changed.** `ImportError: DLL load failed while importing lib: An Application Control policy has
+  blocked this file`, which fails
+  `tests/test_bench_beam_candidate_k.py::test_the_shipped_local_reranker_is_reachable_without_a_cloud_call`
+  and skips three `sentence-transformers` tests whose own guards catch `ImportError`, so the whole
+  signature is `1 failed, 37 skipped` where 34 skips is healthy. `pytest.importorskip` deliberately
+  does NOT skip the first one, because a module that is installed and broken is not a module that
+  is absent, and that is the right behaviour.
+
+  🔁 **Corrected the same afternoon: it is a TRANSIENT, and this first recorded it as a standing
+  fact.** It failed serially, alone, at 15:20 having passed at 12:41, and passed again unchanged
+  by 16:23 on the same machine. Re-measured at 16:40: `pyarrow 25.0.1` imports and all 14 of those
+  tests pass. So do not route around it, pin it, or downgrade anything, and do not disable Smart
+  App Control, which is a one-way door. Re-measure, one second:
+
+  ```bash
+  python -c "import pyarrow, pyarrow.parquet; print(pyarrow.__version__)"
+  ```
 
 - 🔁 **Corrected 2026-08-20: the full suite takes 30 to 40 minutes with a database, not 12.**
   Three runs on this machine that day, on an otherwise idle box: **37:13, 39:20 and 29:45**, at
