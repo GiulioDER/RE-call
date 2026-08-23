@@ -119,3 +119,13 @@ their 51.5; estimated BMI 82 against their 72. Mean latency 5.9s against their 1
 Costs, measured: the whole tuning session (9 judged runs including smokes) moved the OpenRouter
 meter by well under $1; voyage-4 embedding spend not separately metered (estimated low single
 cents per arm at ~340k tokens).
+
+## Result appendix: A2 SPLADE (2026-08-23, landed after the table above)
+
+Measured: **38.3** (A1 + SPLADE replacing lexical, prithivida/Splade_PP_en_v1 on VPS2 under
+the embedding caps). Paired vs A1: +2/-0 flips; retrieval hit rate identical at 30/60.
+Predicted: 0 to +3 over A1. **Gap: none; the top of the band, with the mechanism showing why
+it cannot matter here: SPLADE moved zero retrieval hits, and the score delta sits within judge
+noise.** Excluded from the champion configuration: the gain does not compound with the
+synthesis lever (which fixes conversion, not retrieval), and the cost is hours of capped CPU
+for a local model on the host that runs live services.
