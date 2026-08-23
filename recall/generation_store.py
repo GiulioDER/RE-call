@@ -276,11 +276,14 @@ class GenerationStore(PgVectorStore):
         every generation it has ever built. Carry-forward re-scores a parent's query set against
         the CHILD generation specifically; a tenant-wide maximum would silently read the parent's
         vectors too and report that the corpus had not moved.
+
+        `1 - min(distance)` rather than `max(1 - distance)` for the NaN reason the base method
+        documents; the two forms disagree whenever one row of the scope is a zero-norm vector.
         """
         generation_id = self._generation_id()
         row = self._with_retry(
             lambda conn: conn.execute(
-                "SELECT max(1 - (embedding <=> %(vec)s)) FROM recall_chunks_v1 "
+                "SELECT 1 - min(embedding <=> %(vec)s) FROM recall_chunks_v1 "
                 "WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s",
                 {"vec": Vector(vector), "tenant": self._tenant, "generation": generation_id},
             ).fetchone()

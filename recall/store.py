@@ -1516,6 +1516,19 @@ class PgVectorStore:
         and the scan is exact by construction. That is the property this method exists for, not a
         preference for aggregates.
 
+        ⛔ `1 - min(distance)`, NOT `max(1 - distance)`, and the two are not interchangeable. A
+        zero-norm embedding makes pgvector's cosine distance NaN, and Postgres orders NaN as
+        LARGER than every number in an aggregate but LAST in an ascending sort. So `max(1 - d)`
+        returns NaN for a corpus holding one degenerate row, where the `ORDER BY d LIMIT 1` this
+        replaces returns the real nearest neighbour. Taking the minimum DISTANCE reproduces the
+        sort's semantics exactly: NaN is never the minimum unless every row is NaN, in which case
+        both forms agree. Verified 2026-08-23 against pgvector on all four cases (no degenerate
+        row, one, all, and an empty scope).
+
+        That matters more than it looks. A NaN would flow into the calibration sample lists, and
+        `NaN >= threshold` is false, so it would be counted as a correct abstention and lower
+        `false_confirm_rate` — the same direction as the defect this method exists to remove.
+
         Measured 2026-08-22 on a 60,000-chunk generation, one query, same slice, same session:
         `query_dense(k=1)` reported **0.000000** where the true maximum was **0.707107** — the
         planner picked `recall_chunks_v1_embedding_idx` unprompted, because 60k chunks in one
@@ -1542,7 +1555,7 @@ class PgVectorStore:
         """
         row = self._with_retry(
             lambda conn: conn.execute(
-                f"SELECT max(1 - (embedding <=> %(vec)s)) FROM {self._table} "
+                f"SELECT 1 - min(embedding <=> %(vec)s) FROM {self._table} "
                 "WHERE tenant_id = %(tenant)s",
                 {"vec": Vector(vector), "tenant": self._tenant},
             ).fetchone()
