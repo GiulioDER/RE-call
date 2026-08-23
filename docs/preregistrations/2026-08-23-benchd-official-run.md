@@ -86,3 +86,17 @@ falsification criteria are unchanged): RE-call `1cb2eb2` (LRU commit), harness f
 Correction, same day: the amendment above names RE-call `1cb2eb2`; that SHA does not exist.
 The LRU commit is `4500e7af`. Left wrong above per the no-edit rule; the run-record.json of
 each valid run carries the authoritative SHA.
+
+## Result: LongMemEval 500 (2026-08-23)
+**Status:** measured (LoCoMo pending)
+
+Measured: **67.2** (336/500), run_fe4489535939, signature VERIFIED, fingerprint
+92dae5232b5c8af6, 0 adapter errors, 0 abstentions, 12/500 synthesis fallbacks. Per dimension:
+recall 133/156, reasoning 92/133, temporal 111/211. Efficiency: 96.8 tokens per correct, mean
+recall 65.1 tokens, mean latency 6.7s. Spend, metered: $1.07 OpenRouter. Wall: 21 minutes at
+workers=4. Estimated BMI 76.7 against the leaderboard leader's 71.6.
+Predicted: 68 to 75.
+**Gap: 0.8 below the band's floor (4 questions).** The tuning-slice regression came in at the
+high end of expectation: 75.0 on the tuned 60 became 67.2 on the full 500. Against the
+leaderboard: 8.2 points above the current top (59.0). The falsification threshold (at or below
+59.0) was not approached.
