@@ -976,48 +976,31 @@ def trusted_search(
     the search. Everything it records is what this function was about to return anyway; the only
     thing enabling it changes is that the record now outlives the stack frame.
     """
+    # ONE argument list, built once. Two verbatim copies of a 17-argument pass-through (plus the
+    # two signatures) meant a new parameter needed four synchronized edits with nothing checking
+    # they agree; a parameter silently dropped from one copy would surface only as the ledger
+    # branch behaving differently from the plain one.
+    forwarded: dict[str, object] = dict(
+        k=k,
+        source=source,
+        calibration=calibration,
+        reranker=reranker,
+        now=now,
+        known_as_of=known_as_of,
+        entailment=entailment,
+        candidate_k=candidate_k,
+        retrieval_profile=retrieval_profile,
+        index_generation=index_generation,
+        policy=policy,
+        document_expansion=document_expansion,
+        structural_expansion=structural_expansion,
+        successor_expansion=successor_expansion,
+        _generation_snapshot=_generation_snapshot,
+    )
     if ledger is None:
-        return _trusted_search(
-            store,
-            embedder,
-            query,
-            k=k,
-            source=source,
-            calibration=calibration,
-            reranker=reranker,
-            now=now,
-            known_as_of=known_as_of,
-            entailment=entailment,
-            candidate_k=candidate_k,
-            retrieval_profile=retrieval_profile,
-            index_generation=index_generation,
-            policy=policy,
-            document_expansion=document_expansion,
-            structural_expansion=structural_expansion,
-            successor_expansion=successor_expansion,
-            _generation_snapshot=_generation_snapshot,
-        )
+        return _trusted_search(store, embedder, query, **forwarded)  # type: ignore[arg-type]
     try:
-        result = _trusted_search(
-            store,
-            embedder,
-            query,
-            k=k,
-            source=source,
-            calibration=calibration,
-            reranker=reranker,
-            now=now,
-            known_as_of=known_as_of,
-            entailment=entailment,
-            candidate_k=candidate_k,
-            retrieval_profile=retrieval_profile,
-            index_generation=index_generation,
-            policy=policy,
-            document_expansion=document_expansion,
-            structural_expansion=structural_expansion,
-            successor_expansion=successor_expansion,
-            _generation_snapshot=_generation_snapshot,
-        )
+        result = _trusted_search(store, embedder, query, **forwarded)  # type: ignore[arg-type]
     except TrustRefusal as refusal:
         # The refusal is recorded and then propagates UNCHANGED. Recording before the raise
         # completes would be the witness inserting itself into the enforcement path; recording

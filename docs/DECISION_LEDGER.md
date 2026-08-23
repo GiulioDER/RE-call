@@ -29,7 +29,8 @@ Three consequences are load-bearing, and tested:
   counter increment (`recall_ledger_write_failures_total`) and one warning per failure kind per
   process, never an exception. `tests/test_decision_ledger.py` breaks the store on purpose and
   asserts the search result is unaffected.
-- **A refusal is recorded and still raised.** Strict `TrustRefusal` is a decision too — the
+- **A refusal is recorded and still raised.** A `TrustRefusal` is a decision too — whether the
+  strict gate refused or a dependency fault ended the call in any mode — and the
   ledger appends a `search_refusal` record and re-raises the exception unchanged.
 - **Records are appended after the decision is complete.** The write happens once, on the final
   outcome (after entailment demotion, after successor promotion), so the ledger cannot become a
@@ -43,7 +44,7 @@ Records land in `recall_audit_events` — the same append-only, RLS-isolated tab
 | `event_type` | When |
 |---|---|
 | `search_decision` | the call completed: answered or abstained |
-| `search_refusal` | strict mode refused before retrieval |
+| `search_refusal` | the search raised `TrustRefusal` before retrieval: the strict-mode gate, or a `DEPENDENCY_UNAVAILABLE` fault in any mode |
 
 The JSONB payload (`record_version: 1`) carries:
 
@@ -55,7 +56,8 @@ The JSONB payload (`record_version: 1`) carries:
   `pipeline_fingerprint`, `corpus_fingerprint`, `query_set_digest`, `trust_state`,
   `failure_code`;
 - **the evidence, winners and losers**: every hit's chunk id, source, file, ord, cosine,
-  confidence, verdict, validity window, successor, and `first`-write provenance. The demoted
+  confidence, verdict, validity window, successor, and last-index timestamp (`indexed_at`; the
+  first-write axis, `first_indexed_at`, is not recorded in record version 1). The demoted
   hits are recorded on purpose — a ledger showing only supporting evidence is justification,
   not audit;
 - **both time axes**: `valid_time` (the `now` the verdicts were judged against) and
@@ -110,6 +112,20 @@ The table is tenant-isolated by row-level security, so read through a connection
 - **No cryptographic custody.** Append-only is enforced by the code surface (the store exposes
   no update or delete for audit events) and by grants, not by hashes or signatures. A superuser
   can rewrite history.
+- **The table grows without bound while the ledger is on.** One row per search, typically a few
+  KB of JSONB plus two index entries, in the same `recall_audit_events` table the generation and
+  calibration lifecycle writes to. The library ships no retention mechanism on purpose (append is
+  the only verb on its surface), so retention is the operator's, outside the library — for
+  example, on a schedule:
+
+  ```sql
+  DELETE FROM recall_audit_events
+  WHERE event_type IN ('search_decision', 'search_refusal')
+    AND created_at < now() - interval '90 days';
+  ```
+
+  Watch `recall_ledger_records_total` against `recall_ledger_write_failures_total`: together they
+  are the write rate and the loss rate, and the failure counter alone cannot tell you either.
 - **It witnesses observation, not omniscience.** A record proves what was retrieved, judged,
   and refused under which authority — not that the corpus contained everything relevant. If the
   world changed and nothing indexed the change, the ledger holds a flawless account of a

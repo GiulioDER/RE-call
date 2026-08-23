@@ -121,6 +121,46 @@ def test_decision_payload_bounds_the_query_and_says_so():
     assert payload["query_truncated"] is True
 
 
+def test_jsonb_unstorable_characters_are_replaced_and_declared():
+    """A NUL or lone surrogate would make the jsonb INSERT fail on EVERY attempt, letting a
+    caller suppress their own refusal record deterministically (SEC-001). Replaced with U+FFFD
+    and declared, so the record lands and says it was altered."""
+    result = _result([_hit("ok", "a.md", 0.7)])
+    hostile = TrustedResult(
+        query="who\x00did\ud800this",
+        hits=result.hits,
+        abstained=False,
+        reason="",
+        gap_warning=False,
+        staleness=result.staleness,
+    )
+    payload = decision_payload(hostile)
+    assert "\x00" not in payload["query"] and "\ud800" not in payload["query"]
+    assert payload["query_sanitized"] is True
+    json.dumps(payload)  # must survive the exact serialization Jsonb applies
+    # And an untouched query does not carry the flag at all.
+    assert "query_sanitized" not in decision_payload(result)
+
+
+def test_caller_instants_are_recorded_with_the_offset_enforcement_used():
+    """evaluate() interprets a naive `now` as UTC before judging verdicts; the record must state
+    that offset rather than storing an ambiguous local-looking string (NUM-001)."""
+    naive = datetime(2026, 1, 1, 12, 0)
+    payload = decision_payload(
+        _result([_hit("ok", "a.md", 0.7)]), valid_time=naive, known_as_of=naive
+    )
+    assert payload["valid_time"] == "2026-01-01T12:00:00+00:00"
+    assert payload["known_as_of"] == "2026-01-01T12:00:00+00:00"
+    refusal = TrustRefusal(
+        code=TrustFailureCode.INDEX_NOT_READY,
+        calibration_status="missing",
+        tenant_id="default",
+        generation_id=None,
+    )
+    ref = refusal_payload(refusal, query="q", known_as_of=naive)
+    assert ref["known_as_of"] == "2026-01-01T12:00:00+00:00"
+
+
 def test_refusal_payload_carries_code_and_query():
     refusal = TrustRefusal(
         code=TrustFailureCode.INDEX_NOT_READY,
@@ -350,6 +390,28 @@ def test_strict_refusal_is_witnessed_and_still_raises(make_store):
         assert payload["failure_code"] in {"INDEX_NOT_READY", "CALIBRATION_MISSING"}
     finally:
         _delete_events(store, event_ids)
+
+
+@requires_db
+def test_a_nul_query_still_lands_a_refusal_row(make_store):
+    """Red-to-green for SEC-001: before sanitisation this exact write failed on every attempt
+    (Postgres jsonb rejects the escaped NUL), so the one caller most worth auditing was the one
+    who could choose not to be."""
+    store = make_store(64)
+    refusal = TrustRefusal(
+        code=TrustFailureCode.INDEX_NOT_READY,
+        calibration_status="missing",
+        tenant_id=store.tenant,
+        generation_id=None,
+    )
+    event_id = DecisionLedger(store).record_refusal(refusal, query="who\x00did this?", k=3)
+    try:
+        assert event_id is not None, "the sanitized refusal record must land"
+        rows = _audit_rows(store, SEARCH_REFUSAL_EVENT, "did this?")
+        assert len(rows) == 1
+        assert rows[0][2]["query_sanitized"] is True
+    finally:
+        _delete_events(store, [event_id] if event_id else [])
 
 
 @requires_db

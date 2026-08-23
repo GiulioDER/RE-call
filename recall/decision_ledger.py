@@ -35,9 +35,10 @@ stamped by the database on the row itself.
 from __future__ import annotations
 
 import os
+import re
 from collections import Counter
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from recall.observability import METRICS, get_logger
@@ -101,13 +102,46 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+def _iso_instant(value: datetime | None) -> str | None:
+    """A CALLER-supplied instant, serialized under the same rule enforcement used.
+
+    `evaluate` interprets a naive ``now`` (and `_as_utc` a naive ``known_as_of``) as UTC before
+    judging any verdict, so a naive value recorded verbatim would be an offset-free string a
+    reader could parse as local time — reconstructing an instant off by the local UTC offset
+    from the one the verdicts were actually judged against. The record states the offset
+    enforcement applied. `_iso` stays verbatim for store-derived timestamps, which arrive
+    timezone-aware from TIMESTAMPTZ columns.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.isoformat()
+
+
+#: Characters json.dumps encodes as escapes PostgreSQL's jsonb PARSER rejects: U+0000 becomes
+#: backslash-u0000 escape ("unsupported Unicode escape sequence") and a lone surrogate an unpairable
+#: ``\ud800``-range escape. Left in the payload they make the INSERT fail deterministically on
+#: every attempt, which turns the best-effort catch into something worse than lost-row-on-outage:
+#: a caller who embeds one in the query chooses to be unrecorded, on the refusal path where the
+#: search itself never touches the database. Replaced, not passed through.
+_JSONB_UNSTORABLE = re.compile("[\x00\ud800-\udfff]")
+
+
 def _bounded_query(query: str) -> dict[str, Any]:
     truncated = len(query) > MAX_QUERY_CHARS_RECORDED
-    return {
-        "query": query[:MAX_QUERY_CHARS_RECORDED],
+    recorded = query[:MAX_QUERY_CHARS_RECORDED]
+    sanitized = _JSONB_UNSTORABLE.sub("�", recorded)
+    fields: dict[str, Any] = {
+        "query": sanitized,
         "query_chars": len(query),
         "query_truncated": truncated,
     }
+    if sanitized != recorded:
+        # Declared, like truncation: a record that was altered on the way in must say so, or a
+        # reader will treat the replacement characters as what the caller actually sent.
+        fields["query_sanitized"] = True
+    return fields
 
 
 def decision_payload(
@@ -155,8 +189,8 @@ def decision_payload(
                 staleness.age.total_seconds() if staleness.age is not None else None
             ),
         },
-        "valid_time": _iso(valid_time),
-        "known_as_of": _iso(known_as_of),
+        "valid_time": _iso_instant(valid_time),
+        "known_as_of": _iso_instant(known_as_of),
         "diagnostics": {
             "embedding_profile": diagnostics.embedding_profile,
             "retrieval_profile": diagnostics.retrieval_profile,
@@ -193,10 +227,12 @@ def refusal_payload(
     k: int | None = None,
     known_as_of: datetime | None = None,
 ) -> dict[str, Any]:
-    """The JSON body of one strict-refusal record.
+    """The JSON body of one refusal record.
 
     A refusal is a decision too — the enforcer answered "no answer" — and a ledger that only
-    witnessed the successes would go silent exactly when the gate is doing its job. The fields
+    witnessed the successes would go silent exactly when the gate is doing its job. Not only
+    strict mode lands here: a ``DEPENDENCY_UNAVAILABLE`` refusal is raised in any mode, before
+    the strict gate is consulted, and it is recorded the same way; ``failure_code`` says which. The fields
     are the ones `TrustRefusal` itself carries (all system-controlled identity, no corpus
     bytes), plus the query, which the exception deliberately omits and the record deliberately
     keeps: see the module docstring for why those rules differ.
@@ -214,7 +250,7 @@ def refusal_payload(
         "pipeline_fingerprint": refusal.pipeline_fingerprint,
         "corpus_fingerprint": refusal.corpus_fingerprint,
         "query_set_digest": refusal.query_set_digest,
-        "known_as_of": _iso(known_as_of),
+        "known_as_of": _iso_instant(known_as_of),
     }
 
 
@@ -325,7 +361,7 @@ class DecisionLedger:
         k: int | None = None,
         known_as_of: datetime | None = None,
     ) -> str | None:
-        """Witness one strict refusal. Returns the event id, or None if the write failed."""
+        """Witness one refusal (strict gate, or a dependency fault in any mode)."""
         return self._append(
             SEARCH_REFUSAL_EVENT,
             lambda: (
