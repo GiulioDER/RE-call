@@ -1,0 +1,140 @@
+diff --git a/benchd_harness/cli.py b/benchd_harness/cli.py
+index aa3c29a..d07d484 100644
+--- a/benchd_harness/cli.py
++++ b/benchd_harness/cli.py
+@@ -33,7 +33,8 @@ def cli():
+ @click.option("--budget", type=float, default=None, help="Max budget in USD for ProofMeter spend tracking (e.g., 5.00)")
+ @click.option("--pricing", type=click.Path(exists=True), default=None, help="Path to custom pricing JSON (for enterprise/bulk rates)")
+ @click.option("--pricing-mode", type=click.Choice(["public", "usage-only"]), default="public", help="Pricing mode: 'public' (estimated list prices) or 'usage-only' (no cost calculation)")
+-def run(adapter, benchmark, out, key, max_items, judge, answerer_model, judge_model, adapter_config, budget, pricing, pricing_mode):
++@click.option("--workers", type=int, default=1, help="Concurrent items; one adapter instance per worker")
++def run(adapter, benchmark, out, key, max_items, judge, answerer_model, judge_model, adapter_config, budget, pricing, pricing_mode, workers):
+     """Run a benchmark against a memory system adapter."""
+     # Parse adapter config JSON
+     parsed_adapter_config = None
+@@ -47,6 +48,10 @@ def run(adapter, benchmark, out, key, max_items, judge, answerer_model, judge_mo
+     # Resolve adapter
+     try:
+         adapter_instance = get_adapter(adapter, adapter_config=parsed_adapter_config)
++        extra_adapters = [
++            get_adapter(adapter, adapter_config=parsed_adapter_config)
++            for _ in range(max(0, workers - 1))
++        ]
+     except ValueError as exc:
+         click.echo(click.style(f"Error: {exc}", fg="red"), err=True)
+         sys.exit(1)
+@@ -106,6 +111,8 @@ def run(adapter, benchmark, out, key, max_items, judge, answerer_model, judge_mo
+         use_llm_judge=judge,
+         llm_judge_config=llm_judge_config,
+         budget_cents=budget_cents,
++        workers=workers,
++        extra_adapters=extra_adapters,
+     )
+ 
+     try:
+diff --git a/benchd_harness/runner.py b/benchd_harness/runner.py
+index e0a59f8..728ffe0 100644
+--- a/benchd_harness/runner.py
++++ b/benchd_harness/runner.py
+@@ -40,6 +40,8 @@ class BenchmarkRunner:
+         use_llm_judge: bool = False,
+         llm_judge_config: Optional[object] = None,
+         budget_cents: Optional[int] = None,
++        workers: int = 1,
++        extra_adapters: Optional[list] = None,
+     ):
+         self.adapter = adapter
+         self.benchmark = benchmark
+@@ -48,6 +50,8 @@ class BenchmarkRunner:
+         self.use_llm_judge = use_llm_judge
+         self.llm_judge_config = llm_judge_config
+         self.budget_cents = budget_cents
++        self.workers = max(1, int(workers))
++        self.extra_adapters = list(extra_adapters or [])
+         self._meter_ctx: Optional["ProofMeterRunContext"] = None
+         self._meter_client: Optional["ProofMeterClient"] = None
+ 
+@@ -97,10 +101,9 @@ class BenchmarkRunner:
+         failed = 0
+         pending = 0
+ 
+-        for i, item in enumerate(items, 1):
+-            trace = self._run_item(item)
+-            traces.append(trace)
++        for i, item, trace in self._iter_item_traces(items):
+ 
++            traces.append(trace)
+             if trace.scored_correct:
+                 status_label = "PASS"
+                 passed += 1
+@@ -119,6 +122,8 @@ class BenchmarkRunner:
+             print(f"  [{i:>{len(str(total))}}/{total}] {item.dimension:<10} {query_display:<57} {status_label}")
+ 
+         self.adapter.teardown()
++        for extra in self.extra_adapters:
++            extra.teardown()
+         completed_at = datetime.now(timezone.utc)
+ 
+         elapsed = (completed_at - started_at).total_seconds()
+@@ -182,8 +187,46 @@ class BenchmarkRunner:
+         text = _json.dumps(ingest_history, default=str)
+         return estimate_tokens(text)
+ 
+-    def _run_item(self, item: BenchmarkItem) -> TraceRecord:
++    def _iter_item_traces(self, items):
++        """Yield (1-based index, item, trace) in item order.
++
++        workers=1 preserves the original strictly sequential behaviour. With workers > 1,
++        items run on a thread pool with ONE ADAPTER PER WORKER (adapters are taken from and
++        returned to a queue around each item, never shared between two in-flight items), and
++        results are yielded in submission order. Per-item semantics are unchanged: each item
++        still runs reset -> ingest -> recall -> answer -> judge against a single adapter.
++        """
++        if self.workers <= 1 or not self.extra_adapters:
++            for i, item in enumerate(items, 1):
++                yield i, item, self._run_item(item)
++            return
++
++        import queue as _queue
++        from concurrent.futures import ThreadPoolExecutor
++
++        for extra in self.extra_adapters:
++            extra.setup()
++        adapter_pool: "_queue.Queue" = _queue.Queue()
++        adapter_pool.put(self.adapter)
++        for extra in self.extra_adapters:
++            adapter_pool.put(extra)
++
++        def run_one(indexed):
++            i, item = indexed
++            adapter = adapter_pool.get()
++            try:
++                return i, item, self._run_item(item, adapter=adapter)
++            finally:
++                adapter_pool.put(adapter)
++
++        pool_size = min(self.workers, 1 + len(self.extra_adapters))
++        with ThreadPoolExecutor(max_workers=pool_size) as executor:
++            yield from executor.map(run_one, enumerate(items, 1))
++
++    def _run_item(self, item: BenchmarkItem, adapter: Optional[BaseAdapter] = None) -> TraceRecord:
+         """Run a single benchmark item and return its trace."""
++        if adapter is None:
++            adapter = self.adapter
+         trace_id = f"trace_{uuid.uuid4().hex[:12]}"
+         raw_recall = ""
+         generated_answer = ""
+@@ -193,10 +236,10 @@ class BenchmarkRunner:
+         ingest_tok = self._estimate_ingest_tokens(item.ingest_history)
+ 
+         try:
+-            self.adapter.reset()
++            adapter.reset()
+             t0 = time.perf_counter()
+-            self.adapter.ingest(item.ingest_history)
+-            raw_recall = self.adapter.recall(item.recall_query)
++            adapter.ingest(item.ingest_history)
++            raw_recall = adapter.recall(item.recall_query)
+             latency_ms = (time.perf_counter() - t0) * 1000.0
+         except Exception as exc:
+             latency_ms = 0.0
