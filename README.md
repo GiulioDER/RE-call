@@ -243,18 +243,18 @@ pip install -e ".[fastembed]"
 
 ## How it works
 
-The solid path is the default retrieval flow. The dashed branch is the optional Evidence Graph V1
+The solid path is the default retrieval flow. The dashed branch is the optional Evidence Graph
 path, enabled only with `graph_expansion=one_hop`; it can add evidence, but it cannot bypass the
 normal trust checks.
 
 ```mermaid
 flowchart TB
-    subgraph BUILD["1. Build the memory index"]
+    subgraph BUILD["Build the memory index"]
         direction LR
         M["Memo<br/>markdown + frontmatter"] --> I["Chunk + embed"] --> DB[("PostgreSQL<br/>+ pgvector")]
     end
 
-    subgraph QUERY["2. Every query · default path"]
+    subgraph QUERY["Every query · default path"]
         direction LR
         Q["Question"] --> H["Hybrid retrieval<br/>dense + full-text<br/>optional sparse / rerank"]
         H --> GP{"Calibrated<br/>gap check"}
@@ -262,7 +262,7 @@ flowchart TB
         TR --> E["Trusted evidence<br/>with provenance"]
     end
 
-    subgraph REASONING["3. Reasoning and citations"]
+    subgraph REASONING["Reasoning and citations"]
         direction LR
         E --> RP["Reasoning policy<br/>+ budget"]
         RP --> RV{"Citation + trust<br/>validation"}
