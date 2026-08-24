@@ -600,15 +600,16 @@ class GenerationStore(PgVectorStore):
             self._borrowed() as conn,
             conn.cursor(name=f"recall_gen_{uuid.uuid4().hex[:12]}") as cur,
         ):
-            cur.execute(
-                "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
-                (self._tenant, generation_id),
-            )
-            while rows := cur.fetchmany(batch_size):
-                for chunk_id, source, text, metadata in rows:
-                    value = metadata if isinstance(metadata, dict) else json.loads(metadata)
-                    yield Chunk(str(chunk_id), str(source), str(text), value)
+            with conn.transaction():
+                cur.execute(
+                    "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
+                    "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
+                    (self._tenant, generation_id),
+                )
+                while rows := cur.fetchmany(batch_size):
+                    for chunk_id, source, text, metadata in rows:
+                        value = metadata if isinstance(metadata, dict) else json.loads(metadata)
+                        yield Chunk(str(chunk_id), str(source), str(text), value)
 
     def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> int:
         raise ImmutableGenerationError("active generations are read only")

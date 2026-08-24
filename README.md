@@ -197,6 +197,11 @@ flowchart TB
     TR -. "explicit opt-in" .-> RG["Reasoning graph projection"]
     DB -. "generation-bound" .-> RG
     RG --> IP["Inference proposals: review candidates"]
+    RG -. "optional semantic branch" .-> SG["Evidence Graph V1:<br/>entities, mentions, authored relations"]
+    TR -. "graph_expansion=one_hop" .-> SG
+    SG -. "bounded one hop" .-> EC["Neighbor evidence candidates"]
+    EC --> GT["Normal trust evaluation again"]
+    GT -. "accepted evidence" .-> RP
     TR --> RP["Reasoning policy plus budget"]
     IP --> RP
     RP --> RV{"Citation and trust validation"}
@@ -211,7 +216,7 @@ flowchart TB
 | Configuration | Guided setup, local and hosted embedder choices, retrieval cost profiles, optional reranking, strict or development trust policy, and per-corpus calibration. |
 | Storage | PostgreSQL with pgvector, ordered SQL migration path, immutable generations, incremental indexing, pruning, and source-scoped erasure. |
 | Agent integration | CLI, MCP server, LangChain retriever, LlamaIndex retriever, and injectable search seams for tests. |
-| Reasoning | Explicit opt-in reasoning API, CLI, and MCP tools over trusted retrieval, generation-bound graph projections, proposal inspection, budgets, and citation validation. |
+| Reasoning | Explicit opt-in reasoning API, CLI, and MCP tools over trusted retrieval, generation-bound authored and semantic Evidence Graph V1 projections <!--@ citation-pending: Evidence Graph V1 implementation artifact -->, proposal inspection, budgets, and citation validation. |
 | Security | Tenant isolation, row-level security checks, serving and migration DSNs, bearer-token HTTP transports, scopes, quotas, and unsafe-DSN refusal. |
 | Operations | Timeouts, reconnect policy, structured logging, counters, latency percentiles, and MCP stats. |
 | Quality gates | Real pgvector integration tests, type checking, linting, dependency audit, claim-artifact checks, and regression fixtures for known failure modes. |
@@ -363,13 +368,15 @@ Core documents:
 | [docs/WRITEUP.md](https://github.com/GiulioDER/RE-call/blob/master/docs/WRITEUP.md) | Architecture and design rationale. |
 | [docs/API.md](https://github.com/GiulioDER/RE-call/blob/master/docs/API.md) | Supported Python, CLI, and MCP surface. |
 | [docs/REPOSITORY_MAP.md](https://github.com/GiulioDER/RE-call/blob/master/docs/REPOSITORY_MAP.md) | What is product, evidence, benchmark support, and archive. |
-| [docs/REASONING_OPERATIONS.md](https://github.com/GiulioDER/RE-call/blob/master/docs/REASONING_OPERATIONS.md) | Opt-in reasoning tools, traces, review policy, and operational behavior. |
+| [docs/REASONING_GRAPH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/REASONING_GRAPH.md) | Authored reasoning projection and deterministic Evidence Graph V1 semantics <!--@ citation-pending: Evidence Graph V1 implementation artifact -->. |
+| [docs/REASONING_OPERATIONS.md](https://github.com/GiulioDER/RE-call/blob/master/docs/REASONING_OPERATIONS.md) | Opt-in reasoning tools, graph expansion, traces, review policy, and operational behavior. |
 | [docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md) | Authentication, scopes, and tenant isolation. |
 | [docs/MIGRATIONS.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MIGRATIONS.md) | Migration roles, serving DSNs, and schema operations. |
 | [docs/OPERATING_MODES.md](https://github.com/GiulioDER/RE-call/blob/master/docs/OPERATING_MODES.md) | Local, production, quality, hosted, and evaluation deployment modes. |
 | [docs/CALIBRATION.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md) | Calibration workflow and generation-aware serving. |
 | [docs/CASE_STUDY.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CASE_STUDY.md) | Where the system came from and what is public versus private. |
 | [docs/RESEARCH_PROTOCOL.md](https://github.com/GiulioDER/RE-call/blob/master/docs/RESEARCH_PROTOCOL.md) | How benchmark runs are controlled and audited. |
+| [benchmarks/PREREGISTRATION-evidence-graph-v1.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/PREREGISTRATION-evidence-graph-v1.md) | Preregistered Evidence Graph V1 quality evaluation and relation controls <!--@ citation-pending: preregistration artifact -->. |
 
 Release notes and upgrade warnings live in [CHANGELOG.md](https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md).
 

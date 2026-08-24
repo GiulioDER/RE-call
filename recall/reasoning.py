@@ -290,7 +290,34 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             )
             _record_reasoning_metrics(response)
             return response
-        graph_expansion = provider(request, retrieval)
+        try:
+            graph_expansion = provider(request, retrieval)
+        except TimeoutError as exc:
+            graph_expansion = SemanticGraphExpansionResult(
+                retrieval=retrieval,
+                readiness="GRAPH_PROVIDER_TIMEOUT",
+            )
+            graph_failure = ProviderFailure(
+                kind="timeout",
+                provider_id="semantic-graph",
+                model_id="deterministic",
+                provider_revision="v1",
+                message=type(exc).__name__,
+            )
+        except Exception as exc:
+            graph_expansion = SemanticGraphExpansionResult(
+                retrieval=retrieval,
+                readiness="GRAPH_PROVIDER_ERROR",
+            )
+            graph_failure = ProviderFailure(
+                kind="provider_error",
+                provider_id="semantic-graph",
+                model_id="deterministic",
+                provider_revision="v1",
+                message=type(exc).__name__,
+            )
+        else:
+            graph_failure = None
         if graph_expansion.readiness != "ready":
             response = _response(
                 request=request,
@@ -304,6 +331,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 generator_invoked=False,
                 citations_normalized=False,
                 started=started,
+                provider_failures=(graph_failure,) if graph_failure is not None else (),
                 graph_expansion=graph_expansion,
             )
             _record_reasoning_metrics(response)
