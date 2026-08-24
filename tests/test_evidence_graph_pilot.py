@@ -1,7 +1,12 @@
 from collections import Counter
 
 from benchmarks.evidence_graph_eval import relation_control
-from benchmarks.evidence_graph_pilot import _graph, run_deepseek_judge, run_pilot
+from benchmarks.evidence_graph_pilot import (
+    _graph,
+    human_review_package,
+    run_deepseek_answers,
+    run_pilot,
+)
 
 
 def _observation(artifact, query_id: str, arm: str):
@@ -44,23 +49,30 @@ def test_pilot_shows_graph_gain_and_trust_refusal():
     assert guarded.rejected_candidate_count == 1
 
 
-def test_deepseek_judge_compares_the_same_fixture_without_network_calls():
+def test_deepseek_answers_are_scored_by_human_review_without_network_calls():
     calls = []
 
     def fake_completion(prompt: str, model: str) -> str:
         calls.append((prompt, model))
+        citation = (
+            "[]"
+            if "EVIDENCE:\n(no evidence)" in prompt
+            else f'["{prompt.split("[")[1].split("]", 1)[0]}"]'
+        )
         return (
-            '{"baseline_answer":"baseline", "graph_answer":"graph", '
-            '"added_evidence_value":"useful", "winner":"graph", '
-            '"rationale":"The added chunk answers the dependency question."}'
+            '{"answer":"answer", "abstained":false, '
+            f'"citation_chunk_ids":{citation}'
+            + "}"
         )
 
-    comparisons = run_deepseek_judge(run_pilot(), model="deepseek/test", completion=fake_completion)
+    answers = run_deepseek_answers(run_pilot(), model="deepseek/test", completion=fake_completion)
+    review = human_review_package(run_pilot(), answers)
 
-    assert len(comparisons) == 6
-    assert len(calls) == 6
+    assert len(answers) == 12
+    assert len(calls) == 12
     assert all(model == "deepseek/test" for _, model in calls)
-    supports = next(item for item in comparisons if item.query_id == "supports_relation")
-    assert supports.baseline_chunk_ids == ("c1",)
-    assert supports.graph_chunk_ids == ("c1", "c2", "c8")
-    assert "What evidence supports" in calls[1][0]
+    supports = next(item for item in review if item["query_id"] == "supports_relation")
+    assert supports["baseline"]["evidence"][0]["id"] == "c1"
+    assert supports["graph"]["evidence"][-1]["id"] == "c8"
+    assert supports["human_judgment"]["winner"] is None
+    assert "What evidence supports" in calls[2][0]
