@@ -33,6 +33,8 @@ Run these commands from the committed checkout on VPS2, with the approved provid
 configuration loaded without printing secrets. Run one process at a time.
 
 ```text
+set -a; . /opt/sentiment_agent/.env; set +a
+cd /home/sentiment/recall-repos
 python -m benchmarks.run --arm recall --model openai/gpt-4o-mini --data locomo10.json --conversations 10 --evidence-budget 128 --routing-mode shadow --k 5 --embedder fastembed --reranker none --out benchmarks/results/evidence-routing-v1
 ```
 
