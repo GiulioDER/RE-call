@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
 from recall.calibration import Calibration
 from recall.evidence import EvidencePolicy, build_evidence_bundle
@@ -126,8 +127,8 @@ def main() -> None:
         "baseline_unanswerable_false_positive": sum(bool(case["baseline_answered"]) for case in unanswerable),
         "treatment_unanswerable_false_positive": sum(bool(case["treatment_answered"]) for case in unanswerable),
         "all_treatment_trust_states_trusted": all(case["treatment_trust_state"] == "trusted" for case in cases),
-        "baseline_ms_mean": sum(float(case["baseline_ms"]) for case in cases) / len(cases),
-        "treatment_ms_mean": sum(float(case["treatment_ms"]) for case in cases) / len(cases),
+        "baseline_ms_mean": sum(cast(float, case["baseline_ms"]) for case in cases) / len(cases),
+        "treatment_ms_mean": sum(cast(float, case["treatment_ms"]) for case in cases) / len(cases),
         "details": cases,
     }
     print(json.dumps(result, indent=2, sort_keys=True))

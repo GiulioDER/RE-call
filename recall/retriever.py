@@ -191,11 +191,11 @@ def expand_retrieval_by_structure(
         scoped = search(result.query, policy.chunks_per_source, source)
         reranking_ran = reranking_ran or scoped.diagnostics.reranking_ran
         candidates = list(scoped.hits)
-        ordinals = [
-            hit.chunk.metadata.get("ord")
-            for hit in candidates
-            if isinstance(hit.chunk.metadata.get("ord"), int)
-        ]
+        ordinals: list[int] = []
+        for hit in candidates:
+            ordinal = hit.chunk.metadata.get("ord")
+            if isinstance(ordinal, int):
+                ordinals.append(ordinal)
         terminal = max(ordinals) if ordinals else None
         seeds = seed_ordinals.get(source, [])
         for hit in candidates:

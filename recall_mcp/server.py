@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar, cast
 from urllib.parse import urlsplit
 
 import anyio.to_thread
@@ -95,7 +95,7 @@ from recall.desktop.uploads import discard_staging, stage_uploads
 
 def _serving_json(result: object) -> str:
     """Serialize additive retrieval fields only when a caller opted into them."""
-    dump = getattr(result, "model_dump_json")
+    dump = cast(Callable[..., str], getattr(result, "model_dump_json"))
     exclude: set[str] = set()
     if getattr(result, "explanation", None) is None:
         exclude.add("explanation")

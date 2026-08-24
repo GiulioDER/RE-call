@@ -61,7 +61,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     arms: dict[str, Any] = {}
     for arm_name, arm in retrieval["arms"].items():
-        details = []
+        details: list[dict[str, Any]] = []
         for row in arm["details"]:
             question_id = str(row["id"])
             if question_id not in by_id:
@@ -81,9 +81,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
         summary: dict[str, Any] = {}
         for k in K_VALUES:
-            rows = [row["scores"][str(k)] for row in details]
+            score_rows: list[dict[str, float]] = [row["scores"][str(k)] for row in details]
             summary[str(k)] = {
-                metric: statistics.fmean(row[metric] for row in rows) for metric in rows[0]
+                metric: statistics.fmean(row[metric] for row in score_rows)
+                for metric in score_rows[0]
             }
         arms[arm_name] = {"questions": len(details), "summary": summary, "details": details}
 

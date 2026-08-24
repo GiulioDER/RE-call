@@ -1058,6 +1058,48 @@ class GenerationManager:
                 pass
             raise
 
+    def calibration_status_for(
+        self, generation_id: str, *, conn: psycopg.Connection | None = None
+    ) -> str:
+        """Return calibration status for reporting without blocking recovery."""
+        from recall.calibration_v2 import CalibrationRepository
+
+        repository = CalibrationRepository(self._dsn, self.tenant_id, actor=self.actor)
+        try:
+            if conn is not None:
+                with conn.transaction():
+                    resolution = repository.resolve_within(conn, generation_id)
+            else:
+                resolution = repository.resolve(generation_id)
+            return str(resolution.status.value)
+        except Exception:  # noqa: BLE001
+            return "unknown"
+
+    def require_certified_for_production(
+        self, generation_id: str, *, conn: psycopg.Connection | None = None
+    ) -> None:
+        """Require a published, certified calibration bound to the generation."""
+        from recall.calibration_v2 import CalibrationBindingError, CalibrationRepository, CalibrationStatus
+
+        repository = CalibrationRepository(self._dsn, self.tenant_id, actor=self.actor)
+        try:
+            resolution = (
+                repository.resolve_within(conn, generation_id)
+                if conn is not None
+                else repository.resolve(generation_id)
+            )
+        except CalibrationBindingError as exc:
+            raise UnsafePromotion(
+                f"generation {generation_id} cannot go live in production: {exc}"
+            ) from exc
+        if resolution.status is CalibrationStatus.CERTIFIED:
+            return
+        raise UnsafePromotion(
+            f"generation {generation_id} cannot go live in production: its calibration is "
+            f"{resolution.status.value}. Production serves only a generation whose published "
+            "calibration certified and is still bound to this pipeline and corpus."
+        )
+
     def rebuild_graph(self, generation_id: str) -> GraphReadiness:
         """Build only the deterministic semantic graph for an existing v1 generation."""
         with self._connect() as conn, conn.transaction():

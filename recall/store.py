@@ -49,16 +49,6 @@ def _numeric_query_terms(text: str) -> list[str]:
     return terms
 
 
-def _numeric_query_terms(text: str) -> list[str]:
-    """Return normalized numeric terms for the table exact-match boost."""
-    terms: list[str] = []
-    for value in _NUMERIC_TOKEN_RE.findall(text):
-        normalized = value.replace(",", ".")
-        if normalized not in terms:
-            terms.append(normalized)
-    return terms
-
-
 def _is_local_host(host: str) -> bool:
     """True when `host` cannot reach a shared database (loopback, unix socket, or unset)."""
     if host in _LOCAL_HOSTS or host.startswith(("/", "%2f")):  # %2f: percent-encoded socket dir

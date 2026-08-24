@@ -47,7 +47,7 @@ import warnings
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, TextIO, cast
 
 from benchmarks.llm import Completer, OpenRouterLLM, RunAborted, is_terminal
 from benchmarks.evidence_tokens import PinnedReaderTokenizer, TokenCounter
@@ -727,7 +727,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
                 system,
                 completer,
                 conv_questions,
-                tokenizer=reader_tokenizer,
+                tokenizer=cast(TokenCounter | None, reader_tokenizer),
                 evidence_budget=args.evidence_budget,
                 routing_mode_setting=args.routing_mode,
             )

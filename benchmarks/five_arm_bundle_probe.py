@@ -6,6 +6,7 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from recall.calibration import Calibration
 from recall.evidence import AnswerSlot, EvidencePolicy, build_evidence_bundle
@@ -16,7 +17,7 @@ from recall.retriever import (
     expand_retrieval_by_structure,
 )
 from recall.trust import evaluate
-from recall.types import Chunk, RetrievalDiagnostics, RetrievalResult, ScoredChunk, StalenessReport
+from recall.types import Chunk, RetrievalDiagnostics, RetrievalResult, ScoredChunk, StalenessReport, TrustedResult
 
 NOW = datetime(2026, 8, 18, tzinfo=timezone.utc)
 CALIBRATION = Calibration(embedder="fixture", threshold=0.70)
@@ -52,7 +53,7 @@ def _raw(query: str, hits: tuple[ScoredChunk, ...] | list[ScoredChunk]) -> Retri
     )
 
 
-def _trusted(result: RetrievalResult):
+def _trusted(result: RetrievalResult) -> TrustedResult:
     return evaluate(result, {}, CALIBRATION, NOW)
 
 
@@ -65,7 +66,7 @@ def _p95(values: list[float]) -> float:
     return ordered[max(0, (95 * len(ordered) + 99) // 100 - 1)]
 
 
-def _run(case: Case, arm: str) -> dict[str, object]:
+def _run(case: Case, arm: str) -> dict[str, Any]:
     raw = _raw(case.query, case.initial)
 
     def search(_query: str, _k: int, source: str | None = None) -> RetrievalResult:
@@ -146,7 +147,7 @@ def _cases() -> tuple[Case, ...]:
 def main() -> None:
     arms = ("current_retrieval", "document_grouping", "structural_expansion", "answer_slots", "bundle_beam")
     rows = [_run(case, arm) for case in _cases() for arm in arms]
-    report: dict[str, object] = {"cases": len(_cases()), "arms": {}}
+    report: dict[str, Any] = {"cases": len(_cases()), "arms": {}}
     for arm in arms:
         subset = [row for row in rows if row["arm"] == arm]
         timings = [float(row["elapsed_ms"]) for row in subset]

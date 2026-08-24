@@ -40,7 +40,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if len(gold) != 139:
         raise ValueError(f"expected 139 full list questions, found {len(gold)}")
 
-    rows = []
+    rows: list[dict[str, Any]] = []
     for question_id, row in sorted(gold.items()):
         answer = parse_answer(row["answer"])
         rows.append(
@@ -65,15 +65,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     for arm_name, arm in retrieval["arms"].items():
         retrieval_by_id = {str(row["id"]): row for row in arm["details"]}
         dev_vectors = [(row, vector_by_id[row["id"]]) for row in dev]
-        adaptive_details = []
-        fixed_one = []
-        fixed_five = []
+        adaptive_details: list[dict[str, Any]] = []
+        fixed_one: list[dict[str, float]] = []
+        fixed_five: list[dict[str, float]] = []
         for row in test:
             retrieved = retrieval_by_id[row["id"]]["retrieval_ids"]
             fixed_one.append(score(retrieved[:1], row["gold_answer"]))
             fixed_five.append(score(retrieved[:5], row["gold_answer"]))
             query_vector = vector_by_id[row["id"]]
-            nearest, nearest_vector = max(
+            nearest, _nearest_vector = max(
                 dev_vectors,
                 key=lambda candidate: sum(
                     left * right for left, right in zip(query_vector, candidate[1])

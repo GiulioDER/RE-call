@@ -25,7 +25,8 @@ MAX_RELATED_ITEMS = 50
 
 
 class RelatedStore(Protocol):
-    tenant: str
+    @property
+    def tenant(self) -> str: ...
 
     def iter_chunks(self, batch_size: int = 1000) -> Iterable[Chunk]: ...
 

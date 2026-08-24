@@ -541,6 +541,10 @@ class ForgetResult(BaseModel):
         "re-run before the next replay. On an irreversible path the receipt has to name "
         "every store that was swept, so that 'not consulted' cannot read as 'clean'.",
     )
+    staged_files_removed: int = Field(
+        default=0,
+        description="Number of staged upload files removed, or -1 when cleanup failed.",
+    )
 
 
 class MemoryStatsResult(BaseModel):
@@ -1899,8 +1903,8 @@ def _expand_semantic_graph(
         generation_binding={
             "tenant_id": retrieval.tenant_id or store.tenant,
             "generation_id": retrieval.generation_id or graph.generation_id,
-            "pipeline_fingerprint": retrieval.pipeline_fingerprint or graph.pipeline_fingerprint,
-            "corpus_fingerprint": retrieval.corpus_fingerprint or graph.corpus_fingerprint,
+            "pipeline_fingerprint": retrieval.pipeline_fingerprint or graph.pipeline_fingerprint or "",
+            "corpus_fingerprint": retrieval.corpus_fingerprint or graph.corpus_fingerprint or "",
         },
         query_set_digest=retrieval.query_set_digest,
     )
