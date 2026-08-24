@@ -39,7 +39,39 @@ from recall.reasoning_graph import (
     build_reasoning_graph,
     project_store_graph,
 )
+from recall.semantic_graph import (
+    ENTITY_KINDS,
+    RELATION_KINDS,
+    GraphReadiness,
+    SemanticEntity,
+    SemanticGraphDiagnostic,
+    SemanticGraphProjection,
+    SemanticMention,
+    SemanticRelation,
+    build_semantic_graph,
+    delete_semantic_graph,
+    load_semantic_graph,
+    normalize_entity_name,
+    write_semantic_graph,
+)
 from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
+from recall.current_state import (
+    CurrentStateProjection,
+    CurrentStateRecord,
+    project_current_state,
+)
+from recall.explanations import RetrievalExplanation
+from recall.query_class import (
+    QUERY_CLASS_VERSION,
+    ROUTING_POLICY_VERSION,
+    QueryClassification,
+    RoutingDecision,
+    RoutingMode,
+    classify_query,
+    route_query,
+    routing_mode,
+)
+from recall.related import RelatedEvidenceResult, trusted_related
 from recall.reasoning_planner import (
     EvidenceDecision,
     ExpansionStep,
@@ -58,6 +90,7 @@ from recall.reasoning import (
     Contradiction,
     GenerationSelection,
     ReasoningDiagnostics,
+    SemanticGraphExpansionResult,
     ReasoningPolicy,
     ReasoningProviderPorts,
     ReasoningRequest,
@@ -85,7 +118,7 @@ from recall.reasoning_proposals import (
 
 __version__ = "0.10.0"
 
-__all__ = [
+__all__ = sorted([
     "AnswerEnvelope",
     "AnswerSlot",
     "CalibrationArtifactV2",
@@ -95,6 +128,8 @@ __all__ = [
     "ClaimExtractor",
     "Contradiction",
     "ContradictionDetector",
+    "CurrentStateProjection",
+    "CurrentStateRecord",
     "DocumentExpansionPolicy",
     "EmbedderIdentity",
     "EntityResolution",
@@ -117,10 +152,20 @@ __all__ = [
     "PlannerInitialRetrieval",
     "ProposalContext",
     "ProposalProtocolReport",
+    "QUERY_CLASS_VERSION",
+    "QueryClassification",
     "REASONING_API_VERSION",
+    "ROUTING_POLICY_VERSION",
     "ReasoningBudget",
     "ReasoningBudgetUsage",
     "ReasoningDiagnostics",
+    "SemanticEntity",
+    "SemanticGraphDiagnostic",
+    "SemanticGraphExpansionResult",
+    "SemanticGraphProjection",
+    "SemanticMention",
+    "SemanticRelation",
+    "GraphReadiness",
     "ReasoningGraphDiagnostic",
     "ReasoningGraphEdge",
     "ReasoningGraphNode",
@@ -132,18 +177,27 @@ __all__ = [
     "ReasoningResponse",
     "ReasoningTrace",
     "ReasoningValidationError",
+    "RelatedEvidenceResult",
     "RelationProposer",
+    "RetrievalExplanation",
+    "RoutingDecision",
+    "RoutingMode",
     "StructuralExpansionPolicy",
     "Tokenizer",
     "UnresolvedGap",
     "ValidationResult",
     "build_evidence_bundle",
+    "build_semantic_graph",
+    "delete_semantic_graph",
     "build_reasoning_graph",
+    "classify_query",
     "deterministic_inference_proposals",
     "generate_from_evidence",
     "normalize_citations",
+    "normalize_entity_name",
     "parse_answer_envelope",
     "plan_multi_hop_evidence",
+    "project_current_state",
     "project_store_graph",
     "proposal_precision_recall",
     "proposal_report",
@@ -151,5 +205,12 @@ __all__ = [
     "reason",
     "reasoning_response_from_dict",
     "render_evidence_prompt",
+    "route_query",
+    "routing_mode",
+    "trusted_related",
     "validate_answer",
-]
+    "write_semantic_graph",
+    "load_semantic_graph",
+    "ENTITY_KINDS",
+    "RELATION_KINDS",
+])

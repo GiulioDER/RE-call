@@ -9,10 +9,13 @@ benchmarks, migrations, or experiments, and can change more freely.
 |---|---|---|
 | Trust search | `recall.trust.trusted_search` | Return verdicts, confidence, provenance, and abstention state. |
 | Reasoning | `recall.reasoning.reason` | Run explicit opt-in reasoning from trusted retrieval, bounded provider ports, graph projections, and citation validation. |
-| Reasoning graph | `recall.reasoning_graph.build_reasoning_graph` | Derive immutable, generation-bound graph projections for reasoning and proposal inspection. |
+| Reasoning graph | `recall.reasoning_graph.build_reasoning_graph` | Derive immutable, generation-bound authored and semantic graph projections for reasoning and proposal inspection. |
 | Embeddings | `recall.embeddings.make_embedder` | Construct supported embedding backends from configuration. |
 | Generation store | `recall.generation_store.GenerationStore` | Serve immutable, tenant-scoped generations. |
 | pgvector store | `recall.store.PgVectorStore` | Local indexing and retrieval over PostgreSQL plus pgvector. |
+| Related evidence | `recall.related.trusted_related` | Opt in, independently trusted source, ordinal, or supersession related evidence, bounded to 50 candidates. |
+| Current state | `recall.current_state.project_current_state` | Pure, generation-bound authored state projection. |
+| Query routing | `recall.query_class.classify_query` and `route_query` | Versioned deterministic query classes and shadow routing decisions. |
 | LangChain | `recall.integrations.langchain.RecallRetriever` | Use RE-call as a LangChain retriever. |
 | LlamaIndex | `recall.integrations.llamaindex.RecallRetriever` | Use RE-call as a LlamaIndex retriever. |
 | Errors | `recall.errors.RecallError` | Common base of every deliberate recall/recall_mcp exception. Each family also keeps its historical built-in base (`RuntimeError` or `ValueError`), so existing handlers keep working. |
@@ -57,6 +60,8 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | Tool | Purpose |
 |---|---|
 | `recall_search` | Search trusted memory. |
+| `recall_related` | Retrieve independently trusted structural related evidence. |
+| `recall_current_state` | Inspect a deterministic authored current state projection. |
 | `recall_evidence` | Return evidence for a query. |
 | `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `expand_retrieval=true` only when the cheap expansion provider is configured. |
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |

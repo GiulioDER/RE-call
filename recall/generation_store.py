@@ -8,12 +8,20 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import psycopg
 from pgvector import Vector
 
 from recall.generations import NoActiveGeneration
+from recall.semantic_graph import (
+    GraphReadiness,
+    SemanticGraphProjection,
+    delete_semantic_graph,
+    load_semantic_graph,
+    write_semantic_graph,
+)
 from recall.store import DEFAULT_TABLE
 from recall.store import (
     EdgeCandidates,
@@ -201,6 +209,71 @@ class GenerationStore(PgVectorStore):
             if isinstance(dimension, int):
                 binding["embedder_dimension"] = str(dimension)
         return binding
+
+    def load_semantic_graph(self, generation_id: str | None = None) -> SemanticGraphProjection | None:
+        """Load the semantic graph for the pinned or active generation."""
+        target = generation_id or self._generation_id()
+        return self._with_retry(lambda conn: load_semantic_graph(conn, self._tenant, target))
+
+    def load_generation_graph(
+        self, tenant_id: str, generation_id: str
+    ) -> SemanticGraphProjection | None:
+        """Graph-store contract adapter with explicit tenant and generation binding."""
+        if tenant_id != self._tenant:
+            raise ValueError("graph store tenant does not match this GenerationStore")
+        return self.load_semantic_graph(generation_id)
+
+    def write_generation_graph(self, graph: SemanticGraphProjection) -> None:
+        """Persist one complete graph atomically without changing generation metadata."""
+        if graph.tenant_id != self._tenant:
+            raise ValueError("graph tenant does not match this GenerationStore")
+
+        def _op(conn: psycopg.Connection) -> None:
+            with conn.transaction():
+                write_semantic_graph(conn, graph)
+
+        self._with_retry(_op)
+
+    def graph_readiness(self, generation_id: str | None = None) -> GraphReadiness:
+        """Return graph readiness without changing retrieval behavior."""
+        target = generation_id or self._generation_id()
+
+        def _op(conn: psycopg.Connection) -> GraphReadiness:
+            row = conn.execute(
+                "SELECT validation_summary FROM recall_generations "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (self._tenant, target),
+            ).fetchone()
+            marker = row[0].get("semantic_graph") if row and isinstance(row[0], dict) else None
+            graph = load_semantic_graph(conn, self._tenant, target)
+            if graph is None or not isinstance(marker, dict):
+                return GraphReadiness(
+                    ready=False,
+                    tenant_id=self._tenant,
+                    generation_id=target,
+                    graph_id=None,
+                    graph_fingerprint=None,
+                    entity_count=0,
+                    mention_count=0,
+                    relation_count=0,
+                    diagnostic_count=0,
+                    reason="GRAPH_NOT_READY",
+                )
+            readiness = graph.readiness()
+            if marker.get("graph_id") != readiness.graph_id or marker.get("graph_fingerprint") != readiness.graph_fingerprint:
+                return replace(readiness, ready=False, reason="GRAPH_FINGERPRINT_MISMATCH")
+            return readiness
+
+        return self._with_retry(_op)
+
+    def delete_generation_graph(self, generation_id: str | None = None) -> int:
+        """Delete all derived graph rows for one generation."""
+        target = generation_id or self._generation_id()
+
+        def _op(conn: psycopg.Connection) -> int:
+            return delete_semantic_graph(conn, self._tenant, target)
+
+        return self._with_retry(_op)
 
     def resolve_calibration(self) -> CalibrationResolution:
         from recall.calibration_v2 import CalibrationRepository

@@ -62,7 +62,98 @@ def load_published_artifact(path: Path) -> dict[str, Any]:
             f"{path} was REFUSED publication by benchmarks.run and is not a measurement: "
             f"{doc.get('unpublished_reason', 'no reason recorded')}"
         )
+    validate_evidence_cost_contract(doc)
+    validate_operational_claim_separation(doc)
+    validate_routing_experiment(doc)
     return doc
+
+
+def validate_evidence_cost_contract(payload: Mapping[str, object]) -> None:
+    """Validate the additive exact evidence cost fields when an artifact declares them."""
+    evidence_cost = payload.get("evidence_cost")
+    if evidence_cost is not None:
+        if not isinstance(evidence_cost, Mapping):
+            raise ValueError("evidence_cost must be an object or null")
+        if evidence_cost.get("claim_family") != "evidence_cost":
+            raise ValueError("evidence_cost.claim_family must be 'evidence_cost'")
+        curve = evidence_cost.get("curve")
+        if curve is not None:
+            if not isinstance(curve, Sequence) or isinstance(curve, (str, bytes, bytearray)):
+                raise ValueError("evidence_cost.curve must be an array or null")
+            from benchmarks.evidence_curve import EVIDENCE_BUDGETS
+
+            budgets = tuple(point.get("budget_tokens") for point in curve if isinstance(point, Mapping))
+            if budgets != EVIDENCE_BUDGETS:
+                raise ValueError("evidence_cost.curve must use the preregistered budget ladder")
+            for index, point in enumerate(curve):
+                if not isinstance(point, Mapping):
+                    raise ValueError(f"evidence_cost.curve[{index}] must be an object")
+                records = point.get("records")
+                if not isinstance(records, Sequence) or isinstance(records, (str, bytes, bytearray)):
+                    raise ValueError(f"evidence_cost.curve[{index}].records must be an array")
+                if point.get("measured_budget") is True:
+                    budget = point["budget_tokens"]
+                    for record in records:
+                        if not isinstance(record, Mapping) or record.get("evidence_budget") != budget:
+                            raise ValueError(
+                                f"evidence_cost.curve[{index}] contains a mismatched budget record"
+                            )
+    metadata = payload.get("tokenizer_metadata")
+    if metadata is None:
+        outcomes = payload.get("outcomes")
+        if isinstance(outcomes, Sequence) and any(
+            isinstance(outcome, Mapping) and outcome.get("evidence_budget") is not None
+            for outcome in outcomes
+        ):
+            raise ValueError("budgeted evidence artifacts require tokenizer_metadata")
+        return
+    if not isinstance(metadata, Mapping):
+        raise ValueError("tokenizer_metadata must be an object or null")
+    if metadata.get("tokenizer_id") != "cl100k_base":
+        raise ValueError("exact evidence artifacts must use cl100k_base")
+    for key in ("tokenizer_revision", "tokenizer_hash"):
+        if not isinstance(metadata.get(key), str) or not metadata[key]:
+            raise ValueError(f"tokenizer_metadata.{key} is required")
+    outcomes = payload.get("outcomes")
+    if not isinstance(outcomes, Sequence) or isinstance(outcomes, (str, bytes, bytearray)):
+        raise ValueError("exact evidence artifacts must contain an outcomes array")
+    for index, outcome in enumerate(outcomes):
+        if not isinstance(outcome, Mapping):
+            raise ValueError(f"outcomes[{index}] must be an object")
+        for key in ("evidence_tokens_exact", "input_tokens_exact"):
+            value = outcome.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"outcomes[{index}].{key} must be a nonnegative integer")
+
+
+def validate_operational_claim_separation(payload: Mapping[str, object]) -> None:
+    """Reject an operational block that presents itself as retrieval quality."""
+    operational = payload.get("operational_metrics")
+    if operational is None:
+        return
+    if not isinstance(operational, Mapping):
+        raise ValueError("operational_metrics must be an object")
+    if operational.get("claim_family") != "operational":
+        raise ValueError("operational_metrics.claim_family must be 'operational'")
+    if operational.get("retrieval_quality_claim") is not False:
+        raise ValueError("operational metrics cannot make a retrieval quality claim")
+
+
+def validate_routing_experiment(payload: Mapping[str, object]) -> None:
+    """Validate additive routing provenance without interpreting quality results."""
+    experiment = payload.get("routing_experiment")
+    if experiment is None:
+        return
+    if not isinstance(experiment, Mapping):
+        raise ValueError("routing_experiment must be an object or null")
+    if experiment.get("mode") not in {"shadow", "active"}:
+        raise ValueError("routing_experiment.mode must be shadow or active")
+    from recall.query_class import QUERY_CLASS_VERSION, ROUTING_POLICY_VERSION
+
+    if experiment.get("classifier_version") != QUERY_CLASS_VERSION:
+        raise ValueError("routing_experiment.classifier_version is unsupported")
+    if experiment.get("policy_version") != ROUTING_POLICY_VERSION:
+        raise ValueError("routing_experiment.policy_version is unsupported")
 
 
 def provider_metadata_from_payload(payload: Mapping[str, object]) -> tuple[ProviderMetadata, ...]:
@@ -136,4 +227,7 @@ __all__ = [
     "load_published_artifact",
     "provider_metadata_from_payload",
     "reject_unauditable_cost_claims",
+    "validate_evidence_cost_contract",
+    "validate_operational_claim_separation",
+    "validate_routing_experiment",
 ]

@@ -72,6 +72,8 @@ from recall_mcp.server import build_server
 TOOLS: dict[str, tuple[str, str, dict]] = {
     "recall_search": (SCOPE_READ, "read", {"query": "q"}),
     "recall_evidence": (SCOPE_READ, "read", {"query": "q"}),
+    "recall_related": (SCOPE_READ, "read", {"seed_chunk_id": "c1"}),
+    "recall_current_state": (SCOPE_READ, "read", {}),
     "recall_reasoning_query": (SCOPE_READ, "read", {"query": "q"}),
     "recall_reasoning_projection": (SCOPE_READ, "read", {}),
     "recall_reasoning_proposals": (SCOPE_READ, "read", {}),

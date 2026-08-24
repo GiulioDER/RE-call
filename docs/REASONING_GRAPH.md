@@ -2,7 +2,43 @@
 
 Version: 0.1.0
 
-Status: Session 2 graph projection. Inference is not enabled by this document.
+Status: Evidence Graph V1. Semantic expansion is opt in and inference is not enabled by this
+document.
+
+## Evidence Graph V1
+
+RE-call also projects a deterministic semantic graph into PostgreSQL migration `0015`. It is a
+derived evidence structure, not a replacement for authored corpus truth. The projection contains
+immutable `SemanticEntity`, `SemanticMention`, `SemanticRelation`, `SemanticGraphDiagnostic`, and
+`SemanticGraphProjection` values bound to one tenant and generation.
+
+V1 recognizes the entity kinds `person`, `project`, `service`, `file`, `decision`, `event`,
+`concept`, and `unknown`. Supported authored relations are `supports`, `contradicts`, `references`,
+`depends_on`, `caused`, and `same_entity`. Every relation has supporting chunk identifiers,
+extraction method, confidence, uncertainty, tenant and generation identity, pipeline and corpus
+fingerprints, and authored or candidate status.
+
+Extraction is deterministic. It reads filenames, headings, frontmatter, explicit metadata, and
+explicit relation declarations. Exact Unicode normalized aliases are resolved; fuzzy merging and
+embeddings are deliberately absent. Ambiguous candidates remain separate and produce diagnostics.
+Model extraction remains an ingest proposal path and cannot drive V1 graph expansion.
+
+The four persistence tables are `recall_graph_entities_v1`, `recall_graph_mentions_v1`,
+`recall_graph_relations_v1`, and `recall_graph_relation_evidence_v1`. They are tenant scoped,
+generation scoped, protected by RLS, and linked to chunks and generations with cascading foreign
+keys. Source erasure removes unsupported derived rows and invalidates the generation graph marker.
+
+New generations build and verify the semantic graph before promotion. Existing generations remain
+valid for ordinary retrieval, but graph expansion returns `GRAPH_NOT_READY` until an operator runs:
+
+```text
+recall graph rebuild --generation <generation_id>
+```
+
+Graph expansion is disabled by default. `one_hop` starts only from trusted retrieval, follows
+authored semantic relations, re-evaluates every candidate through the ordinary trust layer, and
+appends only trusted evidence. It cannot promote a demoted hit, bypass calibration, use model
+proposals, or change ordinary `recall_search` and `recall_evidence` behavior.
 
 ## Purpose
 

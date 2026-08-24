@@ -268,6 +268,13 @@ def _ctx_tokens_mean(aggregate: Mapping[str, Any]) -> float | None:
     return mean
 
 
+def _ctx_tokens_exact_mean(aggregate: Mapping[str, Any]) -> float | None:
+    context = aggregate.get("retrieved_context") or {}
+    tokens = context.get("tokens_exact") or {}
+    mean: float | None = tokens.get("mean")
+    return mean
+
+
 def curve_points(paths: Iterable[Path | str]) -> list[dict[str, Any]]:
     """One row per results artifact, sorted by arm then by mean retrieved-context tokens.
 
@@ -287,6 +294,7 @@ def curve_points(paths: Iterable[Path | str]) -> list[dict[str, Any]]:
                 "arm": str(doc.get("arm", "?")),
                 "k": _k_of(doc),
                 "ctx_tokens_mean": _ctx_tokens_mean(aggregate),
+                "evidence_tokens_exact_mean": _ctx_tokens_exact_mean(aggregate),
                 "accuracy": _rate_of(aggregate, "answerable_accuracy"),
                 "adversarial_abstention": _rate_of(aggregate, "adversarial_abstention"),
                 "false_abstain": _rate_of(aggregate, "answerable_false_abstain"),

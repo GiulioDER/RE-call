@@ -61,6 +61,7 @@ ReasoningPolicyName = Literal[
     "review_required",
 ]
 ReasoningOutcome = Literal["answered", "abstained", "needs_clarification", "needs_review"]
+GraphExpansionMode = Literal["off", "one_hop"]
 
 
 class ReasoningValidationError(ValueError, RecallError):
@@ -86,6 +87,12 @@ class ReasoningProposalProvider(Protocol):
     ) -> Sequence[InferenceProposal] | ProposalProtocolReport: ...
 
 
+class ReasoningGraphExpansionProvider(Protocol):
+    def __call__(
+        self, request: "ReasoningRequest", retrieval: TrustedResult
+    ) -> "SemanticGraphExpansionResult": ...
+
+
 ReasoningAnswerProvider = Callable[[str, str], str | dict[str, object] | AnswerEnvelope]
 
 
@@ -93,6 +100,20 @@ class ProviderMetadataSource(Protocol):
     """Optional provider hook for best effort reasoning execution metadata."""
 
     def provider_metadata(self) -> ProviderMetadata: ...
+
+
+@dataclass(frozen=True)
+class SemanticGraphExpansionResult:
+    """The bounded, trust-evaluated result of one semantic graph expansion."""
+
+    retrieval: TrustedResult
+    readiness: str
+    entities_inspected: int = 0
+    relations_inspected: int = 0
+    candidates_discovered: int = 0
+    candidates_rejected: int = 0
+    diagnostics_encountered: int = 0
+    latency_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -113,6 +134,7 @@ class ReasoningPolicy:
     allow_proposal_guided_expansion: bool = False
     allow_retrieval_expansion: bool = False
     require_human_review_on_proposals: bool = False
+    graph_expansion: GraphExpansionMode = "off"
 
     def __post_init__(self) -> None:
         if self.name == "proposal_assisted" and not self.allow_proposal_guided_expansion:
@@ -120,6 +142,8 @@ class ReasoningPolicy:
         if self.name == "review_required":
             object.__setattr__(self, "allow_proposal_guided_expansion", True)
             object.__setattr__(self, "require_human_review_on_proposals", True)
+        if self.graph_expansion not in {"off", "one_hop"}:
+            raise ValueError("graph_expansion must be 'off' or 'one_hop'")
 
 
 @dataclass(frozen=True)
@@ -150,6 +174,12 @@ class ReasoningRequest:
     @property
     def generation_id(self) -> str | None:
         return self.generation.generation_id
+
+    def __post_init__(self) -> None:
+        if self.policy.graph_expansion == "off" and self.budget.max_graph_hops != 0:
+            raise ValueError("graph_expansion='off' requires max_graph_hops=0")
+        if self.policy.graph_expansion == "one_hop" and self.budget.max_graph_hops != 1:
+            raise ValueError("graph_expansion='one_hop' requires max_graph_hops=1")
 
 
 @dataclass(frozen=True)
@@ -241,12 +271,53 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             generator_invoked=False,
             citations_normalized=False,
             started=started,
+            graph_expansion=graph_expansion,
         )
         _record_reasoning_metrics(response)
         return response
 
     retrieval = request.providers.retriever(request)
     _validate_retrieval_binding(request, retrieval)
+    if request.policy.graph_expansion == "one_hop":
+        provider = request.providers.graph_expansion_provider
+        if provider is None:
+            response = _response(
+                request=request,
+                retrieval=retrieval,
+                bundle=build_evidence_bundle(retrieval, request.evidence_policy),
+                outcome="abstained",
+                answer=None,
+                proposals=(),
+                plan=None,
+                refusal_reason="GRAPH_NOT_READY",
+                generator_invoked=False,
+                citations_normalized=False,
+                started=started,
+                graph_expansion=SemanticGraphExpansionResult(
+                    retrieval=retrieval, readiness="GRAPH_NOT_READY"
+                ),
+            )
+            _record_reasoning_metrics(response)
+            return response
+        graph_expansion = provider(request, retrieval)
+        if graph_expansion.readiness != "ready":
+            response = _response(
+                request=request,
+                retrieval=retrieval,
+                bundle=build_evidence_bundle(retrieval, request.evidence_policy),
+                outcome="abstained",
+                answer=None,
+                proposals=(),
+                plan=None,
+                refusal_reason=graph_expansion.readiness,
+                generator_invoked=False,
+                citations_normalized=False,
+                started=started,
+                graph_expansion=graph_expansion,
+            )
+            _record_reasoning_metrics(response)
+            return response
+        retrieval = graph_expansion.retrieval
     bundle = build_evidence_bundle(retrieval, request.evidence_policy)
 
     if request.policy.require_certified_evidence and bundle.trust_state != "trusted":
@@ -262,6 +333,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             generator_invoked=False,
             citations_normalized=False,
             started=started,
+            graph_expansion=graph_expansion,
         )
         _record_reasoning_metrics(response)
         return response
@@ -279,6 +351,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             generator_invoked=False,
             citations_normalized=False,
             started=started,
+            graph_expansion=graph_expansion,
         )
         _record_reasoning_metrics(response)
         return response
@@ -317,6 +390,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 citations_normalized=False,
                 expansion_trace=expansion_trace,
                 started=started,
+                graph_expansion=graph_expansion,
             )
             _record_reasoning_metrics(response)
             return response
@@ -345,6 +419,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 citations_normalized=False,
                 expansion_trace=expansion_trace,
                 started=started,
+                graph_expansion=graph_expansion,
             )
             _record_reasoning_metrics(response)
             return response
@@ -363,6 +438,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 citations_normalized=False,
                 expansion_trace=expansion_trace,
                 started=started,
+                graph_expansion=graph_expansion,
             )
             _record_reasoning_metrics(response)
             return response
@@ -382,6 +458,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             citations_normalized=False,
             expansion_trace=expansion_trace,
             started=started,
+            graph_expansion=graph_expansion,
         )
         _record_reasoning_metrics(response)
         return response
@@ -400,6 +477,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             citations_normalized=False,
             expansion_trace=expansion_trace,
             started=started,
+            graph_expansion=graph_expansion,
         )
         _record_reasoning_metrics(response)
         return response
@@ -426,6 +504,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             citations_normalized=citations_normalized,
             expansion_trace=expansion_trace,
             started=started,
+            graph_expansion=graph_expansion,
         )
         _record_reasoning_metrics(response)
         return response
@@ -443,6 +522,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
         citations_normalized=citations_normalized,
         expansion_trace=expansion_trace,
         started=started,
+        graph_expansion=graph_expansion,
     )
     _record_reasoning_metrics(response)
     return response
@@ -1288,6 +1368,7 @@ def _budget_from_dict(payload: Mapping[str, object]) -> ReasoningBudget:
         max_model_calls=_required_int(payload["max_model_calls"]),
         max_evidence_tokens=_required_int(payload["max_evidence_tokens"]),
         max_wall_time_ms=_required_int(payload["max_wall_time_ms"]),
+        max_graph_hops=_required_int(payload.get("max_graph_hops", 0)),
     )
 
 
