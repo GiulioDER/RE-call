@@ -428,9 +428,10 @@ def test_index_memory_directory_indexes_via_indexer(monkeypatch, tmp_path):
             calls["checked"] = True
 
     class FakeIndexer:
-        def __init__(self, store, embedder, chunker=None):
+        def __init__(self, store, embedder, chunker=None, context_policy=None):
             calls["store"] = store
             calls["embedder"] = embedder
+            calls["context_policy"] = context_policy
 
         def index_path(self, path, glob=None):
             calls["path"] = path
@@ -450,6 +451,7 @@ def test_index_memory_directory_indexes_via_indexer(monkeypatch, tmp_path):
 
     assert calls["path"] == memory_dir
     assert calls["glob"] == "**/*.md"
+    assert calls["context_policy"].mode == "none"
     assert "Indexed 3 chunks from 1 files" in output.getvalue()
 
 

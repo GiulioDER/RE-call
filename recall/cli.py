@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING
 
 from recall._env import load_dotenv
 from recall.calibration import Calibration, load_for
-from recall.embeddings import resolve_embedder
+from recall.context import context_policy_for_profile
+from recall.embeddings import embedding_profile_id, resolve_embedder
 from recall.entailment import EntailmentJudge, resolve_entailment_judge
 from recall.setup import CalibrationResult
 from recall.trust_policy import TrustPolicy
@@ -102,7 +103,8 @@ def _make_embedder(name: str) -> Embedder:
 
     The setup wizard offers `st:<model>` and `voyage:<model>`; a hardcoded two-way branch here
     (and a matching argparse `choices=`) rejected exactly the values it had just written to .env,
-    so an operator who picked MiniLM or Voyage could not index at all.
+    so an operator who picked MiniLM or Voyage could not index at all. A registered local profile
+    is selected through `RECALL_EMBED_PROFILE`, which is resolved before the database opens.
     """
     try:
         return resolve_embedder(name)
@@ -887,7 +889,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--embedder",
         default=os.environ.get("RECALL_EMBEDDER", "fastembed"),
-        help="hashing, fastembed[:model], st:<model>, voyage[:model], openai[:model]",
+        help=(
+            "hashing, fastembed[:model], st:<model>, voyage[:model], openai[:model]. "
+            "Set RECALL_EMBED_PROFILE for a registered local profile."
+        ),
     )
     parser.add_argument(
         "--table",
@@ -1697,6 +1702,9 @@ def main(argv: list[str] | None = None) -> None:
         # builds generations too and a second copy of it would mean two provenance vocabularies
         # drifting apart with nothing failing. The strings it writes are pinned by
         # `tests/test_generation_build_assembly.py`.
+        profile_digest = args.embedder_artifact_digest
+        if profile_digest is None and os.environ.get("RECALL_EMBED_PROFILE"):
+            profile_digest = os.environ.get("RECALL_MODEL_SHA256")
         generation_stats = build_generation(
             manager,
             manifest,
@@ -1708,7 +1716,7 @@ def main(argv: list[str] | None = None) -> None:
                 overlap=args.overlap,
                 provider=args.embedder_provider,
                 revision=args.embedder_revision,
-                artifact_digest=args.embedder_artifact_digest,
+                artifact_digest=profile_digest,
                 unverified=args.unverified_development,
                 # Same provenance the index path stamps. Without this a CALIBRATED generation
                 # carries no record of which project produced each chunk, and the generation path
@@ -2105,6 +2113,7 @@ def main(argv: list[str] | None = None) -> None:
                 store,
                 embedder,
                 chunker=chunker,
+                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
                 allow_prune=args.allow_prune,
                 project=args.project,
                 indexed_commit=commit,
@@ -2279,7 +2288,11 @@ def main(argv: list[str] | None = None) -> None:
             args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
         ) as store:
             store.check_schema()
-            stats = Indexer(store, embedder).index_path("corpus")
+            stats = Indexer(
+                store,
+                embedder,
+                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+            ).index_path("corpus")
             print(f"indexed {stats.chunks} chunks from {stats.files} files\n")
             _run_queries(
                 store,
@@ -2306,7 +2319,12 @@ def main(argv: list[str] | None = None) -> None:
             args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant
         ) as store:
             store.check_schema()
-            stats = Indexer(store, embedder, chunker=chunk_code).index_path(src, glob="**/*.py")
+            stats = Indexer(
+                store,
+                embedder,
+                chunker=chunk_code,
+                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+            ).index_path(src, glob="**/*.py")
             print(f"indexed {stats.chunks} code chunks from {stats.files} files\n")
             _run_queries(
                 store,

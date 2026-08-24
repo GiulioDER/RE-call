@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from recall.calibration import from_samples
+from recall.context import context_policy_for_profile
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.eval._scoring import (
     DEFAULT_SCORE_RETRIEVAL_ON,
@@ -174,7 +175,11 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
     try:
         store.ensure_schema()
         t0 = time.perf_counter()
-        stats = Indexer(store, embedder).index_path(corpus, glob=glob)
+        stats = Indexer(
+            store,
+            embedder,
+            context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+        ).index_path(corpus, glob=glob)
         index_s = time.perf_counter() - t0
 
         # Calibrate on THIS corpus: a threshold from another corpus's cosine regime does not

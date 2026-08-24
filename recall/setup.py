@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Callable, Literal, Sequence
 
 from recall.calibration import Calibration, from_samples, save
-from recall.embeddings import resolve_embedder
+from recall.context import context_policy_for_profile
+from recall.embeddings import embedding_profile_id, resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 
 SETUP_BEGIN = "# recall setup begin"
@@ -1063,7 +1064,12 @@ def index_memory_directory(
             dsn, dim=embedder.dim, table=DEFAULT_TABLE, tenant=DEFAULT_TENANT
         ) as store:
             store.check_schema()
-            indexer = Indexer(store, embedder, chunker=chunk_text)
+            indexer = Indexer(
+                store,
+                embedder,
+                chunker=chunk_text,
+                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+            )
             stats = indexer.index_path(memory_dir, glob="**/*.md")
     except Exception as exc:  # best effort: scaffolded files must survive even if this fails
         print_fn(

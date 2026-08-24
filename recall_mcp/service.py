@@ -16,13 +16,12 @@ from pydantic import BaseModel, Field
 from recall.calibration import Calibration
 from recall.calibration_v2 import CalibrationRepository
 from recall.trust_policy import TrustPolicy, TrustRefusal
-from recall.embedding_registry import find_registered_profile, registered_profile_ids
 from recall.embeddings import (
     Embedder,
-    FastEmbedEmbedder,
     HashingEmbedder,
     REMOTE_MODEL_CODE_OPT_IN,
     embedding_profile_id,
+    resolve_registered_embedder,
     resolve_embedder,
 )
 from recall.guards import staleness
@@ -163,46 +162,14 @@ DEFAULT_MAX_INDEX_BYTES = 20_000_000  # 20 MB
 def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     """Return the embedder backend by name.
 
-    Registered local profiles still belong to `recall.embedding_registry`; this boundary resolves
-    those first so profile identity stays single-sourced. Without `RECALL_EMBED_PROFILE`, the MCP
-    server accepts the shared `recall.embeddings.resolve_embedder` spellings, including explicit
-    cloud and research-model aliases.
+    Registered local profiles and legacy resolver spellings both pass through
+    `recall.embeddings.resolve_embedder`, so profile identity and context selection are shared with
+    the CLI. Without `RECALL_EMBED_PROFILE`, the MCP server accepts the explicit cloud and research
+    model aliases as before.
     """
     values = dict(os.environ) if env is None else env
-    profile = values.get("RECALL_EMBED_PROFILE", "").strip()
-    if profile and name != "fastembed":
-        raise ValueError("RECALL_EMBED_PROFILE can only be combined with RECALL_EMBEDDER=fastembed")
-    if name == "hashing":
+    if name == "hashing" and not values.get("RECALL_EMBED_PROFILE", "").strip():
         return HashingEmbedder(dim=HASHING_DIM)
-    if name == "fastembed":
-        if not profile:
-            return FastEmbedEmbedder()
-        entry = find_registered_profile(profile)
-        if entry is None:
-            # Kept as an env-facing message: the operator set a variable, and naming the
-            # variable is more useful than naming the registry they have never heard of.
-            raise ValueError(
-                f"unknown RECALL_EMBED_PROFILE: {profile!r} "
-                f"(registered: {', '.join(registered_profile_ids())})"
-            )
-        artifact_digest = values.get("RECALL_MODEL_SHA256", "")
-        artifact_path = values.get(entry.artifact_path_env, "")
-        if not artifact_path or not artifact_digest:
-            raise ValueError(
-                f"profile {profile!r} requires {entry.artifact_path_env} and RECALL_MODEL_SHA256"
-            )
-        if entry.rejected:
-            record = entry.rejection
-            assert record is not None  # `rejected` is exactly `rejection is not None`
-            _log.warning(
-                "embedding profile %s was REJECTED on %s (%s) and is being loaded anyway; "
-                "the measured reason was %s",
-                entry.profile_id,
-                record.decided_on,
-                record.reason,
-                ", ".join(f"{k}={v}" for k, v in record.measurements),
-            )
-        return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest)
     try:
         return resolve_embedder(name, env=values)
     except ValueError as exc:
@@ -219,17 +186,7 @@ def make_profile_embedder(
 ) -> Embedder:
     """Construct one registered profile, with optional shadow-specific artifact settings."""
     values = dict(os.environ if env is None else env)
-    values["RECALL_EMBED_PROFILE"] = profile_id
-    if shadow:
-        mappings = {
-            "RECALL_SHADOW_MODEL_CACHE": "RECALL_MODEL_CACHE",
-            "RECALL_SHADOW_MODEL_SHA256": "RECALL_MODEL_SHA256",
-            "RECALL_SHADOW_QWEN_MODEL_PATH": "RECALL_QWEN_MODEL_PATH",
-        }
-        for source, target in mappings.items():
-            if source in values:
-                values[target] = values[source]
-    return make_embedder("fastembed", values)
+    return resolve_registered_embedder(profile_id, values, shadow=shadow)
 
 
 class SearchHit(BaseModel):

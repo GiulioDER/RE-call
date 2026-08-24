@@ -91,12 +91,22 @@ class EmbedderIdentity:
     revision: str | None = None
     artifact_digest: str | None = None
     unverified_reason: str | None = None
+    #: Registered profile identity, when the runtime embedder carries one. Legacy identities omit it.
+    profile_id: str | None = None
+    #: Context identity is optional for backward compatible raw generations. A contextual profile
+    #: records both values so a generation cannot reuse a raw pipeline fingerprint accidentally.
+    context_mode: str = "none"
+    context_version: str = "raw-v1"
 
     def __post_init__(self) -> None:
         if not self.provider.strip() or not self.model.strip():
             raise LineageError("embedder provider and model must be non-empty")
         if self.dimension < 1:
             raise LineageError("embedder dimension must be positive")
+        if self.profile_id is not None and not self.profile_id.strip():
+            raise LineageError("profile_id must be non-empty when supplied")
+        if not self.context_mode.strip() or not self.context_version.strip():
+            raise LineageError("context mode and context version must be non-empty")
         if self.artifact_digest is not None:
             object.__setattr__(
                 self,
@@ -117,7 +127,7 @@ class EmbedderIdentity:
         return bool(self.revision or self.artifact_digest)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "provider": self.provider,
             "model": self.model,
             "revision": self.revision,
@@ -126,6 +136,15 @@ class EmbedderIdentity:
             "verified": self.verified,
             "unverified_reason": self.unverified_reason,
         }
+        # Omitting the default values preserves the serialized shape and fingerprint of existing
+        # raw generations. Contextual generations carry explicit identity so they cannot collide
+        # with those older records.
+        if self.profile_id is not None:
+            payload["profile_id"] = self.profile_id
+        if self.context_mode != "none" or self.context_version != "raw-v1":
+            payload["context_mode"] = self.context_mode
+            payload["context_version"] = self.context_version
+        return payload
 
 
 @dataclass(frozen=True)
@@ -225,6 +244,9 @@ class PipelineIdentity:
                     if embedder.get("unverified_reason")
                     else None
                 ),
+                profile_id=(str(embedder["profile_id"]) if embedder.get("profile_id") else None),
+                context_mode=str(embedder.get("context_mode", "none")),
+                context_version=str(embedder.get("context_version", "raw-v1")),
             ),
             chunker=ChunkerIdentity(
                 algorithm=str(chunker.get("algorithm", "")),

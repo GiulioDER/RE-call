@@ -129,6 +129,11 @@ OPENROUTER_API_KEY=
 # RECALL_MODEL_SHA256 is the SHA256 of the whole provisioned artifact tree. It is verified before
 # anything loads, and a mismatch or a missing tree refuses startup. The BGE profiles read their
 # tree from RECALL_MODEL_CACHE, the Qwen profile from RECALL_QWEN_MODEL_PATH.
+# Set RECALL_EMBED_PROFILE to one registered identifier to select an immutable profile. The same
+# setting is used by the CLI, MCP server, and generation builder. It is valid only with the
+# fastembed backend. Leaving it empty preserves the legacy resolver path and raw passage mode.
+# bge-small-context-section-v1 adds deterministic Markdown heading context to embedding passages,
+# while stored chunk text, evidence, and citations remain unchanged.
 RECALL_EMBED_PROFILE=
 RECALL_MODEL_CACHE=
 RECALL_MODEL_SHA256=

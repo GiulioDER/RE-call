@@ -17,8 +17,9 @@ import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
+from recall.context import ContextPolicy, StructuredChunk, contextual_passages
 from recall.document import parse_document
-from recall.embeddings import Embedder, embed_passages
+from recall.embeddings import Embedder, embed_passages, embedding_profile, embedding_profile_id
 from recall.extraction import ExtractedDocument, chunk_extracted_document
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
 from recall.lineage import (
@@ -40,6 +41,20 @@ DEFAULT_RETAIN_PREVIOUS = 2
 TEMPORARY_STORAGE_MULTIPLIER = 2.2
 DEFAULT_TABLE_MAX_CHARS = 800
 DEFAULT_TABLE_OVERLAP = 80
+
+
+def _context_policy_for_pipeline(pipeline: PipelineIdentity) -> ContextPolicy:
+    """Resolve and validate the passage context declared by an immutable pipeline."""
+    mode = pipeline.embedder.context_mode
+    if mode not in {"none", "document", "section", "neighbor"}:
+        raise GenerationError(f"pipeline context mode is unsupported: {mode!r}")
+    expected = "raw-v1" if mode == "none" else f"context-{mode}-v1"
+    if pipeline.embedder.context_version != expected:
+        raise GenerationError(
+            f"pipeline context version {pipeline.embedder.context_version!r} does not match "
+            f"context mode {mode!r}"
+        )
+    return ContextPolicy(mode=mode)
 
 
 class GenerationError(RuntimeError):
@@ -554,6 +569,19 @@ class GenerationManager:
                     f"embedder implementation {embedder.name!r} does not match pipeline model "
                     f"{pipeline.embedder.model!r}"
                 )
+            runtime_profile = embedding_profile(embedder)
+            if pipeline.embedder.profile_id is not None:
+                if embedding_profile_id(embedder) != pipeline.embedder.profile_id:
+                    raise GenerationError(
+                        f"embedder profile {embedding_profile_id(embedder)!r} does not match "
+                        f"pipeline profile {pipeline.embedder.profile_id!r}"
+                    )
+                if runtime_profile.context_version != pipeline.embedder.context_version:
+                    raise GenerationError(
+                        f"embedder context {runtime_profile.context_version!r} does not match "
+                        f"pipeline context {pipeline.embedder.context_version!r}"
+                    )
+            context_policy = _context_policy_for_pipeline(pipeline)
             fts_language = pipeline.fts_configuration.get("language")
             if not isinstance(fts_language, str):
                 raise GenerationError("pipeline FTS language is malformed")
@@ -637,8 +665,19 @@ class GenerationManager:
                 if not pieces:
                     empty += 1
                     continue
+                structured: list[StructuredChunk] = []
+                embedding_texts = [piece for piece in pieces]
+                if entry.media_type in _MARKDOWN_MEDIA_TYPES:
+                    structured, embedding_texts = contextual_passages(
+                        text,
+                        body,
+                        pieces,
+                        entry.uri,
+                        context_policy,
+                    )
                 chunks: list[Chunk] = []
                 for ordinal, piece in enumerate(pieces):
+                    structured_chunk = structured[ordinal] if structured else None
                     chunk_id = hashlib.sha256(
                         canonical_json(
                             {
@@ -667,6 +706,24 @@ class GenerationManager:
                                 "ord": ordinal,
                                 "content_hash": entry.sha256,
                                 "object_version_id": entry.version_id,
+                                "context_mode": context_policy.mode,
+                                "context_version": pipeline.embedder.context_version,
+                                "text_start": (
+                                    structured_chunk.start if structured_chunk is not None else None
+                                ),
+                                "text_end": (
+                                    structured_chunk.end if structured_chunk is not None else None
+                                ),
+                                "heading_hierarchy": (
+                                    list(structured_chunk.headings)
+                                    if structured_chunk is not None
+                                    else []
+                                ),
+                                **(
+                                    {"embedding_profile": pipeline.embedder.profile_id}
+                                    if pipeline.embedder.profile_id is not None
+                                    else {}
+                                ),
                             },
                         )
                     )
@@ -675,7 +732,7 @@ class GenerationManager:
                 # text, and a generation built with the wrong one is the right width, scores in
                 # range, and silently retrieves worse. Falls back to `embed` for an embedder
                 # that only implements the symmetric interface.
-                embeddings = embed_passages(embedder, [chunk.text for chunk in chunks])
+                embeddings = embed_passages(embedder, embedding_texts)
                 with self._connect() as conn, conn.transaction():
                     self._source_lock(conn, self.tenant_id, entry.uri)
                     if self._is_tombstoned(conn, entry.uri):
