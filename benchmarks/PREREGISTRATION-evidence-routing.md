@@ -27,6 +27,20 @@ This record fixes the measurement before the first public evidence cost or routi
    arm and configuration in shadow and active modes. The evidence curve repeats the RE-call arm at
    each fixed budget.
 
+## Reproduction commands
+
+Run these commands from the committed checkout on VPS2, with the approved provider and database
+configuration loaded without printing secrets. Run one process at a time.
+
+```text
+python -m benchmarks.run --arm recall --model openai/gpt-4o-mini --data locomo10.json --conversations 10 --evidence-budget 128 --routing-mode shadow --k 5 --embedder fastembed --reranker none --out benchmarks/results/evidence-routing-v1
+```
+
+Repeat the same command for budgets 256, 512, 1024, 2048, 4096, and 8192. Repeat the paired
+baseline and active routing runs without changing the frozen population or retrieval settings.
+Provider usage, exact evidence tokens, total input tokens, and raw question records remain in the
+artifacts. No result is publishable until the artifact contract and paired identity checks pass.
+
 ## Fixed execution environment and analysis
 
 1. The measurement host is VPS2. The run records the host fingerprint, CPU count, memory limit,
