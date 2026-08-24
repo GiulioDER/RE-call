@@ -488,8 +488,8 @@ def _entity_specs(chunk: Chunk) -> list[tuple[str, EntityKind, ExtractionMethod]
     for key in ENTITY_KINDS:
         for label in _as_labels(chunk.metadata.get(key)):
             specs.append((label, key, "metadata"))
-    for key in ("entities",):
-        for label in _as_labels(chunk.metadata.get(key)):
+    for metadata_key in ("entities",):
+        for label in _as_labels(chunk.metadata.get(metadata_key)):
             specs.append((label, "unknown", "metadata"))
     for line in chunk.text.splitlines():
         heading = re.match(r"^#{1,6}\s+(.+?)\s*#*$", line)
@@ -574,6 +574,7 @@ def build_semantic_graph(
         by_normalized: dict[str, SemanticEntity] = {}
         for label, kind, method in _entity_specs(chunk):
             normalized = normalize_entity_name(label)
+            entity: SemanticEntity | None
             if not normalized:
                 continue
             if normalized in declared_aliases:

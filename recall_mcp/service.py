@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import psycopg
 from pydantic import BaseModel, Field
@@ -1269,6 +1270,19 @@ def _expand_semantic_graph(
         staleness=retrieval.staleness,
         diagnostics=retrieval.diagnostics,
     )
+    generation_binding = cast(
+        dict[str, str],
+        {
+            key: value
+            for key, value in {
+                "tenant_id": retrieval.tenant_id or store.tenant,
+                "generation_id": retrieval.generation_id or graph.generation_id,
+                "pipeline_fingerprint": retrieval.pipeline_fingerprint or graph.pipeline_fingerprint,
+                "corpus_fingerprint": retrieval.corpus_fingerprint or graph.corpus_fingerprint,
+            }.items()
+            if value is not None
+        },
+    )
     evaluated = evaluate(
         candidate_result,
         supersession,
@@ -1277,12 +1291,7 @@ def _expand_semantic_graph(
         unresolved,
         calibration_id=retrieval.calibration_id,
         calibration_status=retrieval.calibration_status,
-        generation_binding={
-            "tenant_id": retrieval.tenant_id or store.tenant,
-            "generation_id": retrieval.generation_id or graph.generation_id,
-            "pipeline_fingerprint": retrieval.pipeline_fingerprint or graph.pipeline_fingerprint,
-            "corpus_fingerprint": retrieval.corpus_fingerprint or graph.corpus_fingerprint,
-        },
+        generation_binding=generation_binding,
         query_set_digest=retrieval.query_set_digest,
     )
     accepted = [hit for hit in evaluated.hits if is_trusted(hit)]

@@ -39,7 +39,7 @@ def _quality_metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     false_refusals = [bool(row.get("abstained", False)) for row in answerable]
     citation_rows = [row.get("citation_metrics") for row in rows]
     available = [item for item in citation_rows if isinstance(item, Mapping) and item.get("available")]
-    citation = {
+    citation: dict[str, Any] = {
         "available": bool(available),
         "n": len(available),
         "reason_code": None if available else "benchmark_answer_has_no_citation_channel",
@@ -150,7 +150,10 @@ def evidence_cost_curve_from_artifacts(
             row_budgets.add(config_budget)
         if len(row_budgets) != 1:
             raise ValueError("each artifact must identify exactly one evidence budget")
-        budget = int(next(iter(row_budgets)))
+        raw_budget = next(iter(row_budgets))
+        if isinstance(raw_budget, bool) or not isinstance(raw_budget, int):
+            raise ValueError("each artifact must identify an integer evidence budget")
+        budget = raw_budget
         if budget not in expected:
             raise ValueError(f"unsupported evidence budget: {budget}")
         normalized = []

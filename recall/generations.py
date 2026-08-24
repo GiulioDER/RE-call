@@ -30,7 +30,7 @@ from recall.lineage import (
 )
 from recall.manifest import ObjectReader
 from recall.observability import METRICS
-from recall.semantic_graph import GraphReadiness, SemanticGraphProjection, build_semantic_graph, write_semantic_graph
+from recall.semantic_graph import SemanticGraphProjection, build_semantic_graph, write_semantic_graph
 from recall.types import Chunk
 from recall.errors import RecallError
 

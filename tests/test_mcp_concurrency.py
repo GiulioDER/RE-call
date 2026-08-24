@@ -37,6 +37,8 @@ def _tools(server):
 ORIGINAL_TOOLS = {"recall_search", "recall_index", "recall_forget", "recall_stats"}
 ALL_TOOLS = ORIGINAL_TOOLS | {
     "recall_evidence",
+    "recall_related",
+    "recall_current_state",
     "recall_reasoning_audit",
     "recall_reasoning_projection",
     "recall_reasoning_proposals",

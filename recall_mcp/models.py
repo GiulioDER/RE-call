@@ -12,8 +12,8 @@ from pydantic import BaseModel, Field
 class SearchHit(BaseModel):
     chunk_id: str | None = Field(default=None, description="Stable retrieved chunk identifier.")
     source: str = Field(description="Where this memory came from (file/source id).")
-    score: float = Field(description="True dense cosine similarity in [-1, 1].")
-    confidence: float = Field(
+    score: float | None = Field(default=None, description="True dense cosine similarity in [-1, 1].")
+    confidence: float | None = Field(
         description="Calibrated confidence in [0, 1]; 0.5 sits exactly at the abstention "
         "threshold. Uncalibrated when the result says calibrated=false."
     )
@@ -112,6 +112,9 @@ class SearchResult(BaseModel):
         "nothing.",
     )
     hits: list[SearchHit]
+    explanation: dict[str, object] | None = None
+    related_items: list[SearchHit] = Field(default_factory=list)
+    related_diagnostics: list[str] = Field(default_factory=list)
 
 
 class EvidenceItemModel(BaseModel):
@@ -124,8 +127,8 @@ class EvidenceItemModel(BaseModel):
     indexed_at: str | None = Field(default=None, description="ISO time this entered the index.")
     valid_from: str | None = Field(default=None, description="ISO start of the validity window.")
     valid_until: str | None = Field(default=None, description="ISO end of the validity window.")
-    cosine: float = Field(description="True dense cosine similarity in [-1, 1].")
-    confidence: float = Field(description="Calibrated confidence in [0, 1].")
+    cosine: float | None = Field(default=None, description="True dense cosine similarity in [-1, 1].")
+    confidence: float | None = Field(default=None, description="Calibrated confidence in [0, 1].")
     verdict: str = Field(description="Always 'ok'. Nothing else is admitted to a bundle.")
 
 
@@ -184,6 +187,9 @@ class EvidenceResult(BaseModel):
     total_ms: float = 0.0
     latency_budget_ms: int | None = None
     budget_exceeded: bool = False
+    explanation: dict[str, object] | None = None
+    related_items: list[EvidenceItemModel] = Field(default_factory=list)
+    related_diagnostics: list[str] = Field(default_factory=list)
 
 
 class ReasoningProjectionResult(BaseModel):
@@ -204,6 +210,12 @@ class ReasoningProjectionResult(BaseModel):
     )
     diagnostic_count: int = Field(description="Number of graph construction diagnostics.")
     trust_state: str = Field(description="trusted | degraded. Legacy projections are degraded.")
+    semantic_graph_ready: bool = False
+    semantic_graph_reason: str | None = None
+    semantic_entity_count: int = 0
+    semantic_mention_count: int = 0
+    semantic_relation_count: int = 0
+    semantic_diagnostic_count: int = 0
 
 
 class ReasoningProposalItem(BaseModel):

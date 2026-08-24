@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-from typing import Any
+from typing import Any, cast
 from typing import Protocol
 
 
@@ -42,17 +42,17 @@ class PinnedReaderTokenizer:
         if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 0:
             raise ValueError("max_tokens must be a nonnegative int")
         encoding = self._encoding()
-        return encoding.decode(encoding.encode(text)[:max_tokens])
+        return str(encoding.decode(encoding.encode(text)[:max_tokens]))
 
     def encoding_hash(self) -> str:
         """Hash the mergeable ranks and special tokens, not just the package version."""
         encoding = self._encoding()
         digest = hashlib.sha256()
-        for token, rank in sorted(encoding._mergeable_ranks.items()):  # type: ignore[attr-defined]
+        for token, rank in sorted(encoding._mergeable_ranks.items()):
             digest.update(len(token).to_bytes(4, "big"))
             digest.update(token)
             digest.update(int(rank).to_bytes(4, "big"))
-        for token, rank in sorted(encoding._special_tokens.items()):  # type: ignore[attr-defined]
+        for token, rank in sorted(encoding._special_tokens.items()):
             encoded = token.encode("utf-8")
             digest.update(len(encoded).to_bytes(4, "big"))
             digest.update(encoded)
@@ -118,7 +118,7 @@ def truncate_evidence_context(
             low = candidate_tokens
         else:
             high = candidate_tokens - 1
-    return truncator(context, low)
+    return cast(str, truncator(context, low))
 
 
 __all__ = [

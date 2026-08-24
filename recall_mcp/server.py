@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar, cast
 from urllib.parse import urlsplit
 
 import anyio.to_thread
@@ -103,7 +103,7 @@ def _serving_json(result: object) -> str:
         exclude.add("related_items")
     if not getattr(result, "related_diagnostics", ()):
         exclude.add("related_diagnostics")
-    return dump(indent=2, exclude=exclude)
+    return cast(str, dump(indent=2, exclude=exclude))
 
 #: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
 #: is metered the moment it declares a scope — there is no separate table to remember to update,

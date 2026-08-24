@@ -155,6 +155,7 @@ class ReasoningProviderPorts:
     proposal_provider: ReasoningProposalProvider | None = None
     expansion_provider: ReasoningExpansionProvider | None = None
     expansion_retriever: ReasoningExpansionRetriever | None = None
+    graph_expansion_provider: ReasoningGraphExpansionProvider | None = None
     answer_provider: ReasoningAnswerProvider | None = None
 
 

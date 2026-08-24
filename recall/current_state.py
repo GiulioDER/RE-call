@@ -30,7 +30,8 @@ MAX_CURRENT_STATE_RECORDS = 1000
 
 
 class StateStore(Protocol):
-    tenant: str
+    @property
+    def tenant(self) -> str: ...
 
     def iter_chunks(self, batch_size: int = 1000) -> Iterable[Chunk]: ...
 

@@ -60,9 +60,9 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | Tool | Purpose |
 |---|---|
 | `recall_search` | Search trusted memory. |
+| `recall_evidence` | Return evidence for a query. |
 | `recall_related` | Retrieve independently trusted structural related evidence. |
 | `recall_current_state` | Inspect a deterministic authored current state projection. |
-| `recall_evidence` | Return evidence for a query. |
 | `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `expand_retrieval=true` only when the cheap expansion provider is configured. |
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
