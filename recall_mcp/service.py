@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import psycopg
 from pydantic import BaseModel, Field
@@ -70,6 +71,12 @@ from recall.reasoning import (
     ReasoningRetriever,
     SemanticGraphExpansionResult,
     reason,
+)
+from recall.reasoning_expansion import (
+    ExpansionProposal,
+    ReasoningRequestLike,
+    ReasoningExpansionRetriever,
+    resolve_expansion_provider,
 )
 from recall.reasoning_graph import (
     ReasoningGraphProjection,
@@ -1892,6 +1899,19 @@ def _expand_semantic_graph(
         staleness=retrieval.staleness,
         diagnostics=retrieval.diagnostics,
     )
+    generation_binding = cast(
+        dict[str, str],
+        {
+            key: value
+            for key, value in {
+                "tenant_id": retrieval.tenant_id or store.tenant,
+                "generation_id": retrieval.generation_id or graph.generation_id,
+                "pipeline_fingerprint": retrieval.pipeline_fingerprint or graph.pipeline_fingerprint,
+                "corpus_fingerprint": retrieval.corpus_fingerprint or graph.corpus_fingerprint,
+            }.items()
+            if value is not None
+        },
+    )
     evaluated = evaluate(
         candidate_result,
         supersession,
@@ -1900,12 +1920,7 @@ def _expand_semantic_graph(
         unresolved,
         calibration_id=retrieval.calibration_id,
         calibration_status=retrieval.calibration_status,
-        generation_binding={
-            "tenant_id": retrieval.tenant_id or store.tenant,
-            "generation_id": retrieval.generation_id or graph.generation_id,
-            "pipeline_fingerprint": retrieval.pipeline_fingerprint or graph.pipeline_fingerprint or "",
-            "corpus_fingerprint": retrieval.corpus_fingerprint or graph.corpus_fingerprint or "",
-        },
+        generation_binding=generation_binding,
         query_set_digest=retrieval.query_set_digest,
     )
     accepted = [hit for hit in evaluated.hits if is_trusted(hit)]
@@ -2008,6 +2023,7 @@ def reasoning_query(
     max_steps: int = 12,
     max_graph_nodes: int = 32,
     max_evidence_tokens: int = 2048,
+    expand_retrieval: bool = False,
     graph_expansion: str = "off",
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
@@ -2022,6 +2038,8 @@ def reasoning_query(
     if graph_expansion not in {"off", "one_hop"}:
         raise ValueError("graph_expansion must be 'off' or 'one_hop'")
     reasoning_policy = _reasoning_policy(mode, graph_expansion)
+    if expand_retrieval:
+        reasoning_policy = replace(reasoning_policy, allow_retrieval_expansion=True)
     if policy is not None and not policy.strict:
         reasoning_policy = replace(reasoning_policy, require_certified_evidence=False)
 
@@ -2063,6 +2081,29 @@ def reasoning_query(
                 graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
             )
 
+        expansion_provider = resolve_expansion_provider() if expand_retrieval else None
+
+        def expansion_retriever(
+            request: ReasoningRequestLike,
+            proposal: ExpansionProposal,
+            initial: TrustedResult,
+        ) -> TrustedResult:
+            del request, initial
+            expanded_query = query if proposal.mode == "depth" else proposal.query
+            expanded_k = min(MAX_SEARCH_K, max(k + 1, k * 2))
+            result = _retrieve_trusted(
+                store, embedder, expanded_query, source, expanded_k, calibration, policy
+            ).result
+            generation_id = result.generation_id or str(
+                getattr(store, "generation_id", "legacy")
+            )
+            return replace(
+                result,
+                query=expanded_query,
+                tenant_id=result.tenant_id or store.tenant,
+                generation_id=generation_id,
+            )
+
         def graph_expansion_provider(
             request: ReasoningRequest, retrieval: TrustedResult
         ) -> SemanticGraphExpansionResult:
@@ -2071,6 +2112,10 @@ def reasoning_query(
         retriever_port: ReasoningRetriever = retrieve
         graph_port: ReasoningGraphProvider = graph_provider
         proposal_port: ReasoningProposalProvider = proposal_provider
+        expansion_retriever_port: ReasoningExpansionRetriever | None = (
+            expansion_retriever if expand_retrieval else None
+        )
+
         request = ReasoningRequest(
             query=query,
             tenant_id=store.tenant,
@@ -2079,6 +2124,8 @@ def reasoning_query(
                 retriever=retriever_port,
                 graph_provider=graph_port,
                 proposal_provider=proposal_port,
+                expansion_provider=expansion_provider,
+                expansion_retriever=expansion_retriever_port,
                 graph_expansion_provider=graph_expansion_provider,
             ),
             policy=reasoning_policy,

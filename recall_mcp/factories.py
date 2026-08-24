@@ -308,10 +308,13 @@ def _validate_quality_reranker_config(values: dict[str, str]) -> tuple[str, str]
     return model_path, digest
 
 
-def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pragma: no cover
+def _new_reranker(
+    env: dict[str, str] | None = None,
+    profile: RetrievalProfile | None = None,
+) -> "Reranker | None":  # pragma: no cover
     """Instantiate the configured reranker, or None. Imports torch only when actually enabled."""
     values = dict(os.environ) if env is None else env
-    profile = resolve_retrieval_profile(values)
+    profile = profile or resolve_retrieval_profile(values)
     if profile.name == "fast":
         return None
     if profile.name == "quality":
@@ -426,7 +429,9 @@ def _build_reranker(
             # `SystemExit` arriving during a cold build says nothing about the artifact, and
             # caching it would turn a transient event into a process-lifetime outage.
             try:
-                _RERANKERS[name] = _new_reranker()
+                _RERANKERS[name] = (
+                    _new_reranker(profile=profile) if profile is not None else _new_reranker()
+                )
             except Exception as exc:
                 _RERANKERS[name] = (type(exc), exc.args)
                 raise

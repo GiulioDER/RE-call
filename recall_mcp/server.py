@@ -65,8 +65,8 @@ from recall_mcp.service import (
     generation_ingest,
     index_memory,
     calibration_status,
-    JobLedger,
     current_state_memory,
+    JobLedger,
     job_status,
     make_embedder,
     make_profile_embedder,
@@ -1184,6 +1184,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         max_steps: int = 12,
         max_graph_nodes: int = 32,
         max_evidence_tokens: int = 2048,
+        expand_retrieval: bool = False,
         graph_expansion: str = "off",
     ) -> str:
         """Run explicit opt-in reasoning over trusted retrieval and a derived graph.
@@ -1212,6 +1213,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         max_steps=max_steps,
                         max_graph_nodes=max_graph_nodes,
                         max_evidence_tokens=max_evidence_tokens,
+                        expand_retrieval=expand_retrieval,
                         graph_expansion=graph_expansion.replace("-", "_"),
                         policy=TRUST_POLICY,
                     ).to_dict(),

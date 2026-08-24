@@ -150,10 +150,10 @@ def evidence_cost_curve_from_artifacts(
             row_budgets.add(config_budget)
         if len(row_budgets) != 1:
             raise ValueError("each artifact must identify exactly one evidence budget")
-        budget_value = next(iter(row_budgets))
-        if not isinstance(budget_value, int):
-            raise ValueError("evidence budget must be an integer")
-        budget = budget_value
+        raw_budget = next(iter(row_budgets))
+        if isinstance(raw_budget, bool) or not isinstance(raw_budget, int):
+            raise ValueError("each artifact must identify an integer evidence budget")
+        budget = raw_budget
         if budget not in expected:
             raise ValueError(f"unsupported evidence budget: {budget}")
         normalized = []

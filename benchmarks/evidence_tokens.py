@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-from typing import Any
+from typing import Any, cast
 from typing import Protocol
 
 
@@ -118,7 +118,7 @@ def truncate_evidence_context(
             low = candidate_tokens
         else:
             high = candidate_tokens - 1
-    return str(truncator(context, low))
+    return cast(str, truncator(context, low))
 
 
 __all__ = [
