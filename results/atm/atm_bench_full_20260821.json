@@ -142,7 +142,19 @@
     "pull_request": "https://github.com/atmbench/atmbench.github.io/pull/2",
     "opened": "2026-08-21",
     "state_as_of_2026-08-22": "open",
-    "row_type": "RAG"
+    "row_type": "RAG",
+    "state_as_of_2026-08-23": "merged",
+    "merged_at": "2026-08-23T11:47:32Z",
+    "merged_by": "JingbiaoMei",
+    "accepted_row": {
+      "type": "RAG",
+      "harness": "RE-call",
+      "answer_model_as_listed": "DeepSeek V4 Pro (OpenRouter)",
+      "retriever_as_listed": "Voyage-4-large + Voyage rerank-2.5",
+      "qs_as_listed": 68.43,
+      "recall_as_listed": 92.89,
+      "note": "The board rounds to two decimals; the unrounded figures are official_score.qs_percent and retrieval.recall_at_10_percent above. Acceptance settles admissibility only: the QS column remains not answer-model-matched, which the board itself shows by listing this row's answer model beside the baselines' Qwen3-VL-8B-Instruct."
+    }
   },
   "data_sha256": {
     "atm-bench.json": "ab6eaa9df62fb4162e0f5eecd98768a7e3ae721e32d2db2cf227ff41e3295762",

@@ -128,8 +128,10 @@ The board's own rows, full split, memory and RAG systems:
    result this project would defend first, because retrieval is what RE-call is.
 3. **The judge ran over a non-official transport.** The official evaluator, its prompt and the
    `gpt-5-mini` judge identity were all kept; only the HTTP endpoint was OpenRouter rather than
-   OpenAI directly. This is disclosed in the pull request and **the maintainers have not ruled on
-   it**. A same-prompt comparison of the two routes on 60 <!--@ citation-pending: measured 2026-08-20 by re-judging an existing answer file over both routes; the per-question output is not retained in this repository --> already-judged `open_end` questions
+   OpenAI directly. 🔁 **Ruled on 2026-08-23: the maintainers accepted it**, and the merged row
+   carries a source comment recording the disclosure. This paragraph stays because the ruling is
+   about admissibility, not about fidelity, and the measurement below is what bounds the latter.
+   A same-prompt comparison of the two routes on 60 <!--@ citation-pending: measured 2026-08-20 by re-judging an existing answer file over both routes; the per-question output is not retained in this repository --> already-judged `open_end` questions
    agreed on 56 <!--@ citation-pending: measured 2026-08-20 by re-judging an existing answer file over both routes; the per-question output is not retained in this repository --> of 59 <!--@ citation-pending: measured 2026-08-20 by re-judging an existing answer file over both routes; the per-question output is not retained in this repository --> verdicts and ran about 1.7 <!--@ citation-pending: measured 2026-08-20 by re-judging an existing answer file over both routes; the per-question output is not retained in this repository --> points lower
    on that type, which is roughly 0.86 <!--@ citation-pending: measured 2026-08-20 by re-judging an existing answer file over both routes; the per-question output is not retained in this repository --> QS at its population share. That spread cannot be separated from the judge's own run-to-run
    variance, so treat it as an upper bound on route fidelity rather than a correction.
