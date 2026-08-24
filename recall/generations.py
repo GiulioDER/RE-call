@@ -1097,7 +1097,8 @@ class GenerationManager:
         raise UnsafePromotion(
             f"generation {generation_id} cannot go live in production: its calibration is "
             f"{resolution.status.value}. Production serves only a generation whose published "
-            "calibration certified and is still bound to this pipeline and corpus."
+            "calibration certified and is still bound to this pipeline and corpus. Run "
+            f"`recall calibration calibrate --generation {generation_id} --queries FILE --publish`."
         )
 
     def rebuild_graph(self, generation_id: str) -> GraphReadiness:
