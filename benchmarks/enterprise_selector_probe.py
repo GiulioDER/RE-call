@@ -13,13 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.enterprise_rag import load_questions
+from benchmarks._trust import bench_search
 from recall.calibration import Calibration
 from recall.embeddings import embedding_profile_id, resolve_embedder
 from recall.evidence import AnswerSlot, EvidencePolicy, build_evidence_bundle
 from recall.store import PgVectorStore
 from recall.trust_policy import TrustPolicy
-
-from benchmarks._trust import bench_search
 from recall.types import Chunk, Provenance, TrustedHit, Validity
 
 ROOT = Path(__file__).resolve().parents[1]

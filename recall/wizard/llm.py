@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from collections.abc import Sequence
 from typing import Any, Protocol
 
+from recall.eval.synthetic import _OFFTOPIC_TEMPLATES
 from recall.observability import get_logger
 from recall.setup import (
     LOCAL_BASE_URL_DEFAULT,
@@ -48,6 +49,8 @@ from recall.setup import (
 from recall.wizard.queryset import (
     DEFAULT_PER_CLASS,
     QuerySetError,
+    _STOPWORDS,
+    _is_prose,
     prepare_for_calibration,
 )
 
@@ -653,20 +656,27 @@ def _corpus_subject_words(chunks: Sequence[str]) -> set[str]:
     return subject_words
 
 
-def _reuses_corpus_vocabulary(query: str, subject_words: set[str], *, threshold: int = 2) -> bool:
+def _reuses_corpus_vocabulary(query: str, subject_words: set[str]) -> bool:
     """Whether `query` leans on the corpus's SUBJECT MATTER.
 
     A gap question is allowed ordinary English: `synthetic.py` measured its own templates at
     median top cosine 0.570 with 78% below the answerable floor, so shared function words are
     demonstrably harmless. What is not allowed is the topic, so both sides are reduced to
-    non-stopword prose terms and the corpus side to terms that are not ubiquitous in it. Two
-    matches are required, so one coincidence cannot cost a legitimate question.
+    non-stopword prose terms and the corpus side to terms that are not ubiquitous in it. The
+    fixed offline generator uses the same subject test, so its reusable template vocabulary is
+    removed before comparing the question with the corpus.
     """
     from recall.eval.vocab import word_tokens
-    from recall.wizard.queryset import _is_prose, _STOPWORDS
-
-    content = {w for w in word_tokens([query]) if _is_prose(w) and w not in _STOPWORDS}
-    return len(content & subject_words) >= threshold
+    template_words = {
+        word
+        for template in _OFFTOPIC_TEMPLATES
+        for word in word_tokens([template.replace("{s}", "")])
+        if _is_prose(word) and word not in _STOPWORDS
+    }
+    content = {
+        w for w in word_tokens([query]) if _is_prose(w) and w not in _STOPWORDS
+    }
+    return bool((content - template_words) & subject_words)
 
 
 def generate_llm(

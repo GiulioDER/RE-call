@@ -1,12 +1,12 @@
-"""Regression tests for issue #11's third checkbox: HNSW + `source` filter = post-filtering.
+"""Regression tests for issue #11's third checkbox: HNSW post-filtering.
 
-`query_dense()` (`recall/store.py`) applies `WHERE source = ...` alongside an HNSW
+`query_dense()` (`recall/store.py`) applies tenant and optional source predicates alongside an HNSW
 `ORDER BY embedding <=> ...`. The index walk is filter-blind: it finds the globally nearest
 neighbours and only THEN discards the ones that fail the filter, so a selective filter can
 silently return fewer than `k` rows, or omit true nearest neighbours the table certainly
 contains. The fix tunes `hnsw.ef_search` + `hnsw.iterative_scan` (see
 `DEFAULT_HNSW_EF_SEARCH_FILTERED` / `DEFAULT_HNSW_ITERATIVE_SCAN_FILTERED` in `recall/store.py`),
-applied only to the `source`-filtered branch of `query_dense`.
+applied to every tenant-scoped query and the optional `source`-filtered branch.
 
 These run against the REAL pgvector container (`@requires_db`) — the pathology is a genuine
 planner/executor behaviour under an approximate index, not something a fake connection can
@@ -319,10 +319,9 @@ def test_filtered_query_sets_hnsw_guc_only_inside_its_own_transaction(make_store
     The author of this fix first measured against an autocommit connection with no explicit
     transaction, and every configuration looked identical (0.385 recall) because the GUC never
     actually applied -- `SET LOCAL` outside a transaction block is silently a no-op. This test
-    would fail exactly that way: it asserts the `SET LOCAL` statements are actually SENT for a
-    filtered query, that they are NOT sent for an unfiltered one (the tuning must not tax the arm
-    that doesn't need it), and that a plain `SHOW` afterwards proves they did not leak past their
-    own transaction into the store's long-lived session.
+    would fail exactly that way: it asserts the `SET LOCAL` statements are actually SENT for both
+    the tenant-scoped and source-filtered queries, and that a plain `SHOW` afterwards proves they
+    did not leak past their own transaction into the store's long-lived session.
     """
     monkeypatch.setenv("RECALL_HNSW_EF_SEARCH_FILTERED", "321")
     monkeypatch.setenv("RECALL_HNSW_ITERATIVE_SCAN_FILTERED", "strict_order")
@@ -338,13 +337,14 @@ def test_filtered_query_sets_hnsw_guc_only_inside_its_own_transaction(make_store
 
     monkeypatch.setattr(store._conn, "execute", _spy)
 
-    store.query_dense([0.1, 0.2, 0.3], k=1, source="src")
+    store.query_dense([0.1, 0.2, 0.3], k=1)
     assert any("SET LOCAL hnsw.ef_search = 321" in c for c in calls), calls
     assert any("SET LOCAL hnsw.iterative_scan = strict_order" in c for c in calls), calls
 
     calls.clear()
-    store.query_dense([0.1, 0.2, 0.3], k=1)  # unfiltered -- must skip the tuning entirely
-    assert not any("hnsw" in c for c in calls), calls
+    store.query_dense([0.1, 0.2, 0.3], k=1, source="src")
+    assert any("SET LOCAL hnsw.ef_search = 321" in c for c in calls), calls
+    assert any("SET LOCAL hnsw.iterative_scan = strict_order" in c for c in calls), calls
 
     # Not leaked: a wrong-scope bug (a plain `SET`, or `SET LOCAL` issued outside a transaction)
     # would either make the assertions above pass vacuously (no-op -> no observable effect) or
