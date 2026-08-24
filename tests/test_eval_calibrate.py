@@ -1,4 +1,43 @@
-from recall.eval.calibrate import best_threshold
+import pytest
+
+from recall.eval.calibrate import CALIBRATION_DENSE_K, best_threshold, measure_top_cosines
+
+
+class _Embedder:
+    def embed_query(self, text):
+        return [1.0]
+
+
+class _Store:
+    def __init__(self, hits):
+        self.hits = hits
+        self.calls = []
+
+    def query_dense(self, vector, k):
+        self.calls.append((vector, k))
+        return self.hits
+
+
+class _Hit:
+    def __init__(self, score):
+        self.score = score
+
+
+def test_measure_top_cosines_uses_a_wide_dense_probe():
+    store = _Store([_Hit(0.73)])
+
+    answerable, unanswerable = measure_top_cosines(
+        store, _Embedder(), [{"query": "q", "answerable": True}]
+    )
+
+    assert store.calls == [([1.0], CALIBRATION_DENSE_K)]
+    assert answerable == [0.73]
+    assert unanswerable == []
+
+
+def test_measure_top_cosines_refuses_an_empty_dense_result():
+    with pytest.raises(RuntimeError, match="empty result is not a calibration data point"):
+        measure_top_cosines(_Store([]), _Embedder(), [{"query": "q", "answerable": False}])
 
 
 def test_best_threshold_separates_cleanly():

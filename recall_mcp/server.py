@@ -95,7 +95,7 @@ from recall.desktop.uploads import discard_staging, stage_uploads
 
 def _serving_json(result: object) -> str:
     """Serialize additive retrieval fields only when a caller opted into them."""
-    dump = getattr(result, "model_dump_json")
+    dump = cast(Callable[..., str], getattr(result, "model_dump_json"))
     exclude: set[str] = set()
     if getattr(result, "explanation", None) is None:
         exclude.add("explanation")
@@ -103,7 +103,7 @@ def _serving_json(result: object) -> str:
         exclude.add("related_items")
     if not getattr(result, "related_diagnostics", ()):
         exclude.add("related_diagnostics")
-    return cast(str, dump(indent=2, exclude=exclude))
+    return dump(indent=2, exclude=exclude)
 
 #: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
 #: is metered the moment it declares a scope — there is no separate table to remember to update,
@@ -1193,8 +1193,10 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         This tool is additive and returns a full reasoning response: trust state, generation
         identity, proposals, trace, refusal reason, and diagnostics. It does not call a generator,
         so an answer is returned only if a future server explicitly wires an answer provider.
-        Set ``expand_retrieval`` only when the explicitly configured cheap expansion model should
-        be allowed to request one bounded second retrieval round.
+
+        Args:
+            graph_expansion: `off` by default, or `one_hop` to enable deterministic semantic
+                graph expansion. Expanded chunks are independently trust evaluated.
         """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
@@ -1212,7 +1214,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         max_graph_nodes=max_graph_nodes,
                         max_evidence_tokens=max_evidence_tokens,
                         expand_retrieval=expand_retrieval,
-                        graph_expansion=graph_expansion,
+                        graph_expansion=graph_expansion.replace("-", "_"),
                         policy=TRUST_POLICY,
                     ).to_dict(),
                     indent=2,

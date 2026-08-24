@@ -82,7 +82,7 @@ dense and sparse rows returned, with per-row scores. It must control two things 
 
 - **The retrieved id list**, which drives `precision_at_k`, `recall_at_k`, `mrr` and `ndcg_at_k`.
 - **`gap_warning`**, which drives `false_confident_rate`. `HybridRetriever` computes it at
-  `recall/retriever.py:647` as `gap_warning(list(dense_score.values()), self._gap_threshold)`,
+  `recall/retriever.py:564` as `gap_warning(list(dense_score.values()), self._gap_threshold)`,
   from **dense cosine scores only** and against `recall.guards.DEFAULT_GAP_THRESHOLD`. Choosing
   scores either side of that threshold drives it deterministically.
 

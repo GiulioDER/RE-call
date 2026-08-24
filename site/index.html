@@ -58,16 +58,7 @@
     <p class="eyebrow">Setup guide</p>
     <h1>See it work in two commands.</h1>
     <hr class="rule">
-    <p class="hero-lede">A local memory layer for agents. The second command starts its own database, indexes a sample corpus and answers three questions, one of which it refuses.</p>
-    <div class="terminal terminal--command hero-terminal" data-shell="posix">
-      <div class="terminal-bar">
-        <span class="terminal-label">Terminal</span>
-        <button class="copy-button" type="button">Copy</button>
-      </div>
-      <div class="terminal-body"><pre><span class="line">pip install "recall-rag[fastembed]"</span>
-<span class="line">recall quickstart</span></pre></div>
-    </div>
-    <p class="hero-note">Needs Python 3.11+ and Docker. Nothing is calibrated and nothing is wired to an agent: it prints the next command for each. <code>recall quickstart --remove</code> deletes everything it created.</p>
+    <p class="hero-lede">A local memory layer for agents, with every command, expected result, and recovery path.</p>
     <div class="hero-actions">
       <a class="button" href="start.html">Do the full install</a>
       <a class="button-ghost" href="download.html">Download the Windows installer (beta)</a>
@@ -99,11 +90,11 @@
       <p class="eyebrow eyebrow--signal">The middle question <code>recall quickstart</code> asks</p>
       <div class="terminal terminal--output">
         <div class="terminal-bar"><span class="terminal-label">Output</span></div>
-        <div class="terminal-body"><pre><span class="line">query='how many requests per second can a client make?'</span>
-<span class="line">  ok           conf=1.00  cos=0.784  rate_limits_v2.md</span>
-<span class="warn">  superseded   conf=1.00  cos=0.806  rate_limits_v1.md -&gt; use rate_limits_v2.md</span></pre></div>
+        <div class="terminal-body"><pre><span class="warn">[ABSTAIN GAP] query='penguins on Mars?'</span>
+<span class="dim">  reason: no confident match in this corpus</span>
+<span class="dim">  evidence: rate-limits.md · confidence 0.30</span></pre></div>
       </div>
-      <p class="muted">Copied from a real run against the sample corpus. Look at the cosines: the <b>stale</b> memory scores <b>higher</b> (0.806 against 0.784), so plain vector search returns the limit that no longer exists. RE-call flags it <code>superseded</code>, points at its successor, and puts the current memory on top; the third question, which the corpus cannot answer, is refused. Until you fit a threshold to your own corpus every line also carries <code>DEGRADED</code>, which is what <a href="calibration.html">calibration</a> fixes.</p>
+      <p class="muted">A low-confidence match is shown as evidence, not presented as an answer.</p>
     </div>
   </div>
 </section>

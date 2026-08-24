@@ -207,9 +207,17 @@ class ReasoningDiagnostics:
     retrieval_stage_ms: Mapping[str, float]
     generator_invoked: bool
     citations_normalized: bool
+    retrieval_expansion: RetrievalExpansionTrace | None = None
     provider_failures: tuple[ProviderFailure, ...] = ()
     provider_metadata: tuple[ProviderMetadata, ...] = ()
-    retrieval_expansion: RetrievalExpansionTrace | None = None
+    graph_expansion_mode: GraphExpansionMode = "off"
+    graph_readiness: str = "not_requested"
+    graph_entities_inspected: int = 0
+    graph_relations_inspected: int = 0
+    graph_candidates_discovered: int = 0
+    graph_candidates_rejected: int = 0
+    graph_diagnostics_encountered: int = 0
+    graph_expansion_latency_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -301,7 +309,33 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             )
             _record_reasoning_metrics(response)
             return response
-        graph_expansion = provider(request, retrieval)
+        graph_failure: ProviderFailure | None = None
+        try:
+            graph_expansion = provider(request, retrieval)
+        except TimeoutError as exc:
+            graph_expansion = SemanticGraphExpansionResult(
+                retrieval=retrieval,
+                readiness="GRAPH_PROVIDER_TIMEOUT",
+            )
+            graph_failure = ProviderFailure(
+                kind="timeout",
+                provider_id="semantic-graph",
+                model_id="deterministic",
+                provider_revision="v1",
+                message=type(exc).__name__,
+            )
+        except Exception as exc:
+            graph_expansion = SemanticGraphExpansionResult(
+                retrieval=retrieval,
+                readiness="GRAPH_PROVIDER_ERROR",
+            )
+            graph_failure = ProviderFailure(
+                kind="provider_error",
+                provider_id="semantic-graph",
+                model_id="deterministic",
+                provider_revision="v1",
+                message=type(exc).__name__,
+            )
         if graph_expansion.readiness != "ready":
             response = _response(
                 request=request,
@@ -315,6 +349,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 generator_invoked=False,
                 citations_normalized=False,
                 started=started,
+                provider_failures=(graph_failure,) if graph_failure is not None else (),
                 graph_expansion=graph_expansion,
             )
             _record_reasoning_metrics(response)
@@ -585,6 +620,28 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         ),
         retrieval_expansion=_optional_expansion_trace(
             diagnostics_payload.get("retrieval_expansion")
+        ),
+        graph_expansion_mode=cast(
+            GraphExpansionMode, diagnostics_payload.get("graph_expansion_mode", "off")
+        ),
+        graph_readiness=str(diagnostics_payload.get("graph_readiness", "not_requested")),
+        graph_entities_inspected=_required_int(
+            diagnostics_payload.get("graph_entities_inspected", 0)
+        ),
+        graph_relations_inspected=_required_int(
+            diagnostics_payload.get("graph_relations_inspected", 0)
+        ),
+        graph_candidates_discovered=_required_int(
+            diagnostics_payload.get("graph_candidates_discovered", 0)
+        ),
+        graph_candidates_rejected=_required_int(
+            diagnostics_payload.get("graph_candidates_rejected", 0)
+        ),
+        graph_diagnostics_encountered=_required_int(
+            diagnostics_payload.get("graph_diagnostics_encountered", 0)
+        ),
+        graph_expansion_latency_ms=_required_float(
+            diagnostics_payload.get("graph_expansion_latency_ms", 0.0)
         ),
     )
     return ReasoningResponse(
@@ -1124,8 +1181,8 @@ def _response(
     refusal_reason: str | None = None,
     generator_invoked: bool,
     citations_normalized: bool,
-    expansion_trace: RetrievalExpansionTrace | None = None,
     graph_expansion: SemanticGraphExpansionResult | None = None,
+    expansion_trace: RetrievalExpansionTrace | None = None,
 ) -> ReasoningResponse:
     cited = _citations(bundle, citations)
     contradictions = tuple(
@@ -1167,9 +1224,17 @@ def _response(
             retrieval_stage_ms=bundle_stage_ms(retrieval),
             generator_invoked=generator_invoked,
             citations_normalized=citations_normalized,
+            retrieval_expansion=expansion_trace,
             provider_failures=tuple(provider_failures),
             provider_metadata=_provider_metadata(request),
-            retrieval_expansion=expansion_trace,
+            graph_expansion_mode=request.policy.graph_expansion,
+            graph_readiness=(graph_expansion.readiness if graph_expansion else "not_requested"),
+            graph_entities_inspected=(graph_expansion.entities_inspected if graph_expansion else 0),
+            graph_relations_inspected=(graph_expansion.relations_inspected if graph_expansion else 0),
+            graph_candidates_discovered=(graph_expansion.candidates_discovered if graph_expansion else 0),
+            graph_candidates_rejected=(graph_expansion.candidates_rejected if graph_expansion else 0),
+            graph_diagnostics_encountered=(graph_expansion.diagnostics_encountered if graph_expansion else 0),
+            graph_expansion_latency_ms=(graph_expansion.latency_ms if graph_expansion else 0.0),
         ),
     )
 

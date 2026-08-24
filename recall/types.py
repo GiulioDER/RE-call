@@ -74,12 +74,6 @@ class RetrievalDiagnostics:
     candidate_pool_size: int = 20
     reranking_ran: bool = False
     stage_ms: dict[str, float] = field(default_factory=dict)
-    #: Best DENSE cosine in the candidate pool, before fusion and before reranking, or `None`
-    #: when the dense leg ran empty. `gap_warning` is computed from the same scores but reduces
-    #: them to a boolean, so a caller that wants to know HOW confident the dense leg was cannot
-    #: recover it. `benchmarks/atm_full_run.py` records this per question, which is why the field
-    #: is here rather than local to the retriever: that harness is published as the reproduction
-    #: pointer for the ATM-Bench run and is frozen, so the library has to supply what it reads.
     max_dense_score: float | None = None
 
 

@@ -30,7 +30,7 @@ from recall.lineage import (
 )
 from recall.manifest import ObjectReader
 from recall.observability import METRICS
-from recall.semantic_graph import SemanticGraphProjection, build_semantic_graph, write_semantic_graph
+from recall.semantic_graph import GraphReadiness, SemanticGraphProjection, build_semantic_graph, write_semantic_graph
 from recall.types import Chunk
 from recall.errors import RecallError
 
@@ -1061,75 +1061,25 @@ class GenerationManager:
     def calibration_status_for(
         self, generation_id: str, *, conn: psycopg.Connection | None = None
     ) -> str:
-        """The generation's calibration status as a plain string, for reporting rather than gating.
-
-        `rollback` records this instead of refusing on it, per decision 2. Never raises: a status
-        that cannot be determined must not be the thing that stops an incident recovery, so an
-        unreadable calibration reads as `"unknown"` and the rollback proceeds and says so.
-
-        Pass `conn` from inside an open transaction to read on it rather than opening a second
-        connection; see `CalibrationRepository.resolve_within` for why that matters under a lock.
-        Rollback passes its own, so the status it RECORDS is the one that was true for the
-        transaction that did the activating, rather than one read beside it.
-        """
+        """Return calibration status for reporting without blocking recovery."""
         from recall.calibration_v2 import CalibrationRepository
 
         repository = CalibrationRepository(self._dsn, self.tenant_id, actor=self.actor)
         try:
             if conn is not None:
-                # ⛔ **A SAVEPOINT, and without it this method breaks the promise above.**
-                # Catching a `psycopg.Error` in Python does NOT clear the server-side aborted
-                # transaction state. On the borrowed connection that is the CALLER'S transaction,
-                # so swallowing the error here left `rollback`'s next UPDATE raising
-                # `InFailedSqlTransaction` — the reporting call added to make a degradation visible
-                # was instead blocking the recovery, which is exactly what decision 2 forbids.
-                # A nested `conn.transaction()` emits SAVEPOINT / ROLLBACK TO SAVEPOINT, so a
-                # failed read leaves the outer transaction usable and `"unknown"` becomes true
-                # rather than a lie told over a broken connection.
-                #
-                # Found by three auditors independently. The pre-existing test asserted only that
-                # the read happens INTRANS; nothing drove a failing read.
                 with conn.transaction():
                     resolution = repository.resolve_within(conn, generation_id)
             else:
                 resolution = repository.resolve(generation_id)
             return str(resolution.status.value)
-        except Exception:  # noqa: BLE001 - reporting must not be able to block recovery
+        except Exception:  # noqa: BLE001
             return "unknown"
 
     def require_certified_for_production(
         self, generation_id: str, *, conn: psycopg.Connection | None = None
     ) -> None:
-        """Refuse unless `generation_id` is backed by a PUBLISHED, CERTIFIED, still-bound calibration.
-
-        This is the gate `promote`'s old message promised — "unavailable in production until
-        certification gates land" — and it is deliberately built from the machinery that already
-        exists rather than a new notion of certified. `CalibrationRepository.resolve` answers
-        exactly the question being asked: is there a calibration for this generation that is
-        published, that certified, and whose pipeline and corpus fingerprints still match the
-        generation as it stands now. A calibration that certified against a corpus which has since
-        changed resolves as STALE, which is the case a naive "does a published row exist" check
-        would wave through.
-
-        ⚠️ **The status is reported, not flattened to a boolean.** MISSING, DRAFT, UNCERTIFIED and
-        STALE need four different actions from whoever hit this — calibrate, publish, re-calibrate,
-        re-calibrate against the current corpus — and a gate that says only "no" sends them to guess.
-
-        ⛔ **`conn` is not an optimisation.** Passed, the resolution runs on the caller's OPEN
-        transaction, so the verdict and the activation it authorises are one decision. Omitted, it
-        opens its own connection, and the gate then approves a snapshot that a concurrent `forget()`
-        can invalidate before the promotion commits — approving a state that no longer exists. It
-        also acquires that connection while the caller holds a tenant lock, which stalls the lock
-        rather than the caller under exhaustion. `promote` always passes it; the parameter is
-        optional only so a caller outside a transaction can still ask the question.
-
-        Imported lazily. `recall.calibration_v2` does not import this module today, so a top-level
-        import would work, but the calibration layer is the higher one and making the generation
-        layer depend on it at import time invites the cycle later.
-        """
-        from recall.calibration_v2 import CalibrationRepository, CalibrationStatus
-
-        from recall.calibration_v2 import CalibrationBindingError
+        """Require a published, certified calibration bound to the generation."""
+        from recall.calibration_v2 import CalibrationBindingError, CalibrationRepository, CalibrationStatus
 
         repository = CalibrationRepository(self._dsn, self.tenant_id, actor=self.actor)
         try:
@@ -1139,10 +1089,6 @@ class GenerationManager:
                 else repository.resolve(generation_id)
             )
         except CalibrationBindingError as exc:
-            # Translated rather than propagated. Callers of `promote` and `rollback` handle
-            # `UnsafePromotion`; a binding error escaping from two layers down is a different
-            # contract for the same refusal, and the reason is the same either way — this
-            # generation is not backed by a calibration that can carry it into production.
             raise UnsafePromotion(
                 f"generation {generation_id} cannot go live in production: {exc}"
             ) from exc
@@ -1151,9 +1097,76 @@ class GenerationManager:
         raise UnsafePromotion(
             f"generation {generation_id} cannot go live in production: its calibration is "
             f"{resolution.status.value}. Production serves only a generation whose published "
-            f"calibration certified and is still bound to this pipeline and corpus. Run "
+            "calibration certified and is still bound to this pipeline and corpus. Run "
             f"`recall calibration calibrate --generation {generation_id} --queries FILE --publish`."
         )
+
+    def rebuild_graph(self, generation_id: str) -> GraphReadiness:
+        """Build only the deterministic semantic graph for an existing v1 generation."""
+        with self._connect() as conn, conn.transaction():
+            current = self._require_generation(conn, generation_id, lock=True)
+            if current.state == GenerationState.LEGACY_UNVERIFIED:
+                raise GenerationError(
+                    "legacy_unverified generations have no v1 chunk projection; rebuild the "
+                    "generation before building its semantic graph"
+                )
+            if current.state in {GenerationState.BUILDING, GenerationState.VALIDATING}:
+                raise InvalidGenerationTransition(
+                    f"graph rebuild requires a stable generation, found {current.state.value}"
+                )
+            rows = conn.execute(
+                "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
+                (self.tenant_id, generation_id),
+            ).fetchall()
+            graph_started = time.perf_counter()
+            try:
+                graph = build_semantic_graph(
+                    [
+                        Chunk(
+                            str(row[0]),
+                            str(row[1]),
+                            str(row[2]),
+                            row[3] if isinstance(row[3], dict) else {},
+                        )
+                        for row in rows
+                    ],
+                    tenant_id=self.tenant_id,
+                    generation_id=generation_id,
+                    pipeline_fingerprint=current.pipeline_fingerprint,
+                    corpus_fingerprint=current.corpus_fingerprint,
+                )
+                write_semantic_graph(conn, graph)
+            except BaseException:
+                METRICS.increment("recall_graph_build_failure_total")
+                METRICS.observe(
+                    "recall_graph_latency_ms",
+                    (time.perf_counter() - graph_started) * 1000.0,
+                )
+                raise
+            METRICS.increment("recall_graph_build_total")
+            METRICS.observe(
+                "recall_graph_latency_ms", (time.perf_counter() - graph_started) * 1000.0
+            )
+            summary_row = conn.execute(
+                "SELECT validation_summary FROM recall_generations "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (self.tenant_id, generation_id),
+            ).fetchone()
+            summary = dict(summary_row[0]) if summary_row and isinstance(summary_row[0], Mapping) else {}
+            summary["semantic_graph"] = _semantic_graph_marker(graph)
+            conn.execute(
+                "UPDATE recall_generations SET validation_summary = %s "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (Jsonb(summary), self.tenant_id, generation_id),
+            )
+            self._audit(
+                conn,
+                "generation_graph_rebuilt",
+                generation_id=generation_id,
+                payload=summary["semantic_graph"],
+            )
+            return graph.readiness()
 
     def promote(self, generation_id: str, *, unsafe_development: bool = False) -> None:
         """Make one ready generation live, gated on how the tenant is SERVED.
@@ -1489,6 +1502,28 @@ class GenerationManager:
                 removed = len(rows)
                 _scrub_sparse_rows(
                     conn, self.tenant_id, "recall_chunks_v1", [row[0] for row in rows]
+                )
+                # Chunk foreign keys remove mentions and relation evidence. Relations and
+                # entities are derived rows, so remove any that no longer have surviving support
+                # and leave the generation marker mismatched until an explicit graph rebuild.
+                conn.execute(
+                    "DELETE FROM recall_graph_relations_v1 r "
+                    "WHERE r.tenant_id = %s AND r.generation_id = ANY(%s) "
+                    "AND NOT EXISTS (SELECT 1 FROM recall_graph_relation_evidence_v1 e "
+                    "WHERE e.tenant_id = r.tenant_id AND e.generation_id = r.generation_id "
+                    "AND e.relation_id = r.relation_id)",
+                    (self.tenant_id, list(selected)),
+                )
+                conn.execute(
+                    "DELETE FROM recall_graph_entities_v1 e "
+                    "WHERE e.tenant_id = %s AND e.generation_id = ANY(%s) "
+                    "AND NOT EXISTS (SELECT 1 FROM recall_graph_mentions_v1 m "
+                    "WHERE m.tenant_id = e.tenant_id AND m.generation_id = e.generation_id "
+                    "AND m.entity_id = e.entity_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM recall_graph_relations_v1 r "
+                    "WHERE r.tenant_id = e.tenant_id AND r.generation_id = e.generation_id "
+                    "AND (r.subject_id = e.entity_id OR r.object_id = e.entity_id))",
+                    (self.tenant_id, list(selected)),
                 )
             if legacy_table is not None:
                 # Migration 0008 adopts a v0.8 install's rows in place: they stay in the legacy

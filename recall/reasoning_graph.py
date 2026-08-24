@@ -753,4 +753,4 @@ def _load_semantic_graph(store: ChunkIterable, generation_id: str) -> SemanticGr
     loader = getattr(store, "load_semantic_graph", None)
     if not callable(loader):
         return None
-    return cast(SemanticGraphProjection, loader(generation_id))
+    return cast(SemanticGraphProjection | None, loader(generation_id))

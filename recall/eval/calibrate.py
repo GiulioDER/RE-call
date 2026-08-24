@@ -22,6 +22,7 @@ __all__ = ["Calibration", "CalibrationReport", "best_threshold", "calibrate",
            "loo_threshold_rates", "measure_top_cosines"]
 
 EVAL_DIR = Path(__file__).parent
+CALIBRATION_DENSE_K = 200
 
 
 @dataclass
@@ -74,7 +75,15 @@ def measure_top_cosines(
         # query set against a child generation to decide whether that threshold still separates.
         # Under-measuring the unanswerable class lowers `false_confirm_rate`, which is precisely
         # the direction that makes a broken threshold certify.
-        top = store.top_cosine(embed_query(embedder, q["query"]))
+        vector = embed_query(embedder, q["query"])
+        top_cosine = getattr(store, "top_cosine", None)
+        if callable(top_cosine):
+            top = top_cosine(vector)
+        else:
+            hits = store.query_dense(vector, k=CALIBRATION_DENSE_K)
+            if not hits:
+                raise RuntimeError("empty result is not a calibration data point")
+            top = max(float(hit.score) for hit in hits)
         (ans if q["answerable"] else unans).append(top)
     return ans, unans
 

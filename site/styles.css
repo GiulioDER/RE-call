@@ -1,7 +1,7 @@
 /* ==========================================================================
    RE-call setup guide, design system.
 
-   Palette is shared with the Windows desktop UI and docs/archive/brand-guidelines.md.
+   Palette is shared with the Windows desktop UI and docs/brand-guidelines.md.
    Gold is the RE-call signal; green and red describe state only.
    ========================================================================== */
 
@@ -255,14 +255,12 @@ p {
   color: var(--ink);
 }
 
-.masthead nav a[href="start.html"],
-.masthead nav a[href="download.html"] {
+.masthead nav a[href="start.html"] {
   color: var(--signal);
   font-weight: 600;
 }
 
-.masthead nav a[href="start.html"]:hover,
-.masthead nav a[href="download.html"]:hover {
+.masthead nav a[href="start.html"]:hover {
   color: var(--ink);
 }
 
@@ -318,6 +316,13 @@ p {
     right: -2rem;
     top: 74%;
     opacity: 0.13;
+  }
+
+  .masthead nav {
+    gap: 1.25rem;
+    overflow-x: auto;
+    padding-block: 0.5rem;
+    scrollbar-width: none;
   }
 
   .masthead nav {

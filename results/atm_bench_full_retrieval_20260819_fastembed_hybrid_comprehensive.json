@@ -1,0 +1,29 @@
+{
+  "count": 1013,
+  "metrics": {
+    "recall@1": 0.4395043012269072,
+    "recall@5": 0.6847627665742178,
+    "recall@10": 0.769257196132813,
+    "recall@25": 0.8388904558203669,
+    "recall@50": 0.8866223225058367,
+    "recall@100": 0.9134192011783323,
+    "recall@gt": 0.4857170278443723,
+    "hit@1": 0.5044422507403751
+  },
+  "gt_stats": {
+    "count_with_gt": 1013,
+    "count_empty_gt": 0,
+    "gt_count_avg": 1.4383020730503455,
+    "gt_count_min": 1,
+    "gt_count_max": 10
+  },
+  "source_details": "results\\atm_bench_full_retrieval_20260819_fastembed_hybrid_retrieval_recall_details.json",
+  "k_values": [
+    1,
+    5,
+    10,
+    25,
+    50,
+    100
+  ]
+}

@@ -6,6 +6,7 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from recall.calibration import Calibration
 from recall.evidence import AnswerSlot, EvidencePolicy, build_evidence_bundle
@@ -16,16 +17,7 @@ from recall.retriever import (
     expand_retrieval_by_structure,
 )
 from recall.trust import evaluate
-from typing import cast
-
-from recall.types import (
-    Chunk,
-    RetrievalDiagnostics,
-    RetrievalResult,
-    ScoredChunk,
-    StalenessReport,
-    TrustedResult,
-)
+from recall.types import Chunk, RetrievalDiagnostics, RetrievalResult, ScoredChunk, StalenessReport, TrustedResult
 
 NOW = datetime(2026, 8, 18, tzinfo=timezone.utc)
 CALIBRATION = Calibration(embedder="fixture", threshold=0.70)
@@ -74,7 +66,7 @@ def _p95(values: list[float]) -> float:
     return ordered[max(0, (95 * len(ordered) + 99) // 100 - 1)]
 
 
-def _run(case: Case, arm: str) -> dict[str, object]:
+def _run(case: Case, arm: str) -> dict[str, Any]:
     raw = _raw(case.query, case.initial)
 
     def search(_query: str, _k: int, source: str | None = None) -> RetrievalResult:
@@ -155,22 +147,18 @@ def _cases() -> tuple[Case, ...]:
 def main() -> None:
     arms = ("current_retrieval", "document_grouping", "structural_expansion", "answer_slots", "bundle_beam")
     rows = [_run(case, arm) for case in _cases() for arm in arms]
-    # `arms` is built in its own typed dict rather than through `report["arms"]`: a
-    # `dict[str, object]` makes every lookup an `object`, which cannot be indexed or assigned into.
-    # The emitted JSON is unchanged.
-    arms_report: dict[str, dict[str, float]] = {}
+    report: dict[str, Any] = {"cases": len(_cases()), "arms": {}}
     for arm in arms:
         subset = [row for row in rows if row["arm"] == arm]
-        timings = [cast(float, row["elapsed_ms"]) for row in subset]
-        arms_report[arm] = {
+        timings = [float(row["elapsed_ms"]) for row in subset]
+        report["arms"][arm] = {
             "complete_id_recall": sum(bool(row["complete_ids"]) for row in subset),
             "complete_slot_recall": sum(bool(row["complete_slots"]) for row in subset),
-            "forbidden_selected": sum(cast(int, row["forbidden_selected"]) for row in subset),
+            "forbidden_selected": sum(int(row["forbidden_selected"]) for row in subset),
             "false_positives": sum(bool(row["false_positive"]) for row in subset),
             "mean_selection_ms": sum(timings) / len(timings),
             "p95_selection_ms": _p95(timings),
         }
-    report: dict[str, object] = {"cases": len(_cases()), "arms": arms_report}
     report["details"] = rows
     print(json.dumps(report, indent=2, sort_keys=True))
 

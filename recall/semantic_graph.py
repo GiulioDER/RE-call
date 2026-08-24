@@ -574,7 +574,6 @@ def build_semantic_graph(
         by_normalized: dict[str, SemanticEntity] = {}
         for label, kind, method in _entity_specs(chunk):
             normalized = normalize_entity_name(label)
-            entity: SemanticEntity | None
             if not normalized:
                 continue
             if normalized in declared_aliases:
@@ -666,14 +665,15 @@ def build_semantic_graph(
         by_normalized = entity_ids_by_chunk[chunk.id]
         for label, kind, method in _entity_specs(chunk):
             normalized = normalize_entity_name(label)
+            resolved_entity: SemanticEntity | None
             if normalized in alias_candidates and normalized not in ambiguous_names:
-                entity = next(
+                resolved_entity = next(
                     entity for entity in entity_by_key.values() if entity.id == next(iter(alias_candidates[normalized]))
                 )
-                by_normalized[normalized] = entity
+                by_normalized[normalized] = resolved_entity
             else:
-                entity = by_normalized.get(normalized)
-            if entity is None:
+                resolved_entity = by_normalized.get(normalized)
+            if resolved_entity is None:
                 continue
             mention_id = _identity(
                 "mention",
@@ -681,7 +681,7 @@ def build_semantic_graph(
                     "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
                     "tenant_id": tenant_id,
                     "generation_id": generation_id,
-                    "entity_id": entity.id,
+                    "entity_id": resolved_entity.id,
                     "chunk_id": chunk.id,
                     "mention_text": label,
                 },
@@ -694,7 +694,7 @@ def build_semantic_graph(
                     id=mention_id,
                     tenant_id=tenant_id,
                     generation_id=generation_id,
-                    entity_id=entity.id,
+                    entity_id=resolved_entity.id,
                     chunk_id=chunk.id,
                     mention_text=label,
                     extraction_method=method,

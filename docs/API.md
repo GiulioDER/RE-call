@@ -40,12 +40,13 @@ removal.
 | `recall index` | Index a markdown corpus. |
 | `recall forget` | Permanently erase indexed sources; the right-to-erasure path. |
 | `recall search` | Query an indexed corpus through the trust layer. |
-| `recall reasoning` | Inspect projections, proposals, traces, audits, and opt-in reasoning queries without changing ordinary retrieval behavior (`projection`, `proposals`, `query`, `trace`, `audit`). |
+| `recall reasoning` | Inspect projections (`projection`), proposals (`proposals`), queries (`query`), traces (`trace`), audits (`audit`), and opt-in reasoning without changing ordinary retrieval behavior. |
+| `recall graph` | Inspect or rebuild the deterministic Evidence Graph V1 (`rebuild`) without changing chunks or generation identity. |
 | `recall extract` | Extract structured truth claims from memo prose (`run`, `show`). Reads only; writes nothing. Off unless `RECALL_TRUTH_EXTRACTION=1`. |
-| `recall rewrite` | Review extracted claims and declare accepted ones in corpus frontmatter (`plan`, `apply`, `reject`, `verify`). Dry run by default; `--reviewer` and `--note` are required. |
-| `recall quickstart` | One command from a fresh install to three answered queries: throwaway database, bundled corpus, and the printed next steps. |
-| `recall demo` | Run the bundled product example against an existing database (needs a git clone; `quickstart` is the from-PyPI form). |
-| `recall code` | Index and search a code corpus with the code chunker. |
+| `recall rewrite` | Review extracted claims (`plan`, `apply`, `reject`, `verify`) and declare accepted ones in corpus frontmatter. Dry run by default; `--reviewer` and `--note` are required. |
+| `recall quickstart` | Run the guided setup pipeline noninteractively. |
+| `recall demo` | Index the sample corpus and run example searches. |
+| `recall code` | Index RE-call source code and run example code searches. |
 | `recall lint` | Validate memo frontmatter and corpus shape. |
 | `recall check` | Validate one memo, optionally in strict mode. |
 | `recall calibrate` | Fit an abstention threshold from a labeled query file (legacy single-shot form). |
@@ -63,7 +64,7 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_evidence` | Return evidence for a query. |
 | `recall_related` | Retrieve independently trusted structural related evidence. |
 | `recall_current_state` | Inspect a deterministic authored current state projection. |
-| `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `expand_retrieval=true` only when the cheap expansion provider is configured. |
+| `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `graph_expansion` to `one_hop` to enable Evidence Graph V1. Legacy `expand_retrieval` remains available when configured. |
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
 | `recall_rewrite_plan` | Report which key a proposal would declare, in which file. Writes nothing. |
@@ -95,12 +96,11 @@ The static README viewer uses these provider locale identifiers: `english`, `ita
 surfaces. An unsupported identifier or provider failure leaves canonical text unchanged and marks
 the localized object as a fallback.
 
-The `recall_reasoning_query` MCP tool accepts `expand_retrieval`, defaulting to `false`. Enabling it
-requires `RECALL_REASONING_EXPANSION=1`, `RECALL_REASONING_EXPANSION_MODEL`, and
-`RECALL_REASONING_API_KEY`. The provider uses the configured OpenRouter compatible base URL,
-minimal reasoning effort by default, one model call, and at most three generated retrieval queries.
-The provider receives bounded retrieval data as untrusted input. It cannot create citations or
-trusted evidence directly.
+Related expansion and structured retrieval explanations are disabled by default. Set
+`RECALL_ROUTING_MODE=active` only for a preregistered routing experiment. The default `shadow`
+mode records the deterministic decision without changing retrieval behavior. `recall_current_state`
+defaults to a fail closed maximum of 1000 source records and accepts an explicit `max_records`
+bound; use `source` to project one authored lineage when a tenant is larger.
 
 The CLI accepts the same additive presentation option, for example:
 

@@ -11,6 +11,6 @@ def test_profile_selected_by_active_routing_reaches_reranker_builder(monkeypatch
         return None
 
     service._reset_reranker_cache()
-    monkeypatch.setattr("recall_mcp.factories._new_reranker", fake_new_reranker)
+    monkeypatch.setattr(service, "_new_reranker", fake_new_reranker)
     assert service._build_reranker(QUALITY_PROFILE) is None
     assert seen["profile"] is QUALITY_PROFILE

@@ -1,5 +1,9 @@
 """recall — Retrieval-Augmented Self-Recall for long-running agents."""
 
+# This module is the deliberate package reexport surface. The explicit `__all__` below documents
+# the stable subset, while additional historical names remain importable for compatibility.
+# ruff: noqa: F401
+
 from recall.calibration_v2 import CalibrationArtifactV2, CalibrationStatus
 
 # The generator-neutral evidence boundary. Exported here because a guarantee reachable only by
@@ -46,6 +50,7 @@ from recall.semantic_graph import (
     SemanticEntity,
     SemanticGraphDiagnostic,
     SemanticGraphProjection,
+    SemanticGraphStore,
     SemanticMention,
     SemanticRelation,
     build_semantic_graph,
@@ -118,7 +123,7 @@ from recall.reasoning_proposals import (
 
 __version__ = "0.10.0"
 
-__all__ = [
+__all__ = sorted([
     "AnswerEnvelope",
     "AnswerSlot",
     "CalibrationArtifactV2",
@@ -162,6 +167,14 @@ __all__ = [
     "ReasoningBudget",
     "ReasoningBudgetUsage",
     "ReasoningDiagnostics",
+    "SemanticEntity",
+    "SemanticGraphDiagnostic",
+    "SemanticGraphExpansionResult",
+    "SemanticGraphProjection",
+    "SemanticGraphStore",
+    "SemanticMention",
+    "SemanticRelation",
+    "GraphReadiness",
     "ReasoningGraphDiagnostic",
     "ReasoningGraphEdge",
     "ReasoningGraphNode",
@@ -178,21 +191,15 @@ __all__ = [
     "RetrievalExplanation",
     "RoutingDecision",
     "RoutingMode",
-    "SemanticEntity",
-    "SemanticGraphDiagnostic",
-    "SemanticGraphExpansionResult",
-    "SemanticGraphProjection",
-    "SemanticMention",
-    "SemanticRelation",
     "StructuralExpansionPolicy",
     "Tokenizer",
     "UnresolvedGap",
     "ValidationResult",
     "build_evidence_bundle",
-    "build_reasoning_graph",
     "build_semantic_graph",
-    "classify_query",
     "delete_semantic_graph",
+    "build_reasoning_graph",
+    "classify_query",
     "deterministic_inference_proposals",
     "generate_from_evidence",
     "load_semantic_graph",
@@ -213,4 +220,7 @@ __all__ = [
     "trusted_related",
     "validate_answer",
     "write_semantic_graph",
-]
+    "load_semantic_graph",
+    "ENTITY_KINDS",
+    "RELATION_KINDS",
+])

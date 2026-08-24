@@ -47,7 +47,11 @@ def _rss_bytes() -> int | None:
     try:
         import resource
 
-        value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        getrusage = getattr(resource, "getrusage", None)
+        usage_self = getattr(resource, "RUSAGE_SELF", None)
+        if not callable(getrusage) or usage_self is None:
+            return None
+        value = int(getrusage(usage_self).ru_maxrss)
         return value * (1024 if value < 10_000_000 else 1)
     except (ImportError, AttributeError, OSError):
         return None

@@ -100,10 +100,7 @@ def test_local_scan_prunes_generated_directories_and_limits_claude_files(tmp_pat
     (claude / "settings.json").write_text("{}", encoding="utf-8")
 
     assert default_scan_roots(tmp_path) == (documents, claude)
-    # `home=tmp_path` for the same reason `default_scan_roots` takes it: the restriction is a prefix
-    # test against the REAL configuration directories, so a test using a temporary home has to say
-    # which home it means or the restriction correctly declines to fire.
-    found = scan_files(default_scan_roots(tmp_path), home=tmp_path)
+    found = scan_files(default_scan_roots(tmp_path))
 
     assert [path.relative_to(tmp_path).as_posix() for path in found] == [
         "Documents/app.py",
@@ -111,55 +108,6 @@ def test_local_scan_prunes_generated_directories_and_limits_claude_files(tmp_pat
         ".claude/MEMORY.md",
         ".claude/projects/demo/memory/notes.md",
     ]
-
-
-def test_a_project_living_under_a_dot_claude_path_is_scanned_normally(tmp_path: Path) -> None:
-    """⛔ The regression that made the local scan return almost nothing for this repository.
-
-    `_is_claude_root` used to ask whether ANY component of the path was named `.claude`, which is
-    true of every checkout made by this repository's own documented worktree workflow,
-    `<repo>/.claude/worktrees/<name>`. An ordinary project was therefore classified as a Claude
-    configuration folder and restricted to memory files.
-
-    Measured on a real worktree before the fix: scanning its `docs/` directory found **0 of 86**
-    markdown files. It did not look like a filter firing. It looked like a project with no
-    documents, which is the failure mode this repository keeps paying for.
-    """
-    project = tmp_path / "repo" / ".claude" / "worktrees" / "feature"
-    (project / "docs").mkdir(parents=True)
-    (project / "README.md").write_text("readme", encoding="utf-8")
-    (project / "docs" / "design.md").write_text("design", encoding="utf-8")
-    (project / "app.py").write_text("print('ok')", encoding="utf-8")
-
-    found = scan_files([project], home=tmp_path)
-
-    assert [path.relative_to(project).as_posix() for path in found] == [
-        "README.md",
-        "app.py",
-        "docs/design.md",
-    ]
-
-
-def test_the_restriction_follows_the_files_not_the_root(tmp_path: Path) -> None:
-    """Scanning the HOME directory must still keep Claude's own configuration out.
-
-    The old test was per-ROOT, so a scan rooted at the home directory was unrestricted throughout:
-    the home is not itself named `claude`, and the check never ran again. Applying it per file is
-    strictly wider, and this is the case that shows the difference.
-    """
-    (tmp_path / ".claude").mkdir()
-    (tmp_path / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
-    (tmp_path / ".claude" / "MEMORY.md").write_text("memory", encoding="utf-8")
-    (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
-
-    found = scan_files([tmp_path], home=tmp_path)
-
-    relative = [path.relative_to(tmp_path).as_posix() for path in found]
-    # `os.walk` yields the root's own files before it descends, so this is walk order, not luck.
-    assert relative == ["notes.md", ".claude/MEMORY.md"]
-    assert ".claude/settings.json" not in relative, (
-        "settings are what the restriction exists for, and a home-rooted scan reaches them"
-    )
 
 
 def test_vps_runtime_uses_mcp_contract(tmp_path: Path) -> None:

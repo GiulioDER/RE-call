@@ -8,8 +8,8 @@ from datetime import datetime
 import re
 from typing import Literal, Protocol
 
-from recall.types import TrustedHit, TrustedResult
 from recall.errors import RecallError
+from recall.types import TrustedHit, TrustedResult
 
 
 class Tokenizer(Protocol):

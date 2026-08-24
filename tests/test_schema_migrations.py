@@ -37,6 +37,7 @@ from recall.types import Chunk
 from tests.conftest import TEST_DSN, requires_db
 
 DIM = 4
+LATEST_MIGRATION_VERSION = load_migrations()[-1].version
 
 
 def _name(prefix: str) -> str:
@@ -66,6 +67,7 @@ def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     assert migrations[10].transactional
     assert migrations[13].transactional  # 0014_calibration_carry_forward
     assert migrations[14].concurrent_index  # 0015_learned_sparse_chunk_index
+    assert migrations[15].transactional  # 0016_semantic_graph_foundation
     assert len({m.checksum for m in migrations}) == len(migrations)
 
 
@@ -117,7 +119,7 @@ def test_fresh_apply_repeated_apply_and_plan_is_read_only():
         assert [m.version for m in applied] == [f"{n:04d}" for n in range(1, 8)]
         assert apply_migrations(TEST_DSN, table=table, dim=DIM) == ()
         status = schema_status(TEST_DSN, table=table, dim=DIM)
-        assert status.compatible and status.current_version == "0016"
+        assert status.compatible and status.current_version == LATEST_MIGRATION_VERSION
 
         with PgVectorStore(TEST_DSN, dim=DIM, table=table) as store:
             store.check_schema()
@@ -151,7 +153,7 @@ def test_schema_cli_plan_apply_and_status_are_wired(capsys):
         assert "applied 0001" in applied and "applied 0007" in applied
         cli_main([*base, "schema", "--dim", str(DIM), "status"])
         status = capsys.readouterr().out
-        assert "current: 0016" in status and "compatible: yes" in status
+        assert f"current: {LATEST_MIGRATION_VERSION}" in status and "compatible: yes" in status
 
 
 @requires_db
