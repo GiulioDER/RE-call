@@ -15,6 +15,18 @@ This record fixes the measurement before the first public evidence cost or routi
 5. Unknown queries use fast and no expansion.
 6. Operational measurements are reported separately and cannot enter retrieval quality aggregates.
 
+## Frozen benchmark population and arm configuration
+
+1. The public question source is `locomo10.json`, SHA256
+   `79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`.
+2. The run includes all 10 conversations and all 1,986 eligible questions, consisting of 1,540
+   answerable and 446 adversarial questions. No conversation limit or post hoc question filter is
+   permitted.
+3. The primary RE-call arm uses `openai/gpt-4o-mini`, retrieval budget `k=5`, embedder `fastembed`,
+   reranker `none`, and exact evidence accounting enabled. The routing comparison uses the same
+   arm and configuration in shadow and active modes. The evidence curve repeats the RE-call arm at
+   each fixed budget.
+
 ## Fixed execution environment and analysis
 
 1. The measurement host is VPS2. The run records the host fingerprint, CPU count, memory limit,
