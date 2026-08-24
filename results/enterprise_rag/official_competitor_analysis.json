@@ -1,0 +1,4120 @@
+{
+  "phase": "official_downloaded_artifact_analysis",
+  "leaderboard": "C:\\Users\\gde00\\Documents\\recall\\.tmp_erbleaderboard\\data\\final_display_data\\leaderboard.csv",
+  "systems": "C:\\Users\\gde00\\Documents\\recall\\.tmp_erbleaderboard\\data\\raw_data\\systems.yaml",
+  "results_dir": "C:\\Users\\gde00\\Documents\\recall\\.tmp_erbleaderboard\\data\\raw_data",
+  "official_rows_loaded": 22,
+  "top_five": [
+    {
+      "key": "troml",
+      "model": "Troml",
+      "score": 76.79,
+      "correctness": 83.8,
+      "completeness": 81.84,
+      "recall": 86.55,
+      "invalid_extra_docs": 12.65,
+      "aggregate_artifact": {
+        "total_questions": 500,
+        "completed_questions": 500,
+        "skipped_rows": 0,
+        "num_corrected_questions": 18,
+        "average_correctness_pct": 83.8,
+        "average_completeness_pct": 81.84,
+        "combined_correctness_completeness_score": 76.79,
+        "average_recall_pct": 86.55,
+        "average_invalid_extra_docs": 12.65
+      },
+      "question_type_stats": {
+        "basic": {
+          "count": 175,
+          "average_correctness_pct": 93.71,
+          "average_completeness_pct": 89.89,
+          "combined_correctness_completeness_score": 88.36,
+          "average_recall_pct": 94.29,
+          "average_invalid_extra_docs": 12.53
+        },
+        "semantic": {
+          "count": 125,
+          "average_correctness_pct": 73.6,
+          "average_completeness_pct": 68.67,
+          "combined_correctness_completeness_score": 65.04,
+          "average_recall_pct": 71.2,
+          "average_invalid_extra_docs": 13.01
+        },
+        "intra_document_reasoning": {
+          "count": 40,
+          "average_correctness_pct": 97.5,
+          "average_completeness_pct": 93.75,
+          "combined_correctness_completeness_score": 92.5,
+          "average_recall_pct": 100.0,
+          "average_invalid_extra_docs": 14.07
+        },
+        "project_related": {
+          "count": 40,
+          "average_correctness_pct": 65.0,
+          "average_completeness_pct": 75.89,
+          "combined_correctness_completeness_score": 51.53,
+          "average_recall_pct": 81.4,
+          "average_invalid_extra_docs": 12.0
+        },
+        "constrained": {
+          "count": 30,
+          "average_correctness_pct": 83.33,
+          "average_completeness_pct": 93.57,
+          "combined_correctness_completeness_score": 80.4,
+          "average_recall_pct": 96.67,
+          "average_invalid_extra_docs": 12.87
+        },
+        "conflicting_info": {
+          "count": 20,
+          "average_correctness_pct": 85.0,
+          "average_completeness_pct": 83.91,
+          "combined_correctness_completeness_score": 78.58,
+          "average_recall_pct": 85.0,
+          "average_invalid_extra_docs": 14.0
+        },
+        "completeness": {
+          "count": 20,
+          "average_correctness_pct": 55.0,
+          "average_completeness_pct": 58.39,
+          "combined_correctness_completeness_score": 49.42,
+          "average_recall_pct": 71.05,
+          "average_invalid_extra_docs": 10.7
+        },
+        "miscellaneous": {
+          "count": 20,
+          "average_correctness_pct": 95.0,
+          "average_completeness_pct": 74.58,
+          "combined_correctness_completeness_score": 74.58,
+          "average_recall_pct": 100.0,
+          "average_invalid_extra_docs": 10.3
+        },
+        "high_level": {
+          "count": 10,
+          "average_correctness_pct": 80.0,
+          "average_completeness_pct": 87.5,
+          "combined_correctness_completeness_score": 77.5,
+          "average_recall_pct": 0.0,
+          "average_invalid_extra_docs": 0.0
+        },
+        "info_not_found": {
+          "count": 20,
+          "average_correctness_pct": 90.0,
+          "average_completeness_pct": 90.0,
+          "combined_correctness_completeness_score": 90.0,
+          "average_recall_pct": 0.0,
+          "average_invalid_extra_docs": 0.0
+        }
+      }
+    },
+    {
+      "key": "skyller",
+      "model": "Skyller",
+      "score": 71.93,
+      "correctness": 77.0,
+      "completeness": 79.14,
+      "recall": 81.6,
+      "invalid_extra_docs": 8.86,
+      "aggregate_artifact": {
+        "total_questions": 500,
+        "completed_questions": 500,
+        "skipped_rows": 0,
+        "num_corrected_questions": 17,
+        "average_correctness_pct": 77.0,
+        "average_completeness_pct": 79.14,
+        "combined_correctness_completeness_score": 71.93,
+        "average_recall_pct": 81.6,
+        "average_invalid_extra_docs": 8.86
+      },
+      "question_type_stats": {
+        "basic": {
+          "count": 175,
+          "average_correctness_pct": 83.43,
+          "average_completeness_pct": 82.38,
+          "combined_correctness_completeness_score": 79.13,
+          "average_recall_pct": 88.57,
+          "average_invalid_extra_docs": 9.11
+        },
+        "semantic": {
+          "count": 125,
+          "average_correctness_pct": 69.6,
+          "average_completeness_pct": 70.6,
+          "combined_correctness_completeness_score": 64.47,
+          "average_recall_pct": 69.6,
+          "average_invalid_extra_docs": 9.3
+        },
+        "intra_document_reasoning": {
+          "count": 40,
+          "average_correctness_pct": 87.5,
+          "average_completeness_pct": 90.0,
+          "combined_correctness_completeness_score": 83.33,
+          "average_recall_pct": 97.5,
+          "average_invalid_extra_docs": 9.03
+        },
+        "project_related": {
+          "count": 40,
+          "average_correctness_pct": 62.5,
+          "average_completeness_pct": 67.44,
+          "combined_correctness_completeness_score": 50.89,
+          "average_recall_pct": 64.03,
+          "average_invalid_extra_docs": 7.22
+        },
+        "constrained": {
+          "count": 30,
+          "average_correctness_pct": 76.67,
+          "average_completeness_pct": 90.28,
+          "combined_correctness_completeness_score": 72.56,
+          "average_recall_pct": 93.33,
+          "average_invalid_extra_docs": 8.7
+        },
+        "conflicting_info": {
+          "count": 20,
+          "average_correctness_pct": 80.0,
+          "average_completeness_pct": 82.78,
+          "combined_correctness_completeness_score": 74.57,
+          "average_recall_pct": 92.5,
+          "average_invalid_extra_docs": 8.7
+        },
+        "completeness": {
+          "count": 20,
+          "average_correctness_pct": 35.0,
+          "average_completeness_pct": 56.87,
+          "combined_correctness_completeness_score": 32.08,
+          "average_recall_pct": 52.02,
+          "average_invalid_extra_docs": 6.95
+        },
+        "miscellaneous": {
+          "count": 20,
+          "average_correctness_pct": 95.0,
+          "average_completeness_pct": 85.0,
+          "combined_correctness_completeness_score": 85.0,
+          "average_recall_pct": 100.0,
+          "average_invalid_extra_docs": 9.0
+        },
+        "high_level": {
+          "count": 10,
+          "average_correctness_pct": 70.0,
+          "average_completeness_pct": 83.0,
+          "combined_correctness_completeness_score": 68.0,
+          "average_recall_pct": 0.0,
+          "average_invalid_extra_docs": 0.0
+        },
+        "info_not_found": {
+          "count": 20,
+          "average_correctness_pct": 100.0,
+          "average_completeness_pct": 100.0,
+          "combined_correctness_completeness_score": 100.0,
+          "average_recall_pct": 0.0,
+          "average_invalid_extra_docs": 0.0
+        }
+      }
+    },
+    {
+      "key": "openclaw",
+      "model": "OpenClaw",
+      "score": 68.22,
+      "correctness": 81.6,
+      "completeness": 72.86,
+      "recall": 79.02,
+      "invalid_extra_docs": 0.47,
+      "aggregate_artifact": {
+        "total_questions": 500,
+        "completed_questions": 500,
+        "skipped_rows": 0,
+        "num_corrected_questions": 12,
+        "average_correctness_pct": 81.6,
+        "average_completeness_pct": 72.86,
+        "average_recall_pct": 79.02,
+        "average_invalid_extra_docs": 0.47
+      },
+      "question_type_stats": {
+        "basic": {
+          "count": 175,
+          "average_correctness_pct": 84.57,
+          "average_completeness_pct": 75.7,
+          "average_recall_pct": 86.29,
+          "average_invalid_extra_docs": 0.19
+        },
+        "semantic": {
+          "count": 125,
+          "average_correctness_pct": 79.2,
+          "average_completeness_pct": 66.67,
+          "average_recall_pct": 68.0,
+          "average_invalid_extra_docs": 0.84
+        },
+        "intra_document_reasoning": {
+          "count": 40,
+          "average_correctness_pct": 92.5,
+          "average_completeness_pct": 90.63,
+          "average_recall_pct": 100.0,
+          "average_invalid_extra_docs": 0.05
+        },
+        "project_related": {
+          "count": 40,
+          "average_correctness_pct": 57.5,
+          "average_completeness_pct": 46.79,
+          "average_recall_pct": 52.04,
+          "average_invalid_extra_docs": 1.35
+        },
+        "constrained": {
+          "count": 30,
+          "average_correctness_pct": 90.0,
+          "average_completeness_pct": 90.76,
+          "average_recall_pct": 93.33,
+          "average_invalid_extra_docs": 0.13
+        },
+        "conflicting_info": {
+          "count": 20,
+          "average_correctness_pct": 85.0,
+          "average_completeness_pct": 85.9,
+          "average_recall_pct": 80.0,
+          "average_invalid_extra_docs": 0.25
+        },
+        "completeness": {
+          "count": 20,
+          "average_correctness_pct": 65.0,
+          "average_completeness_pct": 46.26,
+          "average_recall_pct": 57.99,
+          "average_invalid_extra_docs": 0.7
+        },
+        "miscellaneous": {
+          "count": 20,
+          "average_correctness_pct": 95.0,
+          "average_completeness_pct": 71.25,
+          "average_recall_pct": 95.0,
+          "average_invalid_extra_docs": 0.05
+        },
+        "high_level": {
+          "count": 10,
+          "average_correctness_pct": 60.0,
+          "average_completeness_pct": 56.33,
+          "average_recall_pct": 0.0,
+          "average_invalid_extra_docs": 0.0
+        },
+        "info_not_found": {
+          "count": 20,
+          "average_correctness_pct": 95.0,
+          "average_completeness_pct": 100.0,
+          "average_recall_pct": 0.0,
+          "average_invalid_extra_docs": 0.0
+        }
+      }
+    },
+    {
+      "key": "fgroo",
+      "model": "fgroo",
+      "score": 63.27,
+      "correctness": 71.0,
+      "completeness": 71.03,
+      "recall": 72.5,
+      "invalid_extra_docs": 0.63,
+      "aggregate_artifact": {
+        "total_questions": 500,
+        "completed_questions": 500,
+        "skipped_rows": 0,
+        "num_corrected_questions": 20,
+        "average_correctness_pct": 71.0,
+        "average_completeness_pct": 71.03,
+        "combined_correctness_completeness_score": 63.27,
+        "average_recall_pct": 72.5,
+        "average_invalid_extra_docs": 0.63
+      },
+      "question_type_stats": {
+        "basic": {
+          "count": 175,
+          "average_correctness_pct": 81.14,
+          "average_completeness_pct": 79.18,
+          "combined_correctness_completeness_score": 75.21,
+          "average_recall_pct": 83.43,
+          "average_invalid_extra_docs": 0.31
+        },
+        "semantic": {
+          "count": 125,
+          "average_correctness_pct": 48.8,
+          "average_completeness_pct": 49.3,
+          "combined_correctness_completeness_score": 40.52,
+          "average_recall_pct": 47.2,
+          "average_invalid_extra_docs": 1.14
+        },
+        "intra_document_reasoning": {
+          "count": 40,
+          "average_correctness_pct": 87.5,
+          "average_completeness_pct": 90.62,
+          "combined_correctness_completeness_score": 84.38,
+          "average_recall_pct": 97.5,
+          "average_invalid_extra_docs": 0.25
+        },
+        "project_related": {
+          "count": 40,
+          "average_correctness_pct": 52.5,
+          "average_completeness_pct": 56.78,
+          "combined_correctness_completeness_score": 34.38,
+          "average_recall_pct": 59.9,
+          "average_invalid_extra_docs": 1.05
+        },
+        "constrained": {
+          "count": 30,
+          "average_correctness_pct": 96.67,
+          "average_completeness_pct": 90.8,
+          "combined_correctness_completeness_score": 88.42,
+          "average_recall_pct": 95.0,
+          "average_invalid_extra_docs": 0.23
+        },
+        "conflicting_info": {
+          "count": 20,
+          "average_correctness_pct": 80.0,
+          "average_completeness_pct": 77.49,
+          "combined_correctness_completeness_score": 70.65,
+          "average_recall_pct": 77.5,
+          "average_invalid_extra_docs": 0.4
+        },
+        "completeness": {
+          "count": 20,
+          "average_correctness_pct": 45.0,
+          "average_completeness_pct": 55.24,
+          "combined_correctness_completeness_score": 39.02,
+          "average_recall_pct": 43.99,
+          "average_invalid_extra_docs": 1.55
+        },
+        "miscellaneous": {
+          "count": 20,
+          "average_correctness_pct": 95.0,
+          "average_completeness_pct": 80.5,
+          "combined_correctness_completeness_score": 80.5,
+          "average_recall_pct": 100.0,
+          "average_invalid_extra_docs": 0.05
+        },
+        "high_level": {
+          "count": 10,
+          "average_correctness_pct": 40.0,
+          "average_completeness_pct": 71.0,
+          "combined_correctness_completeness_score": 40.0,
+          "average_recall_pct": 0.0,
+          "average_invalid_extra_docs": 0.0
+        },
+        "info_not_found": {
+          "count": 20,
+          "average_correctness_pct": 95.0,
+          "average_completeness_pct": 95.0,
+          "combined_correctness_completeness_score": 90.0,
+          "average_recall_pct": 0.0,
+          "average_invalid_extra_docs": 0.0
+        }
+      }
+    },
+    {
+      "key": "openai_filesearch",
+      "model": "OpenAI File Search",
+      "score": 61.03,
+      "correctness": 69.8,
+      "completeness": 67.87,
+      "recall": 71.65,
+      "invalid_extra_docs": 15.7,
+      "aggregate_artifact": {
+        "total_questions": 500,
+        "completed_questions": 500,
+        "skipped_rows": 0,
+        "num_corrected_questions": 18,
+        "average_correctness_pct": 69.8,
+        "average_completeness_pct": 67.87,
+        "average_recall_pct": 71.65,
+        "average_invalid_extra_docs": 15.7
+      },
+      "question_type_stats": {
+        "basic": {
+          "count": 175,
+          "average_correctness_pct": 77.14,
+          "average_completeness_pct": 72.96,
+          "average_recall_pct": 79.43,
+          "average_invalid_extra_docs": 16.17
+        },
+        "semantic": {
+          "count": 125,
+          "average_correctness_pct": 49.6,
+          "average_completeness_pct": 46.54,
+          "average_recall_pct": 46.4,
+          "average_invalid_extra_docs": 16.92
+        },
+        "intra_document_reasoning": {
+          "count": 40,
+          "average_correctness_pct": 75.0,
+          "average_completeness_pct": 80.83,
+          "average_recall_pct": 92.5,
+          "average_invalid_extra_docs": 15.95
+        },
+        "project_related": {
+          "count": 40,
+          "average_correctness_pct": 62.5,
+          "average_completeness_pct": 60.58,
+          "average_recall_pct": 66.72,
+          "average_invalid_extra_docs": 10.2
+        },
+        "constrained": {
+          "count": 30,
+          "average_correctness_pct": 83.33,
+          "average_completeness_pct": 90.3,
+          "average_recall_pct": 91.67,
+          "average_invalid_extra_docs": 14.83
+        },
+        "conflicting_info": {
+          "count": 20,
+          "average_correctness_pct": 85.0,
+          "average_completeness_pct": 80.49,
+          "average_recall_pct": 80.0,
+          "average_invalid_extra_docs": 14.3
+        },
+        "completeness": {
+          "count": 20,
+          "average_correctness_pct": 60.0,
+          "average_completeness_pct": 60.61,
+          "average_recall_pct": 62.73,
+          "average_invalid_extra_docs": 14.9
+        },
+        "miscellaneous": {
+          "count": 20,
+          "average_correctness_pct": 95.0,
+          "average_completeness_pct": 78.75,
+          "average_recall_pct": 100.0,
+          "average_invalid_extra_docs": 17.9
+        },
+        "high_level": {
+          "count": 10,
+          "average_correctness_pct": 40.0,
+          "average_completeness_pct": 58.5,
+          "average_recall_pct": 0.0,
+          "average_invalid_extra_docs": 0.0
+        },
+        "info_not_found": {
+          "count": 20,
+          "average_correctness_pct": 100.0,
+          "average_completeness_pct": 100.0,
+          "average_recall_pct": 0.0,
+          "average_invalid_extra_docs": 0.0
+        }
+      }
+    }
+  ],
+  "category_dimension_ranks": {
+    "basic": {
+      "recall": [
+        {
+          "model": "Troml",
+          "value": 94.29
+        },
+        {
+          "model": "Skyller",
+          "value": 88.57
+        },
+        {
+          "model": "OpenClaw",
+          "value": 86.29
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 85.71
+        },
+        {
+          "model": "fgroo",
+          "value": 83.43
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 82.29
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 79.43
+        },
+        {
+          "model": "hRAG",
+          "value": 79.43
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 77.71
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 76.57
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 74.86
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 73.14
+        },
+        {
+          "model": "RAGFlow",
+          "value": 72.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 64.57
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 64.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 61.71
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 56.57
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 48.57
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 45.71
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 45.14
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 38.29
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 32.57
+        }
+      ],
+      "completeness": [
+        {
+          "model": "Troml",
+          "value": 89.89
+        },
+        {
+          "model": "Skyller",
+          "value": 82.38
+        },
+        {
+          "model": "fgroo",
+          "value": 79.18
+        },
+        {
+          "model": "OpenClaw",
+          "value": 75.7
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 75.15
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 72.96
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 65.86
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 64.1
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 62.44
+        },
+        {
+          "model": "RAGFlow",
+          "value": 61.37
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 60.55
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 58.82
+        },
+        {
+          "model": "hRAG",
+          "value": 57.87
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 51.67
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 47.83
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 46.89
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 44.36
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 42.26
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 39.26
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 33.22
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 33.09
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 30.07
+        }
+      ],
+      "correctness": [
+        {
+          "model": "Troml",
+          "value": 93.71
+        },
+        {
+          "model": "OpenClaw",
+          "value": 84.57
+        },
+        {
+          "model": "Skyller",
+          "value": 83.43
+        },
+        {
+          "model": "fgroo",
+          "value": 81.14
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 79.43
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 77.14
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 73.71
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 72.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 71.43
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 69.14
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 65.71
+        },
+        {
+          "model": "RAGFlow",
+          "value": 63.43
+        },
+        {
+          "model": "hRAG",
+          "value": 59.43
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 59.43
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 52.0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 51.43
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 50.86
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 50.29
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 46.86
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 32.57
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 32.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 32.0
+        }
+      ],
+      "invalid_extra_docs": [
+        {
+          "model": "OpenClaw",
+          "value": 0.19
+        },
+        {
+          "model": "fgroo",
+          "value": 0.31
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 0.53
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 1.13
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 1.5
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 1.6
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 1.78
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 2.19
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 3.3
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 3.34
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 3.38
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 3.48
+        },
+        {
+          "model": "RAGFlow",
+          "value": 4.87
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 8.03
+        },
+        {
+          "model": "Skyller",
+          "value": 9.11
+        },
+        {
+          "model": "hRAG",
+          "value": 9.21
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 9.22
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 9.36
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 9.51
+        },
+        {
+          "model": "Troml",
+          "value": 12.53
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 13.69
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 16.17
+        }
+      ]
+    },
+    "completeness": {
+      "recall": [
+        {
+          "model": "Troml",
+          "value": 71.05
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 62.73
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 59.0
+        },
+        {
+          "model": "OpenClaw",
+          "value": 57.99
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 52.71
+        },
+        {
+          "model": "Skyller",
+          "value": 52.02
+        },
+        {
+          "model": "hRAG",
+          "value": 48.67
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 46.51
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 44.91
+        },
+        {
+          "model": "fgroo",
+          "value": 43.99
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 41.78
+        },
+        {
+          "model": "RAGFlow",
+          "value": 37.55
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 35.31
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 33.64
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 33.38
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 32.82
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 32.56
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 30.88
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 28.25
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 18.47
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 15.71
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 15.69
+        }
+      ],
+      "completeness": [
+        {
+          "model": "OpenAI File Search",
+          "value": 60.61
+        },
+        {
+          "model": "Troml",
+          "value": 58.39
+        },
+        {
+          "model": "Skyller",
+          "value": 56.87
+        },
+        {
+          "model": "fgroo",
+          "value": 55.24
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 49.79
+        },
+        {
+          "model": "OpenClaw",
+          "value": 46.26
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 39.19
+        },
+        {
+          "model": "RAGFlow",
+          "value": 35.69
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 33.85
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 33.33
+        },
+        {
+          "model": "hRAG",
+          "value": 31.66
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 31.21
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 29.7
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 26.62
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 25.44
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 25.05
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 24.82
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 22.7
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 20.79
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 17.19
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 16.7
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 16.68
+        }
+      ],
+      "correctness": [
+        {
+          "model": "OpenClaw",
+          "value": 65.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 60.0
+        },
+        {
+          "model": "Troml",
+          "value": 55.0
+        },
+        {
+          "model": "fgroo",
+          "value": 45.0
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 40.0
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 40.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 40.0
+        },
+        {
+          "model": "Skyller",
+          "value": 35.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 35.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 30.0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 30.0
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 25.0
+        },
+        {
+          "model": "hRAG",
+          "value": 25.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 25.0
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 25.0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 20.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 20.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 20.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 15.0
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 15.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 15.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 15.0
+        }
+      ],
+      "invalid_extra_docs": [
+        {
+          "model": "OpenClaw",
+          "value": 0.7
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 1.1
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 1.2
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 1.25
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 1.5
+        },
+        {
+          "model": "fgroo",
+          "value": 1.55
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 1.95
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 2.3
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 2.55
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 2.95
+        },
+        {
+          "model": "RAGFlow",
+          "value": 3.6
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 3.7
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 6.05
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 6.35
+        },
+        {
+          "model": "Skyller",
+          "value": 6.95
+        },
+        {
+          "model": "hRAG",
+          "value": 7.25
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 7.3
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 8.15
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 8.15
+        },
+        {
+          "model": "Troml",
+          "value": 10.7
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 11.2
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 14.9
+        }
+      ]
+    },
+    "conflicting_info": {
+      "recall": [
+        {
+          "model": "Skyller",
+          "value": 92.5
+        },
+        {
+          "model": "Troml",
+          "value": 85.0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 85.0
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 82.5
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 82.5
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 82.5
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 82.5
+        },
+        {
+          "model": "OpenClaw",
+          "value": 80.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 80.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 80.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 80.0
+        },
+        {
+          "model": "fgroo",
+          "value": 77.5
+        },
+        {
+          "model": "hRAG",
+          "value": 76.67
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 75.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 72.5
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 70.0
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 65.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 65.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 55.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 47.5
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 40.0
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 32.5
+        }
+      ],
+      "completeness": [
+        {
+          "model": "RAGFlow",
+          "value": 86.4
+        },
+        {
+          "model": "OpenClaw",
+          "value": 85.9
+        },
+        {
+          "model": "Troml",
+          "value": 83.91
+        },
+        {
+          "model": "Skyller",
+          "value": 82.78
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 80.96
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 80.68
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 80.49
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 79.32
+        },
+        {
+          "model": "fgroo",
+          "value": 77.49
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 77.42
+        },
+        {
+          "model": "hRAG",
+          "value": 75.45
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 72.23
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 70.86
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 69.08
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 68.82
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 63.92
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 60.92
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 60.42
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 56.94
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 54.93
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 51.26
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 48.57
+        }
+      ],
+      "correctness": [
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 90.0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 90.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 90.0
+        },
+        {
+          "model": "Troml",
+          "value": 85.0
+        },
+        {
+          "model": "OpenClaw",
+          "value": 85.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 85.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 85.0
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 85.0
+        },
+        {
+          "model": "Skyller",
+          "value": 80.0
+        },
+        {
+          "model": "fgroo",
+          "value": 80.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 80.0
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 80.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 75.0
+        },
+        {
+          "model": "hRAG",
+          "value": 70.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 70.0
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 60.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 60.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 60.0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 55.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 55.0
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 40.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 40.0
+        }
+      ],
+      "invalid_extra_docs": [
+        {
+          "model": "OpenClaw",
+          "value": 0.25
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 0.3
+        },
+        {
+          "model": "fgroo",
+          "value": 0.4
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 0.5
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 0.65
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 1.05
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 1.1
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 1.55
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 1.55
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 2.4
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 2.8
+        },
+        {
+          "model": "RAGFlow",
+          "value": 2.85
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 3.65
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 6.85
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 8.4
+        },
+        {
+          "model": "Skyller",
+          "value": 8.7
+        },
+        {
+          "model": "hRAG",
+          "value": 8.85
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 8.95
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 9.05
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 11.9
+        },
+        {
+          "model": "Troml",
+          "value": 14.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 14.3
+        }
+      ]
+    },
+    "constrained": {
+      "recall": [
+        {
+          "model": "Troml",
+          "value": 96.67
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 96.67
+        },
+        {
+          "model": "fgroo",
+          "value": 95.0
+        },
+        {
+          "model": "Skyller",
+          "value": 93.33
+        },
+        {
+          "model": "OpenClaw",
+          "value": 93.33
+        },
+        {
+          "model": "hRAG",
+          "value": 93.33
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 91.67
+        },
+        {
+          "model": "RAGFlow",
+          "value": 90.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 88.33
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 86.67
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 85.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 83.33
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 80.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 80.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 78.33
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 76.67
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 75.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 73.33
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 70.0
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 70.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 68.33
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 63.33
+        }
+      ],
+      "completeness": [
+        {
+          "model": "Troml",
+          "value": 93.57
+        },
+        {
+          "model": "fgroo",
+          "value": 90.8
+        },
+        {
+          "model": "OpenClaw",
+          "value": 90.76
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 90.3
+        },
+        {
+          "model": "Skyller",
+          "value": 90.28
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 89.54
+        },
+        {
+          "model": "RAGFlow",
+          "value": 85.38
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 83.97
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 83.06
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 82.74
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 81.29
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 80.63
+        },
+        {
+          "model": "hRAG",
+          "value": 79.47
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 78.73
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 78.58
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 76.36
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 75.05
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 73.46
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 70.03
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 64.01
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 63.55
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 62.95
+        }
+      ],
+      "correctness": [
+        {
+          "model": "fgroo",
+          "value": 96.67
+        },
+        {
+          "model": "OpenClaw",
+          "value": 90.0
+        },
+        {
+          "model": "Troml",
+          "value": 83.33
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 83.33
+        },
+        {
+          "model": "Skyller",
+          "value": 76.67
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 76.67
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 76.67
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 76.67
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 76.67
+        },
+        {
+          "model": "hRAG",
+          "value": 66.67
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 66.67
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 63.33
+        },
+        {
+          "model": "RAGFlow",
+          "value": 60.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 60.0
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 53.33
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 53.33
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 53.33
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 46.67
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 46.67
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 36.67
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 36.67
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 26.67
+        }
+      ],
+      "invalid_extra_docs": [
+        {
+          "model": "OpenClaw",
+          "value": 0.13
+        },
+        {
+          "model": "fgroo",
+          "value": 0.23
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 0.47
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 0.53
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 0.57
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 0.87
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 1.57
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 1.63
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 2.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 2.33
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 2.37
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 2.97
+        },
+        {
+          "model": "RAGFlow",
+          "value": 3.77
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 6.63
+        },
+        {
+          "model": "Skyller",
+          "value": 8.7
+        },
+        {
+          "model": "hRAG",
+          "value": 8.7
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 8.8
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 8.87
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 8.97
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 11.93
+        },
+        {
+          "model": "Troml",
+          "value": 12.87
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 14.83
+        }
+      ]
+    },
+    "high_level": {
+      "recall": [
+        {
+          "model": "Troml",
+          "value": 0.0
+        },
+        {
+          "model": "Skyller",
+          "value": 0.0
+        },
+        {
+          "model": "OpenClaw",
+          "value": 0.0
+        },
+        {
+          "model": "fgroo",
+          "value": 0.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 0.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 0.0
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 0.0
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 0.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 0.0
+        },
+        {
+          "model": "hRAG",
+          "value": 0.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 0.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 0.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 0.0
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 0.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 0.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 0.0
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 0.0
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 0.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 0.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 0.0
+        }
+      ],
+      "completeness": [
+        {
+          "model": "Troml",
+          "value": 87.5
+        },
+        {
+          "model": "Skyller",
+          "value": 83.0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 76.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 75.67
+        },
+        {
+          "model": "hRAG",
+          "value": 71.5
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 71.5
+        },
+        {
+          "model": "fgroo",
+          "value": 71.0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 69.67
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 66.5
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 63.67
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 63.17
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 60.5
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 60.17
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 58.5
+        },
+        {
+          "model": "OpenClaw",
+          "value": 56.33
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 53.17
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 53.17
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 49.5
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 47.33
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 45.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 37.67
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 23.33
+        }
+      ],
+      "correctness": [
+        {
+          "model": "Troml",
+          "value": 80.0
+        },
+        {
+          "model": "Skyller",
+          "value": 70.0
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 70.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 70.0
+        },
+        {
+          "model": "OpenClaw",
+          "value": 60.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 60.0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 60.0
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 60.0
+        },
+        {
+          "model": "hRAG",
+          "value": 60.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 60.0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 60.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 60.0
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 50.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 50.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 50.0
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 50.0
+        },
+        {
+          "model": "fgroo",
+          "value": 40.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 40.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 40.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 30.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 30.0
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 30.0
+        }
+      ],
+      "invalid_extra_docs": [
+        {
+          "model": "Troml",
+          "value": 0.0
+        },
+        {
+          "model": "Skyller",
+          "value": 0.0
+        },
+        {
+          "model": "OpenClaw",
+          "value": 0.0
+        },
+        {
+          "model": "fgroo",
+          "value": 0.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 0.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 0.0
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 0.0
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 0.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 0.0
+        },
+        {
+          "model": "hRAG",
+          "value": 0.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 0.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 0.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 0.0
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 0.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 0.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 0.0
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 0.0
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 0.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 0.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 0.0
+        }
+      ]
+    },
+    "info_not_found": {
+      "recall": [
+        {
+          "model": "Troml",
+          "value": 0.0
+        },
+        {
+          "model": "Skyller",
+          "value": 0.0
+        },
+        {
+          "model": "OpenClaw",
+          "value": 0.0
+        },
+        {
+          "model": "fgroo",
+          "value": 0.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 0.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 0.0
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 0.0
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 0.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 0.0
+        },
+        {
+          "model": "hRAG",
+          "value": 0.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 0.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 0.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 0.0
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 0.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 0.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 0.0
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 0.0
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 0.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 0.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 0.0
+        }
+      ],
+      "completeness": [
+        {
+          "model": "Skyller",
+          "value": 100.0
+        },
+        {
+          "model": "OpenClaw",
+          "value": 100.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 100.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 100.0
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 100.0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 100.0
+        },
+        {
+          "model": "hRAG",
+          "value": 100.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 100.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 100.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 100.0
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 100.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 100.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 100.0
+        },
+        {
+          "model": "fgroo",
+          "value": 95.0
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 95.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 95.0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 95.0
+        },
+        {
+          "model": "Troml",
+          "value": 90.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 75.0
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 65.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 60.0
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 10.0
+        }
+      ],
+      "correctness": [
+        {
+          "model": "Skyller",
+          "value": 100.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 100.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 100.0
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 100.0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 100.0
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 100.0
+        },
+        {
+          "model": "hRAG",
+          "value": 100.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 100.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 100.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 100.0
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 100.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 100.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 100.0
+        },
+        {
+          "model": "OpenClaw",
+          "value": 95.0
+        },
+        {
+          "model": "fgroo",
+          "value": 95.0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 95.0
+        },
+        {
+          "model": "Troml",
+          "value": 90.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 90.0
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 85.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 75.0
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 60.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 45.0
+        }
+      ],
+      "invalid_extra_docs": [
+        {
+          "model": "Troml",
+          "value": 0.0
+        },
+        {
+          "model": "Skyller",
+          "value": 0.0
+        },
+        {
+          "model": "OpenClaw",
+          "value": 0.0
+        },
+        {
+          "model": "fgroo",
+          "value": 0.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 0.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 0.0
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 0.0
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 0.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 0.0
+        },
+        {
+          "model": "hRAG",
+          "value": 0.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 0.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 0.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 0.0
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 0.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 0.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 0.0
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 0.0
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 0.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 0.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 0.0
+        }
+      ]
+    },
+    "intra_document_reasoning": {
+      "recall": [
+        {
+          "model": "Troml",
+          "value": 100.0
+        },
+        {
+          "model": "OpenClaw",
+          "value": 100.0
+        },
+        {
+          "model": "Skyller",
+          "value": 97.5
+        },
+        {
+          "model": "fgroo",
+          "value": 97.5
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 95.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 95.0
+        },
+        {
+          "model": "hRAG",
+          "value": 95.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 92.5
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 92.5
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 90.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 90.0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 87.5
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 87.5
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 85.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 77.5
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 77.5
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 75.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 57.5
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 55.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 50.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 42.5
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 37.5
+        }
+      ],
+      "completeness": [
+        {
+          "model": "Troml",
+          "value": 93.75
+        },
+        {
+          "model": "OpenClaw",
+          "value": 90.63
+        },
+        {
+          "model": "fgroo",
+          "value": 90.62
+        },
+        {
+          "model": "Skyller",
+          "value": 90.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 82.74
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 80.83
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 76.73
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 75.92
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 70.6
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 69.67
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 66.52
+        },
+        {
+          "model": "RAGFlow",
+          "value": 66.31
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 63.9
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 59.58
+        },
+        {
+          "model": "hRAG",
+          "value": 57.77
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 53.21
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 47.8
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 47.29
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 47.02
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 33.57
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 30.62
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 28.33
+        }
+      ],
+      "correctness": [
+        {
+          "model": "Troml",
+          "value": 97.5
+        },
+        {
+          "model": "OpenClaw",
+          "value": 92.5
+        },
+        {
+          "model": "Skyller",
+          "value": 87.5
+        },
+        {
+          "model": "fgroo",
+          "value": 87.5
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 85.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 75.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 75.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 75.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 72.5
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 65.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 65.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 60.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 57.5
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 57.5
+        },
+        {
+          "model": "RAGFlow",
+          "value": 50.0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 50.0
+        },
+        {
+          "model": "hRAG",
+          "value": 47.5
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 45.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 37.5
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 25.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 12.5
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 12.5
+        }
+      ],
+      "invalid_extra_docs": [
+        {
+          "model": "OpenClaw",
+          "value": 0.05
+        },
+        {
+          "model": "fgroo",
+          "value": 0.25
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 0.42
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 0.88
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 1.3
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 1.57
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 1.62
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 1.68
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 2.35
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 2.9
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 3.35
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 3.38
+        },
+        {
+          "model": "RAGFlow",
+          "value": 4.47
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 7.75
+        },
+        {
+          "model": "Skyller",
+          "value": 9.03
+        },
+        {
+          "model": "hRAG",
+          "value": 9.05
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 9.1
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 9.22
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 9.43
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 12.97
+        },
+        {
+          "model": "Troml",
+          "value": 14.07
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 15.95
+        }
+      ]
+    },
+    "miscellaneous": {
+      "recall": [
+        {
+          "model": "Troml",
+          "value": 100.0
+        },
+        {
+          "model": "Skyller",
+          "value": 100.0
+        },
+        {
+          "model": "fgroo",
+          "value": 100.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 100.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 100.0
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 100.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 100.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 100.0
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 100.0
+        },
+        {
+          "model": "OpenClaw",
+          "value": 95.0
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 90.0
+        },
+        {
+          "model": "hRAG",
+          "value": 90.0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 90.0
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 90.0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 85.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 85.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 85.0
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 85.0
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 75.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 75.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 65.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 55.0
+        }
+      ],
+      "completeness": [
+        {
+          "model": "Skyller",
+          "value": 85.0
+        },
+        {
+          "model": "fgroo",
+          "value": 80.5
+        },
+        {
+          "model": "RAGFlow",
+          "value": 80.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 78.75
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 78.33
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 77.5
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 75.08
+        },
+        {
+          "model": "Troml",
+          "value": 74.58
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 74.58
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 72.08
+        },
+        {
+          "model": "OpenClaw",
+          "value": 71.25
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 70.92
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 70.08
+        },
+        {
+          "model": "hRAG",
+          "value": 61.25
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 60.67
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 54.0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 48.75
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 47.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 45.25
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 41.08
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 40.17
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 37.33
+        }
+      ],
+      "correctness": [
+        {
+          "model": "xFloor.ai",
+          "value": 100.0
+        },
+        {
+          "model": "Troml",
+          "value": 95.0
+        },
+        {
+          "model": "Skyller",
+          "value": 95.0
+        },
+        {
+          "model": "OpenClaw",
+          "value": 95.0
+        },
+        {
+          "model": "fgroo",
+          "value": 95.0
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 95.0
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 90.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 90.0
+        },
+        {
+          "model": "hRAG",
+          "value": 90.0
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 85.0
+        },
+        {
+          "model": "RAGFlow",
+          "value": 85.0
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 85.0
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 85.0
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 85.0
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 80.0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 80.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 80.0
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 80.0
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 75.0
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 65.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 55.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 55.0
+        }
+      ],
+      "invalid_extra_docs": [
+        {
+          "model": "OpenClaw",
+          "value": 0.05
+        },
+        {
+          "model": "fgroo",
+          "value": 0.05
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 0.05
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 0.4
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 0.4
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 1.0
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 1.15
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 1.25
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 2.05
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 2.7
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 3.05
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 3.45
+        },
+        {
+          "model": "RAGFlow",
+          "value": 4.95
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 8.55
+        },
+        {
+          "model": "Skyller",
+          "value": 9.0
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 9.0
+        },
+        {
+          "model": "hRAG",
+          "value": 9.1
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 9.15
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 9.25
+        },
+        {
+          "model": "Troml",
+          "value": 10.3
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 14.5
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 17.9
+        }
+      ]
+    },
+    "project_related": {
+      "recall": [
+        {
+          "model": "Troml",
+          "value": 81.4
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 66.72
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 65.55
+        },
+        {
+          "model": "Skyller",
+          "value": 64.03
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 61.9
+        },
+        {
+          "model": "fgroo",
+          "value": 59.9
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 56.81
+        },
+        {
+          "model": "hRAG",
+          "value": 53.17
+        },
+        {
+          "model": "RAGFlow",
+          "value": 52.08
+        },
+        {
+          "model": "OpenClaw",
+          "value": 52.04
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 51.97
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 51.38
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 49.16
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 48.14
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 46.9
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 43.2
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 42.31
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 42.24
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 41.55
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 30.4
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 28.4
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 27.44
+        }
+      ],
+      "completeness": [
+        {
+          "model": "Troml",
+          "value": 75.89
+        },
+        {
+          "model": "Skyller",
+          "value": 67.44
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 60.58
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 57.86
+        },
+        {
+          "model": "fgroo",
+          "value": 56.78
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 56.1
+        },
+        {
+          "model": "RAGFlow",
+          "value": 53.99
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 51.44
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 50.44
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 47.62
+        },
+        {
+          "model": "hRAG",
+          "value": 47.24
+        },
+        {
+          "model": "OpenClaw",
+          "value": 46.79
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 46.39
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 41.66
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 39.03
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 36.62
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 34.88
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 33.4
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 30.42
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 29.73
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 24.14
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 14.39
+        }
+      ],
+      "correctness": [
+        {
+          "model": "Troml",
+          "value": 65.0
+        },
+        {
+          "model": "Skyller",
+          "value": 62.5
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 62.5
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 60.0
+        },
+        {
+          "model": "OpenClaw",
+          "value": 57.5
+        },
+        {
+          "model": "fgroo",
+          "value": 52.5
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 52.5
+        },
+        {
+          "model": "RAGFlow",
+          "value": 50.0
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 42.5
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 37.5
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 37.5
+        },
+        {
+          "model": "hRAG",
+          "value": 35.0
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 27.5
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 27.5
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 27.5
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 25.0
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 22.5
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 22.5
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 17.5
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 15.0
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 12.5
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 7.5
+        }
+      ],
+      "invalid_extra_docs": [
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 0.8
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 1.02
+        },
+        {
+          "model": "fgroo",
+          "value": 1.05
+        },
+        {
+          "model": "OpenClaw",
+          "value": 1.35
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 1.4
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 1.75
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 1.95
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 2.02
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 2.3
+        },
+        {
+          "model": "RAGFlow",
+          "value": 2.55
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 2.73
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 4.28
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 4.65
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 6.03
+        },
+        {
+          "model": "Skyller",
+          "value": 7.22
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 7.58
+        },
+        {
+          "model": "hRAG",
+          "value": 7.58
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 7.65
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 7.75
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 8.12
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 10.2
+        },
+        {
+          "model": "Troml",
+          "value": 12.0
+        }
+      ]
+    },
+    "semantic": {
+      "recall": [
+        {
+          "model": "Troml",
+          "value": 71.2
+        },
+        {
+          "model": "Skyller",
+          "value": 69.6
+        },
+        {
+          "model": "OpenClaw",
+          "value": 68.0
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 57.6
+        },
+        {
+          "model": "fgroo",
+          "value": 47.2
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 46.4
+        },
+        {
+          "model": "hRAG",
+          "value": 46.4
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 44.0
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 43.2
+        },
+        {
+          "model": "RAGFlow",
+          "value": 36.8
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 34.4
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 32.8
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 29.6
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 28.8
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 28.8
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 24.8
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 23.2
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 23.2
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 23.2
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 18.4
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 14.4
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 12.0
+        }
+      ],
+      "completeness": [
+        {
+          "model": "Skyller",
+          "value": 70.6
+        },
+        {
+          "model": "Troml",
+          "value": 68.67
+        },
+        {
+          "model": "OpenClaw",
+          "value": 66.67
+        },
+        {
+          "model": "fgroo",
+          "value": 49.3
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 46.54
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 42.83
+        },
+        {
+          "model": "RAGFlow",
+          "value": 35.64
+        },
+        {
+          "model": "hRAG",
+          "value": 35.16
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 34.95
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 34.53
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 32.77
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 31.22
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 30.05
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 27.63
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 27.61
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 27.45
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 26.19
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 24.72
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 24.48
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 23.81
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 21.61
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 20.38
+        }
+      ],
+      "correctness": [
+        {
+          "model": "OpenClaw",
+          "value": 79.2
+        },
+        {
+          "model": "Troml",
+          "value": 73.6
+        },
+        {
+          "model": "Skyller",
+          "value": 69.6
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 49.6
+        },
+        {
+          "model": "fgroo",
+          "value": 48.8
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 48.8
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 44.8
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 42.4
+        },
+        {
+          "model": "RAGFlow",
+          "value": 36.8
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 34.4
+        },
+        {
+          "model": "hRAG",
+          "value": 34.4
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 32.8
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 31.2
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 30.4
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 28.8
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 25.6
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 24.8
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 24.0
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 24.0
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 24.0
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 19.2
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 14.4
+        }
+      ],
+      "invalid_extra_docs": [
+        {
+          "model": "OpenClaw",
+          "value": 0.84
+        },
+        {
+          "model": "xFloor.ai",
+          "value": 0.93
+        },
+        {
+          "model": "fgroo",
+          "value": 1.14
+        },
+        {
+          "model": "LlamaIndex (default configs)",
+          "value": 1.87
+        },
+        {
+          "model": "Open WebUI + Chroma",
+          "value": 2.64
+        },
+        {
+          "model": "Weaviate Verba",
+          "value": 2.72
+        },
+        {
+          "model": "Amazon Q (Kendra)",
+          "value": 2.76
+        },
+        {
+          "model": "Bash Agent (GPT-5.4) + GPT-5.4",
+          "value": 3.08
+        },
+        {
+          "model": "LangChain (default configs)",
+          "value": 3.64
+        },
+        {
+          "model": "AnythingLLM",
+          "value": 3.82
+        },
+        {
+          "model": "Azure AI Search",
+          "value": 4.28
+        },
+        {
+          "model": "RAGFlow",
+          "value": 5.55
+        },
+        {
+          "model": "Vertex AI Search",
+          "value": 6.33
+        },
+        {
+          "model": "NVIDIA AI Blueprints",
+          "value": 8.88
+        },
+        {
+          "model": "Skyller",
+          "value": 9.3
+        },
+        {
+          "model": "hRAG",
+          "value": 9.54
+        },
+        {
+          "model": "BM25 + GPT-5.4",
+          "value": 9.57
+        },
+        {
+          "model": "CortexDB-KZ",
+          "value": 9.67
+        },
+        {
+          "model": "Vector (text-embedding-3-large) + GPT-5.4",
+          "value": 9.75
+        },
+        {
+          "model": "Troml",
+          "value": 13.01
+        },
+        {
+          "model": "Cymatix-Context",
+          "value": 14.21
+        },
+        {
+          "model": "OpenAI File Search",
+          "value": 16.92
+        }
+      ]
+    }
+  },
+  "inference_boundary": "These artifacts show outcome associations only. They do not document the systems' internal retrieval or reranking mechanisms."
+}

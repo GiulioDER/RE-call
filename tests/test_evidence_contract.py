@@ -229,6 +229,8 @@ def test_the_bundle_cannot_contain_a_passage_that_was_not_retrieved() -> None:
     # any name. It is NOT strictly dominant: a raw-source scan also matched inside a dynamic
     # `__import__("recall.store")`, which produces no import node. That hole is closed by the
     # separate byte-level assertion below rather than by keeping a guard that cannot fire.
+    # `recall.errors` is admitted deliberately: it defines the RecallError base and imports
+    # nothing itself, so it cannot smuggle a store in under this allowlist's nose.
     assert imported <= {"__future__", "json", "collections.abc", "dataclasses", "datetime",
                         "re", "typing", "recall.types"}, f"unexpected import: {imported}"
     # The one thing an AST import walk cannot see, and the only thing the old denylist caught

@@ -1,0 +1,156 @@
+{
+  "phase": "development_posthoc_threshold_screen",
+  "baseline": {
+    "document_recall": 0.5377450980392157,
+    "exact_coverage": 0.23529411764705882,
+    "mean_extra_docs": 6.117647058823529
+  },
+  "candidates": [
+    {
+      "feature": "max_dense_score",
+      "threshold": 0.55,
+      "expanded_questions": 0,
+      "document_recall": 0.5230392156862744,
+      "exact_coverage": 0.23529411764705882,
+      "mean_extra_docs": 6.176470588235294,
+      "delta_recall_pp": -1.4705882352941235,
+      "delta_exact_pp": 0.0,
+      "delta_extra_docs": 0.058823529411765385
+    },
+    {
+      "feature": "max_dense_score",
+      "threshold": 0.6,
+      "expanded_questions": 0,
+      "document_recall": 0.5230392156862744,
+      "exact_coverage": 0.23529411764705882,
+      "mean_extra_docs": 6.176470588235294,
+      "delta_recall_pp": -1.4705882352941235,
+      "delta_exact_pp": 0.0,
+      "delta_extra_docs": 0.058823529411765385
+    },
+    {
+      "feature": "max_dense_score",
+      "threshold": 0.65,
+      "expanded_questions": 1,
+      "document_recall": 0.5230392156862744,
+      "exact_coverage": 0.23529411764705882,
+      "mean_extra_docs": 6.411764705882353,
+      "delta_recall_pp": -1.4705882352941235,
+      "delta_exact_pp": 0.0,
+      "delta_extra_docs": 0.29411764705882426
+    },
+    {
+      "feature": "max_dense_score",
+      "threshold": 0.7,
+      "expanded_questions": 2,
+      "document_recall": 0.5230392156862744,
+      "exact_coverage": 0.23529411764705882,
+      "mean_extra_docs": 6.647058823529412,
+      "delta_recall_pp": -1.4705882352941235,
+      "delta_exact_pp": 0.0,
+      "delta_extra_docs": 0.5294117647058831
+    },
+    {
+      "feature": "max_dense_score",
+      "threshold": 0.75,
+      "expanded_questions": 6,
+      "document_recall": 0.5720588235294117,
+      "exact_coverage": 0.23529411764705882,
+      "mean_extra_docs": 7.352941176470588,
+      "delta_recall_pp": 3.4313725490196068,
+      "delta_exact_pp": 0.0,
+      "delta_extra_docs": 1.2352941176470589
+    },
+    {
+      "feature": "eighth_hit_dense_score",
+      "threshold": 0.55,
+      "expanded_questions": 1,
+      "document_recall": 0.5230392156862744,
+      "exact_coverage": 0.23529411764705882,
+      "mean_extra_docs": 6.411764705882353,
+      "delta_recall_pp": -1.4705882352941235,
+      "delta_exact_pp": 0.0,
+      "delta_extra_docs": 0.29411764705882426
+    },
+    {
+      "feature": "eighth_hit_dense_score",
+      "threshold": 0.6,
+      "expanded_questions": 1,
+      "document_recall": 0.5230392156862744,
+      "exact_coverage": 0.23529411764705882,
+      "mean_extra_docs": 6.411764705882353,
+      "delta_recall_pp": -1.4705882352941235,
+      "delta_exact_pp": 0.0,
+      "delta_extra_docs": 0.29411764705882426
+    },
+    {
+      "feature": "eighth_hit_dense_score",
+      "threshold": 0.65,
+      "expanded_questions": 3,
+      "document_recall": 0.5426470588235294,
+      "exact_coverage": 0.23529411764705882,
+      "mean_extra_docs": 6.823529411764706,
+      "delta_recall_pp": 0.4901960784313708,
+      "delta_exact_pp": 0.0,
+      "delta_extra_docs": 0.7058823529411766
+    },
+    {
+      "feature": "eighth_hit_dense_score",
+      "threshold": 0.7,
+      "expanded_questions": 5,
+      "document_recall": 0.5573529411764706,
+      "exact_coverage": 0.23529411764705882,
+      "mean_extra_docs": 7.176470588235294,
+      "delta_recall_pp": 1.9607843137254943,
+      "delta_exact_pp": 0.0,
+      "delta_extra_docs": 1.0588235294117654
+    },
+    {
+      "feature": "eighth_hit_dense_score",
+      "threshold": 0.75,
+      "expanded_questions": 11,
+      "document_recall": 0.5965686274509804,
+      "exact_coverage": 0.23529411764705882,
+      "mean_extra_docs": 8.294117647058824,
+      "delta_recall_pp": 5.882352941176472,
+      "delta_exact_pp": 0.0,
+      "delta_extra_docs": 2.1764705882352953
+    }
+  ],
+  "passing_candidates": [
+    {
+      "feature": "max_dense_score",
+      "threshold": 0.75,
+      "expanded_questions": 6,
+      "document_recall": 0.5720588235294117,
+      "exact_coverage": 0.23529411764705882,
+      "mean_extra_docs": 7.352941176470588,
+      "delta_recall_pp": 3.4313725490196068,
+      "delta_exact_pp": 0.0,
+      "delta_extra_docs": 1.2352941176470589
+    },
+    {
+      "feature": "eighth_hit_dense_score",
+      "threshold": 0.7,
+      "expanded_questions": 5,
+      "document_recall": 0.5573529411764706,
+      "exact_coverage": 0.23529411764705882,
+      "mean_extra_docs": 7.176470588235294,
+      "delta_recall_pp": 1.9607843137254943,
+      "delta_exact_pp": 0.0,
+      "delta_extra_docs": 1.0588235294117654
+    }
+  ],
+  "selected": {
+    "feature": "max_dense_score",
+    "threshold": 0.75,
+    "expanded_questions": 6,
+    "document_recall": 0.5720588235294117,
+    "exact_coverage": 0.23529411764705882,
+    "mean_extra_docs": 7.352941176470588,
+    "delta_recall_pp": 3.4313725490196068,
+    "delta_exact_pp": 0.0,
+    "delta_extra_docs": 1.2352941176470589
+  },
+  "selection_rule": "highest development recall among candidates passing the preregistered gate"
+}

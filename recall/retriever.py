@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import os
 import re
 import time
+from typing import Literal
 
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.guards import DEFAULT_GAP_THRESHOLD, gap_warning, staleness
@@ -351,14 +352,18 @@ class HybridRetriever:
                 f"Falling back to lexical would hand an operator who asked for learned sparse a "
                 f"keyword search, and a set of numbers that look like a SPLADE result."
             )
-        if wants_learned and os.environ.get("RECALL_ENV") == "production":
+        # `.strip().lower()`, the house pattern for RECALL_ENV everywhere else: the bare
+        # compare this used to be meant `RECALL_ENV=Production` silently DISABLED a security
+        # gate through a capital letter.
+        if wants_learned and os.environ.get("RECALL_ENV", "").strip().lower() == "production":
             raise RuntimeError(
-                "the learned sparse leg is not available under RECALL_ENV=production: its "
-                "sidecar (recall_sparse_v1) has no foreign key to the chunk table and the "
-                "erasure paths (generations.forget, control_plane.erase_sources_from_pending) "
-                "predate it, so a forgotten chunk would leave its SPLADE weights behind. Those "
-                "weights are term weights over the vocabulary, i.e. partially reconstructable "
-                "content. Wiring erasure is the precondition for lifting this refusal."
+                "the learned sparse leg is not available under RECALL_ENV=production. Erasure "
+                "is now wired — delete_sources, delete_sources_across, replace_sources and "
+                "generations.forget all scrub recall_sparse_v1 in the same transaction — but a "
+                "corpus encoded BEFORE that fix may still carry orphaned rows for chunks that "
+                "were erased earlier, and those weights are term weights over the vocabulary, "
+                "i.e. partially reconstructable content. The remaining precondition for lifting "
+                "this refusal is an orphan sweep for pre-existing deployments."
             )
         self._store = store
         self._embedder = embedder

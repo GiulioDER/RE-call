@@ -4,12 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RE-call · Setup guide</title>
-<meta name="description" content="A beginner's guide to installing, configuring and running RE-call: the memory layer that abstains instead of guessing. Seven steps, every command, on Windows, macOS and Linux.">
+<meta name="description" content="Install, configure and run RE-call, the memory layer that abstains instead of guessing. See it work in two commands, then do the full install, on Windows, macOS and Linux.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
 <link rel="stylesheet" href="styles.css">
 <script src="app.js" defer></script>
+<script src="translate.js" defer></script>
 </head>
 <body>
 
@@ -17,13 +18,34 @@
   <div class="shell masthead-inner">
     <a class="wordmark" href="index.html"><img class="wordmark-mark" src="assets/re_call_logo.png" alt=""><span class="wordmark-name">RE-call</span><span>Setup</span></a>
     <nav>
+      <a href="download.html">Download</a>
       <a href="readme.html">README</a>
       <a href="start.html">Install</a>
       <a href="corpus.html">Your memory</a>
       <a href="claude-code.html">Claude Code</a>
       <a href="calibration.html">Calibration</a>
       <a href="troubleshooting.html">Troubleshooting</a>
+      <a href="blog/index.html">Blog</a>
     </nav>
+    <div class="language-control" data-translate-control>
+      <label for="site-language">Language</label>
+      <select id="site-language" aria-describedby="site-translation-status">
+        <option value="english" data-html-lang="en">English</option>
+        <option value="italian" data-html-lang="it">Italiano</option>
+        <option value="spanish" data-html-lang="es">Español</option>
+        <option value="french" data-html-lang="fr">Français</option>
+        <option value="german" data-html-lang="de">Deutsch</option>
+        <option value="portuguese" data-html-lang="pt">Português</option>
+        <option value="chinese_simplified" data-html-lang="zh-CN">简体中文</option>
+        <option value="japanese" data-html-lang="ja">日本語</option>
+        <option value="korean" data-html-lang="ko">한국어</option>
+        <option value="russian" data-html-lang="ru">Русский</option>
+        <option value="arabic" data-html-lang="ar">العربية</option>
+        <option value="hindi" data-html-lang="hi">हिन्दी</option>
+        <option value="turkish" data-html-lang="tr">Türkçe</option>
+      </select>
+      <span id="site-translation-status" class="translation-status translation-status--sr" role="status" aria-live="polite">English source</span>
+    </div>
   </div>
 </header>
 
@@ -34,11 +56,12 @@
   <img class="hero-logo" src="assets/re_call_logo.png" alt="">
   <div class="shell hero-inner">
     <p class="eyebrow">Setup guide</p>
-    <h1>Get RE-call running in seven steps.</h1>
+    <h1>See it work in two commands.</h1>
     <hr class="rule">
     <p class="hero-lede">A local memory layer for agents, with every command, expected result, and recovery path.</p>
     <div class="hero-actions">
-      <a class="button" href="start.html">Start the install</a>
+      <a class="button" href="start.html">Do the full install</a>
+      <a class="button-ghost" href="download.html">Download the Windows installer (beta)</a>
     </div>
   </div>
   <div class="shell hero-meta">
@@ -46,6 +69,11 @@
     <span>PostgreSQL <b>18</b> via Docker</span>
     <span>Windows <b>·</b> macOS <b>·</b> Linux</span>
     <span>Runs <b>offline</b></span>
+  </div>
+  <div class="shell hero-meta">
+    <span>ATM-Bench Recall@10 <b>92.89</b> vs 79.09 best published (<a href="https://github.com/GiulioDER/RE-call/blob/master/docs/ATM_BENCH.md">limits</a>)</span>
+    <span>MTRAG correct refusals <b>second of ten</b> (<a href="https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md">limits</a>)</span>
+    <span><b>Zero</b> memory-layer LLM calls to build memory (<a href="https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md">limits</a>)</span>
   </div>
 </section>
 
@@ -59,7 +87,7 @@
       <p>When nothing matches with enough confidence, it abstains instead of handing you the nearest note.</p>
     </div>
     <div>
-      <p class="eyebrow eyebrow--signal">Asked something it has no answer to</p>
+      <p class="eyebrow eyebrow--signal">The middle question <code>recall quickstart</code> asks</p>
       <div class="terminal terminal--output">
         <div class="terminal-bar"><span class="terminal-label">Output</span></div>
         <div class="terminal-body"><pre><span class="warn">[ABSTAIN GAP] query='penguins on Mars?'</span>
@@ -125,6 +153,26 @@
           </tr>
         </tbody>
       </table>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ Installer -->
+<section class="band" id="installer">
+  <div class="shell split" data-reveal>
+    <div>
+      <p class="eyebrow eyebrow--signal">New, and in beta</p>
+      <h2>On Windows, a wizard can do the whole install for you.</h2>
+      <p>One window asks a short list of questions, then brings up the database, indexes your folders and writes the Claude Code wiring while you watch the log.</p>
+      <p>It is a beta and it is not code signed yet, so the download page says plainly which machines Windows will let it run on. I am looking for testers, and for comments on how it went.</p>
+      <div class="hero-actions">
+        <a class="button" href="download.html">Go to the download</a>
+      </div>
+    </div>
+    <div>
+      <p class="eyebrow">What you give up by using it</p>
+      <p class="muted">Nothing that cannot be recovered. The wizard writes the same configuration file the terminal flow writes, and the install it produces is one you can re-run, inspect, or hand to somebody else.</p>
+      <p class="muted">The <a href="start.html">full install</a> stays the path on macOS and Linux, and the path to fall back to if the installer will not start.</p>
     </div>
   </div>
 </section>

@@ -72,12 +72,16 @@ _client_count() {
 
 # Positive identity, required before anything is deleted.
 #
-# `session-db.sh orphans` deliberately reports two populations: containers this tooling started,
-# and compose containers whose working directory has vanished. Reporting the second is useful.
-# **Deleting it is not ours to do.** That filter matches every compose project on the daemon, and
-# the `[ -d ]` test behind it cannot see a Linux path from Git Bash, so every compose stack started
-# inside WSL reads as "checkout gone" from here. The sweep therefore removes only what carries this
-# tooling's own label, and merely prints the rest.
+# `session-db.sh orphans` deliberately reports three populations: containers this tooling started,
+# compose containers whose working directory has vanished, and compose containers whose directory
+# survives without a `.git` entry. Reporting the last two is useful. **Deleting them is not ours to
+# do.** That filter matches every compose project on the daemon. The sweep therefore removes only
+# what carries this tooling's own label, and merely prints the rest.
+#
+# The WSL hazard this comment used to describe is now handled upstream: a container started inside
+# WSL records `/home/...`, whose root Git Bash cannot see, and `orphans` prints those as CHECK
+# rather than ORPHAN. The awk below harvests `^ORPHAN ` only, so a CHECK line reaches the report
+# and never reaches the sweep. Both halves matter; do not widen that pattern.
 _is_ours() {
     local id owner
     id="$1"

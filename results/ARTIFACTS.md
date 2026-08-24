@@ -105,7 +105,40 @@ in the same file scores as a miss.
 | `beam_voyage/ksweep.json` | the `k` choice for voyage-4-large — a **proxy** (nugget coverage), not a judged score; see its `_provenance.note` |
 | `wrrf/arm_C_rrf_pool100.json` | §9a's pool-100 column, **clean corpus** — 0.6615 at k=5. Replaces the withdrawn `locomo/postfix_pool100.json` |
 | `wrrf/arm_A_rrf_pool20.json` | §9a's apparatus check — reproduces the published pool-20 column to Δ 0.0000 |
+| `enterprise_rag/dense_floor_strat100.retrieval.json` | the dense-cosine floor probe behind the Track B go/no-go: how many EnterpriseRAG questions the trust layer's **uncalibrated 0.50 threshold** would strip of all evidence once the benchmark goes through `reason()` instead of calling `HybridRetriever.search()` directly. **9 of 100 sampled, a population estimate of 5.7%**, so no mass abstention. ⛔ **ARM-DEPENDENT, and it is a lower bound on the submitted arm.** The score is `max_returned_dense_score`, the best dense cosine among the hits retrieval RETURNED, which is exactly what the floor gates on. That makes it depend on which hits come back: this run is `sparse_backend=lexical, reranker=null` at `scored_over_top_k=8`, while the submitted arm is `both` plus the Voyage reranker. A reranker reorders without rescoring, so it can only push the highest-cosine chunk out of the returned k, which can only move a question BELOW the floor. Visible already with no reranker: 9 rows have the dense argmax outside the returned 8, and `qst_0472` crosses the floor purely because of it (0.4700 against 0.4554). The summary carries `scored_arm` and `scored_over_top_k` so two runs can be told apart. ⚠️ **An ESTIMATE, not a bound, on the population.** The per-question measure is exact; the SAMPLING carries the error. Nine of ten strata are 10-question samples of populations from 20 to 175, and only `high_level` is a census. 🔑 **One sampled question carries 17.5 of the 28.5 estimated counts**: `basic` is 1 of 10 against a population of 175, so a single row is worth **3.5 points** of the 5.7% headline, 2.2% without it and 9.2% with one more. Spend any further sampling budget there. **Mind the three denominators**: 9/100 is over every sampled row and is an equal-allocation draw, so it estimates no population rate; `threshold_metrics['0.5']` is over the 80 rows carrying `expected_docs`, which excludes all 10 `high_level` and all 10 `info_not_found` rows; 5.7% is over the 500-question population after reweighting. ⚠️ **NOT a retrieval quality measurement**: `doc_ids_by_k` and `k_metrics` do not describe the submitted arm and must not be read as recall. 🔁 **Supersedes a run of the same name whose probe was too narrow**, evidenced by `enterprise_rag/dense_floor_probe_width.json`. The summary is derived by `benchmarks/enterprise_rag_contract.summarize`, which refuses a sample missing any stratum, and the runner writes through `write_dense_floor_artifact`, which validates and requires provenance first and leaves no file behind on mismatch |
+| `enterprise_rag/dense_floor_probe_width.json` | the evidence that `query_dense(k=1)` under-reports, which is why the artifact above was re-measured. One query vector per question, scored at k=1 and at k=200, over the same 100 questions as that artifact. `k=1` never trips the `hnsw.ef_search` widening in `recall/store.py`, so it walks at ef_search=40 while k=200 walks at 800, and the same file records 0.385 recall at 40 against 0.942 at 200. **31 of 100 disagree, worst under-report 0.2234, and 4 questions have their floor verdict flipped by probe width alone.** ⚠️ **The narrow probe is not stable either.** An earlier run of this same comparison, same vectors and same index, returned 25 disagreements and 3 flips rather than 31 and 4. Two draws of an unstable instrument, which is a stronger reason to widen it than the bias alone |
 | `store_latency/chunks_20k/splits.json` | the per-leg latency split behind the store-share figure — embed / dense / sparse / meta / fusion / rerank at 20,050 chunks, the evidence for whether a store backend swap could pay for itself. ⚠️ **SYNTHETIC corpus**, so the sparse leg does NOT generalise: `9a5165b` measured sparse median 496 ms on a real 72k-chunk corpus where this measures single-digit ms. Latency is the most host-dependent quantity here — read `stack` and `generated_at` before comparing it to anything. **Supersedes an earlier UNSTAMPED run of the same configuration**, whose figures (271.6 ms dense, 91.3%, 2.9%) appear in commit `66459ae`'s message and are reproducible from no file in the tree; superseded, not retracted — the shares agree to within 0.31 points |
+
+### ATM-Bench: the full split, scored by the benchmark's own evaluator
+
+| artifact | backs |
+|---|---|
+| `atm/atm_bench_full_20260821.json` | [`docs/ATM_BENCH.md`](../docs/ATM_BENCH.md), the README's ATM-Bench row and the ATM row in `docs/EVIDENCE.md`. QS **68.4264** and the three per-type accuracies are the official evaluator's own `atm_openai_gpt-5-mini_summary.json`, copied without edit; the retrieval figures (**Recall@10 92.8924**, Recall@10GT 86.9694) are recomputed from the run's `retrieval.jsonl` against the released ground truth and reproduce the submitted values to four decimals. ⚠️ **Three limits travel with these numbers and are recorded inside the file.** The judge kept the official prompt and the `gpt-5-mini` identity but ran over an **OpenRouter transport** (`judge.transport_is_official` stays `false`, because the field records what ran, not what was permitted); it was disclosed and **accepted by the maintainers on 2026-08-23**, when the leaderboard row was merged. The QS column is **not answer-model-matched** to the published baselines, and acceptance did not change that: it is the one limit of the three that survives being on the board. |
+
+| `atm/atm_answer_diagnosis_20260822.json` | [`docs/ATM_BENCH.md`](../docs/ATM_BENCH.md) section 5, the answer-side decomposition. Produced by `benchmarks/atm_answer_diagnosis.py` from the archived package with **zero provider calls**, by aggregating the official evaluator's own per-question judgements, so unlike the run above it can be regenerated at any time rather than trusted. The script **refuses to write this file unless the replay reproduces the published QS**, because a decomposition that does not reproduce the score is describing a different run. Abstention and tokenisation come from the evaluator's own normalizer, never a local reimplementation. Aggregates only: no question text, no gold answer, no model answer, no per-question row, because the corpus is third-party data. 🔁 **Its modality-floor figure supersedes a published 1.97 QS over 20 questions**, which counted two questions whose token coverage is *unmeasurable* as coverage 0.0 through `(cov or 0)`; the corrected figure is 1.78 over 18, and the retraction is registered in `WITHDRAWN.json`. |
+
+| `atm/atm_harness_20260823.json` | [`docs/ATM_BENCH.md`](../docs/ATM_BENCH.md) section 6, the reproduction section. It records WHICH files were published as the ATM-Bench harness and proves they are byte-identical to run commit `6c0ec26b`: `SHA-256`, byte length and git blob id for each, beside the size of the `recall/` drift between that commit and this publication. It measures nothing about retrieval or answer quality and deliberately does not touch the run artifact above, because a published measurement is appended to rather than edited. Verified by `tests/test_atm_runner_published.py`, which also fails if the library stops supplying an attribute the frozen harness reads. |
+
+The per-question payloads (`answers.jsonl`, `retrieval.jsonl`, the two full judge outputs) are
+archived outside this tree, per the policy at the top of this file. The artifact carries their
+SHA-256 checksums under `package_sha256`, the four dataset hashes under `data_sha256`, and the
+evaluator file hash under `judge.evaluator_sha256`, so an auditor handed the package can prove it is
+the one these numbers came from.
+
+🔁 **Corrected 2026-08-23: the harness is public now, and the gap that remains is a different
+one.** This used to read that commit `6c0ec26b` is on no public branch and that a byte-exact
+re-execution was therefore impossible. The first half is still true of the commit, and it no longer
+decides the question: the two files that produced the run,
+`benchmarks/atm_full_run.py` and `benchmarks/atm_bench.py`, are committed here byte for byte from
+that commit, hashed in `atm/atm_harness_20260823.json`, and pinned by
+`tests/test_atm_runner_published.py`, which fails on one changed byte.
+
+What is left is the library rather than the harness, and it is worth stating in its own words
+because it is the part a reader would otherwise assume away: `recall/` has moved since the run, so
+the published driver reproduces the **method** and not the last decimal of the **numbers**. Landing
+the harness also surfaced that the run depended on a `recall` field, `max_dense_score`, that had
+never existed on `master`, which is the sharpest available evidence that a frozen script is not by
+itself a reproduction pointer.
 
 ### The Mem0 head-to-head — the table that had no artifact until 2026-08-06
 
@@ -291,3 +324,35 @@ exactly this key:
 Full run record: `/var/lib/recall-benchmarks/2026-08-06-context-mode-generation-parity/`.
 ⚠️ Regenerating a natively-stamped artifact now needs a **full four-arm re-index**, not a compare
 re-run: the generations were dropped once this work merged.
+
+### Agent A/B — what the agent did, not what the retriever returned
+
+| artifact | backs |
+|---|---|
+| `results/agent_ab/agent_ab_additive_2026-08-21.json` | every number in [`RESULTS.md` §13](RESULTS.md): the primary trap rate and its exact McNemar, the per-trap table and cluster CI, the control at p=1.0000, the Ragas quality rows, and the cost medians |
+| `docs/preregistrations/2026-08-21-claude-md-plus-recall-additive.md` | the predictions, committed before the run, and the result appended beneath them without editing anything above |
+| `benchmarks/agent_ab/trap-qualification.json` | where each trap's governing fact lives, measured against the real corpus and the real static prompt **before** any session ran |
+| `benchmarks/agent_ab/calibration/memory-query-set.json` | the 50 answerable and 50 unanswerable labelled queries the corpus threshold was fitted on |
+
+**What makes this artifact different from the twelve above it.** Everything else in `results/`
+measures retrieval quality against a fixed corpus. This one measures an agent's behaviour, so the
+things that can go wrong are different and two of them are recorded in the file rather than in prose.
+
+**The arms differ by one thing, and it is asserted rather than assumed.** Both sessions receive the
+same `CLAUDE.md` plus `MEMORY.md` byte for byte; the harness checks that the treated arm's prompt
+contains the control arm's verbatim and adds no more than 2,000 characters, and aborts otherwise. A
+pair is also discarded unless the treated session's own tool list contains a `mcp__recall*` tool and
+the control's does not, because an earlier run of this design completed and reported success with no
+memory tools attached at all.
+
+**The primary endpoint uses no judge.** Deterministic checkers read the transcript for the known
+wrong action. Ragas scores only §13's answer-quality rows, with a judge from a different model
+family than the agent under test, against references written before the run.
+
+⚠️ **Two caveats that live in the artifact, not only here.** `agent-ab-additive-002`'s environment
+record was **reconstructed from the saved transcripts** after the runner was stopped mid-run, so its
+per-session wall times come from each session's own `duration_ms` rather than from the runner timing
+the subprocess; the two measure slightly different spans and are never pooled. And the `shared_db`
+control trap was **excluded post hoc** because it stalled on a deliberately denied tool, which is
+recorded with its reasoning in the preregistration. It was a control the memory layer was expected
+to draw, not one it was expected to win.

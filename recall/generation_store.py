@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
@@ -29,13 +29,14 @@ from recall.store import (
     resolve_supersession_candidates,
 )
 from recall.types import Chunk, ScoredChunk
+from recall.errors import RecallError
 
 if TYPE_CHECKING:
     from recall.calibration_v2 import CalibrationResolution
     from recall.pool import SharedPool
 
 
-class ImmutableGenerationError(RuntimeError):
+class ImmutableGenerationError(RuntimeError, RecallError):
     pass
 
 
@@ -166,22 +167,48 @@ class GenerationStore(PgVectorStore):
             self._pinned_generation.reset(token)
 
     def generation_binding(self) -> dict[str, str]:
+        """Identity of the generation this store reads, including WHICH MODEL wrote its vectors.
+
+        `embedder_model` and `embedder_dimension` are read here rather than left to a readiness
+        check, because this is the only place the serving path looks the generation up.
+        `check_enterprise_readiness` does
+        compare the runtime embedder against the generation's, but only `if control_plane is not
+        None`, and a stdio server has no control plane; its sibling check on the calibration's
+        identity is documented at `recall_mcp/server.py` as unreachable from startup. So on the
+        stdio path nothing compared them at all, and a mismatch is invisible rather than loud.
+        """
         generation_id = self._generation_id()
         row = self._with_retry(
             lambda conn: conn.execute(
-                "SELECT pipeline_fingerprint, corpus_fingerprint FROM recall_generations "
-                "WHERE tenant_id = %s AND generation_id = %s",
+                "SELECT pipeline_fingerprint, corpus_fingerprint, pipeline_identity "
+                "FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
                 (self._tenant, generation_id),
             ).fetchone()
         )
         if row is None:
             raise NoActiveGeneration(generation_id)
-        return {
+        binding = {
             "tenant_id": self._tenant,
             "generation_id": generation_id,
             "pipeline_fingerprint": str(row[0]),
             "corpus_fingerprint": str(row[1]),
         }
+        identity = row[2] if isinstance(row[2], Mapping) else {}
+        embedder = identity.get("embedder")
+        if isinstance(embedder, Mapping):
+            # `model` and `dimension`, NOT a `provider:model` string compared against
+            # `embedding_profile_id`. That function returns a registered `profile_id` when there
+            # is one and the bare `embedder.name` otherwise, so it does not spell
+            # `provider:model`, and comparing the two would have refused the CORRECT embedder.
+            # This pair is the comparison `CalibrationRepository.calibrate` already makes, and it
+            # is known to accept the matching case: the 2026-08-20 carry-forward passed it.
+            model = str(embedder.get("model", "")).strip()
+            if model:
+                binding["embedder_model"] = model
+            dimension = embedder.get("dimension")
+            if isinstance(dimension, int):
+                binding["embedder_dimension"] = str(dimension)
+        return binding
 
     def load_semantic_graph(self, generation_id: str | None = None) -> SemanticGraphProjection | None:
         """Load the semantic graph for the pinned or active generation."""
@@ -315,6 +342,27 @@ class GenerationStore(PgVectorStore):
                 return conn.execute(sql, params).fetchall()
 
         return self._generation_rows(self._with_retry(_op))
+
+    def top_cosine(self, vector: list[float]) -> float:
+        """Exact best cosine within the PINNED generation. See `PgVectorStore.top_cosine`.
+
+        Overridden because the base implementation scopes by tenant alone, and a tenant here holds
+        every generation it has ever built. Carry-forward re-scores a parent's query set against
+        the CHILD generation specifically; a tenant-wide maximum would silently read the parent's
+        vectors too and report that the corpus had not moved.
+
+        `1 - min(distance)` rather than `max(1 - distance)` for the NaN reason the base method
+        documents; the two forms disagree whenever one row of the scope is a zero-norm vector.
+        """
+        generation_id = self._generation_id()
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT 1 - min(embedding <=> %(vec)s) FROM recall_chunks_v1 "
+                "WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s",
+                {"vec": Vector(vector), "tenant": self._tenant, "generation": generation_id},
+            ).fetchone()
+        )
+        return 0.0 if row is None or row[0] is None else float(row[0])
 
     def _query_sparse(
         self,
@@ -596,8 +644,15 @@ class GenerationStore(PgVectorStore):
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
         generation_id = self._generation_id()
+        # The explicit transaction is NOT optional, and its absence here made five MCP tools
+        # unusable under `RECALL_ENV=production` — the only mode that selects this class. A
+        # server-side cursor is transaction-scoped, and these connections are autocommit, so
+        # `DECLARE CURSOR` fails outright. `PgVectorStore.iter_chunks` has carried the same
+        # `conn.transaction()` and the same reasoning all along; this override inherited the
+        # cursor and dropped the transaction around it.
         with (
             self._borrowed() as conn,
+            conn.transaction(),
             conn.cursor(name=f"recall_gen_{uuid.uuid4().hex[:12]}") as cur,
         ):
             with conn.transaction():

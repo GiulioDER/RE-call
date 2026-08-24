@@ -1,0 +1,19 @@
+{
+  "phase": "paired_retrieval_posthoc",
+  "slice": "dev",
+  "status": "measured_posthoc",
+  "question_ids": "results/enterprise_rag/top5_slices/dev.ids",
+  "arms": ["none", "voyage:rerank-2.5"],
+  "metrics": "results/enterprise_rag/non_reasoning/paired_dev.json",
+  "source_artifacts": {
+    "baseline": "results/enterprise_rag/non_reasoning/project_dev_none.answers.jsonl",
+    "candidate": "results/enterprise_rag/non_reasoning/project_dev_reranker.answers.jsonl"
+  },
+  "reason": "The paired answer files were captured on VPS2 and scored only after generation. Their older manifests contain evaluator-style posthoc retrieval fields and are not used as runtime retrieval inputs.",
+  "runtime_policy": {
+    "no_correction": true,
+    "skip_citation_stripping": true,
+    "parallelism": 1,
+    "gold_fields_used_at_runtime": false
+  }
+}

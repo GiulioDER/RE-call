@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.GiulioDER/re-call",
   "title": "RE-call MCP Memory Server",
-  "description": "Trustworthy Postgres plus pgvector memory for AI agents.",
-  "websiteUrl": "https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md",
+  "description": "Agent memory on your own Postgres that flags superseded facts and abstains instead of guessing.",
+  "websiteUrl": "https://giulioder.github.io/RE-call/",
   "repository": {
     "url": "https://github.com/GiulioDER/RE-call",
     "source": "github"

@@ -37,6 +37,11 @@ locomo10.json
 # by whoever happened to run the benchmark last.
 benchmarks/results/
 .benchdata/
+# Local A/B session receipts carry model output, prompts, and retrieved memory chunks. Keep them
+# out of the public repository; publish only a reviewed aggregate or a deliberate release asset.
+benchmarks/artifacts/agent_ab/
+benchmarks/artifacts/codex_ab/
+benchmarks/artifacts/codex_ab/
 # Benchmark run logs — transient. The JSON reports beside them are the artifact.
 results/locomo/*.log
 
@@ -86,3 +91,30 @@ docs/_*_2x.png
 # checkout by `scripts/session-mcp.sh` from a secrets file that lives outside the tree, so the
 # tokens have no path into a commit even by accident. `.mcp.json.example` is the committed shape.
 .mcp.json
+
+# Scratch renders and previews from driving the desktop UI and the docs figure generators, named
+# with a leading `.tmp_` by convention and never shipped. Measured 2026-08-19: 25 were sitting
+# untracked in the main checkout, which is most of what made `git status` there unreadable and a
+# real change hard to pick out among them.
+#
+# Scratch CLONES of third-party harnesses arrive under the same prefix and are the sharper case:
+# `.tmp_erbleaderboard` is the EnterpriseRAG-Bench leaderboard Space, 105 MB carrying its own
+# `.git`. A nested `.git` means a careless `git add -A` records a GITLINK rather than files, so
+# the failure is quiet: one line pointing at a commit in a repository this project does not own,
+# which nobody can clone from here and which `git status` then reports as permanently modified.
+# The rule is deliberately `.tmp_*` and not `.tmp_*/`, so it catches the file case too.
+.tmp_*
+
+# Upload staging. `stage_uploads` resolves RECALL_INDEX_ROOT, whose documented default is `.`, so
+# anything staging an upload from the repository root writes `uploads/<tenant>/<job_id>/` here and
+# leaves it. `tests/conftest.py::_confine_index_root` redirects it for the SUITE, and
+# `test_staging_follows_the_configured_index_root_and_never_the_checkout` guards that fixture, but
+# neither covers the desktop app run from a checkout, which is how one arrived in the main one.
+#
+# ⚠️ Ignoring it is a backstop, NOT the fix. What stages here is the USER'S OWN DOCUMENTS, so the
+# hazard is not clutter: it is committing somebody's private files by accident with a careless
+# `git add`. The fix is to point RECALL_INDEX_ROOT somewhere outside the tree; see
+# docs/SECURITY_MODEL.md.
+uploads/
+
+.deploy-vps2/

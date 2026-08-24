@@ -10,6 +10,12 @@ from recall.types import RetrievalResult, StalenessReport
 
 from .conftest import TEST_DSN, requires_db
 
+import pytest
+
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def test_trusted_search_forwards_candidate_k(monkeypatch) -> None:  # EVAL-002 (unit, no DB)
     from recall import trust

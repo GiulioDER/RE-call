@@ -26,6 +26,7 @@ from recall.observability import get_logger
 from recall.sparse import SparseEncoderProtocol, store_sparse_vectors
 from recall.store import PgVectorStore
 from recall.types import Chunk
+from recall.errors import RecallError
 
 DEFAULT_MAX_CHARS = 800  # target chunk size in characters; paragraphs are packed up to this
 DEFAULT_OVERLAP_CHARS = 80  # chars shared between adjacent pieces of a force-split oversized block
@@ -68,6 +69,19 @@ MIN_PIECE_DIVISOR = 8
 #: roughly one batch of chunks plus their vectors, instead of the whole corpus, and
 #: makes progress visible in the database while a long index is still running.
 DEFAULT_BATCH_CHUNKS = 512
+#: Machine-wide override for the above, read per-Indexer so a host can bound EVERY embedding run
+#: on it without every caller having to pass the argument.
+#:
+#: ⛔ This is the knob that exists. `RECALL_FASTEMBED_BATCH` is named as the fix in more than one
+#: operational note on this project and is read NOWHERE in this package: exporting it is a no-op,
+#: and the run it was supposed to protect died anyway. The default of 512 chunks reaches fastembed,
+#: which then embeds 256 at a time, and fastembed pads a batch to its LONGEST member — bge-large at
+#: sequence 512 costs `batch x 16 heads x 512 x 512 x 4 bytes` for the attention scores alone, so
+#: one long chunk in that batch asks onnxruntime for 4.3 GB and it refuses PARTWAY THROUGH, after
+#: some stores are already written. Measured 2026-08-22 on this project's memory corpus: the
+#: 987-memo store died at a 2.44 GB request while the 211-memo one completed, and 64 chunks per
+#: batch survived the longest documents in the corpus.
+ENV_BATCH_CHUNKS = "RECALL_INDEX_BATCH_CHUNKS"
 #: Refuse to prune when a single run would delete at least this fraction of the sources already
 #: indexed under the root. Re-indexing deletes rows for files that are gone from disk, which is
 #: correct when a memo was really deleted and catastrophic when the corpus merely wasn't there:
@@ -108,7 +122,31 @@ def _prune_fraction_from_env() -> float:
     return value
 
 
-class PruneGuardTripped(RuntimeError):
+def _batch_chunks_from_env() -> int:
+    """`RECALL_INDEX_BATCH_CHUNKS`, positive; anything malformed falls back to the default.
+
+    Read per-Indexer rather than at import, for the reason `_prune_fraction_from_env` is: a
+    long-lived process (and a test) can change it without reloading the module.
+
+    Malformed values are IGNORED rather than clamped, and logged. A host that sets this is bounding
+    an allocation, and silently substituting a different bound for the one that was configured is
+    how a machine ends up OOM-killed by a setting somebody believed was in force.
+    """
+    raw = os.environ.get(ENV_BATCH_CHUNKS)
+    if raw is None:
+        return DEFAULT_BATCH_CHUNKS
+    try:
+        value = int(raw)
+    except ValueError:
+        _log.warning("ignoring malformed %s=%r", ENV_BATCH_CHUNKS, raw)
+        return DEFAULT_BATCH_CHUNKS
+    if value < 1:
+        _log.warning("ignoring out-of-range %s=%r (expected >= 1)", ENV_BATCH_CHUNKS, raw)
+        return DEFAULT_BATCH_CHUNKS
+    return value
+
+
+class PruneGuardTripped(RuntimeError, RecallError):
     """A re-index would have deleted most of the corpus, so nothing was deleted.
 
     Deliberately NOT a ValueError: the caller passed a perfectly valid path. What is wrong is the
@@ -422,17 +460,42 @@ def _index_fingerprint(
 ) -> str:
     """What "this file is already indexed under this configuration" means, in one place.
 
-    It covers the file's bytes plus the embedding profile that produced the vector and the
-    context mode and version that built its passage. A fingerprint omitting any of those
+    It covers the file's bytes plus the COMPLETE embedding identity that produced the vector and
+    the context mode and version that built its passage. A fingerprint omitting any of those
     would let a profile switch look like a no-op.
 
-    ⚠️ It does NOT cover `ContextPolicy.max_tokens`, which also changes the embedded passage:
-    `contextual_passages` selects a different rung of its degradation ladder when it is set.
-    Two policies differing only in `max_tokens` therefore hash equal and the second is
-    skipped. No shipped path reaches this — `context_policy_for_profile` leaves `max_tokens`
-    unset — so it bites a library caller constructing a policy by hand. Recorded rather than
-    fixed because widening the tuple re-fingerprints every indexed corpus, which is a
-    migration, not a comment change.
+    ⚠️ **This hashes `EmbeddingProfile.fingerprint()`, not `embedding_profile_id()`, and that
+    changed in 2026-08.** The id is one field of an identity, and the skip guard was treating it
+    as the whole of it, so any two embedders sharing an id were indistinguishable here. That was
+    not hypothetical: until `92619999` the no-identity path minted `bge-small-symmetric-v1` for
+    every unregistered model, and a 384-dimension corpus and a 1024-dimension corpus produced
+    EQUAL fingerprints for the same file, so a model swap read as a no-op and the stale vectors
+    stayed. Fixing the id closed the reachable case; it left the guard still trusting one field.
+    `cache_key` in `recall/cache.py` has always keyed on the whole profile for exactly this
+    reason, and its docstring says why: "The ID alone is not an identity".
+
+    What this now inherits, deliberately, is every field of that identity, INCLUDING
+    `dependencies`. So an inference-library upgrade or an ONNX execution-provider change
+    (CPU to CUDA) re-fingerprints the corpus and re-embeds it. That is the same trade
+    `EmbeddingProfile.fingerprint` already makes for the cache, made for the same reason:
+    a runtime change is free to move the last bits of a vector and neither a cache nor a skip
+    guard can tell. The two now agree rather than disagreeing.
+
+    `ContextPolicy.max_tokens` is covered too, as of the same change. It selects a different rung
+    of `contextual_passages`' degradation ladder, so two policies differing only in it build
+    different passages, and they used to hash equal and skip the second. It was carried as a known
+    gap for one reason only, that fixing it re-fingerprints every corpus; that cost is being paid
+    here anyway, and deferring it again would have charged a SECOND full re-embed later for a
+    one-term change. It is stringified, so `None` (the shipped value everywhere, since
+    `context_policy_for_profile` never sets it) stays distinct from any integer.
+
+    ⚠️ `ContextPolicy.tokenizer` is still NOT covered, and this one is deliberate rather than
+    deferred. It changes the passage exactly as `max_tokens` does, but it is a CALLABLE with no
+    identity that is stable across processes: `__qualname__` collides for closures and lambdas,
+    and `id()` differs on every run. A term that is merely unstable would be far worse than a
+    missing one, because the fingerprint would differ from itself and re-embed the whole corpus on
+    every single run, silently and forever. A stable tokenizer identity has to be supplied by the
+    caller before this can be closed.
 
     One derivation because it is consumed twice and the two consumers are 60 lines apart: the skip
     guard reads it to decide whether to do the work, and the write path stores it so the NEXT run's
@@ -447,6 +510,7 @@ def _index_fingerprint(
                 embedding_profile_id(embedder),
                 context_policy.mode,
                 context_policy.version,
+                str(context_policy.max_tokens),
             )
         ).encode("utf-8")
     ).hexdigest()
@@ -481,6 +545,11 @@ def head_commit(path: str | Path) -> str | None:
             ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
             capture_output=True,
             text=True,
+            # A short SHA is ASCII, so this is belt and braces rather than a fix. It is here so the
+            # rule reads the same at every call site: `text=True` without an explicit codec decodes
+            # with the platform default, and on Windows that fails silently rather than loudly.
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
@@ -496,7 +565,7 @@ class Indexer:
         embedder: Embedder,
         chunker: Chunker = chunk_text,
         cache: EmbeddingCache | None = None,
-        batch_chunks: int = DEFAULT_BATCH_CHUNKS,
+        batch_chunks: int | None = None,
         allow_prune: bool = False,
         context_policy: ContextPolicy = ContextPolicy(),
         shadow: ShadowIndexTarget | None = None,
@@ -508,7 +577,14 @@ class Indexer:
         self._embedder = embedder
         self._chunker = chunker
         self._cache = cache
-        if batch_chunks < 1:
+        #: `None` means "whatever this host allows" (`ENV_BATCH_CHUNKS`, else the default), so a
+        #: caller that never heard of the variable still gets the host's bound. An explicit value
+        #: WINS over the environment: a caller who names a batch is describing a run they have
+        #: sized, and having the environment silently override that would make the argument a
+        #: suggestion.
+        if batch_chunks is None:
+            batch_chunks = _batch_chunks_from_env()
+        elif batch_chunks < 1:
             raise ValueError("batch_chunks must be >= 1")
         self._batch_chunks = batch_chunks
         #: Set by a caller who has confirmed the files really are gone. Bypasses the guard for
@@ -543,7 +619,22 @@ class Indexer:
         # test would have noticed.
         expected_context = context_version_for(context_policy.mode, context_policy.version)
         profile = embedding_profile(embedder)
-        if profile.artifact_digest != "legacy-unverified" and profile.context_version != expected_context:
+        # ⚠️ The comparison is against the LEGACY literal alone, and deliberately NOT against
+        # `recall.embeddings.artifact_is_pinned` or any other "this profile is unverified"
+        # predicate, even though a hosted profile is also unverified. The two questions are
+        # different:
+        #
+        #   readiness asks  "is the artifact immutably pinned?"   -> legacy no, hosted no
+        #   this site asks  "does this profile CLAIM a context?"  -> legacy no, hosted YES
+        #
+        # A legacy profile is exempt because its `context_version` is a constructor default that
+        # nobody chose, so enforcing it would refuse every legacy embedder under any non-raw
+        # policy. A REGISTERED hosted profile derives its context version from a `context_mode` it
+        # declares, so the claim is real and must be checked exactly as a local profile's is.
+        # Widening this to a shared unverified-ness predicate is what sank an earlier attempt at
+        # hosted support: it exempted hosted profiles from this check, and a hosted identity
+        # declaring `raw-v1` was then accepted under a `section` policy where a local one raises.
+        if profile.artifact_digest != LEGACY_UNVERIFIED_DIGEST and profile.context_version != expected_context:
             raise ValueError(
                 f"embedding profile context {profile.context_version!r} does not match "
                 f"index context {expected_context!r}"
@@ -626,9 +717,26 @@ class Indexer:
         # same basename in different directories (a/notes.md, b/notes.md) must not collide in the
         # supersession map or in provenance. Mirrors recall.lint's `rel` keying. A single-file
         # index has no root to relativize against, so it falls back to the basename.
-        rel = {f: (f.relative_to(root).as_posix() if root.is_dir() else f.name) for f in files}
+        # One stat, hoisted: evaluated inside the comprehension it was N syscalls for a
+        # loop-invariant answer, and a root vanishing mid-comprehension could split one corpus
+        # across both keying schemes — the exact collision this comment exists to prevent.
+        root_is_dir = root.is_dir()
+        rel = {f: (f.relative_to(root).as_posix() if root_is_dir else f.name) for f in files}
 
         known = self._store.source_content_hashes()
+        # ⛔ **A second, machine-independent view of the same question.** `known` keys on the
+        # absolute path, so a corpus re-indexed from a different root matches nothing: every file
+        # is re-embedded and, because `replace_sources` keys the same way, the new rows land beside
+        # the old instead of over them. Measured on a live corpus that is embedded on a workstation
+        # and shipped to a server which had first indexed the same files under its own paths: 452
+        # duplicate rows in one project, 615 in another, and searches returning a chunk twice.
+        #
+        # Only for a DECLARED project. Two roots with the same relative layout and no project may
+        # be different corpora, and merging them is not a guess this layer may make.
+        project = self.provenance.get("project")
+        known_by_file = (
+            self._store.project_file_hashes(project) if project is not None else {}
+        )
         # The shadow's own record of what it holds. Read once per run, like the active one: it
         # decides whether a file can be skipped, and a file the ACTIVE generation already has is
         # not necessarily a file the shadow has.
@@ -736,8 +844,13 @@ class Indexer:
             # is a per-source yes/no from `sparse_covered_sources`, not a value to compare for
             # equality: there is no sparse fingerprint, only "is every chunk of this source in
             # the sidecar yet".
+            # Either key recognising the file is enough: this can only skip MORE than before,
+            # never less, and only within a declared project.
+            already_indexed = known.get(str(f)) == index_fingerprint or (
+                project is not None and known_by_file.get(rel[f]) == index_fingerprint
+            )
             if (
-                known.get(str(f)) == index_fingerprint
+                already_indexed
                 and (
                     shadow_fingerprint is None
                     or known_shadow.get(str(f)) == shadow_fingerprint

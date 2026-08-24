@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from psycopg import Connection
 
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, TENANT_GUC, _schema_lock_timeout_ms
+from recall.errors import RecallError
 
 LEDGER_TABLE = "recall_schema_migrations"
 MIGRATION_LOCK_NAME = "recall-schema-migrations-v1"
@@ -76,7 +77,7 @@ _MIGRATION_NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 _INDEX_MARKER = re.compile(r"^-- recall:concurrent-index ([A-Za-z_][A-Za-z0-9_]*)$", re.MULTILINE)
 
 
-class SchemaError(RuntimeError):
+class SchemaError(RuntimeError, RecallError):
     """Base class for a schema state that prevents safe service."""
 
 

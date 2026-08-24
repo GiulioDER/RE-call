@@ -14,6 +14,7 @@ format before paying for a full answer run.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -21,20 +22,40 @@ import subprocess
 import time
 import zipfile
 from io import TextIOWrapper
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, cast
 
+from benchmarks.enterprise_rag_contract import (
+    POPULATION,
+    summarize,
+    write_dense_floor_artifact,
+)
+from benchmarks.enterprise_rag_sample import sampling_provenance, strata_of, stratify
 from recall._env import load_dotenv
+from recall.eval.provenance import model_stack
+from recall.cache import EmbeddingCache, embed_query_with_cache
 from recall.embeddings import Embedder, embed_query, embedding_profile_id, resolve_embedder
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.index import chunk_text
 from recall.retriever import SPARSE_BACKENDS, HybridRetriever
+from recall.reasoning_expansion import (
+    ExpansionProposal,
+    ExpansionReport,
+    ExpansionRequest,
+    EXPANSION_PROMPT_DIGEST,
+    MAX_EXPANSION_EVIDENCE_CHARS,
+    MAX_EXPANSION_EVIDENCE_ITEMS,
+    MAX_EXPANSION_QUERIES,
+    OpenAIExpansionProvider,
+    resolve_expansion_provider,
+)
 from recall.store import PgVectorStore
-from recall.types import Chunk, ScoredChunk
+from recall.types import Chunk, RetrievalDiagnostics, ScoredChunk
+from benchmarks.artifact_contract import load_published_artifact
 
 DEFAULT_TABLE = "bench_enterprise_rag_chunks"
 DEFAULT_TENANT = "enterprise-rag"
@@ -45,6 +66,7 @@ DEFAULT_BATCH_CHUNKS = 256
 DEFAULT_CHUNK_CHARS = 800
 DEFAULT_CHUNK_OVERLAP = 80
 DEFAULT_RERANK_DOCUMENT_CHARS = 4_000
+MAX_RETRIEVAL_CAPTURES = 10
 DEFAULT_MODEL = "openai/gpt-4o"
 DEFAULT_SPLADE_MODEL = "prithivida/Splade_PP_en_v1"
 DEFAULT_VOYAGE_RERANKER = "rerank-2.5"
@@ -59,6 +81,17 @@ TOP_CONFIG_EMBEDDER = "voyage:voyage-4-large"
 TOP_CONFIG_SPARSE_BACKEND = "both"
 TOP_CONFIG_RERANKER = f"voyage:{DEFAULT_VOYAGE_RERANKER}"
 DOC_ID_RE = re.compile(r"(dsid_[A-Za-z0-9]+)")
+RUNTIME_EXCLUDED_QUESTION_FIELDS = frozenset(
+    {
+        "expected_doc_ids",
+        "answer_facts",
+        "answer",
+        "answers",
+        "gold_answer",
+        "expected_answer",
+        "competitor_answers",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -201,16 +234,32 @@ def _doc_from_row(row: Mapping[str, Any]) -> EnterpriseDoc:
     return EnterpriseDoc(doc_id=doc_id, source_type=source_type, title=title, content=content)
 
 
-def load_questions(path: Path, *, limit: int | None = None) -> list[EnterpriseQuestion]:
+def load_questions(
+    path: Path,
+    *,
+    limit: int | None = None,
+    question_types: Collection[str] | None = None,
+    question_ids: Collection[str] | None = None,
+) -> list[EnterpriseQuestion]:
+    selected_types = {str(value).strip().lower() for value in (question_types or ()) if str(value).strip()}
+    selected_ids = {str(value).strip() for value in (question_ids or ()) if str(value).strip()}
     questions: list[EnterpriseQuestion] = []
     for row in _json_rows(path):
-        questions.append(
-            EnterpriseQuestion(
-                question_id=_required_text(row, "question_id", "id"),
-                question=_required_text(row, "question", "query"),
-                raw=row,
-            )
+        runtime_raw = {
+            key: value
+            for key, value in row.items()
+            if key not in RUNTIME_EXCLUDED_QUESTION_FIELDS
+        }
+        question = EnterpriseQuestion(
+            question_id=_required_text(row, "question_id", "id"),
+            question=_required_text(row, "question", "query"),
+            raw=runtime_raw,
         )
+        if selected_types and _text(row.get("question_type")).lower() not in selected_types:
+            continue
+        if selected_ids and question.question_id not in selected_ids:
+            continue
+        questions.append(question)
         if limit is not None and len(questions) >= limit:
             break
     return questions
@@ -364,14 +413,27 @@ def build_sparse_encoder(
     )
 
 
-def build_reranker(name: str, *, max_document_chars: int | None = None) -> object | None:
+def build_reranker(
+    name: str,
+    *,
+    max_document_chars: int | None = None,
+    rank_weight: float = 1.0,
+) -> object | None:
     if not name or name == "none":
         return None
     if name.startswith("voyage:"):
-        from benchmarks.voyage_rerank import VoyageReranker
+        from benchmarks.voyage_rerank import BlendedVoyageReranker, VoyageReranker
 
-        return VoyageReranker(
+        if not 0.0 <= rank_weight <= 1.0:
+            raise ValueError("rank_weight must be between 0 and 1")
+        if rank_weight == 1.0:
+            return VoyageReranker(
+                model=name[len("voyage:"):],
+                max_document_chars=max_document_chars,
+            )
+        return BlendedVoyageReranker(
             model=name[len("voyage:"):],
+            rank_weight=rank_weight,
             max_document_chars=max_document_chars,
         )
     if name == "local" or name.startswith("local:"):
@@ -387,7 +449,7 @@ def _write_batch(store: PgVectorStore, embedder: Embedder, chunks: list[Chunk]) 
     return store.upsert(chunks, embeddings)
 
 
-def retrieve_docs(
+def retrieve_docs_with_diagnostics(
     store: PgVectorStore,
     embedder: Embedder,
     question: str,
@@ -398,7 +460,7 @@ def retrieve_docs(
     sparse_encoder: object | None,
     reranker: object | None,
     gap_threshold: float,
-) -> tuple[list[str], list[ScoredChunk], bool]:
+) -> tuple[list[str], list[ScoredChunk], bool, RetrievalDiagnostics]:
     retriever = HybridRetriever(
         store,
         embedder,
@@ -417,7 +479,318 @@ def retrieve_docs(
         if doc_id and doc_id not in seen:
             seen.add(doc_id)
             ids.append(doc_id)
-    return ids, result.hits, result.gap_warning
+    return ids, result.hits, result.gap_warning, result.diagnostics
+
+
+def retrieve_docs(
+    store: PgVectorStore,
+    embedder: Embedder,
+    question: str,
+    *,
+    k: int,
+    candidate_k: int,
+    sparse_backend: str,
+    sparse_encoder: object | None,
+    reranker: object | None,
+    gap_threshold: float,
+) -> tuple[list[str], list[ScoredChunk], bool]:
+    ids, hits, gap_warning, _diagnostics = retrieve_docs_with_diagnostics(
+        store,
+        embedder,
+        question,
+        k=k,
+        candidate_k=candidate_k,
+        sparse_backend=sparse_backend,
+        sparse_encoder=sparse_encoder,
+        reranker=reranker,
+        gap_threshold=gap_threshold,
+    )
+    return ids, hits, gap_warning
+
+
+class QueryCachedEmbedder:
+    """Preserve passage embedding behavior while caching repeated query vectors."""
+
+    def __init__(self, inner: Embedder, cache: EmbeddingCache) -> None:
+        self._inner = inner
+        self._cache = cache
+
+    @property
+    def dim(self) -> int:
+        return self._inner.dim
+
+    @property
+    def name(self) -> str:
+        return self._inner.name
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._inner.embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return embed_query_with_cache(self._inner, text, self._cache)
+
+
+def _merge_scored_hits(initial: Sequence[ScoredChunk], additions: Sequence[ScoredChunk]) -> list[ScoredChunk]:
+    merged: dict[str, ScoredChunk] = {}
+    for hit in (*initial, *additions):
+        previous = merged.get(hit.chunk.id)
+        if previous is None or hit.score > previous.score:
+            merged[hit.chunk.id] = hit
+    # Expansion is useful only if a strong newly found hit can displace a weak original hit
+    # before the document-level k cutoff. Ties retain the first-pass ordering for stability.
+    return sorted(merged.values(), key=lambda hit: hit.score, reverse=True)
+
+
+def _expansion_evidence(hits: Sequence[ScoredChunk]) -> tuple[Mapping[str, object], ...]:
+    evidence: list[Mapping[str, object]] = []
+    used_chars = 0
+    for hit in hits:
+        if len(evidence) >= MAX_EXPANSION_EVIDENCE_ITEMS:
+            break
+        remaining = MAX_EXPANSION_EVIDENCE_CHARS - used_chars
+        if remaining <= 0:
+            break
+        text = hit.chunk.text[:remaining]
+        evidence.append(
+            {"chunk_id": hit.chunk.id, "source": hit.chunk.source, "text": text}
+        )
+        used_chars += len(text)
+    return tuple(evidence)
+
+
+def _expansion_report_to_cache(
+    report: ExpansionReport,
+    *,
+    context: Mapping[str, object],
+    provider_metadata: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "context": dict(context),
+        "provider_metadata": dict(provider_metadata),
+        "proposals": [
+            {
+                "id": proposal.id,
+                "mode": proposal.mode,
+                "query": proposal.query,
+                "rationale": proposal.rationale,
+                "parent_chunk_ids": list(proposal.parent_chunk_ids),
+            }
+            for proposal in report.proposals
+        ]
+    }
+
+
+def _expansion_report_from_cache(payload: Mapping[str, Any]) -> ExpansionReport:
+    raw = payload.get("proposals", [])
+    if not isinstance(raw, list):
+        raise ValueError("reasoning cache proposals must be an array")
+    if len(raw) > MAX_EXPANSION_QUERIES:
+        raise ValueError("reasoning cache exceeds the expansion query limit")
+    return ExpansionReport(
+        proposals=tuple(
+            ExpansionProposal(
+                id=str(item["id"]),
+                mode=cast(Any, item["mode"]),
+                query=str(item["query"]),
+                rationale=str(item.get("rationale", "")),
+                parent_chunk_ids=tuple(str(value) for value in item.get("parent_chunk_ids", [])),
+            )
+            for item in raw
+            if isinstance(item, Mapping)
+        )
+    )
+
+
+def _expansion_cache_context(
+    question: EnterpriseQuestion,
+    store: PgVectorStore,
+    *,
+    k: int,
+    candidate_k: int,
+    sparse_backend: str,
+    gap_threshold: float,
+    arm: str,
+    provider: OpenAIExpansionProvider,
+) -> dict[str, object]:
+    provider_identity = provider.provider_metadata().to_dict()
+    return {
+        "question_sha256": hashlib.sha256(question.question.encode("utf-8")).hexdigest(),
+        "tenant": store.tenant,
+        "table": store.table,
+        "generation_id": store.generation_id,
+        "k": k,
+        "candidate_k": candidate_k,
+        "sparse_backend": sparse_backend,
+        "gap_threshold": gap_threshold,
+        "arm": arm,
+        "provider_id": provider_identity["provider_id"],
+        "model_id": provider_identity["model_id"],
+        "model_revision": provider_identity["model_revision"],
+        "prompt_digest": EXPANSION_PROMPT_DIGEST,
+    }
+
+
+def _expansion_cache_matches(
+    payload: Mapping[str, Any], context: Mapping[str, object]
+) -> bool:
+    cached_context = payload.get("context")
+    return isinstance(cached_context, Mapping) and dict(cached_context) == dict(context)
+
+
+def load_reasoning_cache(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("reasoning cache must be a JSON object")
+    return payload
+
+
+def write_reasoning_cache(path: Path | None, cache: Mapping[str, Any]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def expand_retrieval_hits(
+    question: EnterpriseQuestion,
+    store: PgVectorStore,
+    embedder: Embedder,
+    *,
+    initial_hits: Sequence[ScoredChunk],
+    initial_gap_warning: bool,
+    k: int,
+    candidate_k: int,
+    sparse_backend: str,
+    sparse_encoder: object | None,
+    reranker: object | None,
+    gap_threshold: float,
+    arm: str,
+    provider: OpenAIExpansionProvider | None,
+    expansion_cache: dict[str, Any] | None,
+) -> tuple[list[str], list[ScoredChunk], dict[str, Any]]:
+    """Run one of the preregistered retrieval expansion arms."""
+
+    if arm == "none":
+        return _doc_ids_from_hits(initial_hits, k=k), list(initial_hits), {
+            "arm": arm,
+            "passes": 1,
+            "expanded": False,
+        }
+
+    hits = list(initial_hits)
+    queries: list[str] = []
+    fallback_reason: str | None = None
+    model_metadata: dict[str, object] | None = None
+    passes = 1
+    depth_gap_warning: bool | None = None
+    cache_context = (
+        _expansion_cache_context(
+            question,
+            store,
+            k=k,
+            candidate_k=candidate_k,
+            sparse_backend=sparse_backend,
+            gap_threshold=gap_threshold,
+            arm=arm,
+            provider=provider,
+        )
+        if provider is not None
+        else None
+    )
+
+    if arm in {"depth", "closed_loop"}:
+        _, depth_hits, depth_gap_warning = retrieve_docs(
+            store,
+            embedder,
+            question.question,
+            k=min(candidate_k, max(k + 1, k * 2)),
+            candidate_k=candidate_k,
+            sparse_backend=sparse_backend,
+            sparse_encoder=sparse_encoder,
+            reranker=reranker,
+            gap_threshold=gap_threshold,
+        )
+        hits = _merge_scored_hits(hits, depth_hits)
+        passes = 2
+        queries.append(question.question)
+
+    if arm == "closed_loop" and not depth_gap_warning and depth_hits:
+        return _doc_ids_from_hits(hits, k=k), hits, {
+            "arm": arm,
+            "passes": passes,
+            "expanded": len(hits) > len(initial_hits),
+            "queries": queries,
+            "fallback_reason": None,
+            "provider_skipped_reason": "depth_resolved",
+            "model": None,
+        }
+
+    if arm in {"cheap", "closed_loop"}:
+        if provider is None:
+            fallback_reason = "cheap_expansion_provider_unavailable"
+        else:
+            expansion_request = ExpansionRequest(
+                query=question.question,
+                tenant_id="enterprise-rag",
+                generation_id=None,
+                evidence=_expansion_evidence(hits),
+                gap_reason=(
+                    "retrieval_gap"
+                    if initial_gap_warning or not initial_hits
+                    else "assess_evidence_completeness"
+                ),
+            )
+            try:
+                cached = expansion_cache.get(question.question_id) if expansion_cache else None
+                if cache_context is not None and isinstance(cached, Mapping) and _expansion_cache_matches(
+                    cached, cache_context
+                ):
+                    report = _expansion_report_from_cache(cached)
+                else:
+                    report = provider(expansion_request)
+                    if expansion_cache is not None:
+                        expansion_cache[question.question_id] = _expansion_report_to_cache(
+                            report,
+                            context=cache_context or {},
+                            provider_metadata=provider.provider_metadata().to_dict(),
+                        )
+                if not isinstance(report, ExpansionReport):
+                    raise TypeError("cheap provider returned an invalid report")
+                proposals = sorted(
+                    report.proposals,
+                    key=lambda proposal: {"depth": 0, "rewrite": 1, "decompose": 2}[proposal.mode],
+                )
+                for proposal in proposals:
+                    if proposal.mode == "depth" and arm == "closed_loop":
+                        continue
+                    _, proposal_hits, _ = retrieve_docs(
+                        store,
+                        embedder,
+                        proposal.query,
+                        k=k,
+                        candidate_k=candidate_k,
+                        sparse_backend=sparse_backend,
+                        sparse_encoder=sparse_encoder,
+                        reranker=reranker,
+                        gap_threshold=gap_threshold,
+                    )
+                    hits = _merge_scored_hits(hits, proposal_hits)
+                    queries.append(proposal.query)
+                passes += int(bool(proposals))
+                model_metadata = provider.provider_metadata().to_dict()
+            except Exception as exc:
+                fallback_reason = type(exc).__name__
+
+    return _doc_ids_from_hits(hits, k=k), hits, {
+        "arm": arm,
+        "passes": passes,
+        "expanded": len(hits) > len(initial_hits),
+        "queries": queries,
+        "fallback_reason": fallback_reason,
+        "model": model_metadata,
+    }
 
 
 def extractive_answer(question: str, hits: Sequence[ScoredChunk], *, max_chars: int) -> str:
@@ -450,6 +823,7 @@ def generated_answer(
     api_key: str,
     max_chars: int,
     question_type: str | None = None,
+    answer_policy: str = "baseline",
 ) -> str:
     from benchmarks.llm import OpenRouterLLM
 
@@ -476,9 +850,98 @@ def generated_answer(
         "separately. Reason through conflicts, completeness, and missing evidence before giving "
         "the final answer, but return only the final answer."
     )
+    if answer_policy == "category_aware":
+        system += "\n\n" + category_answer_policy(question_type)
+    elif answer_policy != "baseline":
+        raise ValueError(f"unknown answer policy: {answer_policy}")
     type_line = f"Question type: {question_type}\n" if question_type else ""
     user = f"{type_line}Question:\n{question}\n\nDocuments:\n\n" + "\n\n".join(evidence)
     return OpenRouterLLM(model=model, api_key=api_key).complete(system, user)
+
+
+def category_answer_policy(question_type: str | None) -> str:
+    """Return the bounded reader policy for an official benchmark category.
+
+    This is deliberately an answer-side policy. It does not use gold document ids or answer
+    facts, and it is therefore safe to evaluate as a system behavior rather than as an oracle.
+    """
+
+    policies = {
+        "project_related": (
+            "This is a project-related multi-document question. Build one coherent answer from "
+            "all relevant documents. Track each requested entity, decision, dependency, and "
+            "causal step separately, then merge them without dropping a supported detail. "
+            "Distinguish facts from different source systems and do not fill gaps from general "
+            "knowledge."
+        ),
+        "completeness": (
+            "This is a completeness question. Treat the requested result as a checklist or set. "
+            "Search the provided documents for every distinct item, count, comparison, or fact "
+            "needed by the question. Before answering, verify that every part of the checklist "
+            "is supported and do not stop after finding only the most salient document."
+        ),
+        "conflicting_info": (
+            "This is a conflicting-information question. Compare the relevant documents before "
+            "answering. Use explicit dates, version markers, status, and source specificity to "
+            "separate superseded information from the current answer. Mention the older or "
+            "contradictory value when it is necessary to explain the change, and never silently "
+            "blend incompatible values."
+        ),
+        "constrained": (
+            "This is a constrained question. Treat every qualifier in the question as mandatory. "
+            "Filter out documents that match the topic but fail even one condition, and report "
+            "only facts supported after all constraints are applied."
+        ),
+        "intra_document_reasoning": (
+            "This question requires joining evidence from different parts of a document. Check "
+            "the whole supplied evidence for exceptions, conditions, and later qualifications "
+            "before deciding what the document supports."
+        ),
+        "high_level": (
+            "This is a high-level synthesis question. Separate directly supported company-wide "
+            "patterns from individual examples, and state the scope of the evidence instead of "
+            "inventing a precise number or universal conclusion."
+        ),
+    }
+    return policies.get(
+        (question_type or "").strip().lower(),
+        "First identify the exact facts requested, then verify each fact against the supplied evidence before answering.",
+    )
+
+
+def answer_hits(
+    hits: Sequence[ScoredChunk],
+    document_ids: Sequence[str],
+    *,
+    question_type: str | None,
+    answer_policy: str = "baseline",
+) -> list[ScoredChunk]:
+    """Keep answer context and submitted document ids aligned for the experimental policy."""
+
+    if answer_policy == "baseline":
+        return list(hits)
+    if answer_policy != "category_aware":
+        raise ValueError(f"unknown answer policy: {answer_policy}")
+
+    allowed = {str(value) for value in document_ids}
+    if not allowed:
+        return list(hits)
+    selected: list[ScoredChunk] = []
+    seen_documents: set[str] = set()
+    # Conflict questions benefit from one representative chunk per submitted document so the
+    # reader compares distinct sources instead of repeating the same stale/current claim. The
+    # other multi-evidence categories need all available chunks: completeness and project answers
+    # often distribute separate requested facts across several chunks of one document.
+    deduplicate_by_document = question_type == "conflicting_info"
+    for hit in hits:
+        doc_id = str(hit.chunk.metadata.get("doc_id") or hit.chunk.source)
+        if doc_id not in allowed:
+            continue
+        if deduplicate_by_document and doc_id in seen_documents:
+            continue
+        seen_documents.add(doc_id)
+        selected.append(hit)
+    return selected or list(hits)
 
 
 def write_answers(
@@ -537,6 +1000,118 @@ def write_answers_stream(
     return len(written_rows), written_rows
 
 
+def retrieval_capture_summary(captures: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    if not captures:
+        return {
+            "count": 0,
+            "stable": None,
+            "mean_document_jaccard": None,
+            "mean_latency_ms": None,
+            "p95_latency_ms": None,
+            "mean_stage_ms": {},
+            "calls": {},
+        }
+    document_sets = [
+        {str(value) for value in capture.get("document_ids", ())}
+        for capture in captures
+    ]
+    jaccard_sum = 0.0
+    pair_count = 0
+    for index, left in enumerate(document_sets):
+        for right in document_sets[index + 1 :]:
+            union = left | right
+            jaccard_sum += len(left & right) / len(union) if union else 1.0
+            pair_count += 1
+    latencies = sorted(
+        float(capture["latency_ms"])
+        for capture in captures
+        if isinstance(capture.get("latency_ms"), (int, float))
+    )
+    stage_totals: dict[str, float] = {}
+    call_totals: dict[str, int] = {}
+    for capture in captures:
+        stage_ms = capture.get("stage_ms")
+        if isinstance(stage_ms, Mapping):
+            for name, value in stage_ms.items():
+                if isinstance(value, (int, float)):
+                    stage_totals[str(name)] = stage_totals.get(str(name), 0.0) + float(value)
+        calls = capture.get("calls")
+        if isinstance(calls, Mapping):
+            for name, value in calls.items():
+                if isinstance(value, int):
+                    call_totals[str(name)] = call_totals.get(str(name), 0) + value
+    p95_index = min(len(latencies) - 1, max(0, int(len(latencies) * 0.95 + 0.999) - 1))
+    return {
+        "count": len(captures),
+        "stable": len({tuple(sorted(values)) for values in document_sets}) == 1,
+        "mean_document_jaccard": jaccard_sum / pair_count if pair_count else 1.0,
+        "mean_latency_ms": sum(latencies) / len(latencies) if latencies else None,
+        "p95_latency_ms": latencies[p95_index] if latencies else None,
+        "mean_stage_ms": (
+            {name: value / len(captures) for name, value in sorted(stage_totals.items())}
+            if stage_totals
+            else {}
+        ),
+        "calls": call_totals,
+    }
+
+
+def runtime_telemetry(rows: Sequence[Mapping[str, Any]], *, answer_mode: str) -> dict[str, Any]:
+    """Summarize non gold runtime measurements for the run manifest."""
+
+    captures = [
+        row.get("_diagnostics", {}).get("captures")
+        for row in rows
+        if isinstance(row.get("_diagnostics"), Mapping)
+    ]
+    summaries = [item for item in captures if isinstance(item, Mapping)]
+    latencies = [
+        float(item["mean_latency_ms"])
+        for item in summaries
+        if isinstance(item.get("mean_latency_ms"), (int, float))
+    ]
+    calls: dict[str, int] = {}
+    for item in summaries:
+        raw_calls = item.get("calls")
+        if isinstance(raw_calls, Mapping):
+            for name, value in raw_calls.items():
+                if isinstance(value, int):
+                    calls[str(name)] = calls.get(str(name), 0) + value
+    calls["answer_model"] = len(rows) if answer_mode == "openrouter" else 0
+    return {
+        "questions_with_telemetry": len(summaries),
+        "mean_question_retrieval_latency_ms": sum(latencies) / len(latencies) if latencies else None,
+        "p95_question_retrieval_latency_ms": (
+            sorted(latencies)[min(len(latencies) - 1, max(0, int(len(latencies) * 0.95 + 0.999) - 1))]
+            if latencies
+            else None
+        ),
+        "calls": calls,
+        "cost_usd": None,
+        "cost_status": "not_available_for_retrieval_providers",
+    }
+
+
+def _combine_retrieval_diagnostics(
+    first: RetrievalDiagnostics,
+    second: RetrievalDiagnostics,
+) -> RetrievalDiagnostics:
+    """Combine the two retrieval passes used by selective depth."""
+
+    stage_ms: dict[str, float] = {}
+    for diagnostics in (first, second):
+        for name, value in diagnostics.stage_ms.items():
+            stage_ms[name] = stage_ms.get(name, 0.0) + float(value)
+    return RetrievalDiagnostics(
+        embedding_profile=second.embedding_profile,
+        retrieval_profile=second.retrieval_profile,
+        index_generation=second.index_generation,
+        candidate_pool_size=max(first.candidate_pool_size, second.candidate_pool_size),
+        reranking_ran=first.reranking_ran or second.reranking_ran,
+        stage_ms=stage_ms,
+    )
+
+
 def _answers(
     questions: Sequence[EnterpriseQuestion],
     store: PgVectorStore,
@@ -552,37 +1127,176 @@ def _answers(
     sparse_encoder: object | None,
     reranker: object | None,
     gap_threshold: float,
+    reasoning_arm: str,
+    expansion_provider: OpenAIExpansionProvider | None,
+    expansion_cache: dict[str, Any] | None,
+    answer_policy: str = "baseline",
+    retrieval_captures: int = 1,
+    adaptive_depth_feature: str | None = None,
+    adaptive_depth_threshold: float | None = None,
+    adaptive_depth_k: int | None = None,
 ) -> Iterator[Mapping[str, Any]]:
-    for question in questions:
-        doc_ids, hits, gap_warning = retrieve_docs(
-            store,
-            embedder,
-            question.question,
-            k=k,
-            candidate_k=candidate_k,
-            sparse_backend=sparse_backend,
-            sparse_encoder=sparse_encoder,
-            reranker=reranker,
-            gap_threshold=gap_threshold,
+    if retrieval_captures < 1 or retrieval_captures > MAX_RETRIEVAL_CAPTURES:
+        raise ValueError(
+            f"retrieval_captures must be between 1 and {MAX_RETRIEVAL_CAPTURES}"
         )
+    for question in questions:
+        retrieval_k = max(k, adaptive_depth_k or k)
+        capture_rows: list[dict[str, Any]] = []
+        first_answer: tuple[
+            list[str], list[ScoredChunk], bool, dict[str, Any], list[str], int,
+            RetrievalDiagnostics,
+    ] | None = None
+        for capture in range(retrieval_captures):
+            capture_started = time.perf_counter()
+            doc_ids, hits, gap_warning, retrieval_diagnostics = retrieve_docs_with_diagnostics(
+                store,
+                embedder,
+                question.question,
+                k=k,
+                candidate_k=candidate_k,
+                sparse_backend=sparse_backend,
+                sparse_encoder=sparse_encoder,
+                reranker=reranker,
+                gap_threshold=gap_threshold,
+            )
+            document_k, confidence_value, depth_expanded = adaptive_depth_choice(
+                hits,
+                base_k=k,
+                expanded_k=retrieval_k,
+                feature=adaptive_depth_feature,
+                threshold=adaptive_depth_threshold,
+            )
+            if depth_expanded:
+                doc_ids, hits, gap_warning, expanded_diagnostics = retrieve_docs_with_diagnostics(
+                    store,
+                    embedder,
+                    question.question,
+                    k=retrieval_k,
+                    candidate_k=candidate_k,
+                    sparse_backend=sparse_backend,
+                    sparse_encoder=sparse_encoder,
+                    reranker=reranker,
+                    gap_threshold=gap_threshold,
+                )
+                retrieval_diagnostics = _combine_retrieval_diagnostics(
+                    retrieval_diagnostics,
+                    expanded_diagnostics,
+                )
+            selected_document_ids = _doc_ids_from_hits(hits, k=document_k)
+            reasoning_doc_ids, reasoning_hits, reasoning_diagnostics = expand_retrieval_hits(
+                question,
+                store,
+                embedder,
+                initial_hits=hits,
+                initial_gap_warning=gap_warning,
+                k=document_k,
+                candidate_k=candidate_k,
+                sparse_backend=sparse_backend,
+                sparse_encoder=sparse_encoder,
+                reranker=reranker,
+                gap_threshold=gap_threshold,
+                arm=reasoning_arm,
+                provider=expansion_provider,
+                expansion_cache=expansion_cache,
+            )
+            if first_answer is None:
+                first_answer = (
+                    reasoning_doc_ids,
+                    reasoning_hits,
+                    gap_warning,
+                    reasoning_diagnostics,
+                    selected_document_ids,
+                    len(hits),
+                    retrieval_diagnostics,
+                )
+            stage_ms = dict(retrieval_diagnostics.stage_ms)
+            retrieval_passes = 1 + int(depth_expanded)
+            calls = {
+                "embedding": retrieval_passes,
+                "lexical": retrieval_passes * int(sparse_backend in ("lexical", "both")),
+                "splade": retrieval_passes * int(sparse_backend in ("splade", "both")),
+                "reranker": retrieval_passes * int(retrieval_diagnostics.reranking_ran),
+            }
+            capture_rows.append(
+                {
+                    "capture": capture + 1,
+                    "initial_document_ids": selected_document_ids,
+                    "initial_hit_count": len(hits),
+                    "document_ids": reasoning_doc_ids,
+                    "adaptive_depth": {
+                        "feature": adaptive_depth_feature,
+                        "threshold": adaptive_depth_threshold,
+                        "value": confidence_value,
+                        "expanded": depth_expanded,
+                        "selected_k": document_k,
+                    },
+                    "expanded": bool(reasoning_diagnostics.get("expanded")),
+                    "latency_ms": round((time.perf_counter() - capture_started) * 1000.0, 3),
+                    "stage_ms": stage_ms,
+                    "calls": calls,
+                }
+            )
+        assert first_answer is not None
+        (
+            reasoning_doc_ids,
+            reasoning_hits,
+            gap_warning,
+            reasoning_diagnostics,
+            initial_document_ids,
+            initial_hit_count,
+            retrieval_diagnostics,
+        ) = first_answer
+        capture_diagnostics = retrieval_capture_summary(capture_rows)
         if mode == "openrouter":
             if not api_key:
                 raise RuntimeError("OPENROUTER_API_KEY is required for --answer-mode openrouter")
+            answer_hits_for_model = answer_hits(
+                reasoning_hits,
+                reasoning_doc_ids,
+                question_type=_question_type(question),
+                answer_policy=answer_policy,
+            )
             answer = generated_answer(
                 question.question,
-                hits,
+                answer_hits_for_model,
                 model=model,
                 api_key=api_key,
                 max_chars=max_chars,
                 question_type=_text(question.raw.get("question_type")),
+                answer_policy=answer_policy,
             )
         else:
-            answer = extractive_answer(question.question, hits, max_chars=max_chars)
+            answer = extractive_answer(question.question, reasoning_hits, max_chars=max_chars)
         yield {
             "question_id": question.question_id,
             "answer": answer,
-            "document_ids": doc_ids,
-            "_diagnostics": {"gap_warning": gap_warning},
+            "document_ids": reasoning_doc_ids,
+            "_diagnostics": {
+                "gap_warning": gap_warning,
+                "initial_document_ids": initial_document_ids,
+                "initial_hit_count": initial_hit_count,
+                "adaptive_depth": {
+                    "feature": adaptive_depth_feature,
+                    "threshold": adaptive_depth_threshold,
+                    "k": adaptive_depth_k,
+                },
+                "reasoning": reasoning_diagnostics,
+                "answer_policy": answer_policy,
+                "answer_context_document_ids": [
+                    str(hit.chunk.metadata.get("doc_id") or hit.chunk.source)
+                    for hit in answer_hits_for_model
+                ] if mode == "openrouter" else reasoning_doc_ids,
+                "captures": capture_diagnostics,
+                "retrieval_diagnostics": {
+                    "embedding_profile": retrieval_diagnostics.embedding_profile,
+                    "retrieval_profile": retrieval_diagnostics.retrieval_profile,
+                    "index_generation": retrieval_diagnostics.index_generation,
+                    "candidate_pool_size": retrieval_diagnostics.candidate_pool_size,
+                    "reranking_ran": retrieval_diagnostics.reranking_ran,
+                    "stage_ms": dict(retrieval_diagnostics.stage_ms),
+                },
+            },
         }
 
 
@@ -620,6 +1334,32 @@ def _doc_ids_from_hits(hits: Sequence[ScoredChunk], *, k: int) -> list[str]:
     return ids
 
 
+ADAPTIVE_DEPTH_FEATURES = frozenset({"max_dense_score", "eighth_hit_dense_score"})
+
+
+def adaptive_depth_choice(
+    hits: Sequence[ScoredChunk],
+    *,
+    base_k: int,
+    expanded_k: int,
+    feature: str | None,
+    threshold: float | None,
+) -> tuple[int, float | None, bool]:
+    """Choose a document depth from non-gold dense-score confidence."""
+
+    if feature is None or threshold is None:
+        return base_k, None, False
+    if feature not in ADAPTIVE_DEPTH_FEATURES:
+        raise ValueError(f"unknown adaptive depth feature: {feature}")
+    scores = [float(hit.score) for hit in hits if isinstance(hit.score, (int, float))]
+    if feature == "max_dense_score":
+        value = max(scores) if scores else None
+    else:
+        value = float(hits[7].score) if len(hits) >= 8 else None
+    expanded = value is not None and value < threshold
+    return (expanded_k if expanded else base_k), value, expanded
+
+
 def _expected_docs(question: EnterpriseQuestion) -> set[str]:
     expected_raw = question.raw.get("expected_doc_ids")
     if not isinstance(expected_raw, list):
@@ -631,10 +1371,28 @@ def _question_type(question: EnterpriseQuestion) -> str:
     return _text(question.raw.get("question_type")).lower()
 
 
+#: Probe depth for the corpus-wide dense top-1.
+#:
+#: ⚠️ NOT 1, and the reason is not politeness about recall. `PgVectorStore._query_dense` widens
+#: `hnsw.ef_search` only when `k * multiplier` exceeds pgvector's default of 40, so a `k=1` probe
+#: runs the graph walk at ef_search=40 while the retrieval leg it is compared against runs at
+#: k=200 and therefore ef_search=800. `recall/store.py` records ef_search=40 at 0.385 recall
+#: against 0.942 at 200. An approximate walk can only UNDER-report the top score, and under-
+#: reporting moves questions below a floor they do not really fall below, which is the direction
+#: that silently breaks a claim phrased as "at least". Measured at k=1 this repo has seen a top
+#: cosine 0.047 below the true one, with no error and a plausible value.
+CORPUS_TOP1_PROBE_K = 200
+
+
 def best_dense_score(store: PgVectorStore, embedder: Embedder, question: str) -> float | None:
+    """The corpus-wide best dense cosine for `question`, or None if the tenant returned nothing.
+
+    `max` over the returned hits rather than `hits[0].score`: the ordering is the store's, and
+    taking the maximum states the quantity being asked for instead of trusting a sort.
+    """
     qvec = embed_query(embedder, question)
-    hits = store.query_dense(qvec, k=1)
-    return hits[0].score if hits else None
+    hits = store.query_dense(qvec, k=CORPUS_TOP1_PROBE_K)
+    return max((hit.score for hit in hits), default=None)
 
 
 def retrieval_calibration(
@@ -663,12 +1421,49 @@ def retrieval_calibration(
             reranker=reranker,
             gap_threshold=DEFAULT_GAP_THRESHOLD,
         )
+        # 🔑 The quantity the trust floor actually decides on. The floor is applied per RETURNED
+        # hit, so a question loses all of its evidence exactly when every returned hit is below
+        # it, i.e. when this maximum is. It is an equality, not a bound, and it costs nothing:
+        # these hits are already in hand.
+        max_returned = max((hit.score for hit in hits), default=None)
+        best = best_dense_score(store, embedder, question.question)
+        if best is None:
+            # ⚠️ This is NOT evidence that the tenant is empty, and an earlier version of this
+            # message said it was. `query_dense` filters on tenant as a POST-filter over an HNSW
+            # index built across the whole table, so on a multi-tenant table the walk can return
+            # only other tenants' rows for one query and not another: emptiness is per-QUERY.
+            # This repo has measured 10 of 26 queries coming back empty on one tenant while the
+            # rest returned hits. Raising early is still right, because every later number would
+            # be meaningless, but the operator must be sent to the right knob.
+            raise RuntimeError(
+                f"no dense hit for {question.question_id!r} at k={CORPUS_TOP1_PROBE_K} in tenant "
+                f"{store.tenant!r}. The tenant filter is applied AFTER the HNSW walk, so this can "
+                f"be a per-query miss on a multi-tenant table rather than an empty tenant. Check "
+                f"hnsw.ef_search and the tenant's share of {store.table!r} before concluding the "
+                f"index is absent."
+            )
+        if max_returned is not None and max_returned > best:
+            # The corpus top-1 must dominate every returned hit, since the returned hits are drawn
+            # from the same table. A violation means the two are not on one basis: a different
+            # query vector (this benchmark embeds twice unless a query cache is wired, and Voyage
+            # query embeddings are not deterministic), or a probe still too narrow to find the
+            # true nearest neighbour. Either way no number below can be interpreted.
+            raise RuntimeError(
+                f"{question.question_id!r}: a returned hit scores {max_returned!r}, above the "
+                f"corpus top-1 probe {best!r}. These cannot both be dense cosines of one query "
+                f"against one table. Wire --embedding-cache so both sides share a query vector, "
+                f"and check CORPUS_TOP1_PROBE_K is wide enough for this index."
+            )
         rows.append(
             {
                 "question_id": question.question_id,
                 "question_type": _question_type(question),
                 "expected_docs": sorted(_expected_docs(question)),
-                "best_dense_score": best_dense_score(store, embedder, question.question),
+                # The corpus-wide top-1. Kept because it is what the previous artifact measured,
+                # so the two instruments can be compared rather than argued about.
+                "best_dense_score": best,
+                # What the floor is actually applied to. This is the one the summary reads.
+                "max_returned_dense_score": max_returned,
                 "doc_ids_by_k": {str(k): _doc_ids_from_hits(hits, k=k) for k in k_values},
             }
         )
@@ -738,6 +1533,24 @@ def retrieval_calibration(
         "reranker": type(reranker).__name__ if reranker is not None else None,
         "k_metrics": k_metrics,
         "threshold_metrics": threshold_metrics,
+        # Derived here rather than by hand later. A summary written beside the rows by a human is
+        # the same fact twice, and the first one that was drifted silently: every median was
+        # `median_high`. `summarize` is the single definition and the write below refuses a
+        # mismatch, so this cannot be stale relative to `rows`.
+        # ⚠️ The scored quantity is arm-dependent, unlike the corpus top-1 it replaced. It is the
+        # max dense cosine over the RETURNED hits, so which hits come back decides it: a reranker
+        # reorders without rescoring and can push the highest-cosine chunk out of the returned k,
+        # which can only move a question BELOW the floor. A wider k can only move it above. So the
+        # arm and the k travel with the number rather than living in a paragraph someone may not
+        # read, and a reader comparing two runs can see immediately whether they are comparable.
+        "dense_floor_summary": {
+            **summarize(rows),
+            "scored_over_top_k": max_k,
+            "scored_arm": {
+                "sparse_backend": sparse_backend,
+                "reranker": type(reranker).__name__ if reranker is not None else None,
+            },
+        },
         "rows": rows,
     }
 
@@ -774,6 +1587,135 @@ def retrieval_summary(
         "expected_docs": total_expected,
         "hit_expected_docs": total_hit,
     }
+
+
+def reasoning_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    diagnostics = [
+        row.get("_diagnostics", {}).get("reasoning", {})
+        for row in rows
+        if isinstance(row.get("_diagnostics"), Mapping)
+        and isinstance(row.get("_diagnostics", {}).get("reasoning"), Mapping)
+    ]
+    if not diagnostics:
+        return None
+    expanded = sum(bool(item.get("expanded")) for item in diagnostics)
+    fallbacks = sum(bool(item.get("fallback_reason")) for item in diagnostics)
+    capture_blocks = [
+        row.get("_diagnostics", {}).get("captures")
+        for row in rows
+        if isinstance(row.get("_diagnostics"), Mapping)
+        and isinstance(row.get("_diagnostics", {}).get("captures"), Mapping)
+    ]
+    stable_captures = [
+        bool(block.get("stable")) for block in capture_blocks if isinstance(block, Mapping)
+    ]
+    return {
+        "rows": len(diagnostics),
+        "expanded_rows": expanded,
+        "expanded_rate": expanded / len(diagnostics),
+        "fallback_rows": fallbacks,
+        "fallback_rate": fallbacks / len(diagnostics),
+        "passes_total": sum(int(item.get("passes", 1)) for item in diagnostics),
+        "queries_total": sum(len(item.get("queries", ())) for item in diagnostics),
+        "capture_stability_rate": (
+            sum(stable_captures) / len(stable_captures) if stable_captures else None
+        ),
+        "model": next(
+            (item.get("model") for item in diagnostics if item.get("model") is not None), None
+        ),
+    }
+
+
+def reasoning_promotion_gate(metrics: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Evaluate the cheap model promotion gate from independent judge metrics.
+
+    The benchmark runner does not act as the answer judge. Missing judge signals therefore keep
+    the gate pending, and no expensive reasoning model can be selected by omission.
+    """
+
+    if metrics is None:
+        return {
+            "status": "pending",
+            "expensive_model_allowed": False,
+            "missing": [
+                "baseline_correctness",
+                "candidate_correctness",
+                "useful_expansion_precision",
+                "stable_repeated_captures",
+                "validation_failure_rate",
+                "no_material_false_abstention",
+                "info_not_found_correctness",
+            ],
+            "failed": [],
+        }
+    checks: dict[str, bool | None] = {}
+    missing: list[str] = []
+    failed: list[str] = []
+
+    baseline = _optional_number(metrics.get("baseline_correctness"))
+    candidate = _optional_number(metrics.get("candidate_correctness"))
+    if baseline is None:
+        missing.append("baseline_correctness")
+    if candidate is None:
+        missing.append("candidate_correctness")
+    checks["correctness_delta_at_least_3_points"] = (
+        None if baseline is None or candidate is None else candidate - baseline >= 0.03
+    )
+
+    for name in ("useful_expansion_precision", "stable_repeated_captures"):
+        value = metrics.get(name)
+        checks[name] = value if isinstance(value, bool) else None
+        if checks[name] is None:
+            missing.append(name)
+
+    validation_failure_rate = _optional_number(metrics.get("validation_failure_rate"))
+    checks["validation_failure_rate_at_most_5_percent"] = (
+        None if validation_failure_rate is None else validation_failure_rate <= 0.05
+    )
+    if validation_failure_rate is None:
+        missing.append("validation_failure_rate")
+
+    false_abstention = metrics.get("no_material_false_abstention")
+    checks["false_abstention_regression_absent"] = (
+        false_abstention if isinstance(false_abstention, bool) else None
+    )
+    if checks["false_abstention_regression_absent"] is None:
+        missing.append("no_material_false_abstention")
+
+    info_not_found_correctness = _optional_number(metrics.get("info_not_found_correctness"))
+    checks["info_not_found_correctness_at_least_90_percent"] = (
+        None if info_not_found_correctness is None else info_not_found_correctness >= 0.90
+    )
+    if info_not_found_correctness is None:
+        missing.append("info_not_found_correctness")
+
+    failed.extend(name for name, passed in checks.items() if passed is False)
+    status = "eligible" if not missing and not failed else "blocked" if failed else "pending"
+    return {
+        "status": status,
+        "expensive_model_allowed": status == "eligible",
+        "checks": checks,
+        "missing": missing,
+        "failed": failed,
+        "thresholds": {
+            "correctness_delta": 0.03,
+            "validation_failure_rate": 0.05,
+            "false_abstention_regression": "independent_judge_decision",
+            "info_not_found_correctness": 0.90,
+        },
+    }
+
+
+def _optional_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def load_promotion_metrics(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    return load_published_artifact(path)
 
 
 def sha256_file(path: Path) -> str:
@@ -836,6 +1778,27 @@ def build_parser() -> argparse.ArgumentParser:
             "into millions of tiny vectors."
         ),
     )
+    parser.add_argument(
+        "--reasoning-cache",
+        type=Path,
+        help="JSON cache for cheap model expansion proposals, enabling replay without model calls",
+    )
+    parser.add_argument(
+        "--embedding-cache",
+        type=Path,
+        help="SQLite cache for query embeddings, enabling repeated retrieval captures without re-embedding",
+    )
+    parser.add_argument(
+        "--promotion-metrics",
+        type=Path,
+        help="JSON metrics from the independent judge used to evaluate cheap model promotion",
+    )
+    parser.add_argument(
+        "--retrieval-captures",
+        type=int,
+        default=1,
+        help="repeat each retrieval capture to quantify embedding and ranking variance",
+    )
     parser.add_argument("--chunk-overlap", type=int, default=DEFAULT_CHUNK_OVERLAP)
     parser.add_argument("--sparse-backend", choices=sorted(SPARSE_BACKENDS), default="lexical")
     parser.add_argument("--splade-model", default=DEFAULT_SPLADE_MODEL)
@@ -850,8 +1813,39 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_RERANK_DOCUMENT_CHARS,
         help="maximum characters per candidate document sent to the reranker",
     )
+    parser.add_argument(
+        "--reranker-rank-weight",
+        type=float,
+        default=1.0,
+        help="Voyage rank contribution; 1.0 preserves pure reranking, lower values blend hybrid rank",
+    )
+    parser.add_argument(
+        "--adaptive-depth-feature",
+        choices=sorted(ADAPTIVE_DEPTH_FEATURES),
+        help="non-gold confidence feature used to widen the submitted document depth",
+    )
+    parser.add_argument(
+        "--adaptive-depth-threshold",
+        type=float,
+        help="expand to --adaptive-depth-k when the selected feature is below this value",
+    )
+    parser.add_argument(
+        "--adaptive-depth-k",
+        type=int,
+        default=12,
+        help="expanded document depth for the selective-depth arm",
+    )
     parser.add_argument("--limit-docs", type=int)
     parser.add_argument("--limit-questions", type=int)
+    parser.add_argument(
+        "--question-types",
+        help="comma-separated official question_type values to run, preserving release order",
+    )
+    parser.add_argument(
+        "--question-ids-file",
+        type=Path,
+        help="newline-delimited question ids to run, preserving the file order from the release",
+    )
     parser.add_argument("--reset-index", action="store_true")
     parser.add_argument(
         "--skip-indexed-sources",
@@ -863,9 +1857,42 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--answer-mode", choices=("extractive", "openrouter"), default="extractive")
+    parser.add_argument(
+        "--answer-policy",
+        choices=("baseline", "category_aware"),
+        default="baseline",
+        help="answer-side evidence policy; category_aware is an opt-in experiment",
+    )
+    parser.add_argument(
+        "--reasoning-arm",
+        choices=("none", "depth", "cheap", "closed_loop"),
+        default="none",
+        help=(
+            "retrieval expansion arm. cheap and closed_loop require "
+            "RECALL_REASONING_EXPANSION=1, RECALL_REASONING_EXPANSION_MODEL, and "
+            "RECALL_REASONING_API_KEY; the answer model remains --model"
+        ),
+    )
     parser.add_argument("--model", default=os.environ.get("ENTERPRISE_RAG_MODEL", DEFAULT_MODEL))
     parser.add_argument("--max-context-chars", type=int, default=DEFAULT_MAX_CHARS)
     parser.add_argument("--calibrate-retrieval-out", type=Path)
+    parser.add_argument(
+        "--calibrate-sample-per-stratum", type=int, default=0,
+        help="draw this many questions per question_type with --calibrate-sample-seed; 0 uses "
+             "every question passed in. The published artifact took the first ten ids of each "
+             "category block, which is head bias and was reproducible by nothing in the tree.",
+    )
+    parser.add_argument("--calibrate-sample-seed", type=int, default=0)
+    parser.add_argument(
+        "--calibrate-note", default="",
+        help="the _provenance note. Required, because an artifact nobody can explain is not "
+             "evidence, and the repo's artifact suite refuses a file without one.",
+    )
+    parser.add_argument(
+        "--calibrate-backs", action="append", default=None,
+        help="a claim this artifact supports; repeatable. Required for the same reason.",
+    )
+    parser.add_argument("--calibrate-generation", default="post-#81/#84")
     parser.add_argument("--calibrate-k-values", default="3,5,8,10,12,15")
     parser.add_argument("--calibrate-thresholds", default="0.35,0.4,0.45,0.5,0.55,0.6")
     parser.add_argument(
@@ -902,12 +1929,62 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     apply_top_config(args)
+    if args.retrieval_captures < 1 or args.retrieval_captures > MAX_RETRIEVAL_CAPTURES:
+        raise ValueError(
+            f"--retrieval-captures must be between 1 and {MAX_RETRIEVAL_CAPTURES}"
+        )
     started = datetime.now(UTC).isoformat()
     t0 = time.perf_counter()
     embedder = resolve_embedder(args.embedder)
-    reranker = build_reranker(args.reranker, max_document_chars=args.rerank_document_chars)
+    embedding_cache = EmbeddingCache(args.embedding_cache) if args.embedding_cache else None
+    retrieval_embedder: Embedder = (
+        QueryCachedEmbedder(embedder, embedding_cache) if embedding_cache is not None else embedder
+    )
+    if not 0.0 <= args.reranker_rank_weight <= 1.0:
+        raise ValueError("--reranker-rank-weight must be between 0 and 1")
+    if (args.adaptive_depth_feature is None) != (args.adaptive_depth_threshold is None):
+        raise ValueError(
+            "--adaptive-depth-feature and --adaptive-depth-threshold must be provided together"
+        )
+    if args.adaptive_depth_threshold is not None and not 0.0 <= args.adaptive_depth_threshold <= 1.0:
+        raise ValueError("--adaptive-depth-threshold must be between 0 and 1")
+    if args.adaptive_depth_k < args.k:
+        raise ValueError("--adaptive-depth-k must be at least --k")
+    reranker = build_reranker(
+        args.reranker,
+        max_document_chars=args.rerank_document_chars,
+        rank_weight=args.reranker_rank_weight,
+    )
+    expansion_provider = (
+        resolve_expansion_provider()
+        if args.reasoning_arm in ("cheap", "closed_loop")
+        else None
+    )
+    expansion_cache = load_reasoning_cache(args.reasoning_cache)
+    if args.retrieval_captures > 1 and args.reasoning_arm in ("cheap", "closed_loop"):
+        expansion_cache = expansion_cache or {}
+    promotion_metrics = load_promotion_metrics(args.promotion_metrics)
     sparse_encoder: object | None = None
-    questions = load_questions(args.questions, limit=args.limit_questions)
+    question_types = (
+        {item.strip().lower() for item in args.question_types.split(",") if item.strip()}
+        if args.question_types
+        else None
+    )
+    question_ids = (
+        {
+            line.strip()
+            for line in args.question_ids_file.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        if args.question_ids_file
+        else None
+    )
+    questions = load_questions(
+        args.questions,
+        limit=args.limit_questions,
+        question_types=question_types,
+        question_ids=question_ids,
+    )
     all_questions = list(questions)
     existing_answer_rows: list[dict[str, Any]] = []
     if args.resume:
@@ -925,7 +2002,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     stats = {"documents": 0, "chunks": 0}
     sparse_stats: dict[str, Any] | None = None
     retrieval_metrics: dict[str, Any] | None = None
+    reasoning_metrics: dict[str, Any] | None = None
     calibration: dict[str, Any] | None = None
+    new_answer_rows: list[Mapping[str, Any]] = []
     with PgVectorStore(
         dsn,
         dim=embedder.dim,
@@ -963,10 +2042,57 @@ def main(argv: Iterable[str] | None = None) -> int:
                 accept_noncommercial_license=args.accept_noncommercial_splade_license,
                 device=args.sparse_device,
             )
+            # ⚠️ Both sides of the corpus-top-1 invariant must come from ONE query vector.
+            # Without a query cache this benchmark embeds each question twice, and this project
+            # has measured 42.5% of repeat Voyage query embeddings as different, so the two
+            # sides would be cosines of two slightly different queries and the invariant would
+            # fail for a reason that has nothing to do with the index.
+            # Checked BEFORE the run, not after it. This file's own comment says "Fail on
+            # question 1, not after the bill", and the first version of this check sat below
+            # `retrieval_calibration`, so a forgotten flag cost a full 100-question run.
+            if not args.calibrate_note or not args.calibrate_backs:
+                raise SystemExit(
+                    "--calibrate-retrieval-out needs --calibrate-note and at least one "
+                    "--calibrate-backs: the repository refuses a committed artifact that explains "
+                    "neither what it measured nor what cites it."
+                )
+            if not isinstance(retrieval_embedder, QueryCachedEmbedder):
+                raise SystemExit(
+                    "--calibrate-retrieval-out needs --embedding-cache: the corpus probe and the "
+                    "retrieval leg embed the same question separately, and this embedder is not "
+                    "deterministic, so without a shared vector the two are not comparable."
+                )
+            # ⛔ The population weights are hard-coded, so a questions file whose per-type counts
+            # differ from the benchmark this module was written against produces a silently wrong
+            # estimate. Checked before a single embedding is spent, which is the only reason
+            # `strata_of` exists.
+            observed = strata_of(questions, type_of=_question_type)
+            if observed != POPULATION:
+                raise SystemExit(
+                    f"the questions file's strata {sorted(observed.items())} do not match the "
+                    f"population weights {sorted(POPULATION.items())} that summarize() applies. "
+                    f"Every population figure from this run would be a rate over the wrong base."
+                )
+            calibrate_questions = questions
+            sampling: dict[str, Any] | None = None
+            if args.calibrate_sample_per_stratum:
+                calibrate_questions = stratify(
+                    questions,
+                    per_stratum=args.calibrate_sample_per_stratum,
+                    seed=args.calibrate_sample_seed,
+                    type_of=_question_type,
+                    expect=POPULATION,
+                )
+                sampling = sampling_provenance(
+                    questions,
+                    calibrate_questions,
+                    per_stratum=args.calibrate_sample_per_stratum,
+                    seed=args.calibrate_sample_seed,
+                )
             calibration = retrieval_calibration(
-                questions,
+                calibrate_questions,
                 store,
-                embedder,
+                retrieval_embedder,
                 k_values=_parse_int_list(args.calibrate_k_values),
                 threshold_values=_parse_float_list(args.calibrate_thresholds),
                 candidate_k=args.candidate_k,
@@ -974,10 +2100,42 @@ def main(argv: Iterable[str] | None = None) -> int:
                 sparse_encoder=sparse_encoder,
                 reranker=reranker,
             )
-            args.calibrate_retrieval_out.parent.mkdir(parents=True, exist_ok=True)
-            args.calibrate_retrieval_out.write_text(
-                json.dumps(calibration, indent=2), encoding="utf-8"
-            )
+            # Emitted by the RUNNER, not assembled by hand afterwards. The previous artifact's
+            # block credited a revision predating the module that supposedly wrote it, and a
+            # re-run produced a file with no block at all.
+            calibration["_provenance"] = {
+                "generation": args.calibrate_generation,
+                "status": "current",
+                "superseded_by": None,
+                "note": args.calibrate_note,
+                "backs": list(args.calibrate_backs or []),
+                "generated_at": datetime.now(UTC).isoformat(),
+                "recall_revision": git_revision(Path(__file__).resolve().parents[1]),
+                "recall_version": package_version("recall-rag"),
+                "embedder": args.embedder,
+                "embedding_profile": embedding_profile_id(embedder),
+                "index": {"table": args.table, "tenant": args.tenant},
+                # ⛔ NAME and digest, never the absolute path. This artifact is committed to a
+                # public repository, and an absolute path names a user and a directory layout on
+                # an internal host, which this project treats as disclosure in its own right. No
+                # committed artifact here carried a /home/ path before, and the digest is the half
+                # that makes provenance verifiable anyway.
+                "questions": {
+                    "name": args.questions.name,
+                    "sha256": sha256_file(args.questions),
+                },
+                "sampling": sampling,
+                # Every number here passes through an embedder, so the versions that produced
+                # it are part of the result. The repo's artifact suite refuses a file without it.
+                "stack": model_stack(),
+                "corpus_top1_probe_k": CORPUS_TOP1_PROBE_K,
+                "candidate_k": args.candidate_k,
+                "sparse_backend": args.sparse_backend,
+                "reranker": args.reranker,
+            }
+            # Validate, then write: a payload whose summary disagrees with its rows leaves no
+            # file behind. `write_text` here was the hole that let a hand-written summary drift.
+            write_dense_floor_artifact(args.calibrate_retrieval_out, calibration)
             written = 0
         else:
             sparse_encoder = build_sparse_encoder(
@@ -991,7 +2149,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 _answers(
                     questions,
                     store,
-                    embedder,
+                    retrieval_embedder,
                     k=args.k,
                     candidate_k=args.candidate_k,
                     mode=args.answer_mode,
@@ -1002,12 +2160,28 @@ def main(argv: Iterable[str] | None = None) -> int:
                     sparse_encoder=sparse_encoder,
                     reranker=reranker,
                     gap_threshold=args.gap_threshold,
+                    reasoning_arm=args.reasoning_arm,
+                    expansion_provider=expansion_provider,
+                    expansion_cache=expansion_cache,
+                    answer_policy=args.answer_policy,
+                    retrieval_captures=args.retrieval_captures,
+                    adaptive_depth_feature=args.adaptive_depth_feature,
+                    adaptive_depth_threshold=args.adaptive_depth_threshold,
+                    adaptive_depth_k=(
+                        args.adaptive_depth_k if args.adaptive_depth_feature is not None else None
+                    ),
                 ),
                 overwrite=args.overwrite,
                 resume=args.resume,
             )
             answer_rows = [*existing_answer_rows, *new_answer_rows]
-            retrieval_metrics = retrieval_summary(all_questions, answer_rows)
+            # Gold document ids are intentionally excluded from the runtime object. Retrieval
+            # quality is scored only after this answer file exists, by the posthoc evaluator.
+            retrieval_metrics = None
+            reasoning_metrics = reasoning_summary(answer_rows)
+            write_reasoning_cache(args.reasoning_cache, expansion_cache)
+    if embedding_cache is not None:
+        embedding_cache.close()
     manifest = {
         "benchmark": "EnterpriseRAG-Bench",
         "started_at": started,
@@ -1015,7 +2189,18 @@ def main(argv: Iterable[str] | None = None) -> int:
         "elapsed_s": round(time.perf_counter() - t0, 3),
         "recall_revision": git_revision(Path(__file__).resolve().parents[1]),
         "recall_version": package_version("recall-rag"),
-        "questions": {"path": str(args.questions), "sha256": sha256_file(args.questions)},
+        "questions": {
+            "path": str(args.questions),
+            "sha256": sha256_file(args.questions),
+            "selected_count": len(all_questions),
+            "question_types": sorted(question_types) if question_types else None,
+            "question_ids_file": (
+                str(args.question_ids_file) if args.question_ids_file else None
+            ),
+            "question_ids_file_sha256": (
+                sha256_file(args.question_ids_file) if args.question_ids_file else None
+            ),
+        },
         "documents": [{"path": str(path), "sha256": sha256_file(path)} for path in args.documents],
         "index": {
             "table": args.table,
@@ -1028,6 +2213,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "retrieval": {
             "embedder": args.embedder,
             "embedding_profile": embedding_profile_id(embedder),
+            "embedding_cache": str(args.embedding_cache) if args.embedding_cache else None,
             "k": args.k,
             "candidate_k": args.candidate_k,
             "gap_threshold": args.gap_threshold,
@@ -1035,11 +2221,32 @@ def main(argv: Iterable[str] | None = None) -> int:
             "splade_model": args.splade_model if args.sparse_backend in ("splade", "both") else None,
             "splade_backfill": sparse_stats,
             "reranker": args.reranker,
+            "reranker_rank_weight": args.reranker_rank_weight,
+            "adaptive_depth_feature": args.adaptive_depth_feature,
+            "adaptive_depth_threshold": args.adaptive_depth_threshold,
+            "adaptive_depth_k": (
+                args.adaptive_depth_k if args.adaptive_depth_feature is not None else None
+            ),
+            "retrieval_captures": args.retrieval_captures,
+            "gold_fields_used_at_runtime": False,
+            "posthoc_metrics": "scripts/enterprise_rag_posthoc_metrics.py",
         },
         "answering": {
             "mode": args.answer_mode,
             "model": args.model if args.answer_mode == "openrouter" else None,
             "max_context_chars": args.max_context_chars,
+            "answer_policy": args.answer_policy,
+        },
+        "reasoning": {
+            "arm": args.reasoning_arm,
+            "provider": (
+                expansion_provider.provider_metadata().to_dict()
+                if expansion_provider is not None
+                else None
+            ),
+            "summary": reasoning_metrics,
+            "cache": str(args.reasoning_cache) if args.reasoning_cache else None,
+            "promotion": reasoning_promotion_gate(promotion_metrics),
         },
         "outputs": {
             "answers": str(args.out),
@@ -1048,6 +2255,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             "resumed_rows": len(existing_answer_rows),
         },
         "retrieval_metrics": retrieval_metrics,
+        "runtime_telemetry": runtime_telemetry(
+            [*existing_answer_rows, *new_answer_rows], answer_mode=args.answer_mode
+        ),
         "calibration": {"path": str(args.calibrate_retrieval_out)} if calibration else None,
     }
     manifest_path = args.out.with_suffix(args.out.suffix + ".manifest.json")

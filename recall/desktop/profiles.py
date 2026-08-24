@@ -18,22 +18,90 @@ def profile_path() -> Path:
 
 def load_profile(path: Path | None = None) -> RuntimeProfile | None:
     target = path or profile_path()
+    # ⚠️ **Construction is INSIDE the guard, and that was the bug.** Widening the catch to
+    # `ValueError` covered `json.loads`, but `RuntimeProfile.from_dict` sat outside it — and it
+    # raises `ValueError` too: an unknown `RuntimeMode`, a docker profile with no compose file, an
+    # empty `default_tenant`. So a file that PARSED but did not validate escaped, out through the
+    # unguarded call in `main.py`, and the application would not open — the exact outcome the
+    # sibling `load_pipelines` docstring promises a bad settings file never causes.
     try:
         value = json.loads(target.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        if not isinstance(value, dict):
+            return None
+        return RuntimeProfile.from_dict(value)
+    except (OSError, ValueError, TypeError):
         return None
-    if not isinstance(value, dict):
-        return None
-    return RuntimeProfile.from_dict(value)
+
+
+def _write_json_atomically(target: Path, payload: object) -> Path:
+    """Write `payload` to `target` through `recall.atomic_write` (LF, bytes, fsync'd).
+
+    One implementation, because there were two and they had already diverged: `save_profile` wrote
+    platform newlines and `save_pipelines` pinned LF, so on Windows two files in the same directory
+    written by the same module disagreed. LF wins, matching every writer in the install path.
+
+    Delegating to `atomic_write_bytes` fixed two more defects the local version carried: the
+    temp name was `target.with_suffix(".tmp")`, which REPLACES the extension, so every save of
+    `runtime.json` shared one `runtime.tmp` and two concurrent saves could promote each other's
+    half-written JSON; and nothing was fsync'd, so a crash could publish an empty rename.
+    """
+    from recall.atomic_write import atomic_write_bytes
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(target, (json.dumps(payload, indent=2) + "\n").encode("utf-8"))
+    return target
 
 
 def save_profile(profile: RuntimeProfile, path: Path | None = None) -> Path:
-    target = path or profile_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(".tmp")
-    temporary.write_text(json.dumps(profile.to_dict(), indent=2) + "\n", encoding="utf-8")
-    temporary.replace(target)
-    return target
+    return _write_json_atomically(path or profile_path(), profile.to_dict())
+
+
+def pipeline_path() -> Path:
+    """Where the per-corpus pipeline choices live, beside `runtime.json`.
+
+    A separate file rather than a field on `RuntimeProfile`, because they answer different
+    questions: the profile says how to REACH recall (mode, compose file, endpoint, tenant), and this
+    says what the retrieval stack should BE. The wizard writes the profile and knows nothing about
+    embedder or reranker choices; keeping them apart means neither has to load the other's concerns.
+    """
+    return profile_path().with_name("pipeline.json")
+
+
+def load_pipelines(path: Path | None = None) -> dict[str, dict[str, object]]:
+    """The saved pipeline choices, or an empty mapping.
+
+    Empty for anything unreadable, on the same reasoning as the wizard's state file: a corrupt
+    settings file must not stop the application starting. The worst case of ignoring it is the user
+    re-entering their choices; the worst case of refusing is an app that will not open.
+    """
+    target = path or pipeline_path()
+    try:
+        value = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # ValueError, not json.JSONDecodeError. UnicodeDecodeError is a ValueError and NOT a
+        # JSONDecodeError, so a file that is not valid UTF-8 — a torn write, a file saved as
+        # UTF-16 — used to propagate out of `MainWindow.__init__` and stop the app opening, which
+        # is the exact outcome the docstring above promises it prevents. JSONDecodeError is a
+        # ValueError too, so this is strictly wider.
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(source_type): dict(settings)
+        for source_type, settings in value.items()
+        if isinstance(settings, dict)
+    }
+
+
+def save_pipelines(configs: dict[str, dict[str, object]], path: Path | None = None) -> Path:
+    """Persist the pipeline choices, atomically.
+
+    ⚠️ **This exists because the UI told the user "Configuration saved" and did not save.** The
+    choices lived in an in-memory dict, so the status line asserted a state nothing had created and
+    reopening the app restored the defaults. Demonstrated before fixing: set the embedder model,
+    press Save, close the window, reopen, and the field reads `hashing-64` again.
+    """
+    return _write_json_atomically(path or pipeline_path(), configs)
 
 
 def read_token(profile: RuntimeProfile) -> str | None:

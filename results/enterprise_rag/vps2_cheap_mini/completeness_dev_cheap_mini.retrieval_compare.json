@@ -1,0 +1,89 @@
+{
+  "questions": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+  "baseline": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/completeness_dev_none.answers.jsonl",
+  "candidate": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/completeness_dev_cheap_mini.answers.jsonl",
+  "common_questions": 5,
+  "overall": {
+    "count": 5,
+    "answerable_count": 5,
+    "baseline_document_recall": 0.2583333333333333,
+    "candidate_document_recall": 0.2583333333333333,
+    "mean_recall_delta": 0.0,
+    "baseline_exact_coverage": 0.0,
+    "candidate_exact_coverage": 0.0,
+    "mean_extra_delta": 0.0,
+    "questions_with_recall_gain": 0,
+    "questions_with_recall_loss": 0
+  },
+  "by_category": {
+    "completeness": {
+      "count": 5,
+      "answerable_count": 5,
+      "baseline_document_recall": 0.2583333333333333,
+      "candidate_document_recall": 0.2583333333333333,
+      "mean_recall_delta": 0.0,
+      "baseline_exact_coverage": 0.0,
+      "candidate_exact_coverage": 0.0,
+      "mean_extra_delta": 0.0,
+      "questions_with_recall_gain": 0,
+      "questions_with_recall_loss": 0
+    }
+  },
+  "pairs": [
+    {
+      "question_id": "qst_0433",
+      "question_type": "completeness",
+      "baseline_recall": 0.0,
+      "candidate_recall": 0.0,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 8,
+      "candidate_extra": 8
+    },
+    {
+      "question_id": "qst_0434",
+      "question_type": "completeness",
+      "baseline_recall": 0.3333333333333333,
+      "candidate_recall": 0.3333333333333333,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0438",
+      "question_type": "completeness",
+      "baseline_recall": 0.3333333333333333,
+      "candidate_recall": 0.3333333333333333,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 5,
+      "candidate_extra": 5
+    },
+    {
+      "question_id": "qst_0440",
+      "question_type": "completeness",
+      "baseline_recall": 0.5,
+      "candidate_recall": 0.5,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 5,
+      "candidate_extra": 5
+    },
+    {
+      "question_id": "qst_0442",
+      "question_type": "completeness",
+      "baseline_recall": 0.125,
+      "candidate_recall": 0.125,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 7,
+      "candidate_extra": 7
+    }
+  ]
+}

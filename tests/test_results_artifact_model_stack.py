@@ -71,6 +71,11 @@ def _artifacts() -> list[Path]:
         *(RESULTS / "locomo_rerank").glob("*.json"),
         *(RESULTS / "cosine").glob("*.json"),
         *(RESULTS / "wrrf").glob("*.json"),
+        # By exact name, matching tests/test_results_artifact_provenance.py: the runner
+        # writes uncommitted sweeps into this directory, and `dense_floor_*` is the obvious
+        # name for a re-run. This suite is where a new artifact would otherwise "join by
+        # omission", which results/ARTIFACTS.md says it cannot.
+        *(RESULTS / "enterprise_rag").glob("dense_floor_strat100.retrieval.json"),
         *(RESULTS / "beam_voyage").glob("*.json"),
         # `splits.json` by name, not `*.json`: the benchmark writes its generated corpus
         # (including a `queries.json`) under the same tree, and those are INPUTS, not

@@ -11,6 +11,10 @@ from typing import Any
 class RuntimeMode(StrEnum):
     VPS_MCP = "vps_mcp"
     DOCKER = "docker"
+    #: A PostgreSQL the user already runs, with no container anywhere. The MCP servers are ordinary
+    #: local processes pointed at that database, which is what the wizard already registers for
+    #: Claude Code — the desktop simply had no way to say it.
+    LOCAL_DATABASE = "local_database"
 
 
 class SourceCategory(StrEnum):
@@ -25,6 +29,10 @@ class RuntimeProfile:
     endpoint: str | None = None
     compose_file: str | None = None
     compose_project: str | None = None
+    #: The database for `LOCAL_DATABASE`. Held here rather than read from the environment so the
+    #: UI shows what it will actually connect to, and so two profiles on one machine cannot end up
+    #: fighting over one `RECALL_DSN`.
+    dsn: str | None = None
     default_tenant: str = "default"
     shared_profile: str = "user"
     pinned_version: str | None = None
@@ -37,6 +45,8 @@ class RuntimeProfile:
             raise ValueError("a VPS MCP profile needs an endpoint")
         if self.mode is RuntimeMode.DOCKER and not self.compose_file:
             raise ValueError("a Docker profile needs a compose file")
+        if self.mode is RuntimeMode.LOCAL_DATABASE and not self.dsn:
+            raise ValueError("a local database profile needs a dsn")
         if not self.default_tenant.strip():
             raise ValueError("default_tenant must be non empty")
 
@@ -53,6 +63,7 @@ class RuntimeProfile:
             endpoint=value.get("endpoint"),
             compose_file=value.get("compose_file"),
             compose_project=value.get("compose_project"),
+            dsn=value.get("dsn"),
             default_tenant=str(value.get("default_tenant", "default")),
             shared_profile=str(value.get("shared_profile", "user")),
             pinned_version=value.get("pinned_version"),
@@ -62,12 +73,28 @@ class RuntimeProfile:
         )
 
 
+#: Which corpus kind each category belongs in. The wizard's own vocabulary
+#: (`recall.wizard.corpora.CorpusKind`) is docs/code/memory, and this is the desktop's half of that
+#: agreement; `tests/test_desktop.py` pins the two together so a fourth kind cannot drift in on one
+#: side only.
+_KIND_BY_CATEGORY = {
+    SourceCategory.DOCUMENTS: "docs",
+    SourceCategory.CODE: "code",
+    SourceCategory.MEMORY: "memory",
+}
+
+
 @dataclass(frozen=True)
 class SourceSelection:
     category: SourceCategory
     paths: tuple[Path, ...]
     tenant: str
     shared: bool = False
+    #: The scope the "all projects" choice maps to. Carried rather than hardcoded, because
+    #: `RuntimeProfile.shared_profile` is configurable and everything ELSE in the UI already reads
+    #: it from there; a literal here silently ingested into `user-*` for a profile that named a
+    #: different shared scope, so display and calibration used one tenant while ingest used another.
+    shared_profile: str = "user"
 
     def __post_init__(self) -> None:
         if not self.paths:
@@ -77,8 +104,18 @@ class SourceSelection:
 
     @property
     def physical_tenant(self) -> str:
-        suffix = "code" if self.category is SourceCategory.CODE else "docs"
-        base = "user" if self.shared else self.tenant
+        """`{scope}-{kind}`, matching `recall.wizard.corpora.tenant_for`.
+
+        ⚠️ **MEMORY used to map to `-docs`, and that sent the user's memory into the wrong corpus.**
+        The wizard builds THREE corpora per project — docs, code and memory — and the memory one is
+        the writable, never-calibrated scope that memory notes belong in. Mapping MEMORY onto
+        `-docs` put them in the corpus that is production-routed, strict-trust and calibrated, which
+        is both the wrong destination and the one place a stray write does the most harm.
+
+        The wizard has always provisioned `<project>-memory`; nothing addressed it.
+        """
+        suffix = _KIND_BY_CATEGORY[self.category]
+        base = self.shared_profile if self.shared else self.tenant
         return f"{base}-{suffix}"
 
 

@@ -98,8 +98,21 @@ jobs:
       # below the observed number so a normal PR never trips it on noise, and raised deliberately
       # when a real jump lands. A gate nobody fails on drifts down one PR at a time; a gate pinned
       # to the exact current number fails on the first unlucky rounding.
+      # `-n auto`: one worker per vCPU, four on a standard runner. The suite is LARGE rather than
+      # slow (6,563 tests, no hotspot worth removing), so parallelism is the only lever on its
+      # wall clock, and `tests/conftest.py::_isolate_xdist_worker` is what makes it safe against
+      # one shared database: each worker gets a database of its own, which the `postgres` image's
+      # superuser role can create. Read that docstring before changing this line.
+      #
+      # ⚠️ `auto` is right HERE and wrong locally, where it asks for twelve workers on a 12 GB
+      # machine and kills one. `make test` pins four for that reason; the runner has four vCPU and
+      # `auto` asks for exactly the number a person would choose.
+      #
+      # `pytest-cov` combines the workers' data itself, so `--cov-fail-under` still gates the
+      # whole run. If that combination ever breaks, coverage collapses rather than drifting, which
+      # is the failure mode you want from a gate.
       - name: Test (pytest on real pgvector, with coverage)
-        run: pytest -q --cov=recall --cov=recall_mcp --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+        run: pytest -q -n auto --cov=recall --cov=recall_mcp --cov-report=term-missing --cov-report=xml --cov-fail-under=70
 
   # Static typing, in its own job: it needs no database, so a type error surfaces in ~30s instead
   # of behind the full integration suite, and a red DB service never hides a red type check.
@@ -124,6 +137,221 @@ jobs:
   # for code paths that never execute in practice, which is the failure mode the
   # suites themselves are written against. The repository is public, so Windows
   # runner minutes are free.
+  # The installer, on a machine that has never run recall.
+  #
+  # Every wizard defect found so far was found by RUNNING the install, never by reading it or by a
+  # unit test: a database that died on a bind mount, a first `up` that always failed, an image that
+  # was silently the wrong one, an upload written to a table nothing reads. A runner is the only
+  # clean machine available on demand — no image cache, no volumes, no `wizard.state.json` — so this
+  # is the one place that condition can be reproduced on every change instead of once.
+  #
+  # **It deliberately does NOT build the recall image.** `run_headless` starts `db` only (see the
+  # `services=("db",)` call it makes), and the generated Dockerfile pins the RUNNING version from
+  # PyPI. Building here would make every PR between a version bump and its release fail on a
+  # missing wheel — a red build caused by the release calendar rather than the change. Whether the
+  # image builds and the MCP services start is a separate question, and belongs in a job that can
+  # be pinned to a published version.
+  #
+  # ⚠️ Blind to Windows filesystem semantics, which is where the sharpest defect so far came from
+  # (PostgreSQL taking EINTR on a bind-mounted WAL and dying). The database now lives on a named
+  # volume, so that surface is much smaller, but this job cannot speak for it.
+  clean-install:
+    name: Clean install (wizard)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev,fastembed,documents]"
+
+      # A BOUNDED corpus, copied rather than pointed at `docs/` and `recall/` whole.
+      #
+      # Runtime scales close to linearly with corpus bytes, measured: 3.83 MB took 33 minutes on a
+      # runner, and 386 KB takes 137 seconds locally — a 10x cut in bytes bought a 10x cut in time,
+      # and BOTH corpora still certify 40 answerable / 40 unanswerable. The point of this job is
+      # that the install path works on a clean machine, and that is answered as well by a small
+      # corpus as by a large one.
+      #
+      # Bounded by CONSTRUCTION, not by naming two directories, because the repository grows: an
+      # unbounded corpus makes this job slower every quarter for no added coverage, and nothing
+      # would report the drift until somebody noticed CI had become slow.
+      #
+      # ⚠️ The floor is not arbitrary. Calibration needs 40 answerable queries drawn from the
+      # corpus's own text; cut this far enough and certification fails, which fails the job for a
+      # reason that has nothing to do with the change under test. If you shrink it further, verify
+      # the report still says `40 answerable / 40 unanswerable` rather than assuming.
+      - name: Assemble a bounded corpus
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/install/memory" "$RUNNER_TEMP/corpus/docs"
+          find docs -maxdepth 1 -name '*.md' | sort | head -12 \
+            | xargs -I{} cp {} "$RUNNER_TEMP/corpus/docs/"
+          cp -r recall/wizard "$RUNNER_TEMP/corpus/code"
+          echo "a durable fact about widget alignment tolerances" \
+            > "$RUNNER_TEMP/install/memory/notes.md"
+          echo "docs bytes: $(cat "$RUNNER_TEMP"/corpus/docs/*.md | wc -c)"
+          echo "code bytes: $(find "$RUNNER_TEMP/corpus/code" -name '*.py' -exec cat {} + | wc -c)"
+
+      # The shape a first-run user writes: a data root and no DSN, so the wizard provisions its own
+      # database rather than being handed one.
+      - name: Write the wizard config
+        run: |
+          cat > "$RUNNER_TEMP/install/wizard.json" <<JSON
+          {
+            "embedder": "fastembed",
+            "corpus_version": "ci-clean-install",
+            "data_root": "$RUNNER_TEMP/install",
+            "project": "default",
+            "docs_root": "$RUNNER_TEMP/corpus/docs",
+            "code_root": "$RUNNER_TEMP/corpus/code",
+            "memory_root": "$RUNNER_TEMP/install/memory",
+            "project_root": "$RUNNER_TEMP/install/project"
+          }
+          JSON
+
+      # ⚠️ The wizard registers its servers in Claude Code's OWN config and refuses to CREATE that
+      # file, because inventing another application's configuration is not an installer's business.
+      # A runner has never started Claude Code, so without this the install would correctly report
+      # that nothing was registered and this job would test the refusal rather than the install.
+      - name: A client config the wizard can register into
+        run: echo '{}' > "$HOME/.claude.json"
+
+      - name: Install recall
+        run: |
+          set -o pipefail
+          python -m recall.cli wizard --headless \
+            --config "$RUNNER_TEMP/install/wizard.json" | tee "$RUNNER_TEMP/install.log"
+
+      # ⚠️ Asserting the ARTIFACTS, not the report's wording. An install that refused or degraded
+      # can still exit 0 and print a report, and this repository has shipped a report claiming
+      # "install complete" for a tenant that could answer nothing.
+      #
+      # The registered servers are the sharp check: `wiring.server_blocks` omits a tenant it cannot
+      # serve, so a block for `default-docs` existing IS the assertion that the corpus built,
+      # validated, calibrated and promoted. A corpus that failed any of those silently loses its
+      # block.
+      #
+      # Asserted at LOCAL scope, under this project's own entry in `~/.claude.json`, and two other
+      # locations are asserted EMPTY. A top-level `mcpServers` is user scope, which would load these
+      # per-tenant servers in every unrelated checkout the user opens; a project-scoped `.mcp.json`
+      # is the file the approval prompt guards. Each of the three looks like a working install from
+      # the outside and only one of them is.
+      - name: The install produced a servable stack
+        run: |
+          set -euo pipefail
+          # The corpus is deliberately small, and "too small" fails as a DROP in certification
+          # rather than as an error. Asserted here so shrinking it further cannot quietly leave
+          # this job green while testing an install that no longer certifies anything.
+          certified=$(grep -c "40 answerable / 40 unanswerable" "$RUNNER_TEMP/install.log" || true)
+          test "$certified" -eq 2 || {
+            echo "expected docs and code to certify 40/40; matched $certified line(s)"
+            grep -E "certified|degraded|refused|failed" "$RUNNER_TEMP/install.log" || true
+            exit 1
+          }
+          root="$RUNNER_TEMP/install"
+          for f in docker-compose.recall.yml Dockerfile wizard.state.json; do
+            test -f "$root/$f" || { echo "missing $f"; exit 1; }
+          done
+          # The wizard CREATES `project_root` when only its last directory is missing, which is
+          # what a first install looks like and what this config asks for. Asserted as files
+          # rather than as a directory: a run that made the directory and then wrote nothing into
+          # it would satisfy a `test -d` and leave the user exactly where the regression did.
+          for f in .env CLAUDE.md; do
+            test -f "$root/project/$f" || { echo "missing project/$f"; exit 1; }
+          done
+          if [ -f "$root/project/.mcp.json" ]; then
+            echo "a project-scoped .mcp.json was written; that file is what the prompt guards"
+            exit 1
+          fi
+          python - "$HOME/.claude.json" "$root/project" <<'PY'
+          import json, pathlib, sys
+          document = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          if document.get("mcpServers"):
+              raise SystemExit(
+                  "servers were registered at USER scope (top-level mcpServers). Each carries a "
+                  "RECALL_TENANT for this project, so they would answer about the wrong corpus in "
+                  "every other checkout the user opens."
+              )
+          wanted = pathlib.Path(sys.argv[2]).resolve()
+          entries = [
+              entry.get("mcpServers", {})
+              for key, entry in document.get("projects", {}).items()
+              if pathlib.Path(key).resolve() == wanted
+          ]
+          if len(entries) != 1:
+              raise SystemExit(f"expected one project entry for {wanted}, found {len(entries)}")
+          servers = entries[0]
+          print("registered servers:", sorted(servers))
+          missing = [t for t in ("default-docs", "default-code") if t not in servers]
+          if missing:
+              raise SystemExit(
+                  f"no server block for {missing}. server_blocks omits a tenant it cannot serve, "
+                  "so this means the corpus did not certify - the install reported success and "
+                  "left nothing able to answer."
+              )
+          PY
+
+      - name: Remove the stack this job started
+        if: always()
+        run: |
+          compose="$RUNNER_TEMP/install/docker-compose.recall.yml"
+          test -f "$compose" && docker compose -f "$compose" down -v || true
+
+  # The desktop UI, which until now was tested only on a maintainer's machine.
+  #
+  # ⚠️ **No job installed the `desktop` extra, so every test guarding the UI silently SKIPPED on
+  # every CI run.** `tests/test_desktop.py` opens with `pytest.importorskip("PySide6")`, and the
+  # installing jobs use `.[dev,documents]`, `.[dev]` and `.[dev,mcp,documents]`. Nothing was red;
+  # the tests simply never ran. That covered, among others, the regression test for a Save button
+  # that reported "Configuration saved" and saved nothing — the defect existed precisely because
+  # nothing in CI could see it.
+  #
+  # A separate job rather than widening `test`, because PySide6 is a large wheel and the main suite
+  # already runs a database; there is no reason for every contributor's test run to pay for Qt.
+  #
+  # `desktop` was also absent from every PUBLISHED release until 0.9.6, so before then this job
+  # could not have installed it even if it had asked.
+  desktop:
+    name: Desktop UI
+    runs-on: ubuntu-latest
+    env:
+      # Qt has no display on a runner. The tests set this themselves, but a missing platform plugin
+      # aborts at import rather than failing a test, so it is set here too: the failure mode this
+      # job exists to prevent is "the suite did not run", and a crash before collection looks
+      # exactly like that.
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Qt needs these shared libraries on a headless runner even with the offscreen platform;
+      # without them PySide6 imports and then aborts, which importorskip would swallow as a skip.
+      - name: Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libglib2.0-0
+
+      - name: Install
+        run: pip install -e ".[dev,desktop]"
+
+      # Fails the job if PySide6 is not importable, INSTEAD of letting the suite skip. A skip and a
+      # pass render identically in a green check, which is the whole reason this gap survived.
+      - name: Refuse to pass by skipping
+        run: python -c "import PySide6; print('PySide6', PySide6.__version__)"
+
+      - name: Desktop suite
+        run: pytest -q tests/test_desktop.py
+
   session-hooks:
     name: Session hooks (Windows)
     runs-on: windows-latest
@@ -143,12 +371,47 @@ jobs:
       - name: SessionEnd hook
         run: python scripts/session_end_hook_tests.py
 
+      # ⛔ This guard had no source and no tests until 2026-08-22: it lived only in
+      # `~/.claude/hooks/` while denying commits and pushes in every repository on the machine,
+      # and it refused EVERY tag push, which is how every signed release here is made. Its
+      # deployed-copy assertion is skipped on a runner, where nothing is deployed; the rest of
+      # the file is what CI is for.
+      - name: git clone race guard
+        run: python scripts/git_clone_race_guard_tests.py
+
       # Git Bash, which windows-latest ships. This suite covers session-space.sh,
       # the shell half of the same guard, including the claim-lock atomicity that
       # `set -C` silently failed to provide.
+      # Docker is stubbed in this one, so it runs on a runner with no daemon. It covers the
+      # orphan classifier, which reported a clean machine while five containers from a removed
+      # worktree sat exited on it.
+      - name: session-db.sh
+        shell: bash
+        run: bash scripts/session_db_tests.sh
+
       - name: session-space.sh
         shell: bash
         run: bash scripts/session_space_tests.sh
+
+  # Documentation citations, which rot faster than anything else in this repository: one commit
+  # (79a0d6ed) shifted recall/index.py by 26 lines and broke 23 `path:line` references across five
+  # documents at once. `fetch-depth: 0` is load-bearing and not a habit — the check asks git how
+  # each cited file moved since the citing document was last committed, and a shallow clone cannot
+  # answer that. The script refuses a shallow checkout rather than reporting a pass it never made.
+  citations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+
+      # Standard library only, so this needs no install step and cannot be broken by a dependency.
+      - name: Check documentation citations
+        run: python scripts/check_doc_citations.py
 
   typecheck:
     runs-on: ubuntu-latest
@@ -210,7 +473,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
 
       # `--resolution lowest-direct`: oldest version of each DIRECT dependency, transitives
       # resolved normally. `lowest` would also pin every transitive to its floor, which tests
@@ -221,8 +484,66 @@ jobs:
       - name: Show what actually resolved
         run: uv pip list --system
 
+      # Parallel for the same reason as the job above, and with one difference worth naming:
+      # `--resolution lowest-direct` resolves `pytest-xdist` to its DECLARED floor, so this job is
+      # also the only place the suite runs against the oldest xdist anyone may have installed.
       - name: Test (pytest on real pgvector)
-        run: pytest -q
+        run: pytest -q -n auto
+
+  # Every `path:line` citation in docs/**/*.md still points at the code it claims.
+  #
+  # Its own job, and a fast one: pure file reading, no database, no models, no install beyond a
+  # Python interpreter, so a stale citation surfaces in seconds rather than behind the 12-minute
+  # integration suite. The same check also runs inside `test` as tests/test_citation_anchors.py,
+  # which is where the mutation tests live; this job exists so the answer arrives early and so a
+  # red database service cannot hide it.
+  #
+  # WHY IT IS A GATE AT ALL. Measured 2026-08-18: while docs/UNCALIBRATED_FIRST_RUN_DESIGN.md was
+  # being written, three concurrent merges to master moved cited lines, one of them moving 13 of
+  # 13 checked citations in a single commit. Every one was caught by hand. A merged document
+  # asserting `file.py:123 does X` when line 123 is a closing paren is a silent correctness
+  # defect, and it is silent precisely because the line still exists -- which is why an
+  # existence check reported "41 citations, 0 broken" over three citations pointing at a `try:`,
+  # a docstring's closing quotes and the wrong error branch.
+  #
+  # No `pip install`: the checker imports nothing outside the standard library, on purpose, so
+  # this job cannot be taken down by a dependency resolution failure that has nothing to do with
+  # documentation.
+  citation-anchors:
+    name: Citation anchors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+
+      # Two failure modes, one exit code: a citation that no longer points at the code it claims,
+      # and a NEW citation with nothing to check it against. The second is a ratchet against
+      # docs/citation_anchor_baseline.txt, so unverifiable citations can only ever fall.
+      - name: Verify path:line citations in docs/
+        run: python scripts/check_citation_anchors.py
+
+  # Validate the MCP registry manifest on every PR, using the SAME `mcp-publisher validate` the
+  # Publish MCP Registry workflow runs. Added 2026-08-23: the 0.10.0 release published to PyPI
+  # fine but the registry dispatch 422'd on a server.json description of 198 chars against the
+  # registry's `<= 100` cap -- a metadata break that reached publish time because nothing checked
+  # it on the PR. `validate` needs no auth and hits the registry's schema, so it catches that
+  # class here instead. Network-dependent by nature (it is the registry's own validator); a
+  # registry outage will fail it, which is the honest signal for "we could not confirm".
+  mcp-metadata:
+    name: MCP registry manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Validate server.json against the registry schema
+        run: ./mcp-publisher validate server.json
 
   # Dependency vulnerability scan against the committed uv.lock. Runs independently of the
   # test job (no DB needed) so a CVE advisory never blocks the functional suite and vice versa.
@@ -232,7 +553,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
 
       # TWO INDEPENDENT CHECKS THAT MUST NOT BE ABLE TO DISABLE EACH OTHER.
       #

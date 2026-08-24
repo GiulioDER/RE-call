@@ -35,6 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from recall.observability import get_logger
+from recall.errors import RecallError
 
 _log = get_logger("limits")
 
@@ -45,11 +46,17 @@ DEFAULT_CALLS_PER_MIN: dict[str, float] = {
     "read": 120.0,
     "write": 20.0,
     "forget": 10.0,
+    # Admin actions (calibration publish) change what a whole tenant serves; they are rare by
+    # nature and share nobody else's budget, so a runaway publish loop cannot starve indexing.
+    "admin": 10.0,
 }
 #: Aggregate embedding spend, in bytes of source text per hour per tenant. 200 MB is ~10x the
 #: 20 MB single-request cap, so an ordinary re-index of a large corpus fits comfortably while a
 #: loop calling `recall_index` at the cap is stopped after ten iterations rather than never.
 DEFAULT_INDEX_BYTES_PER_HOUR = 200 * 1024 * 1024
+#: The budget key for the byte quota, named once. A bare literal at a debit site that mistyped it
+#: would silently meter nothing: `RateLimiter.check` treats an unknown key as unlimited.
+INDEX_BYTES_BUDGET = "index_bytes"
 
 _SECONDS_PER_MIN = 60.0
 _SECONDS_PER_HOUR = 3600.0
@@ -59,7 +66,7 @@ _SECONDS_PER_HOUR = 3600.0
 OFF = "off"
 
 
-class RateLimited(RuntimeError):
+class RateLimited(RuntimeError, RecallError):
     """A tenant exceeded its budget. Carries the wait so a caller can be told when to retry."""
 
     def __init__(self, message: str, *, retry_after_seconds: float) -> None:
@@ -117,6 +124,26 @@ class _Bucket:
             self._tokens -= cost
             return 0.0
         return (cost - self._tokens) / self._rate.per_second
+
+    def _refill(self, now: float) -> None:
+        elapsed = max(0.0, now - self._updated)
+        self._updated = max(self._updated, now)
+        self._tokens = min(self._rate.capacity, self._tokens + elapsed * self._rate.per_second)
+
+    def level(self, now: float) -> float:
+        """Refill for elapsed time and report the token level, without debiting."""
+        self._refill(now)
+        return self._tokens
+
+    def drain(self, cost: float, now: float) -> None:
+        """Debit `cost`, saturating at 0. Never raises.
+
+        Unlike `take`, a cost larger than the bucket is NOT a user error here — for a
+        failure counter it just means the bucket stays empty. `take` reserves the raise for
+        the spend limiter, where an impossible cost is a misconfiguration worth shouting about.
+        """
+        self._refill(now)
+        self._tokens = max(0.0, self._tokens - cost)
 
 
 class RateLimiter:
@@ -221,6 +248,58 @@ def _rate_from_env(name: str, default: float, window_seconds: float) -> Rate | N
     return Rate(capacity=value, per_second=value / window_seconds)
 
 
+class FailedAuthThrottle:
+    """Caps the work an authentication-failure storm can drive.
+
+    The SDK's TokenVerifier protocol hands a verifier only the token string — no request
+    object, no remote address — so this throttle is process-global, and it says so rather
+    than pretending per-client fairness. It is consulted only where a failed authentication
+    is EXPENSIVE: the OIDC path, whose JWKS fetch and RSA verify are the work worth capping.
+    The static token path does not gate on it (a digest lookup is cheap), so a valid static
+    token is never refused because of someone else's failures.
+
+    ⚠️ On the OIDC path the gate is not free of collateral: while the bucket is drained a
+    VALID OIDC token is refused too, because `allow()` cannot tell it from garbage without
+    doing the very validation the gate defers. That is a deliberate availability-for-integrity
+    trade on the one path where the work is expensive; the per-IP ASGI middleware in front of
+    the SDK's bearer middleware is the way to narrow it, and it is not built yet. Revisit
+    before serving a fleet.
+
+    `allow()` reports the level without debiting; `record_failure()` debits one, saturating
+    at zero (never raising, even under a sub-1 per-minute configuration).
+    """
+
+    def __init__(self, rate: Rate | None, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._rate = rate
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._bucket: _Bucket | None = None
+
+    def allow(self) -> bool:
+        if self._rate is None:
+            return True
+        with self._lock:
+            now = self._clock()
+            if self._bucket is None:
+                self._bucket = _Bucket(self._rate, now)
+            return self._bucket.level(now) >= 1.0
+
+    def record_failure(self) -> None:
+        if self._rate is None:
+            return
+        with self._lock:
+            now = self._clock()
+            if self._bucket is None:
+                self._bucket = _Bucket(self._rate, now)
+            self._bucket.drain(1.0, now)
+
+
+def failed_auth_throttle_from_env() -> FailedAuthThrottle:
+    """Build the pre-auth failure throttle from `RECALL_RATE_AUTH_FAILURES_PER_MIN`."""
+    rate = _rate_from_env("RECALL_RATE_AUTH_FAILURES_PER_MIN", 60.0, _SECONDS_PER_MIN)
+    return FailedAuthThrottle(rate)
+
+
 def limiter_from_env() -> RateLimiter:
     """Build the limiter the server uses, from `RECALL_RATE_*` / `RECALL_INDEX_BYTES_PER_HOUR`."""
     rates: dict[str, Rate] = {}
@@ -232,5 +311,5 @@ def limiter_from_env() -> RateLimiter:
         "RECALL_INDEX_BYTES_PER_HOUR", float(DEFAULT_INDEX_BYTES_PER_HOUR), _SECONDS_PER_HOUR
     )
     if byte_rate is not None:
-        rates["index_bytes"] = byte_rate
+        rates[INDEX_BYTES_BUDGET] = byte_rate
     return RateLimiter(rates)

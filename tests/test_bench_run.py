@@ -22,6 +22,10 @@ from benchmarks.pipeline import GEN_SYSTEM_PROMPT, JUDGE_SYSTEM_PROMPT, Outcome
 from benchmarks.run import _load, main, run_arm, validate_openrouter_key
 from benchmarks.systems import DEFAULT_K, MemorySystem
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 #: A shape-valid but obviously fake key. `main` validates the key's SHAPE before doing any work
 #: (see `validate_openrouter_key`), so the placeholder these tests used to pass is now rejected —
 #: which is the point. The completer is faked in every `main` test, so the value is never sent.

@@ -249,12 +249,17 @@ def test_a_gap_query_the_model_copied_from_the_corpus_is_dropped() -> None:
     list against the corpus: a gap class sharing the corpus vocabulary is the failure that made an
     earlier abstention measurement meaningless.
     """
+    # Drawn from the pool rather than spelled out: a literal subject in a test file joins the
+    # corpus whenever a code corpus is rooted at this repository, and the filter then disqualifies
+    # it for every user. That is precisely how the pool came to disqualify all 25 of its own
+    # subjects when it lived as Python literals.
+    from recall.eval.synthetic import _OFFTOPIC_SUBJECTS
+
     client = _FakeClient(
         [
             _payload(
                 ["a", "b", "c"],
-                ["what is the read-through cache p99", "sourdough fermentation", "baroque counterpoint",
-                 "tidal locking of moons"],
+                ["what is the read-through cache p99", *_OFFTOPIC_SUBJECTS[1:4]],
             )
         ]
     )
@@ -311,7 +316,17 @@ def test_the_vocabulary_filter_agrees_with_the_offline_generators_own_disjointne
 
 
 def test_an_on_topic_question_is_still_caught() -> None:
-    """Loosening the filter must not stop it doing its job. All four were measured as caught."""
+    """Loosening the filter must not stop it doing its job. All four were measured as caught.
+
+    Against the LIVING docs/ deliberately, like the agreement test above: the corpus these words
+    drift in is the corpus the guard runs on, and the one red this test has produced was a true
+    positive. On 2026-08-23 "abstention" sat at df 144 under a ceiling of 145, so the first
+    question passed with exactly 2 matches and one ordinary new doc mentioning abstention flipped
+    it — the guard was genuinely about to stop catching the most on-topic question a user of this
+    product can ask, because the ceiling had already swallowed "corpus" (df 657) and "threshold"
+    (df 253). The repair was `_TOPICAL_REPETITION_FLOOR`, not a reworded doc and not a frozen
+    fixture; a fixture would keep this green while the real guard rots.
+    """
     from pathlib import Path
 
     from recall.wizard.queryset import chunks_from_directory
@@ -321,8 +336,15 @@ def test_an_on_topic_question_is_still_caught() -> None:
         pytest.skip("docs/ is not present in this checkout")
     subject_words = L._corpus_subject_words(chunks_from_directory(docs))
 
+    # The exemption itself, pinned on words whose subject-hood is structural: both are far over
+    # the df ceiling and kept only because chunks that mention them repeat them (tf/df 1.50
+    # against the 1.3 floor). Not pinned on "abstention", whose repetition is below the floor —
+    # asserting it would recreate the zero-margin fragility this test is here to prevent.
+    for topic in ("corpus", "threshold"):
+        assert topic in subject_words, f"{topic!r} fell out of the corpus's subject vocabulary"
+
     for question in (
-        "how do i tune the abstention threshold for my corpus",
+        "how do i tune the answerability floor for my corpus",
         "what happens when a generation is promoted before it is calibrated",
         "which postgres extension does the index require",
         "how long does indexing take for a thousand documents",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 import re
 import threading
 import uuid
@@ -19,6 +20,8 @@ from recall.generations import (
     UnsafePromotion,
     _body_rule_changed,
 )
+from psycopg.pq import TransactionStatus
+
 from recall.generation_store import GenerationStore, ImmutableGenerationError
 from recall.cli import main as cli_main
 from recall.lineage import (
@@ -82,10 +85,24 @@ def _pipeline(
     )
 
 
-def _manifest(tenant: str, data: bytes, *, version: str = "object-v1") -> IndexManifestV1:
+def _manifest(
+    tenant: str,
+    data: bytes,
+    *,
+    version: str = "object-v1",
+    corpus_version: str = "corpus-v1",
+) -> IndexManifestV1:
+    """A one-object manifest.
+
+    ⛔ `version` is the OBJECT's `version_id`; `corpus_version` is the manifest-level field. They
+    are separate parameters because conflating them made a test vacuous: it stamped `version=` and
+    asserted on a filter that reads `corpus_version`, so both generations carried the default and
+    the filter's result was empty by construction. The assertion then held against a filter that
+    returned nothing at all, which is exactly the mutation that disables the reclaim.
+    """
     return IndexManifestV1(
         tenant,
-        "corpus-v1",
+        corpus_version,
         (
             ManifestObjectV1(
                 f"s3://approved/corpora/{tenant}/memo.md",
@@ -358,8 +375,60 @@ def test_promotion_is_explicitly_unsafe_and_unavailable_in_production(manager) -
     production = GenerationManager(
         TEST_DSN, manager.tenant_id, actor="pytest", environment="production"
     )
-    with pytest.raises(UnsafePromotion, match="unavailable in production"):
+    with pytest.raises(UnsafePromotion, match="served under production"):
         production.promote(generation, unsafe_development=True)
+
+
+@requires_db
+def test_the_gate_follows_the_serving_environment_not_the_build_one(manager) -> None:
+    """⛔ The wizard's shape: BUILD under development, SERVE under production.
+
+    This combination is not exotic — it is every install this project ships. A production build
+    demands a verifiable embedder identity that the bundled FastEmbed model does not have, so the
+    wizard builds under `development`; a calibrated corpus is then served with
+    `RECALL_ENV=production`, because that is the only environment that reads the generation store.
+
+    While `promote` keyed on the BUILD environment, the certification gate therefore ran on nothing
+    the installer produces. Both assertions below failed before `serving_environment` existed: the
+    flag was accepted, and the promotion went through ungated.
+    """
+    data = b"ready generation"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = _ready(
+        manager, manifest, _pipeline("model-a"), _reader(manifest, data), _Embedder(1)
+    )
+    split = GenerationManager(
+        TEST_DSN,
+        manager.tenant_id,
+        actor="pytest",
+        environment="development",
+        serving_environment="production",
+    )
+    assert split.certification_required, "a production-served tenant is gated wherever it was built"
+
+    with pytest.raises(UnsafePromotion, match="served under production"):
+        split.promote(generation, unsafe_development=True)
+
+    # And without the flag it reaches the certification check rather than sailing through: this
+    # generation has no published calibration at all.
+    with pytest.raises(UnsafePromotion, match="calibration is"):
+        split.promote(generation)
+
+
+@requires_db
+def test_serving_environment_defaults_to_the_build_environment(manager) -> None:
+    """Every existing caller passes one environment and must keep the behaviour it had."""
+    for environment in ("development", "test", "production"):
+        instance = GenerationManager(
+            TEST_DSN, manager.tenant_id, actor="pytest", environment=environment
+        )
+        assert instance.serving_environment == environment
+        assert instance.certification_required == (environment == "production")
+
+    with pytest.raises(ValueError, match="serving_environment must be"):
+        GenerationManager(
+            TEST_DSN, manager.tenant_id, actor="pytest", serving_environment="prod"
+        )
 
 
 @requires_db
@@ -1373,3 +1442,298 @@ def test_markdown_build_strips_the_derived_block_before_chunking(manager) -> Non
     blocked_texts = [text for uri, _, text in rows if uri == blocked_uri]
     assert plain_texts, "the plain source produced no chunks"
     assert blocked_texts == plain_texts
+
+
+@requires_db
+def test_iter_chunks_wraps_its_server_side_cursor_in_a_transaction(manager) -> None:
+    """`GenerationStore.iter_chunks` overrides the base method and dropped its transaction.
+
+    `PgVectorStore.iter_chunks` opens `conn.transaction()` around the named cursor, and says why
+    four lines above it: "a server-side cursor is transaction-scoped, and under autocommit each
+    FETCH would otherwise land in its own transaction, where the cursor no longer exists". The
+    override kept the cursor and lost the transaction, so on the autocommit connections this store
+    uses, `DECLARE CURSOR` fails outright.
+
+    Measured on VPS2 before this test existed: **five of the ten MCP tools** were unusable under
+    `RECALL_ENV=production` — `recall_reasoning_query`, `_projection`, `_proposals`, `_audit` and
+    `recall_rewrite_plan` — every one of them reporting `DECLARE CURSOR can only be used in
+    transaction blocks`. The same tools worked under `development`, because that path builds a
+    `PgVectorStore` instead. Production is the ONLY mode that selects `GenerationStore`, so the
+    defect was invisible to any test that did not ask for it.
+
+    Sibling of `test_cosines_for_matches_query_dense_on_the_generation_store`: both are overrides
+    that inherited a behaviour and silently discarded part of it.
+    """
+    data = b"alpha generation text"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = _ready(
+        manager, manifest, _pipeline("model-a"), _reader(manifest, data), _Embedder(1)
+    )
+    manager.promote(generation, unsafe_development=True)
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        # Consuming the iterator is the point: the failure is raised by DECLARE, and a lazy
+        # generator that is never advanced would pass while the tool it backs still breaks.
+        chunks = list(store.iter_chunks())
+
+        # ⚠️ AND the transaction must be RELEASED, which is a separate claim from "one was open".
+        # `conn.execute("BEGIN")` in place of `conn.transaction()` satisfies DECLARE and returns
+        # every row, so the assertions above alone cannot tell a fix from a leak — it just leaves
+        # the connection `idle in transaction` forever. This repository has already lost days to
+        # exactly that shape: a 5-day idle-in-transaction backend pinned the xmin horizon of a
+        # 205 GB production database and blocked every vacuum on it.
+        assert store._direct.info.transaction_status == TransactionStatus.IDLE, (
+            "iter_chunks left the connection in a transaction after the iterator was exhausted"
+        )
+
+    assert chunks, "iter_chunks yielded nothing for an active generation"
+    assert all(c.text for c in chunks)
+
+
+@requires_db
+def test_the_reclaim_never_touches_a_generation_another_path_built(manager) -> None:
+    """⛔ **Critical: the desktop reclaim could destroy a corpus it did not create.**
+
+    `superseded_ready_generations` selected on STATE ALONE, and `abandon` protects only the
+    tenant's active and previous generations. A generation that was built and validated but
+    deliberately NEVER promoted is in neither — and that is exactly what a degraded wizard install
+    leaves behind, because `recall/wizard/pipeline.py` skips `promote` when the corpus did not
+    certify so an operator can promote it later.
+
+    One refused desktop upload would abandon it, `gc` would collect it, and the chunk rows would
+    cascade away. The only previous test asserted on `inspect.getsource(...)` containing a literal
+    string, which cannot observe what the loop selects — so this one builds the two generations and
+    asks.
+    """
+    data = b"ready generation"
+
+    def ready(payload: bytes, corpus_version: str) -> str:
+        manifest = _manifest(manager.tenant_id, payload, corpus_version=corpus_version)
+        return _ready(manager, manifest, _pipeline("model-a"), _reader(manifest, payload), _Embedder(1))
+
+    somebody_elses = ready(data, "wizard-2026-01-01")
+    also_mine = ready(data + b" two", "desktop-aaa111")
+    mine = ready(data + b" three", "desktop-bbb222")
+
+    unconfined = manager.superseded_ready_generations(mine)
+    confined = manager.superseded_ready_generations(mine, corpus_version_prefix="desktop-")
+
+    assert somebody_elses in unconfined, "the fixture must actually reproduce the hazard"
+    assert somebody_elses not in confined, (
+        "a generation another path built and deliberately left READY must survive the desktop "
+        "reclaim; abandoning it makes gc delete a corpus this path never created"
+    )
+    # ⛔ **The positive half, which the first version of this test did not have.** Without it a
+    # filter that returns NOTHING satisfies every other assertion here, and that filter is precisely
+    # the mutation that disables the reclaim and reopens the unbounded-growth leak the confinement
+    # was added alongside. An exclusion test with no inclusion test cannot tell a working guard from
+    # a disabled one.
+    assert also_mine in confined, (
+        "a generation THIS path built must still be reclaimed; a filter that excludes everything "
+        "passes the exclusion assertions above while leaking a full corpus copy per upload"
+    )
+    assert mine not in confined, "the generation being kept must never be in its own reclaim list"
+
+
+def test_two_ingests_into_one_tenant_cannot_overlap(manager: GenerationManager) -> None:
+    """⛔ **The lost update, reproduced — this is what took the finding out of UNCERTAIN.**
+
+    Nothing serialised `servable_manifest()` through `promote`. Two uploads to one tenant both read
+    the same base manifest M, built M+A and M+B, and whichever promoted second retired the other.
+    The loser's files were gone from the live corpus while its tool call had already returned
+    success. Nothing counted it, because nothing had vanished — `_vanished_note` reports 0 and is
+    right to, which is why this shape is worse than a drop.
+
+    `recall_ingest` runs each tool body through `anyio.to_thread.run_sync`, so two calls genuinely
+    execute in parallel worker threads; this drives the same primitive from two threads.
+    """
+    import threading
+
+    order: list[str] = []
+    inside = threading.Event()
+    release = threading.Event()
+    failed: list[BaseException] = []
+
+    def first() -> None:
+        try:
+            with manager.tenant_ingest_lock():
+                order.append("first-in")
+                inside.set()
+                release.wait(timeout=10)
+                order.append("first-out")
+        except BaseException as exc:  # noqa: BLE001 - reported through `failed`
+            failed.append(exc)
+
+    def second() -> None:
+        try:
+            inside.wait(timeout=10)
+            with manager.tenant_ingest_lock(wait_seconds=10):
+                order.append("second-in")
+        except BaseException as exc:  # noqa: BLE001 - reported through `failed`
+            failed.append(exc)
+
+    one = threading.Thread(target=first)
+    two = threading.Thread(target=second)
+    one.start()
+    two.start()
+    inside.wait(timeout=10)
+    # The second thread is now blocked on the lock. Give it room to get it wrong.
+    time.sleep(1.0)
+    assert "second-in" not in order, (
+        "the second ingest entered while the first still held the tenant: both would seed from the "
+        "same base manifest and the second to promote would silently retire the first"
+    )
+    release.set()
+    one.join(timeout=15)
+    two.join(timeout=15)
+
+    assert not failed, failed
+    assert order == ["first-in", "first-out", "second-in"], order
+
+
+def test_a_second_ingest_refuses_rather_than_hanging(manager: GenerationManager) -> None:
+    """⚠️ A bounded wait, then a refusal that says what to do.
+
+    The caller is an interactive upload inside an MCP tool call, where an unbounded wait is
+    indistinguishable from a hang. A short wait absorbs two clicks in quick succession; past that,
+    saying so is honest. The message must name the tenant and tell the user to retry.
+    """
+    import threading
+
+    from recall.generations import ConcurrentIngest
+
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        with manager.tenant_ingest_lock():
+            holding.set()
+            release.wait(timeout=10)
+
+    keeper = threading.Thread(target=hold)
+    keeper.start()
+    try:
+        assert holding.wait(timeout=10)
+        started = time.monotonic()
+        with pytest.raises(ConcurrentIngest) as caught:
+            with manager.tenant_ingest_lock(wait_seconds=0.5):
+                pass
+        waited = time.monotonic() - started
+    finally:
+        release.set()
+        keeper.join(timeout=15)
+
+    assert waited < 5, f"it must refuse promptly, not hang; waited {waited:.1f}s"
+    assert manager.tenant_id in str(caught.value)
+    assert "try again" in str(caught.value).lower()
+
+
+def test_the_lock_is_released_when_the_ingest_raises(manager: GenerationManager) -> None:
+    """A failed upload must not wedge the tenant against every later one."""
+    with pytest.raises(RuntimeError):
+        with manager.tenant_ingest_lock():
+            raise RuntimeError("the build blew up")
+
+    # Immediately re-acquirable: if the finally did not fire, this refuses.
+    with manager.tenant_ingest_lock(wait_seconds=1.0):
+        pass
+
+
+def test_forget_scrubs_the_learned_sparse_sidecar_rows(manager) -> None:
+    """Erasure reaches the sidecar for generation chunks too: `GenerationManager.forget` is
+    the path `GenerationStore.delete_sources` routes through, and before this it removed the
+    chunk rows while their SPLADE term weights stayed addressable under recall_chunks_v1."""
+    embedder = _Embedder(1)
+    data = b"---\nstatus: current\n---\nthe memo to erase"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    generation = _ready(
+        manager, manifest, _pipeline("model-a"), _reader(manifest, data), embedder
+    )
+    manager.promote(generation, unsafe_development=True)
+    memo_uri = manifest.objects[0].uri
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        chunk_ids = [
+            row[0]
+            for row in conn.execute(
+                "SELECT chunk_id FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+                (manager.tenant_id, memo_uri),
+            ).fetchall()
+        ]
+        assert chunk_ids, "the promoted generation must hold the memo's chunks"
+        for chunk_id in chunk_ids:
+            conn.execute(
+                "INSERT INTO recall_sparse_v1 (tenant_id, chunk_table, profile_id, id, vec, nnz) "
+                "VALUES (%s, 'recall_chunks_v1', 'test-splade', %s, %s::sparsevec, 1)",
+                (manager.tenant_id, chunk_id, "{7:1.0}/30522"),
+            )
+
+    result = manager.forget(memo_uri)
+    assert result.chunks_removed >= 1
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        remaining = conn.execute(
+            "SELECT count(*) FROM recall_sparse_v1 WHERE tenant_id = %s AND id = ANY(%s)",
+            (manager.tenant_id, chunk_ids),
+        ).fetchone()[0]
+    assert remaining == 0, "the forgotten chunks' sidecar rows must not survive"
+
+
+def test_gc_scrubs_the_sidecar_rows_of_collected_generations(manager) -> None:
+    """gc() deletes generations and lets chunks cascade; the learned-sparse sidecar has no
+    cascade, so before this fix a collected generation's term-weight rows orphaned
+    permanently. Red before the fix: `first`'s sidecar row survived gc as an orphan.
+
+    Three generations so `first` is neither the active nor the previous generation (gc always
+    protects both); with retain_previous=0 it is then collectable, each with distinct content
+    so its chunk_ids are unique to it and genuinely cascade away."""
+    pipeline = _pipeline("model-a")
+    ids: list[str] = []
+    for ordinal, body in enumerate((b"first content", b"second content", b"third content")):
+        manifest = _manifest(manager.tenant_id, body, version=f"v{ordinal}")
+        generation = _ready(
+            manager, manifest, pipeline, _reader(manifest, body), _Embedder(1)
+        )
+        manager.promote(generation, unsafe_development=True)
+        ids.append(generation)
+    first = ids[0]
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        chunk_ids = [
+            row[0]
+            for row in conn.execute(
+                "SELECT chunk_id FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
+                (manager.tenant_id, first),
+            ).fetchall()
+        ]
+        assert chunk_ids, "the generation to collect must hold chunks"
+        for chunk_id in chunk_ids:
+            conn.execute(
+                "INSERT INTO recall_sparse_v1 (tenant_id, chunk_table, profile_id, id, vec, nnz) "
+                "VALUES (%s, 'recall_chunks_v1', 'test-splade', %s, %s::sparsevec, 1) "
+                "ON CONFLICT DO NOTHING",
+                (manager.tenant_id, chunk_id, "{7:1.0}/30522"),
+            )
+
+    collected = manager.gc(
+        now=datetime.now(timezone.utc) + timedelta(days=1),
+        retention_days=0,
+        retain_previous=0,
+    )
+    assert first in collected, "the test needs `first` actually collected to exercise the scrub"
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        gone = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND chunk_id = ANY(%s)",
+            (manager.tenant_id, chunk_ids),
+        ).fetchone()[0]
+        assert gone == 0, "gc must cascade-delete the collected generation's chunks"
+        orphaned = conn.execute(
+            "SELECT count(*) FROM recall_sparse_v1 WHERE tenant_id = %s AND id = ANY(%s)",
+            (manager.tenant_id, chunk_ids),
+        ).fetchone()[0]
+    assert orphaned == 0, "gc left sidecar rows for chunks it cascade-deleted"

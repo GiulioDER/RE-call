@@ -6,21 +6,39 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from benchmarks import enterprise_rag
 from benchmarks.enterprise_rag import (
     EnterpriseDoc,
+    EnterpriseQuestion,
+    QueryCachedEmbedder,
+    answer_hits,
+    adaptive_depth_choice,
     apply_top_config,
     build_parser,
+    category_answer_policy,
     doc_chunks,
+    expand_retrieval_hits,
     generated_answer,
     index_documents,
     load_documents,
     load_questions,
+    reasoning_promotion_gate,
+    retrieval_capture_summary,
+    runtime_telemetry,
+    reasoning_summary,
     read_answer_rows,
     write_answers_stream,
     write_answers,
 )
+from recall.cache import EmbeddingCache
 from recall.types import ScoredChunk
 from recall.types import Chunk
+
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
 
 
 def test_loads_enterprise_release_shapes_from_zip(tmp_path: Path) -> None:
@@ -192,6 +210,57 @@ def test_loads_questions_and_writes_answer_jsonl(tmp_path: Path) -> None:
     }
 
 
+def test_load_questions_can_select_official_types_and_ids(tmp_path: Path) -> None:
+    questions_path = tmp_path / "questions.jsonl"
+    questions_path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "question_id": f"qst_{index}",
+                    "question": f"Question {index}",
+                    "question_type": question_type,
+                }
+            )
+            for index, question_type in enumerate(("basic", "project_related", "basic"), 1)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    selected = enterprise_rag.load_questions(
+        questions_path,
+        question_types={"project_related"},
+    )
+    assert [question.question_id for question in selected] == ["qst_2"]
+
+    selected = enterprise_rag.load_questions(
+        questions_path,
+        question_ids={"qst_3", "qst_1"},
+    )
+    assert [question.question_id for question in selected] == ["qst_1", "qst_3"]
+
+
+def test_runtime_question_loading_strips_gold_fields(tmp_path: Path) -> None:
+    questions_path = tmp_path / "questions.jsonl"
+    questions_path.write_text(
+        json.dumps(
+            {
+                "question_id": "qst_1",
+                "question": "Who owns launch?",
+                "question_type": "basic",
+                "expected_doc_ids": ["dsid_gold"],
+                "answer_facts": ["Mira"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    question = load_questions(questions_path)[0]
+
+    assert question.raw == {"question_id": "qst_1", "question": "Who owns launch?", "question_type": "basic"}
+
+
 def test_top_config_enables_lexical_splade_voyage_rerank_and_openrouter() -> None:
     parser = build_parser()
     args = parser.parse_args(
@@ -221,6 +290,79 @@ def test_top_config_enables_lexical_splade_voyage_rerank_and_openrouter() -> Non
     assert args.chunk_chars == 12_000
     assert args.chunk_overlap == 200
     assert args.rerank_document_chars == 4_000
+
+
+def _rerank_test_hit(chunk_id: str, score: float) -> ScoredChunk:
+    chunk = Chunk(id=chunk_id, source=chunk_id, text=chunk_id, metadata={})
+    return ScoredChunk(chunk=chunk, score=score, indexed_at=datetime(2026, 1, 1, tzinfo=UTC))
+
+
+def test_blended_voyage_reranker_preserves_original_order_at_zero_weight() -> None:
+    from benchmarks.voyage_rerank import BlendedVoyageReranker
+
+    class FakeVoyage:
+        def rerank(self, query: str, documents: list[str], model: str, top_k: int):
+            del query, documents, model, top_k
+            return type(
+                "Response",
+                (),
+                {"results": [type("Item", (), {"index": 1})(), type("Item", (), {"index": 0})()]},
+            )()
+
+    hits = [_rerank_test_hit("a", 0.9), _rerank_test_hit("b", 0.2)]
+    output = BlendedVoyageReranker(rank_weight=0.0, client=FakeVoyage()).rerank("q", hits)
+
+    assert [hit.chunk.id for hit in output] == ["a", "b"]
+
+
+def test_blended_voyage_reranker_uses_voyage_order_at_one_weight() -> None:
+    from benchmarks.voyage_rerank import BlendedVoyageReranker
+
+    class FakeVoyage:
+        def rerank(self, query: str, documents: list[str], model: str, top_k: int):
+            del query, documents, model, top_k
+            return type(
+                "Response",
+                (),
+                {"results": [type("Item", (), {"index": 1})(), type("Item", (), {"index": 0})()]},
+            )()
+
+    hits = [_rerank_test_hit("a", 0.9), _rerank_test_hit("b", 0.2)]
+    output = BlendedVoyageReranker(rank_weight=1.0, client=FakeVoyage()).rerank("q", hits)
+
+    assert [hit.chunk.id for hit in output] == ["b", "a"]
+
+
+def test_adaptive_depth_expands_on_low_eighth_hit_score() -> None:
+    hits = [_rerank_test_hit(f"id-{index}", 0.9 if index < 7 else 0.6) for index in range(8)]
+
+    selected, value, expanded = adaptive_depth_choice(
+        hits,
+        base_k=8,
+        expanded_k=12,
+        feature="eighth_hit_dense_score",
+        threshold=0.7,
+    )
+
+    assert selected == 12
+    assert value == 0.6
+    assert expanded is True
+
+
+def test_adaptive_depth_keeps_base_k_on_high_max_score() -> None:
+    hits = [_rerank_test_hit(f"id-{index}", 0.8) for index in range(8)]
+
+    selected, value, expanded = adaptive_depth_choice(
+        hits,
+        base_k=8,
+        expanded_k=12,
+        feature="max_dense_score",
+        threshold=0.75,
+    )
+
+    assert selected == 8
+    assert value == 0.8
+    assert expanded is False
 
 
 def test_generated_answer_prompt_includes_question_type_and_strict_abstention(
@@ -263,6 +405,65 @@ def test_generated_answer_prompt_includes_question_type_and_strict_abstention(
     assert "Source type: github" in calls[0]["user"]
     assert "available documents do not contain the answer" in calls[0]["system"]
     assert "exact facts, quantities, dates, names" in calls[0]["system"]
+
+
+def test_category_aware_prompt_adds_completeness_checklist() -> None:
+    policy = category_answer_policy("completeness")
+    assert "every distinct item" in policy
+    assert "checklist" in policy
+
+
+def test_category_aware_conflict_context_aligns_documents_and_deduplicates_chunks() -> None:
+    first = doc_chunks(
+        EnterpriseDoc("dsid_1", "slack", "one", "first")
+    )[0]
+    second = doc_chunks(
+        EnterpriseDoc("dsid_2", "jira", "two", "second")
+    )[0]
+    duplicate = doc_chunks(
+        EnterpriseDoc("dsid_1", "slack", "one", "duplicate")
+    )[0]
+    hits = [
+        ScoredChunk(first, 1.0, datetime(2026, 1, 1, tzinfo=UTC)),
+        ScoredChunk(duplicate, 0.9, datetime(2026, 1, 1, tzinfo=UTC)),
+        ScoredChunk(second, 0.8, datetime(2026, 1, 1, tzinfo=UTC)),
+    ]
+
+    selected = answer_hits(
+        hits,
+        ["dsid_1", "dsid_2"],
+        question_type="conflicting_info",
+        answer_policy="category_aware",
+    )
+    assert [hit.chunk.source for hit in selected] == ["dsid_1", "dsid_2"]
+
+
+def test_category_aware_completeness_keeps_all_chunks_from_selected_documents() -> None:
+    first = doc_chunks(
+        EnterpriseDoc("dsid_1", "slack", "one", "first")
+    )[0]
+    duplicate = doc_chunks(
+        EnterpriseDoc("dsid_1", "slack", "one", "second fact")
+    )[0]
+    other = doc_chunks(
+        EnterpriseDoc("dsid_3", "jira", "three", "unsubmitted")
+    )[0]
+    hits = [
+        ScoredChunk(first, 1.0, datetime(2026, 1, 1, tzinfo=UTC)),
+        ScoredChunk(duplicate, 0.9, datetime(2026, 1, 1, tzinfo=UTC)),
+        ScoredChunk(other, 0.8, datetime(2026, 1, 1, tzinfo=UTC)),
+    ]
+
+    selected = answer_hits(
+        hits,
+        ["dsid_1"],
+        question_type="completeness",
+        answer_policy="category_aware",
+    )
+    assert [hit.chunk.text.splitlines()[-1] for hit in selected] == [
+        "first",
+        "second fact",
+    ]
 
 
 def test_streaming_answers_append_for_resume_without_diagnostics(tmp_path: Path) -> None:
@@ -315,3 +516,250 @@ def test_parser_exposes_resume_and_sparse_device() -> None:
 
     assert args.resume is True
     assert args.sparse_device == "cuda"
+
+
+def test_parser_exposes_reasoning_arm_and_cache() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--questions",
+            "questions.jsonl",
+            "--documents",
+            "docs.zip",
+            "--out",
+            "answers.jsonl",
+            "--reasoning-arm",
+            "closed_loop",
+            "--reasoning-cache",
+            "expansions.json",
+            "--embedding-cache",
+            "vectors.sqlite",
+            "--retrieval-captures",
+            "3",
+        ]
+    )
+
+    assert args.reasoning_arm == "closed_loop"
+    assert args.reasoning_cache == Path("expansions.json")
+    assert args.embedding_cache == Path("vectors.sqlite")
+    assert args.retrieval_captures == 3
+
+
+def test_parser_exposes_category_slice_and_answer_policy() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--questions",
+            "questions.jsonl",
+            "--documents",
+            "docs.zip",
+            "--out",
+            "answers.jsonl",
+            "--question-types",
+            "project_related,completeness",
+            "--question-ids-file",
+            "ids.txt",
+            "--answer-policy",
+            "category_aware",
+        ]
+    )
+    assert args.question_types == "project_related,completeness"
+    assert args.question_ids_file == Path("ids.txt")
+    assert args.answer_policy == "category_aware"
+
+
+def test_reasoning_summary_records_expansion_and_fallback_rates() -> None:
+    summary = reasoning_summary(
+        [
+            {"_diagnostics": {"reasoning": {"expanded": True, "passes": 2, "queries": ["q"]}}},
+            {
+                "_diagnostics": {
+                    "reasoning": {
+                        "expanded": False,
+                        "passes": 1,
+                        "queries": [],
+                        "fallback_reason": "provider_failure",
+                    }
+                }
+            },
+        ]
+    )
+
+    assert summary == {
+        "rows": 2,
+        "expanded_rows": 1,
+        "expanded_rate": 0.5,
+        "fallback_rows": 1,
+        "fallback_rate": 0.5,
+        "passes_total": 3,
+        "queries_total": 1,
+        "capture_stability_rate": None,
+        "model": None,
+    }
+
+
+def test_closed_loop_skips_cheap_provider_after_depth_resolves_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    question = EnterpriseQuestion(
+        question_id="qst_1",
+        question="Who owns the project?",
+        raw={"expected_doc_ids": ["dsid_2"]},
+    )
+    initial = ScoredChunk(
+        chunk=doc_chunks(
+            EnterpriseDoc("dsid_1", "github", "project", "The project is incomplete.")
+        )[0],
+        score=0.5,
+        indexed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    depth = ScoredChunk(
+        chunk=doc_chunks(
+            EnterpriseDoc("dsid_2", "github", "owner", "Ada owns the project.")
+        )[0],
+        score=0.9,
+        indexed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    class _Store:
+        pass
+
+    class _Embedder:
+        pass
+
+    calls: list[str] = []
+
+    def fake_retrieve(*_args: Any, **kwargs: Any) -> tuple[list[str], list[ScoredChunk], bool]:
+        del kwargs
+        calls.append(_args[2])
+        return ["dsid_2"], [depth], False
+
+    monkeypatch.setattr(enterprise_rag, "retrieve_docs", fake_retrieve)
+    ids, _, diagnostics = expand_retrieval_hits(
+        question,
+        _Store(),
+        _Embedder(),
+        initial_hits=[initial],
+        initial_gap_warning=True,
+        k=8,
+        candidate_k=80,
+        sparse_backend="lexical",
+        sparse_encoder=None,
+        reranker=None,
+        gap_threshold=0.5,
+        arm="closed_loop",
+        provider=None,
+        expansion_cache=None,
+    )
+
+    assert ids == ["dsid_2", "dsid_1"]
+    assert calls == ["Who owns the project?"]
+    assert diagnostics["provider_skipped_reason"] == "depth_resolved"
+
+
+def test_query_cached_embedder_reuses_query_vectors(tmp_path: Path) -> None:
+    class FakeEmbedder:
+        dim = 2
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            self.calls += 1
+            return [[float(len(text)), 1.0] for text in texts]
+
+    inner = FakeEmbedder()
+    with EmbeddingCache(tmp_path / "vectors.sqlite") as cache:
+        embedder = QueryCachedEmbedder(inner, cache)
+        assert embedder.embed_query("same") == embedder.embed_query("same")
+    assert inner.calls == 1
+
+
+def test_reasoning_promotion_gate_stays_pending_without_independent_metrics() -> None:
+    gate = reasoning_promotion_gate(None)
+    assert gate["status"] == "pending"
+    assert gate["expensive_model_allowed"] is False
+
+
+def test_reasoning_promotion_gate_requires_all_safety_signals() -> None:
+    metrics = {
+        "baseline_correctness": 0.50,
+        "candidate_correctness": 0.54,
+        "useful_expansion_precision": True,
+        "stable_repeated_captures": True,
+        "validation_failure_rate": 0.01,
+        "no_material_false_abstention": True,
+        "info_not_found_correctness": 0.95,
+    }
+    assert reasoning_promotion_gate(metrics)["expensive_model_allowed"] is True
+
+    metrics["candidate_correctness"] = 0.52
+    gate = reasoning_promotion_gate(metrics)
+    assert gate["status"] == "blocked"
+    assert "correctness_delta_at_least_3_points" in gate["failed"]
+
+
+def test_retrieval_capture_summary_reports_variance() -> None:
+    summary = retrieval_capture_summary(
+        [
+            {"document_ids": ["a", "b"]},
+            {"document_ids": ["a", "b"]},
+            {"document_ids": ["a", "c"]},
+        ]
+    )
+    assert summary["count"] == 3
+    assert summary["stable"] is False
+    assert summary["mean_document_jaccard"] == (1.0 + 1 / 3 + 1 / 3) / 3
+
+
+def test_runtime_telemetry_reports_calls_without_gold_metrics() -> None:
+    telemetry = runtime_telemetry(
+        [
+            {
+                "_diagnostics": {
+                    "captures": {
+                        "mean_latency_ms": 12.0,
+                        "calls": {"embedding": 1, "reranker": 1},
+                    }
+                }
+            }
+        ],
+        answer_mode="extractive",
+    )
+
+    assert telemetry["calls"] == {"embedding": 1, "reranker": 1, "answer_model": 0}
+    assert telemetry["cost_usd"] is None
+
+
+def test_retrieval_capture_summary_does_not_materialize_pair_scores() -> None:
+    captures = [{"document_ids": [str(index)]} for index in range(10)]
+    summary = retrieval_capture_summary(captures)
+
+    assert summary["count"] == 10
+    assert summary["mean_document_jaccard"] == 0.0
+
+
+def test_retrieval_capture_limit_is_bounded() -> None:
+    with pytest.raises(ValueError, match="between 1 and 10"):
+        list(
+            enterprise_rag._answers(
+                [],
+                object(),
+                object(),
+                k=1,
+                candidate_k=1,
+                mode="extractive",
+                model="model",
+                api_key=None,
+                max_chars=100,
+                sparse_backend="none",
+                sparse_encoder=None,
+                reranker=None,
+                gap_threshold=0.1,
+                reasoning_arm="none",
+                expansion_provider=None,
+                expansion_cache=None,
+                retrieval_captures=11,
+            )
+        )

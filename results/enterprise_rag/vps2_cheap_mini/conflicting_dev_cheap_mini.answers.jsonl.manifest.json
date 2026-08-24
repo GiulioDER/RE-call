@@ -1,0 +1,116 @@
+{
+  "benchmark": "EnterpriseRAG-Bench",
+  "started_at": "2026-08-18T09:50:33.230255+00:00",
+  "finished_at": "2026-08-18T09:58:01.068500+00:00",
+  "elapsed_s": 447.838,
+  "recall_revision": null,
+  "recall_version": "0.9.5",
+  "questions": {
+    "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+    "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905",
+    "selected_count": 5,
+    "question_types": [
+      "conflicting_info"
+    ],
+    "question_ids_file": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/top5_slices/dev.ids",
+    "question_ids_file_sha256": "2e3199469c8da0afbf06304b6896910ed0f6d689c37e00e7f65499deec241d8c"
+  },
+  "documents": [
+    {
+      "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+      "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905"
+    }
+  ],
+  "index": {
+    "table": "ber_voy_lex_12k_full",
+    "tenant": "enterprise-rag-voyage-lexical-chunk12k-full",
+    "pool_size": null,
+    "reset": false,
+    "skipped": true,
+    "documents": 0,
+    "chunks": 0
+  },
+  "retrieval": {
+    "embedder": "voyage:voyage-4-large",
+    "embedding_profile": "voyage:voyage-4-large",
+    "embedding_cache": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/conflicting_dev_vectors.sqlite",
+    "k": 8,
+    "candidate_k": 200,
+    "gap_threshold": 0.5,
+    "sparse_backend": "lexical",
+    "splade_model": null,
+    "splade_backfill": null,
+    "reranker": "none",
+    "retrieval_captures": 1
+  },
+  "answering": {
+    "mode": "extractive",
+    "model": null,
+    "max_context_chars": 3500,
+    "answer_policy": "baseline"
+  },
+  "reasoning": {
+    "arm": "cheap",
+    "provider": {
+      "provider_id": "recall.reasoning.expansion.openai",
+      "model_id": "openai/gpt-5-mini",
+      "model_revision": "unpinned",
+      "prompt_tokens": 3390,
+      "completion_tokens": 351,
+      "total_tokens": 3741,
+      "latency_ms": 6347,
+      "monetary_cost_usd": null,
+      "prompt_digest": "3ab3b3399209d24e6608c3af5d73bf823f3b66f46f99277b30e6013bdf68739c"
+    },
+    "summary": {
+      "rows": 5,
+      "expanded_rows": 4,
+      "expanded_rate": 0.8,
+      "fallback_rows": 1,
+      "fallback_rate": 0.2,
+      "passes_total": 9,
+      "queries_total": 9,
+      "capture_stability_rate": 1.0,
+      "model": {
+        "provider_id": "recall.reasoning.expansion.openai",
+        "model_id": "openai/gpt-5-mini",
+        "model_revision": "unpinned",
+        "prompt_tokens": 3384,
+        "completion_tokens": 229,
+        "total_tokens": 3613,
+        "latency_ms": 7254,
+        "monetary_cost_usd": null,
+        "prompt_digest": "3ab3b3399209d24e6608c3af5d73bf823f3b66f46f99277b30e6013bdf68739c"
+      }
+    },
+    "cache": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/conflicting_dev_cheap_mini.expansions.json",
+    "promotion": {
+      "status": "pending",
+      "expensive_model_allowed": false,
+      "missing": [
+        "baseline_correctness",
+        "candidate_correctness",
+        "useful_expansion_precision",
+        "stable_repeated_captures",
+        "validation_failure_rate",
+        "no_material_false_abstention",
+        "info_not_found_correctness"
+      ],
+      "failed": []
+    }
+  },
+  "outputs": {
+    "answers": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/conflicting_dev_cheap_mini.answers.jsonl",
+    "rows": 5,
+    "new_rows": 5,
+    "resumed_rows": 0
+  },
+  "retrieval_metrics": {
+    "questions_with_expected_docs": 5,
+    "document_recall": 0.8,
+    "exact_doc_set_coverage": 0.6,
+    "expected_docs": 10,
+    "hit_expected_docs": 8
+  },
+  "calibration": null
+}

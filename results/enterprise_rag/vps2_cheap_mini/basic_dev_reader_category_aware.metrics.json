@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 60.0,
+    "average_completeness_pct": 53.33,
+    "combined_correctness_completeness_score": 53.33,
+    "average_recall_pct": 100.0,
+    "average_invalid_extra_docs": 6.8
+  },
+  "question_type_stats": {
+    "basic": {
+      "count": 5,
+      "average_correctness_pct": 60.0,
+      "average_completeness_pct": 53.33,
+      "combined_correctness_completeness_score": 53.33,
+      "average_recall_pct": 100.0,
+      "average_invalid_extra_docs": 6.8
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0001",
+      "corrected": false,
+      "question_type": "basic",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate contradicts the gold by stating a 25 MB per-file default instead of 10 MiB and fails to report the 50 MiB total-request default, so it does not align.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0003",
+      "corrected": false,
+      "question_type": "basic",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate matches the gold answer by listing the same six acceptance criteria with identical specifics (design JSON token spec including elevation.kappa.0-6, implementation PR and feature flag for DataGrid/Table, 3:1 and 4.5:1 contrast requirements, visual-regression snapshots/tolerances, Figma updates, and the canary\u2192staged\u2192full rollout with fallback).",
+      "completeness_pct": 100.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0004",
+      "corrected": false,
+      "question_type": "basic",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate matches the core recommendation \u2014 make the onboarding flow resilient to entitlement propagation delays by surfacing 'pending'/'entitlement not found' UX states and validating in staging (plus follow-up tests and action items) which aligns with the gold guidance to handle pending entitlement propagation gracefully, avoid scary errors, and provide retry/support flows.",
+      "completeness_pct": 66.67,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0005",
+      "corrected": false,
+      "question_type": "basic",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned \u2014 the candidate denies any specification while the gold states a failover hierarchy (EU primary \u2192 EU warm standby \u2192 US emergency failover), RPO 15 minutes, RTO 30 minutes, and a 4-hour cap on shifting traffic to the US.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0008",
+      "corrected": false,
+      "question_type": "basic",
+      "answer_correct": true,
+      "correctness_reasoning": "Matches the gold answer's threshold of 10 minutes and adds a consistent verification detail (p95 latency within +5% of baseline) without contradicting it.",
+      "completeness_pct": 100.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 7
+    }
+  ]
+}

@@ -15,6 +15,8 @@ loader was exercised against the provisioned artifact on VPS2; see
 """
 from __future__ import annotations
 
+import pathlib
+
 import socket
 import sys
 import types
@@ -279,3 +281,352 @@ def test_the_shadow_path_reads_the_shadow_artifact_variables(
     active_built = make_profile_embedder("bge-small-asymmetric-v1", env=env)
     assert active_built.profile.artifact_digest == active_digest
     assert active_built.profile.fingerprint() != built.profile.fingerprint()
+
+
+# ----------------------------------------------------------------------------------------------
+# Artifact digests: the provenance a production ingest now rests on
+# ----------------------------------------------------------------------------------------------
+
+
+def test_an_embedder_with_no_weights_has_no_digest_and_says_so() -> None:
+    """⛔ **None is a real answer and must stay one.**
+
+    `HashingEmbedder` is defined by code, not weights: there is nothing on disk to hash.
+    Manufacturing a digest for it — over the model name, say — would turn an honest "unverified"
+    into a claim of provenance that no bytes back, which is worse than the refusal it bypasses. A
+    production ingest with this embedder is SUPPOSED to be refused.
+    """
+    from recall.embeddings import HashingEmbedder, embedder_artifact_digest, embedder_artifact_path
+
+    embedder = HashingEmbedder(dim=64)
+
+    assert embedder_artifact_path(embedder) is None
+    assert embedder_artifact_digest(embedder) is None
+
+
+def test_a_digest_is_over_the_model_directory_not_the_shared_cache(tmp_path: Path) -> None:
+    """⚠️ The scope is what makes the digest mean anything.
+
+    Measured on this machine: the fastembed `cache_dir` held 45 files and 1.5 GB across SEVERAL
+    models, so a digest over it would change whenever an unrelated model was downloaded, and would
+    identify nothing. `_model_dir` is one model's own snapshot — 5 files, 67 MB.
+
+    Stubbed rather than downloaded, so this runs offline and pins the SHAPE reached for rather than
+    one vendor's directory layout.
+    """
+    from recall.embeddings import artifact_tree_sha256, embedder_artifact_digest
+
+    model_dir = tmp_path / "snapshots" / "abc123"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model.onnx").write_bytes(b"weights")
+    (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+    sibling = tmp_path / "snapshots" / "other-model"
+    sibling.mkdir()
+    (sibling / "model.onnx").write_bytes(b"a different model entirely")
+
+    # ⚠️ **The stub carries BOTH attributes, because the real object does.** A first version
+    # defined only `_model_dir`, so a mutation that preferred `cache_dir` was invisible: the stub
+    # had no `cache_dir` to prefer, `getattr` fell through, and the test passed against code that
+    # would hash 1.5 GB of unrelated models on a real machine. Caught by mutation, not by reading.
+    class _Inner:
+        cache_dir = str(tmp_path / "snapshots")
+        _model_dir = model_dir
+
+    class _Model:
+        model = _Inner()
+
+    class _Embedder:
+        _model = _Model()
+
+    digest = embedder_artifact_digest(_Embedder())
+
+    assert digest == artifact_tree_sha256(model_dir)
+    assert digest != artifact_tree_sha256(tmp_path / "snapshots"), (
+        "hashing the whole cache would change when an unrelated model appears"
+    )
+
+
+def _symlinks_available(tmp_path: Path) -> bool:
+    """Whether this host can create a file symlink at all.
+
+    Windows refuses without developer mode or elevation (`WinError 1314`), which is exactly why
+    HuggingFace copies files there and why the defect below was invisible on this machine.
+    """
+    target = tmp_path / "_probe_target"
+    target.write_bytes(b"x")
+    try:
+        (tmp_path / "_probe_link").symlink_to(target)
+    except (OSError, NotImplementedError):
+        return False
+    return True
+
+
+def test_a_huggingface_snapshot_of_symlinks_still_digests(tmp_path: Path) -> None:
+    """⛔ **The layout every Linux and macOS install actually has.**
+
+    `huggingface_hub` stores each weight once under `<cache>/models--org--repo/blobs/<etag>` and
+    makes `snapshots/<rev>/<file>` a symlink to it. `blobs/` is a SIBLING of `snapshots/`, so under
+    the strict rule every file resolved outside the snapshot root, `artifact_tree_sha256` refused
+    the whole tree, `embedder_artifact_digest` caught the `ValueError` and returned None — and a
+    production upload was refused for an unverified identity, which is the exact failure the digest
+    was added to remove. Three auditors found this independently.
+
+    ⚠️ **This test cannot run on the machine where the code was written.** Windows without
+    elevation cannot create a symlink, so the hub copies real files there and the strict path
+    succeeds. That is why the original tests, which built a directory of regular files, passed
+    everywhere while proving nothing about the deploy target. CI is Linux and runs this for real.
+    """
+    if not _symlinks_available(tmp_path):
+        pytest.skip("this host cannot create symlinks; CI (Linux) covers this case")
+
+    from recall.embeddings import artifact_tree_sha256, embedder_artifact_digest
+
+    cache = tmp_path / "models--qdrant--bge-small-en-v1.5-onnx-q"
+    blobs = cache / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / "e3b0c442").write_bytes(b"the actual onnx weights")
+    (blobs / "9f86d081").write_text("{}", encoding="utf-8")
+
+    snapshot = cache / "snapshots" / "52398278842ec682c6f32300af41344b1c0b0bb2"
+    snapshot.mkdir(parents=True)
+    (snapshot / "model_optimized.onnx").symlink_to(blobs / "e3b0c442")
+    (snapshot / "config.json").symlink_to(blobs / "9f86d081")
+
+    with pytest.raises(ValueError, match="escapes its root"):
+        artifact_tree_sha256(snapshot)
+
+    digest = artifact_tree_sha256(snapshot, follow_file_symlinks=True)
+    assert len(digest) == 64
+
+    class _Inner:
+        cache_dir = str(cache)
+        _model_dir = snapshot
+
+    class _Model:
+        model = _Inner()
+
+    class _Embedder:
+        _model = _Model()
+
+    assert embedder_artifact_digest(_Embedder()) == digest, (
+        "a real HuggingFace layout must produce a digest, or production refuses every upload"
+    )
+
+
+def test_following_a_symlink_still_tracks_the_bytes_behind_it(tmp_path: Path) -> None:
+    """Following links must not cost the property the digest exists for.
+
+    A provenance digest is worthless if it does not move when the weights move. This pins that the
+    permissive mode is still content-sensitive, and that it names files by their place in the
+    snapshot rather than by the blob's content-addressed filename — otherwise two identical trees
+    laid out differently would disagree.
+    """
+    if not _symlinks_available(tmp_path):
+        pytest.skip("this host cannot create symlinks; CI (Linux) covers this case")
+
+    from recall.embeddings import artifact_tree_sha256
+
+    blobs = tmp_path / "blobs"
+    blobs.mkdir()
+    (blobs / "aaa").write_bytes(b"weights v1")
+    snapshot = tmp_path / "snapshots" / "rev"
+    snapshot.mkdir(parents=True)
+    (snapshot / "model.onnx").symlink_to(blobs / "aaa")
+
+    before = artifact_tree_sha256(snapshot, follow_file_symlinks=True)
+    (blobs / "aaa").write_bytes(b"weights v2 -- different bytes entirely")
+    after = artifact_tree_sha256(snapshot, follow_file_symlinks=True)
+
+    assert before != after, "the digest must change when the bytes behind the link change"
+
+
+def test_an_unreachable_artifact_path_yields_none_rather_than_raising() -> None:
+    """This reaches into another library's internals, which change between versions.
+
+    A wrong answer is worse than no answer, because it feeds an identity claiming to be verified.
+    So every failure mode resolves to None and the caller falls back to an honest unverified
+    identity.
+    """
+    from recall.embeddings import embedder_artifact_digest
+
+    class _Model:
+        class model:  # noqa: N801 - mimicking an attribute chain, not naming a class
+            _model_dir = "/a/path/that/does/not/exist/anywhere"
+
+    class _Gone:
+        _model = _Model()
+
+    assert embedder_artifact_digest(_Gone()) is None
+    assert embedder_artifact_digest(object()) is None, "an embedder of another shape must not raise"
+
+
+def _stub_embedder(model_dir: pathlib.Path) -> object:
+    """The shape `embedder_artifact_path` reaches through, carrying BOTH attributes it consults.
+
+    `cache_dir` is present because the real object has it: a stub that omits it makes a mutation
+    preferring the shared cache invisible, which is a mistake this file has already paid for once.
+    """
+
+    class _Inner:
+        cache_dir = str(model_dir.parent)
+        _model_dir = model_dir
+
+    class _Model:
+        model = _Inner()
+
+    class _Embedder:
+        _model = _Model()
+
+    return _Embedder()
+
+
+def test_a_changed_model_file_invalidates_the_cached_digest(tmp_path, monkeypatch) -> None:
+    """⛔ The cache was keyed by PATH alone, so it answered for bytes that may have changed.
+
+    A digest exists to say "these are the weights that produced this index". Cached with no
+    invalidation, it says that about whatever was on disk the first time the process looked, for the
+    life of the process — and a long-running MCP server is exactly that process. A re-download, a
+    partial write, or a swapped model file kept the stale answer.
+
+    Measured after the fix, on a real temporary directory: rewriting `model.onnx` moved the digest
+    from `8705c4703bef5836...` to `87ea1dc0e4bc6c11...`; adding a file moved it again; removing that
+    file returned it to the previous value.
+    """
+    import time
+
+    from recall.embeddings import embedder_artifact_digest
+
+    monkeypatch.setattr("recall.embeddings._ARTIFACT_DIGESTS", {})
+    model_dir = tmp_path / "snapshots" / "rev"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model.onnx").write_bytes(b"weights v1")
+    (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+    embedder = _stub_embedder(model_dir)
+
+    first = embedder_artifact_digest(embedder)
+    assert first is not None
+    assert embedder_artifact_digest(embedder) == first, "an unchanged directory must be stable"
+
+    time.sleep(0.01)
+    (model_dir / "model.onnx").write_bytes(b"weights v2 -- swapped")
+    assert embedder_artifact_digest(embedder) != first, (
+        "the weights changed and the digest did not; every generation built from here now claims "
+        "provenance no bytes on disk support"
+    )
+
+    time.sleep(0.01)
+    (model_dir / "extra.bin").write_bytes(b"an added file")
+    third = embedder_artifact_digest(embedder)
+    assert third != first
+    (model_dir / "extra.bin").unlink()
+    assert embedder_artifact_digest(embedder) != third, "removing a file must be noticed too"
+
+
+def test_the_unchanged_case_is_still_served_from_cache(tmp_path, monkeypatch) -> None:
+    """Invalidation must not become "re-hash every time": that was the point of the cache.
+
+    Hashing a 67 MB snapshot costs about a second, and `generation_ingest` asks per upload. Asserted
+    by counting calls to the hasher rather than by timing, which would be flaky.
+    """
+    import recall.embeddings as embeddings
+
+    monkeypatch.setattr("recall.embeddings._ARTIFACT_DIGESTS", {})
+    model_dir = tmp_path / "snapshots" / "rev"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model.onnx").write_bytes(b"weights")
+    embedder = _stub_embedder(model_dir)
+
+    calls: list[int] = []
+    real = embeddings.artifact_tree_sha256
+
+    def _counted(path, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        calls.append(1)
+        return real(path, **kwargs)
+
+    monkeypatch.setattr(embeddings, "artifact_tree_sha256", _counted)
+
+    for _ in range(5):
+        embeddings.embedder_artifact_digest(embedder)
+
+    assert len(calls) == 1, (
+        f"five identical calls hashed the tree {len(calls)} times; the cache is not caching"
+    )
+
+
+def test_a_directory_that_cannot_be_signed_is_not_cached(tmp_path, monkeypatch) -> None:
+    """A value that cannot be invalidated must not be stored.
+
+    If the signature cannot be read, there is no way to notice the next change, so caching would
+    reintroduce the original defect for exactly the directories whose state is least knowable.
+    """
+    import recall.embeddings as embeddings
+
+    monkeypatch.setattr("recall.embeddings._ARTIFACT_DIGESTS", {})
+    model_dir = tmp_path / "snapshots" / "rev"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model.onnx").write_bytes(b"weights")
+    embedder = _stub_embedder(model_dir)
+
+    monkeypatch.setattr(embeddings, "_artifact_signature", lambda path: None)
+    assert embeddings.embedder_artifact_digest(embedder) is not None
+    assert embeddings._ARTIFACT_DIGESTS == {}, (
+        "an unsignable directory was cached, so it can never be invalidated"
+    )
+
+
+def test_a_same_size_rewrite_is_still_noticed(tmp_path, monkeypatch) -> None:
+    """⚠️ **This test exists because its mutation survived.**
+
+    The first version of the invalidation test replaced ten bytes with twenty-one, so the SIZE
+    component alone caught it and dropping `mtime` from the signature failed nothing. That is the
+    least contrived case there is: a re-download after a corrupted write, or a deliberate swap of
+    equal-length weights, changes no size and no file count.
+    """
+    import time
+
+    from recall.embeddings import embedder_artifact_digest
+
+    monkeypatch.setattr("recall.embeddings._ARTIFACT_DIGESTS", {})
+    model_dir = tmp_path / "snapshots" / "rev"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model.onnx").write_bytes(b"AAAAAAAAAA")
+    embedder = _stub_embedder(model_dir)
+
+    first = embedder_artifact_digest(embedder)
+    time.sleep(0.01)
+    (model_dir / "model.onnx").write_bytes(b"BBBBBBBBBB")  # same length, different bytes
+
+    assert embedder_artifact_digest(embedder) != first, (
+        "same size, same file count, different weights: without mtime in the signature this is "
+        "invisible, and the digest keeps vouching for bytes that are gone"
+    )
+
+
+def test_removing_an_empty_older_file_is_still_noticed(tmp_path, monkeypatch) -> None:
+    """The case that makes the COUNT component load-bearing, and nothing else covers it.
+
+    Removing a file usually shifts the total size or the newest mtime. A file that is empty and not
+    the newest shifts neither: only the count moves. Contrived on its face, ordinary in practice —
+    a `.gitkeep`, an empty config, a zero-length placeholder left by an interrupted download.
+    """
+    import time
+
+    from recall.embeddings import embedder_artifact_digest
+
+    monkeypatch.setattr("recall.embeddings._ARTIFACT_DIGESTS", {})
+    model_dir = tmp_path / "snapshots" / "rev"
+    model_dir.mkdir(parents=True)
+    placeholder = model_dir / "empty.bin"
+    placeholder.write_bytes(b"")
+    time.sleep(0.02)
+    # Written AFTER, so the placeholder is not the newest file and removing it cannot move `newest`.
+    (model_dir / "model.onnx").write_bytes(b"weights")
+    embedder = _stub_embedder(model_dir)
+
+    first = embedder_artifact_digest(embedder)
+    placeholder.unlink()
+
+    assert embedder_artifact_digest(embedder) != first, (
+        "an empty, older file was removed: total size and newest mtime are both unchanged, so only "
+        "the file count can see it"
+    )

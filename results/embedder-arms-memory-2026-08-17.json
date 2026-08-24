@@ -1,0 +1,52 @@
+{
+ "n_queries": 22,
+ "pool": 300,
+ "bootstrap": 10000,
+ "seed": 20260817,
+ "combined_rerank_fallbacks": 0,
+ "arms": {
+  "R@5": {
+   "bge_small": 0.343319300316908,
+   "bge_large": 0.43372817374013545,
+   "combined": 0.4648742206756561
+  },
+  "R@10": {
+   "bge_small": 0.3824900577891009,
+   "bge_large": 0.4827114273286522,
+   "combined": 0.5517903746970733
+  },
+  "R@100": {
+   "bge_small": 0.6608872387580521,
+   "bge_large": 0.6979230100043498,
+   "combined": 0.7689349924397771
+  },
+  "nDCG@10": {
+   "bge_small": 0.4145151238461477,
+   "bge_large": 0.5179752770951883,
+   "combined": 0.547827595566634
+  },
+  "MRR": {
+   "bge_small": 0.6296717171717172,
+   "bge_large": 0.8015692640692641,
+   "combined": 0.7845238095238095
+  }
+ },
+ "comparisons": {
+  "embedder (small->large)": {
+   "delta": 0.03703577124629756,
+   "ci_low": -0.03246753246753246,
+   "ci_high": 0.11536796536796536,
+   "predicted_low": 0.01,
+   "predicted_high": 0.03,
+   "verdict": "INDISTINGUISHABLE FROM ZERO"
+  },
+  "combined (small->large+rr)": {
+   "delta": 0.10804775368172498,
+   "ci_low": 0.04207445266057707,
+   "ci_high": 0.17987012987012987,
+   "predicted_low": 0.06,
+   "predicted_high": 0.12,
+   "verdict": "CONFIRMED (in band, CI excludes 0)"
+  }
+ }
+}

@@ -7,6 +7,7 @@ test that also cannot express "and now it is exactly one hour later".
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -230,7 +231,7 @@ def test_defaults_apply_when_nothing_is_configured(monkeypatch):
     monkeypatch.delenv("RECALL_INDEX_BYTES_PER_HOUR", raising=False)
 
     limits = limiter_from_env().limits()
-    assert set(limits) == {"read", "write", "forget", "index_bytes"}
+    assert set(limits) == {"read", "write", "forget", "admin", "index_bytes"}
     assert limits["read"].capacity == DEFAULT_CALLS_PER_MIN["read"]
 
 
@@ -296,3 +297,73 @@ def test_rate_from_env_reports_disabled_as_none(monkeypatch):
     assert _rate_from_env("X", 10.0, 60.0) is None
     monkeypatch.setenv("X", "OFF")  # case-insensitive
     assert _rate_from_env("X", 10.0, 60.0) is None
+
+
+def test_the_failed_auth_throttle_closes_after_a_failure_storm_and_reopens():
+    """N failures close the gate; elapsed time reopens it. Successes never touch it."""
+    from recall_mcp.limits import FailedAuthThrottle
+
+    clock = [0.0]
+    throttle = FailedAuthThrottle(Rate(capacity=3.0, per_second=1.0), clock=lambda: clock[0])
+    assert throttle.allow()
+    for _ in range(3):
+        throttle.record_failure()
+    assert not throttle.allow(), "three failures against a capacity of three must close the gate"
+    clock[0] += 1.5
+    assert throttle.allow(), "refill at 1/s reopens the gate after 1.5s"
+
+
+def test_the_failed_auth_throttle_disabled_is_always_open():
+    from recall_mcp.limits import FailedAuthThrottle
+
+    throttle = FailedAuthThrottle(None)
+    for _ in range(1000):
+        throttle.record_failure()
+    assert throttle.allow()
+
+
+def test_record_failure_does_not_raise_when_the_budget_is_below_one():
+    """RECALL_RATE_AUTH_FAILURES_PER_MIN=0.5 gives capacity 0.5; a failure must count, not
+    raise RateLimited out of the verifier (which would be a 500 where a 401 belongs).
+
+    Red before the fix: record_failure called _Bucket.take(1.0), which raises when
+    cost > capacity."""
+    from recall_mcp.limits import FailedAuthThrottle
+
+    throttle = FailedAuthThrottle(Rate(capacity=0.5, per_second=0.5 / 60.0))
+    throttle.record_failure()  # must not raise
+    assert not throttle.allow(), "a sub-1 capacity gate is closed, not crashing"
+
+
+def test_a_valid_static_token_is_not_refused_while_the_throttle_is_closed():
+    """The F1 regression guard: on the STATIC path a valid token verifies even during a
+    failure storm, because the static verifier does not consult the throttle before the
+    (cheap) lookup. Red before the fix: verify_token gated on allow() first and returned
+    None for a valid token once the bucket drained."""
+    import asyncio
+
+    from recall_mcp.limits import FailedAuthThrottle
+    from recall_mcp.server import RecallTokenVerifier
+
+    class _Registry:
+        def verify(self, token):
+            if token == "good":
+                return SimpleNamespace(
+                    name="agent", tenant="acme", scopes=frozenset({"recall:read"}), expires_at=None
+                )
+            return None
+
+    clock = [0.0]
+    throttle = FailedAuthThrottle(Rate(capacity=3.0, per_second=1.0), clock=lambda: clock[0])
+    verifier = RecallTokenVerifier(_Registry(), throttle=throttle)
+
+    # Drain the bucket with garbage, as an unauthenticated attacker would.
+    for _ in range(5):
+        asyncio.run(verifier.verify_token("garbage"))
+    assert not throttle.allow(), "the storm must have closed the gate"
+
+    # A valid token must still authenticate.
+    result = asyncio.run(verifier.verify_token("good"))
+    assert result is not None and result.client_id == "agent", (
+        "a valid static token was refused during a failure storm — the F1 lockout"
+    )

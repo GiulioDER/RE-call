@@ -84,6 +84,7 @@ from recall.promotion import PromotedFact
 from recall.reasoning_proposals.types import InferenceProposal
 from recall.truth_extraction.types import STATUS_VOCABULARY, VALIDITY_CLAIM_KEYS
 from recall.trust import metadata_is_trusted
+from recall.errors import RecallError
 
 _log = get_logger("rewrite")
 
@@ -109,7 +110,7 @@ _LEDGER_DIR = ".recall"
 _LEDGER_NAME = "rejections.sqlite3"
 
 
-class RewriteRefused(ValueError):
+class RewriteRefused(ValueError, RecallError):
     """A rewrite was asked for that this module will not perform."""
 
 

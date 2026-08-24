@@ -59,6 +59,9 @@ def measure_top_cosines(
 
     Single source of the sampling rule for both `calibrate()` and the trust evaluation —
     validity-sensitive (`trust`) queries carry no answerable label and are skipped.
+
+    "Best" means the exact maximum over the scope, not the top hit of an approximate search. See
+    the comment in the loop, and `PgVectorStore.top_cosine` for the measurement that guarantees it.
     """
     ans: list[float] = []
     unans: list[float] = []

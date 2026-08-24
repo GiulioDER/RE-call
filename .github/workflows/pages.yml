@@ -19,16 +19,27 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # Pinned to SHAs with the tag in a comment, matching ci.yml, release.yml and
+      # publish-mcp.yml. This was the last workflow on floating tags, and it is the one that
+      # holds `pages: write` and `id-token: write` and publishes the public site, so a moved
+      # tag here is worth more to an attacker than anywhere else in the repository.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d  # v6.0.0
 
+      # `include-hidden-files: true` is load-bearing, not tidiness. upload-pages-artifact v4
+      # made "hidden files are excluded" the default (its own release notes call it potentially
+      # breaking), and `site/.nojekyll` is a hidden file. Taking the v3 -> v5 bump without this
+      # input would drop it from the artifact and hand the site back to Jekyll, and nothing
+      # would say so: this workflow runs only on push to master, so no PR check can see it, and
+      # the deploy would still go green.
       - name: Upload static artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
         with:
           path: ./site
+          include-hidden-files: true
 
   deploy:
     needs: build
@@ -39,4 +50,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5.0.0

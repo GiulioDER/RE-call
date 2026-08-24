@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any, Protocol
 import hashlib
+from recall.errors import RecallError
 
 
 def _package_version(package: str) -> str:
@@ -472,7 +473,7 @@ def store_sparse_vectors(
     return SparseIndexResult(written=written, empty_ids=empty_ids)
 
 
-class SparseCoverageError(RuntimeError):
+class SparseCoverageError(RuntimeError, RecallError):
     """The sidecar disagrees with the corpus under a profile, in either direction.
 
     Fewer sidecar rows than chunks: the retrieval leg would answer, thinly and silently. More
@@ -521,10 +522,11 @@ def assert_sparse_coverage(
         f"learned sparse sidecar holds {encoded} rows under profile {profile_id!r}, more than "
         f"the {total} chunks in the corpus. The sidecar keys its parent chunk table as a column "
         f"value, not a relation, so nothing cascades when a chunk row is removed: these are "
-        f"orphaned rows for chunks that no longer exist. Likely causes are `replace_sources` "
-        f"re-chunking a source into fewer chunks, which leaves the tail's old sidecar rows "
-        f"behind, or `_prune_vanished` removing a source that left the corpus through "
-        f"`delete_sources`, which also does not clean the sidecar. This still refuses, because "
+        f"orphaned rows for chunks that no longer exist. The erasure paths (`replace_sources`, "
+        f"`delete_sources`, `delete_sources_across`, `generations.forget`) now scrub the "
+        f"sidecar in the same transaction, so on a current build the likely cause is rows "
+        f"orphaned BEFORE that fix landed, or a scrub bypassed by direct SQL. This still "
+        f"refuses, because "
         f"a sidecar that disagrees with the corpus is a real fault: at least {encoded - total} "
         f"sidecar row(s) are orphaned. This compares counts, not id sets, so an overcount is "
         f"not evidence that coverage is complete: a separately unencoded chunk can still be "
@@ -597,7 +599,7 @@ DEFAULT_REQUIRED_VRAM_MB = 2048
 SPARSE_DEVICES = ("auto", "cpu", "cuda")
 
 
-class SparseDeviceError(RuntimeError):
+class SparseDeviceError(RuntimeError, RecallError):
     """A device was asked for by name and cannot be used."""
 
 

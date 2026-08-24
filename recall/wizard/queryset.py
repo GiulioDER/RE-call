@@ -31,7 +31,7 @@ from __future__ import annotations
 import random
 import re
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +41,7 @@ from recall.eval.vocab import word_tokens
 from recall.index import chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
+from recall.errors import RecallError
 
 _log = get_logger("wizard.queryset")
 
@@ -94,7 +95,7 @@ _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
 _CODE_SPAN = re.compile(r"`[^`]*`")
 
 
-class QuerySetError(ValueError):
+class QuerySetError(ValueError, RecallError):
     """A query set that certification would refuse, refused earlier and with a reason."""
 
 
@@ -192,8 +193,19 @@ def prepare_for_calibration(
     return require_balance(canonicalize(entries), min_per_class=min_per_class)
 
 
-def chunks_from_directory(root: str | Path, glob: str = DEFAULT_GLOB) -> list[str]:
+def chunks_from_directory(
+    root: str | Path,
+    glob: str = DEFAULT_GLOB,
+    chunker: "Callable[[str], list[str]] | None" = None,
+) -> list[str]:
     """Every chunk of the corpus at `root`, chunked exactly as indexing will chunk it.
+
+    `chunker` defaults to `chunk_text` and MUST be the callable the generation will actually be
+    built with. A caller indexing code with `chunk_code` while generating queries from `chunk_text`
+    breaks the invariant this docstring states two paragraphs down, and it breaks it invisibly:
+    measured on this repository's own `pipeline.py`, the two produce 20 chunks against 8 with no
+    exact string in common, so every "answerable" query would be generated from text that is not in
+    the index it is about to be measured against.
 
     `chunk_text` rather than a local splitter: a query generated from text that was never a chunk
     cannot retrieve that chunk, so the two must be the same function and not merely similar ones.
@@ -212,6 +224,7 @@ def chunks_from_directory(root: str | Path, glob: str = DEFAULT_GLOB) -> list[st
         raise QuerySetError(str(exc)) from exc
 
     chunks: list[str] = []
+    split = chunker if chunker is not None else chunk_text
     unreadable: list[str] = []
     vanished = 0
     for file in files:
@@ -237,7 +250,7 @@ def chunks_from_directory(root: str | Path, glob: str = DEFAULT_GLOB) -> list[st
             # caller never learned was truncated.
             unreadable.append(f"{file} ({type(exc).__name__})")
             continue
-        chunks.extend(chunk_text(body))
+        chunks.extend(split(body))
 
     if unreadable:
         shown = ", ".join(unreadable[:3])
@@ -276,6 +289,22 @@ def offtopic_subjects_absent_from(texts: Sequence[str]) -> list[str]:
         if not corpus_words.intersection(content):
             surviving.append(subject)
     return surviving
+
+
+def _pool_collisions(texts: Sequence[str]) -> set[str]:
+    """The pool's own content words that this corpus contains, which is what the refusal must name.
+
+    A count of surviving subjects says how bad it is. These words say WHY, and the two commonest
+    causes are told apart by reading them: a corpus genuinely about food and music, or a corpus
+    that has ingested the subject list itself.
+    """
+    corpus_words = set(word_tokens(texts))
+    return {
+        word
+        for subject in _OFFTOPIC_SUBJECTS
+        for word in word_tokens([subject])
+        if len(word) > 3 and word in corpus_words
+    }
 
 
 def _document_frequency(chunks: Sequence[str]) -> Counter[str]:
@@ -378,12 +407,29 @@ def generate_offline(
     subjects = offtopic_subjects_absent_from(chunks)
     capacity = len(subjects) * len(_OFFTOPIC_TEMPLATES)
     if capacity < per_class:
+        # The colliding WORDS, not just the count. Without them this refusal said the corpus
+        # overlaps the pool and told the operator to supply a domain-specific subject list, which
+        # was a confident diagnosis and, in the case that actually occurred, the wrong one: the
+        # corpus was a Python tree that happened to contain recall's own source. Naming the words
+        # makes a corpus that has swallowed a copy of the pool distinguishable at a glance from a
+        # corpus genuinely about food and music, and those two want opposite fixes.
+        #
+        # ⚠️ Do NOT quote example subjects here. An earlier version of this comment named the three
+        # words it had collided on, which put them back into every code corpus rooted at this
+        # repository and disqualified those three subjects for every user. Measured: survivors fell
+        # from 12 to 11 and the words traced to this file. The pool lives in
+        # `recall/eval/offtopic_subjects.json` precisely so it is not source; a comment quoting it
+        # is source again.
+        collisions = _pool_collisions(chunks)
+        sample = ", ".join(sorted(collisions)[:8]) or "none identified"
         raise QuerySetError(
             f"only {len(subjects)} of {len(_OFFTOPIC_SUBJECTS)} off-topic subjects are disjoint "
             f"from this corpus, giving {capacity} distinct gap questions against the "
-            f"{per_class} needed. The corpus overlaps the shipped off-topic pool, so a gap class "
-            "drawn from it would share vocabulary with the corpus and would not be separable. "
-            "Supply a disjoint subject list for this domain."
+            f"{per_class} needed. A gap class drawn from the rest would share vocabulary with the "
+            f"corpus and would not be separable. The corpus contains these pool words: {sample}. "
+            "If they read as an unrelated subject list rather than as your domain, the corpus "
+            "probably includes a copy of the pool itself (recall's own source does), and the fix "
+            "is to exclude that path rather than to supply a new subject list."
         )
 
     rng = random.Random(seed)

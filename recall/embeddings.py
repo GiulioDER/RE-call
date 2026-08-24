@@ -11,7 +11,11 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+
+from recall.observability import get_logger
 from typing import Literal, Protocol, TypeVar, runtime_checkable
+from recall.errors import RecallError
+from recall._env import truthy
 
 #: Return type of the callable `retry_with_backoff` wraps — it hands back whatever `fn` returns,
 #: so the retry is transparent to the caller's type rather than widening it to `object`.
@@ -34,7 +38,7 @@ _TRANSIENT_MARKERS = (
 )
 
 
-class NonTransientError(Exception):
+class NonTransientError(RecallError):
     """Marker: ``retry_with_backoff`` must never retry this, whatever the message happens to say.
 
     ``_is_transient`` classifies by heuristic, and its last resort is substring-matching the
@@ -469,6 +473,59 @@ def _package_version(package: str) -> str:
         return "not-installed"
 
 
+#: The digest value a profile carries when its weights are provisioned by the operator and
+#: nothing verified them. Pre-dates the registry; every legacy embedder mints it.
+LEGACY_UNVERIFIED_DIGEST = "legacy-unverified"
+
+#: The digest value a REGISTERED HOSTED profile carries. A hosted provider serves weights it can
+#: replace behind a stable model name, so there is no artifact to hash and no revision to pin: the
+#: honest value is a marker saying so, not a digest that would be invented.
+#:
+#: Deliberately DISTINCT from `LEGACY_UNVERIFIED_DIGEST`, and the distinction is load-bearing in
+#: two places that ask different questions of it:
+#:
+#: * `recall.readiness` asks "is the artifact immutably pinned?". Both answer no, so that site
+#:   compares against `UNVERIFIED_ARTIFACT_DIGESTS` rather than either literal.
+#: * `recall.index` asks "does this profile make a real claim about its context?". A legacy
+#:   profile does not (its `context_version` is a default nobody chose) and is exempt; a
+#:   registered hosted profile DOES, so it must stay subject to the check. That site therefore
+#:   compares against the LEGACY literal alone, on purpose. A shared "is unverified" predicate
+#:   there would exempt hosted profiles from a check they should pass, which is the defect that
+#:   sank an earlier attempt at this feature.
+HOSTED_UNVERIFIED_DIGEST = "hosted-unverifiable"
+
+#: Every digest value that is a marker rather than a pinned artifact. One named set so that adding
+#: a third kind cannot silently pass a gate that enumerates the other two.
+UNVERIFIED_ARTIFACT_DIGESTS = frozenset({LEGACY_UNVERIFIED_DIGEST, HOSTED_UNVERIFIED_DIGEST})
+
+
+def artifact_is_pinned(profile: EmbeddingProfile) -> bool:
+    """Whether this profile names an artifact whose bytes something actually verified."""
+    return profile.artifact_digest not in UNVERIFIED_ARTIFACT_DIGESTS
+
+
+def _check_declared_width(identity: EmbeddingProfile | None, actual_dim: int, what: str) -> None:
+    """Refuse an identity whose declared width the live encoder does not produce.
+
+    The declared dimension is a CLAIM, and until this existed nothing checked it on the hosted
+    path. `check_enterprise_readiness` looks like it would, since it compares
+    `profile.dimension != embedder.dim`, but on an embedder with no identity that profile comes
+    from `legacy_embedding_profile`, which sets `dimension` FROM `embedder.dim`, so the comparison
+    is vacuously true. Measured 2026-08-18 before this guard: a stub returning 512-wide vectors
+    under a profile declaring 1024 built cleanly and passed the readiness gate.
+
+    Raising here rather than at the gate is deliberate. A provider that changes the width behind a
+    model name has changed the model, and the cheapest moment to say so is before a single vector
+    is written into a store built at the other width. `FastEmbedEmbedder` already refuses this for
+    local artifacts; this is the same refusal for a hosted one.
+    """
+    if identity is not None and actual_dim != identity.dimension:
+        raise ValueError(
+            f"profile {identity.profile_id!r} declares dimension {identity.dimension} but "
+            f"{what} embeds at {actual_dim}; this endpoint is not that profile"
+        )
+
+
 def legacy_embedding_profile(embedder: Embedder) -> EmbeddingProfile:
     """Describe a legacy embedder without changing its public protocol."""
     name = getattr(embedder, "name", type(embedder).__name__)
@@ -476,7 +533,7 @@ def legacy_embedding_profile(embedder: Embedder) -> EmbeddingProfile:
     return EmbeddingProfile(
         profile_id=str(name),
         model_name=str(name),
-        artifact_digest="legacy-unverified",
+        artifact_digest=LEGACY_UNVERIFIED_DIGEST,
         dimension=dim,
         query_mode="legacy",
         passage_mode="legacy",
@@ -512,8 +569,34 @@ def embed_passages(embedder: Embedder, texts: list[str]) -> list[list[float]]:
     return [[float(x) for x in vector] for vector in raw]
 
 
-def artifact_tree_sha256(path: str | Path) -> str:
-    """Hash a provisioned file or directory without following directory symlinks."""
+def artifact_tree_sha256(path: str | Path, *, follow_file_symlinks: bool = False) -> str:
+    """Hash a provisioned file or directory without following directory symlinks.
+
+    ⛔ **`follow_file_symlinks` defaults to False, and that default is deliberate.** The strict
+    behaviour is what `verify_artifact` compares against a pinned, declared SHA, where a file
+    symlinked in from outside the tree would let unpinned bytes into a verified digest. Nothing that
+    checks against a declared expectation should follow links, so the default does not.
+
+    ⚠️ **It is True for provenance, because the strict rule made the digest unobtainable on Linux.**
+    `huggingface_hub` stores weights once under `<cache>/models--org--repo/blobs/<etag>` and makes
+    `snapshots/<rev>/<file>` a SYMLINK to it. `blobs/` is a sibling of `snapshots/`, so every weight
+    file resolves outside the snapshot root and the escape check refuses the entire tree — meaning
+    `embedder_artifact_digest` returned None, the identity stayed unverified, and a production
+    upload was refused exactly as before. Three auditors reached this independently; the generated
+    stack is `python:3.13-slim` and CI is Linux, so that is the deploy target, not an edge case.
+
+    It went unnoticed here because Windows without developer privileges cannot create symlinks at
+    all (`WinError 1314`), so the hub copies real files and the strict path succeeds. The measured
+    "5 files, 67 MB, 0.95s" in `embedder_artifact_digest` is a Windows measurement.
+
+    Following a FILE symlink is safe for provenance and is in fact the point: the bytes behind the
+    link are the bytes the model loaded, and the digest still changes when they change. DIRECTORY
+    symlinks are not followed in either mode, because `rglob` does not descend them.
+
+    The recorded name comes from the UNRESOLVED path in this mode, so the digest describes the
+    snapshot's own layout rather than the blob store's content-addressed filenames — otherwise two
+    identical trees laid out differently would hash differently.
+    """
     root = Path(path).resolve(strict=True)
     digest = hashlib.sha256()
     files = [root] if root.is_file() else sorted(p for p in root.rglob("*") if p.is_file())
@@ -521,15 +604,128 @@ def artifact_tree_sha256(path: str | Path) -> str:
         raise ValueError(f"model artifact has no files: {root}")
     for file in files:
         resolved = file.resolve(strict=True)
-        if root.is_dir() and not resolved.is_relative_to(root):
+        escapes = root.is_dir() and not resolved.is_relative_to(root)
+        if escapes and not follow_file_symlinks:
             raise ValueError(f"model artifact symlink escapes its root: {file}")
-        relative = resolved.name if root.is_file() else resolved.relative_to(root).as_posix()
+        if root.is_file():
+            relative = resolved.name
+        elif escapes:
+            # Named by where it sits in the tree, not by the blob it points at.
+            relative = file.relative_to(root).as_posix()
+        else:
+            relative = resolved.relative_to(root).as_posix()
         digest.update(relative.encode("utf-8"))
         digest.update(b"\x00")
         with resolved.open("rb") as stream:
             for block in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(block)
     return digest.hexdigest()
+
+
+#: Digests already computed, keyed by resolved artifact directory, each stored WITH the cheap
+#: directory signature it was computed from. Hashing a model costs ~1s for a 67 MB snapshot, which
+#: is cheap once and wasteful per upload.
+#:
+#: ⛔ **Keyed by path alone, this cached a claim about bytes that may have changed.** The digest
+#: exists to say "these are the weights that produced this index"; a cache with no invalidation
+#: says it about whatever was there the first time the process looked. A re-download, a partial
+#: write, or an edited model file kept the old answer for the life of the process, and a
+#: long-running MCP server is exactly the process this matters in.
+_ARTIFACT_DIGESTS: dict[str, tuple[tuple[int, int, int], str]] = {}
+
+#: Cleared wholesale past this many entries. A process sees a handful of model directories at most,
+#: so this is a runaway guard rather than a policy; clearing costs one re-hash and bounds nothing
+#: that matters.
+_ARTIFACT_DIGEST_LIMIT = 32
+
+
+def _artifact_signature(path: Path) -> tuple[int, int, int] | None:
+    """File count, total size and newest mtime of an artifact directory. `None` if unreadable.
+
+    Follows symlinks, because `artifact_tree_sha256(..., follow_file_symlinks=True)` does: a
+    HuggingFace snapshot is a farm of links into a sibling `blobs/`, and a signature that stopped at
+    the link would not see the bytes the digest actually covers.
+
+    ⚠️ **This detects staleness, not tampering, and the difference is worth stating.** Someone able
+    to write into the model directory can also set mtimes, so a same-size same-mtime replacement
+    keeps the cached digest. The defence against that is recomputing the digest, which is what a
+    fresh process does; this only stops the cache from confidently reporting a value it can no
+    longer justify. `None` is returned rather than a partial signature when anything cannot be
+    stat'd, and an unsignable directory is never cached — recomputing is the safe answer when the
+    question "has this changed?" cannot be answered.
+    """
+    count = 0
+    total = 0
+    newest = 0
+    try:
+        for file in sorted(path.rglob("*")):
+            if not file.is_file():
+                continue
+            stat = file.stat()
+            count += 1
+            total += stat.st_size
+            newest = max(newest, stat.st_mtime_ns)
+    except OSError:
+        return None
+    return (count, total, newest)
+
+
+def embedder_artifact_path(embedder: object) -> Path | None:
+    """The directory holding the weights this embedder actually loaded, or None.
+
+    ⚠️ **The model's OWN snapshot directory, never the shared cache.** Measured on this machine:
+    `cache_dir` held 45 files and 1.5 GB across several models, so its digest would change whenever
+    an unrelated model was downloaded and would not identify anything. `_model_dir` is 5 files and
+    67 MB — `model_optimized.onnx`, the tokenizer and the configs — and its directory name is the
+    upstream revision hash.
+
+    Returns None rather than guessing when the path cannot be recovered. This reaches into
+    fastembed's internals, which are free to change between versions, and a wrong answer here would
+    be worse than no answer: it feeds an identity that claims to be verified.
+    """
+    model = getattr(embedder, "_model", None)
+    inner = getattr(model, "model", None)
+    raw = getattr(inner, "_model_dir", None)
+    if raw is None:
+        return None
+    try:
+        path = Path(str(raw)).resolve(strict=True)
+    except (OSError, ValueError):
+        return None
+    return path if path.is_dir() else None
+
+
+def embedder_artifact_digest(embedder: object) -> str | None:
+    """A SHA256 over the weights this embedder loaded, or None when they cannot be located.
+
+    ⛔ **None is a real answer and must stay one.** `HashingEmbedder` has no artifacts at all: it is
+    defined by code, not weights, and there is nothing on disk to hash. Manufacturing a digest for
+    it — over the model name, say — would turn an honest "unverified" into a claim of provenance
+    that no bytes back, which is worse than the refusal it would bypass.
+    """
+    path = embedder_artifact_path(embedder)
+    if path is None:
+        return None
+    key = str(path)
+    signature = _artifact_signature(path)
+    cached = _ARTIFACT_DIGESTS.get(key)
+    if cached is not None and signature is not None and cached[0] == signature:
+        return cached[1]
+    try:
+        # `follow_file_symlinks=True`: a HuggingFace snapshot is a farm of symlinks into a
+        # sibling `blobs/` directory, and the strict rule refuses the whole tree. See
+        # `artifact_tree_sha256`. Without this the digest is None on every Linux install, which
+        # is the deploy target.
+        digest = artifact_tree_sha256(path, follow_file_symlinks=True)
+    except (OSError, ValueError):
+        return None
+    if signature is not None:
+        # Not cached when the directory could not be signed: without a signature there is no way to
+        # notice the next change, and a value that cannot be invalidated should not be stored.
+        if len(_ARTIFACT_DIGESTS) >= _ARTIFACT_DIGEST_LIMIT:
+            _ARTIFACT_DIGESTS.clear()
+        _ARTIFACT_DIGESTS[key] = (signature, digest)
+    return digest
 
 
 def verify_artifact(path: str | Path, expected_sha256: str) -> Path:
@@ -684,6 +880,115 @@ def _session_providers(model: object) -> list[str]:
     return [PROVIDERS_UNKNOWN]
 
 
+#: The identifiers the no-identity path has always minted, keyed by ``asymmetric``.
+#:
+#: They name ONE model at ONE width. Kept as literals rather than derived so that the default
+#: embedder's id is stable by construction: it is the key every shipped calibration file, every
+#: recorded promotion decision under `results/`, and every corpus indexed by `FastEmbedEmbedder()`
+#: is already written under, and re-deriving it would re-partition all of them for no defect.
+_LEGACY_FALLBACK_PROFILE_IDS = {
+    False: "bge-small-symmetric-v1",
+    True: "bge-small-asymmetric-v1",
+}
+
+
+def _fallback_profile_id(model_name: str, dimension: int, asymmetric: bool) -> str:
+    """The profile id for an embedder built with no registered identity and no explicit id.
+
+    The legacy literal is returned ONLY when this embedder is the model that literal names, at
+    the width the registry declares for it. Anything else gets an id derived from what actually
+    varies, because the literal was previously unconditional and a `profile_id` is a CLAIM about
+    which model wrote a vector, not a label. Measured 2026-08-18 before this guard existed: a
+    `fastembed:BAAI/bge-large-en-v1.5` embedder reported ``dim=1024`` under
+    ``profile_id='bge-small-symmetric-v1'``, an id whose registry entry is 384-dimensional, and a
+    production corpus of 8,716 chunks had stored that pairing in its chunk metadata.
+
+    Why the id and not just the fingerprint. `EmbeddingProfile.fingerprint` already covers
+    `model_name` and `dimension`, so the embedding cache (`recall/cache.py`) never confused the
+    two models. `recall.index._index_fingerprint` does not: it hashes `embedding_profile_id`
+    alone, so under the unconditional literal a bge-small corpus and a bge-large corpus produced
+    the SAME index fingerprint for the same file, and the incremental skip guard treated a model
+    swap as a no-op. Verified by execution: the 384-dimension and 1024-dimension fingerprints were
+    equal.
+
+    The comparison covers `model_name` and `dimension` only. The encoder modes cannot disagree
+    here: the legacy id is looked up BY ``asymmetric``, and both the registry pair and this
+    fallback derive their modes from that same flag, so a mode check could never fail and would
+    be a guard that cannot fire.
+    """
+    # Function-local: `recall.embedding_registry` imports this module at module level, so a
+    # top-level import here would be a cycle. Safe at call time because the registry only builds
+    # a `FastEmbedEmbedder` inside `RegisteredProfile.build`, never while it is being imported.
+    from recall.embedding_registry import find_registered_profile
+
+    # `bool(...)` because the expression this replaced was a conditional on TRUTHINESS, and a dict
+    # lookup is not. A library caller passing `asymmetric=2` (or a string out of a config file)
+    # used to get the asymmetric branch and would now get a KeyError from a public constructor.
+    # Narrowing a public signature is not part of this fix.
+    asymmetric = bool(asymmetric)
+    legacy = _LEGACY_FALLBACK_PROFILE_IDS[asymmetric]
+    entry = find_registered_profile(legacy)
+    if entry is not None and entry.model_name == model_name and entry.dimension == dimension:
+        return legacy
+    # Namespaced so the id is self-describing in a chunk's metadata and cannot be mistaken for a
+    # registered profile. Injective in exactly the three inputs that reach it, which is the
+    # property `_index_fingerprint` needs and the regression test pins.
+    #
+    # ⚠️ FILENAME-SAFE, which is a constraint and not a style choice. A profile id is not only
+    # compared: `recall.eval.promotion.run.ArmConfig.key` interpolates it into a result FILENAME,
+    # and its own docstring says so ("a generation id can be long and a filename cannot"). A raw
+    # HuggingFace name would put a `/` in that path and a `:` that Windows refuses outright, so
+    # the separator is `__` and the org separator goes the same way. `SparseProfile` already
+    # resolved this identically (`model_name.replace("/", "__")`); this follows that precedent
+    # rather than inventing a second convention. Injectivity survives it for every real model
+    # name, none of which contain `__`.
+    kind = "asymmetric" if asymmetric else "symmetric"
+    return f"unregistered__{model_name.replace('/', '__')}__{dimension}__{kind}"
+
+
+_log = get_logger("embeddings")
+
+
+#: Bad `RECALL_FASTEMBED_BATCH` values already reported. Deduplicated by VALUE, not by a single
+#: flag: a variable corrected mid-process should warn again for the new bad value.
+_WARNED_BATCH_VALUES: set[str] = set()
+
+
+def _warn_once(raw: str, problem: str) -> None:
+    """Report a bad batch setting the FIRST time it is seen, and not on every batch after.
+
+    `_batch_size_from_env` runs once per batch, so warning unconditionally produced hundreds of
+    identical lines during a single index and buried anything real. The docstring below claimed
+    "warns once" before the code did.
+    """
+    if raw in _WARNED_BATCH_VALUES:
+        return
+    _WARNED_BATCH_VALUES.add(raw)
+    _log.warning("RECALL_FASTEMBED_BATCH=%r %s; using the backend default", raw, problem)
+
+
+def _batch_size_from_env() -> int | None:
+    """`RECALL_FASTEMBED_BATCH` as a positive int, or `None` for the backend's own default.
+
+    ⚠️ **An unreadable value degrades rather than raising.** `int()` on a mistyped variable used to
+    raise `ValueError` out of the middle of an index run, after several projects had already been
+    written. A guard against running out of memory that instead kills the job on a typo is worse
+    than no guard. It warns once so the setting is not silently ignored either.
+    """
+    raw = os.environ.get("RECALL_FASTEMBED_BATCH")
+    if not raw:
+        return None
+    try:
+        size = int(raw)
+    except ValueError:
+        _warn_once(raw, "is not an integer")
+        return None
+    if size < 1:
+        _warn_once(raw, "is not positive")
+        return None
+    return size
+
+
 class FastEmbedEmbedder:
     """Real local embeddings (no API key). Requires `pip install "recall-rag[fastembed]"`."""
 
@@ -795,11 +1100,11 @@ class FastEmbedEmbedder:
             _with_provider_dependency(identity, self.session_providers)
             if identity
             else EmbeddingProfile(
-                profile_id=profile_id or (
-                    "bge-small-asymmetric-v1" if asymmetric else "bge-small-symmetric-v1"
+                profile_id=profile_id or _fallback_profile_id(
+                    model_name, self._dim, asymmetric
                 ),
                 model_name=model_name,
-                artifact_digest=artifact_sha256 or "legacy-unverified",
+                artifact_digest=artifact_sha256 or LEGACY_UNVERIFIED_DIGEST,
                 dimension=self._dim,
                 query_mode=self._query_mode,
                 passage_mode=self._passage_mode,
@@ -852,7 +1157,28 @@ class FastEmbedEmbedder:
         return [float(x) for x in next(iter(self._encoder(self._query_mode)([text])))]
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:
-        return [[float(x) for x in vec] for vec in self._encoder(self._passage_mode)(texts)]
+        # ⚠️ **`RECALL_FASTEMBED_BATCH` bounds the batch fastembed builds internally.** Unset, this
+        # behaves exactly as before. The default of 256 is too large for a 1024-dim model on long
+        # passages: bge-large asked onnxruntime for a single 1.24 GB buffer and the arena refused,
+        # which fails an index part-way through rather than merely running slowly.
+        #
+        # Passed as fastembed's OWN parameter rather than by slicing the list here. An earlier
+        # version sliced and called the encoder once per slice, and at size 16 that wedged: 152 of
+        # 208 files in, eight cores pinned, no database writes for three minutes, and every server
+        # connection idle in `ClientRead`, so the stall was in this process rather than on I/O.
+        encoder = self._encoder(self._passage_mode)
+        size = _batch_size_from_env()
+        if size is not None:
+            try:
+                return [
+                    [float(x) for x in vec]
+                    for vec in encoder(texts, batch_size=size)  # type: ignore[call-arg]
+                ]
+            except TypeError:
+                # This backend's encoder does not take the argument. Fall through rather than fail:
+                # the variable is a memory guard, not a contract.
+                pass
+        return [[float(x) for x in vec] for vec in encoder(texts)]
 
 
 SFR_CODE_EMBEDDER_MODEL = "Salesforce/SFR-Embedding-Code-2B_R"
@@ -861,7 +1187,7 @@ REMOTE_MODEL_CODE_OPT_IN = "RECALL_ACCEPT_REMOTE_MODEL_CODE"
 
 
 def _truthy_env(value: str | None) -> bool:
-    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
+    return truthy(value)
 
 
 def _require_research_model_opt_in(source: Mapping[str, str], model: str) -> None:
@@ -1046,7 +1372,18 @@ class VoyageEmbedder:
         api_key: str | None = None,
         batch_size: int = 128,
         max_retries: int = 3,
+        identity: EmbeddingProfile | None = None,
     ) -> None:
+        """Build a Voyage client, optionally under a registered profile's immutable identity.
+
+        ``identity`` is how a registered hosted profile is built: `RegisteredProfile.build` passes
+        the identity it declared, and this class then carries THAT object rather than minting a
+        second one. Without it every consumer falls back to `legacy_embedding_profile`, so the
+        profile id a generation and a calibration were registered under could never match the
+        runtime and the corpus could not be served. When it is supplied, the identity's model name
+        is what gets sent to the provider, so the registry decides the request rather than
+        describing it.
+        """
         key = api_key or os.environ.get("VOYAGE_API_KEY")
         if not key:
             raise RuntimeError("VoyageEmbedder needs VOYAGE_API_KEY (env) or an explicit api_key")
@@ -1059,11 +1396,13 @@ class VoyageEmbedder:
         # needs explicitly, so that an SDK release which starts retrying cannot quietly
         # reintroduce the multiplication with `retry_with_backoff` in `embed` below.
         self._client = voyageai.Client(api_key=key, max_retries=0)
-        self._model = model
-        self._name = f"voyage:{model}"
+        self._model = identity.model_name if identity is not None else model
+        self._name = f"voyage:{self._model}"
         self._batch_size = batch_size
         self._max_retries = max_retries
-        self._dim = len(self._client.embed(["probe"], model=model).embeddings[0])
+        self._dim = len(self._client.embed(["probe"], model=self._model).embeddings[0])
+        _check_declared_width(identity, self._dim, "the Voyage endpoint")
+        self._profile = identity
 
     @property
     def dim(self) -> int:
@@ -1072,6 +1411,15 @@ class VoyageEmbedder:
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def profile(self) -> EmbeddingProfile | None:
+        """The registered identity, or None for a legacy construction.
+
+        `embedding_profile` reads this attribute and falls back to `legacy_embedding_profile`
+        when it is not an `EmbeddingProfile`, so returning None preserves every existing caller.
+        """
+        return self._profile
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed in provider-safe batches with exponential-backoff retry per batch.
@@ -1112,7 +1460,16 @@ class OpenAICompatEmbedder:
         max_retries: int = 3,
         dimensions: int | None = None,
         name_prefix: str = "openai",
+        identity: EmbeddingProfile | None = None,
     ) -> None:
+        """Build an OpenAI-compatible client, optionally under a registered profile's identity.
+
+        See `VoyageEmbedder.__init__` for why ``identity`` matters; the reasoning is identical.
+        Note that ``base_url`` and ``dimensions`` are NOT derivable from the identity and must be
+        passed alongside it: the same model name answers at different widths depending on the
+        ``dimensions`` field, so a registered profile has to supply both and `_check_declared_width`
+        then holds them to it.
+        """
         key = api_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
         if not key:
             raise RuntimeError(
@@ -1135,8 +1492,8 @@ class OpenAICompatEmbedder:
         # corpus indexing path, so the multiplication lands batch after batch on a provider that
         # has just said it is overloaded.
         self._client = OpenAI(api_key=key, base_url=base_url, max_retries=0)
-        self._model = model
-        self._name = f"{name_prefix}:{model}"
+        self._model = identity.model_name if identity is not None else model
+        self._name = f"{name_prefix}:{self._model}"
         self._batch_size = batch_size
         self._max_retries = max_retries
         if dimensions is not None and dimensions < 1:
@@ -1145,6 +1502,8 @@ class OpenAICompatEmbedder:
         # Probe the width once, the same way the other cloud embedder does, so a store can be built
         # at the matching ``dim`` before the first real batch is embedded.
         self._dim = len(self._embed_one_batch(["probe"])[0])
+        _check_declared_width(identity, self._dim, f"{base_url} model {self._model!r}")
+        self._profile = identity
 
     @property
     def dim(self) -> int:
@@ -1153,6 +1512,11 @@ class OpenAICompatEmbedder:
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def profile(self) -> EmbeddingProfile | None:
+        """The registered identity, or None for a legacy construction."""
+        return self._profile
 
     def _embed_one_batch(self, batch: list[str]) -> list[list[float]]:
         request: dict[str, object] = {

@@ -9,12 +9,26 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Callable, Literal, Sequence
 
 from recall.calibration import Calibration, from_samples, save
+from recall.claude_code import (
+    PLUGIN_INSTALL_LINES,
+    SKILL_NAME,
+    claude_code_detected,
+    install_hooks,
+    install_user_skill,
+    plugin_skill_source,
+    register_mcp_server,
+    user_skill_dir,
+)
 from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
+from recall.seed import plan_seed, seed_corpus
+from recall.store import scrub_dsn_secrets
+from recall._env import env_is_production
 
 SETUP_BEGIN = "# recall setup begin"
 SETUP_END = "# recall setup end"
@@ -379,7 +393,8 @@ def _prepare_schema_for_embedder(
             raise SystemExit(
                 "The wizard could not prepare the schema automatically. Pass --migration-dsn if "
                 "the serving DSN is read only, and verify that the chosen role can create tables "
-                f"and indexes. Original error: {type(exc).__name__}: {exc}"
+                f"and indexes. Original error: "
+                f"{scrub_dsn_secrets(f'{type(exc).__name__}: {exc}', ddl_dsn)}"
             ) from exc
         if applied:
             print_fn(f"Prepared {target_table!r} for {embedder.dim} dimensions.")
@@ -424,7 +439,8 @@ def _prepare_schema_for_embedder(
             raise SystemExit(
                 "The wizard could not rebuild the default schema automatically. Verify that the "
                 "chosen role can drop and create the RE-call tables, or pass --migration-dsn with "
-                f"the owner role. Original error: {type(exc).__name__}: {exc}"
+                f"the owner role. Original error: "
+                f"{scrub_dsn_secrets(f'{type(exc).__name__}: {exc}', ddl_dsn)}"
             ) from exc
         if applied:
             print_fn(f"Prepared {target_table!r} for {embedder.dim} dimensions.")
@@ -457,7 +473,8 @@ def _prepare_schema_for_embedder(
         raise SystemExit(
             "The wizard could not rebuild the selected table automatically. Verify that the "
             "chosen role can drop and create the RE-call table, or pass --migration-dsn with the "
-            f"owner role. Original error: {type(exc).__name__}: {exc}"
+            f"owner role. Original error: "
+            f"{scrub_dsn_secrets(f'{type(exc).__name__}: {exc}', ddl_dsn)}"
         ) from exc
     if applied:
         print_fn(f"Prepared {target_table!r} for {embedder.dim} dimensions.")
@@ -1000,6 +1017,13 @@ def _claude_md_block() -> str:
         "- Write new durable facts to `memory/`, one file per fact, indexed by "
         "`memory/MEMORY.md` (see that file for the format), then call `recall_index` on "
         "`memory/` so the new file and the updated index both become searchable.\n"
+        "- Give every new memory file `valid_from: YYYY-MM-DD`, the day you learned the fact. "
+        "Leave `valid_until` out unless you know a real end date: an absent value reads as "
+        "unknown, a guessed one reads as judged, and the guess is worse.\n"
+        "- When a fact stops being true, do not edit or delete the file that states it. Write a "
+        "NEW file carrying `supersedes: <old-file>` and leave the old one in place. That is what "
+        "lets recall serve the correction while still explaining a decision made under the old "
+        "fact; overwriting destroys the only record that the old fact was ever believed.\n"
     )
 
 
@@ -1007,7 +1031,23 @@ def scaffold_claude_md(path: Path = DEFAULT_CLAUDE_MD_PATH) -> None:
     _update_markdown_block(path, CLAUDE_MD_BEGIN, CLAUDE_MD_END, _claude_md_block())
 
 
-def _memory_md_starter() -> str:
+def _memory_md_starter(today: date | None = None) -> str:
+    """The starter index, teaching the frontmatter the trust layer actually reads.
+
+    `today` is a parameter rather than a `date.today()` call inside the template because the
+    example date has to be a REAL `YYYY-MM-DD`. `recall/index.py` calls `validity_bounds` to fail
+    fast, so a memo copied from this template with an unfilled `<placeholder>` in `valid_from`
+    raises on the next `recall_index` instead of degrading. Injecting the date keeps the example
+    copyable, correct on the day it is written, and deterministic under test.
+
+    Measured 2026-08-19, before this changed: zero of 152 memos in recall's own memory store, and
+    zero of 59 documents in its `docs/`, declared `valid_from`, `valid_until` or `supersedes`. The
+    three keys the store DID carry were exactly the three this template used to teach. A format
+    that omits the validity keys produces a corpus where the trust layer can only ever return
+    `ok`, which is the shipped feature switched off. Teaching the keys is the cheap half of
+    fixing that; whether authors fill them is the part that has to be re-measured later.
+    """
+    stamp = (today or date.today()).isoformat()
     return (
         "# Memory index\n"
         "\n"
@@ -1018,6 +1058,7 @@ def _memory_md_starter() -> str:
         "---\n"
         "name: <short-kebab-case-slug>\n"
         "description: <one-line summary, used to judge relevance>\n"
+        f"valid_from: {stamp}\n"
         "metadata:\n"
         "  type: user | feedback | project | reference\n"
         "---\n"
@@ -1025,19 +1066,63 @@ def _memory_md_starter() -> str:
         "<the fact>\n"
         "```\n"
         "\n"
+        "`valid_from` is the day you learned the fact, in `YYYY-MM-DD`. A malformed date fails "
+        "the index rather than passing silently. recall reads three validity keys and ignores "
+        "every other one, so `name`, `description` and anything else you find useful sit beside "
+        "them untouched.\n"
+        "\n"
+        "`valid_until` is the day a fact stopped being true. Leave it out unless you know a real "
+        "end date: an absent value reads as unknown, a guessed one reads as judged, and the "
+        "guess is worse.\n"
+        "\n"
+        "When a fact stops being true, do not edit this file's entry or delete the memo. Write a "
+        "NEW memo that closes the old one by naming it:\n"
+        "\n"
+        "```markdown\n"
+        "---\n"
+        "name: <slug-of-the-new-fact>\n"
+        f"valid_from: {stamp}\n"
+        "supersedes: <old-file>.md\n"
+        "---\n"
+        "```\n"
+        "\n"
+        "The old memo then stays retrievable with its successor named, which is what lets recall "
+        "serve the correction and still explain a decision taken under the old fact. The target "
+        "is matched on its name, so `old-file`, `old-file.md` and `[[old-file]]` all resolve to "
+        "the same memo. The `Using recall` section of `CLAUDE.md` carries the same rule for the "
+        "agent. `recall lint memory/` checks dates and edges without touching the database.\n"
+        "\n"
         "Add one line per fact here as you create them:\n"
         "\n"
         "`- [Title](file.md) — one-line hook`\n"
     )
 
 
-def scaffold_memory_index(memory_dir: Path = DEFAULT_MEMORY_DIR) -> bool:
+def scaffold_memory_index(
+    memory_dir: Path = DEFAULT_MEMORY_DIR, today: date | None = None
+) -> bool:
     memory_dir.mkdir(parents=True, exist_ok=True)
     index_path = memory_dir / "MEMORY.md"
     if index_path.exists():
         return False
-    index_path.write_text(_memory_md_starter(), encoding="utf-8")
+    index_path.write_text(_memory_md_starter(today), encoding="utf-8")
     return True
+
+
+def _safe_error(exc: Exception, dsn: str) -> str:
+    """An exception rendered without echoing the DSN's password back at the user.
+
+    A MALFORMED dsn makes psycopg quote the whole connection string in its message: `missing "="
+    after "postgresql://user:PASSWORD@host" in connection info string`. Every WELL-FORMED failure
+    (unreachable port, bad host, wrong password) is clean, which is what makes this easy to miss.
+    Found by the wizard session in its own preflight.
+
+    Replacing the known DSN covers the echo, which is the observed leak. It is not a general
+    scrubber; `recall.store.scrub_dsn_secrets` is that, and this should call it once #434 lands.
+    """
+    from recall.store import redacted_dsn
+
+    return str(exc).replace(dsn, redacted_dsn(dsn))
 
 
 def index_memory_directory(
@@ -1046,9 +1131,18 @@ def index_memory_directory(
     embedder_name: str,
     memory_dir: Path = DEFAULT_MEMORY_DIR,
     env: dict[str, str] | None = None,
+    tenant: str | None = None,
+    table: str | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
-    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+    """Index `memory_dir` into the legacy `chunks` table.
+
+    `tenant` and `table` are parameters rather than constants because this wrote unconditionally to
+    `DEFAULT_TENANT`, so a caller configuring a `memory` tenant got its content in `default`
+    instead: the index succeeded, reported success, and put the rows where nothing would look for
+    them. `None` keeps the historical defaults, so existing callers are unaffected.
+    """
+    if env_is_production():
         print_fn(
             f"Skipping auto-index: RECALL_ENV is production. Index {memory_dir} via your "
             "production build pipeline instead."
@@ -1060,14 +1154,17 @@ def index_memory_directory(
 
         embedder = resolve_embedder(embedder_name, env=env)
         with PgVectorStore(
-            dsn, dim=embedder.dim, table=DEFAULT_TABLE, tenant=DEFAULT_TENANT
+            dsn,
+            dim=embedder.dim,
+            table=table or DEFAULT_TABLE,
+            tenant=tenant or DEFAULT_TENANT,
         ) as store:
             store.check_schema()
             indexer = Indexer(store, embedder, chunker=chunk_text)
             stats = indexer.index_path(memory_dir, glob="**/*.md")
     except Exception as exc:  # best effort: scaffolded files must survive even if this fails
         print_fn(
-            f"Could not auto-index {memory_dir}: {exc} — run "
+            f"Could not auto-index {memory_dir}: {_safe_error(exc, dsn)} — run "
             f"'python -m recall.cli index {memory_dir}' once the schema is applied for this "
             "embedder's dimension."
         )
@@ -1275,6 +1372,52 @@ def run_setup_wizard(
         default=True,
     )
 
+    # Computed before asking, so the question names what would actually be ingested rather than
+    # asking the user to agree to an unspecified amount of their own project.
+    # One notion of "this project" for both steps below. Seeding reads from it, and the MCP
+    # registration is keyed by it: a local-scope entry lives under `projects[<dir>]`, so the
+    # path recorded here is the path the client will later look the server up by.
+    project_root = Path.cwd().resolve()
+    seed_plan = plan_seed(project_root)
+    seed_requested = False
+    if not seed_plan.is_empty:
+        seed_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            f"Seed the corpus now from this project ({seed_plan.describe()})?",
+            default=True,
+        )
+
+    # Scaffolding tells Claude HOW to use recall; this step is what gives it the tools at all.
+    # Only offered when there is a client on this machine to wire up: asking someone to register
+    # an MCP server with a program they do not have is noise dressed up as a choice.
+    claude_detected = claude_code_detected()
+    claude_wiring_requested = False
+    if claude_detected:
+        claude_wiring_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            "Register the recall MCP server with Claude Code and install session hooks?",
+            default=True,
+        )
+
+    # The plugin step's only question. The guidance itself is print-only and needs no consent,
+    # but copying the skill writes into the user's own `~/.claude/skills`, which every project's
+    # sessions load, so it is asked for and never done silently. Default no, because the plugin
+    # install printed alongside it is the route that keeps the skill updated; this copy is a
+    # snapshot for people who want the skill without the plugin. The offer only exists where the
+    # source file does: an installed wheel does not carry `plugin/`, and there the guidance says
+    # the plugin is how the skill arrives.
+    skill_source = plugin_skill_source() if claude_detected else None
+    skill_copy_requested = False
+    if skill_source is not None:
+        skill_copy_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            f"Copy the {SKILL_NAME} skill into {user_skill_dir()} for a user-level install?",
+            default=False,
+        )
+
     # Deferred to right before each return, after `.env` is written: `scaffold_claude_md` and
     # `index_memory_directory` can resolve/download an embedder model and open a DB connection,
     # and running that BEFORE the answers just gathered are persisted means an interruption
@@ -1297,12 +1440,96 @@ def run_setup_wizard(
         except Exception as exc:
             print_fn(f"Could not scaffold CLAUDE.md/memory: {exc}")
 
+    def _run_claude_wiring() -> None:
+        """Register the MCP server and install the hooks, best effort.
+
+        Best effort deliberately: this writes into files the Claude Code client owns and shares
+        with every project on the machine, so a client version that has moved a key, or a config
+        somebody is mid-edit on, must cost the user a printed line rather than the setup run they
+        just completed. Everything above this point is already persisted in `.env`.
+        """
+        try:
+            register_mcp_server(dsn=dsn, project_root=project_root, print_fn=print_fn)
+            install_hooks(dsn=dsn, embedder=embedder.value, print_fn=print_fn)
+            print_fn(
+                "Claude Code is wired up. The tools appear in the NEXT session, not this one: "
+                "the client reads its server list at startup."
+            )
+        except Exception as exc:
+            print_fn(
+                f"Could not wire up Claude Code: {_safe_error(exc, dsn)}\n"
+                "Register it by hand with the block in docs/USING_WITH_CLAUDE.md."
+            )
+
+    def _run_seed() -> None:
+        seed_corpus(
+            dsn=dsn,
+            embedder_name=embedder.value,
+            plan=seed_plan,
+            env=cloud_keys,
+            print_fn=print_fn,
+        )
+
+    def _run_plugin_step() -> None:
+        """Print the plugin install lines, and copy the skill only if that was accepted.
+
+        Best effort like the wiring: the copy writes into a directory the client owns, so a
+        filesystem refusal there must cost a printed line, never the setup run that is already
+        persisted in `.env` by the time this executes.
+        """
+        if not claude_detected:
+            return
+        print_fn(
+            "The RE-call plugin for Claude Code bundles the MCP server, the session hooks and "
+            f"the {SKILL_NAME} skill. Install it from inside Claude Code with:"
+        )
+        for line in PLUGIN_INSTALL_LINES:
+            print_fn(f"  {line}")
+        if skill_source is None:
+            print_fn(
+                f"The {SKILL_NAME} skill ships inside that plugin; installing it is how a pip "
+                "install of recall gets the skill."
+            )
+        elif skill_copy_requested:
+            try:
+                install_user_skill(skill_source, print_fn=print_fn)
+            except Exception as exc:
+                print_fn(
+                    f"Could not copy the skill: {exc}\n"
+                    f"Copy {skill_source} into {user_skill_dir() / SKILL_NAME} by hand, or "
+                    "install the plugin with the lines above."
+                )
+
+    def _run_post_setup() -> None:
+        # Order is the point, not an accident. Seeding runs before the hooks, because a first
+        # session that searches an empty corpus teaches the user that recall finds nothing, and
+        # the session-start digest correctly stays silent when there is nothing to report. The
+        # wiring goes last, so the tools arrive pointed at a corpus that already answers.
+        #
+        # Scaffolding first is NOT so that seeding picks up the `memory/MEMORY.md` it writes: the
+        # seed plan was computed before the interview finished, so a file created here cannot be
+        # in it. It does not need to be. `_run_scaffold` indexes `memory/` itself, and the plan
+        # covers a `memory/` that already existed, which is the case where scaffolding is
+        # declined. Recomputing the plan here instead would index a set the user never agreed to.
+        if scaffold_requested:
+            _run_scaffold()
+        if seed_requested:
+            _run_seed()
+        if claude_wiring_requested:
+            _run_claude_wiring()
+        # The plugin guidance is truly last, so the install lines are the note left on screen
+        # when the wizard exits, where they can be typed into Claude Code next.
+        _run_plugin_step()
+
     values: dict[str, str] = {
         "RECALL_DSN": dsn,
         "RECALL_SECURITY_REQUIRED": "1" if security_required else "0",
         "RECALL_EMBEDDER": embedder.value,
         "RECALL_SPARSE": "fts",
         "RECALL_ENTAILMENT": "0",
+        # Seeded off, like RECALL_ENTAILMENT: the generated .env advertises the knob so the
+        # decision ledger is discoverable without the wizard asking about it.
+        "RECALL_DECISION_LEDGER": "0",
     }
     if reranker.value == "RECALL_RERANK=1":
         values["RECALL_RERANK"] = "1"
@@ -1349,8 +1576,7 @@ def run_setup_wizard(
             )
             _update_env_block(env_path, values)
             print_fn(f"Wrote {env_path}")
-            if scaffold_requested:
-                _run_scaffold()
+            _run_post_setup()
             return values
         queries = _require_local_path(queries_raw, label="Path to labeled queries JSON")
         corpus = _require_local_path(corpus_raw, label="Path to your corpus")
@@ -1374,8 +1600,7 @@ def run_setup_wizard(
             # bad calibration path aborts the whole wizard. But scaffolding was requested
             # independently of calibration succeeding, so still attempt it best-effort on the
             # way out rather than silently dropping a completed part of the interview.
-            if scaffold_requested:
-                _run_scaffold()
+            _run_post_setup()
             raise SystemExit(2) from exc
         values["RECALL_CALIBRATION"] = str(result.path)
         print_fn(
@@ -1389,6 +1614,5 @@ def run_setup_wizard(
 
     _update_env_block(env_path, values)
     print_fn(f"Wrote {env_path}")
-    if scaffold_requested:
-        _run_scaffold()
+    _run_post_setup()
     return values

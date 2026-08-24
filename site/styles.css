@@ -269,6 +269,32 @@ p {
   transform: scaleX(1);
 }
 
+@media (max-width: 1280px) {
+  .masthead-inner {
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: 0.35rem;
+    padding-block: 0.65rem;
+  }
+
+  .masthead nav {
+    order: 3;
+    flex-basis: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    padding-block: 0.35rem;
+    scrollbar-width: none;
+  }
+
+  .masthead nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .masthead .language-control {
+    margin-left: auto;
+  }
+}
+
 /* Mobile nav collapses to a horizontally scrollable strip rather than a
    hamburger: five links, all worth showing, no JS needed. */
 @media (max-width: 860px) {
@@ -299,8 +325,14 @@ p {
     scrollbar-width: none;
   }
 
-  .masthead nav::-webkit-scrollbar {
-    display: none;
+  .masthead nav {
+    gap: 1.25rem;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .masthead .language-control {
+    margin-left: 0;
   }
 }
 
@@ -373,6 +405,22 @@ p {
   color: var(--ink-soft);
   max-width: 48ch;
   margin-bottom: 2.5rem;
+}
+
+/* The two commands, in the hero, because they are the shortest true description of the product.
+   Narrower than the band so the second line does not wrap on a laptop: both commands have to be
+   readable as one unit or the "two commands" claim is not visible at a glance. */
+.hero-terminal {
+  max-width: 44rem;
+  margin-bottom: 1.25rem;
+}
+
+.hero-note {
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  max-width: 52ch;
+  margin-bottom: 2.25rem;
 }
 
 .hero-actions {
@@ -1042,6 +1090,10 @@ td {
   gap: clamp(2rem, 5vw, 4rem);
 }
 
+.split > * {
+  min-width: 0;
+}
+
 @media (min-width: 900px) {
   .split {
     grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
@@ -1247,11 +1299,17 @@ td {
   animation: rise 0.7s var(--ease) both;
 }
 
+/* ⚠️ One delay per hero child, and the list must stay as long as the hero is.
+   `.hero-inner > *` gives EVERY child `animation: rise ... both`, so a child past the end of this
+   list animates with delay 0 and therefore arrives BEFORE the eyebrow above it. Adding the command
+   block and its note to the hero without extending this ran the stagger backwards. */
 .hero-inner > :nth-child(1) { animation-delay: 0.05s; }
 .hero-inner > :nth-child(2) { animation-delay: 0.12s; }
 .hero-inner > :nth-child(3) { animation-delay: 0.22s; }
 .hero-inner > :nth-child(4) { animation-delay: 0.3s; }
 .hero-inner > :nth-child(5) { animation-delay: 0.38s; }
+.hero-inner > :nth-child(6) { animation-delay: 0.46s; }
+.hero-inner > :nth-child(7) { animation-delay: 0.54s; }
 
 .hero .rule {
   transform-origin: left;
@@ -1405,6 +1463,18 @@ td {
 .translation-status[data-tone="error"] {
   color: #fca5a5;
   border-color: rgba(252, 165, 165, 0.35);
+}
+
+.translation-status--sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .translation-disclosure {

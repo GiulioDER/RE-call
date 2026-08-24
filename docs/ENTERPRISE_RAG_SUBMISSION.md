@@ -142,5 +142,5 @@ reproducing results. The public repo now carries that guide and the exact answer
 file. The remaining step is to send the artifact links and reproduction notes to
 `joachim@onyx.app` for verification.
 
-See [ENTERPRISE_RAG_ONYX_EMAIL.md](ENTERPRISE_RAG_ONYX_EMAIL.md) for the mail
+See [ENTERPRISE_RAG_ONYX_EMAIL.md](archive/ENTERPRISE_RAG_ONYX_EMAIL.md) for the mail
 draft and verification links.

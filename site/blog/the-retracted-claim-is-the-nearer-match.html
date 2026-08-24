@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The retracted claim is the nearer match · RE-call blog</title>
+<meta name="description" content="One pair of memos from RE-call's shipped demo corpus shows why agent memory on PostgreSQL and pgvector cannot be ranked by similarity alone, and what declared supersession does about it.">
+<link rel="alternate" type="application/atom+xml" title="RE-call blog" href="feed.xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="../styles.css">
+<script src="../app.js" defer></script>
+<script src="../translate.js" defer></script>
+<style>
+  .post { max-width: 44rem; }
+  .post h2 { font-size: 1.5rem; margin-top: 3rem; margin-bottom: 0.85rem; }
+  .post p, .post li { max-width: 65ch; }
+  .post .memo { border: 1px solid var(--line, rgba(127,127,127,.3)); border-radius: 8px; padding: 1rem 1.25rem; margin: 1.5rem 0; }
+  .post .memo figcaption { font-family: "Geist Mono", monospace; font-size: 0.78rem; opacity: 0.7; margin-bottom: 0.5rem; }
+  .post .memo pre { margin: 0; white-space: pre-wrap; font-size: 0.9rem; line-height: 1.55; font-family: "Geist Mono", monospace; }
+  .post figure { margin: 1.5rem 0; }
+  .post img { max-width: 100%; border-radius: 8px; }
+  .post-meta { font-family: "Geist Mono", monospace; font-size: 0.8rem; opacity: 0.75; margin-bottom: 2rem; }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="../index.html"><img class="wordmark-mark" src="../assets/re_call_logo.png" alt=""><span class="wordmark-name">RE-call</span><span>Blog</span></a>
+    <nav>
+      <a href="../download.html">Download</a>
+      <a href="../readme.html">README</a>
+      <a href="../start.html">Install</a>
+      <a href="../corpus.html">Your memory</a>
+      <a href="../claude-code.html">Claude Code</a>
+      <a href="../calibration.html">Calibration</a>
+      <a href="../troubleshooting.html">Troubleshooting</a>
+      <a href="index.html" aria-current="page">Blog</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="shell post" style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(4rem, 9vw, 7rem);">
+
+  <p class="eyebrow">Validity, not similarity</p>
+  <h1 style="font-size: clamp(2rem, 5vw, 3.25rem); max-width: 22ch; margin-bottom: 1rem;">The retracted claim is the nearer match</h1>
+  <p class="post-meta">Giulio D'Erme · 2026-08-23</p>
+  <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
+
+  <p class="lede">Agent memory that keeps its history holds both the claim and the correction, and on cosine similarity the retracted claim often wins. One pair of memos from RE-call's own demo corpus shows the failure exactly, and why it is not a tuning problem.</p>
+
+  <p>An agent that runs for months accumulates memos: decisions, incident notes, configuration facts. Keeping the history is a feature, because the reason behind a change is worth as much as the change. But it means the corpus contains claims that were later retracted, sitting beside the corrections that retracted them. RE-call ships a small fictional corpus for its quickstart, and this pair from it is the whole argument in two files.</p>
+
+  <figure class="memo">
+    <figcaption>cache_ttl_v1.md</figcaption>
+    <pre># Pricing snapshot cache TTL
+
+The cache TTL for the pricing snapshot is 15 minutes. Entries are refreshed lazily on the
+first read after expiry. Status: adopted.</pre>
+  </figure>
+
+  <figure class="memo">
+    <figcaption>cache_ttl_v2.md</figcaption>
+    <pre>---
+supersedes: cache_ttl_v1.md
+---
+# Snapshot caching revision
+
+After the stale-quote incident, snapshot entries now expire after 60 seconds and are refreshed
+proactively by a background worker. This replaces the original lazy expiry choice.</pre>
+  </figure>
+
+  <p>Now ask the question an agent would actually ask: <em>how long do pricing snapshot cache entries live?</em></p>
+
+  <p>The first memo answers in the vocabulary of the question. It says cache, it says TTL, it says how long, and it states a number with the confidence of a document that was, at the time, correct. The revision is worded around an incident and a worker; it is the truer document and the worse lexical match. On a plain vector index, the retracted 15 minute answer comes back first, and it comes back looking exactly like a good result: high similarity, clean text, no hint that its own corpus disagrees with it.</p>
+
+  <h2>Why a better ranker does not fix this</h2>
+
+  <p>This is the point where the instinct is to reach for a stronger embedder or a cross-encoder. That instinct is wrong in an interesting way: a better model makes <em>both</em> memos rank higher, because both are genuinely about the question. The problem is not that the ranking is inaccurate. The problem is that similarity is the wrong axis. Whether a document is <em>close to the question</em> and whether it is <em>still true</em> are independent properties, and a ranker that only sees the first has no way to prefer the correction. The information that decides the case is not in either document's text; it is in the relationship between them.</p>
+
+  <h2>Declare the relationship, then enforce it per hit</h2>
+
+  <p>RE-call's answer is to make that relationship a first class part of the corpus. The revision declares <code>supersedes: cache_ttl_v1.md</code> in its frontmatter (the vocabulary is a small open spec, <a href="https://github.com/GiulioDER/validity-frontmatter">Validity Frontmatter</a>, published separately under MIT). At query time, every hit carries a verdict, a confidence and provenance. The stale memo is still retrievable, because history is a feature, but it comes back marked <code>superseded</code>, pointing at the document that replaced it, and the revision wins the ranking it deserves.</p>
+
+  <p>PostgreSQL is not a storage detail in this design; it is the implementation. Retrieval fuses pgvector cosine search with PostgreSQL full-text search under reciprocal rank fusion. Tenant isolation is row-level security, not application code. Indexing is serialised with advisory locks, so two indexers cannot interleave. Corpora are promoted as immutable generations, which is what lets a calibration stay bound to the exact data it was fitted on. If you already run PostgreSQL, the memory layer lives under your roles, your backups and your monitoring, and with local embedding models it builds and answers without any memory layer LLM call.</p>
+
+  <h2>The third question is refused</h2>
+
+  <p>The quickstart asks three questions, and the third is one the corpus cannot answer: <em>who painted the mural in the town library?</em> Nothing in the corpus is about murals, but a nearest neighbour search does not know that; it returns the nearest neighbour regardless, because that is all it can do. RE-call fits a threshold to the corpus and refuses below it, with a reason, so the caller can say "I do not know" instead of paraphrasing an irrelevant document.</p>
+
+  <p>A detail from building the demo says more about this than any benchmark: the first candidate for that third question failed. Measured against this corpus on 2026-08-22, its top cosine was 0.505 against the 0.50 development threshold, so the demo would have answered over a caption claiming it refused. The replacement was chosen for its margin: top cosine 0.446, which is 0.054 clear of the threshold. Both measurements are recorded next to the query list in <a href="https://github.com/GiulioDER/RE-call/blob/master/recall/quickstart.py">recall/quickstart.py</a>, with the command that re-measures them. Abstention is a claim about a specific corpus and a specific threshold, and it has to be measured there, not assumed.</p>
+
+  <h2>See it in two commands</h2>
+
+  <div class="terminal terminal--command">
+    <div class="terminal-bar"><span class="terminal-label">Shell</span><button class="copy-button" type="button">Copy</button></div>
+    <div class="terminal-body"><pre><span class="line">pip install "recall-rag[fastembed]"</span>
+<span class="line">recall quickstart</span></pre></div>
+  </div>
+
+  <p>That provisions a throwaway PostgreSQL with pgvector in Docker, indexes the corpus above, and answers the three questions: one answered, one where the correction beats its own retraction, one refused. <code>recall quickstart --remove</code> tears it down.</p>
+
+  <figure>
+    <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/launch/terminal-video/out/re-call-terminal-demo-preview.gif" alt="Terminal recording: a stale memo outranks its correction on cosine, RE-call marks it superseded, and an unanswerable query is refused" loading="lazy">
+  </figure>
+
+  <h2>Where the boundary is</h2>
+
+  <p>Declared supersession beats similarity ranking on the cases where the edge is authored, and that is the honest scope of this post. RE-call does not infer missing supersession edges from prose, and its abstention works on far gaps while near misses need a stronger answerability layer, which is measured and stated rather than glossed over. The full interpretation, including the negative results, is in <a href="https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md">results/FINDINGS.md</a>, and every published number is tied to a committed artifact checked in CI.</p>
+
+  <p>RE-call is Apache 2.0, on <a href="https://github.com/GiulioDER/RE-call">GitHub</a> and <a href="https://pypi.org/project/recall-rag/">PyPI</a>. The setup guide is <a href="../index.html">here</a>.</p>
+
+</article>
+
+</main>
+
+<footer class="footer">
+  <div class="shell footer-inner">
+    <nav>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+      <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
+      <a href="feed.xml">Atom feed</a>
+    </nav>
+    <small>Apache 2.0</small>
+  </div>
+</footer>
+
+</body>
+</html>

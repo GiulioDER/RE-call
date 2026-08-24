@@ -64,6 +64,10 @@ from benchmarks.llm import (
 from benchmarks.rejudge import rejudge_document, rejudge_outcomes
 from benchmarks.run import run_arm
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 class _Status(Exception):
     """A provider error carrying a numeric status, the way the OpenAI SDK's errors do.

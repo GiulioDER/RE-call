@@ -1,0 +1,594 @@
+"""Turn a finished install into the three MCP servers that serve it, and refuse to lie about them.
+
+The MCP registration is the artifact that decides whether any of the preceding work is reachable.
+Every variable below is set in the server's OWN `env` block rather than left to the operator's
+shell,
+because a stdio server launched with an explicit `env` inherits nothing: a corpus that searches
+correctly from the terminal answered `INDEX_NOT_READY` through the client for exactly that reason.
+That per-block isolation is also what lets one machine serve `docs` in production mode and `memory`
+in development mode at the same time.
+
+**The rule this module exists to enforce: a server block is only written for a tenant that can
+actually answer.** Three cases, and they are not interchangeable:
+
+* **Certified and promoted** → `RECALL_ENV=production` with strict trust. `RECALL_ENV` is what
+  selects `GenerationStore` (`recall_mcp/server.py:629`), so a calibrated generation is only reached
+  through it, and the published calibration is what makes strict trust answerable.
+
+* **Degraded with a predecessor still serving** → production, but development trust, and the block
+  carries a note saying the generation just built is NOT the one serving. Relaxing trust here is a
+  judgement about a calibration that no longer matches the corpus on disk, not about the older
+  generation being broken.
+
+* **Degraded with nothing serving** → **no block at all.** This is the case worth stating, because
+  it is the one a wizard gets wrong. The generation was deliberately not promoted, so under
+  `RECALL_ENV=production` the tenant has no active generation and `GenerationStore.snapshot` raises
+  `NoActiveGeneration` from OUTSIDE `trusted_search`'s try block: the caller gets a raw exception
+  with no failure code and no advice. Writing `RECALL_TRUST_MODE=development` does not fix it, and
+  it is tempting to think it would, because the failure is upstream of the trust gate entirely.
+  A configured server that raises on every query is worse than an absent one, which at least says
+  what is missing.
+
+An uncalibrated corpus (`memory`) gets development trust and NO `RECALL_ENV`, because its rows live
+in the legacy `chunks` table that only `PgVectorStore` reads, and production mode routes past it.
+
+⚠️ **Docker autostart is deliberately not done here.** Making a container start on login is a change
+to the machine, not to the project: on Windows it is a Docker Desktop setting, and a driver that
+silently edits it would be modifying system configuration the operator did not ask about. The report
+names the container instead.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+from recall.wizard.corpora import CorpusPlan, CorpusSpec
+
+__all__ = [
+    "ServerBlock",
+    "SmokeResult",
+    "UnservableTenant",
+    "LocalScopeRegistration",
+    "claude_config_path",
+    "mcp_config",
+    "register_local_scope",
+    "server_blocks",
+    "write_project_files",
+    "write_runtime_profile",
+]
+
+
+@dataclass(frozen=True)
+class ServerBlock:
+    """One MCP server, its tenant, and the reason it is configured the way it is."""
+
+    name: str
+    tenant: str
+    env: dict[str, str]
+    #: Why this block looks like this, carried so the report can say it and a reader of the JSON is
+    #: not left guessing why one tenant is strict and another is not.
+    rationale: str
+
+
+@dataclass(frozen=True)
+class SmokeResult:
+    """One query put through one configured server, and what came back.
+
+    **A raise is the failure; an abstention is not.** That distinction is the whole design. Abstaining
+    is a trust decision the gate is entitled to make, and a smoke test that treated it as broken
+    would fail on a server behaving correctly. What must never happen is an exception, because that
+    means the block cannot serve at all: a wrong `RECALL_ENV` reads a table the build never wrote to,
+    and a tenant with no active generation raises `NoActiveGeneration` from outside the trust gate.
+
+    So this exists to check the reasoning in `server_blocks` against the database rather than trust
+    it. If that reasoning is ever wrong about which tenants are servable, `error` is where it shows.
+    """
+
+    tenant: str
+    #: The query actually used, drawn from the tenant's own indexed text so a hit is possible at all.
+    query: str
+    hits: int
+    abstained: bool
+    trust_state: str
+    failure_code: str | None
+    #: Set only when the search RAISED. Non-None means this server cannot answer.
+    error: str | None = None
+    #: True when the tenant has no rows to draw a query from. Expected for a fresh `memory`.
+    empty: bool = False
+
+    @property
+    def answered(self) -> bool:
+        """Reached the trust gate without raising. Abstaining still counts as answering."""
+        return self.error is None and not self.empty
+
+
+@dataclass(frozen=True)
+class UnservableTenant:
+    """A tenant deliberately given no server, and why. Reported, never silently omitted."""
+
+    tenant: str
+    reason: str
+
+
+def server_blocks(
+    plan: CorpusPlan,
+    *,
+    dsn: str,
+    promoted: frozenset[str],
+    serving: frozenset[str],
+) -> tuple[tuple[ServerBlock, ...], tuple[UnservableTenant, ...]]:
+    """The blocks to write, and the tenants deliberately left out.
+
+    `promoted` is the tenants whose freshly built generation went live. `serving` is the tenants that
+    have SOME active generation, which includes a predecessor left in place by a degraded run. The
+    two are different questions and collapsing them is what produces a server that raises.
+    """
+    blocks: list[ServerBlock] = []
+    unservable: list[UnservableTenant] = []
+
+    for spec in plan.corpora:
+        if not spec.calibrated:
+            blocks.append(_legacy_block(spec, dsn=dsn, embedder=plan.embedder))
+            continue
+        if spec.tenant in promoted:
+            blocks.append(
+                _generation_block(
+                    spec,
+                    dsn=dsn,
+                    embedder=plan.embedder,
+                    trust="strict",
+                    rationale=(
+                        "certified and promoted, so the published calibration backs strict trust"
+                    ),
+                )
+            )
+            continue
+        if spec.tenant in serving:
+            blocks.append(
+                _generation_block(
+                    spec,
+                    dsn=dsn,
+                    embedder=plan.embedder,
+                    trust="development",
+                    rationale=(
+                        "certification fell short, so an EARLIER generation is what serves this "
+                        "tenant. Trust is relaxed for this server only, because the calibration "
+                        "that is published no longer describes the corpus on disk. Re-run once the "
+                        "corpus can certify, then tighten this back to strict."
+                    ),
+                )
+            )
+            continue
+        unservable.append(
+            UnservableTenant(
+                tenant=spec.tenant,
+                reason=(
+                    "certification fell short and this tenant has no earlier generation, so nothing "
+                    "is promoted and nothing can answer. A production server would raise "
+                    "NoActiveGeneration from outside the trust gate, with no failure code and no "
+                    "advice, so no server is configured for it. Add content and re-run, or promote "
+                    "the built generation deliberately to serve it uncertified."
+                ),
+            )
+        )
+
+    return tuple(blocks), tuple(unservable)
+
+
+def _base_env(spec: CorpusSpec, *, dsn: str, embedder: str) -> dict[str, str]:
+    return {"RECALL_DSN": dsn, "RECALL_EMBEDDER": embedder, "RECALL_TENANT": spec.tenant}
+
+
+def _generation_block(
+    spec: CorpusSpec,
+    *,
+    dsn: str,
+    embedder: str,
+    trust: str,
+    rationale: str,
+) -> ServerBlock:
+    env = _base_env(spec, dsn=dsn, embedder=embedder)
+    # `RECALL_ENV=production` is what selects `GenerationStore`, so a calibrated corpus is only
+    # reachable through it. Without this the server would read the legacy `chunks` table, which a
+    # generation build never wrote to, and answer nothing while looking configured.
+    env["RECALL_ENV"] = "production"
+    env["RECALL_TRUST_MODE"] = trust
+    return ServerBlock(
+        name=spec.tenant, tenant=spec.tenant, env=env, rationale=rationale
+    )
+
+
+def _legacy_block(spec: CorpusSpec, *, dsn: str, embedder: str) -> ServerBlock:
+    env = _base_env(spec, dsn=dsn, embedder=embedder)
+    # No RECALL_ENV. This corpus lives in the legacy `chunks` table, which only `PgVectorStore`
+    # reads; production mode would route past it and find nothing.
+    env["RECALL_TRUST_MODE"] = "development"
+    return ServerBlock(
+        name=spec.tenant,
+        tenant=spec.tenant,
+        env=env,
+        rationale=(
+            "writable and never calibrated, so it has no generation and no calibration to be "
+            "strict about. A fresh memory directory cannot meet the certification floor, and this "
+            "is the one corpus that must accept writes after install, which production mode refuses."
+        ),
+    )
+
+
+def mcp_config(
+    blocks: tuple[ServerBlock, ...], *, project_root: Path, interpreter: str | None = None
+) -> dict[str, object]:
+    """The `.mcp.json` document, in the shape a working configuration already uses.
+
+    ⚠️ **The interpreter is an ABSOLUTE path, not the word `python`.** A bare `python` resolves
+    against whatever PATH the CLIENT has, which is not the environment recall was installed into.
+    On Windows it routinely resolves to the Microsoft Store stub, which opens the Store instead of
+    running anything, and the user sees a server that will not start with no cause named. Captured
+    from `sys.executable` at install time, which is by construction the interpreter that has
+    `recall_mcp` importable, since it is the one running this code.
+
+    `args` stays a list so a path containing spaces — `C:\\Program Files\\...` — is never re-split
+    by a shell.
+    """
+    return {
+        "mcpServers": {
+            block.name: {
+                "type": "stdio",
+                "command": interpreter or sys.executable,
+                "args": ["-m", "recall_mcp.server"],
+                "cwd": str(project_root),
+                "env": dict(block.env),
+            }
+            for block in blocks
+        }
+    }
+
+
+def write_project_files(
+    *,
+    project_root: Path,
+    dsn: str,
+    embedder: str,
+    memory_dir: Path,
+) -> tuple[Path, ...]:
+    """Write `.env`, the `CLAUDE.md` block and `memory/MEMORY.md`, returning what was touched.
+
+    Every one of these reuses `recall.setup`'s writers rather than reimplementing them, and that
+    matters for a specific reason: all three are BLOCK-scoped, delimited by begin/end markers, so
+    they update an operator's existing file instead of replacing it. A wizard that overwrote a
+    project's `CLAUDE.md` would destroy work no installer has any business touching.
+
+    `.env` carries the serving DSN and embedder for the CLI, not for the MCP servers. The servers get
+    their variables in their own `env` blocks, because a stdio server launched with an explicit `env`
+    inherits nothing, so `.env` alone would leave them on defaults.
+
+    **`project_root` is created if it is absent, and exactly one level of it.** Nothing else creates
+    it: the directory used to appear as a side effect of the deleted `write_mcp_config`, which did
+    `path.parent.mkdir(parents=True, exist_ok=True)` on its way to writing `project_root/.mcp.json`,
+    and when `03456359` moved registration to local scope in `~/.claude.json` that incidental mkdir
+    went with it. What was left is this function opening `.env` for writing inside a directory that
+    may not exist, at the END of an install, after every corpus is built, calibrated, promoted and
+    registered. In CI that read as `could not write .../project/.env: No such file or directory`
+    with the whole install already paid for.
+
+    `parents=False` is the deliberate half. A missing LEAF is an ordinary first install: the user
+    named a project directory and this is the thing that makes it. A missing PARENT is a mistyped
+    path, and `recall.wizard.headless.load_config` refuses that by name before anything is built,
+    which is where a cheap check belongs. Passing `parents=True` here would quietly manufacture the
+    tree the reader already decided not to, and would do it thirty minutes too late to be useful.
+    """
+    from recall.setup import _update_env_block, scaffold_claude_md, scaffold_memory_index
+
+    # `exist_ok=True` covers the re-run and the ordinary case of an existing project. It does NOT
+    # swallow a file sitting at this path: `mkdir` only suppresses `FileExistsError` for a
+    # directory, so a root that is a file still raises here rather than being written into.
+    project_root.mkdir(exist_ok=True)
+
+    written: list[Path] = []
+
+    env_path = project_root / ".env"
+    _update_env_block(env_path, {"RECALL_DSN": dsn, "RECALL_EMBEDDER": embedder})
+    written.append(env_path)
+
+    claude_md = project_root / "CLAUDE.md"
+    scaffold_claude_md(claude_md)
+    written.append(claude_md)
+
+    if scaffold_memory_index(memory_dir):
+        written.append(memory_dir / "MEMORY.md")
+
+    return tuple(written)
+
+
+def write_runtime_profile(
+    *,
+    compose_path: Path,
+    project: str,
+    compose_project: str,
+    shared_profile: str = "user",
+    path: Path | None = None,
+) -> Path:
+    """Write `runtime.json`, the handoff from the wizard to the desktop UI.
+
+    **`recall.desktop.profiles.save_profile` existed with ZERO callers.** `main.py` reads the file
+    and, finding none, falls back to `RuntimeProfile(mode=DOCKER, compose_file=
+    "docker-compose.desktop.yml")` — a RELATIVE path resolved against the process working directory,
+    so Docker mode worked only when the app happened to be launched from the repository root. The
+    wizard is the missing writer, and it writes an ABSOLUTE path.
+
+    This is also what decides which projects the UI offers. Verified by constructing the real
+    window offscreen: it makes no runtime calls at all on startup, and its scope selector is built
+    from the PROFILE rather than from `list_tenants`. So what is written here is what the user sees.
+
+    `default_tenant` is the project SCOPE (`myapp`), not a full tenant (`myapp-docs`). The UI
+    appends the corpus kind itself in `SourceSelection.physical_tenant`, and handing it a complete
+    tenant would produce `myapp-docs-docs`.
+
+    Imported lazily, and reachable without PySide6: the desktop extra may not be installed at the
+    moment the wizard runs, and refusing to record the configuration because the GUI is absent
+    would make the install order matter for no reason.
+    """
+    from recall.desktop.models import RuntimeMode, RuntimeProfile
+    from recall.desktop.profiles import save_profile
+
+    profile = RuntimeProfile(
+        mode=RuntimeMode.DOCKER,
+        compose_file=str(compose_path),
+        compose_project=compose_project,
+        default_tenant=project,
+        shared_profile=shared_profile,
+    )
+    return save_profile(profile, path)
+
+
+#: The environment variable Claude Code uses to relocate the directory it writes config into.
+#:
+#: ⚠️ **Undocumented, and real.** It appears in neither `code.claude.com/docs/en/settings` nor the
+#: CLI reference (both checked 2026-08-20). The installed client binary contains it beside its own
+#: advice, "Use `CLAUDE_CONFIG_DIR=/tmp` for ephemeral local writes with external mirroring", and
+#: the client demonstrably honours it: see `claude_config_path` for the measurement.
+CLAUDE_CONFIG_DIR = "CLAUDE_CONFIG_DIR"
+
+
+def claude_config_path() -> Path:
+    """Claude Code's own configuration. Not recall's, which is why it is touched so carefully.
+
+    ⛔ **This used to be `Path.home() / ".claude.json"` unconditionally**, which on a machine where
+    the user has relocated the config names a file the client never reads. Registration would write
+    it, return a populated `LocalScopeRegistration`, and report success, while nothing the client
+    loads had changed — the silent-nothing failure this whole change exists to remove, reintroduced
+    at its own default. Reported by the user-acquisition session, which hit it end to end after
+    swapping onto this function; six of their tests passed through the bug, because every one of
+    them substitutes this collaborator and so can only assert that it was called, not that it was
+    called correctly.
+
+    **The variable is undocumented; the layout is MEASURED.** Those are separate claims and the
+    first version of this note ran them together as "inferred".
+
+    Undocumented: it appears in neither `code.claude.com/docs/en/settings` nor the CLI reference
+    (2026-08-20), and the settings page says `.claude.json` lives at `~/.claude.json`, a SIBLING of
+    `~/.claude/`, with nothing about relocation. So the documented layout argues AGAINST what this
+    function does, which is why it is worth writing down.
+
+    Measured: seed both candidate layouts with distinctly named user-scope servers, point
+    `CLAUDE_CONFIG_DIR` at a temporary directory, and ask the client what it can see.
+
+        saw INSIDE probe  : True     <- .claude.json inside the configured directory
+        saw SIBLING probe : False    <- .claude.json beside it, the documented home layout
+
+    Run twice on 2026-08-20, once by the user-acquisition session and once here, independently. That
+    is the client's own behaviour rather than a reading of a help string, and it is what a claim
+    with a silent failure mode needs. ⚠️ Filter such a probe by the PROBE NAMES: a project-scoped
+    `.mcp.json` in the working directory is read whatever the config dir is, and would otherwise
+    look like a positive.
+    """
+    configured = os.environ.get(CLAUDE_CONFIG_DIR, "").strip()
+    if configured:
+        return Path(configured).expanduser() / ".claude.json"
+    return Path.home() / ".claude.json"
+
+
+@dataclass(frozen=True)
+class LocalScopeRegistration:
+    """What was written into the client's LOCAL-scope server list, and what was refused."""
+
+    config_path: Path
+    #: The `projects` keys the servers were written under. Usually one. Reported because the entry
+    #: is keyed by PATH, so moving or renaming the project orphans it with no error: the same shape
+    #: as the memory-store forking this project has already been bitten by.
+    project_keys: tuple[str, ...] = ()
+    registered: tuple[str, ...] = ()
+    #: Names already present that this install did NOT overwrite, with what they point at. A second
+    #: install under the same project name is the reachable case, and silently replacing the first
+    #: one's servers would repoint a working install at another corpus.
+    conflicts: tuple[tuple[str, str], ...] = ()
+    skipped_reason: str = ""
+
+    @property
+    def recorded(self) -> bool:
+        return bool(self.registered)
+
+
+def _project_keys(projects: dict[str, object], project_root: Path) -> tuple[str, ...]:
+    """Which `projects` keys this install belongs under, preferring the client's own spelling.
+
+    ⚠️ **The client does NOT normalise this key, and one project can hold several spellings.**
+    Measured 2026-08-19 on a real config with 313 project keys: the same directory appeared as both
+    `C:\\Users\\...\\progetto sentimental` and `C:/Users/.../progetto sentimental`, which is
+    what a native launch and a Git Bash launch produce. A local-scope entry written under a spelling
+    the client does not use is invisible, with no error, which is the failure this whole change is
+    removing.
+
+    So every existing key that resolves to this directory is used, rather than one invented one. A
+    project the user has never opened has no key at all, and only then is one invented from the
+    resolved path.
+    """
+    matches = [key for key in projects if _same_directory(key, project_root)]
+    return tuple(matches) if matches else (str(project_root.resolve()),)
+
+
+def _same_directory(key: str, project_root: Path) -> bool:
+    try:
+        return Path(key).resolve() == project_root.resolve()
+    except (OSError, ValueError):
+        return False
+
+
+def _written_by_this_project(existing: object, project_root: Path) -> bool:
+    """Whether an entry already under this name came from an install of THIS project.
+
+    Two judgements, and both were wrong in the first version of this function.
+
+    **A missing `cwd` means the entry is NOT ours.** Every block this module writes carries one, so
+    an entry without it was written by somebody else, by hand or by another tool. Treating "no cwd"
+    as ours would silently replace a server the operator configured themselves, which is precisely
+    the harm the conflict path exists to prevent.
+
+    **Paths are compared RESOLVED.** A config that named the project relatively on one run and
+    absolutely on the next would otherwise have its own previous install reported as a stranger, and
+    the user would be told to rename a project that was already theirs.
+    """
+    if not isinstance(existing, dict):
+        return False
+    cwd = existing.get("cwd")
+    if not isinstance(cwd, str):
+        return False
+    try:
+        return Path(cwd).resolve() == project_root.resolve()
+    except (OSError, ValueError):
+        # A path the platform will not even parse cannot be shown to be ours, and guessing in the
+        # permissive direction here overwrites somebody's configuration.
+        return cwd == str(project_root)
+
+
+def _describe_owner(existing: object) -> str:
+    """What to tell the user about the entry that is in the way, without pretending to know more."""
+    if isinstance(existing, dict):
+        cwd = existing.get("cwd")
+        if isinstance(cwd, str):
+            return f"cwd {cwd}"
+    return "no cwd, so it was not written by this wizard"
+
+
+def register_local_scope(
+    blocks: tuple[ServerBlock, ...],
+    *,
+    project_root: Path,
+    config_path: Path | None = None,
+    interpreter: str | None = None,
+) -> LocalScopeRegistration:
+    """Register the servers at LOCAL scope: this project only, and no approval prompt.
+
+    **Why not project scope, which is what this wrote first.** Claude Code gates project-scoped
+    `.mcp.json`: it prompts for approval in an interactive session, and until the user answers, the
+    tools are silently absent — no error, nothing naming the cause. Measured on this machine, 2 of
+    310 tracked projects had any approval recorded, neither created by the wizard. For the audience
+    this installer exists for, a first-run user who is not a Claude Code expert, an invisible gate
+    between "the installer said it worked" and "the tools are there" is the whole product failing.
+
+    **And why not USER scope, which is what this wrote second.** User scope also skips the prompt,
+    but it is the only scope that loads in EVERY project on the machine, and `server_blocks` emits
+    one server per tenant with `RECALL_TENANT` baked into each. All three would then load in every
+    unrelated checkout the user opens and answer confidently about a corpus that is not the
+    repository they are in. That is the corpus-boundary failure this project documents as the worst
+    kind available: not an error, a well-formed answer about the wrong repository. Local scope is
+    per-project by construction, which matches how the blocks are already built: one `project_root`,
+    one DSN, one tenant each.
+
+    ⚠️ **The wizard must therefore NOT also write `.mcp.json`.** Precedence is local, then project,
+    then user, and entries are NOT merged: local wins over a project file in the same directory, so
+    a `.mcp.json` would be dead weight that still has to be trusted, explained and kept in step.
+
+    ⚠️ **The approval sentence is about `.mcp.json` specifically**, which is also why the client's
+    keys are named `enabledMcpjsonServers` / `disabledMcpjsonServers`. Local scope is not that file
+    and is outside the gate. That reading is documentary rather than measured: no project on this
+    machine carried a local-scope entry to observe, and an interactive session is the only place the
+    difference shows.
+
+    **Collisions are refused, not overwritten.** Server names are `{project}-{kind}`, so a second
+    install using the same project name would silently repoint the first install's servers at a
+    different corpus. That is a data-visibility change the user never asked for, so a name already
+    present and not ours is reported and left alone; the remedy is a distinct `project` in the
+    config.
+
+    Written by merging directly rather than shelling out to `claude mcp add`. The CLI is the
+    schema's owner and would be preferable, but it is frequently absent from PATH on Windows (the
+    app installs without it), and its output does not decode under the console's default codec
+    there — measured: `UnicodeDecodeError: 'charmap' codec can't decode byte 0x8f`. Depending on it
+    would make the install fail on the platform this wizard is for. The merge touches one key, backs
+    up first, and writes atomically.
+    """
+    target = config_path or claude_config_path()
+    if not blocks:
+        return LocalScopeRegistration(config_path=target, skipped_reason="no servers to register")
+
+    try:
+        raw = target.read_text(encoding="utf-8")
+        document = json.loads(raw)
+    except OSError as exc:
+        return LocalScopeRegistration(
+            config_path=target,
+            skipped_reason=f"no Claude Code config at {target} ({exc.strerror or exc})",
+        )
+    except ValueError as exc:
+        return LocalScopeRegistration(
+            config_path=target,
+            skipped_reason=f"{target} is not readable JSON ({exc}); left untouched",
+        )
+    if not isinstance(document, dict):
+        return LocalScopeRegistration(
+            config_path=target, skipped_reason=f"{target} is not a JSON object"
+        )
+
+    projects = document.get("projects")
+    if not isinstance(projects, dict):
+        projects = {}
+        document["projects"] = projects
+    keys = _project_keys(projects, project_root)
+
+    incoming = mcp_config(blocks, project_root=project_root, interpreter=interpreter)["mcpServers"]
+    assert isinstance(incoming, dict)
+
+    registered: list[str] = []
+    conflicts: list[tuple[str, str]] = []
+    for key in keys:
+        entry = projects.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+            projects[key] = entry
+        servers = entry.get("mcpServers")
+        merged = dict(servers) if isinstance(servers, dict) else {}
+        for name, definition in incoming.items():
+            existing = merged.get(name)
+            if existing is not None and not _written_by_this_project(existing, project_root):
+                if (name, _describe_owner(existing)) not in conflicts:
+                    conflicts.append((name, _describe_owner(existing)))
+                continue
+            merged[name] = definition
+            if name not in registered:
+                registered.append(name)
+        entry["mcpServers"] = merged
+
+    if not registered:
+        return LocalScopeRegistration(
+            config_path=target,
+            project_keys=tuple(keys),
+            conflicts=tuple(conflicts),
+            skipped_reason="every server name is already taken by something else in this project",
+        )
+
+    backup = target.with_name(target.name + ".recall-backup")
+    backup.write_text(raw, encoding="utf-8", newline="\n")
+    temporary = target.with_name(target.name + ".recall-tmp")
+    temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
+    temporary.replace(target)
+    return LocalScopeRegistration(
+        config_path=target,
+        project_keys=tuple(keys),
+        registered=tuple(registered),
+        conflicts=tuple(conflicts),
+    )

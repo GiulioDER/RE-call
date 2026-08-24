@@ -1,0 +1,125 @@
+{
+  "aggregate_stats": {
+    "total_questions": 10,
+    "completed_questions": 10,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 10.0,
+    "average_completeness_pct": 4.17,
+    "combined_correctness_completeness_score": 4.17,
+    "average_recall_pct": 21.0,
+    "average_invalid_extra_docs": 7.0
+  },
+  "question_type_stats": {
+    "completeness": {
+      "count": 10,
+      "average_correctness_pct": 10.0,
+      "average_completeness_pct": 4.17,
+      "combined_correctness_completeness_score": 4.17,
+      "average_recall_pct": 21.0,
+      "average_invalid_extra_docs": 7.0
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0431",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": true,
+      "correctness_reasoning": "It matches the core rollback steps and distinctions for Hosted vs Dedicated, including freezing rollout, regional/cluster rollback order, and stabilization windows, without conflicting details.",
+      "completeness_pct": 41.67,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0432",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate says the answer is unavailable, but the gold answer identifies Jira (customer-support SUP tickets) as having the most reports.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 16.67,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0435",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate says the answer is unavailable, but the gold answer clearly states there were three 'At Risk' updates.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 0.0,
+      "invalid_extra_docs": 8
+    },
+    {
+      "question_id": "qst_0436",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "It fails to provide the gold answer's key information that the Python SDK had the most auth-related bug reports and the ticket IDs SUP-4821 and SUP-4933.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 10.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0437",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "It contradicts the gold answer by claiming the answer is unavailable instead of identifying Platform with 16 action items.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 0.0,
+      "invalid_extra_docs": 8
+    },
+    {
+      "question_id": "qst_0439",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate says the answer is unavailable, but the gold answer gives a specific count of 4 incidents.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 0.0,
+      "invalid_extra_docs": 8
+    },
+    {
+      "question_id": "qst_0441",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate does not provide the mandated go/no-go gate details and incorrectly claims the documents lack the complete customer communication requirements, which the gold answer specifies.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 33.33,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0445",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate answer does not provide the required rollout plan contents or any of the key metrics, approvals, rollback rules, or communication requirements described in the gold answer.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 37.5,
+      "invalid_extra_docs": 5
+    },
+    {
+      "question_id": "qst_0449",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "It is misaligned because the gold answer states Hosted API had the most request-timeout escalations in March 2026, while the candidate incorrectly says the answer is unavailable.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 0.0,
+      "invalid_extra_docs": 8
+    },
+    {
+      "question_id": "qst_0450",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate says the answer is unavailable, but the gold answer specifies that 8 transcripts mention data residency requirements.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 12.5,
+      "invalid_extra_docs": 7
+    }
+  ]
+}

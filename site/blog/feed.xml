@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>RE-call blog</title>
+  <subtitle>Technical notes on trustworthy agent memory on PostgreSQL and pgvector: validity, supersession, calibration and abstention.</subtitle>
+  <link href="https://giulioder.github.io/RE-call/blog/feed.xml" rel="self" type="application/atom+xml"/>
+  <link href="https://giulioder.github.io/RE-call/blog/index.html" rel="alternate" type="text/html"/>
+  <id>https://giulioder.github.io/RE-call/blog/</id>
+  <updated>2026-08-23T18:00:00Z</updated>
+  <author>
+    <name>Giulio D'Erme</name>
+  </author>
+
+  <entry>
+    <title>The retracted claim is the nearer match</title>
+    <link href="https://giulioder.github.io/RE-call/blog/the-retracted-claim-is-the-nearer-match.html" rel="alternate" type="text/html"/>
+    <id>https://giulioder.github.io/RE-call/blog/the-retracted-claim-is-the-nearer-match.html</id>
+    <author>
+      <name>Giulio D'Erme</name>
+    </author>
+    <published>2026-08-23T18:00:00Z</published>
+    <updated>2026-08-23T18:00:00Z</updated>
+    <summary>Agent memory that keeps its history holds both the claim and the correction, and on cosine similarity the retracted claim often wins. One pair of memos from RE-call's shipped demo corpus shows the failure exactly, why a better ranker cannot fix it, and how declared supersession on PostgreSQL and pgvector does: every hit carries a verdict, the stale memo comes back marked superseded, and a question the corpus cannot answer is refused with a measured margin.</summary>
+  </entry>
+</feed>

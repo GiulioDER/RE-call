@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 40.0,
+    "average_completeness_pct": 66.83,
+    "combined_correctness_completeness_score": 37.5,
+    "average_recall_pct": 80.0,
+    "average_invalid_extra_docs": 6.0
+  },
+  "question_type_stats": {
+    "conflicting_info": {
+      "count": 5,
+      "average_correctness_pct": 40.0,
+      "average_completeness_pct": 66.83,
+      "combined_correctness_completeness_score": 37.5,
+      "average_recall_pct": 80.0,
+      "average_invalid_extra_docs": 6.0
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0418",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate contradicts the gold answer by claiming no numeric thresholds exist while the gold answer provides explicit score ranges for v2 (\u226585, 70\u201384, 35\u201369, <35) and previous thresholds (\u226580, 60\u201379, 30\u201359, <30).",
+      "completeness_pct": 20.0,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 5
+    },
+    {
+      "question_id": "qst_0419",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned: the candidate says the endpoint is not available in the documents, but the gold answer specifies POST /v1/capacity/migrations/start (with legacy alias POST /v1/migration/start).",
+      "completeness_pct": 66.67,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0423",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate fails to give the required answer\u2014gold specifies exporting the last 12 months (superseding a prior 18-month note)\u2014but the candidate claims no answer exists in the documents, which contradicts the gold answer.",
+      "completeness_pct": 60.0,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 7
+    },
+    {
+      "question_id": "qst_0424",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate exactly matches the current token-based bucket cutoffs from the gold answer (short <128, medium 128\u20131024, long >1024).",
+      "completeness_pct": 100.0,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0425",
+      "corrected": false,
+      "question_type": "conflicting_info",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate matches the gold: v1 omits an embedded `signature` and uses optional `integrity` (none|sha256-only|sigstore-oidc) plus an `integrity_ref` URI pointing to external signature/envelope, noting it replaces earlier embedded `signature` drafts.",
+      "completeness_pct": 87.5,
+      "document_recall_pct": 100.0,
+      "invalid_extra_docs": 6
+    }
+  ]
+}

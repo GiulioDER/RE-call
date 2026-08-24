@@ -87,6 +87,11 @@ def _run(command: list[str], timeout: float) -> subprocess.CompletedProcess[str]
             command,
             capture_output=True,
             text=True,
+            # The `except Exception` below would swallow a platform-codec decode failure into
+            # `None`, which reads here as "the probe found nothing" rather than "the probe could
+            # not read the answer". Decoding explicitly keeps those two apart.
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
         )

@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import uuid4
 from ipaddress import ip_address
 from urllib.parse import unquote, urlsplit
@@ -15,6 +15,7 @@ from urllib.parse import unquote, urlsplit
 import psycopg
 from pgvector import SparseVector, Vector
 from pgvector.psycopg import register_vector
+from psycopg.types.json import Jsonb
 
 from recall.frontmatter import supersedes_key
 from recall.observability import METRICS, get_logger
@@ -30,7 +31,22 @@ _DEFAULT_CREDS = ("recall", "recall")
 _NUMERIC_TOKEN_RE = re.compile(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)?%?(?![\w.])")
 #: "" covers a hostless/unix-socket DSN. Bracketed IPv6 is absent on purpose: urlsplit strips
 #: the brackets. All of 127.0.0.0/8 is handled numerically by `_is_local_host`.
-_LOCAL_HOSTS = ("", "localhost", "::1", "0.0.0.0", "host.docker.internal")
+_LOCAL_HOSTS = ("", "localhost", "::1", "0.0.0.0")
+#: Hosts that get a WARNING but not a refusal. `host.docker.internal` used to sit in
+#: `_LOCAL_HOSTS`, which was wrong in one direction: from inside a container it reaches the
+#: container HOST, which can be a shared, network-reachable machine. It stays out of the
+#: refusal so the compose quickstart keeps working, and the warning says what it reaches.
+_WARN_ONLY_HOSTS = ("host.docker.internal",)
+
+
+def _numeric_query_terms(text: str) -> list[str]:
+    """Return normalized numeric terms for the table exact-match boost."""
+    terms: list[str] = []
+    for value in _NUMERIC_TOKEN_RE.findall(text):
+        normalized = value.replace(",", ".")
+        if normalized not in terms:
+            terms.append(normalized)
+    return terms
 
 
 def _numeric_query_terms(text: str) -> list[str]:
@@ -51,6 +67,89 @@ def _is_local_host(host: str) -> bool:
         return ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def _dsn_passwords(dsn: str) -> tuple[str, ...]:
+    """Every password this DSN could carry, in either libpq form. Never raises.
+
+    The URI form (`postgresql://u:pw@host/db`) and the keyword form (`host=x password=pw`) are both
+    accepted by libpq, so both are scrubbed. A DSN that parses as neither yields nothing to scrub,
+    which is the honest answer: this is a redaction helper, not a validator, and a malformed DSN is
+    exactly when the caller most needs it to keep working.
+    """
+    found: list[str] = []
+    try:
+        uri_password = urlsplit(dsn).password
+    except ValueError:
+        uri_password = None
+    if uri_password:
+        found.append(uri_password)
+        # ⛔ **The DECODED form too.** `urlsplit` does not percent-decode and libpq does, so a
+        # password containing a reserved character (which MUST be encoded in a URI DSN, making this
+        # the ordinary case rather than an edge one) was scrubbed in a spelling that never appears
+        # in an error message. Measured: `postgresql://u:p%40ss@h/db` scrubbed `p%40ss` while the
+        # text carried `p@ss`. Three auditors found this independently.
+        decoded = unquote(uri_password)
+        if decoded != uri_password:
+            found.append(decoded)
+
+    # The keyword form. libpq allows single-quoted values with backslash escapes, so a password
+    # containing a space or a quote is reachable and must still be matched in full.
+    for match in re.finditer(r"password\s*=\s*(?:'((?:[^'\\]|\\.)*)'|(\S+))", dsn):
+        quoted, bare = match.group(1), match.group(2)
+        value = quoted.replace("\\'", "'").replace("\\\\", "\\") if quoted is not None else bare
+        if value:
+            found.append(value)
+    return tuple(found)
+
+
+def scrub_dsn_secrets(text: str, *dsns: str) -> str:
+    """Remove any of these DSNs' passwords from `text`.
+
+    `redacted_dsn` is not enough on its own, because the password can be inside the EXCEPTION rather
+    than inside a DSN we format. Two measurements, years apart in spirit and days apart in fact:
+
+    * a password containing `%` produced
+      `psycopg.ProgrammingError: invalid percent-encoded token: "S3cr%tPw"`, so wrapping the error
+      with a redacted DSN beside it still printed the secret verbatim;
+    * a MALFORMED dsn produced
+      `ProgrammingError: missing "=" after "not-a-dsn://user:PASSWORD@x" in connection info string`,
+      echoing the entire connection string. That one reached a label in the desktop settings page,
+      which is on screen, in screenshots, and in whatever a user pastes into an issue — and a
+      mistyped DSN is exactly when a person is looking at that label.
+
+    Anything derived from a connection attempt goes through here. Lives beside `redacted_dsn`
+    rather than in one caller, because it was written twice before this: once in
+    `recall/wizard/headless.py` and once, nearly, in the preflight.
+
+    ⚠️ **A password shorter than 4 characters is NOT removed.** A blind `str.replace` of a
+    one-character password rewrote every occurrence of that letter: measured, a password of `a`
+    turned "cannot connect to database at host a" into
+    "c***nnot connect to d***t***b***se ***t host ***". An unreadable error is its own kind of
+    failure, and the callers put this on screen. So the guarantee below has a floor, and it is
+    stated HERE rather than in a comment inside the loop, because a caller who needs an
+    unconditional guarantee must be able to see that this is not one.
+
+    ⛔ **Both DSN forms, because libpq accepts both and the installer's field is free text.**
+    This handled only the URI form: `urlsplit("host=db password=s3cret dbname=recall").password` is
+    `None`, so a keyword/value DSN — which psycopg accepts, and which is what somebody pasting from
+    a hosting provider's console often has — passed through with the password intact, while the
+    caller's docstring promised it had been removed. The parse is hand-rolled rather than delegated
+    to `psycopg.conninfo`, because this function must not fail on a MALFORMED dsn: malformed is the
+    case that produced the second measurement above.
+    """
+    for dsn in dsns:
+        for password in _dsn_passwords(dsn):
+            # ⚠️ **Short passwords are skipped, deliberately.** A blind `str.replace` of a
+            # one-character password rewrote every occurrence of that letter: measured, a password
+            # of `a` turned "cannot connect to database at host a" into
+            # "c***nnot connect to d***t***b***se ***t host ***". An unreadable error is its own
+            # kind of failure, and a password that short is not the secret worth protecting at the
+            # cost of every diagnosis the user needs.
+            if len(password) < 4:
+                continue
+            text = text.replace(password, "***")
+    return text
 
 
 def redacted_dsn(dsn: str) -> str:
@@ -253,7 +352,19 @@ def warn_if_insecure_dsn(dsn: str) -> str | None:
     # "recall" and must not slip past the comparison
     if (unquote(parts.username or ""), unquote(parts.password or "")) != _DEFAULT_CREDS:
         return None
-    if _is_local_host((parts.hostname or "").lower()):
+    host = (parts.hostname or "").lower()
+    if _is_local_host(host):
+        return None
+    if host in _WARN_ONLY_HOSTS:
+        # Warn without returning a message: `require_secure_dsn` raises on any returned
+        # message, and this host must warn rather than block (it is the documented way a
+        # containerised quickstart reaches its database).
+        _log.warning(
+            "recall: WARNING — default 'recall:recall' credentials against %r, which reaches "
+            "the container HOST, not this container. Fine for a local quickstart; set a strong "
+            "password if that machine is shared.",
+            parts.hostname,
+        )
         return None
     msg = (
         f"recall: WARNING — using the default 'recall:recall' credentials against non-local host "
@@ -593,6 +704,31 @@ def _ef_search_multiplier() -> int:
     if mult < 1:
         raise ValueError(f"RECALL_HNSW_EF_SEARCH_MULTIPLIER={mult} must be >= 1")
     return mult
+
+
+def _chunk_identity(chunks: list[Chunk]) -> tuple[str | None, list[str]]:
+    """The project and root-relative file names a batch of chunks belongs to.
+
+    `(None, [])` when the chunks declare no project, which is what confines the identity delete to a
+    corpus whose owner declared one: two roots with the same relative layout and no project may be
+    different corpora, and merging them is not a guess this layer may make.
+
+    Also `(None, [])` if a batch ever mixed two projects, rather than guessing which one owns the
+    delete.
+    """
+    projects = {
+        value
+        for chunk in chunks
+        if isinstance(value := chunk.metadata.get("project"), str) and value
+    }
+    if len(projects) != 1:
+        return None, []
+    names: dict[str, None] = {}
+    for chunk in chunks:
+        name = chunk.metadata.get("file")
+        if isinstance(name, str) and name:
+            names.setdefault(name, None)
+    return projects.pop(), list(names)
 
 
 class PgVectorStore:
@@ -1145,6 +1281,66 @@ class PgVectorStore:
                 ],
             )
 
+    def append_audit_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        generation_id: str | None = None,
+        source_uri: str | None = None,
+        actor: str = "serving",
+        event_id: str | None = None,
+    ) -> str:
+        """Append one event to this tenant's audit ledger (``recall_audit_events``).
+
+        The write side (generation and calibration lifecycle) has appended to that table since
+        migration 0008 through its own repositories; this is the read side's pen, used by
+        `recall.decision_ledger` to witness search decisions. It runs on the store's own
+        tenant-scoped connections, so the row satisfies the table's RLS policy exactly when
+        every other statement here does. Append is the ONLY verb on this surface — no update or
+        delete exists, because a ledger that can be edited in place is a draft, not a record.
+
+        ``ON CONFLICT DO NOTHING`` makes the append idempotent PER EVENT ID, which is not a
+        loophole in append-only (nothing is ever updated) but the honest answer to the
+        indeterminate-commit window: `_with_retry` re-runs the INSERT when the connection dies
+        after the server committed but before the client heard, and the pre-generated id means
+        the collision can only be this call's own earlier success. Without it, that window
+        reported a failure for a row that exists, so the failure counter disagreed with the
+        table. A caller passing an explicit ``event_id`` twice gets one row and two successes,
+        by the same rule.
+
+        The write inherits the store's single reconnect-retry, so under a degraded connection
+        it can cost the caller up to two attempts of latency before failing — a deliberate
+        trade for a best-effort caller that shares the search path's connection anyway.
+
+        Raises on failure (a schema predating 0008, a connection dead after the retry): whether
+        the write is load-bearing is the CALLER's decision, and `DecisionLedger` decides it is
+        not by catching here.
+        """
+        if not isinstance(event_type, str) or not event_type:
+            raise ValueError("event_type must be a non-empty str")
+        event_id = event_id or f"evt_{uuid4().hex}"
+
+        def _op(conn: "psycopg.Connection") -> None:
+            conn.execute(
+                "INSERT INTO recall_audit_events "
+                "(tenant_id, event_id, event_type, actor, generation_id, source_uri, payload) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (tenant_id, event_id) DO NOTHING",
+                (
+                    self._tenant,
+                    event_id,
+                    event_type,
+                    actor,
+                    generation_id,
+                    source_uri,
+                    Jsonb(dict(payload)),
+                ),
+            )
+
+        self._with_retry(_op)
+        return event_id
+
     def analyze(self) -> bool:
         """Refresh the planner's statistics for this table. Best-effort; never raises.
 
@@ -1420,6 +1616,66 @@ class PgVectorStore:
             rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._rows_to_hits(rows)
 
+    def top_cosine(self, vector: list[float]) -> float:
+        """The BEST cosine any chunk in scope has with `vector`, computed EXACTLY.
+
+        Not `query_dense(k=1)[0].score`, and the difference is the whole point. That is an
+        `ORDER BY embedding <=> v LIMIT 1`, which Postgres may serve from the HNSW index — an
+        APPROXIMATE structure whose walk is filter-blind, so a tenant- or generation-scoped query
+        can return a row that is merely reachable rather than nearest, or no row at all. Whether
+        that happens is decided by the planner from table size and statistics, so the SAME corpus
+        yields a different "best cosine" depending on how much unrelated data shares the table.
+
+        An aggregate has no ORDER BY and no LIMIT, so the ordering index cannot serve it at all
+        and the scan is exact by construction. That is the property this method exists for, not a
+        preference for aggregates.
+
+        ⛔ `1 - min(distance)`, NOT `max(1 - distance)`, and the two are not interchangeable. A
+        zero-norm embedding makes pgvector's cosine distance NaN, and Postgres orders NaN as
+        LARGER than every number in an aggregate but LAST in an ascending sort. So `max(1 - d)`
+        returns NaN for a corpus holding one degenerate row, where the `ORDER BY d LIMIT 1` this
+        replaces returns the real nearest neighbour. Taking the minimum DISTANCE reproduces the
+        sort's semantics exactly: NaN is never the minimum unless every row is NaN, in which case
+        both forms agree. Verified 2026-08-23 against pgvector on all four cases (no degenerate
+        row, one, all, and an empty scope).
+
+        That matters more than it looks. A NaN would flow into the calibration sample lists, and
+        `NaN >= threshold` is false, so it would be counted as a correct abstention and lower
+        `false_confirm_rate` — the same direction as the defect this method exists to remove.
+
+        Measured 2026-08-22 on a 60,000-chunk generation, one query, same slice, same session:
+        `query_dense(k=1)` reported **0.000000** where the true maximum was **0.707107** — the
+        planner picked `recall_chunks_v1_embedding_idx` unprompted, because 60k chunks in one
+        tenant is an ordinary corpus rather than an extreme. Cost of exactness there: 29.9 ms
+        against 7.75 ms, on a path that runs once per labelled query at calibration time.
+
+        Callers are measurement code (`recall.eval.calibrate.measure_top_cosines`, and through it
+        `calibrate`, `carry_forward` and drift monitoring), where the number IS the finding. The
+        serving path deliberately keeps the approximate search: a search may be approximate, but a
+        measurement of whether a threshold still separates two classes may not be.
+
+        Returns 0.0 for an empty scope, matching what `measure_top_cosines` recorded for a query
+        that retrieved nothing.
+
+        ⛔ Deliberately NOT in `TIMED_PUBLIC_METHODS`, and therefore deliberately safe for a
+        subclass to override by this name — the opposite of the rule that tuple states, because
+        the reason behind that rule does not reach here. `STORE_QUERY_METRIC` attributes cost on
+        the QUERY path, and its legs exist so an operator can see what fusion costs; this runs at
+        calibration time over a whole generation and would put 30 ms full-slice scans into a
+        distribution that is read as serving latency. If a timer is ever wanted here it needs its
+        own leg in `STORE_QUERY_LEGS`, not one of the serving ones — and at that point this method
+        must gain a private `_top_cosine` twin and move into `TIMED_PUBLIC_METHODS`, or
+        `GenerationStore`'s override silently drops the series for the third time.
+        """
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT 1 - min(embedding <=> %(vec)s) FROM {self._table} "
+                "WHERE tenant_id = %(tenant)s",
+                {"vec": Vector(vector), "tenant": self._tenant},
+            ).fetchone()
+        )
+        return 0.0 if row is None or row[0] is None else float(row[0])
+
     def query_sparse(
         self, text: str, k: int, source: str | None = None, vec: list[float] | None = None
     ) -> list[ScoredChunk]:
@@ -1528,6 +1784,29 @@ class PgVectorStore:
         return self._rows_to_hits(rows)
 
     # ── Learned sparse (SPLADE) sidecar ──────────────────────────────────────────────────────
+
+    def _scrub_sparse_rows(
+        self, conn: "psycopg.Connection", chunk_table: str, chunk_ids: list[str]
+    ) -> int:
+        """Delete every profile's sidecar rows for chunks that were just removed.
+
+        Same transaction as the chunk delete: the sidecar holds partially reconstructable
+        content (term weights over a 30,522-term vocabulary), so a commit that removes the
+        chunk and strands its weights is an erasure that did not happen. `profile_id` is
+        deliberately absent from the WHERE — a dead chunk's rows die under every profile.
+        Tenant-filtered, so unlike `drop_table`'s DELETE this is RLS-safe under a
+        non-BYPASSRLS role. `chunk_table` travels as a bound VALUE: it is a column value in
+        the sidecar, never an identifier here.
+        """
+        if not chunk_ids:
+            return 0
+        sidecar = conn.execute("SELECT to_regclass(%s)", (SPARSE_TABLE,)).fetchone()
+        if not (sidecar and sidecar[0]):
+            return 0  # pre-0012 install: no sidecar exists to scrub
+        statement = psycopg.sql.SQL(
+            "DELETE FROM {} WHERE tenant_id = %s AND chunk_table = %s AND id = ANY(%s)"
+        ).format(psycopg.sql.Identifier(SPARSE_TABLE))
+        return conn.execute(statement, (self._tenant, chunk_table, chunk_ids)).rowcount or 0
 
     def upsert_sparse(self, profile_id: str, vectors: dict[str, dict[int, float]]) -> int:
         """Write learned sparse vectors for `vectors`' chunk ids under `profile_id`.
@@ -1762,6 +2041,18 @@ class PgVectorStore:
     ) -> int:
         """Atomically replace every row of `sources` with the given chunks.
 
+        ⛔ **A second delete, by `(project, root-relative file)`, reaches what `sources` cannot.**
+        Deleting by absolute path alone left the previous rows in place whenever the same file was
+        re-indexed from a different root, so the new chunks landed BESIDE the old ones rather than
+        over them. Measured on a live corpus: 452 duplicate rows in one project and 615 in another.
+        The two keys are ORed, never substituted, so this can only remove more, never less.
+
+        The identity is derived from `chunks` rather than passed in. Two reasons, and the second is
+        the one that changed the design: the rows deleted and the rows inserted then cannot describe
+        different files, because they come from one list; and a keyword argument here broke five
+        test doubles in three files, which is what an interface implemented in many places does when
+        it grows a parameter the callee could work out for itself.
+
         Delete + insert run in ONE transaction: a failure (or a concurrent reader) never
         observes the sources deleted without their replacement rows. Callers must compute
         `embeddings` BEFORE calling — an embedding failure then leaves the old rows intact.
@@ -1777,6 +2068,7 @@ class PgVectorStore:
                 # there is no conflict and the re-inserted chunk would claim it was first written
                 # now. That is the whole re-index defect, and this is the path that causes it.
                 preserved: dict[str, datetime] = {}
+                removed_ids: set[str] = set()
                 if sources:
                     # COALESCE to the row's OWN `indexed_at`, not `now()`. Two bugs deep here.
                     # First: a NULL key was still PRESENT, so the restore wrote that NULL back
@@ -1797,11 +2089,36 @@ class PgVectorStore:
                         ).fetchall()
                         if first is not None
                     }
-                    conn.execute(
-                        f"DELETE FROM {self._table} "
-                        f"WHERE tenant_id = %s AND source = ANY(%s)",
-                        (self._tenant, sources),
+                    removed_ids.update(
+                        row[0]
+                        for row in conn.execute(
+                            f"DELETE FROM {self._table} "
+                            f"WHERE tenant_id = %s AND source = ANY(%s) RETURNING id",
+                            (self._tenant, sources),
+                        ).fetchall()
                     )
+                identity_project, identity_files = _chunk_identity(chunks)
+                if identity_project and identity_files:
+                    # Same transaction as the insert below, so a reader never sees the old rows
+                    # gone without their replacement. The project is a scalar because one index run
+                    # carries one project; PostgreSQL also refuses an anonymous composite as a
+                    # bound parameter, so the pair was never an option.
+                    removed_ids.update(
+                        row[0]
+                        for row in conn.execute(
+                            f"DELETE FROM {self._table} "
+                            f"WHERE tenant_id = %s AND metadata->>'project' = %s "
+                            f"AND metadata->>'file' = ANY(%s) RETURNING id",
+                            (self._tenant, identity_project, identity_files),
+                        ).fetchall()
+                    )
+                # Before the upsert: a re-inserted chunk id's old sparse vector is stale for the
+                # new text anyway, and the indexer's sparse hook re-encodes in the same run when
+                # an encoder is configured. Re-indexing WITHOUT an encoder therefore shrinks
+                # sidecar coverage, and `assert_sparse_coverage` refuses loudly (undercount)
+                # instead of silently serving stale vectors for changed text — the intended
+                # direction.
+                self._scrub_sparse_rows(conn, self._table, sorted(removed_ids))
                 if chunks:
                     self._upsert_in(conn, chunks, embeddings)  # savepoint, same commit
                     restore = [
@@ -1833,20 +2150,33 @@ class PgVectorStore:
         """Delete every chunk belonging to the given `source` values; returns rows removed.
 
         Standalone removal API (the Indexer uses the atomic `replace_sources` instead).
+
+        ⚠️ The returned count can UNDERCOUNT after a reconnect-retry. The delete and its sidecar
+        scrub now share a transaction whose COMMIT runs inside the retried op, so a connection
+        lost at commit time has an indeterminate outcome: the retry re-runs, finds the rows
+        already gone, and returns 0 for an erasure that in fact happened. On the right-to-erasure
+        path the deletion is still real; only the receipt may say fewer rows than it removed.
         """
         if not sources:
             return 0
         self._supersession_cache = None
-        # Read `rowcount` INSIDE the borrow, not from an escaped cursor: in pooled mode
-        # `_with_retry` returns from within `with self._pool.connection()`, so a returned cursor
-        # outlives its lease and belongs to a connection another thread may already hold.
-        return self._with_retry(
-            lambda conn: conn.execute(
-                f"DELETE FROM {self._table} WHERE tenant_id = %s AND source = ANY(%s)",
-                (self._tenant, sources),
-            ).rowcount
-            or 0
-        )
+
+        # An explicit transaction, where a single statement used to suffice: the chunk delete
+        # and the sidecar scrub MUST share one commit, or a failure between them leaves term
+        # weights for text the caller was told is gone. The row count is computed inside the
+        # borrow for the reason the old comment gave: in pooled mode `_with_retry` returns from
+        # within `with self._pool.connection()`, so nothing from the cursor may escape it.
+        def _op(conn: "psycopg.Connection") -> int:
+            with conn.transaction():
+                rows = conn.execute(
+                    f"DELETE FROM {self._table} "
+                    f"WHERE tenant_id = %s AND source = ANY(%s) RETURNING id",
+                    (self._tenant, sources),
+                ).fetchall()
+                self._scrub_sparse_rows(conn, self._table, [row[0] for row in rows])
+                return len(rows)
+
+        return self._with_retry(_op)
 
     def delete_sources_across(self, tables: list[str], sources: list[str]) -> int:
         """Atomically erase tenant sources from active and shadow generation tables."""
@@ -1870,10 +2200,15 @@ class PgVectorStore:
             removed = 0
             with conn.transaction():
                 for table in unique_tables:
-                    removed += conn.execute(
-                        f"DELETE FROM {table} WHERE tenant_id = %s AND source = ANY(%s)",
+                    rows = conn.execute(
+                        f"DELETE FROM {table} "
+                        f"WHERE tenant_id = %s AND source = ANY(%s) RETURNING id",
                         (self._tenant, sources),
-                    ).rowcount or 0
+                    ).fetchall()
+                    # Under THAT table's name: the sidecar keys shadow-table rows by the
+                    # chunk_table column, so each table scrubs its own.
+                    self._scrub_sparse_rows(conn, table, [row[0] for row in rows])
+                    removed += len(rows)
             return removed
 
         return self._with_retry(_op)
@@ -2097,6 +2432,33 @@ class PgVectorStore:
                 if source not in bucket:
                     bucket.append(source)
         return resolved
+
+    def project_file_hashes(self, project: str) -> dict[str, str]:
+        """`{root-relative file: content hash}` for one declared project.
+
+        ⛔ **Machine-independent, which `source` is not.** `source_content_hashes` keys on the
+        absolute path, so the same memo indexed from `/home/.../memory/acme/note.md` and from
+        `C:\\Users\\...\\memstores\\acme\\note.md` looks like two different files: the skip test
+        misses, every file is re-embedded, and `replace_sources` deletes nothing because it too
+        keys on `source`. Measured on a live corpus: 452 duplicate rows in one project, 615 in
+        another, and a search returning the same chunk twice.
+
+        Scoped to a DECLARED project. Without one, two roots indexed into a single tenant may be
+        different corpora that happen to share relative paths, and merging them is not a guess this
+        layer may make. `metadata->>'file'` is already the root-relative path and already documents
+        itself as the thing that identifies a file; it simply was not what the decisions used.
+        """
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT DISTINCT metadata->>'file', "
+                f"coalesce(metadata->>'index_fingerprint', metadata->>'content_hash', '') "
+                f"FROM {self._table} "
+                f"WHERE tenant_id = %s AND metadata->>'project' = %s "
+                f"AND metadata->>'file' IS NOT NULL",
+                (self._tenant, project),
+            ).fetchall()
+        )
+        return {name: digest for name, digest in rows}
 
     def source_content_hashes(self) -> dict[str, str]:
         """`{source: content_hash}` for this tenant — what the indexer compares against.

@@ -8,9 +8,14 @@ Two things here are load-bearing and easy to get subtly wrong:
   order comes from `BEAM_QUESTION_TYPES` in the vendored `prompts.py`, which is why that dict is
   imported instead of being re-listed: one source of truth for the order means the join cannot
   silently shift by one.
-- **Reading the parquet without pandas.** `datasets.load_dataset` pulls pandas in, and pandas is
-  DLL-blocked on this machine. pyarrow reads the identical file. `--data` therefore points at a
-  parquet path (or at a pre-converted JSON), never at a HuggingFace loader.
+- **Reading the parquet without pandas.** `datasets.load_dataset` pulls in pandas and a network
+  fetch; pyarrow reads the identical file directly, with no loader script and no download.
+  `--data` therefore points at a parquet path (or at a pre-converted JSON), never at a
+  HuggingFace loader.
+
+  🔁 Corrected 2026-08-23: the reason recorded here used to be "pandas is DLL-blocked on this
+  machine". It is not, and `pandas 3.0.3` imports fine. The design is unchanged and still right,
+  for the plainer reason above; only the justification was wrong.
 """
 from __future__ import annotations
 

@@ -129,7 +129,7 @@ class GenerationResult:
     citations_normalized: bool = False
 
 
-class EvidenceValidationError(ValueError):
+class EvidenceValidationError(ValueError, RecallError):
     """A generator returned malformed or structurally unsupported output."""
 
 

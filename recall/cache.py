@@ -110,10 +110,26 @@ def embed_with_cache(
     miss_idx = [i for i, r in enumerate(results) if r is None]
     if miss_idx:
         fresh = _embed([texts[i] for i in miss_idx])
+        if len(fresh) != len(miss_idx):
+            # A hosted embedder dropping one item used to be absorbed here: the unstrict zip
+            # left the unfilled slot as None and the filter below removed it, so the caller
+            # got N-1 vectors for N texts and the misalignment surfaced two layers later as a
+            # cryptic length mismatch — after the embedding spend. Name the fault at its
+            # source instead.
+            raise RuntimeError(
+                f"embedder {embedder.name!r} returned {len(fresh)} vectors for "
+                f"{len(miss_idx)} texts; the Embedder contract is one vector per input"
+            )
         for i, vec in zip(miss_idx, fresh):
             results[i] = vec
             cache.put(keys[i], vec)
-    return [r for r in results if r is not None]
+    filled = [r for r in results if r is not None]
+    if len(filled) != len(texts):
+        raise RuntimeError(
+            f"embedding cache produced {len(filled)} vectors for {len(texts)} texts; "
+            f"a cache hit vanished mid-call"
+        )
+    return filled
 
 
 def embed_query_with_cache(

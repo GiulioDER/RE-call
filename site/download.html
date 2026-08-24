@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Download · RE-call installer (beta)</title>
+<meta name="description" content="Download the RE-call installation wizard for Windows. A beta build, offered to beta testers who are willing to say what happened when they ran it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
+<script src="translate.js" defer></script>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="index.html"><img class="wordmark-mark" src="assets/re_call_logo.png" alt=""><span class="wordmark-name">RE-call</span><span>Setup</span></a>
+    <nav>
+      <a href="download.html" aria-current="page">Download</a>
+      <a href="readme.html">README</a>
+      <a href="start.html">Install</a>
+      <a href="corpus.html">Your memory</a>
+      <a href="claude-code.html">Claude Code</a>
+      <a href="calibration.html">Calibration</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <a href="blog/index.html">Blog</a>
+    </nav>
+    <div class="language-control" data-translate-control>
+      <label for="site-language">Language</label>
+      <select id="site-language" aria-describedby="site-translation-status">
+        <option value="english" data-html-lang="en">English</option>
+        <option value="italian" data-html-lang="it">Italiano</option>
+        <option value="spanish" data-html-lang="es">Español</option>
+        <option value="french" data-html-lang="fr">Français</option>
+        <option value="german" data-html-lang="de">Deutsch</option>
+        <option value="portuguese" data-html-lang="pt">Português</option>
+        <option value="chinese_simplified" data-html-lang="zh-CN">简体中文</option>
+        <option value="japanese" data-html-lang="ja">日本語</option>
+        <option value="korean" data-html-lang="ko">한국어</option>
+        <option value="russian" data-html-lang="ru">Русский</option>
+        <option value="arabic" data-html-lang="ar">العربية</option>
+        <option value="hindi" data-html-lang="hi">हिन्दी</option>
+        <option value="turkish" data-html-lang="tr">Türkçe</option>
+      </select>
+      <span id="site-translation-status" class="translation-status translation-status--sr" role="status" aria-live="polite">English source</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ============================================================ Hero -->
+<section class="hero">
+  <img class="hero-logo" src="assets/re_call_logo.png" alt="">
+  <div class="shell hero-inner">
+    <p class="eyebrow eyebrow--signal">Beta · Windows</p>
+    <h1>The installer wizard, for people who would rather not open a terminal.</h1>
+    <hr class="rule">
+    <p class="hero-lede">One window asks a short list of questions, then builds the database, the index and the Claude Code wiring while you watch it happen. This is a beta, and I am looking for testers who will tell me how it went.</p>
+    <div class="hero-actions">
+      <a class="button" href="https://github.com/GiulioDER/RE-call/releases/download/v0.9.8/recall-install-0.9.8-windows-x64-UNSIGNED.zip">Download for Windows</a>
+      <a class="button-ghost" href="https://github.com/GiulioDER/RE-call/releases">All releases</a>
+    </div>
+  </div>
+  <div class="shell hero-meta">
+    <span>Version <b>0.9.8</b></span>
+    <span>Windows <b>10 · 11</b>, 64-bit</span>
+    <span>Download <b>131 MB</b></span>
+    <span>Not <b>code signed</b></span>
+  </div>
+</section>
+
+<!-- ============================================================ The previous build -->
+<section class="band" id="previous-build">
+  <div class="shell" data-reveal>
+    <div class="notice">
+      <p class="notice-title">If you tried 0.9.7 and nothing happened, that was not your machine</p>
+      <p>The first build published here could not start. It printed <code>QWidget: Must construct a QApplication before a QWidget</code> and the process was gone: no window, no error dialog. Every copy did it, on every machine, and the cause was one line in the launch path that built the window before the Qt application object it needs existed.</p>
+      <p>0.9.8 fixes it, and the check that let it through is fixed too. The build test used to start the window in an order the shipped program never used, so it passed on a bundle that killed itself on launch. It now goes through the same launch path the exe does, and a second test starts the real program in a fresh process and fails on the exit code. That test is red against the build you downloaded.</p>
+      <p class="muted">That download has been deleted from the 0.9.7 release, so the link no longer resolves anywhere. If you already have the zip, delete it: it cannot be made to work.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ What beta means -->
+<section class="band" id="beta">
+  <div class="shell split" data-reveal>
+    <div>
+      <p class="eyebrow">What beta means here</p>
+      <h2>It has never been installed by anyone who did not write it.</h2>
+      <p>The build is checked on every change by a hosted Windows runner, and 0.9.7 shows exactly how much that is worth. The check proved the bundle was complete, because that is what it was written to prove, and it started the window in an order the shipped entry point never used. So it passed on a build that killed itself on launch. The check now goes through the same launch path the exe does.</p>
+      <p>That is the honest version of what beta means here. What no test covers is the part I want to hear about: whether the questions made sense, whether the folder it suggested was the folder you wanted, whether anything sat there saying nothing for long enough that you thought it had died.</p>
+    </div>
+    <div>
+      <p class="eyebrow eyebrow--signal">What I would like back</p>
+      <ul class="plain-list">
+        <li>Did it start at all, or did Windows refuse to run it.</li>
+        <li>Which question you had to stop and think about.</li>
+        <li>How long the install took, and where it felt stuck.</li>
+        <li>What it wrote, and whether you could find it afterwards.</li>
+        <li>Anything you expected it to ask and it did not.</li>
+      </ul>
+      <p class="muted">A one line "it worked, took eleven minutes" is worth having. So is "I gave up at the second screen", and that one is worth more.</p>
+      <a class="button" href="https://github.com/GiulioDER/RE-call/issues/new?title=%5Binstaller%20beta%5D%20&amp;body=Windows%20version%3A%0A%0ADid%20it%20start%2C%20or%20was%20it%20blocked%3F%0A%0AHow%20far%20did%20the%20wizard%20get%3F%0A%0AWhat%20happened%2C%20and%20what%20did%20you%20expect%20instead%3F%0A">Send feedback on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ The file -->
+<section class="band--tight" data-reveal>
+  <dl class="facts">
+    <div class="fact">
+      <dt>File</dt>
+      <dd>A zip<small>Unpacks to a folder holding recall-install.exe</small></dd>
+    </div>
+    <div class="fact">
+      <dt>Size</dt>
+      <dd>131 MB<small>278 MB once unpacked</small></dd>
+    </div>
+    <div class="fact">
+      <dt>Python</dt>
+      <dd>Not needed<small>The runtime is inside the bundle</small></dd>
+    </div>
+    <div class="fact">
+      <dt>Licence</dt>
+      <dd>Apache 2.0<small>Free for commercial use</small></dd>
+    </div>
+  </dl>
+</section>
+
+<!-- ============================================================ Signature -->
+<section class="band band--tint" id="unsigned">
+  <div class="shell" data-reveal>
+    <div class="section-head">
+      <p class="eyebrow">Read this before you download</p>
+      <h2>This build carries no signature, and on some machines Windows will not run it.</h2>
+      <p class="muted">The filename says UNSIGNED, because that is the one warning a download page can give you that you cannot miss. Here is what it means, and how to find out which case you are in before spending 131 MB.</p>
+    </div>
+
+    <div class="notice notice--signal">
+      <p class="notice-title">Two different refusals, and only one of them can be clicked past</p>
+      <p><b>SmartScreen</b> shows a blue box saying Windows protected your PC. That one has a <b>More info</b> link, and under it a <b>Run anyway</b> button. This is the common case.</p>
+      <p><b>Smart App Control</b> is stricter. Where it is enforced it blocks an unsigned executable outright, with an application control policy message and no way through. Nothing you click will start the installer, and the way in is the <a href="start.html">terminal install</a>, which is unaffected.</p>
+    </div>
+
+    <p>Ask Windows which case you are in. Run this in PowerShell before downloading anything. It only reads a registry value.</p>
+
+    <div class="terminal terminal--command" data-shell="powershell">
+      <div class="terminal-bar">
+        <span class="terminal-label">PowerShell</span>
+        <button class="copy-button" type="button">Copy</button>
+      </div>
+      <div class="terminal-body"><pre><span class="line">Get-ItemPropertyValue -Path HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy -Name VerifiedAndReputablePolicyState</span></pre></div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>What comes back</th><th>What it means</th><th>What to do</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>0</code>, or an error saying the property does not exist</td>
+            <td>Smart App Control is off, or this build of Windows does not have it.</td>
+            <td>Download it. Expect a SmartScreen warning you can click past.</td>
+          </tr>
+          <tr>
+            <td><code>2</code></td>
+            <td>Evaluation mode. It is watching rather than blocking.</td>
+            <td>Download it. Same SmartScreen warning.</td>
+          </tr>
+          <tr>
+            <td><code>1</code></td>
+            <td>Enforced. An unsigned executable is blocked, not warned about.</td>
+            <td>Do not spend the download. Use the <a href="start.html">terminal install</a> instead.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <details class="why">
+      <summary>Why publish something Windows might refuse to run</summary>
+      <div class="why-body">
+        <p>Because a signing certificate for an open source project is granted on the strength of a release that already exists, and this is that release. The build pipeline is already wired for signing and refuses to publish an unsigned artifact from a tag: this one exists only because the bootstrap case was deliberately allowed on a manual run, and the filename says so.</p>
+        <p>A signature here is not decoration. Microsoft's documentation says Smart App Control will still run an app it cannot otherwise vouch for when it is signed by a certificate authority in the Trusted Root Program, which is what makes a first release runnable rather than leaving it to accumulate a reputation it can never start earning. Signed builds are the point of the next release, not a later polish.</p>
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- ============================================================ Before you run it -->
+<section class="band" id="requirements">
+  <div class="shell" data-reveal>
+    <div class="section-head">
+      <p class="eyebrow">What it needs from your machine</p>
+      <h2>Docker, memory, and not much else.</h2>
+      <p class="muted">The installer measures all of this and names what is missing before it starts, so this list is here to save you the download rather than to be checked by hand.</p>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>What</th><th>Why</th><th>If it is missing</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Windows 10 or 11, 64-bit</td>
+            <td>The bundle is built for x64. There is no ARM or 32-bit build.</td>
+            <td>Nothing to do about it here. The <a href="start.html">terminal install</a> runs anywhere Python does.</td>
+          </tr>
+          <tr>
+            <td>Docker Desktop, running</td>
+            <td>Your memory lives in PostgreSQL with pgvector, and the installer runs that as a container.</td>
+            <td>It says so and stops. Installing Docker Desktop does not start it: launch it once and let it finish starting.</td>
+          </tr>
+          <tr>
+            <td>4 GB of RAM</td>
+            <td>PostgreSQL and an embedding model have to fit at the same time. Below this the install is refused rather than warned about.</td>
+            <td>8 GB is where the heavier options become available.</td>
+          </tr>
+          <tr>
+            <td>Hardware virtualization</td>
+            <td>Docker Desktop cannot start without it.</td>
+            <td>It is a firmware setting, called VT-x or AMD-V. The installer names it if it finds it disabled.</td>
+          </tr>
+          <tr>
+            <td>A few GB of free disk</td>
+            <td>The unpacked application, a PostgreSQL image, and a small embedding model downloaded once.</td>
+            <td>Nothing is written outside the folder you choose and Docker's own storage.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="notice">
+      <p class="notice-title">You do not need Python</p>
+      <p>This is the one difference from the <a href="start.html">full install</a>. The interpreter, the database driver and the embedding runtime are all inside the bundle, which is why it is 131 MB rather than a few hundred kilobytes.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ Running it -->
+<section class="band band--tint" id="running">
+  <div class="shell" data-reveal>
+    <div class="section-head">
+      <p class="eyebrow">What happens when you run it</p>
+      <h2>Two screens, and a file you keep.</h2>
+    </div>
+
+    <div class="split">
+      <div>
+        <p><b>Unpack it first.</b> Run <code>recall-install.exe</code> from the unpacked folder, not from inside the zip: the application needs the folder that sits beside it.</p>
+        <p><b>The first screen is a form.</b> Every question has an answer filled in already, and on a first install the defaults are the right answers. A folder question gets a Browse button. A connection string, if you have your own PostgreSQL and choose to use it, gets a Test button that checks it before the install rather than during it.</p>
+        <p><b>The second screen builds.</b> It brings up the database, applies the schema, indexes each of your three folders, and calibrates what can be calibrated. That takes minutes rather than seconds, and it streams a log while it works, because a window that goes quiet reads as a window that has crashed.</p>
+        <p><b>Your answers are saved as a configuration file</b>, and it is that file which runs. The path is on screen before anything is built. You can re-run it, put it in CI, or hand it to a colleague and get the same install.</p>
+      </div>
+      <div>
+        <p class="eyebrow eyebrow--signal">What it asks you</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Question</th><th>Answer on a first install</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Project name</td><td>Anything. It labels every chunk.</td></tr>
+              <tr><td>Which embedder</td><td><code>fastembed</code>, which runs on your own machine.</td></tr>
+              <tr><td>Where the database should live</td><td>Let it make one in Docker.</td></tr>
+              <tr><td>Where to keep its data</td><td>The suggested folder.</td></tr>
+              <tr><td>Documents folder</td><td>The suggestion. An empty folder is fine.</td></tr>
+              <tr><td>Code folder</td><td>The suggestion.</td></tr>
+              <tr><td>Agent memory folder</td><td>The suggestion.</td></tr>
+              <tr><td>Which project to wire Claude Code into</td><td>A project folder, or leave it blank to skip.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="muted">A connection string is asked for only if you say you already have a PostgreSQL, which is why that row is not in the list above.</p>
+      </div>
+    </div>
+
+    <p class="escape">Rather do it by hand, or on macOS and Linux? <a href="start.html">The full install</a> gets to the same place.</p>
+  </div>
+</section>
+
+<!-- ============================================================ Verify -->
+<section class="band" id="verify">
+  <div class="shell" data-reveal>
+    <div class="section-head">
+      <p class="eyebrow">Optional, and reasonable</p>
+      <h2>Check that you got the file I published.</h2>
+      <p class="muted">An unsigned download is exactly the sort of thing worth checking a hash on. This is the SHA-256 GitHub recorded for the asset, and it matches the hash I took of the file before uploading it.</p>
+    </div>
+
+    <div class="terminal terminal--command" data-shell="powershell">
+      <div class="terminal-bar">
+        <span class="terminal-label">PowerShell</span>
+        <button class="copy-button" type="button">Copy</button>
+      </div>
+      <div class="terminal-body"><pre><span class="line">Get-FileHash .\recall-install-0.9.8-windows-x64-UNSIGNED.zip -Algorithm SHA256</span></pre></div>
+    </div>
+
+    <div class="checkpoint">
+      <p class="checkpoint-title">The hash should be</p>
+      <div class="terminal terminal--output">
+        <div class="terminal-bar"><span class="terminal-label">Output</span></div>
+        <div class="terminal-body"><pre><span class="ok">812fc9f85c6c2e40ecb4d8c2e6e66611fd04f20ebfb14840850ef5da57df96a3</span></pre></div>
+      </div>
+      <p class="muted" style="font-size: 0.9375rem;">PowerShell prints it in capitals. Case is not part of the value.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ Feedback -->
+<section class="band band--tint" id="feedback">
+  <div class="shell" data-reveal>
+    <div class="section-head">
+      <p class="eyebrow">The reason this page exists</p>
+      <h2>I am looking for beta testers, and the comments are the whole point.</h2>
+      <p class="muted">Open an issue on GitHub. The link below opens one with the questions already in it, and you can delete any that do not apply.</p>
+    </div>
+
+    <div class="split">
+      <div>
+        <p class="eyebrow eyebrow--signal">Most useful to me</p>
+        <ul class="plain-list">
+          <li>The exact text of anything Windows said when you ran it.</li>
+          <li>Your Windows version, and whether Smart App Control is on.</li>
+          <li>The last line the log printed before it stopped, if it stopped.</li>
+          <li>The wording of any question you had to read twice.</li>
+        </ul>
+      </div>
+      <div>
+        <p class="eyebrow">Least useful, and still welcome</p>
+        <p>An install that simply worked. That tells me the path is real on a machine which is not mine, and no amount of testing on my own machine can establish it.</p>
+        <p>Please do not paste a connection string into an issue. The installer scrubs passwords out of its own error messages for this reason, and a screenshot of a filled in form does not scrub itself.</p>
+      </div>
+    </div>
+
+    <div class="hero-actions" style="margin-top: 2rem;">
+      <a class="button" href="https://github.com/GiulioDER/RE-call/issues/new?title=%5Binstaller%20beta%5D%20&amp;body=Windows%20version%3A%0A%0ADid%20it%20start%2C%20or%20was%20it%20blocked%3F%0A%0AHow%20far%20did%20the%20wizard%20get%3F%0A%0AWhat%20happened%2C%20and%20what%20did%20you%20expect%20instead%3F%0A">Open a feedback issue</a>
+      <a class="button-ghost" href="troubleshooting.html">Troubleshooting first</a>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ Closer -->
+<section class="closer">
+  <div class="shell-narrow" data-reveal>
+    <h2>Download it, run it, tell me what happened.</h2>
+    <p>Version 0.9.8, Windows 64-bit, 131 MB, no signature yet.</p>
+    <a class="button" href="https://github.com/GiulioDER/RE-call/releases/download/v0.9.8/recall-install-0.9.8-windows-x64-UNSIGNED.zip">Download for Windows</a>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="shell footer-inner">
+    <nav>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+      <a href="https://github.com/GiulioDER/RE-call/releases">Releases</a>
+      <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
+    </nav>
+    <small>Apache 2.0</small>
+  </div>
+</footer>
+
+</body>
+</html>

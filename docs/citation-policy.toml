@@ -1,0 +1,145 @@
+# Which `path:line` citations `scripts/check_doc_citations.py` may demand be current.
+#
+# This file lives OUTSIDE the documents it describes, and that is the whole point. Every entry
+# below names a document whose citations must NOT be updated, so recording the policy inside those
+# documents would require editing exactly the records that exist in order to stay unedited.
+#
+# Add an entry when a document's citations are deliberately anchored to a moment rather than to the
+# tree. Do not add one to silence a real failure: the checker reports where each anchor actually
+# moved to, and copying that number in is almost always the correct repair.
+
+# Archived records. Their citations are part of the history they preserve.
+[[exempt]]
+path = "docs/archive/*"
+reason = "archived records; their citations are the history, not pointers into the current tree"
+
+# A pre-registration with TWO zones, which is the case that makes this file necessary rather than
+# merely tidy. Above its line-number rule the citations are frozen, in the document's own words,
+# "because a prediction is a historical record and must not be edited"; it tracks their drift in a
+# separate note below the rule instead. Below the rule they are re measured on every edit, so those
+# are checked normally.
+#
+# The marker is matched as a line PREFIX. If it ever stops matching, the checker refuses the file
+# loudly rather than quietly checking a frozen zone or quietly skipping a live one.
+# 🔁 **Promoted to a whole-file exemption on 2026-08-22, because two rules disagreed about one
+# line and only one of them can be satisfied without editing a record.**
+#
+# The document's own rule says citations below it are re-measured whenever the file is edited. The
+# standing rule says never to edit a number in a committed pre-registration, names `path:line`
+# citations specifically, and says a gate demanding such an edit is the thing that is wrong.
+#
+# The line the checker flagged is a CORRECTION NOTE, not a live pointer: it records that a frozen
+# citation above the rule, `recall/index.py:707`, had moved to `:861` "at the time of writing".
+# Repointing 861 would edit the observation rather than refresh a reference, and the phrase that
+# dates it is the entire content of the sentence.
+#
+# Reversible in one line if the document's re-measure rule is meant to win: drop this entry, restore
+# the `frozen_above` below, and update the number.
+#
+#   [[frozen_above]]
+#   path = "docs/preregistrations/2026-08-18-uncalibrated-first-run.md"
+#   marker = "## A note on line numbers in every result below"
+#   reason = "citations above this rule are registered predictions and are never updated"
+[[exempt]]
+path = "docs/preregistrations/2026-08-18-uncalibrated-first-run.md"
+reason = "predictions above the rule, and a dated correction note below it"
+
+# The sibling of the entry above, and the same two zones.
+#
+# WHY THIS IS ONE ENTRY AND NOT A PREFIX RULE. `scripts/check_citation_anchors.py` already freezes
+# this document, and every other one here, through `FROZEN_PREFIXES = ("docs/archive/",
+# "docs/preregistrations/")`. `scripts/check_doc_citations.py` freezes only what this file names, so
+# the two checkers disagree about a whole directory. That gap is not theoretical: it is why #395 had
+# to repoint five citations in this document, four of them above "## Result" and one inside "What I
+# predict", to keep the line checker green. The anchor checker never asked for that edit and its own
+# comments explain why no gate should be able to: "a gate must never be able to force an edit to an
+# immutable record."
+#
+# This entry closes the gap for the one document that has actually been bitten. Teaching
+# `check_doc_citations.py` the same directory prefix would close it for all of them and is the
+# better fix; it is a change to that checker rather than to this list, so it is not made here.
+#
+# It reverts nothing. The numbers #395 wrote are correct for the current tree and are what this
+# freezes. The point is that the NEXT shift must not edit a prediction to stay green.
+# 🔁 **Promoted from `frozen_above` to a whole-file exemption on 2026-08-22, because the marker
+# stopped fitting the document.** The result section this file appended contains a table headed
+# `Cited | Was | Is now`, and the FIRST column is the citation as it stood when the drift was
+# recorded. `check_doc_citations.py` flagged `recall/index.py:787` there. Repointing it would
+# destroy exactly what the row exists to preserve, and the row sits BELOW `## Result`, so the
+# marker did not protect it.
+#
+# The live zone the marker was defending is now that table, and a table of historical pointers is
+# not something to keep live. The old entry is left below, commented, because the reason it stopped
+# working is more useful than its absence.
+#
+#   [[frozen_above]]
+#   path = "docs/preregistrations/2026-08-18-extraction-attestation.md"
+#   marker = "## Result"
+#   reason = "citations above the result are registered predictions and are never updated"
+[[exempt]]
+path = "docs/preregistrations/2026-08-18-extraction-attestation.md"
+reason = "predictions above the result, and a historical Cited/Was/Is-now table below it"
+
+# Pre-registrations whose citations are part of the registered record.
+#
+# A pre-registration is evidence of what was true and what was believed WHEN IT WAS WRITTEN, and its
+# citations are part of that evidence. A record that gets silently repointed whenever the tree moves
+# under it cannot be used to show what anyone believed beforehand, so the stale pointer is the more
+# informative artefact. This is a standing rule, and its consequence for tooling is the reason this
+# file exists: a gate must never be able to force an edit to a prediction. If the checker demands one,
+# the checker gets an exemption and the record is left alone.
+#
+# Both were flagged by a change that shifted `recall/cli.py` and `recall/eval/synthetic.py`, not by
+# anything wrong with the documents.
+#
+# ⚠️ These are whole-file entries and NOT a blanket `docs/preregistrations/*`, deliberately. The
+# `frozen_above` entry above describes a pre-registration that re-measures the citations below its
+# rule on every edit, and a blanket exemption would stop checking that live zone. Appending a result
+# is legitimate editing; repointing a prediction is not.
+[[exempt]]
+path = "docs/preregistrations/2026-08-16-generated-calibration-query-sets.md"
+reason = "registered predictions and their citations; never repointed after measuring"
+
+[[exempt]]
+path = "docs/preregistrations/2026-08-18-the-core-bind.md"
+reason = "registered predictions and their citations; never repointed after measuring"
+
+# Citations into a DIFFERENT repository. `docs/their-harness-parity.md` documents the seam in a
+# third party evaluation harness, and two of its paths (`benchmarks/locomo/run.py`,
+# `benchmarks/beam/run.py`) happen to collide with paths in this tree. Resolving them here compares
+# a citation against a file it was never about, which produced exactly that false report when this
+# checker was first run. The collision is the reason this entry exists; without it the checker
+# looks confidently wrong.
+[[exempt]]
+path = "docs/their-harness-parity.md"
+reason = "cites a third party harness whose paths collide with this repository's"
+
+# The drift-trigger record, which has the same two zones as the two entries above: registered
+# predictions, then a measured result appended under a rule.
+#
+# It cites `recall/calibration_v2.py:210` and `:161` for `corpus_delta` and `threshold_error_rates`
+# as they stood when the prediction was written. Both have since moved, because the same branch
+# extracted `score_query_set` and `stored_query_set` out of `calibrate` and `carry_forward`. The
+# stale pointer is the more informative artefact: it shows what the tree looked like when the
+# prediction was made, which is exactly what a pre-registration is evidence of.
+[[frozen_above]]
+path = "docs/preregistrations/2026-08-21-calibration-drift-trigger.md"
+marker = "## A note on line numbers below this rule"
+reason = "citations above this rule are registered predictions and are never updated"
+
+# Two citations that are historical even though they sit in a LIVE zone, which is the case no
+# whole-file entry above can express.
+#
+# `2026-08-18-extraction-attestation.md` tracks its own drift below the result marker, in a table
+# whose columns are `Cited | Was | Is now`. The first column is the pointer the PREDICTION
+# registered and must never move; the third is maintained, and the live-zone rule is right about
+# it. Freezing the document would stop checking the maintained column; freezing nothing forces an
+# edit to a registered one. So this freezes the two cells that are the record.
+#
+# Surfaced by a change that added 63 lines to `recall/index.py`. The standing rule it resolves
+# under is stated in `check_doc_citations.py`: a gate must never be able to force an edit to an
+# immutable record.
+[[frozen_citations]]
+path = "docs/preregistrations/2026-08-18-extraction-attestation.md"
+citations = ["recall/index.py:787", "recall/index.py:841"]
+reason = "the 'Cited' column of that document's drift table IS the registered pointer; only 'Is now' is maintained"

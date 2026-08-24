@@ -32,6 +32,7 @@ import random
 import shutil
 from dataclasses import dataclass
 from datetime import date, timedelta
+from importlib import resources
 from pathlib import Path
 
 from recall.index import DEFAULT_MAX_CHARS
@@ -73,21 +74,37 @@ _ASPECTS = [
 #: scored HIGHER than the hardest real one. Any abstention measured on it was meaningless.
 #: Genuinely off-topic questions (how the shipped 14-doc corpus writes them) sit at median 0.570
 #: with 78% below the answerable floor.
-_OFFTOPIC_SUBJECTS = [
-    "penguins in antarctic winters", "sourdough fermentation", "tidal locking of moons",
-    "baroque counterpoint", "sprinting biomechanics", "volcanic ash dispersal",
-    "medieval cathedral acoustics", "honeybee waggle dances", "typography kerning",
-    "deep sea bioluminescence", "alpine glacier retreat", "espresso extraction pressure",
-    "origami crease patterns", "coral spawning cycles", "steam locomotive boilers",
-    "wildfire smoke chemistry", "harpsichord tuning", "monsoon onset timing",
-    "lichen growth rates", "cuneiform tablet translation", "tidewater glacier calving",
-    "saffron harvesting by hand", "gamelan tuning systems", "auroral substorm onset",
-    "papyrus conservation methods",
-]
-_OFFTOPIC_TEMPLATES = [
-    "what explains {s}", "how does {s} actually work", "why is {s} difficult to predict",
-    "what is the leading theory about {s}", "who first described {s}",
-]
+#:
+#: ⚠️ **Loaded from JSON rather than written as literals here, and that is the whole point.** These
+#: subjects are DATA, and as Python literals they were also CORPUS. `offtopic_subjects_absent_from`
+#: keeps a subject only when none of its content words appear anywhere in the corpus under test, so
+#: a code corpus that includes recall's own tree ingested this very list and then disqualified
+#: every one of its 25 subjects. Measured 2026-08-18 over `recall/**/*.py`: 0 of 25 survived, and
+#: removing this one file took it to 12 of 25 (capacity 60 against the 40 the default needs). A
+#: third-party corpus of the same size was unaffected at 11 of 25, so the failure was recall
+#: dogfooding itself, not the pool being too small.
+#:
+#: A `.json` file is not matched by the wizard's `**/*.py` or `**/*.md` globs, which is what keeps
+#: the pool out of the corpora it has to stay disjoint from. After also removing two collisions
+#: found while fixing this (one subject whose anchor word was in `_ADJECTIVES` too, and one that
+#: appeared in a demo query in `cli.py`), the same corpus measures 14 of 25 and capacity 70.
+#:
+#: ⚠️ Neither word is named here, and that is not squeamishness. Naming one puts it back into every
+#: code corpus rooted at this repository and silently disqualifies its subject. I did exactly that
+#: twice while writing this fix: once in a comment in `recall/wizard/queryset.py`, caught only
+#: because the measured survivor count moved the wrong way, and once in THIS paragraph, caught in
+#: seconds by the guard below. Refer to the JSON; do not quote it.
+#:
+#: `tests/test_eval_synthetic.py` holds three guards, and they assert different things on purpose:
+#: capacity stays above `DEFAULT_PER_CLASS`; no word from the `distinctive` field appears anywhere
+#: under `recall/`; and no subject overlaps the generated corpus's own vocabulary. Demanding that
+#: NO subject word appear was tried and is the wrong shape, because `tuning`, `timing`, `patterns`
+#: and `methods` are words any codebase contains.
+_OFFTOPIC_DATA = json.loads(
+    (resources.files("recall.eval") / "offtopic_subjects.json").read_text(encoding="utf-8")
+)
+_OFFTOPIC_SUBJECTS: list[str] = list(_OFFTOPIC_DATA["subjects"])
+_OFFTOPIC_TEMPLATES: list[str] = list(_OFFTOPIC_DATA["templates"])
 
 _INCIDENTS = [
     "the checkout timeout incident", "the stale-quote incident", "the failover drill",

@@ -112,7 +112,7 @@ def test_the_package_surface_does_not_lose_what_it_already_exported() -> None:
 
 def test_the_cli_search_listing_keeps_every_field_it_already_printed(capsys) -> None:
     """Backward compatibility: the existing line format is unchanged."""
-    from recall.cli import _print_result
+    from recall.cli_commands._shared import _print_result
 
     _print_result(_result([_hit(text="the limit is 120 per minute")]))
 
@@ -130,7 +130,7 @@ def test_the_cli_listing_now_names_the_chunk_the_ordinal_and_the_index() -> None
     Six, not five: chunk id, ordinal, valid_from, embedding profile, retrieval profile and
     index generation. An earlier docstring said five over six assertions.
     """
-    from recall.cli import _print_result
+    from recall.cli_commands._shared import _print_result
 
     import io
     import contextlib
@@ -156,7 +156,7 @@ def test_a_corpus_escape_sequence_in_a_chunk_id_does_not_reach_the_terminal(caps
     property of one it does not own. An earlier docstring here claimed the id literally IS
     `<file>#<ord>`; it is not.
     """
-    from recall.cli import _print_result
+    from recall.cli_commands._shared import _print_result
 
     _print_result(_result([_hit(chunk_id="notes\x1b[2K\r.md#0")]))
 
@@ -171,7 +171,7 @@ def test_the_cli_flags_a_degraded_result(capsys) -> None:
     buried in the evidence JSON. Written after a mutation sweep showed that deleting the flag
     changed no test.
     """
-    from recall.cli import _print_result
+    from recall.cli_commands._shared import _print_result
 
     degraded = replace(
         _result([_hit()]), trust_state="degraded", failure_code="CALIBRATION_UNCERTIFIED"
@@ -187,7 +187,7 @@ def test_the_cli_flags_a_degraded_result(capsys) -> None:
 
 def test_the_cli_evidence_json_carries_the_trust_state(capsys) -> None:
     """The bundle is what a generator is built from, so the signal has to be IN it."""
-    from recall.cli import _print_evidence
+    from recall.cli_commands.index_search import _print_evidence
 
     degraded = replace(
         _result([_hit()]), trust_state="degraded", failure_code="CALIBRATION_UNCERTIFIED"
@@ -201,7 +201,7 @@ def test_the_cli_evidence_json_carries_the_trust_state(capsys) -> None:
 
 
 def test_the_cli_can_print_the_evidence_bundle_and_the_prompt_it_renders_to(capsys) -> None:
-    from recall.cli import _print_evidence
+    from recall.cli_commands.index_search import _print_evidence
 
     _print_evidence(_result([_hit(), _hit("notes.md#3", verdict="superseded")]), max_items=5)
 
@@ -219,7 +219,7 @@ def test_the_cli_evidence_output_neutralises_a_terminal_payload(capsys) -> None:
     An operator debugging an injection needs to see the byte that is really in their corpus, so
     this surface escapes instead: `\\u001b` is inert to a terminal and still tells the truth.
     """
-    from recall.cli import _print_evidence
+    from recall.cli_commands.index_search import _print_evidence
 
     _print_evidence(_result([_hit(text="danger\x1b[2K\rgone")]), max_items=5)
 
@@ -652,7 +652,7 @@ def test_a_zero_k_search_does_not_traceback() -> None:
     The clamp added in `_print_evidence` could never run for this invocation, because the library
     raised two calls earlier. Driven end to end rather than asserted on the clamp.
     """
-    import recall.cli as cli
+    import recall.cli_commands._shared as cli
 
     seen: dict[str, int] = {}
 

@@ -272,8 +272,20 @@ def build_generation(
     """Create the generation and build it, leaving it BUILT and awaiting `validate`.
 
     Deliberately stops there. Validation, calibration and promotion are separate steps because
-    their order is load-bearing: promotion gives a generation a fresh corpus fingerprint, so a
-    calibration measured before it becomes `CALIBRATION_STALE` after it.
+    their order is load-bearing.
+
+    🔁 The reason given here was wrong, and this is where the wizard's pipeline copied it from.
+    It said promotion gives a generation a fresh corpus fingerprint, so a calibration measured
+    before it becomes `CALIBRATION_STALE` afterwards. `corpus_fingerprint` is written in exactly
+    two places, `GenerationManager.create` and `forget`; `promote` writes only state, timestamps
+    and the tenant pointer. `CalibrationRepository` explicitly accepts an already-active
+    generation, so calibrating after promotion resolves CERTIFIED. `trust_policy` says the same in
+    its own advice text: `CALIBRATION_STALE` means a rebuild or a privacy erasure moved the
+    fingerprint.
+
+    The real reason promotion is last: it is irreversible, it RETIRES whatever the tenant was
+    serving, and between promotion and a published calibration the tenant is live with nothing
+    bound to it, which resolves `CalibrationStatus.MISSING` and refuses under strict trust.
     """
     # One `chunker_for` call, and the callable and the record it describes come out of the same
     # one. Calling it twice — once through `pipeline_identity` for the record, once for the

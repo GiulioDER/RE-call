@@ -271,3 +271,18 @@ def test_there_is_no_env_var_that_accepts_a_raw_token(tmp_path):
     """
     env = {"RECALL_AUTH_TOKENS": json.dumps(doc())}
     assert token_registry_from_env(env) is None
+
+
+def test_a_digest_entry_is_named_in_the_boot_log_as_length_unverifiable(caplog):
+    """One warning per digest principal, so an operator auditing the boot log sees exactly
+    which tokens carry a length nobody can verify. A plaintext entry stays silent."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        parse_principals(doc(token=None, token_sha256=_sha256_hex(GOOD_TOKEN)))
+    assert any("token_sha256" in rec.message for rec in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        parse_principals(doc(token=GOOD_TOKEN, token_sha256=None))
+    assert not any("token_sha256" in rec.message for rec in caplog.records)

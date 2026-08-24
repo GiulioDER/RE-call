@@ -1,0 +1,25 @@
+{
+  "questions": "C:\\Users\\gde00\\Documents\\recall\\.benchdata\\enterprise-rag-v1.0.0\\questions.jsonl",
+  "questions_sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905",
+  "seed": "366",
+  "dev_fraction": 0.5,
+  "question_types": [
+    "basic",
+    "completeness",
+    "conflicting_info",
+    "constrained",
+    "project_related",
+    "semantic"
+  ],
+  "total": 410,
+  "dev": 198,
+  "confirmation": 212,
+  "counts_by_type": {
+    "basic": 175,
+    "completeness": 20,
+    "conflicting_info": 20,
+    "constrained": 30,
+    "project_related": 40,
+    "semantic": 125
+  }
+}

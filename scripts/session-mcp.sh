@@ -30,6 +30,12 @@ OUT="$ROOT/.mcp.json"
 #   RECALL_DSN=$DSN RECALL_EMBEDDER=fastembed python -m recall.cli index docs
 # Index each tenant SEPARATELY. Re-indexing prunes sources that have vanished from disk, so
 # pointing both corpora at one tenant deletes the other.
+#
+# ⚠️ This is the ONE corpus that is still embedded on this machine, and it is the named exception
+# to "embedding runs on VPS2" (CLAUDE.md). Its database is here, so embedding it there would ship
+# the vectors straight back. It is small; nothing else local should follow its example. The
+# single-writer lock still applies, so a second `recall index` against this corpus refuses rather
+# than interleaving.
 DOGFOOD_DSN="${RECALL_DOGFOOD_DSN:-postgresql://recall:recall@127.0.0.1:5433/recall}"
 
 # The .mcp.json this writes carries secrets. Refuse to create it at all unless the ignore rule is
@@ -182,3 +188,17 @@ with open(out, "w", encoding="utf-8", newline="\n") as fh:
     fh.write("\n")
 print(f"session-mcp: wrote {out} ({len(servers)} servers)")
 PY
+
+# Writing the file is only half of it. A project-scoped server sits at "pending approval" until
+# the CLIENT has recorded the approval for this directory, and a non-interactive session can
+# never answer that prompt. Measured 2026-08-17: 306 tracked projects on this machine, zero with
+# an approved .mcp.json server, while `claude mcp list` reported both recall servers as
+# "⏸ Pending approval" with the file sitting on disk in front of it.
+#
+# So the correct fix for "the servers never load" is not to write the file EARLIER, it is to
+# approve it. Only the names cross into the client config; the definitions and the secrets stay
+# here. See scripts/session_mcp_approve.py for what this deliberately does not do.
+#
+# Never fatal: a session whose servers stay pending is degraded, not stopped.
+python "$ROOT/scripts/session_mcp_approve.py" --root "$ROOT" --from-mcp-json "$OUT" || \
+    echo "session-mcp: approval step failed; servers will stay pending" >&2

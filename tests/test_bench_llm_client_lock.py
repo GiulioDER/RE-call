@@ -55,6 +55,10 @@ import pytest
 from benchmarks.llm import OpenRouterLLM
 from tests.lazy_client_lock_helpers import asserting_lazy_client, built_under_the_lock
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 #: Threads released at once onto one instance. `benchmarks.beam.run` defaults to 8 workers, and
 #: that pool is the deployment this guard exists for.
 WORKERS = 8

@@ -1,13 +1,9 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
-from typing import get_args
-from dataclasses import asdict
-from pathlib import Path
-from typing import TYPE_CHECKING
+from collections.abc import Callable
 
 from recall._env import load_dotenv
 from recall.calibration import Calibration, load_for
@@ -31,18 +27,24 @@ from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.retriever import DocumentExpansionPolicy
 from recall.store import (
+    DEFAULT_TABLE,
     DEFAULT_TENANT,
-    PgVectorStore,
     _env_opt_out,
     require_secure_dsn,
     warn_if_insecure_dsn,
 )
-from recall.trust import terminal_safe, trusted_search
-from recall.types import TrustedResult
-from recall_mcp.translation import provider_from_env, translate_for_display
 
-if TYPE_CHECKING:
-    from recall.reasoning import ReasoningResponse
+from recall.cli_commands import (
+    calibration_cmd,
+    extract_rewrite,
+    generation_cmd,
+    index_search,
+    lint_check,
+    manifest_cmd,
+    reasoning_cmd,
+    schema_cmd,
+    setup_wizard,
+)
 
 # `recall setup` writes its answers to .env, so the file has to be read BEFORE the DSN
 # defaults below are computed from os.environ. Without this the wizard appears to succeed
@@ -891,7 +893,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--table",
-        default="chunks",
+        default=DEFAULT_TABLE,  # imported, not retyped: the wizard compares against it
         help="table to read/write (default: chunks). Use a throwaway name to keep an "
         "experiment out of your real memory index.",
     )
@@ -904,13 +906,21 @@ def main(argv: list[str] | None = None) -> None:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser(
-        "setup", help="run the first install wizard and write a local .env file"
-    ).set_defaults(
-        _opens_db=True  # the wizard connects when the operator accepts the calibrate prompt
-    )
+    # Registration order is the `--help` listing order, so families whose commands are not
+    # adjacent in that listing register in more than one step.
+    setup_wizard.register(sub)
+    schema_cmd.register(sub)
+    manifest_cmd.register(sub)
+    generation_cmd.register(sub)
+    index_search.register(sub)
+    reasoning_cmd.register(sub)
+    extract_rewrite.register(sub)
+    setup_wizard.register_quickstart(sub)
+    index_search.register_demo_code(sub)
+    lint_check.register(sub)
+    calibration_cmd.register(sub)
+    return parser
 
-    p_schema = sub.add_parser("schema", help="inspect or apply versioned database migrations")
 
     p_schema.set_defaults(_opens_db=True)
     p_schema.add_argument(
@@ -1470,6 +1480,14 @@ def main(argv: list[str] | None = None) -> None:
                     "command. Re-run with a DSN carrying a real password, or set "
                     "RECALL_ALLOW_INSECURE_DSN=1 to accept the risk deliberately."
                 ) from exc
+        elif args.cmd == "wizard":
+            # `recall wizard` never contacts `args.dsn`. Every DSN it uses comes from --config, so
+            # checking the global one is wrong in BOTH directions and both were reproduced: a
+            # config naming `recall:recall` against a remote host sailed through unchecked, and a
+            # `--serving-dsn`/RECALL_SERVING_DSN pointing at a remote host refused the command
+            # outright, as a raw PermissionError traceback, before the config was even read. The
+            # real DSNs are checked in the wizard handler, once they exist.
+            pass
         else:
             _require_secure(args.dsn)
     else:
@@ -1477,8 +1495,12 @@ def main(argv: list[str] | None = None) -> None:
 
     # The DDL-owner credential was never checked or even warned about on any path, which is the
     # wrong way round: it is the most privileged DSN this CLI accepts.
+    #
+    # No longer scoped to `schema`. That scoping meant the credential was guarded on exactly one of
+    # the commands that use it, and `generation`, `calibration` and the wizard's own DDL all ran
+    # unchecked. `opens_db` still keeps `schema grants` exempt, since it only prints SQL.
     migration_dsn = getattr(args, "migration_dsn", None)
-    if migration_dsn and opens_db and args.cmd == "schema":  # `opens_db` so grants stays exempt
+    if migration_dsn and opens_db:
         _require_secure(migration_dsn)
 
     if args.cmd == "setup":

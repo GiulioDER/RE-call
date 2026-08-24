@@ -4,12 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Install RE-call · Setup guide</title>
-<meta name="description" content="The complete RE-call install path in seven steps: start the database, install the package, run the wizard, index your first memory, and connect Claude Code.">
+<meta name="description" content="The complete RE-call install: start the database, install the package, run the wizard, index your first memory, and connect Claude Code. To just see it work first, run recall quickstart.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
 <link rel="stylesheet" href="styles.css">
 <script src="app.js" defer></script>
+<script src="translate.js" defer></script>
 </head>
 <body>
 
@@ -17,12 +18,34 @@
   <div class="shell masthead-inner">
     <a class="wordmark" href="index.html"><img class="wordmark-mark" src="assets/re_call_logo.png" alt=""><span class="wordmark-name">RE-call</span><span>Setup</span></a>
     <nav>
+      <a href="download.html">Download</a>
+      <a href="readme.html">README</a>
       <a href="start.html" aria-current="page">Install</a>
       <a href="corpus.html">Your memory</a>
       <a href="claude-code.html">Claude Code</a>
       <a href="calibration.html">Calibration</a>
       <a href="troubleshooting.html">Troubleshooting</a>
+      <a href="blog/index.html">Blog</a>
     </nav>
+    <div class="language-control" data-translate-control>
+      <label for="site-language">Language</label>
+      <select id="site-language" aria-describedby="site-translation-status">
+        <option value="english" data-html-lang="en">English</option>
+        <option value="italian" data-html-lang="it">Italiano</option>
+        <option value="spanish" data-html-lang="es">Español</option>
+        <option value="french" data-html-lang="fr">Français</option>
+        <option value="german" data-html-lang="de">Deutsch</option>
+        <option value="portuguese" data-html-lang="pt">Português</option>
+        <option value="chinese_simplified" data-html-lang="zh-CN">简体中文</option>
+        <option value="japanese" data-html-lang="ja">日本語</option>
+        <option value="korean" data-html-lang="ko">한국어</option>
+        <option value="russian" data-html-lang="ru">Русский</option>
+        <option value="arabic" data-html-lang="ar">العربية</option>
+        <option value="hindi" data-html-lang="hi">हिन्दी</option>
+        <option value="turkish" data-html-lang="tr">Türkçe</option>
+      </select>
+      <span id="site-translation-status" class="translation-status translation-status--sr" role="status" aria-live="polite">English source</span>
+    </div>
   </div>
 </header>
 
@@ -30,9 +53,19 @@
 
 <section class="shell" style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(2rem, 5vw, 3.5rem);">
   <p class="eyebrow">The install path</p>
-  <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 18ch; margin-bottom: 1.5rem;">Seven steps from nothing to a memory that answers you.</h1>
+  <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 18ch; margin-bottom: 1.5rem;">From nothing to a memory that answers you.</h1>
   <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
-  <p class="lede">Do them in order. Each one gives you something you can check before moving on, so you never get three steps deep before finding out something went wrong.</p>
+  <p class="lede">This is the full install: your own notes, a threshold fitted to them, and Claude Code wired up. Do the steps in order. Each one gives you something you can check before moving on, so you never get three steps deep before finding out something went wrong.</p>
+
+  <div class="notice" style="margin-top: 2rem;">
+    <p class="notice-title">Only want to see whether it works? Two commands will do that</p>
+    <p><code>pip install "recall-rag[fastembed]"</code> then <code>recall quickstart</code> starts its own database, indexes a sample corpus and answers three questions. It calibrates nothing and wires nothing, so it is a demonstration rather than an install, and <code>recall quickstart --remove</code> deletes everything it created. Come back here when you want it pointed at your own notes.</p>
+  </div>
+
+  <div class="notice notice--signal" style="margin-top: 2rem;">
+    <p class="notice-title">On Windows there is now a wizard that does all of this for you</p>
+    <p>It asks the same questions in a window and runs the same engine. It is in beta and not code signed yet, so read what that means before downloading: <a href="download.html">the download page</a>. This guide stays the path on macOS and Linux, and the one to fall back to.</p>
+  </div>
 </section>
 
 <div class="shell guide-layout" style="padding-bottom: clamp(4rem, 9vw, 7rem);">

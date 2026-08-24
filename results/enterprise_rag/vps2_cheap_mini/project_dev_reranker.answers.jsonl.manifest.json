@@ -1,0 +1,96 @@
+{
+  "benchmark": "EnterpriseRAG-Bench",
+  "started_at": "2026-08-18T12:01:07.051955+00:00",
+  "finished_at": "2026-08-18T12:03:30.289419+00:00",
+  "elapsed_s": 143.237,
+  "recall_revision": null,
+  "recall_version": "0.9.5",
+  "questions": {
+    "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+    "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905",
+    "selected_count": 5,
+    "question_types": [
+      "project_related"
+    ],
+    "question_ids_file": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/project_slices/dev.ids",
+    "question_ids_file_sha256": "7aed291b67f4f04cd088c5da15f50ed0168f1a45d04ee22e7b1aa4c6689abac3"
+  },
+  "documents": [
+    {
+      "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+      "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905"
+    }
+  ],
+  "index": {
+    "table": "ber_voy_lex_12k_full",
+    "tenant": "enterprise-rag-voyage-lexical-chunk12k-full",
+    "pool_size": null,
+    "reset": false,
+    "skipped": true,
+    "documents": 0,
+    "chunks": 0
+  },
+  "retrieval": {
+    "embedder": "voyage:voyage-4-large",
+    "embedding_profile": "voyage:voyage-4-large",
+    "embedding_cache": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/project_dev_vectors.sqlite",
+    "k": 8,
+    "candidate_k": 200,
+    "gap_threshold": 0.5,
+    "sparse_backend": "lexical",
+    "splade_model": null,
+    "splade_backfill": null,
+    "reranker": "voyage:rerank-2.5",
+    "retrieval_captures": 1
+  },
+  "answering": {
+    "mode": "extractive",
+    "model": null,
+    "max_context_chars": 3500,
+    "answer_policy": "baseline"
+  },
+  "reasoning": {
+    "arm": "none",
+    "provider": null,
+    "summary": {
+      "rows": 5,
+      "expanded_rows": 0,
+      "expanded_rate": 0.0,
+      "fallback_rows": 0,
+      "fallback_rate": 0.0,
+      "passes_total": 5,
+      "queries_total": 0,
+      "capture_stability_rate": 1.0,
+      "model": null
+    },
+    "cache": null,
+    "promotion": {
+      "status": "pending",
+      "expensive_model_allowed": false,
+      "missing": [
+        "baseline_correctness",
+        "candidate_correctness",
+        "useful_expansion_precision",
+        "stable_repeated_captures",
+        "validation_failure_rate",
+        "no_material_false_abstention",
+        "info_not_found_correctness"
+      ],
+      "failed": []
+    }
+  },
+  "outputs": {
+    "answers": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/project_dev_reranker.answers.jsonl",
+    "rows": 5,
+    "new_rows": 5,
+    "resumed_rows": 0
+  },
+  "retrieval_metrics": {
+    "questions_with_expected_docs": 5,
+    "document_recall": 0.6363636363636364,
+    "exact_doc_set_coverage": 0.4,
+    "expected_docs": 11,
+    "hit_expected_docs": 7
+  },
+  "calibration": null
+}

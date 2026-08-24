@@ -13,7 +13,8 @@ license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Giulio D'Erme" }]
 keywords = [
-    "rag", "retrieval-augmented-generation", "agent-memory", "pgvector", "postgresql",
+    "rag", "retrieval-augmented-generation", "agent-memory", "memory", "long-term-memory",
+    "ai-agents", "semantic-search", "claude", "pgvector", "postgresql",
     "hybrid-search", "vector-search", "reranking", "mcp", "model-context-protocol",
     "abstention", "calibration", "llm-agents",
 ]
@@ -37,7 +38,43 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-fastembed = ["fastembed>=0.3"]
+# <1 rather than unbounded, and the reason is narrower than "majors can break".
+# `recall.embeddings.embedder_artifact_path` reaches `embedder._model.model._model_dir`, a PRIVATE
+# attribute chain, because a model's own snapshot directory is the only thing worth hashing: the
+# shared cache holds every model ever downloaded and its digest would identify nothing. That
+# function is deliberately defensive and returns `None` when the chain cannot be walked, so a
+# fastembed release that renames it does NOT raise. It makes `embedder_artifact_digest` return
+# `None`, which makes the pipeline identity unverified, which makes production generation builds
+# refuse — an install that silently stops being able to accept uploads, with nothing pointing at
+# the dependency that changed.
+# Verified reachable on fastembed 0.8.0 (2026-08-20): digest dcc52dedc73755de..., production
+# upload possible. Re-check with `recall.embeddings.embedder_artifact_digest(resolve_embedder(
+# "fastembed"))` before raising this bound.
+fastembed = ["fastembed>=0.3,<1"]
+# ⛔ Ragas is deliberately NOT declared as an extra, and this is a security decision.
+#
+# PYSEC-2026-3046 / GHSA-95ww-475f-pr4f (SSRF via the multi-modal faithfulness module)
+# affects 0.2.3 through 0.4.3, and 0.4.3 is the LATEST release: there is no fixed version
+# to pin to. Declaring it here would ship a known-vulnerable dependency, with no fixed
+# version to move to, into every install of this package. That is reason enough on its
+# own: the scorer is a benchmarking tool, and nobody installing this package needs it.
+# It therefore runs in its own interpreter, and `scripts/agent_ab_score_ragas.py` carries
+# the install command for that venv.
+#
+# 🔁 Corrected 2026-08-23. This used to add "to no purpose, because Ragas cannot run on
+# this project's Python anyway: pyarrow.parquet has no cp314 wheel". False in both halves.
+# pyarrow 22.0.0, 23.0.1, 24.0.0, 25.0.0 and 25.0.1 all publish a plain cp314 wheel, and
+# 25.0.1 imports fine here. Do not restore that clause: it made a security decision look
+# like a free one, so the day the convenience argument expired the whole rationale would
+# have read as expired with it. The security argument has to carry this alone, and does.
+#
+# The benchmark never reaches the vulnerable path: it uses AnswerCorrectness and
+# FactualCorrectness, not the multi-modal collections module. That is a reason the tool is
+# safe to USE in an isolated venv, not a reason to ship it as a dependency.
+# The paired A/B harness. scipy carries ONLY the Wilcoxon test for the continuous cost
+# metrics; the primary binary endpoint uses an exact binomial written in the standard
+# library, so the headline result needs nothing from this extra.
+agent-ab = ["scipy>=1.11"]
 # Native extraction for PDF, Office, spreadsheets, presentations, HTML, and tables.
 documents = [
     "pypdf>=5.0",
@@ -78,6 +115,12 @@ llamaindex = ["llama-index-core>=0.11"]
 bench = ["mem0ai==2.0.13", "openai>=1.0", "pyarrow>=15", "numpy>=1.26", "tiktoken==0.13.0"]
 dev = [
     "pytest>=8", "pytest-timeout>=2.3", "pytest-cov>=5", "ruff>=0.16,<0.17",
+    # `pytest-xdist` is a dev tool, not a test dependency: nothing imports it and the suite runs
+    # identically without it. It is declared because the suite is LARGE rather than slow — 6,563
+    # tests averaging under a third of a second each, with no hotspot to remove — so the only
+    # lever on its wall clock is running it in parallel. `tests/conftest.py::_isolate_xdist_worker`
+    # is what makes that safe against a shared database; see the note there.
+    "pytest-xdist>=3.6",
     "mcp>=2,<3", "psycopg-pool>=3.2",
     "python-dotenv>=1.0",
     "PyJWT[crypto]>=2.10.1,<3",
@@ -92,6 +135,7 @@ desktop = ["PySide6>=6.7", "keyring>=25", "mcp>=2,<3"]
 # reparent whatever followed it.
 [project.urls]
 Homepage = "https://github.com/GiulioDER/RE-call"
+Documentation = "https://giulioder.github.io/RE-call/"
 Source = "https://github.com/GiulioDER/RE-call"
 Issues = "https://github.com/GiulioDER/RE-call/issues"
 Changelog = "https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md"
@@ -102,25 +146,84 @@ Changelog = "https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md"
 recall = "recall.cli:main"
 recall-enterprise = "recall.enterprise_cli:main"
 recall-mcp = "recall_mcp.server:main"
+# The session hooks, as a script rather than only as `python -m recall_hooks`.
+#
+# ⚠️ This exists so the Claude Code PLUGIN can invoke them. A plugin's `hooks.json` is written
+# once and shipped to every user, so it cannot name an interpreter: `recall.claude_code`
+# hardcodes `sys.executable` at install time precisely because it knows the machine, and a plugin
+# never does. Bare `python` is not a substitute, since it resolves to whatever is first on PATH,
+# which on a machine with a venv is routinely an interpreter recall is not installed into.
+# A console script is placed beside `recall` and `recall-mcp` by the same installer, so if one of
+# those resolves this one does too.
+recall-hooks = "recall_hooks:main"
 recall-desktop = "recall.desktop.main:main"
+# The graphical installer. A separate script rather than a flag on `recall-desktop`, because the
+# person who needs it does not have an install yet and therefore has nothing for that app to open.
+recall-install = "recall.desktop.main:install_main"
+# The uninstaller has a window too, because the person who needed a graphical installer is the same
+# person a year later, and `recall uninstall --data-root ...` is not a thing they will type.
+recall-uninstall = "recall.desktop.main:uninstall_main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["recall", "recall_mcp"]
+packages = ["recall", "recall_hooks", "recall_mcp"]
 artifacts = ["recall/py.typed", "recall_mcp/py.typed"]
+# recall/eval ships only its load-bearing slice: calibrate/metrics (the wizard's calibration),
+# labelled and its deps (a documented CLI), synthetic/vocab (query generation), and the sample
+# corpus + labels the README points the wizard at. The one-off benchmark drivers and session
+# scripts below are repo-only, like recall_interop — they never worked from a wheel (several
+# index relative clone paths) and 671K of research artifacts does not belong in an install.
+# recall/wizard/llm.py is a preregistered experiment arm imported by nothing but its own test
+# (docs/preregistrations/2026-08-16-generated-calibration-query-sets.md); it stays out of the
+# wheel until that experiment resolves.
+exclude = [
+  "recall/eval/reasoning_session*",
+  "recall/eval/locomo*.py",
+  "recall/eval/longmemeval*.py",
+  "recall/eval/beir.py",
+  "recall/eval/gap_run.py",
+  "recall/eval/gap_study.py",
+  "recall/eval/hostload.py",
+  "recall/eval/scale.py",
+  "recall/eval/cosine_dump.py",
+  "recall/eval/_show_ids.py",
+  "recall/eval/arm_check.py",
+  "recall/eval/resume.py",
+  "recall/eval/harness.py",
+  "recall/eval/__main__.py",
+  "recall/eval/promotion",
+  "recall/eval/provenance.py",
+  "recall/eval/near_miss.json",
+  "recall/eval/peps_questions.json",
+  "recall/eval/peps_trust_queries.json",
+  "recall/wizard/llm.py",
+]
 
 [tool.pytest.ini_options]
 # `pytest-timeout` was a declared dependency with nothing configuring it, which made it inert:
 # the comment beside it in `[project.optional-dependencies].dev` explains that a test which
 # fails to terminate "reads as 'still running', not as a regression", and that was exactly the
-# state the suite was in. CI runs bare `pytest -q`, so a hang burned the job's full timeout
-# instead of failing. 120s is far above the slowest test here (the whole suite runs in ~3
-# minutes) and far below anything anyone would wait for; a test with a legitimate reason to
-# take longer can raise its own with `@pytest.mark.timeout(n)`.
+# state the suite was in. CI runs `pytest -q -n auto` (bare `pytest -q` until 2026-08-23), so a
+# hang burned the job's full timeout instead of failing; under `-n` it is reported as `node down`
+# instead, which is easier to read and just as fatal. 120s is far above the slowest single test
+# and far below anything anyone would wait for; a test with a legitimate reason to take longer can
+# raise its own with `@pytest.mark.timeout(n)`, as the four `voyageai_sdk` tests do and as
+# `test_hnsw_filtered_recall.py` does at 300s for its 105.7s of module setup, which is therefore
+# NOT relying on the headroom here.
+#
+# 🔁 Corrected 2026-08-23, over a correction landed the same week. This said "30 to 40 minutes at
+# 6,088 tests", which was measured on 2026-08-20 and was true serially. The suite now runs in
+# parallel: measured 2026-08-23 at 6,599 tests, **49:58 serial and 14:05 at `-n 4`**. Re-measure,
+# and get the breakdown rather than the number alone:
+#
+#   python -m pytest tests/ -q -n 4 --durations=30
 #
 # `thread` rather than `signal`: signal-based timeouts do not work on Windows, and this suite is
 # developed there and run on Linux in CI.
 timeout = 120
 timeout_method = "thread"
+markers = [
+  "benchharness: benchmark-harness coverage rather than product coverage; deselect with -m 'not benchharness' for a product-only run",
+]
 
 # Collect ONLY `tests/`. Two analysis scripts under `results/` are named `paired_rerank_test.py`
 # ("paired rerank test" as in the statistical test, not a unit test); neither defines a single
@@ -134,6 +237,28 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# The agent-benchmark fixtures are INPUT, not source. `benchmarks/agent_ab/workspaces/` holds the
+# repository states restored into each sandbox, and one of them is a lint control whose whole
+# design is that three files are lint-clean but unformatted while a fourth fails `ruff check`: the
+# tree is how the checker tells which tool the agent reached for. Linting them here would either
+# fail CI or force a fix that destroys the measurement. Excluded rather than noqa'd, because the
+# noqa comments would themselves be visible to the agent being measured.
+#
+# `benchmarks/atm_full_run.py` and `benchmarks/atm_bench.py` are FROZEN ARTIFACTS, not maintained
+# source. They are byte-identical to the code that produced the published ATM-Bench run, and that
+# is their entire value: the leaderboard submission points at them as the reproduction pointer, so
+# a lint fix would quietly make the published harness a different program from the one that ran.
+# They arrive with 8 findings (six `E402`, two `F841`), all of them stylistic and none of them
+# reachable as a defect. Excluded rather than `noqa`'d, because a `noqa` comment is itself an edit
+# to the bytes this repository promises are frozen.
+# `tests/test_atm_runner_published.py` pins both files by SHA-256, so removing them from this list
+# fails a test with the reason rather than producing a silent lint failure.
+extend-exclude = [
+    "benchmarks/agent_ab/workspaces",
+    "benchmarks/agent_ab/oracles",
+    "benchmarks/atm_full_run.py",
+    "benchmarks/atm_bench.py",
+]
 
 [tool.ruff.lint]
 # Ruff 0.16 expands the implicit default rule set from 59 rules to 413. RE-call keeps the previous
@@ -160,6 +285,31 @@ select = ["E4", "E7", "E9", "F"]
 # numbers, and a shape mismatch against the third-party harness it feeds does not raise — it
 # degrades into a worse score that reads as a retrieval result.
 files = ["recall", "recall_mcp", "recall_interop", "recall_consistency", "benchmarks"]
+# The agent-benchmark fixtures and oracles are INPUT, not source, and one of them is a decoy
+# `recall/` package: `oracles/ts-worktree-import/installed/recall/` stands in for the editable
+# install shared across every worktree on this machine, and the task is whether the agent's script
+# imports the checkout's package or that one. mypy sees two modules named `recall` and stops with
+# "Duplicate module named 'recall'" before checking anything at all, which is the same shadowing
+# the task measures, arriving in the type checker. Excluded rather than renamed, because renaming
+# it would destroy the measurement, and rather than noqa'd, because the fixtures are read by the
+# agent under test and a comment addressed to our tooling would be visible to it.
+#
+# `benchmarks/artifacts/` is excluded for the same reason one level along: a run writes each
+# session's sandbox there, so after any run the tree holds dozens of copies of `benchmarks/` and
+# `recall/`. That directory is gitignored, so CI never sees it and only a local `mypy` breaks,
+# which is worse rather than better: the gate would pass on the runner and fail for whoever tried
+# to reproduce it.
+#
+# `benchmarks/atm_(full_run|bench).py` are the frozen ATM-Bench harness, excluded for the reason
+# ruff's `extend-exclude` states above: they are byte-identical to the published run's code and a
+# fix is a falsification of the reproduction pointer, not an improvement. They arrive with six
+# errors, and it is worth writing down what they are rather than leaving "excluded" to imply
+# "clean": two are a `str | None` reaching a parameter typed `str`, two an `int()` over a value
+# typed `object`, one an `Embedder` assigned to a `VoyageEmbedder` name, and one an attribute the
+# library had never had on `master` until this same change ported it over. The last one is a real
+# incompatibility and is fixed in the LIBRARY, where the fix belongs; the other five are the type
+# checker seeing dynamic JSON, and the run they produced is the evidence they did not fire.
+exclude = "^benchmarks/(agent_ab/(workspaces|oracles)|artifacts)/|^benchmarks/atm_(full_run|bench)\\.py$"
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 warn_return_any = true
@@ -230,6 +380,20 @@ module = [
     "PySide6.*",
     "keyring",
     "keyring.*",
+    # Optional application-level evaluator. The adapter must type-check when Ragas is absent.
+    "ragas",
+    "ragas.*",
+    # ATM-Bench's official evaluator, which `benchmarks/atm_answer_diagnosis.py` imports for its
+    # `is_abstention` and tokeniser rather than reimplementing them. It is NOT a dependency and is
+    # never installed: the script takes `--atm-bench-root` and puts that checkout on `sys.path` at
+    # run time, because a local reimplementation would measure this repository instead of the thing
+    # the published score was computed with.
+    #
+    # This belongs here rather than on an inline `# type: ignore`, and `warn_unused_ignores = true`
+    # above is the reason: an inline ignore is UNUSED for anyone who does have the checkout
+    # importable, so it would fail exactly the developer best placed to run the script.
+    "memqa",
+    "memqa.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

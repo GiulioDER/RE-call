@@ -1,0 +1,24 @@
+{
+  "name": "re-call",
+  "owner": {
+    "name": "Giulio D'Erme",
+    "url": "https://github.com/GiulioDER"
+  },
+  "description": "RE-call: agent memory that abstains instead of guessing.",
+  "plugins": [
+    {
+      "name": "recall",
+      "source": "./plugin",
+      "description": "Memory that abstains instead of guessing. Searches your project's own notes and decisions, marks a retracted claim as superseded, and refuses when nothing clears the threshold.",
+      "version": "0.10.0",
+      "category": "memory",
+      "tags": ["memory", "rag", "retrieval", "postgresql", "pgvector"],
+      "author": {
+        "name": "Giulio D'Erme",
+        "url": "https://github.com/GiulioDER"
+      },
+      "homepage": "https://giulioder.github.io/RE-call/",
+      "license": "Apache-2.0"
+    }
+  ]
+}

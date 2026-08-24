@@ -7,7 +7,7 @@ import os
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
@@ -32,6 +32,7 @@ from recall.manifest import ObjectReader
 from recall.observability import METRICS
 from recall.semantic_graph import GraphReadiness, SemanticGraphProjection, build_semantic_graph, write_semantic_graph
 from recall.types import Chunk
+from recall.errors import RecallError
 
 Chunker = Callable[[str], list[str]]
 
@@ -42,7 +43,7 @@ DEFAULT_TABLE_MAX_CHARS = 800
 DEFAULT_TABLE_OVERLAP = 80
 
 
-class GenerationError(RuntimeError):
+class GenerationError(RuntimeError, RecallError):
     """A generation lifecycle invariant was violated."""
 
 
@@ -56,6 +57,15 @@ class InvalidGenerationTransition(GenerationError):
 
 class UnsafePromotion(GenerationError):
     pass
+
+
+class ConcurrentIngest(GenerationError):
+    """Another ingest holds this tenant's lock.
+
+    Raised rather than waited out, because the caller is an interactive upload and an unbounded
+    wait inside a tool call is indistinguishable from a hang. A retry is cheap; a lost upload that
+    reported success is not.
+    """
 
 
 class NoActiveGeneration(GenerationError):
@@ -138,6 +148,31 @@ def _body_rule_changed(media_type: str, text: str) -> bool:
     is a schema change to a reuse path. Recorded as a follow up.
     """
     return media_type in _MARKDOWN_MEDIA_TYPES and legacy_pairing_differs(text)
+
+
+def _scrub_sparse_rows(
+    conn: psycopg.Connection, tenant_id: str, chunk_table: str, chunk_ids: list[str]
+) -> int:
+    """Delete the learned-sparse sidecar rows for chunks an erasure just removed.
+
+    A deliberate duplicate of `PgVectorStore._scrub_sparse_rows` rather than an import: this
+    module must not depend on the store (see the store helper for the full rationale). Same
+    contract: same transaction as the chunk delete, every profile's rows die together, and
+    the table name is a bound VALUE against the sidecar's `chunk_table` column.
+    """
+    if not chunk_ids:
+        return 0
+    sidecar = conn.execute("SELECT to_regclass('recall_sparse_v1')").fetchone()
+    if not (sidecar and sidecar[0]):
+        return 0
+    return (
+        conn.execute(
+            "DELETE FROM recall_sparse_v1 "
+            "WHERE tenant_id = %s AND chunk_table = %s AND id = ANY(%s)",
+            (tenant_id, chunk_table, chunk_ids),
+        ).rowcount
+        or 0
+    )
 
 
 def _new_id(prefix: str) -> str:
@@ -234,7 +269,26 @@ class GenerationManager:
         *,
         actor: str = "recall-cli",
         environment: str | None = None,
+        serving_environment: str | None = None,
     ) -> None:
+        """`environment` is where the BUILD runs; `serving_environment` is where the tenant is READ.
+
+        ⚠️ **They are the same value almost everywhere and different on the path that matters.** The
+        certification gate keys on the serving one, because certification is a claim about what a
+        query will get back, not about which process built it.
+
+        The wizard is the case that forced this apart, and it is the ordinary install rather than a
+        corner: it builds every corpus under `environment="development"`, because a production build
+        demands a verifiable embedder identity that a bundled FastEmbed model does not have, and
+        then writes `RECALL_ENV=production` into the MCP server block that serves those same
+        tenants. So before this parameter existed, the gate ran on **no tenant the wizard
+        creates** — every real first install took the ungated branch and was then served as
+        production. The wizard's own pipeline refuses to promote an uncertified generation, so
+        nothing shipped uncertified; but the gate and the pipeline check were two independent
+        implementations of one rule, and only one of them was tested as the thing that holds it.
+
+        `serving_environment` defaults to `environment`, so every existing caller is unchanged.
+        """
         if not tenant_id.strip():
             raise ValueError("tenant_id must be non-empty")
         self._dsn = dsn
@@ -243,6 +297,21 @@ class GenerationManager:
         self.environment = (environment or os.environ.get("RECALL_ENV", "development")).lower()
         if self.environment not in {"development", "test", "production"}:
             raise ValueError("environment must be development, test, or production")
+        self.serving_environment = (serving_environment or self.environment).lower()
+        if self.serving_environment not in {"development", "test", "production"}:
+            raise ValueError(
+                "serving_environment must be development, test, or production"
+            )
+
+    @property
+    def certification_required(self) -> bool:
+        """Whether promotion here must present a CERTIFIED calibration.
+
+        Reads the SERVING environment, not the build one. `promote` and every caller that decides
+        whether to pass `unsafe_development` consult this rather than comparing environments
+        themselves, so the two cannot drift apart.
+        """
+        return self.serving_environment == "production"
 
     @contextmanager
     def _connect(self) -> Iterator[psycopg.Connection]:
@@ -424,6 +493,60 @@ class GenerationManager:
         if not isinstance(manifest_raw, Mapping) or not isinstance(pipeline_raw, Mapping):
             raise GenerationError("stored generation identity is malformed")
         return IndexManifestV1.from_dict(manifest_raw), PipelineIdentity.from_dict(pipeline_raw)
+
+    @contextmanager
+    def tenant_ingest_lock(self, *, wait_seconds: float = 20.0) -> Iterator[None]:
+        """Serialise the whole ingest for ONE tenant: read the base, build, promote, reclaim.
+
+        ⛔ **Session-scoped, not `pg_advisory_xact_lock`.** The sibling `_source_lock` uses the
+        transaction-scoped form, which is right for the single statement it guards and useless
+        here: an ingest spans several transactions on several connections, and a transaction lock
+        is released at the first commit, which is before the interesting part even starts.
+
+        ⛔ **Why this exists at all.** Nothing serialised `servable_manifest()` through `promote`,
+        so two uploads to one tenant both seeded from the same base manifest M, built M+A and M+B
+        respectively, and whichever promoted second retired the other. The loser's files were
+        absent from the live corpus while its tool call had already reported success — a silent
+        loss with a success message on top, which is the worst shape this codebase has. Nothing
+        counted it, because nothing had vanished: `_vanished_note` reports 0 and is right to.
+
+        A second, narrower hazard closes with it: `_release_superseded` selects READY generations
+        by prefix, and a concurrent upload sits READY between `validate()` and `promote()`. It was
+        therefore a candidate for abandonment by the other upload, which would destroy a build that
+        had already succeeded and then fail its promote with `InvalidGenerationTransition`.
+
+        ⚠️ **Refuses after `wait_seconds` instead of waiting.** The caller is an interactive
+        upload. A bounded wait absorbs the ordinary case of two clicks in quick succession; beyond
+        that, saying "another upload is in progress, try again" is honest and a hang is not.
+
+        The lock is held on its OWN connection, so it outlives each step's transaction, and it is
+        released by closing that connection even if the process dies mid-ingest — a session lock
+        does not survive its backend.
+        """
+        key = f"ingest\x1f{self.tenant_id}"
+        with self._connect() as conn:
+            deadline = time.monotonic() + wait_seconds
+            while True:
+                row = conn.execute(
+                    "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (key,)
+                ).fetchone()
+                if row is not None and row[0]:
+                    break
+                if time.monotonic() >= deadline:
+                    raise ConcurrentIngest(
+                        f"another upload into tenant {self.tenant_id!r} is still running. "
+                        "Uploads to one tenant are serialised, because two at once would each "
+                        "build from the same starting point and the second to finish would "
+                        "silently drop the first one's files. Wait for it to finish and try again."
+                    )
+                time.sleep(0.25)
+            try:
+                yield
+            finally:
+                with suppress(Exception):
+                    conn.execute(
+                        "SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (key,)
+                    )
 
     @staticmethod
     def _source_lock(conn: psycopg.Connection, tenant_id: str, source_uri: str) -> None:
@@ -795,6 +918,59 @@ class GenerationManager:
                 payload={"reason": reason[:2000]},
             )
 
+    def abandon(self, generation_id: str, reason: str) -> None:
+        """Mark a READY generation failed, so `gc` can reclaim its rows.
+
+        `fail` refuses READY, ACTIVE, RETIRED and LEGACY_UNVERIFIED, and that is right for the
+        states where failing something would destroy what is serving. But it left READY with no
+        exit at all, and READY is where a generation lands when it built and validated and was
+        then not promoted. `gc` collects only `retired` and `failed`, and `recall_chunks_v1`
+        cascades from `recall_generations`, so such a generation holds a full copy of the corpus's
+        chunk rows that no supported path could ever reclaim. The installation wizard reaches that
+        state twice per run whenever certification falls short, which is the ordinary outcome of a
+        first install, so without this the database grows without bound on the success path.
+
+        READY only. This is a reclaim route, not a second way to fail something, and widening
+        `fail` instead would have removed the protection ACTIVE and RETIRED actually need.
+        """
+        with self._connect() as conn, conn.transaction():
+            # ⚠️ Lock ORDER matters, and it is tenant state first, then the generation row. That is
+            # the order `promote` and `gc` both take, and taking the two the other way round is a
+            # deadlock: `promote` would hold tenant state waiting for the generation row while this
+            # held the generation row waiting for tenant state. The first version of this method
+            # had them reversed.
+            #
+            # The generation a rollback would return to must survive. `promote` moves the outgoing
+            # generation to RETIRED, so a READY generation is normally neither, but the read is
+            # cheap and the alternative is destroying the only thing `rollback` can restore.
+            state = conn.execute(
+                "SELECT active_generation_id, previous_generation_id "
+                "FROM recall_tenant_state WHERE tenant_id = %s FOR UPDATE",
+                (self.tenant_id,),
+            ).fetchone()
+            current = self._require_generation(conn, generation_id, lock=True)
+            if current.state != GenerationState.READY:
+                raise InvalidGenerationTransition(
+                    f"abandon requires ready state, found {current.state.value}"
+                )
+            protected = {str(item) for item in (state or ()) if item}
+            if generation_id in protected:
+                raise InvalidGenerationTransition(
+                    f"cannot abandon generation {generation_id!r}: it is the tenant's active or "
+                    "previous generation"
+                )
+            conn.execute(
+                "UPDATE recall_generations SET state = 'failed', failure_reason = %s "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (reason[:2000], self.tenant_id, generation_id),
+            )
+            self._audit(
+                conn,
+                "generation_abandoned",
+                generation_id=generation_id,
+                payload={"reason": reason[:2000]},
+            )
+
     def _validate(self, generation_id: str) -> ValidationResult:
         with self._connect() as conn, conn.transaction():
             current = self._require_generation(conn, generation_id, lock=True)
@@ -954,7 +1130,42 @@ class GenerationManager:
             raise UnsafePromotion(
                 "generation promotion is unavailable in production until certification gates land"
             )
-        if not unsafe_development:
+        except CalibrationBindingError as exc:
+            # Translated rather than propagated. Callers of `promote` and `rollback` handle
+            # `UnsafePromotion`; a binding error escaping from two layers down is a different
+            # contract for the same refusal, and the reason is the same either way — this
+            # generation is not backed by a calibration that can carry it into production.
+            raise UnsafePromotion(
+                f"generation {generation_id} cannot go live in production: {exc}"
+            ) from exc
+        if resolution.status is CalibrationStatus.CERTIFIED:
+            return
+        raise UnsafePromotion(
+            f"generation {generation_id} cannot go live in production: its calibration is "
+            f"{resolution.status.value}. Production serves only a generation whose published "
+            f"calibration certified and is still bound to this pipeline and corpus. Run "
+            f"`recall calibration calibrate --generation {generation_id} --queries FILE --publish`."
+        )
+
+    def promote(self, generation_id: str, *, unsafe_development: bool = False) -> None:
+        """Make one ready generation live, gated on how the tenant is SERVED.
+
+        See `certification_required`: the gate follows the serving environment, so a build that runs
+        under `development` in order to use an unverifiable embedder is still gated when its output
+        will be read under `RECALL_ENV=production`. That is the wizard, which is to say every
+        install this project ships.
+        """
+        if self.certification_required:
+            # ⛔ **`unsafe_development` does not open this door.** Refused here rather than after
+            # the certification check, so a caller cannot learn that the flag would otherwise have
+            # worked. The production path has exactly one way through: a certified calibration.
+            if unsafe_development:
+                raise UnsafePromotion(
+                    "unsafe_development is unavailable for a tenant served under production; "
+                    "promotion there requires a published, certified calibration bound to this "
+                    "generation"
+                )
+        elif not unsafe_development:
             raise UnsafePromotion("development promotion requires unsafe_development=True")
         with self._connect() as conn, conn.transaction():
             conn.execute(
@@ -972,6 +1183,17 @@ class GenerationManager:
                 raise InvalidGenerationTransition(
                     f"promotion requires ready state, found {target.state.value}"
                 )
+            # ⚠️ **After the existence and state checks, deliberately.** Run first, the gate answered
+            # a missing generation with `CalibrationBindingError: generation ... does not exist` and
+            # a mid-build one with the same, replacing `GenerationNotFound` and
+            # `InvalidGenerationTransition` — three different problems arriving as one unrelated
+            # exception type. Measured before this was moved. Ordering the cheap, specific checks
+            # first keeps each failure named by the thing that actually failed.
+            if self.certification_required:
+                # On THIS connection, inside THIS transaction. See the method's docstring: the
+                # generation row is already locked here, so the check and the activation cannot be
+                # separated by a concurrent fingerprint rewrite.
+                self.require_certified_for_production(generation_id, conn=conn)
             active = str(state[0]) if state and state[0] else None
             if active:
                 conn.execute(
@@ -992,14 +1214,54 @@ class GenerationManager:
                 "WHERE tenant_id = %s",
                 (generation_id, active, self.tenant_id),
             )
+            # Two paths reach here and they are not the same event. Recording a certified
+            # production promotion as `..._unsafe_development` would make the audit trail say the
+            # opposite of what happened, and the audit trail is the artefact that outlives everyone
+            # who remembers the code.
             self._audit(
                 conn,
-                "generation_promoted_unsafe_development",
+                (
+                    "generation_promoted_certified"
+                    if self.certification_required
+                    else "generation_promoted_unsafe_development"
+                ),
                 generation_id=generation_id,
                 payload={"previous_generation_id": active},
             )
 
-    def rollback(self) -> str:
+    def rollback(self, *, provisional_reason: str | None = None) -> str:
+        """Return the tenant to its previous generation. **Never refuses on certification grounds.**
+
+        ⛔ **This refused in production for one release, and that was wrong.**
+        `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md` section 6 decision 2 had already settled the
+        question, in bold: "`rollback(*, provisional_reason: str | None = None)`, and it never
+        refuses on certification grounds ... Rollback is the incident path. A gate that blocks
+        recovery precisely when recovery is needed is worse than serving a `provisional` answer
+        that says so on the wire, and an operator facing a bad generation will route around a
+        refusal in a way nobody audits. **Refusing here would trade a visible degradation for an
+        invisible workaround.**" The gate was added without reading that section.
+
+        Three ways the refusal bit, each found independently in the audit that caught this:
+
+        * **`forget()` bricked it permanently.** It rewrites `corpus_fingerprint` on every
+          generation of the tenant, so after one erasure request every calibration resolves STALE
+          and there was no target left to return to — ever.
+        * **Upgrading bricked it.** Production `promote` refused outright before this release, so
+          every generation an existing install is serving was promoted under `development` and has
+          no published calibration. Upgrading would have removed rollback from every one of them.
+        * There is no override to reach for, which is exactly the "invisible workaround" the
+          decision predicted: the remaining routes are a mid-incident recalibration that must
+          certify, or flipping `RECALL_ENV`, which silently changes five other policies.
+
+        **The invariant F2 is about survives**, because it was never "only certified generations go
+        live". It was "no generation becomes active without the operator being told what they are
+        activating". A rollback to an uncertified target is recorded as such: the audit event
+        carries the resolved calibration status and the reason, so the downgrade is visible rather
+        than prevented. `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md`: "Prevented, no; hidden, never."
+
+        `promote` keeps its gate. Promotion is the planned path and has somewhere to go back to;
+        rollback is what you reach for when it does not.
+        """
         with self._connect() as conn, conn.transaction():
             state = conn.execute(
                 "SELECT active_generation_id, previous_generation_id "
@@ -1015,6 +1277,9 @@ class GenerationManager:
                 raise InvalidGenerationTransition(
                     f"rollback target is {target.state.value}, expected retired or ready"
                 )
+            # ⛔ Deliberately NOT gated. See the docstring: this is the incident path, and the
+            # status is reported into the audit event below rather than used to refuse.
+            status = self.calibration_status_for(previous, conn=conn)
             if active:
                 conn.execute(
                     "UPDATE recall_generations SET state = 'ready', retired_at = NULL "
@@ -1037,7 +1302,18 @@ class GenerationManager:
                 conn,
                 "generation_rolled_back",
                 generation_id=previous,
-                payload={"replaced_generation_id": active},
+                payload={
+                    "replaced_generation_id": active,
+                    # ⚠️ The downgrade is REPORTED, which is the whole of decision 2's bargain:
+                    # "Prevented, no; hidden, never." A rollback onto an uncertified target is
+                    # allowed and leaves a record saying exactly what was activated and why.
+                    "calibration_status": status,
+                    "provisional_reason": (
+                        provisional_reason or "rollback: incident recovery"
+                        if status != "certified"
+                        else None
+                    ),
+                },
             )
             return previous
 
@@ -1050,6 +1326,64 @@ class GenerationManager:
         if not row or not row[0]:
             raise NoActiveGeneration(f"tenant {self.tenant_id!r} has no active generation")
         return str(row[0])
+
+    def servable_manifest(self) -> IndexManifestV1:
+        """The manifest a NEW build should carry forward: the newest generation worth continuing.
+
+        ⛔ **`active_manifest` is the wrong base once a build can finish without being activated.**
+        A desktop upload whose promotion is refused leaves its generation READY, never active, so
+        `active_generation_id` does not advance. The next upload then seeds from the OLD active
+        manifest and silently contains none of the previous upload's files: two READY generations,
+        neither holding the whole corpus, and the message from the first told the user to certify
+        the one that will be superseded. Three auditors found this independently.
+
+        So the base is the newest generation in a state that can still become active — READY or
+        ACTIVE — falling back to the active one, and to an empty manifest when the tenant has
+        neither. RETIRED and FAILED are excluded: continuing from a retired corpus would resurrect
+        content that was deliberately rolled away from.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT manifest FROM recall_generations "
+                "WHERE tenant_id = %s AND state IN ('ready', 'active') "
+                "ORDER BY created_at DESC, generation_id DESC LIMIT 1",
+                (self.tenant_id,),
+            ).fetchone()
+        if row and isinstance(row[0], Mapping):
+            return IndexManifestV1.from_dict(row[0])
+        return self.active_manifest()
+
+    def superseded_ready_generations(
+        self, keep: str, *, corpus_version_prefix: str | None = None
+    ) -> tuple[str, ...]:
+        """READY generations for this tenant other than `keep`, newest first.
+
+        The reclaim list. A READY generation holds a full copy of the corpus's chunk rows and `gc`
+        collects only `retired` and `failed`, so one left behind per refused upload grows the
+        database without bound — the leak `abandon` was written to close, documented in its own
+        docstring, and reintroduced by a path that returns success instead of raising.
+
+        ⛔ **`corpus_version_prefix` is not optional in spirit, and omitting it destroys other
+        people's corpora.** Without it this selects on STATE ALONE, and `abandon` protects only the
+        tenant's active and previous generations — so a generation that was built and validated but
+        deliberately NEVER promoted is fair game. That is precisely what a degraded wizard install
+        leaves behind: `recall/wizard/pipeline.py` skips `promote` when the corpus did not certify,
+        on purpose, so an operator can promote it later. One refused desktop upload would then
+        abandon it, `gc` would collect it, and the chunk rows would cascade away.
+
+        Caller-supplied rather than inferred, because only the caller knows which generations are
+        its own to reclaim. A caller that cannot name its own provenance should not be reclaiming.
+        """
+        return tuple(
+            record.generation_id
+            for record in self.list_generations()
+            if record.state is GenerationState.READY
+            and record.generation_id != keep
+            and (
+                corpus_version_prefix is None
+                or record.corpus_version.startswith(corpus_version_prefix)
+            )
+        )
 
     def active_manifest(self) -> IndexManifestV1:
         """Return the manifest for the active generation.
@@ -1139,10 +1473,14 @@ class GenerationManager:
                 )
             removed = 0
             if selected:
-                result = conn.execute(
+                rows = conn.execute(
                     "DELETE FROM recall_chunks_v1 WHERE tenant_id = %s "
-                    "AND generation_id = ANY(%s) AND source_uri = %s",
+                    "AND generation_id = ANY(%s) AND source_uri = %s RETURNING chunk_id",
                     (self.tenant_id, list(selected), source_uri),
+                ).fetchall()
+                removed = len(rows)
+                _scrub_sparse_rows(
+                    conn, self.tenant_id, "recall_chunks_v1", [row[0] for row in rows]
                 )
                 removed = result.rowcount
                 # Chunk foreign keys remove mentions and relation evidence. Relations and
@@ -1179,11 +1517,16 @@ class GenerationManager:
                     "SELECT to_regclass(%s) IS NOT NULL", (legacy_table,)
                 ).fetchone()
                 if exists and exists[0]:
-                    legacy = conn.execute(
-                        f"DELETE FROM {legacy_table} WHERE tenant_id = %s AND source = %s",
+                    legacy_rows = conn.execute(
+                        psycopg.sql.SQL(
+                            "DELETE FROM {} WHERE tenant_id = %s AND source = %s RETURNING id"
+                        ).format(psycopg.sql.Identifier(legacy_table)),
                         (self.tenant_id, source_uri),
+                    ).fetchall()
+                    removed += len(legacy_rows)
+                    _scrub_sparse_rows(
+                        conn, self.tenant_id, legacy_table, [row[0] for row in legacy_rows]
                     )
-                    removed += legacy.rowcount
             return ErasureResult(source_uri, tuple(sorted(selected)), removed, event_id)
 
     def gc(
@@ -1232,5 +1575,23 @@ class GenerationManager:
                     "AND generation_id = ANY(%s)",
                     (self.tenant_id, delete),
                 )
+                # The chunk rows die by ON DELETE CASCADE, which reaches no _scrub_sparse_rows,
+                # so the learned-sparse sidecar would orphan term-weight rows (partially
+                # reconstructable content) for every chunk_id unique to a collected generation.
+                # Anti-join scrub in the same transaction: delete sidecar rows for this table
+                # whose chunk_id no longer exists in ANY surviving generation. `_reuse_source`
+                # shares a chunk_id across generations, so a chunk still held by the active
+                # generation still exists here and its row is correctly kept. Guarded, like the
+                # other scrubs, so a pre-0012 install has nothing to fail against.
+                sidecar = conn.execute("SELECT to_regclass('recall_sparse_v1')").fetchone()
+                if sidecar and sidecar[0]:
+                    conn.execute(
+                        "DELETE FROM recall_sparse_v1 s "
+                        "WHERE s.tenant_id = %s AND s.chunk_table = 'recall_chunks_v1' "
+                        "AND NOT EXISTS ("
+                        "  SELECT 1 FROM recall_chunks_v1 c "
+                        "  WHERE c.tenant_id = s.tenant_id AND c.chunk_id = s.id)",
+                        (self.tenant_id,),
+                    )
                 self._audit(conn, "generation_gc", payload={"generation_ids": delete})
             return tuple(delete)

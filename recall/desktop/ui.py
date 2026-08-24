@@ -20,6 +20,10 @@ from recall.desktop.sources import (
     display_type,
 )
 from recall.desktop.github import GithubImport, download_repository
+from recall.desktop.jobs import CLOSE_WAIT_MS
+from recall.desktop.jobs import Job as _Worker
+from recall.store import scrub_dsn_secrets
+from recall.wizard.database import probe_database
 
 
 _qt_widgets: Any = None
@@ -65,9 +69,17 @@ QApplication: Any = getattr(_qt_widgets, "QApplication", None)
 if QApplication is not None:
 
     def _project_name(value: str) -> str:
-        """Show one project entry for the paired docs and code scopes."""
+        """Show one project entry for a project's corpus scopes.
+
+        ⚠️ **This listed `("-docs", "-code")` and missed `-memory`** — the same omission, in the
+        same words, that `runtime.py` records having made in three places at once. It survived here
+        because nothing pinned the two files together. With memory tenants now real, a runtime that
+        returns raw tenant names (the base `RuntimeManager.list_tenants` does, from `recall_tenants`)
+        yields a phantom project called `<project>-memory`, and the calibration page then builds
+        `<project>-memory-docs` from it.
+        """
         text = value.strip()
-        for suffix in ("-docs", "-code"):
+        for suffix in _CORPUS_SUFFIXES:
             if text.endswith(suffix):
                 return text[: -len(suffix)]
         return text
@@ -249,22 +261,13 @@ if QApplication is not None:
             return bool(super().eventFilter(watched, event))
 
 
-    class _WorkerSignals(QObject):
-        done = Signal(object)
-        failed = Signal(str)
-
-
-    class _Worker(QRunnable):
-        def __init__(self, fn: Any) -> None:
-            super().__init__()
-            self.fn = fn
-            self.signals = _WorkerSignals()
-
-        def run(self) -> None:
-            try:
-                self.signals.done.emit(self.fn())
-            except Exception as exc:  # noqa: BLE001
-                self.signals.failed.emit(str(exc))
+    # ⛔ **Moved to `recall/desktop/jobs.py`, not copied.** The graphical installer needs the same
+    # runnable with a progress channel, and the two properties that make a queued cross-thread
+    # signal actually arrive are a race when they are wrong — they work often enough to look
+    # correct, so a second copy would not fail visibly. The measurements and the reasoning live in
+    # that module's docstring; `_run` below still explains why it holds the reference, because that
+    # is where a reader of this file will look.
+    _CLOSE_WAIT_MS = CLOSE_WAIT_MS
 
 
     class MainWindow(QMainWindow):
@@ -273,6 +276,9 @@ if QApplication is not None:
             self.profile = profile
             self.runtime = runtime or create_runtime(profile)
             self.pool = QThreadPool(self)
+            #: Live workers. Holding them is what makes `_run`'s callbacks arrive at all; see the
+            #: measurement in `_run`. Entries are removed when their job reports.
+            self._workers: list[Any] = []
             self.pending_files: list[tuple[Path, SourceCategory]] = []
             self.pending_scopes: list[dict[str, Any]] = []
             self.calibration_snapshot: Any = None
@@ -302,6 +308,12 @@ if QApplication is not None:
                 }
                 for source_type in ("Documents", "Memory", "Code")
             }
+            # Saved choices layered OVER the defaults, key by key. A wholesale replacement would
+            # drop any setting added after the file was written, so an upgrade would silently lose
+            # a control's value rather than keep the new default for it.
+            for source_type, saved in load_pipelines().items():
+                if source_type in self._pipeline_configs:
+                    self._pipeline_configs[source_type].update(saved)
             self.setWindowTitle("RE-call")
             self.resize(980, 760)
             self._build_ui()
@@ -539,6 +551,11 @@ if QApplication is not None:
 
             footer = QHBoxLayout()
             self.status = QLabel("Connect to a runtime to begin.")
+            # PlainText, not Qt's default AutoText: this label reports user-supplied names (a
+            # project typed into "+ Add project") and error text, and AutoText renders anything
+            # that looks like markup AS markup. A status line that can be visually rewritten by
+            # its own subject is worth nothing, and this is the line that says "not provisioned".
+            self.status.setTextFormat(Qt.TextFormat.PlainText)
             self.status.setObjectName("status")
             footer.addWidget(self.status, 1)
             self.reconnect_button = QPushButton("Reconnect")
@@ -825,14 +842,31 @@ if QApplication is not None:
             controls = self._config_controls()
             for control in controls:
                 control.blockSignals(True)
-            self.embedder_combo.setCurrentText(str(values["embedder"]))
-            self.reranker_combo.setCurrentText(str(values["reranker"]))
+            # `setCurrentText` is a NO-OP on a non-editable combo when the text is not an item, so
+            # a saved value that no longer exists would leave the widget on its first entry while
+            # `_pipeline_configs` still held the stale string — and the next Save would write that
+            # stale string straight back. Restoring only what the combo can actually show, and
+            # writing the fallback back into the config, keeps memory and screen saying one thing.
+            for combo, key in (
+                (self.embedder_combo, "embedder"),
+                (self.reranker_combo, "reranker"),
+                (self.judge_combo, "judge"),
+                (self.reasoning_combo, "reasoning"),
+                (self.arm_combo, "arm"),
+            ):
+                wanted = str(values[key])
+                if combo.findText(wanted) >= 0:
+                    combo.setCurrentText(wanted)
+                else:
+                    values[key] = combo.currentText()
+            # SPLADE is restored only when this machine can actually run it. The probe DISABLES the
+            # checkbox without unticking it, and `_save_configuration` refuses while it is ticked,
+            # so a config saved on a CUDA machine (or one that hit a transient probe failure) would
+            # restore a ticked, disabled box the user cannot clear: Save wedged permanently.
+            values["splade"] = bool(values["splade"]) and self.splade_check.isEnabled()
             self.splade_check.setChecked(bool(values["splade"]))
-            self.judge_combo.setCurrentText(str(values["judge"]))
-            self.reasoning_combo.setCurrentText(str(values["reasoning"]))
             self.model_edit.setText(str(values["model"]))
             self.reranker_model_edit.setText(str(values["reranker_model"]))
-            self.arm_combo.setCurrentText(str(values["arm"]))
             for control in controls:
                 control.blockSignals(False)
 
@@ -996,6 +1030,8 @@ if QApplication is not None:
             update_layout.addLayout(update_info, 1)
             layout.addWidget(updates)
 
+            layout.addWidget(self._build_database_group())
+
             info = QGroupBox("Runtime information")
             info.setObjectName("watermarkGroup")
             info_layout = QHBoxLayout(info)
@@ -1022,6 +1058,183 @@ if QApplication is not None:
             layout.addStretch()
             self._add_page_watermark(page)
             return page
+
+        #: Display text for each runtime, in the order the settings page offers them. The stored
+        #: value is the enum; this is only what a person reads.
+        _MODE_LABELS = {
+            RuntimeMode.DOCKER: "Managed Docker stack (RE-call installs and runs PostgreSQL)",
+            RuntimeMode.LOCAL_DATABASE: "A PostgreSQL I already run (no Docker)",
+            RuntimeMode.VPS_MCP: "A remote RE-call server (MCP endpoint)",
+        }
+
+        def _build_database_group(self) -> QWidget:
+            """Where the install options that already existed become selectable.
+
+            The engine has always accepted a database somebody else runs — `HeadlessConfig` takes
+            `dsn` as the alternative to `data_root`, and with it set no compose file is written at
+            all. Nothing in this window could say so, so Docker was the only reachable choice.
+            """
+            box = QGroupBox("Database")
+            box.setObjectName("watermarkGroup")
+            outer = QVBoxLayout(box)
+            form = QFormLayout()
+
+            self.mode_combo = QComboBox()
+            for mode, label in self._MODE_LABELS.items():
+                self.mode_combo.addItem(label, mode)
+            current = self.mode_combo.findData(self.profile.mode)
+            if current >= 0:
+                self.mode_combo.setCurrentIndex(current)
+            self.mode_combo.currentIndexChanged.connect(self._database_mode_changed)
+            form.addRow("Runtime", self.mode_combo)
+
+            self.dsn_edit = QLineEdit(self.profile.dsn or "")
+            self.dsn_edit.setPlaceholderText("postgresql://user:password@127.0.0.1:5432/recall")
+            form.addRow("Connection", self.dsn_edit)
+            outer.addLayout(form)
+
+            actions = QHBoxLayout()
+            self.test_database_button = QPushButton("Test connection")
+            self.test_database_button.clicked.connect(self._test_database)
+            self.save_database_button = QPushButton("Save")
+            self.save_database_button.clicked.connect(self._save_database)
+            actions.addWidget(self.test_database_button)
+            actions.addWidget(self.save_database_button)
+            actions.addStretch()
+            outer.addLayout(actions)
+
+            self.database_status = QLabel(
+                "Not tested. `Test connection` checks the server, the pgvector extension, "
+                "permission to create tables, and whether an existing index matches this embedder."
+            )
+            self.database_status.setObjectName("mutedLabel")
+            self.database_status.setWordWrap(True)
+            outer.addWidget(self.database_status)
+
+            self._database_mode_changed()
+            return box
+
+        def _selected_mode(self) -> RuntimeMode:
+            """The chosen runtime, as the ENUM rather than whatever Qt handed back.
+
+            ⛔ **Qt stores a `StrEnum` as a plain `str`.** Measured: `addItem(label,
+            RuntimeMode.DOCKER)` then `itemData(0)` returns `'docker'`, type `str`. So
+            `currentData() is RuntimeMode.DOCKER` is permanently False while
+            `currentData() == RuntimeMode.DOCKER` is True, and identity is the comparison this file
+            uses everywhere else for enums.
+
+            Three call sites read that as "not the local-database mode", so the connection field
+            never enabled, the test button never enabled, and Save took the branch that stores no
+            DSN. Every one of them looked right. Converting once here means the rest of the class
+            can keep comparing with `is`, which is what the reader expects.
+            """
+            return RuntimeMode(self.mode_combo.currentData())
+
+        def _database_mode_changed(self) -> None:
+            """Only one runtime takes a connection string, so only that one offers the field."""
+            mode = self._selected_mode()
+            needs_dsn = mode is RuntimeMode.LOCAL_DATABASE
+            self.dsn_edit.setEnabled(needs_dsn)
+            self.test_database_button.setEnabled(needs_dsn)
+            if not needs_dsn:
+                self.database_status.setText(
+                    f"{self._MODE_LABELS[mode]} does not use a connection string."
+                )
+
+        def _database_settings(self) -> tuple[RuntimeMode, str] | None:
+            """The chosen mode and a non-empty DSN, or None after reporting why not."""
+            mode = self._selected_mode()
+            dsn = self.dsn_edit.text().strip()
+            if mode is RuntimeMode.LOCAL_DATABASE and not dsn:
+                self.database_status.setText("Enter a connection string first.")
+                return None
+            return mode, dsn
+
+        def _test_database(self) -> None:
+            settings = self._database_settings()
+            if settings is None:
+                return
+            _mode, dsn = settings
+            self.test_database_button.setEnabled(False)
+            self.database_status.setText("Testing...")
+            # ⚠️ On the pool, never inline. `probe_database` opens a network connection, and a
+            # database that is merely unreachable takes its whole timeout to say so — on the GUI
+            # thread that is the window freezing with no way to tell it apart from a crash.
+            self._run(
+                lambda: probe_database(dsn),
+                self._database_tested,
+                self._database_test_failed,
+            )
+
+        def _database_tested(self, report: Any) -> None:
+            self.test_database_button.setEnabled(True)
+            self.database_status.setText(report.render())
+
+        def _database_test_failed(self, message: str) -> None:
+            self.test_database_button.setEnabled(True)
+            self.database_status.setText(f"Could not test the connection: {self._safe(message)}")
+
+        def _save_database(self) -> None:
+            settings = self._database_settings()
+            if settings is None:
+                return
+            mode, dsn = settings
+            self.save_database_button.setEnabled(False)
+            if mode is not RuntimeMode.LOCAL_DATABASE:
+                self._persist_profile(mode, None)
+                return
+            self.database_status.setText("Checking the database before saving...")
+            # Tested before it is written, deliberately. A profile that names a database nothing can
+            # serve from is the silent-nothing failure with an extra step: the app restarts, the
+            # runtime fails, and the setting that caused it looks like the one the user chose.
+            self._run(
+                lambda: probe_database(dsn),
+                lambda report: self._save_checked(report, mode, dsn),
+                self._database_save_failed,
+            )
+
+        def _save_checked(self, report: Any, mode: RuntimeMode, dsn: str) -> None:
+            if not report.usable:
+                self.save_database_button.setEnabled(True)
+                self.database_status.setText(
+                    "Not saved, because this database cannot serve RE-call yet.\n" + report.render()
+                )
+                return
+            self._persist_profile(mode, dsn)
+
+        def _persist_profile(self, mode: RuntimeMode, dsn: str | None) -> None:
+            try:
+                updated = replace(self.profile, mode=mode, dsn=dsn)
+                save_profile(updated)
+            except (OSError, ValueError) as exc:
+                self.save_database_button.setEnabled(True)
+                self.database_status.setText(f"Could not save: {self._safe(str(exc))}")
+                return
+            self.profile = updated
+            self.save_database_button.setEnabled(True)
+            # ⚠️ Says RESTART, because this window built its runtime at startup and does not rebuild
+            # it. Reporting "saved" alone would leave the user watching the old runtime and
+            # concluding the setting did nothing.
+            self.database_status.setText(
+                f"Saved. {self._MODE_LABELS[mode]}.\nRestart RE-call for it to take effect."
+            )
+
+        def _database_save_failed(self, message: str) -> None:
+            self.save_database_button.setEnabled(True)
+            self.database_status.setText(f"Could not save: {self._safe(message)}")
+
+        def _safe(self, message: str) -> str:
+            """Anything derived from a connection attempt, with this DSN's password removed.
+
+            ⚠️ **These two paths carry an EXCEPTION, not a report.** `probe_database` scrubs what it
+            returns, so the ordinary failures arrive clean; these handlers fire when the probe
+            itself raised, and `_Worker` hands on a bare `str(exc)`. The label is on screen, in
+            screenshots, and in whatever a user pastes into an issue.
+
+            The comment that used to sit here simply asserted "Redacted" and nothing did any
+            redacting. That is worse than no comment, because it stops the next reader looking.
+            """
+            return scrub_dsn_secrets(message, self.dsn_edit.text().strip())
 
         def _save_api_keys(self) -> None:
             self._api_keys = {
@@ -1050,6 +1263,21 @@ if QApplication is not None:
                 self.status.setText("BGE and Voyage models are not available in this RE-call configuration.")
                 return
             self._pipeline_configs[self._active_config_type] = self._capture_config()
+            # ⚠️ Actually WRITE it. Until this line the button set an in-memory dict and then told
+            # the user "Configuration saved", so reopening the app restored the defaults and the
+            # status line was a false claim. Demonstrated before fixing: set the embedder model,
+            # save, close, reopen, and the field read `hashing-64` again.
+            try:
+                save_pipelines(self._pipeline_configs)
+            except OSError as exc:
+                # Say so rather than claim success. The choices are still live in this session, so
+                # the user can keep working; what they cannot do is rely on them surviving.
+                self.status.setText(
+                    f"Configuration applied for this session but NOT saved: {exc.strerror or exc}"
+                )
+                self._config_dirty = False
+                self._calibration_required = True
+                return
             self._config_dirty = False
             self._calibration_required = True
             self.configuration_warning.setText(
@@ -1084,11 +1312,28 @@ if QApplication is not None:
             self.splade_status.setText(f"Hardware check failed: {message}")
 
         def _calibration_targets(self) -> list[tuple[str, str, str]]:
+            """One row per corpus that exists, naming the tenant it actually reports on.
+
+            ⚠️ **The Memory row used to read the DOCS tenant.** `("Memory", "docs")` meant two rows
+            showed the same corpus under different names, so the Memory row reported a calibration
+            belonging to something else — and it read as reassuring, because the docs corpus is the
+            one that certifies. The memory corpus is deliberately never calibrated, so its honest
+            status is "missing"; showing another corpus's certification in its place is worse than
+            showing nothing.
+
+            "All projects" appears only when the runtime can serve that scope, for the same reason
+            the scope selector hides it: the wizard provisions no `user-*` tenant.
+            """
             projects = [(name, name) for name in self._project_names]
-            projects.append(("All projects", self.profile.shared_profile))
+            if self._can_serve_shared():
+                projects.append(("All projects", self.profile.shared_profile))
             targets: list[tuple[str, str, str]] = []
             for label, project in projects:
-                for corpus, suffix in (("Documents", "docs"), ("Memory", "docs"), ("Code", "code")):
+                for corpus, suffix in (
+                    ("Documents", "docs"),
+                    ("Code", "code"),
+                    ("Memory", "memory"),
+                ):
                     targets.append((label, corpus, f"{project}-{suffix}"))
             return targets
 
@@ -1342,6 +1587,29 @@ if QApplication is not None:
                 return data
             return {"tenant": self.profile.default_tenant, "shared": bool(data)}
 
+        def _can_serve_shared(self) -> bool:
+            """Whether the shared "all projects" scope actually exists in this stack.
+
+            Asked of the runtime rather than assumed, because the answer differs by install: the
+            legacy compose defines `recall-user-docs`/`recall-user-code`, and a wizard-generated
+            stack defines neither. Offering a scope nothing can serve is the same defect class as a
+            status line claiming a save that did not happen — the menu asserts a capability.
+
+            Any runtime that cannot answer the question keeps the entry. A VPS server resolves the
+            scope remotely and this process cannot know what it holds, so hiding on ignorance would
+            remove a working choice; only a definite "no service for this scope" hides it.
+            """
+            resolve = getattr(self.runtime, "_service_for_tenant", None)
+            if resolve is None:
+                return True
+            for kind in ("docs", "code", "memory"):
+                try:
+                    resolve(f"{self.profile.shared_profile}-{kind}")
+                except Exception:  # noqa: BLE001 - any refusal means "not servable", not a crash
+                    continue
+                return True
+            return False
+
         def _populate_scopes(self, tenants: list[str]) -> None:
             names: list[str] = []
             for raw in tenants:
@@ -1357,12 +1625,137 @@ if QApplication is not None:
             self.scope.clear()
             for name in names:
                 self.scope.addItem(name, {"tenant": name, "shared": False})
-            self.scope.addItem("All projects (shared memory)", {"tenant": self.profile.shared_profile, "shared": True})
+            # ⚠️ Offered only when the runtime can actually serve it. The wizard provisions
+            # `<project>-*` and never a `user-*` scope, so on every wizard install this entry
+            # resolved to a tenant with no MCP service: a permanent menu item that refused whenever
+            # anyone picked it. The legacy `docker-compose.desktop.yml` DOES define
+            # `recall-user-docs` and `recall-user-code`, which is why it looked fine there.
+            if self._can_serve_shared():
+                self.scope.addItem(
+                    "All projects (shared memory)",
+                    {"tenant": self.profile.shared_profile, "shared": True},
+                )
             self.scope.addItem("+ Add project", {"action": "add"})
             preferred = self.scope.findText(self.profile.default_tenant)
             self.scope.setCurrentIndex(preferred if preferred >= 0 else 0)
             self._last_scope_index = self.scope.currentIndex()
             self.scope.blockSignals(False)
+
+        def _provision_project(self, name: str) -> None:
+            """Actually create the project, rather than only offering its name.
+
+            "+ Add project" used to append a string to this combo box and stop. The scope then
+            pointed at a tenant with no compose service, no MCP server block and no corpus, so it
+            did not survive a restart and anything reaching the runtime with it was refused — a
+            failure that arrived later, worded as a problem with a "tenant scope".
+
+            The corpora are NOT built or calibrated here. That takes minutes and the user has asked
+            for somewhere to put files, not for an index of files they have not chosen yet; the
+            queue page fills it and the calibration page certifies it. So the project arrives real
+            but empty and uncalibrated, and this says so instead of implying it is ready.
+
+            Docker only. `RuntimeManager._call_for` discards the tenant argument, so in VPS mode the
+            scope is a field sent to a remote server and provisioning it is that server's business,
+            not something this process can do or should claim to have done.
+            """
+            if not isinstance(self.runtime, DockerRuntime):
+                self.status.setText(
+                    f"Project {name!r} is selected. This app provisions projects only for the "
+                    f"managed local stack; on a remote server the scope has to exist there."
+                )
+                return
+
+            compose_file = self.profile.compose_file
+            if not compose_file:
+                self.status.setText(
+                    f"Cannot create {name!r}: this profile names no compose file, so there is no "
+                    f"stack to add it to."
+                )
+                return
+
+            # ⚠️ **On the worker pool, not the GUI thread.** This ran `add_project` and a full
+            # `runtime.start()` inline in a `currentIndexChanged` slot, so the window stopped
+            # repainting and Windows marked it "(Not Responding)" for the length of a compose
+            # `up --wait` — which, on a first start, includes building the image. Every other
+            # long operation in this class already goes through `_run`; this was the only one that
+            # did not. Four auditors found it.
+            self.status.setText(f"Creating project {name!r}…")
+            self.scope.setEnabled(False)
+            self._run(
+                lambda: self._do_provision(name, compose_file),
+                lambda outcome: self._provision_done(name, outcome),
+                lambda message: self._provision_failed(name, message),
+            )
+
+        def _do_provision(self, name: str, compose_file: str) -> tuple[object, str]:
+            """Worker half: create the project and bring the stack back up. No Qt here.
+
+            Returns `(added, start_error)`. ⚠️ **Creating and starting are separate outcomes, and
+            collapsing them lost a state the user has to be told about.** Once `add_project`
+            returns, the compose file HAS been written and the tenants exist; if the restart then
+            fails, "cannot create" is false and dropping the name from the selector strands the
+            user — a retry finds the tenants already present, reports "already exists", and never
+            starts anything.
+            """
+            # Hand over the compose path the profile ACTUALLY records, not just its directory.
+            # Passing the parent alone discarded the filename and let `add_project` guess it,
+            # and the guess was wrong: the installer writes `docker-compose.recall.yml`.
+            from recall.wizard.projects import add_project
+
+            stack_file = Path(compose_file).resolve()
+            added = add_project(stack_file.parent, name, compose_path=stack_file)
+            try:
+                # Unconditionally, not only when something was created: a retry after a failed
+                # start finds nothing to add, and skipping the start there is what left the user
+                # with no route back to a running stack. `start()` is idempotent.
+                self.runtime.start()
+            except Exception as exc:  # noqa: BLE001 - reported, not handled; see the docstring
+                return added, str(exc)
+            return added, ""
+
+        def _provision_done(self, name: str, outcome: tuple[object, str]) -> None:
+            self.scope.setEnabled(True)
+            added, start_error = outcome
+            created = getattr(added, "tenants", ())
+
+            if start_error:
+                # The project EXISTS — the compose file was written before the start was attempted.
+                # Saying "cannot create" here would be a claim about a state the code did create,
+                # and the name stays in the selector so a retry can start it.
+                where = getattr(added, "compose_path", None)
+                self.status.setText(
+                    f"Project {name!r} was written to {where.name if where else 'the stack'}, but "
+                    f"the stack did not come back up: {start_error}. The project exists; it will "
+                    f"be there on the next connect."
+                )
+                return
+
+            if not created:
+                self.status.setText(f"Project {name!r} already exists in this stack; selected it.")
+                return
+
+            # Names the pages as the navigation labels them. This said "the Queue page", which the
+            # user cannot find: the buttons are MAIN, GITHUB, CALIBRATION, CONFIG, SETTINGS, and
+            # `queue_page` is only the internal name of the one shown as MAIN. (Finding DOC-005.)
+            self.status.setText(
+                f"Created project {name!r} ({len(created)} corpora). It is empty and not yet "
+                f"calibrated: add files on the MAIN page, then calibrate it on the CALIBRATION "
+                f"page before trusting search."
+            )
+
+        def _provision_failed(self, name: str, message: str) -> None:
+            self.scope.setEnabled(True)
+            # Every failure shape lands here, including the ones `_Worker` converts from arbitrary
+            # exceptions. The previous inline version caught only `RuntimeErrorBase`, while
+            # `runtime.start()` reaches the MCP client and can raise types that are not.
+            self.status.setText(f"Cannot create {name!r}: {message}")
+            self._forget_project(name)
+
+        def _forget_project(self, name: str) -> None:
+            """Drop a name that was added to the combo box but could not be provisioned."""
+            if name in self._project_names:
+                self._project_names.remove(name)
+            self._populate_scopes(self._project_names)
 
         def _scope_changed(self, index: int) -> None:
             data = self.scope.itemData(index)
@@ -1370,12 +1763,29 @@ if QApplication is not None:
                 name, accepted = QInputDialog.getText(self, "Add project", "Project name")
                 clean_name = _project_name(name) if accepted else ""
                 if clean_name:
-                    if clean_name not in self._project_names:
+                    provisioned = clean_name in self._project_names
+                    if not provisioned:
                         self._project_names.append(clean_name)
                         self._populate_scopes(self._project_names)
                     selected = self.scope.findText(clean_name)
                     if selected >= 0:
                         self.scope.setCurrentIndex(selected)
+                    else:
+                        # The name was REFUSED by `_populate_scopes`, which drops anything equal to
+                        # the shared profile and then resets the index to the default project. So
+                        # the user is now on a scope they did not choose. Saying "is selected" here
+                        # would be an affirmative false claim about the live write target, and the
+                        # next drop would ingest into the default corpus.
+                        self.scope.blockSignals(True)
+                        self.scope.setCurrentIndex(self._last_scope_index)
+                        self.scope.blockSignals(False)
+                        self.status.setText(
+                            f"{clean_name!r} is reserved for the shared scope, which is already "
+                            f"listed as 'All projects (shared memory)'. Selection unchanged."
+                        )
+                        return
+                    if not provisioned:
+                        self._provision_project(clean_name)
                 else:
                     self.scope.blockSignals(True)
                     self.scope.setCurrentIndex(self._last_scope_index)
@@ -1749,7 +2159,15 @@ if QApplication is not None:
             self.status.setText("Indexing is running…")
             self._run(
                 lambda: [
-                    self.runtime.start_ingest(SourceSelection(category, tuple(paths), tenant, shared))
+                    self.runtime.start_ingest(
+                        SourceSelection(
+                            category,
+                            tuple(paths),
+                            tenant,
+                            shared,
+                            shared_profile=self.profile.shared_profile,
+                        )
+                    )
                     for (category, tenant, shared), paths in groups.items()
                 ],
                 self._job_done,
@@ -1789,9 +2207,35 @@ if QApplication is not None:
             )
 
         def _run(self, fn: Any, done: Any, failed: Any | None = None) -> None:
+            """Run `fn` on the pool and deliver its result to `done` (or `failed`).
+
+            ⚠️ **The worker must be KEPT, or the callback is delivered by luck.** `_Worker` is a
+            `QRunnable` with `autoDelete` on, so the moment `run()` returns Qt destroys it — taking
+            `_WorkerSignals` with it and purging the queued cross-thread call before it is
+            delivered. Measured on PySide6 6.11 with five identical jobs: **1 of 5 arrived** as this
+            was written, **5 of 5** with a reference held. Zero in another run, because it is a
+            garbage-collection race rather than a deterministic failure, which is worse: it works
+            often enough to look correct.
+
+            This affects every caller — connect, ingest, calibration, the GitHub download — not
+            just the one that exposed it. It surfaced because provisioning disables the scope
+            selector and re-enables it only from these callbacks, so a lost signal left the control
+            disabled for good.
+            """
             worker = _Worker(fn)
+            worker.setAutoDelete(False)
+            self._workers.append(worker)
+
+            def _release(_: Any = None) -> None:
+                # Idempotent: both signals are connected to it, and only one ever fires, but a
+                # double release must not raise inside a Qt slot.
+                if worker in self._workers:
+                    self._workers.remove(worker)
+
             worker.signals.done.connect(done)
             worker.signals.failed.connect(failed or (lambda message: self._job_failed(message)))
+            worker.signals.done.connect(_release)
+            worker.signals.failed.connect(_release)
             self.pool.start(worker)
 
         def _runtime_ready(self, result: Any) -> None:
@@ -1864,17 +2308,88 @@ if QApplication is not None:
             QMessageBox.warning(self, "RE-call", message)
 
         def closeEvent(self, event: Any) -> None:
+            """Close, always, and never wait longer than a person will.
+
+            ⛔ **`waitForDone()` with no argument waits FOREVER.** A provisioning worker sits inside
+            `docker compose up`, whose timeout is `_SLOW_VERB_TIMEOUT` — 1800 seconds. So closing
+            the window during a first install froze the whole application for up to half an hour,
+            unresponsive, with no indication that anything was happening. On Windows that is the
+            state the OS offers to kill for you, and killing it mid-provision is how a stack ends up
+            half-created.
+
+            It also made `test_provisioning_is_dispatched_to_the_pool_not_the_gui_thread` flaky
+            rather than failing: the wait only exceeds the test timeout when Docker happens to be
+            busy, so it passed on a quiet machine and hung on a loaded one. Found while running the
+            suite against a database for the first time, which is not where the defect was.
+
+            **Bounded, and closing regardless.** The work is in subprocesses with their own
+            timeouts; abandoning the wait does not abandon the install, and Docker finishes what it
+            started. The workers are retained in `self._workers` with `setAutoDelete(False)`, so a
+            still-running one cannot be destroyed underneath its own signals — the same retention
+            that fixed the garbage-collection race documented in `_run`.
+            """
             try:
-                self.pool.waitForDone()
+                finished = self.pool.waitForDone(_CLOSE_WAIT_MS)
+                if not finished:
+                    # Reported rather than silent. Something is still running and the user is
+                    # entitled to know that closing the window did not stop it.
+                    print(
+                        f"recall: closing while {self.pool.activeThreadCount()} background task(s) "
+                        "are still running; they continue in Docker and will finish on their own."
+                    )
                 self.runtime.stop()
             finally:
                 event.accept()
 
 
-def run_app(profile: RuntimeProfile) -> int:
+def application_and_window(build_window: Callable[[], Any]) -> tuple[Any, Any]:
+    """Create the `QApplication` FIRST, then build the window, and return both.
+
+    ⛔ **The parameter is a FACTORY, and that is the whole point of this function.** It used to take
+    an already-constructed window, which reads harmlessly and is not:
+
+        run_window(InstallerWindow(default_root=...))
+
+    Python evaluates the argument before the call, so the window was built before this function had
+    made the application. Qt answers a widget constructed with no `QApplication` by printing
+    `QWidget: Must construct a QApplication before a QWidget` and aborting the process on its fatal
+    handler: no traceback, no window, exit `0xC0000409`. That shipped in the 0.9.7 installer and was
+    reported by the first person to run it. A factory moves the construction inside, where the
+    ordering is decided, so no call site can get it wrong again.
+
+    ⛔ **One launcher, because there are now two windows.** The graphical installer
+    (`recall/desktop/install_ui.py`) needs exactly this and nothing else, and a second copy of it
+    would be a second place that decides whether to reuse an existing `QApplication`, which is the
+    line that decides whether the installer can be opened from inside the running desktop app or
+    crashes with "A QApplication instance already exists".
+
+    ⚠️ **Split out of `run_window` so the self-test can exercise the ordering without an event
+    loop.** The self-test used to build an application and a window itself, in the right order,
+    which is why it passed against the bundle that could not start: it rehearsed a sequence nothing
+    shipped. It now comes through here.
+    """
     if QApplication is None:
         raise RuntimeErrorBase('The desktop extra is required. Install with: pip install "recall-rag[desktop]"')
+    if not callable(build_window):
+        # An already-built widget IS the defect: it was constructed at the call site, before any
+        # application existed. Naming it beats letting Qt abort the process.
+        raise TypeError(
+            "run_window takes a callable that builds the window, not a window. Pass "
+            "`lambda: MyWindow(...)` so the QApplication is created first."
+        )
     app = QApplication.instance() or QApplication([])
-    window = MainWindow(profile)
+    return app, build_window()
+
+
+def run_window(build_window: Callable[[], Any]) -> int:
+    """Build the window inside a live `QApplication`, show it, and run until it closes."""
+    app, window = application_and_window(build_window)
     window.show()
     return int(app.exec())
+
+
+def run_app(profile: RuntimeProfile) -> int:
+    """The main desktop window. Unchanged behaviour; the launcher underneath it is now shared."""
+    if QApplication is None:
+        raise RuntimeErrorBase('The desktop extra is required. Install with: pip install "recall-rag[desktop]"')
+    return run_window(lambda: MainWindow(profile))

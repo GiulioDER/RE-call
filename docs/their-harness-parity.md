@@ -1,5 +1,10 @@
 # Running RE-call inside Mem0's own benchmark harness
 
+<!-- citations: external -- every `benchmarks/...:line` below is in mem0ai/memory-benchmarks,
+     not in this repository. `benchmarks/beam/run.py` exists in BOTH trees and is a different
+     file in each, so scripts/verify_citations.py must not resolve these against ours. -->
+<!-- citations: external -->
+
 Every RE-call number published before this document was produced by **RE-call's** harness. Mem0's
 published numbers (LOCOMO 92.5, LongMemEval 94.4, BEAM 1M 0.641 avg score / 70.1% pass) were
 produced by **theirs**. Those two sets of numbers are not comparable, and no wording makes them
@@ -34,8 +39,20 @@ git apply /path/to/recall/recall_interop/memory-benchmarks-backend-swap.patch
 
 ## 2. The seam
 
-Their runners talk to the memory system through exactly two async calls
-(`benchmarks/locomo/run.py:417`, `benchmarks/beam/run.py:690`):
+Their runners talk to the memory system through exactly two async calls. Both live in **their**
+repository, `mem0ai/memory-benchmarks`, not in this one: `benchmarks/locomo/run.py` around line 417,
+and `benchmarks/beam/run.py` around line 690.
+
+⚠️ **Those two line numbers carry less than a citation into this tree does, and are written this way
+deliberately.** The paths collide with real files here (`benchmarks/beam/run.py` exists in RE-call
+and is a different program), so writing them in this repository's `path:line` form invited both a
+reader and `scripts/check_doc_citations.py` to resolve them against the wrong repository, which is
+exactly what happened. They are also unverifiable from here: the clone step above pins no commit, so
+their runners can move under these numbers with nothing to detect it. The durable anchor is the pair
+of CALLS below, not the lines; the closest thing to a pin is
+`recall_interop/memory-benchmarks-backend-swap.patch`, which records the blobs it was cut against
+(`b277261` for `beam/run.py`, `8e4bdb9` for `locomo/run.py`) and will refuse to apply if their tree
+has moved far enough to matter.
 
 ```python
 await mem0.add(messages, user_id, timestamp=<epoch>)   # -> {"results": [...]}

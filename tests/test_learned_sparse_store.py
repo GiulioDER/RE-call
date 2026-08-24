@@ -157,3 +157,63 @@ def test_dropping_the_table_removes_its_sidecar_rows(make_store) -> None:
         ).fetchone()
     assert remaining is not None and remaining[0] == 0
 
+
+def _sidecar_ids(table: str) -> set[str]:
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        rows = conn.execute(
+            f"SELECT id FROM {SPARSE_TABLE} WHERE chunk_table = %s", (table,)
+        ).fetchall()
+    return {row[0] for row in rows}
+
+
+@requires_db
+def test_delete_sources_erases_the_sidecar_rows_of_the_deleted_chunks(make_store) -> None:
+    """Right-to-erasure reaches the sidecar: a forgotten chunk's term weights die with it,
+    under EVERY profile, while the surviving chunk's rows stay."""
+    store = make_store(64)
+    store.upsert([_chunk("alpha", "alpha text"), _chunk("beta", "beta text")], [[0.1] * 64] * 2)
+    store.upsert_sparse("profile-a", {"alpha": {7: 1.0}, "beta": {9: 1.0}})
+    store.upsert_sparse("profile-b", {"alpha": {11: 1.0}})
+
+    removed = store.delete_sources(["/corpus/alpha.md"])
+
+    assert removed == 1
+    assert _sidecar_ids(store.table) == {"beta"}, (
+        "alpha's sidecar rows must be gone under both profiles; beta's must survive"
+    )
+
+
+@requires_db
+def test_replace_sources_leaves_no_orphaned_tail_rows(make_store) -> None:
+    """The exact scenario SparseCoverageError names: re-chunking a source into fewer chunks
+    used to leave the tail's old sidecar rows behind as permanent orphans."""
+    store = make_store(64)
+    one = Chunk(id="one", source="/corpus/doc.md", text="first half", metadata={})
+    two = Chunk(id="two", source="/corpus/doc.md", text="second half", metadata={})
+    store.upsert([one, two], [[0.1] * 64] * 2)
+    store.upsert_sparse(PROFILE.profile_id, {"one": {7: 1.0}, "two": {9: 1.0}})
+
+    merged = Chunk(id="merged", source="/corpus/doc.md", text="both halves", metadata={})
+    store.replace_sources(["/corpus/doc.md"], [merged], [[0.2] * 64])
+
+    assert _sidecar_ids(store.table) == set(), (
+        "the replaced chunks' sidecar rows must not survive as orphans"
+    )
+
+
+@requires_db
+def test_delete_sources_across_scrubs_both_tables_sidecars(make_store) -> None:
+    """Each generation table scrubs its own sidecar rows, keyed under that table's name."""
+    store_a = make_store(64)
+    store_b = make_store(64)
+    for store in (store_a, store_b):
+        store.upsert([_chunk("alpha", "alpha text")], [[0.1] * 64])
+        store.upsert_sparse(PROFILE.profile_id, {"alpha": {7: 1.0}})
+
+    removed = store_a.delete_sources_across(
+        [store_a.table, store_b.table], ["/corpus/alpha.md"]
+    )
+
+    assert removed == 2
+    assert _sidecar_ids(store_a.table) == set()
+    assert _sidecar_ids(store_b.table) == set()

@@ -31,10 +31,18 @@ Provider ports:
 2. `graph_provider`: optional, returns `ReasoningGraphProjection`.
 3. `proposal_provider`: optional, returns proposals or a `ProposalProtocolReport`.
 4. `answer_provider`: optional, consumes the existing evidence prompt pair and returns `AnswerEnvelope` JSON.
+5. `expansion_provider`: optional, returns bounded untrusted retrieval proposals.
+6. `expansion_retriever`: optional, executes proposals and must preserve tenant, generation, trust,
+   and calibration binding.
 
 Response type: `ReasoningResponse`
 
 Fields include outcome, answer or clarification request, trusted evidence, inference proposals, provider failures, reasoning trace, contradictions, unsupported gaps, citations, calibration identity, generation identity, trust state, refusal reason, and diagnostics.
+
+Retrieval expansion is depth first and bounded to two retrieval rounds, one provider call, and at
+most three generated queries. A successful depth pass that no longer reports an evidence gap skips
+the model provider. Provider input is bounded before serialization. Expansion proposals never
+become evidence or citations until normal trusted retrieval accepts them.
 
 Provider failures are structured records rather than exceptions in the public response. A proposal provider outage, timeout, or malformed provider report returns `outcome="needs_review"` with `refusal_reason="provider_failure"`, includes `provider_failures`, and does not invoke the answer provider.
 

@@ -27,7 +27,7 @@ from recall.calibration_v2 import (
 )
 from recall.cli import main as cli_main
 from recall.generation_store import GenerationStore
-from recall.generations import GenerationManager
+from recall.generations import GenerationManager, UnsafePromotion
 from recall.trust import trusted_search
 from recall_mcp.service import search_memory
 from tests.conftest import TEST_DSN, requires_db
@@ -336,7 +336,9 @@ def test_calibration_cli_create_publish_inspect_and_export(
     generation_id = _ready(manager, embedder, b"answer corpus", "v1")
     query_path = tmp_path / "queries.json"
     query_path.write_text(json.dumps(_labels()), encoding="utf-8")
-    monkeypatch.setattr("recall.cli._make_embedder", lambda _name: embedder)
+    monkeypatch.setattr(
+        "recall.cli_commands.calibration_cmd._make_embedder", lambda _name: embedder
+    )
     base = ["--serving-dsn", TEST_DSN, "--tenant", tenant]
 
     cli_main(
@@ -556,3 +558,378 @@ def test_the_remediation_example_is_advice_the_guard_itself_accepts() -> None:
         assert datetime.fromisoformat(suggestion) == datetime.fromisoformat(naive).replace(
             tzinfo=UTC
         )
+
+
+# ----------------------------------------------------------------------------------------------
+# The production certification gate
+# ----------------------------------------------------------------------------------------------
+
+
+def _production(manager: GenerationManager) -> GenerationManager:
+    """The same tenant and database, seen as production."""
+    return GenerationManager(
+        TEST_DSN, manager.tenant_id, actor="pytest", environment="production"
+    )
+
+
+@requires_db
+def test_a_certified_generation_promotes_in_production(calibration_tenant) -> None:
+    """⛔ **The half that makes this a gate rather than a wall.**
+
+    `promote` used to refuse production outright — "unavailable until certification gates land" —
+    so the desktop could build a generation and never activate it. A replacement that refuses
+    everything is the same placeholder with a longer message, so this is the test that has to pass:
+    a generation whose calibration certified, published, and is still bound goes live.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+    artifact = repository.calibrate(generation_id, _labels(), embedder)
+    repository.publish(artifact.calibration_id)
+
+    _production(manager).promote(generation_id)
+
+    assert repository.resolve(generation_id).status == CalibrationStatus.CERTIFIED
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        active = conn.execute(
+            "SELECT active_generation_id FROM recall_tenant_state WHERE tenant_id = %s",
+            (tenant,),
+        ).fetchone()
+        state = conn.execute(
+            "SELECT state FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
+            (tenant, generation_id),
+        ).fetchone()
+    assert active is not None and active[0] == generation_id, "the tenant must be serving it"
+    assert state is not None and state[0] == "active"
+
+
+@requires_db
+def test_an_uncertified_generation_is_refused_and_told_which_precondition_failed(
+    calibration_tenant,
+) -> None:
+    """MISSING, DRAFT, UNCERTIFIED and STALE need four different actions from the reader.
+
+    A gate that says only "no" sends them to guess, so the status is carried into the message
+    rather than flattened to a boolean.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+    production = _production(manager)
+
+    # Nothing calibrated yet.
+    with pytest.raises(UnsafePromotion, match="missing"):
+        production.promote(generation_id)
+
+    # Calibrated but not published: a draft is not a licence to serve.
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+    artifact = repository.calibrate(generation_id, _labels(), embedder)
+    with pytest.raises(UnsafePromotion, match="draft") as caught:
+        production.promote(generation_id)
+    assert "recall calibration calibrate" in str(caught.value), (
+        "a refusal without a remedy is only half the report"
+    )
+
+    repository.publish(artifact.calibration_id)
+    production.promote(generation_id)
+
+
+@requires_db
+def test_the_unsafe_development_flag_does_not_open_the_production_door(
+    calibration_tenant,
+) -> None:
+    """⛔ The flag exists for development and must not be a way past certification.
+
+    Refused BEFORE the certification check, so a caller cannot discover that the flag would
+    otherwise have worked on an uncertified generation.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+    artifact = repository.calibrate(generation_id, _labels(), embedder)
+    repository.publish(artifact.calibration_id)
+
+    with pytest.raises(
+        UnsafePromotion,
+        match="unsafe_development is unavailable for a tenant served under production",
+    ):
+        _production(manager).promote(generation_id, unsafe_development=True)
+
+
+@requires_db
+def test_rollback_never_refuses_and_records_what_it_activated(calibration_tenant) -> None:
+    """⛔ **Decision 2: rollback is the incident path and never refuses on certification grounds.**
+
+    This test previously asserted the opposite, because the gate was written without reading
+    `docs/UNCALIBRATED_FIRST_RUN_DESIGN.md` section 6, which had already settled the question in
+    bold: "A gate that blocks recovery precisely when recovery is needed is worse than serving a
+    `provisional` answer that says so on the wire ... Refusing here would trade a visible
+    degradation for an invisible workaround."
+
+    The bargain is not "anything goes". It is **"Prevented, no; hidden, never."** So the assertion
+    is that the rollback SUCCEEDS and that the audit event says what was activated.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+
+    first = _ready(manager, embedder, b"answer corpus", "v1")
+    published = repository.calibrate(first, _labels(), embedder)
+    repository.publish(published.calibration_id)
+    production = _production(manager)
+    production.promote(first)
+
+    second = _ready(manager, embedder, b"answer corpus two", "v2")
+    second_artifact = repository.calibrate(second, _labels(), embedder)
+    repository.publish(second_artifact.calibration_id)
+    production.promote(second)
+
+    # Break the target's binding, which is what `forget()` does to EVERY generation of a tenant.
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        conn.execute(
+            "UPDATE recall_calibrations SET lifecycle_state = 'superseded' "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (tenant, first),
+        )
+
+    assert production.rollback(provisional_reason="incident 4171") == first, (
+        "an uncertified target must NOT block recovery"
+    )
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        row = conn.execute(
+            "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
+            "AND event_type = 'generation_rolled_back' ORDER BY created_at DESC LIMIT 1",
+            (tenant,),
+        ).fetchone()
+
+    assert row is not None, "the rollback must be audited"
+    payload = row[0]
+    assert payload["calibration_status"] != "certified", "the fixture must actually be degraded"
+    assert payload["provisional_reason"] == "incident 4171", (
+        "the operator's reason must survive into the record; that is the whole of the bargain"
+    )
+
+
+@requires_db
+def test_a_rollback_onto_a_certified_target_records_no_provisional_reason(
+    calibration_tenant,
+) -> None:
+    """The undegraded case must not look degraded, or the marker stops meaning anything."""
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+
+    first = _ready(manager, embedder, b"answer corpus", "v1")
+    repository.publish(repository.calibrate(first, _labels(), embedder).calibration_id)
+    production = _production(manager)
+    production.promote(first)
+    second = _ready(manager, embedder, b"answer corpus two", "v2")
+    repository.publish(repository.calibrate(second, _labels(), embedder).calibration_id)
+    production.promote(second)
+
+    production.rollback()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        row = conn.execute(
+            "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
+            "AND event_type = 'generation_rolled_back' ORDER BY created_at DESC LIMIT 1",
+            (tenant,),
+        ).fetchone()
+
+    assert row is not None
+    assert row[0]["calibration_status"] == "certified"
+    assert row[0]["provisional_reason"] is None
+
+
+@requires_db
+def test_development_promotion_is_unchanged_by_the_gate(calibration_tenant) -> None:
+    """The gate is production-only. Development still promotes uncertified, with the flag.
+
+    Worth pinning: a gate that quietly tightened development would break every local install and
+    every test that builds a corpus without calibrating one.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+
+    manager.promote(generation_id, unsafe_development=True)
+
+    assert CalibrationRepository(TEST_DSN, tenant, actor="pytest").resolve(
+        generation_id
+    ).status == CalibrationStatus.MISSING, "promoted with no calibration at all, as before"
+
+
+@requires_db
+def test_the_gate_resolves_on_the_promoting_transaction(calibration_tenant, monkeypatch) -> None:
+    """⛔ The verdict and the activation it authorises must be ONE decision.
+
+    `require_certified_for_production` used to open its own connection, which made the gate read a
+    different snapshot than the transaction that commits the promotion. Two things followed, and
+    only one of them is the one that looks alarming:
+
+    * **Not a deadlock**, though it reads like one. Measured: a plain `SELECT` does not wait on
+      `FOR UPDATE` under MVCC, so the nested read completed. The hazard is subtler than a hang.
+    * **A verdict about a state that could already be gone.** Between CERTIFIED and COMMIT, a
+      concurrent `forget()` can rewrite the generation's `corpus_fingerprint` and make the
+      calibration STALE.
+    * **A connection acquired under a tenant lock.** Measured: +1 backend for the width of the lock
+      window against `max_connections=100`; exhaustion stalls the lock, not just the caller.
+
+    Reading on the promoting connection closes it, because a fingerprint rewrite must take the same
+    row lock `promote` already holds. Measured with a competing `FOR UPDATE`: it waited 1.503s, the
+    exact duration of the hold, rather than proceeding.
+
+    This test asserts the mechanism the measurement explains: the resolution runs on a connection
+    that is INSIDE a transaction, and the self-opening path is not taken.
+    """
+    from recall.calibration_v2 import CalibrationRepository as _Repository
+
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+    repository.publish(repository.calibrate(generation_id, _labels(), embedder).calibration_id)
+
+    seen: list[str] = []
+    real_within = _Repository.resolve_within
+
+    def _watch(self, conn, generation):  # noqa: ANN001, ANN202
+        seen.append(conn.info.transaction_status.name)
+        return real_within(self, conn, generation)
+
+    def _forbidden(self, generation):  # noqa: ANN001, ANN202
+        raise AssertionError(
+            "the gate opened its OWN connection while `promote` held a tenant lock; the verdict "
+            "and the activation are then two decisions, not one"
+        )
+
+    monkeypatch.setattr(_Repository, "resolve_within", _watch)
+    monkeypatch.setattr(_Repository, "resolve", _forbidden)
+
+    _production(manager).promote(generation_id)
+
+    assert seen, "the gate must have run at all"
+    assert seen == ["INTRANS"], (
+        f"the gate must resolve inside the promoting transaction, saw {seen}. IDLE means it ran on "
+        "a connection with no open transaction, which is the defect wearing the fixed signature"
+    )
+
+
+@requires_db
+def test_rollback_reads_its_recorded_status_on_its_own_transaction(
+    calibration_tenant, monkeypatch
+) -> None:
+    """The same connection rule, on the path where the read only REPORTS.
+
+    ⚠️ **This test exists because its mutation survived.** Reverting `promote` to a self-opened
+    connection failed a test; reverting `rollback` failed nothing, so half the fix was unpinned and
+    would have rotted back silently.
+
+    The atomicity argument is weaker here, because the status is recorded rather than enforced. The
+    other two are not. A rollback holds the tenant row `FOR UPDATE` exactly as a promotion does, so
+    a self-opened connection acquires a backend under that lock; and the status written into
+    `generation_rolled_back` should be the one that was true for the transaction that did the
+    activating, not one read beside it. An audit record is the artefact that outlives everyone who
+    remembers the code, and "approximately what was true" is not what it should say.
+    """
+    from recall.calibration_v2 import CalibrationRepository as _Repository
+
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+
+    first = _ready(manager, embedder, b"answer corpus", "v1")
+    repository.publish(repository.calibrate(first, _labels(), embedder).calibration_id)
+    production = _production(manager)
+    production.promote(first)
+    second = _ready(manager, embedder, b"answer corpus two", "v2")
+    repository.publish(repository.calibrate(second, _labels(), embedder).calibration_id)
+    production.promote(second)
+
+    seen: list[str] = []
+    real_within = _Repository.resolve_within
+
+    def _watch(self, conn, generation):  # noqa: ANN001, ANN202
+        seen.append(conn.info.transaction_status.name)
+        return real_within(self, conn, generation)
+
+    def _forbidden(self, generation):  # noqa: ANN001, ANN202
+        raise AssertionError(
+            "the rollback opened its OWN connection while holding the tenant lock, and recorded a "
+            "status read outside the transaction that did the activating"
+        )
+
+    monkeypatch.setattr(_Repository, "resolve_within", _watch)
+    monkeypatch.setattr(_Repository, "resolve", _forbidden)
+
+    assert production.rollback() == first
+
+    assert seen == ["INTRANS"], (
+        f"the status must be read inside the rolling-back transaction, saw {seen}"
+    )
+
+
+@requires_db
+def test_a_failing_status_read_does_not_break_the_rollback(calibration_tenant, monkeypatch) -> None:
+    """⛔ **The reporting call must not become the thing that blocks recovery.**
+
+    `calibration_status_for` catches every exception and returns `"unknown"`, on the stated grounds
+    that "a status that cannot be determined must not be the thing that stops an incident recovery".
+    But it runs on the ROLLBACK'S OWN open transaction, and catching a `psycopg.Error` in Python
+    does not clear the server-side aborted state. So a failed read left the next `UPDATE` raising
+    `InFailedSqlTransaction`: the refusal decision 2 removed, reintroduced as a crash.
+
+    Reachable without contrivance — a partially migrated install missing `recall_calibrations` is
+    the exact population the docstring cites as "upgrading bricked it".
+
+    Found by three auditors independently. The existing test asserted only that the read happens
+    INTRANS; nothing drove a failing read, which is why a savepoint was never noticed as missing.
+    """
+    import psycopg
+
+    from recall.calibration_v2 import CalibrationRepository as _Repository
+
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+
+    first = _ready(manager, embedder, b"answer corpus", "v1")
+    repository.publish(repository.calibrate(first, _labels(), embedder).calibration_id)
+    production = _production(manager)
+    production.promote(first)
+    second = _ready(manager, embedder, b"answer corpus two", "v2")
+    repository.publish(repository.calibrate(second, _labels(), embedder).calibration_id)
+    production.promote(second)
+
+    def _explode(self, conn, generation):  # noqa: ANN001, ANN202
+        # A real server-side error on the caller's connection, not a Python-only raise: this is
+        # what aborts the transaction. `SELECT 1/0` is the cheapest way to produce one.
+        conn.execute("SELECT 1/0")
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(_Repository, "resolve_within", _explode)
+
+    assert production.rollback(provisional_reason="incident 9000") == first, (
+        "a failed status read must not stop the rollback; the whole point of swallowing it is that "
+        "recovery proceeds"
+    )
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        row = conn.execute(
+            "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
+            "AND event_type = 'generation_rolled_back' ORDER BY created_at DESC LIMIT 1",
+            (tenant,),
+        ).fetchone()
+
+    assert row is not None, "the rollback must still be audited"
+    assert row[0]["calibration_status"] == "unknown", (
+        "and it must record that the status could not be determined, rather than inventing one"
+    )

@@ -37,6 +37,10 @@ from benchmarks.judge_quality import (
     swap_reject_reason,
 )
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def _record(
     question_id: str,

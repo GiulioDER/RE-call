@@ -11,6 +11,10 @@ import pytest
 
 from benchmarks.beam.dataset import parse_conversation_indices as parse
 
+#: Benchmark-harness coverage, not product coverage; product CI can deselect with
+#: `-m 'not benchharness'`.
+pytestmark = pytest.mark.benchharness
+
 
 def test_a_single_index() -> None:
     assert parse("7") == [7]

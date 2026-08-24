@@ -65,6 +65,8 @@ def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     assert migrations[7].transactional
     assert all(m.concurrent_index for m in (*migrations[1:7], *migrations[8:10]))
     assert migrations[10].transactional
+    assert migrations[13].transactional  # 0014_calibration_carry_forward
+    assert migrations[14].concurrent_index  # 0015_learned_sparse_chunk_index
     assert len({m.checksum for m in migrations}) == len(migrations)
 
 

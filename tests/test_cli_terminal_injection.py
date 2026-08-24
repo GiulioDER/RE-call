@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from recall.cli import _print_result
+from recall.cli_commands._shared import _print_result
 from recall.trust import terminal_safe
 from recall.types import (
     Chunk,

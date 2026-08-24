@@ -219,7 +219,9 @@ def test_the_plan_result_hands_off_a_claim_not_a_proposal_id():
 
 def test_the_cli_accepts_a_claim_key():
     """Otherwise the command the tool prints does not exist."""
-    tree = ast.parse((REPO_ROOT / "recall" / "cli.py").read_text(encoding="utf-8"))
+    tree = ast.parse(
+        (REPO_ROOT / "recall" / "cli_commands" / "extract_rewrite.py").read_text(encoding="utf-8")
+    )
     flags = {
         node.args[0].value
         for node in ast.walk(tree)
@@ -247,7 +249,9 @@ def test_the_cli_flag_defaults_to_off():
     Read off the parser definition with `ast`, because `recall reasoning proposals` opens the
     database and this property does not need one to be true.
     """
-    tree = ast.parse((REPO_ROOT / "recall" / "cli.py").read_text(encoding="utf-8"))
+    tree = ast.parse(
+        (REPO_ROOT / "recall" / "cli_commands" / "reasoning_cmd.py").read_text(encoding="utf-8")
+    )
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "add_argument"):
             continue
@@ -260,7 +264,7 @@ def test_the_cli_flag_defaults_to_off():
             assert action == "store_true", f"action is {action!r}, so the default is not False"
             assert default is None, "an explicit default would override store_true's False"
             return
-    raise AssertionError("--include-extracted is not defined in recall/cli.py")
+    raise AssertionError("--include-extracted is not defined in recall/cli_commands/reasoning_cmd.py")
 
 
 def test_nothing_on_this_path_builds_an_extraction_engine():

@@ -1,0 +1,75 @@
+{
+  "aggregate_stats": {
+    "total_questions": 5,
+    "completed_questions": 5,
+    "skipped_rows": 0,
+    "num_corrected_questions": 0,
+    "average_correctness_pct": 20.0,
+    "average_completeness_pct": 32.25,
+    "combined_correctness_completeness_score": 20.0,
+    "average_recall_pct": 25.83,
+    "average_invalid_extra_docs": 6.2
+  },
+  "question_type_stats": {
+    "completeness": {
+      "count": 5,
+      "average_correctness_pct": 20.0,
+      "average_completeness_pct": 32.25,
+      "combined_correctness_completeness_score": 20.0,
+      "average_recall_pct": 25.83,
+      "average_invalid_extra_docs": 6.2
+    }
+  },
+  "questions": [
+    {
+      "question_id": "qst_0433",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate covers general planned-rotation patterns (ownership, dual-serve, staged rollouts, monitoring, rollback, and post-op) but omits critical gold specifics for emergency rotation (incident declaration, time-limited 60\u2011minute break\u2011glass, Tier 0\u2192Tier 1 prioritization, exact Vault/version/7\u2011day overlap and monitoring windows of \u226530/\u226560 minutes and timestamping/audit steps), so it does not align.",
+      "completeness_pct": 16.67,
+      "document_recall_pct": 0.0,
+      "invalid_extra_docs": 8
+    },
+    {
+      "question_id": "qst_0434",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "Misaligned \u2014 the candidate lists only 1 published Fintech story (LumenMoney) while the gold answer states Fintech appeared in 3 published stories (2 case studies and 1 one-page) in Q4 2025.",
+      "completeness_pct": 0.0,
+      "document_recall_pct": 33.33,
+      "invalid_extra_docs": 6
+    },
+    {
+      "question_id": "qst_0438",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": true,
+      "correctness_reasoning": "The candidate identifies Eng Infra as owning the most incidents and lists the same two incident IDs and count as the gold answer, with no conflicts.",
+      "completeness_pct": 100.0,
+      "document_recall_pct": 33.33,
+      "invalid_extra_docs": 5
+    },
+    {
+      "question_id": "qst_0440",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate only restates security controls, scope, and approvals and explicitly says the SOP is missing, but it omits the detailed enablement/configuration steps, validation, customer communications, and ongoing operations/ownership that the gold answer provides, so it is not aligned.",
+      "completeness_pct": 25.0,
+      "document_recall_pct": 50.0,
+      "invalid_extra_docs": 5
+    },
+    {
+      "question_id": "qst_0442",
+      "corrected": false,
+      "question_type": "completeness",
+      "answer_correct": false,
+      "correctness_reasoning": "The candidate covers the high-level definition, change record, approval tiers, verification, communications, and rollback requirements but omits many critical specifics from the gold answer (SRE/security gates, time windows, canary size/hold time, error/latency thresholds, capacity headroom, rollout order, and other quantitative gates), so it is not fully aligned.",
+      "completeness_pct": 19.57,
+      "document_recall_pct": 12.5,
+      "invalid_extra_docs": 7
+    }
+  ]
+}

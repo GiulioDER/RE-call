@@ -26,6 +26,7 @@ from recall.observability import METRICS
 from recall.promotion import reviewed_promotion_is_trusted_metadata
 
 if TYPE_CHECKING:  # avoid a runtime import cycle: entailment imports trust's abstain wording
+    from recall.decision_ledger import DecisionLedger
     from recall.entailment import EntailmentJudge
 
 from recall.calibration import Calibration
@@ -605,7 +606,53 @@ def evaluate(
     )
 
 
-def trusted_search(
+def order_promoted(
+    trusted: TrustedResult, pool_index: dict[str, int], ordering: str
+) -> TrustedResult:
+    """Reorder the verdict-`ok` hits according to `SuccessorExpansionPolicy.ordering`.
+
+    `evaluate` returns ``ok + rest`` with pool position preserved inside each group, so a fetched
+    successor, appended last by the expander, is last among `ok` however relevant it is. Measured
+    over 6 absent-successor queries: promoted 6 of 6, then ranked 5, 5, 5, 5 and 2.
+
+    `pool_index` must be built from the RetrievalResult BEFORE `evaluate`, because ``ok + rest``
+    has already destroyed the interleaving this needs: the predecessor sits in `rest` and its
+    position relative to the `ok` hits is not recoverable afterwards.
+
+    A successor inherits the LOWEST pool index among the superseded hits naming it. A document is
+    several chunks, and the rank it earned is the best one any of them reached, not the last.
+
+    `rest` is never reordered. It is the demoted material, and its order is not a claim.
+    """
+    if ordering == "pool":
+        return trusted
+    ok = [hit for hit in trusted.hits if hit.verdict == "ok"]
+    rest = [hit for hit in trusted.hits if hit.verdict != "ok"]
+    if not ok:
+        return trusted
+    inherited: dict[str, int] = {}
+    for hit in trusted.hits:
+        target = hit.validity.superseded_by
+        index = pool_index.get(hit.chunk.id)
+        if not target or index is None:
+            continue
+        if index < inherited.get(target, index + 1):
+            inherited[target] = index
+    # A hit the pool never saw sorts last rather than first. Reachable only if a caller hands in a
+    # partial index, and defaulting to 0 there would silently promote an unknown to the top.
+    last = len(pool_index) + 1
+
+    def _own(hit: TrustedHit) -> int:
+        return pool_index.get(hit.chunk.id, last)
+
+    if ordering == "promoted_first":
+        ok.sort(key=lambda hit: (0 if hit.provenance.file in inherited else 1, _own(hit)))
+    else:  # "inherit"
+        ok.sort(key=lambda hit: inherited.get(hit.provenance.file or "", _own(hit)))
+    return replace(trusted, hits=ok + rest)
+
+
+def _trusted_search(
     store: PgVectorStore,
     embedder: Embedder,
     query: str,
@@ -624,23 +671,18 @@ def trusted_search(
     structural_expansion: StructuralExpansionPolicy | None = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
-    """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
+    """The implementation of `trusted_search`, minus the decision-ledger wrapper.
 
-    `entailment` is OFF by default: when a judge is passed, verdict-ok hits that do not entail
-    an answer to the query are demoted to ``not_entailed`` (see `recall.entailment`) — the
-    near-miss guard the cosine threshold cannot provide. Costs one judge pass per ok hit.
-
-    `candidate_k` is the per-leg pool size handed to the retriever (default the library's own
-    ``DEFAULT_CANDIDATE_K``). It is exposed so a caller that widened the pool for its other
-    retrievals — e.g. an eval sweep — can hold this call to the SAME pool, rather than silently
-    reverting to the default here.
+    The generation-snapshot recursion below re-enters HERE, not the public function, so one call
+    is witnessed once: the wrapper records the final outcome, and an inner retry or snapshot
+    re-entry never writes a record of its own.
     """
     if k < 1:
         raise ValueError("k must be >= 1")
     snapshot = getattr(store, "snapshot", None)
     if _generation_snapshot and callable(snapshot):
         with snapshot():
-            return trusted_search(
+            return _trusted_search(
                 store,
                 embedder,
                 query,
@@ -705,9 +747,59 @@ def trusted_search(
     # guarantee: a refusal raised before any `query_dense` call cannot leak corpus bytes, because
     # none were ever fetched. Placing it after retrieval and filtering the payload would have
     # left a sanitiser that someone eventually forgets to call.
+    #
+    # THE MODEL CHECK COMES FIRST, and outranks every calibration verdict, because a cosine
+    # between vectors from two different models is not a small error to be flagged: it is not a
+    # similarity at all. A threshold certified for one model says nothing about the other's
+    # numbers, so reporting `certified` beside them would be the gate asserting precisely what it
+    # cannot know.
+    #
+    # ⛔ Measured 2026-08-20 on VPS2 before this existed: a server running `voyage:voyage-4`
+    # against a `bge-large` generation returned `trust_state: trusted`, `failure_code: null`, and
+    # bound a certified calibration — because both models emit 1024 dimensions, so the only check
+    # that ran was the dimension one. `check_enterprise_readiness` compares these two, but only
+    # `if control_plane is not None`, and a stdio server has none; its sibling check on the
+    # calibration's identity is documented in `recall_mcp/server.py` as unreachable from startup.
+    # Nothing on that path compared the model at all.
+    binding = generation_binding or {}
+    expected_model = binding.get("embedder_model")
+    expected_dim = binding.get("embedder_dimension")
+    model_mismatch = (
+        expected_model is not None and str(getattr(embedder, "name", "")) != expected_model
+    ) or (expected_dim is not None and str(getattr(embedder, "dim", "")) != expected_dim)
+    if model_mismatch:
+        # `embedder.name` against the manifest's `model`, which is the SAME comparison
+        # `CalibrationRepository.calibrate` makes before it will fit a threshold at all. Using
+        # `embedding_profile_id` here would be wrong: it returns a registered profile id when one
+        # exists and the bare name otherwise, so it does not spell what the manifest stores.
+        #
+        # Deliberately NOT raising or counting here: the existing block below already does both,
+        # and doing it twice would double-count `recall_degraded_searches_total` and give the
+        # refusal two exit points to keep in step.
+        _log.warning(
+            "runtime embedder %r does not match generation %r, which was built with %r at "
+            "dimension %s; cosines from two models are not comparable and no threshold applies",
+            getattr(embedder, "name", "?"),
+            binding.get("generation_id"),
+            expected_model,
+            expected_dim,
+        )
+        # Degraded mode still answers, but it must not APPLY a threshold fitted for another
+        # model, nor name the artifact as if it had. `calibration_status` is deliberately left as
+        # the repository reported it: "certified" beside `LINEAGE_MISMATCH` is the honest pair of
+        # facts, i.e. a certified artifact does exist for this generation and the runtime embedder
+        # is not the one it was fitted for. `TrustedResult.calibrated` stays False regardless,
+        # because it requires a non-null `calibration_id` AND `trust_state == "trusted"`, and this
+        # path clears the first and degrades the second.
+        calibration = None
+        calibration_id = None
+
     failure_code = code_for_status(calibration_status)
+    if model_mismatch:
+        failure_code = TrustFailureCode.LINEAGE_MISMATCH
     if failure_code is not None:
-        binding = generation_binding or {}
+        # `binding` is the one hoisted above for the model check; it is the same expression this
+        # line used to recompute.
         # No active generation outranks any calibration verdict, and for the same reason
         # `tenant_readiness` checks it first: telling an operator to recalibrate against a
         # generation that does not exist is useless advice. The two call sites must agree, or the
@@ -757,6 +849,26 @@ def trusted_search(
             if known_as_of is not None:
                 _warn_no_edge_dates(type(store).__name__)
             supersession, unresolved = store.supersession()
+    if successor_expansion is not None:
+        # AFTER the edges are read and BEFORE `evaluate`, which is the only window where both
+        # facts are in hand: the supersession map already says which hits are about to be demoted,
+        # and nothing has been verdicted yet, so a single `evaluate` still sees the whole pool.
+        # Expanding after `evaluate` would mean verdicting twice and reconciling two results.
+        def _resolve(file: str) -> str | None:
+            """The successor `_verdict` is about to find, or None where it will find none."""
+            # An ambiguous edge resolves to `ambiguous_supersession` there rather than to a
+            # successor, so fetching for it here would pull in a document the trust layer is
+            # about to refuse to use. `not_yet_known` is deliberately NOT mirrored: it wins over
+            # `superseded` per-hit, so this may fetch for a hit replayed before its own write.
+            # That costs one scoped search and cannot change a verdict, which is the right side
+            # to err on while the cheaper check is the one that would need the hit dates.
+            if file in unresolved:
+                return None
+            return resolve_successor(file, supersession, edge_candidates, known_as_of)
+
+        result = expand_retrieval_by_successor(
+            result, retriever.search, _resolve, successor_expansion
+        )
     trust_started = time.perf_counter()
     trusted = evaluate(
         result,
@@ -777,6 +889,14 @@ def trusted_search(
         trusted,
         diagnostics=replace(trusted.diagnostics, stage_ms=stage_ms),
     )
+    if successor_expansion is not None and successor_expansion.ordering != "pool":
+        # `result` is the POST-expansion pool and is still in pool order here, which is exactly
+        # what `order_promoted` needs and what `trusted.hits` no longer carries.
+        trusted = order_promoted(
+            trusted,
+            {hit.chunk.id: index for index, hit in enumerate(result.hits)},
+            successor_expansion.ordering,
+        )
     if failure_code is not None:
         # Development degradation. Reached only when the policy explicitly allows it, since
         # strict already raised above. The result is ALWAYS marked degraded and is never
@@ -810,3 +930,78 @@ def trusted_search(
 
         trusted = apply_entailment(trusted, entailment)
     return trusted
+
+
+def trusted_search(
+    store: PgVectorStore,
+    embedder: Embedder,
+    query: str,
+    k: int = 5,
+    source: str | None = None,
+    calibration: Calibration | None = None,
+    reranker: Reranker | None = None,
+    now: datetime | None = None,
+    known_as_of: datetime | None = None,
+    entailment: EntailmentJudge | None = None,
+    candidate_k: int = DEFAULT_CANDIDATE_K,
+    retrieval_profile: str = "legacy",
+    index_generation: str = "legacy",
+    policy: TrustPolicy | None = None,
+    document_expansion: DocumentExpansionPolicy | None = None,
+    structural_expansion: StructuralExpansionPolicy | None = None,
+    successor_expansion: SuccessorExpansionPolicy | None = None,
+    ledger: "DecisionLedger | None" = None,
+    _generation_snapshot: bool = True,
+) -> TrustedResult:
+    """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
+
+    `entailment` is OFF by default: when a judge is passed, verdict-ok hits that do not entail
+    an answer to the query are demoted to ``not_entailed`` (see `recall.entailment`) — the
+    near-miss guard the cosine threshold cannot provide. Costs one judge pass per ok hit.
+
+    `candidate_k` is the per-leg pool size handed to the retriever (default the library's own
+    ``DEFAULT_CANDIDATE_K``). It is exposed so a caller that widened the pool for its other
+    retrievals — e.g. an eval sweep — can hold this call to the SAME pool, rather than silently
+    reverting to the default here.
+
+    `ledger` is OFF by default: when a `recall.decision_ledger.DecisionLedger` is passed, the
+    call's final outcome — the answered or abstained result, or the strict `TrustRefusal` — is
+    appended to the tenant's audit table as one decision record, best-effort, AFTER the decision
+    is complete. The ledger is a witness at this boundary, never part of it: it cannot change a
+    verdict, a refusal, or an ordering, and a failed write costs a counter and a log line, not
+    the search. Everything it records is what this function was about to return anyway; the only
+    thing enabling it changes is that the record now outlives the stack frame.
+    """
+    # ONE argument list, built once. Two verbatim copies of a 17-argument pass-through (plus the
+    # two signatures) meant a new parameter needed four synchronized edits with nothing checking
+    # they agree; a parameter silently dropped from one copy would surface only as the ledger
+    # branch behaving differently from the plain one.
+    forwarded: dict[str, object] = dict(
+        k=k,
+        source=source,
+        calibration=calibration,
+        reranker=reranker,
+        now=now,
+        known_as_of=known_as_of,
+        entailment=entailment,
+        candidate_k=candidate_k,
+        retrieval_profile=retrieval_profile,
+        index_generation=index_generation,
+        policy=policy,
+        document_expansion=document_expansion,
+        structural_expansion=structural_expansion,
+        successor_expansion=successor_expansion,
+        _generation_snapshot=_generation_snapshot,
+    )
+    if ledger is None:
+        return _trusted_search(store, embedder, query, **forwarded)  # type: ignore[arg-type]
+    try:
+        result = _trusted_search(store, embedder, query, **forwarded)  # type: ignore[arg-type]
+    except TrustRefusal as refusal:
+        # The refusal is recorded and then propagates UNCHANGED. Recording before the raise
+        # completes would be the witness inserting itself into the enforcement path; recording
+        # instead of re-raising would be the witness overruling it.
+        ledger.record_refusal(refusal, query=query, k=k, known_as_of=known_as_of)
+        raise
+    ledger.record_decision(result, k=k, valid_time=now, known_as_of=known_as_of)
+    return result

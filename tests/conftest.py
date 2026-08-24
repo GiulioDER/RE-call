@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import sys
@@ -169,12 +170,171 @@ def _reject_unsafe_test_dsn() -> None:
 _reject_unsafe_test_dsn()
 
 
-def _db_available() -> bool:
+def _isolate_xdist_worker(dsn: str) -> str:
+    """Give each `pytest -n` worker its own DATABASE inside the checkout's own container.
+
+    Parallel workers are separate processes with separate pytest sessions, so every guarantee this
+    file makes about isolation holds WITHIN a worker and none of it holds ACROSS workers. Three
+    things collide otherwise, and all three are silent:
+
+    1. `chunks`. The session bootstrap below creates it once per session, which under `-n` means
+       once per worker against the same database, and `tests/test_wizard_database.py` DROPs and
+       rebuilds it mid-run because `wizard.database.probe_database` inspects it by name. A worker
+       reading `chunks` while another rebuilds it fails with `relation "chunks" does not exist`,
+       in a test that has nothing to do with the wizard.
+    2. The migration ledger. `apply_migrations` is idempotent by consulting it, so two workers
+       racing on the same row can leave a table unbuilt and no error behind.
+    3. `recall_rls_probe`, provisioned by `unprivileged_dsn`. A role is CLUSTER-wide, so a
+       check-then-create in two workers at once raises `DuplicateObject` in one of them.
+
+    A database per worker removes all three at once, rather than fixing them one at a time and
+    waiting to discover the fourth. It is cheap: `CREATE DATABASE` off the empty template, with
+    `CREATE EXTENSION IF NOT EXISTS vector` arriving in migration 0001 like everywhere else.
+
+    ⚠️ **`RECALL_TEST_DSN` is rewritten in the environment too, not just here.** ~30 tests spawn a
+    subprocess (`python -m recall.cli`, the MCP server) that reads the variable itself, and a
+    subprocess left on the shared database would reintroduce exactly the collisions above, from
+    the one place this module cannot see.
+
+    The per-worker databases are left behind on purpose. They live in a container this checkout
+    started and `scripts/session-db.sh down` removes, so dropping them per run would buy nothing
+    and would need a connection-terminating `DROP DATABASE` that could hit a worker still finishing.
+    """
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker or not os.environ.get("RECALL_TEST_DSN"):
+        return dsn
+
+    from urllib.parse import urlsplit, urlunsplit
+
+    # `gw0`, `gw1`, ... from xdist. Sanitised rather than trusted: it lands in DDL that cannot be
+    # parameterised, and a database name is not a place to find out what xdist calls its workers.
+    suffix = "".join(c for c in worker if c.isalnum())[:16] or "w"
+
+    # ⚠️ **Rewritten as a URL, NOT through `psycopg.conninfo.make_conninfo`.** Both spellings are
+    # valid libpq and psycopg accepts either, but the suite does not: five tests take
+    # `TEST_DSN` apart with `urlsplit`, `rsplit("/", 1)` or an f-string to build a DSN for a role
+    # or a database of their own, and a keyword-form DSN turns those into
+    # `invalid connection option "//recall_serve_x:pw@None:5432/user"` — a failure that names the
+    # test's own string handling and says nothing about the worker isolation that caused it.
+    # Measured: exactly that, in `test_schema_migrations`, `test_tenancy`, `test_store` and
+    # `test_beam_transfer_index_guards`, on the first parallel run.
+    split = urlsplit(dsn)
+    if not split.scheme.startswith("postgres"):
+        return dsn
+    base = (split.path or "/recall").lstrip("/") or "recall"
+    isolated_db = f"{base}_{suffix}"
+
     try:
-        psycopg.connect(TEST_DSN, connect_timeout=2).close()
-        return True
-    except Exception:
-        return False
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s", (isolated_db,)
+            ).fetchone()
+            if not exists:
+                conn.execute(f'CREATE DATABASE "{isolated_db}"')
+    except psycopg.errors.DuplicateDatabase:  # pragma: no cover - two workers, same instant
+        pass
+    except psycopg.errors.InsufficientPrivilege as exc:
+        # Deliberately fatal, and deliberately NOT a fallback to the shared database. Falling back
+        # would hand every worker the same database and reintroduce the collisions this exists to
+        # prevent, as a green run with occasional inexplicable failures. Serial needs no such
+        # privilege, so the fix is to drop `-n` or to use a role that has CREATEDB.
+        raise RuntimeError(
+            f"the RECALL_TEST_DSN role cannot CREATE DATABASE, which `pytest -n` needs so that "
+            f"worker {worker} does not share one with the others. Run the suite serially, or "
+            f"point RECALL_TEST_DSN at a role with CREATEDB."
+        ) from exc
+    except psycopg.OperationalError:
+        # No database reachable at all. Hand back the DSN unchanged and let `require_db` skip with
+        # its own message, which names the reason; failing here would replace it with a worse one.
+        return dsn
+
+    isolated = urlunsplit(split._replace(path=f"/{isolated_db}"))
+    os.environ["RECALL_TEST_DSN"] = isolated
+    return isolated
+
+
+TEST_DSN = _isolate_xdist_worker(TEST_DSN)
+
+
+#: How long one probe waits, and how many probes are tried before the answer is believed.
+#:
+#: ⚠️ **What this replaces is a 2 second timeout tried once PER TEST, and its failure mode was a
+#: false GREEN.** `require_db()` re-probed on every test reaching a DB fixture, so on a loaded
+#: machine a probe that lost the race turned a database test into a SKIP. Nothing failed and
+#: nothing said so, which is the signature `CLAUDE.md` warns about under "read the skip count
+#: before calling a run green".
+#:
+#: Measured 2026-08-21, same commit, same machine, same container: a run with nothing else
+#: competing reported `6209 passed, 34 skipped`; a run sharing the host with a type check and a
+#: doc gate reported `6176 passed, 88 skipped`. 21 of that difference is tests added in between,
+#: and **54 is tests that had passed and now skipped**.
+#:
+#: Both numbers only apply when a DSN is CONFIGURED. With `RECALL_TEST_DSN` unset there is nothing
+#: to wait for: the probe goes to a reserved port, is refused immediately, and retrying a refusal
+#: three times would just triple a cost every DB-less run already pays.
+_PROBE_TIMEOUT_SECONDS = 10
+_PROBE_ATTEMPTS = 3
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """Did this connection attempt run out of time, as opposed to being refused outright?
+
+    Matched on the message as well as the class. `psycopg.errors.ConnectionTimeout` is the precise
+    type, and it is not the only way libpq reports the condition: a wrapped `OperationalError`
+    carrying "timeout expired" arrives from the same cause through a different path. Missing one
+    would silently turn the retry off for the exact case it exists to handle.
+    """
+    return isinstance(exc, psycopg.errors.ConnectionTimeout) or "timeout" in str(exc).lower()
+
+
+@functools.cache
+def _probe_database() -> str | None:
+    """`None` when the database answered, otherwise a one-line diagnosis of why it did not.
+
+    **Cached, and the cache is the fix rather than an optimisation.** The answer is decided once,
+    at conftest import, before the suite has had a chance to load the machine, so every test in a
+    run agrees about whether a database exists. Deciding it per test made the skip count a function
+    of what else the host happened to be doing at that second.
+
+    Retried, because one decision for a whole run must not itself be a coin flip.
+
+    The failure is RETURNED rather than swallowed. `_db_available()` reduces it to a boolean for
+    the callers that only need one, but the text reaches the skip reason, and that is the
+    difference between "nothing is listening" and "something is there and too slow to answer".
+    Those want opposite responses from whoever reads the report, and the old probe collapsed them.
+    """
+    # A shorter wait when nobody asked for a database. `_UNCONFIGURED_DSN` points at a reserved
+    # port so the answer is normally instant, but a host that DROPs rather than refuses turns that
+    # into a full wait, and every database-less run on every contributor's machine would pay it.
+    configured = os.environ.get("RECALL_TEST_DSN") is not None
+    timeout = _PROBE_TIMEOUT_SECONDS if configured else 2
+    failure = "no attempt was made"
+    for _attempt in range(_PROBE_ATTEMPTS):
+        try:
+            psycopg.connect(TEST_DSN, connect_timeout=timeout).close()
+            return None
+        except Exception as exc:  # noqa: BLE001 - any failure to connect is the same answer here
+            # The class name as well as the message: `str(exc)` is the empty string for several
+            # psycopg errors, and a reason ending in "Probe saw: " reads as a mechanism that ran
+            # and found nothing worth saying. Collapsed to one line because this text becomes a
+            # pytest skip reason, and psycopg's connection errors span lines, which would break the
+            # `-rs` report into fragments that no longer read as one cause.
+            failure = " ".join(f"{type(exc).__name__}: {exc}".split())
+            if not _is_timeout(exc):
+                # ⛔ Retry AMBIGUITY, never certainty. A refused connection is a complete answer:
+                # nothing is listening on that port, and asking twice more cannot change it. Only a
+                # timeout is the ambiguous case this retry exists for, and it is the only one a
+                # loaded host manufactures.
+                #
+                # Not merely tidy. `test_requires_db_coverage.py` deliberately runs a subprocess
+                # against a dead port and requires it to skip cleanly; retrying that refusal would
+                # triple the fixed cost of the guard that protects the whole fixture set.
+                break
+    return failure
+
+
+def _db_available() -> bool:
+    return _probe_database() is None
 
 
 #: One wording, used by the collection-time mark and by every fixture that refuses at setup, so a
@@ -194,7 +354,20 @@ DB_UNREACHABLE = (
     "other's tables."
 )
 
-requires_db = pytest.mark.skipif(not _db_available(), reason=DB_UNREACHABLE)
+def db_unreachable_reason() -> str:
+    """`DB_UNREACHABLE`, plus what the probe actually saw.
+
+    The constant stays the PREFIX and is never rebuilt, because `test_requires_db_coverage.py`
+    compares it against a subprocess's output and the comment above explains why it must not branch
+    on the environment. What is appended is a diagnosis, not a second wording: a refused connection
+    and a connection that timed out are different states, and a report that spells both "not
+    reachable" cannot tell a machine with no database from a machine too busy to answer one.
+    """
+    probe = _probe_database()
+    return DB_UNREACHABLE if probe is None else f"{DB_UNREACHABLE} Probe saw: {probe}"
+
+
+requires_db = pytest.mark.skipif(not _db_available(), reason=db_unreachable_reason())
 
 
 def require_db() -> None:
@@ -211,7 +384,7 @@ def require_db() -> None:
     same protection.
     """
     if not _db_available():
-        pytest.skip(DB_UNREACHABLE)
+        pytest.skip(db_unreachable_reason())
 
 #: Fixtures below that hand a test access to the database. Each one REFUSES to run without a
 #: reachable DB, which is what makes `@requires_db` an optimisation (skip at collection, before the
@@ -328,18 +501,41 @@ def unprivileged_dsn() -> str:
     return dsn
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _bootstrap_default_test_schema() -> Iterator[None]:
-    """Provision the default MCP table explicitly for subprocess/server integration tests."""
-    if not _db_available():
-        yield
-        return
+def restore_default_chunks_table() -> None:
+    """Put the shared `chunks` table back exactly as the session bootstrap leaves it.
+
+    ⚠️ **Any test that replaces `chunks` MUST call this afterwards.** This file already documents
+    the same lesson thirty lines below, for the CLI tests, and it was reintroduced anyway. `chunks`
+    is SHARED: the session fixture creates it once at dim 64 and a dozen integration tests assume
+    it. A test that drops it to build its own leaves everything that runs later failing with
+    `relation "chunks" does not exist` — and only when the random order puts it first, so it passes
+    locally, passes on a re-run, and fails in CI.
+
+    Measured: `tests/test_wizard_database.py` did exactly that and took three
+    `tests/test_wizard_pipeline.py` tests down with it.
+
+    **Prefer a uuid-named table wherever the code under test allows it** — see `cli_table`. This
+    exists for the case that cannot: `wizard.database.probe_database` inspects `chunks` by name, so
+    a test of the dimension check has to use that name and put it back.
+
+    Clearing the ledger row matters as much as the drop: `apply_migrations` is idempotent by
+    consulting it, so re-applying over a stale row would skip the work and leave no table at all.
+    """
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute("DROP TABLE IF EXISTS chunks CASCADE")
         ledger = conn.execute("SELECT to_regclass(%s)", (LEDGER_TABLE,)).fetchone()
         if ledger is not None and ledger[0]:
             conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = 'chunks'")
     apply_migrations(TEST_DSN, table="chunks", dim=64)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _bootstrap_default_test_schema() -> Iterator[None]:
+    """Provision the default MCP table explicitly for subprocess/server integration tests."""
+    if not _db_available():
+        yield
+        return
+    restore_default_chunks_table()
     yield
 
 
@@ -380,6 +576,49 @@ requires_openai = pytest.mark.skipif(
     not _openai_available(),
     reason='needs the extract extra (pip install "recall-rag[extract]")',
 )
+
+
+@pytest.fixture(scope="session")
+def _suite_index_root(tmp_path_factory):
+    """One disposable directory that `RECALL_INDEX_ROOT` points at for the whole session.
+
+    Deliberately NOT under each test's own `tmp_path`, which was the first version of this and cost
+    two failures to learn: `tests/test_fix.py::test_apply_proposal_preserves_the_memo_when_the_write_fails`
+    and `tests/test_bench_systems.py::test_conversation_to_messages_mirrors_recall_turn_walk` both
+    ENUMERATE `tmp_path` and assert on everything in it, so a fixture that creates one directory
+    there fails them without either test having anything to do with uploads. `tmp_path` belongs to
+    the test; a fixture that writes into it is changing the subject.
+
+    Session scope is safe because nothing collides inside it: `stage_uploads` keys every staging
+    directory by a fresh uuid, and any test that cares about the value sets its own.
+    """
+    return tmp_path_factory.mktemp("recall-index-root")
+
+
+@pytest.fixture(autouse=True)
+def _confine_index_root(_suite_index_root, monkeypatch) -> Iterator[None]:
+    """Point `RECALL_INDEX_ROOT` somewhere disposable for EVERY test.
+
+    `RECALL_INDEX_ROOT` defaults to `.`, the server's working directory, and that default is
+    documented, deliberate and correct for the desktop app (docs/SECURITY_MODEL.md,
+    docs/USING_WITH_CLAUDE.md), so it is not the thing to change. It is wrong for a test session
+    only because the working directory of a test session is the checkout: `recall.desktop.uploads`
+    resolves its staging root from the same variable, so any test that reaches `stage_uploads`
+    without setting it decodes its upload into `uploads/<tenant>/<job_id>/` at the repository root.
+
+    Three such directories were left behind by `tests/test_mcp_tool_authorization.py` alone, which
+    calls `recall_ingest` for its authorised cases and stops at the service boundary, which is AFTER
+    the staging write. They are untracked, they survive the run, and `git add` by pathspec is the
+    only thing standing between them and a commit.
+
+    Autouse rather than a per-test `monkeypatch.setenv` because the defect is a default reached by
+    OMISSION: a new test that touches an upload or index path inherits the confinement without
+    knowing this variable exists, which is the only version of this that cannot regress. Tests that
+    care about the value still set their own, and win: `monkeypatch.setenv` in the test body runs
+    after this fixture.
+    """
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(_suite_index_root))
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -467,6 +706,51 @@ def cli_table() -> Iterator[str]:
         conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (name,))
 
 
+@pytest.fixture(scope="session")
+def voyageai_sdk() -> Any:
+    """The `voyageai` package, imported on demand and NEVER during collection.
+
+    ⚠️ **Importing this costs ~44s warm and ~75s cold, and the module that pays it is not the one
+    you expect.** `voyageai/__init__.py` imports `voyageai.chunking`, which imports
+    `langchain_text_splitters`, which imports `transformers`, which imports `torch`. Measured
+    2026-08-23 with `python -X importtime`: 74.8s cumulative for `voyageai` on a cold cache, of
+    which 31.4s is `transformers`.
+
+    Three test modules used to pay that at MODULE scope, and each carried a comment explaining
+    why: an `import` inside a test is billed to that test's 120s timeout, and one of them had
+    already timed out that way. That reasoning is still right, which is why the four tests using
+    this fixture carry `@pytest.mark.timeout(300)`.
+
+    What it cost, measured back to back against this branch's base and warm, so that the two
+    halves are comparable:
+
+    | | with the module-scope import | with this fixture |
+    |---|---|---|
+    | `pytest tests/test_embeddings_retry_after.py --collect-only` | **45.33s** | **1.04s** |
+    | whole-suite collection | 55.6 / 59.6 / 59.1s | 50.9 / 54.8 / 50.0 / 51.3s |
+
+    So the win is on the SINGLE-FILE run, which is what you do while working on this file. It
+    nearly vanishes from the whole-suite figure because a module collected earlier has already
+    pulled `transformers` in, and voyageai then only adds its margin.
+
+    🔁 This docstring first claimed 154.1s of collection falling to 75.1s, and that "every
+    `pytest` invocation paid it, including `pytest tests/test_cli.py`". Both were wrong. The pair
+    compared a cold cache against a warm one, and pytest imports only the modules it COLLECTS, so
+    an unrelated single-file run never touched `voyageai` at all.
+    `docs/preregistrations/2026-08-23-test-suite-wall-clock.md` carries the full correction.
+
+    A session-scoped fixture keeps both halves: the import happens once per session, and only if
+    one of the four tests that actually need the SDK is selected. Those four carry
+    `@pytest.mark.timeout(300)` because whichever of them runs first is billed for the import.
+    """
+    try:
+        import voyageai
+        import voyageai.error  # noqa: F401  # the submodule the error-shape tests read
+    except ImportError:
+        pytest.skip('needs the voyage extra (pip install "recall-rag[voyage]")')
+    return voyageai
+
+
 def dev_search(*args: Any, **kwargs: Any) -> TrustedResult:
     """`trusted_search` in development mode, for tests that exercise UNCALIBRATED retrieval.
 
@@ -533,3 +817,53 @@ def dev_search_uncalibrated(*args: Any, **kwargs: Any) -> TrustedResult:
 
     kwargs.setdefault("policy", TrustPolicy.development())
     return trusted_search(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _confine_claude_client_config(tmp_path_factory, monkeypatch) -> None:
+    """Keep every test away from the user's REAL `~/.claude.json`.
+
+    ⚠️ **Written after a test run put five junk entries into the developer's own client config.**
+    `wiring.register_local_scope` writes the wizard's servers into Claude Code's own config so
+    they load in that project without an approval prompt, and its default target is
+    `Path.home() / ".claude.json"` — a user-global file holding every project the user has. Five
+    `run_headless` tests reached it with a `project_root` under `pytest-of-.../`, and each one
+    appended an entry pointing at a temp directory that no longer exists.
+
+    🔁 The writer named above has changed twice (it recorded an APPROVAL for a project-scoped
+    `.mcp.json` when this was written, then registered the servers at user scope, and now at
+    local scope).
+    The hazard did not change with it: the default target is still another application's
+    user-global file, which is the only reason this fixture exists.
+
+    Nothing was corrupted (the writer is atomic and backs up first, and no existing project was
+    modified), which is precisely why it went unnoticed: the suite was green and the damage was
+    additive. `run_headless` now takes an explicit `claude_config_path`, but a parameter only
+    protects the callers that remember it, and remembering is the thing that failed. This makes
+    forgetting harmless.
+
+    `Path.home` rather than the HOME variable, because that is what the writer calls and because
+    `Path.home()` on Windows reads USERPROFILE, so patching one environment name would miss it.
+
+    ⚠️ **The environment is redirected AS WELL, and that is not redundancy.** A patched `Path.home`
+    lives in this process and does not survive into a subprocess: anything that shells out resolves
+    the real home itself and writes to the developer's own config. That is not hypothetical — a peer
+    session hit exactly it, and the way it happened is the part worth keeping. Their test was safe
+    when written, because it exercised a faked CLI arm that wrote no file; a later change flipped
+    the primary path, the test stopped taking that branch, fell through to a direct writer, and
+    started leaking. **The test did not change. The code beneath it changed branches**, which is
+    invisible in a diff and which no per-test opt-in can cover, because the opt-in was a decision
+    made against the code as it was.
+
+    Nothing under `recall/wizard/` spawns a process today, so the `Path.home` patch alone is
+    currently sufficient. That is a property of the implementation, not of this guard, and it is
+    exactly the kind of property that stops being true without anyone noticing. Both names are set
+    because `Path.home()` reads USERPROFILE on Windows and HOME elsewhere, and a subprocess may
+    consult either.
+    """
+    from pathlib import Path as _Path
+
+    home = tmp_path_factory.mktemp("fake-home")
+    monkeypatch.setattr(_Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))

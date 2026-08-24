@@ -8,6 +8,8 @@ DOC, ODT, ODS, ODP, and PPT require LibreOffice. MSG requires the optional docum
 
 from __future__ import annotations
 
+import atexit
+import contextlib
 import csv
 import io
 import os
@@ -27,7 +29,7 @@ from typing import Any, Iterable, Literal
 from xml.etree import ElementTree
 
 
-class DocumentExtractionError(ValueError):
+class DocumentExtractionError(ValueError, RecallError):
     """Raised when a supported file cannot produce a searchable text view."""
 
 
@@ -119,6 +121,14 @@ DOCUMENT_EXTENSIONS = frozenset(
         ".xltx",
     }
 )
+
+# The formats handed to the LibreOffice CLI because no Python reader covers them. MSG is
+# deliberately absent: LibreOffice ships no MAPI import filter, so a .msg reaches it only to fail.
+# Measured 2026-08-18 against LibreOffice 25.8, exit 1 and "source file could not be loaded" on a
+# genuine .msg; re-measure with scripts/check_libreoffice_msg.py. MSG is read by python oxmsg from
+# the documents extra, and a deployment without it is told to install that extra rather than being
+# routed here and told to install LibreOffice.
+LIBREOFFICE_EXTENSIONS = frozenset({".doc", ".odt", ".ods", ".odp", ".ppt"})
 
 MAX_TABLE_ROWS = 10_000
 MAX_TABLE_COLUMNS = 200

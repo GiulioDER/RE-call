@@ -6,13 +6,27 @@ surfaced closed decision (that isn't a `gap_warning`) tells it to back off inste
 
 Works with **Claude Code** and **Claude Desktop** — both take the same MCP server block.
 
+**On Claude Code, the plugin is the short path** — it wires the server, the session hooks and a
+skill that teaches Claude when to search, and keeps the DSN in your OS keychain:
+
+```
+/plugin marketplace add GiulioDER/RE-call
+/plugin install recall@re-call
+```
+
+You still need a database first (`recall quickstart` makes a throwaway one). See
+[plugin/README.md](../plugin/README.md). Everything below is the manual wiring, for other
+clients and for anyone who wants to see what the plugin writes.
+
 ## 1. Install & run
 
 ```bash
-pip install -e ".[fastembed,mcp]"
+pip install "recall-rag[fastembed,mcp]"
 python -m recall.cli --migration-dsn "$RECALL_MIGRATION_DSN" schema --dim 384 apply
 python -m recall_mcp.server        # stdio server (Claude launches this for you via the config below)
 ```
+
+(Contributors working from a clone use `pip install -e ".[fastembed,mcp]"` instead.)
 
 The migration command is a deployment/provisioning step, not part of server startup. Use a
 schema-owner DSN for it and an unprivileged `RECALL_SERVING_DSN` for the server; see
@@ -23,6 +37,12 @@ apply the default-table schema separately before starting MCP, or use an embedde
 matches the existing `chunks` table.
 
 ## 2. Register the server
+
+**`python -m recall.cli setup` does everything in this section for you**, including the session
+hooks below, and it is the recommended path. It registers at local scope, sets `RECALL_TRUST_MODE`,
+writes the entry under every spelling of your project path that the client already knows, and
+prints the keys it used. The rest of this section is what it does, for anyone wiring it by hand or
+debugging what the wizard wrote.
 
 Both clients use the same `mcpServers` block; only the entry point differs.
 
@@ -42,10 +62,39 @@ Both clients use the same `mcpServers` block; only the entry point differs.
 }
 ```
 
-- **Claude Code** — save this as `.mcp.json` in your project root, or run
-  `claude mcp add recall -- python -m recall_mcp.server`.
+- **Claude Code** — register it at **local scope**, which is what
+  `claude mcp add recall -- python -m recall_mcp.server` does by default. It writes the block into
+  Claude Code's own `~/.claude.json` under this project, and loads only here.
+
+  ⚠️ **Saving the block as `.mcp.json` in the project root also works, and is the worse option.**
+  Claude Code gates project-scoped servers from that file behind an approval prompt, and until you
+  answer it in an interactive session the tools are simply absent — no error, nothing naming the
+  cause. It also puts a DSN in the repository, which the credentials note below says not to do.
+
+  When one server name is defined in more than one scope, Claude Code uses **one** definition and
+  does not merge fields across scopes. The order, **highest precedence first**, is:
+
+  1. **local** — `~/.claude.json` under this project's entry
+  2. **project** — `.mcp.json` in the repository
+  3. **user** — `~/.claude.json` at the top level
+
+  So a local entry **beats** an `.mcp.json` of the same name rather than losing to it. If the tools
+  do not appear, read that order before deleting anything: a `.mcp.json` sitting under a local entry
+  of the same name is already inert, and removing it changes nothing. `docs/WIZARD.md` has the full
+  reasoning, and the installer does all of this for you.
 - **Claude Desktop** — add the block to `claude_desktop_config.json`
   (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`), then restart.
+
+### Two things the scope list above does not say
+
+**Do not use user scope for this**, tempting though the "works everywhere" reading is. A recall
+server carries one `RECALL_TENANT` and one DSN, so a user-scope entry follows you into every
+unrelated checkout and answers confidently about a corpus belonging to a different repository. That
+failure never raises an error, which is what makes it the expensive one.
+
+⚠️ **A local entry is keyed by your project's path**, so moving or renaming the project orphans it
+silently: no error, no tools. Re-run the registration after a move. The installer prints the keys
+it registered under for this reason.
 
 > 🔒 **Credentials.** The DSN above is the **local Docker dev** default — not a secret. For any real
 > database, supply the DSN (and the optional `VOYAGE_API_KEY` for the cloud embedder) through your
@@ -112,6 +161,10 @@ generation identity, `stale`, `gap_warning`, `advice`, and hits carrying `verdic
 certified exact generation binding. When `abstained` is true, say you do not know and do not answer
 from the hits.
 
+For non-English presentation, pass `locale` to `recall_search` or `recall_evidence` after enabling
+the optional translation endpoint; localized text is additive and never replaces canonical
+evidence (configuration in [ENVIRONMENT.md](ENVIRONMENT.md)).
+
 `recall_evidence` uses the same retrieval path, but admits only passages cleared by the trust layer.
 Reasoning tools are additive and opt in; `recall_search` and `recall_evidence` keep the same
 retrieval behavior when they are used directly.
@@ -150,6 +203,35 @@ Claude:  "Memory has no real answer on that — I'd be guessing. Want me to rese
 
 The agent-side glue is tiny — see [`examples/self_recall_agent.py`](../examples/self_recall_agent.py)
 for the ~30-line pattern: search first; if a non-gap closed decision surfaces, back off.
+
+## Session hooks: what makes the tools get used
+
+Registering the server makes the tools *available*. It does not make Claude reach for them, and it
+does not keep the corpus current. `recall setup` also offers three hooks, written into
+`~/.claude/settings.json`:
+
+| Event | What it does | Why there |
+|---|---|---|
+| `SessionStart` | Injects a one-line digest naming the indexed chunk count and the standing instruction | The only event that can add context before the first turn |
+| `PreCompact` | Indexes `memory/` | Compaction is where a long session loses the detail behind its conclusions |
+| `SessionEnd` | Indexes `memory/` and refreshes the cached count | Closes the write-to-searchable loop |
+
+Three properties are deliberate and worth knowing before you edit them:
+
+- **`SessionStart` touches no database.** It reads a count cached by the other two hooks, so the
+  digest still appears when your database is not running, and it adds about 66 ms to a session
+  start rather than the ~1.2 s a database round trip and an embedder import would cost.
+- **`PreCompact` never blocks.** Exit code 2 on that event *blocks compaction*, so every path
+  returns 0 and the handler runs `async`. A memory tool must not be able to wedge a session whose
+  context window is already full.
+- **They run out of `recall_hooks`, not `recall`.** Importing the `recall` package costs about a
+  second, and a session-start hook pays that on every launch.
+
+The hooks are removable exactly, without disturbing anything else in the file:
+
+```bash
+python -c "from recall.claude_code import uninstall; uninstall()"
+```
 
 ## 5. Configure your project's memory files
 

@@ -1,0 +1,482 @@
+{
+  "phase": "official_evaluator_posthoc",
+  "questions": "C:\\Users\\gde00\\Documents\\recall\\.benchdata\\enterprise-rag-v1.0.0\\questions.jsonl",
+  "baseline": "results\\enterprise_rag\\non_reasoning\\project_confirmation_none.answers.jsonl",
+  "candidate": "results\\enterprise_rag\\non_reasoning\\project_confirmation_reranker.answers.jsonl",
+  "runtime": {
+    "baseline": {
+      "benchmark": "EnterpriseRAG-Bench",
+      "started_at": "2026-08-18T12:21:06.464379+00:00",
+      "finished_at": "2026-08-18T12:33:27.398975+00:00",
+      "elapsed_s": 740.935,
+      "recall_revision": null,
+      "recall_version": "0.9.5",
+      "questions": {
+        "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+        "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905",
+        "selected_count": 23,
+        "question_types": [
+          "project_related"
+        ],
+        "question_ids_file": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/top5_slices/confirmation.ids",
+        "question_ids_file_sha256": "9b95afa2af288d507d2c7090aa8fd1bd423302844155ea3f448061f8bcce23ea"
+      },
+      "documents": [
+        {
+          "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+          "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905"
+        }
+      ],
+      "index": {
+        "table": "ber_voy_lex_12k_full",
+        "tenant": "enterprise-rag-voyage-lexical-chunk12k-full",
+        "pool_size": null,
+        "reset": false,
+        "skipped": true,
+        "documents": 0,
+        "chunks": 0
+      },
+      "retrieval": {
+        "embedder": "voyage:voyage-4-large",
+        "embedding_profile": "voyage:voyage-4-large",
+        "embedding_cache": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/project_confirmation_vectors.sqlite",
+        "k": 8,
+        "candidate_k": 200,
+        "gap_threshold": 0.5,
+        "sparse_backend": "lexical",
+        "splade_model": null,
+        "splade_backfill": null,
+        "reranker": "none",
+        "retrieval_captures": 1
+      },
+      "answering": {
+        "mode": "extractive",
+        "model": null,
+        "max_context_chars": 3500,
+        "answer_policy": "baseline"
+      },
+      "reasoning": {
+        "arm": "none",
+        "provider": null,
+        "summary": {
+          "rows": 23,
+          "expanded_rows": 0,
+          "expanded_rate": 0.0,
+          "fallback_rows": 0,
+          "fallback_rate": 0.0,
+          "passes_total": 23,
+          "queries_total": 0,
+          "capture_stability_rate": 1.0,
+          "model": null
+        },
+        "cache": null,
+        "promotion": {
+          "status": "pending",
+          "expensive_model_allowed": false,
+          "missing": [
+            "baseline_correctness",
+            "candidate_correctness",
+            "useful_expansion_precision",
+            "stable_repeated_captures",
+            "validation_failure_rate",
+            "no_material_false_abstention",
+            "info_not_found_correctness"
+          ],
+          "failed": []
+        }
+      },
+      "outputs": {
+        "answers": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/project_confirmation_none.answers.jsonl",
+        "rows": 23,
+        "new_rows": 23,
+        "resumed_rows": 0
+      },
+      "retrieval_metrics": {
+        "questions_with_expected_docs": 23,
+        "document_recall": 0.5578947368421052,
+        "exact_doc_set_coverage": 0.13043478260869565,
+        "expected_docs": 95,
+        "hit_expected_docs": 53
+      },
+      "calibration": null
+    },
+    "candidate": {
+      "benchmark": "EnterpriseRAG-Bench",
+      "started_at": "2026-08-18T12:33:56.512333+00:00",
+      "finished_at": "2026-08-18T12:43:37.374405+00:00",
+      "elapsed_s": 580.862,
+      "recall_revision": null,
+      "recall_version": "0.9.5",
+      "questions": {
+        "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+        "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905",
+        "selected_count": 23,
+        "question_types": [
+          "project_related"
+        ],
+        "question_ids_file": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/top5_slices/confirmation.ids",
+        "question_ids_file_sha256": "9b95afa2af288d507d2c7090aa8fd1bd423302844155ea3f448061f8bcce23ea"
+      },
+      "documents": [
+        {
+          "path": "/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl",
+          "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905"
+        }
+      ],
+      "index": {
+        "table": "ber_voy_lex_12k_full",
+        "tenant": "enterprise-rag-voyage-lexical-chunk12k-full",
+        "pool_size": null,
+        "reset": false,
+        "skipped": true,
+        "documents": 0,
+        "chunks": 0
+      },
+      "retrieval": {
+        "embedder": "voyage:voyage-4-large",
+        "embedding_profile": "voyage:voyage-4-large",
+        "embedding_cache": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/project_confirmation_vectors.sqlite",
+        "k": 8,
+        "candidate_k": 200,
+        "gap_threshold": 0.5,
+        "sparse_backend": "lexical",
+        "splade_model": null,
+        "splade_backfill": null,
+        "reranker": "voyage:rerank-2.5",
+        "retrieval_captures": 1
+      },
+      "answering": {
+        "mode": "extractive",
+        "model": null,
+        "max_context_chars": 3500,
+        "answer_policy": "baseline"
+      },
+      "reasoning": {
+        "arm": "none",
+        "provider": null,
+        "summary": {
+          "rows": 23,
+          "expanded_rows": 0,
+          "expanded_rate": 0.0,
+          "fallback_rows": 0,
+          "fallback_rate": 0.0,
+          "passes_total": 23,
+          "queries_total": 0,
+          "capture_stability_rate": 1.0,
+          "model": null
+        },
+        "cache": null,
+        "promotion": {
+          "status": "pending",
+          "expensive_model_allowed": false,
+          "missing": [
+            "baseline_correctness",
+            "candidate_correctness",
+            "useful_expansion_precision",
+            "stable_repeated_captures",
+            "validation_failure_rate",
+            "no_material_false_abstention",
+            "info_not_found_correctness"
+          ],
+          "failed": []
+        }
+      },
+      "outputs": {
+        "answers": "/home/sentiment/enterprise-rag-run/reasoning-366-next/results/enterprise_rag/project_confirmation_reranker.answers.jsonl",
+        "rows": 23,
+        "new_rows": 23,
+        "resumed_rows": 0
+      },
+      "retrieval_metrics": {
+        "questions_with_expected_docs": 23,
+        "document_recall": 0.5473684210526316,
+        "exact_doc_set_coverage": 0.2608695652173913,
+        "expected_docs": 95,
+        "hit_expected_docs": 52
+      },
+      "calibration": null
+    }
+  },
+  "common_questions": 23,
+  "overall": {
+    "count": 23,
+    "answerable_count": 23,
+    "baseline_document_recall": 0.6171497584541062,
+    "candidate_document_recall": 0.6092995169082126,
+    "mean_recall_delta": -0.00785024154589371,
+    "baseline_exact_coverage": 0.13043478260869565,
+    "candidate_exact_coverage": 0.2608695652173913,
+    "mean_extra_delta": 0.21739130434782608,
+    "questions_with_recall_gain": 6,
+    "questions_with_recall_loss": 6
+  },
+  "by_category": {
+    "project_related": {
+      "count": 23,
+      "answerable_count": 23,
+      "baseline_document_recall": 0.6171497584541062,
+      "candidate_document_recall": 0.6092995169082126,
+      "mean_recall_delta": -0.00785024154589371,
+      "baseline_exact_coverage": 0.13043478260869565,
+      "candidate_exact_coverage": 0.2608695652173913,
+      "mean_extra_delta": 0.21739130434782608,
+      "questions_with_recall_gain": 6,
+      "questions_with_recall_loss": 6
+    }
+  },
+  "pairs": [
+    {
+      "question_id": "qst_0342",
+      "question_type": "project_related",
+      "baseline_recall": 0.75,
+      "candidate_recall": 0.25,
+      "recall_delta": -0.5,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 5,
+      "candidate_extra": 7
+    },
+    {
+      "question_id": "qst_0343",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.6666666666666666,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0344",
+      "question_type": "project_related",
+      "baseline_recall": 0.5,
+      "candidate_recall": 0.5,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0348",
+      "question_type": "project_related",
+      "baseline_recall": 0.5,
+      "candidate_recall": 0.5,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0349",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.6666666666666666,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0350",
+      "question_type": "project_related",
+      "baseline_recall": 0.3333333333333333,
+      "candidate_recall": 1.0,
+      "recall_delta": 0.6666666666666667,
+      "baseline_exact": false,
+      "candidate_exact": true,
+      "baseline_extra": 7,
+      "candidate_extra": 5
+    },
+    {
+      "question_id": "qst_0351",
+      "question_type": "project_related",
+      "baseline_recall": 0.75,
+      "candidate_recall": 0.75,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 4,
+      "candidate_extra": 5
+    },
+    {
+      "question_id": "qst_0352",
+      "question_type": "project_related",
+      "baseline_recall": 1.0,
+      "candidate_recall": 1.0,
+      "recall_delta": 0.0,
+      "baseline_exact": true,
+      "candidate_exact": true,
+      "baseline_extra": 4,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0355",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.3333333333333333,
+      "recall_delta": -0.3333333333333333,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 7
+    },
+    {
+      "question_id": "qst_0356",
+      "question_type": "project_related",
+      "baseline_recall": 0.5,
+      "candidate_recall": 0.25,
+      "recall_delta": -0.25,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 7
+    },
+    {
+      "question_id": "qst_0357",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.3333333333333333,
+      "recall_delta": -0.3333333333333333,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 7
+    },
+    {
+      "question_id": "qst_0358",
+      "question_type": "project_related",
+      "baseline_recall": 0.25,
+      "candidate_recall": 0.25,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 7,
+      "candidate_extra": 7
+    },
+    {
+      "question_id": "qst_0359",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.8333333333333334,
+      "recall_delta": 0.16666666666666674,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 4,
+      "candidate_extra": 3
+    },
+    {
+      "question_id": "qst_0360",
+      "question_type": "project_related",
+      "baseline_recall": 1.0,
+      "candidate_recall": 1.0,
+      "recall_delta": 0.0,
+      "baseline_exact": true,
+      "candidate_exact": true,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0361",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.3333333333333333,
+      "recall_delta": -0.3333333333333333,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 7
+    },
+    {
+      "question_id": "qst_0366",
+      "question_type": "project_related",
+      "baseline_recall": 0.3333333333333333,
+      "candidate_recall": 0.3333333333333333,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 5,
+      "candidate_extra": 5
+    },
+    {
+      "question_id": "qst_0367",
+      "question_type": "project_related",
+      "baseline_recall": 0.4444444444444444,
+      "candidate_recall": 0.2222222222222222,
+      "recall_delta": -0.2222222222222222,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 3,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0371",
+      "question_type": "project_related",
+      "baseline_recall": 1.0,
+      "candidate_recall": 1.0,
+      "recall_delta": 0.0,
+      "baseline_exact": true,
+      "candidate_exact": true,
+      "baseline_extra": 5,
+      "candidate_extra": 5
+    },
+    {
+      "question_id": "qst_0372",
+      "question_type": "project_related",
+      "baseline_recall": 0.75,
+      "candidate_recall": 1.0,
+      "recall_delta": 0.25,
+      "baseline_exact": false,
+      "candidate_exact": true,
+      "baseline_extra": 5,
+      "candidate_extra": 4
+    },
+    {
+      "question_id": "qst_0373",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 1.0,
+      "recall_delta": 0.33333333333333337,
+      "baseline_exact": false,
+      "candidate_exact": true,
+      "baseline_extra": 6,
+      "candidate_extra": 5
+    },
+    {
+      "question_id": "qst_0374",
+      "question_type": "project_related",
+      "baseline_recall": 0.6666666666666666,
+      "candidate_recall": 0.6666666666666666,
+      "recall_delta": 0.0,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 6
+    },
+    {
+      "question_id": "qst_0375",
+      "question_type": "project_related",
+      "baseline_recall": 0.5,
+      "candidate_recall": 0.75,
+      "recall_delta": 0.25,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 5
+    },
+    {
+      "question_id": "qst_0379",
+      "question_type": "project_related",
+      "baseline_recall": 0.25,
+      "candidate_recall": 0.375,
+      "recall_delta": 0.125,
+      "baseline_exact": false,
+      "candidate_exact": false,
+      "baseline_extra": 6,
+      "candidate_extra": 5
+    }
+  ]
+}
