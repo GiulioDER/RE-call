@@ -78,6 +78,7 @@ from recall.eval.locomo import (
     CATEGORY_NAMES,
     DEFAULT_DSN,
 )
+from recall._env import load_dotenv
 from recall.query_class import QUERY_CLASS_VERSION, ROUTING_POLICY_VERSION
 
 
@@ -531,6 +532,13 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     It is a parameter rather than a `datetime.now()` buried in the filename logic so a test can
     pin the artifact paths without freezing time process-wide.
     """
+    # Benchmark invocations often run from a deployment checkout whose secrets live in its
+    # adjacent `.env`. Load both the caller's working directory and this checkout's root without
+    # overriding explicitly exported variables.
+    load_dotenv()
+    checkout_env = Path(__file__).resolve().parents[1] / ".env"
+    if checkout_env.resolve() != Path(".env").resolve():
+        load_dotenv(checkout_env)
     p = argparse.ArgumentParser(
         prog="python -m benchmarks.run",
         description="Run one arm of the memory head-to-head benchmark over LOCOMO.",
