@@ -256,6 +256,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
     # Monotonic, not wall-clock: an NTP step or DST shift between the two readings used
     # to produce a negative interval that the max() clamp recorded as a silent zero.
     started = time.perf_counter()
+    graph_expansion: SemanticGraphExpansionResult | None = None
     if not request.query.strip():
         empty_bundle = _empty_bundle(request)
         response = _response(
@@ -1123,6 +1124,7 @@ def _response(
     generator_invoked: bool,
     citations_normalized: bool,
     expansion_trace: RetrievalExpansionTrace | None = None,
+    graph_expansion: SemanticGraphExpansionResult | None = None,
 ) -> ReasoningResponse:
     cited = _citations(bundle, citations)
     contradictions = tuple(

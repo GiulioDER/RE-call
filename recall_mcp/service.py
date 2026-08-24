@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import psycopg
+from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
 from recall.calibration_v2 import CalibrationRepository
@@ -37,6 +38,8 @@ from recall.generations import (
 )
 from recall.observability import METRICS, get_logger
 from recall.profiles import (
+    FAST_PROFILE,
+    QUALITY_PROFILE,
     RetrievalOverloaded,
     RetrievalProfile,
     resolve_retrieval_profile,
@@ -87,8 +90,8 @@ from recall.rerank import (
 )
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
-from recall.trust import trusted_search
-from recall.types import TrustedResult
+from recall.trust import evaluate, is_trusted, trusted_search
+from recall.types import Chunk, RetrievalResult, ScoredChunk, TrustedResult
 from recall_mcp.factories import (  # noqa: F401 — re-exported; server.py and tests import via service
     _ADMISSION_LOCK,
     _ADMISSIONS,
@@ -237,6 +240,43 @@ def startup_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
         _require_remote_model_code_enabled(values, "coreb-code")
         _positive_env(values, "RECALL_RERANK_BATCH_SIZE", 4)
     return profile
+
+
+class CurrentStateRecordModel(BaseModel):
+    """One authored source state in a generation bound projection."""
+
+    state_id: str
+    source: str
+    state: str
+    chunk_ids: list[str]
+    successor_chain: list[str] = Field(default_factory=list)
+    valid_from: str | None = None
+    valid_until: str | None = None
+    diagnostics: list[str] = Field(default_factory=list)
+
+
+class CurrentStateResult(BaseModel):
+    """Bounded deterministic authored state projection returned by the MCP surface."""
+
+    schema_version: int
+    projection_id: str
+    tenant_id: str
+    generation_id: str
+    pipeline_fingerprint: str | None = None
+    corpus_fingerprint: str | None = None
+    as_of: str
+    records: list[CurrentStateRecordModel]
+
+
+class RelatedResult(BaseModel):
+    """Related evidence whose candidates each passed independent trust evaluation."""
+
+    seed_chunk_id: str
+    relation: str
+    generation_id: str
+    items: list[EvidenceItemModel]
+    rejected_count: int
+    explanation: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -1346,6 +1386,7 @@ def reasoning_query(
     max_graph_nodes: int = 32,
     max_evidence_tokens: int = 2048,
     expand_retrieval: bool = False,
+    graph_expansion: str = "off",
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
 ) -> ReasoningResponse:
@@ -1356,7 +1397,7 @@ def reasoning_query(
         max_evidence_tokens=max_evidence_tokens,
         max_graph_hops=1 if graph_expansion == "one_hop" else 0,
     )
-    reasoning_policy = _reasoning_policy(mode)
+    reasoning_policy = _reasoning_policy(mode, graph_expansion)
     if expand_retrieval:
         reasoning_policy = replace(reasoning_policy, allow_retrieval_expansion=True)
     if policy is not None and not policy.strict:
@@ -1430,6 +1471,11 @@ def reasoning_query(
             expansion_retriever if expand_retrieval else None
         )
 
+        def graph_expansion_provider(
+            request: ReasoningRequest, retrieval: TrustedResult
+        ) -> SemanticGraphExpansionResult:
+            return _expand_semantic_graph(store, request, retrieval, calibration)
+
         request = ReasoningRequest(
             query=query,
             tenant_id=store.tenant,
@@ -1440,6 +1486,7 @@ def reasoning_query(
                 proposal_provider=proposal_port,
                 expansion_provider=expansion_provider,
                 expansion_retriever=expansion_retriever_port,
+                graph_expansion_provider=graph_expansion_provider,
             ),
             policy=reasoning_policy,
             budget=budget,
