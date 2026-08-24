@@ -285,6 +285,9 @@ class _RecordingConn:
 def test_hnsw_filtered_tuning_defaults():
     store = _bare_store(_RecordingConn())
     assert store._hnsw_filtered_tuning() == (200, "relaxed_order")
+    assert store._hnsw_filtered_tuning(k=1) == (200, "relaxed_order")
+    with pytest.warns(RuntimeWarning, match="hnsw.ef_search capped at 1000"):
+        assert store._hnsw_filtered_tuning(k=500) == (1000, "relaxed_order")
 
 
 def test_hnsw_filtered_tuning_reads_env(monkeypatch):

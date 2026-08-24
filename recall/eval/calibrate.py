@@ -22,6 +22,10 @@ __all__ = ["Calibration", "CalibrationReport", "best_threshold", "calibrate",
            "loo_threshold_rates", "measure_top_cosines"]
 
 EVAL_DIR = Path(__file__).parent
+#: The calibration probe must be wider than pgvector's default HNSW scan and the shipped dense
+#: candidate pool. A k=1 probe can return an empty or merely reachable row from a tenant-filtered
+#: shared index, which is not evidence about the corpus' true nearest neighbour.
+CALIBRATION_DENSE_K = 200
 
 
 @dataclass
@@ -61,8 +65,13 @@ def measure_top_cosines(
     for q in queries:
         if q.get("trust"):
             continue
-        hits = store.query_dense(embed_query(embedder, q["query"]), k=1)
-        top = hits[0].score if hits else 0.0
+        hits = store.query_dense(embed_query(embedder, q["query"]), k=CALIBRATION_DENSE_K)
+        if not hits:
+            raise RuntimeError(
+                f"calibration query returned no dense hits for {q['query']!r}; "
+                "an empty result is not a calibration data point"
+            )
+        top = hits[0].score
         (ans if q["answerable"] else unans).append(top)
     return ans, unans
 

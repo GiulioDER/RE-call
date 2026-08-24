@@ -13,11 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.enterprise_rag import load_questions
+from benchmarks._trust import bench_search
 from recall.calibration import Calibration
 from recall.embeddings import embedding_profile_id, resolve_embedder
 from recall.evidence import AnswerSlot, EvidencePolicy, build_evidence_bundle
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
 from recall.trust_policy import TrustPolicy
 from recall.types import Chunk, Provenance, TrustedHit, Validity
 
@@ -172,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit(f"no indexed gold chunks for {question_id}")
             if not _slots_covered(slots, [chunk.text for chunk in gold_chunks]):
                 raise SystemExit(f"label coverage audit failed for {question_id}")
-            retrieved = trusted_search(
+            retrieved = bench_search(
                 store, embedder, question.question, k=8, candidate_k=args.candidate_k,
                 calibration=calibration, policy=TrustPolicy.development(),
             )

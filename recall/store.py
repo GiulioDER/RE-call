@@ -277,11 +277,11 @@ TENANT_GUC = "recall.tenant_id"
 #: in a deploy is a visible, greppable decision rather than an oversight.
 INSECURE_DSN_OPT_OUT = "RECALL_ALLOW_INSECURE_DSN"
 
-#: HNSW tuning applied ONLY to a `source`-filtered `query_dense` call (see issue #11's third
-#: checkbox). An HNSW index walk is filter-blind: it finds the globally nearest neighbours, THEN
-#: discards the ones that fail `WHERE source = ...`, so a selective filter can silently return
-#: fewer than `k` rows, or fewer true neighbours than exist. Measured on 20,000 rows / dim 64 /
-#: a filter matching 10% of rows / 40 queries, recall@10 against an exact scan:
+#: HNSW tuning applied to a filtered `query_dense` call (see issue #11's third checkbox). An HNSW
+#: index walk is filter-blind: it finds the globally nearest neighbours, THEN discards the ones
+#: that fail `WHERE tenant_id = ...` or `WHERE source = ...`, so a selective filter can silently
+#: return fewer than `k` rows, or fewer true neighbours than exist. Measured on 20,000 rows / dim
+#: 64 / a filter matching 10% of rows / 40 queries, recall@10 against an exact scan:
 #:
 #:   default (ef_search=40, iterative_scan=off) ..................... 0.385 recall, 40/40 truncated
 #:   ef_search=200 alone ............................................. 0.942 recall,  1/40 truncated
@@ -292,11 +292,10 @@ INSECURE_DSN_OPT_OUT = "RECALL_ALLOW_INSECURE_DSN"
 #: Neither knob alone is enough: `ef_search` widens the candidate list (fixes recall) but a
 #: filtered scan can still exhaust it before reaching k matches (truncation); `iterative_scan`
 #: re-widens the scan on exhaustion (fixes truncation) but not recall by itself. Both are needed
-#: together. These two knobs apply to FILTERED queries; the unfiltered arm has its own, separate
-#: widening for `k` past ef_search's default (see `_PGVECTOR_DEFAULT_EF_SEARCH` below). The earlier
-#: claim that the unfiltered arm needs no tuning held only at `k <= ef_search` — at k=10, where it
-#: was measured; it does not generalise past ef_search's default, which is the gap that widening
-#: closes.
+#: together. These two knobs apply to FILTERED queries, which includes the normal tenant-scoped
+#: arm. The defensive unfiltered path below retains its own widening for `k` past ef_search's
+#: default (see `_PGVECTOR_DEFAULT_EF_SEARCH`), but a real `PgVectorStore` never takes that path:
+#: its tenant predicate is always present.
 #:
 #: Both are read at CALL time (not import time) via `os.environ`, matching how
 #: `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` are read in `recall_mcp/service.py`, so a
@@ -1240,12 +1239,17 @@ class PgVectorStore:
             )
         return hits
 
-    def _hnsw_filtered_tuning(self) -> tuple[int, str]:
+    def _hnsw_filtered_tuning(self, k: int | None = None) -> tuple[int, str]:
         """`(ef_search, iterative_scan)` for a filtered dense query, from env or the defaults.
 
         Read fresh on every call (not cached at import/construction time) so a test can
         `monkeypatch.setenv` per-case and a long-lived process can pick up a changed value without
         restarting — the same convention `index_memory()` uses for `RECALL_INDEX_MAX_FILES`.
+
+        When ``k`` is supplied, the scan is widened far enough to return the requested page even
+        when it exceeds the default filtered width. The configured filtered width remains the
+        floor, because the over-fetch multiplier is a correctness margin rather than a reason to
+        narrow an operator's explicit setting.
         """
         raw_ef = os.environ.get(
             "RECALL_HNSW_EF_SEARCH_FILTERED", str(DEFAULT_HNSW_EF_SEARCH_FILTERED)
@@ -1271,6 +1275,26 @@ class PgVectorStore:
             raise ValueError(
                 f"RECALL_HNSW_ITERATIVE_SCAN_FILTERED={iterative_scan!r} is not one of "
                 f"{sorted(_HNSW_ITERATIVE_SCAN_VALUES)}"
+            )
+        if k is not None:
+            if k > _HNSW_EF_SEARCH_MAX:
+                raise ValueError(
+                    f"k={k} exceeds pgvector's maximum hnsw.ef_search of {_HNSW_EF_SEARCH_MAX}, "
+                    "so a filtered HNSW scan cannot be widened far enough to return k rows and "
+                    "would silently truncate. Ask for fewer candidates."
+                )
+            desired_ef = k * _ef_search_multiplier()
+            if desired_ef > _HNSW_EF_SEARCH_MAX:
+                warnings.warn(
+                    f"hnsw.ef_search capped at {_HNSW_EF_SEARCH_MAX}: k={k} x multiplier "
+                    f"{_ef_search_multiplier()} = {desired_ef}, above pgvector's maximum. The "
+                    f"scan still covers k={k}, so only the over-fetch margin is reduced.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
+            ef_search = max(
+                ef_search,
+                min(desired_ef, _HNSW_EF_SEARCH_MAX),
             )
         return ef_search, iterative_scan
 
@@ -1310,14 +1334,16 @@ class PgVectorStore:
         if source:
             params["source"] = source
 
-        if source:
-            # Filtered arm only — see `DEFAULT_HNSW_EF_SEARCH_FILTERED` above for why the
-            # unfiltered arm skips this. `SET LOCAL` only takes effect inside a transaction block;
-            # on the autocommit connections this store uses, that means explicitly opening one
-            # here, tuning the GUCs, then running the query, all before the transaction closes and
-            # the tuning reverts. Values are validated/int-cast above, never taken as a bound
-            # parameter — Postgres' `SET` does not accept one for the value.
-            ef_search, iterative_scan = self._hnsw_filtered_tuning()
+        if self._tenant or source:
+            # Every PgVectorStore query is tenant-filtered, even when `source` is absent. The
+            # tenant predicate is a post-filter on the shared HNSW index just like the source
+            # predicate, so the filtered tuning is required for the normal tenant-scoped path too.
+            # `SET LOCAL` only takes effect inside a transaction block; on the autocommit
+            # connections this store uses, that means explicitly opening one here, tuning the
+            # GUCs, then running the query, all before the transaction closes and the tuning
+            # reverts. Values are validated/int-cast above, never taken as a bound parameter —
+            # Postgres' `SET` does not accept one for the value.
+            ef_search, iterative_scan = self._hnsw_filtered_tuning(k)
 
             def _op(conn: "psycopg.Connection") -> list[tuple]:
                 with conn.transaction():

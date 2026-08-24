@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
 
+from benchmarks._trust import bench_search
 from benchmarks.enterprise_rag import (
     _doc_from_text_file,
     index_documents,
@@ -31,7 +32,6 @@ from recall.retriever import (
     StructuralExpansionPolicy,
 )
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
 from recall.trust_policy import TrustPolicy
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,7 +142,7 @@ def _run_case(
     elif arm in {"answer_slots", "bundle_beam"}:
         expansion = DocumentExpansionPolicy(enabled=True, max_sources=2, chunks_per_source=8)
 
-    result = trusted_search(
+    result = bench_search(
         store,
         embedder,
         question.question,
