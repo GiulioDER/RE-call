@@ -4,6 +4,28 @@ Generated from the canonical evidence records in `docs/prior_art/`.
 
 This matrix records evidence, not absolute absence. `unknown` means the investigation is incomplete; `not_evidenced` means the reviewed sources did not establish the capability.
 
+## System overview
+
+This overview has one row per system and one column per capability group. Group cells aggregate the detailed capability records below; `partial` means the group is not completely evidenced.
+
+| System | representation | write_path | retrieval | validity_and_revision | time | provenance | uncertainty | authority_and_scope | deletion_and_forgetting | action_feedback | security | evaluation |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| AgentMemoryBench | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `partial` |
+| A-MEM | `unknown` | `partial` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` |
+| Agent-Memory Protocol | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `partial` | `unknown` |
+| Graphiti | `partial` | `unknown` | `partial` | `unknown` | `partial` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` |
+| HippoRAG | `unknown` | `unknown` | `partial` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` |
+| LangMem | `unknown` | `partial` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` |
+| Letta | `partial` | `partial` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` |
+| LongMemEval | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `partial` |
+| LongMemEval V2 | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `partial` |
+| Mem0 | `partial` | `partial` | `partial` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` |
+| MemMachine | `partial` | `unknown` | `partial` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` |
+| MemoryBank | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` | `partial` | `unknown` | `unknown` | `unknown` |
+| Neo4j Agent Memory | `partial` | `partial` | `unknown` | `unknown` | `partial` | `partial` | `unknown` | `unknown` | `unknown` | `partial` | `unknown` | `unknown` |
+| Quipu | `partial` | `unknown` | `unknown` | `unknown` | `partial` | `partial` | `unknown` | `partial` | `partial` | `unknown` | `unknown` | `unknown` |
+| RE-call | `unknown` | `unknown` | `unknown` | `partial` | `unknown` | `partial` | `partial` | `partial` | `unknown` | `unknown` | `unknown` | `unknown` |
+
 ## representation: Raw episodes
 
 The system preserves source episodes or turns as retrievable memory.

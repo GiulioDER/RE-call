@@ -17,6 +17,8 @@ def test_matrix_contains_uncertainty_states_and_systems() -> None:
     assert "`not_evidenced`" in matrix
     assert "Graphiti" in matrix
     assert "RE-call" in matrix
+    assert "## System overview" in matrix
+    assert "| System | representation | write_path | retrieval |" in matrix
     assert "## Incomplete or unresolved claims" in matrix
     assert "clm_langmem_revision_001" in matrix
     assert "## Conflicting evidence" in matrix

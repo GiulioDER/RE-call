@@ -19,6 +19,16 @@ def _capabilities(dataset: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     return values
 
 
+def _groups(dataset: dict[str, Any]) -> list[tuple[str, list[str]]]:
+    return [
+        (
+            group["group_id"],
+            [capability["capability_id"] for capability in group["capabilities"]],
+        )
+        for group in dataset["taxonomy"]["groups"]
+    ]
+
+
 def _cell(claims: list[dict[str, Any]]) -> str:
     if not claims:
         return "unknown"
@@ -28,6 +38,22 @@ def _cell(claims: list[dict[str, Any]]) -> str:
     for value in ("verified", "partial", "not_evidenced", "unknown", "contradicted"):
         if value in values:
             return value
+    return "unknown"
+
+
+def _group_cell(values: list[str]) -> str:
+    """Aggregate capability values without turning missing evidence into a positive result."""
+
+    if any(value in {"contested", "contradicted"} for value in values):
+        if any(value in {"verified", "partial"} for value in values):
+            return "contested"
+        return "contradicted"
+    if values and all(value == "verified" for value in values):
+        return "verified"
+    if any(value in {"verified", "partial"} for value in values):
+        return "partial"
+    if values and all(value == "not_evidenced" for value in values):
+        return "not_evidenced"
     return "unknown"
 
 
@@ -126,7 +152,31 @@ def render_matrix(dataset: dict[str, Any]) -> str:
         "",
         "This matrix records evidence, not absolute absence. `unknown` means the investigation is incomplete; `not_evidenced` means the reviewed sources did not establish the capability.",
         "",
+        "## System overview",
+        "",
+        "This overview has one row per system and one column per capability group. Group cells aggregate the detailed capability records below; `partial` means the group is not completely evidenced.",
+        "",
     ]
+    group_columns = [group_id for group_id, _ in _groups(dataset)]
+    lines.append("| System | " + " | ".join(group_columns) + " |")
+    lines.append("| --- | " + " | ".join("---" for _ in group_columns) + " |")
+    for system in systems:
+        group_values = []
+        for _, capability_ids in _groups(dataset):
+            group_values.append(
+                _group_cell(
+                    [
+                        _cell(claims_by_cell.get((system["system_id"], capability_id), []))
+                        for capability_id in capability_ids
+                    ]
+                )
+            )
+        lines.append(
+            f"| {system['display_name']} | "
+            + " | ".join(f"`{value}`" for value in group_values)
+            + " |"
+        )
+    lines.append("")
     for group_id, capability in _capabilities(dataset):
         capability_id = capability["capability_id"]
         lines.extend(
