@@ -20,7 +20,7 @@ import json
 import os
 from pathlib import Path
 import time
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, cast
 
 from benchmarks.evidence_graph_eval import (
     EVALUATION_ARMS,
@@ -387,7 +387,7 @@ def _deepseek_completion(prompt: str, model: str) -> str:
             {"role": "user", "content": prompt},
         ],
     )
-    content = response.choices[0].message.content
+    content = cast(str | None, response.choices[0].message.content)
     if not content:
         raise RuntimeError("DeepSeek answer returned an empty response")
     return content
