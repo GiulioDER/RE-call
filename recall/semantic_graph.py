@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 import re
 from types import MappingProxyType
 import unicodedata
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Literal, Protocol
 
 from psycopg.types.json import Jsonb
 
@@ -487,9 +487,9 @@ def _entity_specs(chunk: Chunk) -> list[tuple[str, EntityKind, ExtractionMethod]
         specs.append((file_name.strip(), "file", "filename"))
     for key in ENTITY_KINDS:
         for label in _as_labels(chunk.metadata.get(key)):
-            specs.append((label, cast(EntityKind, key), "metadata"))
-    for key in ("entities",):
-        for label in _as_labels(chunk.metadata.get(key)):
+            specs.append((label, key, "metadata"))
+    for metadata_key in ("entities",):
+        for label in _as_labels(chunk.metadata.get(metadata_key)):
             specs.append((label, "unknown", "metadata"))
     for line in chunk.text.splitlines():
         heading = re.match(r"^#{1,6}\s+(.+?)\s*#*$", line)
@@ -665,15 +665,15 @@ def build_semantic_graph(
         by_normalized = entity_ids_by_chunk[chunk.id]
         for label, kind, method in _entity_specs(chunk):
             normalized = normalize_entity_name(label)
-            entity: SemanticEntity | None
+            resolved_entity: SemanticEntity | None
             if normalized in alias_candidates and normalized not in ambiguous_names:
-                entity = next(
+                resolved_entity = next(
                     entity for entity in entity_by_key.values() if entity.id == next(iter(alias_candidates[normalized]))
                 )
-                by_normalized[normalized] = entity
+                by_normalized[normalized] = resolved_entity
             else:
-                entity = by_normalized.get(normalized)
-            if entity is None:
+                resolved_entity = by_normalized.get(normalized)
+            if resolved_entity is None:
                 continue
             mention_id = _identity(
                 "mention",
@@ -681,7 +681,7 @@ def build_semantic_graph(
                     "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
                     "tenant_id": tenant_id,
                     "generation_id": generation_id,
-                    "entity_id": entity.id,
+                    "entity_id": resolved_entity.id,
                     "chunk_id": chunk.id,
                     "mention_text": label,
                 },
@@ -694,7 +694,7 @@ def build_semantic_graph(
                     id=mention_id,
                     tenant_id=tenant_id,
                     generation_id=generation_id,
-                    entity_id=entity.id,
+                    entity_id=resolved_entity.id,
                     chunk_id=chunk.id,
                     mention_text=label,
                     extraction_method=method,
