@@ -8,6 +8,7 @@ from datetime import datetime
 import re
 from typing import Literal, Protocol
 
+from recall.errors import RecallError
 from recall.types import TrustedHit, TrustedResult
 
 

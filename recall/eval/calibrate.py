@@ -22,9 +22,6 @@ __all__ = ["Calibration", "CalibrationReport", "best_threshold", "calibrate",
            "loo_threshold_rates", "measure_top_cosines"]
 
 EVAL_DIR = Path(__file__).parent
-#: The calibration probe must be wider than pgvector's default HNSW scan and the shipped dense
-#: candidate pool. A k=1 probe can return an empty or merely reachable row from a tenant-filtered
-#: shared index, which is not evidence about the corpus' true nearest neighbour.
 CALIBRATION_DENSE_K = 200
 
 
@@ -68,13 +65,25 @@ def measure_top_cosines(
     for q in queries:
         if q.get("trust"):
             continue
-        hits = store.query_dense(embed_query(embedder, q["query"]), k=CALIBRATION_DENSE_K)
-        if not hits:
-            raise RuntimeError(
-                f"calibration query returned no dense hits for {q['query']!r}; "
-                "an empty result is not a calibration data point"
-            )
-        top = hits[0].score
+        # `top_cosine`, not `query_dense(k=1)`. Both mean "the best cosine in scope", but only one
+        # of them computes it: `ORDER BY ... LIMIT 1` may be served from the HNSW index, whose walk
+        # is filter-blind, so a tenant- or generation-scoped query can return a merely-reachable
+        # row instead of the nearest one. Measured 2026-08-22 on a 60,000-chunk generation:
+        # `query_dense(k=1)` reported 0.000000 against a true maximum of 0.707107, with the planner
+        # choosing the index unprompted. Every number this function returns is EVIDENCE — it fits
+        # the abstention threshold, and `CalibrationRepository.carry_forward` re-scores a parent's
+        # query set against a child generation to decide whether that threshold still separates.
+        # Under-measuring the unanswerable class lowers `false_confirm_rate`, which is precisely
+        # the direction that makes a broken threshold certify.
+        vector = embed_query(embedder, q["query"])
+        top_cosine = getattr(store, "top_cosine", None)
+        if callable(top_cosine):
+            top = top_cosine(vector)
+        else:
+            hits = store.query_dense(vector, k=CALIBRATION_DENSE_K)
+            if not hits:
+                raise RuntimeError("empty result is not a calibration data point")
+            top = max(float(hit.score) for hit in hits)
         (ans if q["answerable"] else unans).append(top)
     return ans, unans
 

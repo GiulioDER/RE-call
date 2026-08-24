@@ -232,7 +232,9 @@ def test_the_bundle_cannot_contain_a_passage_that_was_not_retrieved() -> None:
     # `recall.errors` is admitted deliberately: it defines the RecallError base and imports
     # nothing itself, so it cannot smuggle a store in under this allowlist's nose.
     assert imported <= {"__future__", "json", "collections.abc", "dataclasses", "datetime",
-                        "re", "typing", "recall.types"}, f"unexpected import: {imported}"
+                        "re", "typing", "recall.types", "recall.errors"}, (
+        f"unexpected import: {imported}"
+    )
     # The one thing an AST import walk cannot see, and the only thing the old denylist caught
     # that this does not.
     assert "__import__" not in source, "a dynamic import would bypass the allowlist above"

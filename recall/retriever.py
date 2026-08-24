@@ -76,6 +76,24 @@ class StructuralExpansionPolicy:
             raise ValueError("radius must not be negative")
 
 
+@dataclass(frozen=True)
+class SuccessorExpansionPolicy:
+    """Bounded, opt in retrieval of declared successors outside the initial candidate pool."""
+
+    enabled: bool = False
+    max_sources: int = 2
+    chunks_per_source: int = 3
+    ordering: Literal["pool", "promoted_first", "inherit"] = "pool"
+
+    def __post_init__(self) -> None:
+        if self.max_sources < 1:
+            raise ValueError("max_sources must be positive")
+        if self.chunks_per_source < 1:
+            raise ValueError("chunks_per_source must be positive")
+        if self.ordering not in {"pool", "promoted_first", "inherit"}:
+            raise ValueError("ordering must be one of ['inherit', 'pool', 'promoted_first']")
+
+
 _RELATIONAL_QUERY = re.compile(
     r"\b(?:why|how|when|before|after|compare|comparison|difference|changed|change|"
     r"decision|decided|status|result|outcome|outcomes|happened|led|caused|consequence|following|"
@@ -200,6 +218,63 @@ def expand_retrieval_by_structure(
     timings = dict(result.diagnostics.stage_ms)
     timings["structural_expansion"] = round((time.perf_counter() - started) * 1000.0, 3)
     timings["structural_expansion_sources"] = float(len(sources))
+    diagnostics = replace(
+        result.diagnostics,
+        reranking_ran=reranking_ran,
+        stage_ms=timings,
+    )
+    return replace(result, hits=merged, diagnostics=diagnostics)
+
+
+def expand_retrieval_by_successor(
+    result: RetrievalResult,
+    search: Callable[[str, int, str | None], RetrievalResult],
+    resolve: Callable[[str], str | None],
+    policy: SuccessorExpansionPolicy,
+) -> RetrievalResult:
+    """Fetch declared successors, leaving ordinary retrieval unchanged when disabled."""
+    if not policy.enabled or not result.hits:
+        return result
+
+    present: set[str] = set()
+    for hit in result.hits:
+        file = hit.chunk.metadata.get("file")
+        if isinstance(file, str) and file:
+            present.add(file)
+
+    targets: list[str] = []
+    for hit in result.hits:
+        file = hit.chunk.metadata.get("file")
+        if not isinstance(file, str) or not file:
+            continue
+        successor = resolve(file)
+        if successor is None or successor in present:
+            continue
+        present.add(successor)
+        targets.append(successor)
+        if len(targets) >= policy.max_sources:
+            break
+    if not targets:
+        return result
+
+    started = time.perf_counter()
+    expanded: list[ScoredChunk] = []
+    reranking_ran = result.diagnostics.reranking_ran
+    for successor in targets:
+        scoped = search(result.query, policy.chunks_per_source, successor)
+        expanded.extend(scoped.hits)
+        reranking_ran = reranking_ran or scoped.diagnostics.reranking_ran
+
+    by_id = {hit.chunk.id: hit for hit in result.hits}
+    merged = list(result.hits)
+    for hit in expanded:
+        if hit.chunk.id not in by_id:
+            by_id[hit.chunk.id] = hit
+            merged.append(hit)
+
+    timings = dict(result.diagnostics.stage_ms)
+    timings["successor_expansion"] = round((time.perf_counter() - started) * 1000.0, 3)
+    timings["successor_expansion_sources"] = float(len(targets))
     diagnostics = replace(
         result.diagnostics,
         reranking_ran=reranking_ran,

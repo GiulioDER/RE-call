@@ -1,5 +1,9 @@
 """recall — Retrieval-Augmented Self-Recall for long-running agents."""
 
+# This module is the deliberate package reexport surface. The explicit `__all__` below documents
+# the stable subset, while additional historical names remain importable for compatibility.
+# ruff: noqa: F401
+
 from recall.calibration_v2 import CalibrationArtifactV2, CalibrationStatus
 
 # The generator-neutral evidence boundary. Exported here because a guarantee reachable only by
@@ -117,7 +121,7 @@ from recall.reasoning_proposals import (
     proposal_to_graph_edge,
 )
 
-__version__ = "0.9.8"
+__version__ = "0.10.0"
 
 __all__ = sorted([
     "AnswerEnvelope",

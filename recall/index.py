@@ -14,7 +14,12 @@ from recall.context import ContextPolicy, StructuredChunk, contextual_passages
 from recall.embedding_registry import context_version_for
 from recall.control_plane import ControlPlane
 from recall.document import parse_document
-from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
+from recall.embeddings import (
+    LEGACY_UNVERIFIED_DIGEST,
+    Embedder,
+    embedding_profile,
+    embedding_profile_id,
+)
 from recall.extraction import (
     DOCUMENT_EXTENSIONS,
     STRUCTURED_DOCUMENT_VERSION,
@@ -22,6 +27,7 @@ from recall.extraction import (
     extract_document,
 )
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
+from recall.index_lock import single_writer
 from recall.observability import get_logger
 from recall.sparse import SparseEncoderProtocol, store_sparse_vectors
 from recall.store import PgVectorStore
@@ -507,7 +513,7 @@ def _index_fingerprint(
             (
                 content_hash,
                 STRUCTURED_DOCUMENT_VERSION,
-                embedding_profile_id(embedder),
+                embedding_profile(embedder).fingerprint(),
                 context_policy.mode,
                 context_policy.version,
                 str(context_policy.max_tokens),
@@ -657,6 +663,24 @@ class Indexer:
         return {**meta, **self.provenance}
 
     def index_path(
+        self, path: str | Path, glob: str | None = None, files: list[Path] | None = None
+    ) -> IndexStats:
+        """Index `path` while holding this corpus's single-writer lock. See `_index_path`.
+
+        The lock is taken HERE rather than at each entry point, because the callers that most
+        need it are the ones nobody is watching: the `SessionEnd` hook
+        (`recall.setup.index_memory_directory`), a scheduled refresh, a script that builds its own
+        `Indexer`. Every one of them arrives through this method, and a guard that each caller has
+        to remember to take is a guard that protects whichever call site was written first.
+
+        `recall.index_lock.single_writer` states what it does not cover: an embedding run that
+        writes to no corpus shares the host's memory rather than the corpus, and is bounded by a
+        host-level lock instead.
+        """
+        with single_writer(self._store):
+            return self._index_path(path, glob=glob, files=files)
+
+    def _index_path(
         self, path: str | Path, glob: str | None = None, files: list[Path] | None = None
     ) -> IndexStats:
         """Index one supported source, or a directory of supported sources, into the vector store.

@@ -14,10 +14,12 @@ import csv
 import io
 import os
 import posixpath
+import queue
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import urllib.parse
 import zipfile
 from dataclasses import dataclass
@@ -25,8 +27,9 @@ from email import policy
 from email.parser import BytesParser
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Iterator, Literal
 from xml.etree import ElementTree
+from recall.errors import RecallError
 
 
 class DocumentExtractionError(ValueError, RecallError):
@@ -190,7 +193,7 @@ def extract_document(path: Path, data: bytes) -> ExtractedDocument:
         return _extract_epub(data)
     if suffix in {".html", ".htm"}:
         return _extract_html(data)
-    if suffix in {".doc", ".msg", ".odt", ".ods", ".odp", ".ppt"}:
+    if suffix in LIBREOFFICE_EXTENSIONS:
         return _extract_with_libreoffice(path, data)
     if suffix in {".csv", ".tsv"}:
         return _extract_delimited(suffix, data)
@@ -572,6 +575,155 @@ def _extract_epub(data: bytes) -> ExtractedDocument:
     return _result("\n\n".join(sections), "epub")
 
 
+# A small pool of reusable LibreOffice user profiles, one process-wide, checked out per conversion.
+#
+# Every call used to build its own `-env:UserInstallation` inside its own temporary directory, so
+# every legacy-format extraction paid a cold profile bootstrap. Reusing profiles is worth real time:
+# measured 2026-08-18, Windows 11, LibreOffice 26.2.5.2, five serial extractions fell from a median
+# 29.76s to 17.94s, because only the first call still pays the bootstrap and the rest drop from
+# about 6s to about 3s each. Full record and the falsified prediction that shaped this design:
+# `docs/preregistrations/2026-08-18-libreoffice-profile-reuse.md`.
+#
+# **A pool rather than one shared profile, because one profile has to be locked and the lock costs
+# more than the bootstrap it saves.** Two `soffice --convert-to` processes started at the same
+# moment against ONE profile do not both succeed: exactly one converts, and the other exits 1
+# having written no output file and nothing at all on stderr, cold profile and warm alike. So a
+# single shared profile forces every extraction in the process to serialise, and measured at four
+# way concurrency that lost outright, 12.61s and 13.16s serialised against 7.10s and 9.25s for the
+# old always-cold code. Distinct profiles used concurrently are fine (zero errors in that same
+# measurement), so the pool keeps the reuse and keeps the parallelism.
+#
+# Profiles are per PROCESS rather than at a fixed path under the temp directory, deliberately: a
+# lock cannot span processes, but a distinct path does not need to, so two concurrent `recall index`
+# processes cannot collide at all. The price is one bootstrap per process, not one per machine.
+#
+# Re-measure: `python scripts/bench_libreoffice_profile.py probe --fixtures DIR [--warm]` for the
+# collision, and `serial` / `threads` for the two timings.
+_DEFAULT_PROFILE_POOL = 4
+_pool_lock = threading.Lock()
+_profile_pool: queue.LifoQueue[str | None] | None = None
+_live_profiles: set[str] = set()
+_cleanup_registered = False
+
+
+def _shared_profile_disabled() -> bool:
+    """Escape hatch back to a per-call profile, for a deployment that meets a stuck pooled one."""
+    setting = os.environ.get("RECALL_LIBREOFFICE_SHARED_PROFILE", "1").strip().lower()
+    return setting in {"0", "false", "no", "off"}
+
+
+def _profile_pool_size() -> int:
+    """How many extractions may run at once. Beyond core count there is nothing left to overlap."""
+    raw = os.environ.get("RECALL_LIBREOFFICE_PROFILES", "").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return max(1, min(_DEFAULT_PROFILE_POOL, os.cpu_count() or 1))
+
+
+def _profiles() -> queue.LifoQueue[str | None]:
+    global _profile_pool
+    with _pool_lock:
+        if _profile_pool is None:
+            # LIFO, not FIFO, and that is the whole trick for the serial case: a returned profile
+            # goes back on top, so the next call reuses it instead of working through the remaining
+            # empty slots and paying a bootstrap for each. A FIFO pool of four would make a serial
+            # workload build all four profiles before it reused any of them.
+            pool: queue.LifoQueue[str | None] = queue.LifoQueue()
+            for _ in range(_profile_pool_size()):
+                pool.put(None)
+            global _cleanup_registered
+            if not _cleanup_registered:
+                atexit.register(_discard_all_profiles)
+                _cleanup_registered = True
+            _profile_pool = pool
+        return _profile_pool
+
+
+def _discard_all_profiles() -> None:
+    with _pool_lock:
+        stale = list(_live_profiles)
+        _live_profiles.clear()
+    for directory in stale:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def _libreoffice_profile(scratch: Path) -> Iterator[Path]:
+    """Check a user profile out of the pool, blocking while every profile is in use."""
+    if _shared_profile_disabled():
+        profile = scratch / "profile"
+        profile.mkdir()
+        yield profile
+        return
+    pool = _profiles()
+    slot = pool.get()
+    if slot is None:
+        slot = tempfile.mkdtemp(prefix="recall-office-profile-")
+        with _pool_lock:
+            _live_profiles.add(slot)
+    try:
+        yield Path(slot)
+    except BaseException:
+        # A `soffice` that died mid-run can leave a lock behind that poisons every later launch
+        # against the same profile, which a per-call profile could never suffer from. Throwing the
+        # profile away costs one bootstrap; keeping it costs every call that reuses the slot after.
+        #
+        # `BaseException`, not `Exception`, and the difference is not pedantry: the slot MUST go
+        # back. A Ctrl-C through here would otherwise retire one slot permanently, and enough of
+        # them would empty the pool and leave the next `pool.get()` blocking for ever.
+        with _pool_lock:
+            _live_profiles.discard(slot)
+        shutil.rmtree(slot, ignore_errors=True)
+        pool.put(None)
+        raise
+    else:
+        pool.put(slot)
+
+
+def _run_libreoffice(
+    executable: str,
+    path: Path,
+    scratch: Path,
+    source: Path,
+    convert_to: str,
+    verb: str,
+) -> None:
+    """Run one headless conversion, translating both failure modes into a typed error."""
+    try:
+        with _libreoffice_profile(scratch) as profile:
+            subprocess.run(
+                [
+                    executable,
+                    f"-env:UserInstallation={profile.as_uri()}",
+                    "--headless",
+                    "--convert-to",
+                    convert_to,
+                    "--outdir",
+                    str(scratch),
+                    str(source),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                # LibreOffice reports in the system locale, so this is the call site most likely to
+                # emit a byte the platform codec cannot read. See `recall/desktop/runtime.py` for
+                # what that costs: rc=0, `stdout=None`, and no exception.
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+            )
+    except FileNotFoundError as exc:
+        raise DocumentExtractionError(
+            f"{path.suffix.upper()} needs LibreOffice for extraction; install LibreOffice "
+            "or use the modern Office format"
+        ) from exc
+    except subprocess.SubprocessError as exc:
+        raise DocumentExtractionError(
+            f"LibreOffice could not {verb} {path.name}: {type(exc).__name__}"
+        ) from exc
+
+
 def _extract_with_libreoffice(path: Path, data: bytes) -> ExtractedDocument:
     executable = _libreoffice_executable()
     if executable is None:
@@ -579,57 +731,21 @@ def _extract_with_libreoffice(path: Path, data: bytes) -> ExtractedDocument:
             f"{path.suffix.upper()} needs LibreOffice for extraction; install LibreOffice or use "
             "the modern Office format"
         )
+    # The scratch directory stays per call even though the profile is now shared: two concurrent
+    # extractions must not race on the source file or on the converted output name.
     with tempfile.TemporaryDirectory(prefix="recall-office-") as directory:
-        source = Path(directory) / path.name
-        profile = Path(directory) / "profile"
-        profile.mkdir()
+        scratch = Path(directory)
+        source = scratch / path.name
         source.write_bytes(data)
-        office_command = [
-            executable,
-            f"-env:UserInstallation={profile.as_uri()}",
-            "--headless",
-        ]
         if path.suffix.lower() in {".ppt", ".odp"}:
-            try:
-                subprocess.run(
-                    [*office_command, "--convert-to", "pptx", "--outdir", directory, str(source)],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-            except FileNotFoundError as exc:
-                raise DocumentExtractionError(
-                    f"{path.suffix.upper()} needs LibreOffice for extraction; install LibreOffice "
-                    "or use the modern Office format"
-                ) from exc
-            except subprocess.SubprocessError as exc:
-                raise DocumentExtractionError(
-                    f"LibreOffice could not convert {path.name}: {type(exc).__name__}"
-                ) from exc
+            _run_libreoffice(executable, path, scratch, source, "pptx", "convert")
             converted_pptx = source.with_suffix(".pptx")
             if not converted_pptx.exists():
                 raise DocumentExtractionError(f"LibreOffice produced no PPTX for {path.name}")
             return _extract_pptx(converted_pptx.read_bytes())
         output_suffix = ".csv" if path.suffix.lower() == ".ods" else ".txt"
         output_filter = "csv:Text - txt - csv (StarCalc)" if output_suffix == ".csv" else "txt:Text"
-        try:
-            subprocess.run(
-                [*office_command, "--convert-to", output_filter, "--outdir", directory, str(source)],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-        except FileNotFoundError as exc:
-            raise DocumentExtractionError(
-                f"{path.suffix.upper()} needs LibreOffice for extraction; install LibreOffice "
-                "or use the modern Office format"
-            ) from exc
-        except subprocess.SubprocessError as exc:
-            raise DocumentExtractionError(
-                f"LibreOffice could not extract {path.name}: {type(exc).__name__}"
-            ) from exc
+        _run_libreoffice(executable, path, scratch, source, output_filter, "extract")
         converted = source.with_suffix(output_suffix)
         if not converted.exists():
             raise DocumentExtractionError(f"LibreOffice produced no text for {path.name}")

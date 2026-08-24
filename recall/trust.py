@@ -40,8 +40,10 @@ from recall.retriever import (
     DocumentExpansionPolicy,
     HybridRetriever,
     StructuralExpansionPolicy,
+    SuccessorExpansionPolicy,
     expand_retrieval_by_source,
     expand_retrieval_by_structure,
+    expand_retrieval_by_successor,
 )
 from recall.store import EdgeCandidates, PgVectorStore
 from recall.trust_policy import (
@@ -669,6 +671,7 @@ def _trusted_search(
     policy: TrustPolicy | None = None,
     document_expansion: DocumentExpansionPolicy | None = None,
     structural_expansion: StructuralExpansionPolicy | None = None,
+    successor_expansion: SuccessorExpansionPolicy | None = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """The implementation of `trusted_search`, minus the decision-ledger wrapper.
@@ -699,6 +702,7 @@ def _trusted_search(
                 policy=policy,
                 document_expansion=document_expansion,
                 structural_expansion=structural_expansion,
+                successor_expansion=successor_expansion,
                 _generation_snapshot=False,
             )
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must

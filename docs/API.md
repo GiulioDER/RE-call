@@ -40,10 +40,13 @@ removal.
 | `recall index` | Index a markdown corpus. |
 | `recall forget` | Permanently erase indexed sources; the right-to-erasure path. |
 | `recall search` | Query an indexed corpus through the trust layer. |
-| `recall reasoning` | Inspect projections, proposals, traces, audits, and opt-in reasoning queries without changing ordinary retrieval behavior. |
-| `recall graph rebuild` | Build the deterministic Evidence Graph V1 for an existing generation without changing chunks or generation identity. |
-| `recall extract` | Extract structured truth claims from memo prose. Reads only; writes nothing. Off unless `RECALL_TRUTH_EXTRACTION=1`. |
-| `recall rewrite` | Review extracted claims and declare accepted ones in corpus frontmatter. Dry run by default; `--reviewer` and `--note` are required. |
+| `recall reasoning` | Inspect projections (`projection`), proposals (`proposals`), queries (`query`), traces (`trace`), audits (`audit`), and opt-in reasoning without changing ordinary retrieval behavior. |
+| `recall graph` | Inspect or rebuild the deterministic Evidence Graph V1 (`rebuild`) without changing chunks or generation identity. |
+| `recall extract` | Extract structured truth claims from memo prose (`run`, `show`). Reads only; writes nothing. Off unless `RECALL_TRUTH_EXTRACTION=1`. |
+| `recall rewrite` | Review extracted claims (`plan`, `apply`, `reject`, `verify`) and declare accepted ones in corpus frontmatter. Dry run by default; `--reviewer` and `--note` are required. |
+| `recall quickstart` | Run the guided setup pipeline noninteractively. |
+| `recall demo` | Index the sample corpus and run example searches. |
+| `recall code` | Index RE-call source code and run example code searches. |
 | `recall lint` | Validate memo frontmatter and corpus shape. |
 | `recall check` | Validate one memo, optionally in strict mode. |
 | `recall calibrate` | Fit an abstention threshold from a labeled query file (legacy single-shot form). |
@@ -58,12 +61,9 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | Tool | Purpose |
 |---|---|
 | `recall_search` | Search trusted memory. |
+| `recall_evidence` | Return evidence for a query. |
 | `recall_related` | Retrieve independently trusted structural related evidence. |
 | `recall_current_state` | Inspect a deterministic authored current state projection. |
-| `recall_evidence` | Return evidence for a query. |
-| `recall_index` | Index allowed files beneath `RECALL_INDEX_ROOT`. |
-| `recall_forget` | Erase indexed source material. |
-| `recall_stats` | Report counters and operational state. |
 | `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `graph_expansion` to `one_hop` to enable Evidence Graph V1. |
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |

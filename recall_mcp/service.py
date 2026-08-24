@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import psycopg
+from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
 from recall.calibration_v2 import CalibrationRepository
@@ -22,6 +23,8 @@ from recall.embeddings import (
     embedder_artifact_digest,
     embedding_profile_id,
 )
+from recall.embeddings import REMOTE_MODEL_CODE_OPT_IN
+from recall._env import env_is_production
 from recall.guards import staleness
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
@@ -68,12 +71,6 @@ from recall.reasoning import (
     SemanticGraphExpansionResult,
     reason,
 )
-from recall.reasoning_expansion import (
-    ExpansionProposal,
-    ReasoningRequestLike,
-    ReasoningExpansionRetriever,
-    resolve_expansion_provider,
-)
 from recall.reasoning_graph import (
     ReasoningGraphProjection,
     build_reasoning_graph,
@@ -87,7 +84,15 @@ from recall.reasoning_proposals import (
 )
 from recall.rerank import (
     COREB_CODE_RERANKER_MODEL,
+    DEFAULT_RERANKER_MODEL,
+    DEFAULT_RERANKER_REVISION,
+    KNOWN_RERANKER_REVISIONS,
+    RERANKER_MODEL_ALIASES,
+    Reranker,
 )
+from recall_mcp import factories as _factories
+from recall_mcp.factories import make_embedder, make_profile_embedder  # noqa: F401
+from recall_mcp.models import RewritePlanResult
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import evaluate, is_trusted, trusted_search
@@ -693,6 +698,10 @@ def _new_reranker(
     profile: RetrievalProfile | None = None,
 ) -> "Reranker | None":  # pragma: no cover
     """Instantiate the configured reranker, or None. Imports torch only when actually enabled."""
+    return _factories._new_reranker(env)
+
+    # Kept below as a compatibility record for the pre-factory implementation. The factory above
+    # is the single construction path so tests and runtime callers observe the same cache.
     values = dict(os.environ) if env is None else env
     profile = profile or resolve_retrieval_profile(values)
     if profile.name == "fast":
@@ -796,6 +805,7 @@ def _reset_reranker_cache() -> None:
     """Drop the per-process reranker. For tests — a server should never need this."""
     with _RERANKER_LOCK:
         _RERANKERS.clear()
+    _factories._reset_reranker_cache()
 
 
 def _build_reranker(
@@ -2001,7 +2011,7 @@ def reasoning_query(
     budget = ReasoningBudget(
         max_steps=max_steps,
         max_graph_nodes=max_graph_nodes,
-        max_model_calls=1 if expand_retrieval else 0,
+        max_model_calls=0,
         max_evidence_tokens=max_evidence_tokens,
         max_graph_hops=1 if graph_expansion == "one_hop" else 0,
     )
@@ -2057,10 +2067,6 @@ def reasoning_query(
         retriever_port: ReasoningRetriever = retrieve
         graph_port: ReasoningGraphProvider = graph_provider
         proposal_port: ReasoningProposalProvider = proposal_provider
-        expansion_retriever_port: ReasoningExpansionRetriever | None = (
-            expansion_retriever if expand_retrieval else None
-        )
-
         request = ReasoningRequest(
             query=query,
             tenant_id=store.tenant,

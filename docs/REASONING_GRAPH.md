@@ -7,7 +7,7 @@ document.
 
 ## Evidence Graph V1
 
-RE-call also projects a deterministic semantic graph into PostgreSQL migration `0015`. It is a
+RE-call also projects a deterministic semantic graph into PostgreSQL migration `0016`. It is a
 derived evidence structure, not a replacement for authored corpus truth. The projection contains
 immutable `SemanticEntity`, `SemanticMention`, `SemanticRelation`, `SemanticGraphDiagnostic`, and
 `SemanticGraphProjection` values bound to one tenant and generation.

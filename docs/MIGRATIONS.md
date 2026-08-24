@@ -181,9 +181,9 @@ pods.
   concurrently and rebuilt; a completed-but-unrecorded index is validated and adopted.
 - schema too new: deploy application code that knows the recorded versions. Do not delete ledger
   rows to force an older binary to start.
-# Migration 0015: Evidence Graph V1
+# Migration 0016: Evidence Graph V1
 
-Migration `0015_semantic_graph_foundation.sql` creates the tenant and generation scoped semantic
+Migration `0016_semantic_graph_foundation.sql` creates the tenant and generation scoped semantic
 graph tables used by Evidence Graph V1. It adds entities, mentions, relations, and normalized
 relation evidence links. Every graph row is protected by row level security and linked to the
 corresponding generation and chunk. The relation evidence table stores chunk identifiers only and

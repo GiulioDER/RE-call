@@ -10,7 +10,7 @@ import pytest
 
 import recall.desktop.profiles as profiles
 from recall.desktop.models import RuntimeMode, RuntimeProfile, SourceCategory, SourceSelection
-from recall.desktop.runtime import DockerRuntime, VpsMcpRuntime, create_runtime
+from recall.desktop.runtime import DockerRuntime, RuntimeErrorBase, VpsMcpRuntime, create_runtime
 from recall.desktop.sources import (
     classify,
     collect_files,

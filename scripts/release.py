@@ -82,6 +82,7 @@ class Site:
 SITES: tuple[Site, ...] = (
     Site("pyproject.toml", r'^version = "([0-9][^"]*)"', 1),
     Site("recall/__init__.py", r'^__version__ = "([0-9][^"]*)"', 1),
+    Site("recall/version.py", r'^__version__ = "([0-9][^"]*)"', 1),
     Site("server.json", r'"version": "([0-9][^"]*)"', 2),
     # ⛔ The THIRD copy in `server.json`, and it is not a `"version":` key. It is the pin inside
     # `runtimeArguments`, of the form `recall-rag[mcp,fastembed]==X.Y.Z`, which is the exact string

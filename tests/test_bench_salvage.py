@@ -118,6 +118,11 @@ def _conv_a_records() -> list[dict[str, Any]]:
     ]
 
 
+def _assert_record_fields_preserved(actual: dict[str, Any], expected: dict[str, Any]) -> None:
+    """The salvage keeps the sidecar's scored fields while adding current outcome metadata."""
+    assert {key: actual[key] for key in expected} == expected
+
+
 def _write_partial(path: Path, records: list[dict[str, Any]], *, truncate: bool = False) -> Path:
     """Write a sidecar. With `truncate`, the last line is cut mid-JSON, as a kill leaves it."""
     body = "".join(json.dumps(record) + "\n" for record in records)
@@ -287,6 +292,7 @@ def test_merge_only_rebuilds_the_artifact_and_its_aggregate_without_scoring(
     assert set(payload) == {
         "arm", "model", "config", "conversations", "questions", "skipped_questions",
         "usage", "provider_metadata", "cost_claims", "aggregate", "outcomes", "salvaged",
+        "evidence_cost", "routing_experiment", "operational_metrics",
         # Always present, empty on a clean run: `n` shrinks silently when a question is
         # quarantined, so a reader diffing two artifacts needs the count beside it.
         "dropped",
@@ -372,7 +378,7 @@ def test_resume_scores_only_the_missing_conversations_and_marks_the_artifact(
     assert payload["questions"] == 4
     by_id = {o["question_id"]: o for o in payload["outcomes"]}
     # the salvaged records are byte-identical to what the dead run wrote
-    assert by_id["conv-a:0"] == _conv_a_records()[0]
+    _assert_record_fields_preserved(by_id["conv-a:0"], _conv_a_records()[0])
     # and the new ones came from this process
     assert by_id["conv-b:0"]["answer"] == "a fresh answer"
     assert by_id["conv-b:0"]["context"] == "fresh ctx"
@@ -433,7 +439,7 @@ def test_resume_refills_a_conversation_whose_last_record_was_truncated(
         "conv-a:0", "conv-a:1", "conv-b:0", "conv-c:0"
     ]
     # the kept record was not re-bought; the lost one was
-    assert payload["outcomes"][0] == _conv_a_records()[0]
+    _assert_record_fields_preserved(payload["outcomes"][0], _conv_a_records()[0])
     assert payload["outcomes"][1]["context"] == "fresh ctx"
     salvage = payload["salvage"]
     assert salvage["sources"][0]["discarded_lines"] == 1

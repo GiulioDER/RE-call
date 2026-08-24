@@ -1126,28 +1126,6 @@ class GenerationManager:
             return graph.readiness()
 
     def promote(self, generation_id: str, *, unsafe_development: bool = False) -> None:
-        if self.environment == "production":
-            raise UnsafePromotion(
-                "generation promotion is unavailable in production until certification gates land"
-            )
-        except CalibrationBindingError as exc:
-            # Translated rather than propagated. Callers of `promote` and `rollback` handle
-            # `UnsafePromotion`; a binding error escaping from two layers down is a different
-            # contract for the same refusal, and the reason is the same either way — this
-            # generation is not backed by a calibration that can carry it into production.
-            raise UnsafePromotion(
-                f"generation {generation_id} cannot go live in production: {exc}"
-            ) from exc
-        if resolution.status is CalibrationStatus.CERTIFIED:
-            return
-        raise UnsafePromotion(
-            f"generation {generation_id} cannot go live in production: its calibration is "
-            f"{resolution.status.value}. Production serves only a generation whose published "
-            f"calibration certified and is still bound to this pipeline and corpus. Run "
-            f"`recall calibration calibrate --generation {generation_id} --queries FILE --publish`."
-        )
-
-    def promote(self, generation_id: str, *, unsafe_development: bool = False) -> None:
         """Make one ready generation live, gated on how the tenant is SERVED.
 
         See `certification_required`: the gate follows the serving environment, so a build that runs
@@ -1482,7 +1460,6 @@ class GenerationManager:
                 _scrub_sparse_rows(
                     conn, self.tenant_id, "recall_chunks_v1", [row[0] for row in rows]
                 )
-                removed = result.rowcount
                 # Chunk foreign keys remove mentions and relation evidence. Relations and
                 # entities are derived rows, so remove any that no longer have surviving support
                 # and leave the generation marker mismatched until an explicit graph rebuild.

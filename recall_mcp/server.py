@@ -65,6 +65,7 @@ from recall_mcp.service import (
     generation_ingest,
     index_memory,
     calibration_status,
+    JobLedger,
     current_state_memory,
     job_status,
     make_embedder,

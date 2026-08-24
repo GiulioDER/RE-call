@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from recall.desktop.models import RuntimeProfile, SourceCategory, SourceSelection
-from recall.desktop.runtime import RuntimeManager, RuntimeErrorBase, create_runtime
+from recall.desktop.models import RuntimeMode, RuntimeProfile, SourceCategory, SourceSelection
+from recall.desktop.profiles import load_pipelines, save_pipelines, save_profile
+from recall.desktop.runtime import (
+    _CORPUS_SUFFIXES,
+    DockerRuntime,
+    RuntimeManager,
+    RuntimeErrorBase,
+    create_runtime,
+)
 from recall.desktop.sources import (
     CLAUDE_MEMORY_FILENAMES,
     CODE_EXTENSIONS,
@@ -29,7 +38,7 @@ from recall.wizard.database import probe_database
 _qt_widgets: Any = None
 try:
     _qt_widgets = importlib.import_module("PySide6.QtWidgets")
-    from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, QPoint, QRunnable, QThreadPool, QTimer, Qt, Signal
+    from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, QPoint, QThreadPool, QTimer, Qt, Signal
     from PySide6.QtGui import QColor, QPixmap, QPolygon
     from PySide6.QtWidgets import (
         QAbstractItemView,

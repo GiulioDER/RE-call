@@ -153,6 +153,8 @@ class ReasoningProviderPorts:
     retriever: ReasoningRetriever
     graph_provider: ReasoningGraphProvider | None = None
     proposal_provider: ReasoningProposalProvider | None = None
+    expansion_provider: ReasoningExpansionProvider | None = None
+    expansion_retriever: ReasoningExpansionRetriever | None = None
     graph_expansion_provider: ReasoningGraphExpansionProvider | None = None
     answer_provider: ReasoningAnswerProvider | None = None
 
@@ -205,6 +207,7 @@ class ReasoningDiagnostics:
     retrieval_stage_ms: Mapping[str, float]
     generator_invoked: bool
     citations_normalized: bool
+    retrieval_expansion: RetrievalExpansionTrace | None = None
     provider_failures: tuple[ProviderFailure, ...] = ()
     provider_metadata: tuple[ProviderMetadata, ...] = ()
     graph_expansion_mode: GraphExpansionMode = "off"
@@ -612,6 +615,9 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         provider_metadata=tuple(
             _provider_metadata_from_dict(_mapping(item))
             for item in _sequence(diagnostics_payload.get("provider_metadata", ()))
+        ),
+        retrieval_expansion=_optional_expansion_trace(
+            diagnostics_payload.get("retrieval_expansion")
         ),
         graph_expansion_mode=cast(
             GraphExpansionMode, diagnostics_payload.get("graph_expansion_mode", "off")
@@ -1174,6 +1180,7 @@ def _response(
     generator_invoked: bool,
     citations_normalized: bool,
     graph_expansion: SemanticGraphExpansionResult | None = None,
+    expansion_trace: RetrievalExpansionTrace | None = None,
 ) -> ReasoningResponse:
     cited = _citations(bundle, citations)
     contradictions = tuple(
@@ -1215,6 +1222,7 @@ def _response(
             retrieval_stage_ms=bundle_stage_ms(retrieval),
             generator_invoked=generator_invoked,
             citations_normalized=citations_normalized,
+            retrieval_expansion=expansion_trace,
             provider_failures=tuple(provider_failures),
             provider_metadata=_provider_metadata(request),
             graph_expansion_mode=request.policy.graph_expansion,
