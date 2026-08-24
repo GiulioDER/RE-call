@@ -1,7 +1,7 @@
 from collections import Counter
 
 from benchmarks.evidence_graph_eval import relation_control
-from benchmarks.evidence_graph_pilot import _graph, run_pilot
+from benchmarks.evidence_graph_pilot import _graph, run_deepseek_judge, run_pilot
 
 
 def _observation(artifact, query_id: str, arm: str):
@@ -42,3 +42,25 @@ def test_pilot_shows_graph_gain_and_trust_refusal():
     guarded = _observation(artifact, "untrusted_neighbor", "deterministic_graph")
     assert guarded.appended_trusted_chunk_ids == ()
     assert guarded.rejected_candidate_count == 1
+
+
+def test_deepseek_judge_compares_the_same_fixture_without_network_calls():
+    calls = []
+
+    def fake_completion(prompt: str, model: str) -> str:
+        calls.append((prompt, model))
+        return (
+            '{"baseline_answer":"baseline", "graph_answer":"graph", '
+            '"added_evidence_value":"useful", "winner":"graph", '
+            '"rationale":"The added chunk answers the dependency question."}'
+        )
+
+    comparisons = run_deepseek_judge(run_pilot(), model="deepseek/test", completion=fake_completion)
+
+    assert len(comparisons) == 6
+    assert len(calls) == 6
+    assert all(model == "deepseek/test" for _, model in calls)
+    supports = next(item for item in comparisons if item.query_id == "supports_relation")
+    assert supports.baseline_chunk_ids == ("c1",)
+    assert supports.graph_chunk_ids == ("c1", "c2", "c8")
+    assert "What evidence supports" in calls[1][0]

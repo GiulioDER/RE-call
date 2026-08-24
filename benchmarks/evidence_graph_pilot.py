@@ -17,9 +17,10 @@ import argparse
 from collections import defaultdict
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import time
-from typing import Iterable
+from typing import Any, Callable, Iterable
 
 from benchmarks.evidence_graph_eval import (
     EVALUATION_ARMS,
@@ -43,6 +44,7 @@ class PilotQuery:
     seed_chunk_ids: tuple[str, ...]
     gold_evidence_chunk_ids: tuple[str, ...]
     trusted_chunk_ids: frozenset[str]
+    query: str = ""
 
 
 PILOT_CHUNKS: tuple[Chunk, ...] = (
@@ -85,13 +87,14 @@ PILOT_CHUNKS: tuple[Chunk, ...] = (
 
 
 PILOT_QUERIES: tuple[PilotQuery, ...] = (
-    PilotQuery("direct_fact", "direct fact", ("c5",), ("c5",), frozenset(c.id for c in PILOT_CHUNKS)),
+    PilotQuery("direct_fact", "direct fact", ("c5",), ("c5",), frozenset(c.id for c in PILOT_CHUNKS), "What does the weekly planning note say?"),
     PilotQuery(
         "supports_relation",
         "indirect relation",
         ("c1",),
         ("c1", "c2"),
         frozenset(c.id for c in PILOT_CHUNKS),
+        "What evidence supports the Atlas Billing service?",
     ),
     PilotQuery(
         "dependency_relation",
@@ -99,17 +102,49 @@ PILOT_QUERIES: tuple[PilotQuery, ...] = (
         ("c3",),
         ("c3", "c4"),
         frozenset(c.id for c in PILOT_CHUNKS),
+        "What does Orion depend on for discovery?",
     ),
-    PilotQuery("ambiguous_entity", "ambiguity", ("c6",), ("c6",), frozenset(c.id for c in PILOT_CHUNKS)),
+    PilotQuery("ambiguous_entity", "ambiguity", ("c6",), ("c6",), frozenset(c.id for c in PILOT_CHUNKS), "What did Alex approve?"),
     PilotQuery(
         "untrusted_neighbor",
         "trust guard",
         ("c3",),
         ("c3",),
         frozenset(c.id for c in PILOT_CHUNKS if c.id != "c4"),
+        "What does Orion depend on for discovery?",
     ),
-    PilotQuery("unanswerable", "unanswerable", (), (), frozenset(c.id for c in PILOT_CHUNKS)),
+    PilotQuery("unanswerable", "unanswerable", (), (), frozenset(c.id for c in PILOT_CHUNKS), "Which database does Mercury use?"),
 )
+
+
+@dataclass(frozen=True)
+class DeepSeekComparison:
+    """One cheap model comparison of baseline evidence versus graph-expanded evidence."""
+
+    query_id: str
+    model: str
+    baseline_chunk_ids: tuple[str, ...]
+    graph_chunk_ids: tuple[str, ...]
+    baseline_answer: str
+    graph_answer: str
+    added_evidence_value: str
+    winner: str
+    rationale: str
+    model_calls: int = 1
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "query_id": self.query_id,
+            "model": self.model,
+            "baseline_chunk_ids": list(self.baseline_chunk_ids),
+            "graph_chunk_ids": list(self.graph_chunk_ids),
+            "baseline_answer": self.baseline_answer,
+            "graph_answer": self.graph_answer,
+            "added_evidence_value": self.added_evidence_value,
+            "winner": self.winner,
+            "rationale": self.rationale,
+            "model_calls": self.model_calls,
+        }
 
 
 def _graph() -> SemanticGraphProjection:
@@ -281,15 +316,161 @@ def _summary(artifact: EvidenceGraphEvaluationArtifact) -> list[dict[str, object
     return summary
 
 
+def _comparison_prompt(
+    query: PilotQuery,
+    baseline_ids: tuple[str, ...],
+    graph_ids: tuple[str, ...],
+    chunks_by_id: dict[str, Chunk],
+) -> str:
+    def evidence(ids: tuple[str, ...]) -> str:
+        if not ids:
+            return "(no evidence)"
+        return "\n\n".join(
+            f"[{chunk_id}] {chunks_by_id[chunk_id].text}" for chunk_id in ids
+        )
+
+    return (
+        "Compare two evidence sets for the same question. The graph set contains the baseline "
+        "evidence plus any one-hop additions. Judge only whether the additions improve supported "
+        "answering. Do not invent facts. Return JSON only with exactly these string fields: "
+        "baseline_answer, graph_answer, added_evidence_value, winner, rationale. "
+        "added_evidence_value must be one of none, useful, noisy, harmful. "
+        "winner must be baseline, graph, or tie. Keep answers concise.\n\n"
+        f"Question: {query.query}\n\n"
+        f"BASELINE EVIDENCE:\n{evidence(baseline_ids)}\n\n"
+        f"GRAPH EVIDENCE:\n{evidence(graph_ids)}"
+    )
+
+
+def _parse_judge_json(content: str) -> dict[str, str]:
+    candidate = content.strip()
+    if candidate.startswith("```"):
+        candidate = candidate.split("\n", 1)[1] if "\n" in candidate else candidate
+        candidate = candidate.rsplit("```", 1)[0].strip()
+    try:
+        value = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        raise ValueError("DeepSeek judge returned non-JSON output") from exc
+    if not isinstance(value, dict):
+        raise ValueError("DeepSeek judge returned a JSON value that is not an object")
+    result: dict[str, str] = {}
+    for field in ("baseline_answer", "graph_answer", "added_evidence_value", "winner", "rationale"):
+        field_value = value.get(field)
+        if not isinstance(field_value, str):
+            raise ValueError(f"DeepSeek judge response is missing string field {field!r}")
+        result[field] = field_value.strip()
+    if result["added_evidence_value"] not in {"none", "useful", "noisy", "harmful"}:
+        raise ValueError("DeepSeek judge returned an unsupported added_evidence_value")
+    if result["winner"] not in {"baseline", "graph", "tie"}:
+        raise ValueError("DeepSeek judge returned an unsupported winner")
+    return result
+
+
+def _deepseek_completion(prompt: str, model: str) -> str:
+    """Call DeepSeek directly or through OpenRouter, without adding a hard dependency."""
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not api_key and not openrouter_key:
+        raise RuntimeError(
+            "set DEEPSEEK_API_KEY or OPENROUTER_API_KEY to run the DeepSeek judge"
+        )
+    if openrouter_key and not api_key:
+        api_key = openrouter_key
+        base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://openrouter.ai/api/v1")
+        model = model or "deepseek/deepseek-chat"
+    else:
+        base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+        model = model or "deepseek-chat"
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=60.0)
+    response = client.chat.completions.create(
+        model=model,
+        temperature=0,
+        max_tokens=350,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a strict evidence comparison judge. Return valid JSON only.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+    )
+    content = response.choices[0].message.content
+    if not content:
+        raise RuntimeError("DeepSeek judge returned an empty response")
+    return content
+
+
+def run_deepseek_judge(
+    artifact: EvidenceGraphEvaluationArtifact,
+    *,
+    model: str = "",
+    completion: Callable[[str, str], str] | None = None,
+) -> list[DeepSeekComparison]:
+    """Compare baseline and deterministic graph evidence with one low-cost call per query."""
+    chunks_by_id = {chunk.id: chunk for chunk in PILOT_CHUNKS}
+    observations = {
+        (observation.query_id, observation.arm): observation
+        for observation in artifact.observations
+    }
+    complete = completion or _deepseek_completion
+    resolved_model = model or (
+        "deepseek/deepseek-chat"
+        if os.environ.get("OPENROUTER_API_KEY") and not os.environ.get("DEEPSEEK_API_KEY")
+        else "deepseek-chat"
+    )
+    results: list[DeepSeekComparison] = []
+    for query in PILOT_QUERIES:
+        baseline = observations[(query.query_id, "hybrid_retrieval")]
+        graph = observations[(query.query_id, "deterministic_graph")]
+        prompt = _comparison_prompt(
+            query,
+            baseline.citation_chunk_ids,
+            graph.citation_chunk_ids,
+            chunks_by_id,
+        )
+        judged = _parse_judge_json(complete(prompt, resolved_model))
+        results.append(
+            DeepSeekComparison(
+                query_id=query.query_id,
+                model=resolved_model,
+                baseline_chunk_ids=baseline.citation_chunk_ids,
+                graph_chunk_ids=graph.citation_chunk_ids,
+                **judged,
+            )
+        )
+    return results
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="write the sanitized artifact JSON")
+    parser.add_argument(
+        "--judge",
+        choices=("deepseek",),
+        help="optionally compare baseline versus deterministic graph evidence with DeepSeek",
+    )
+    parser.add_argument("--judge-model", default="", help="override the DeepSeek/OpenRouter model id")
+    parser.add_argument("--judge-output", type=Path, help="write raw judge comparisons separately")
     args = parser.parse_args(list(argv) if argv is not None else None)
     artifact = run_pilot()
     if args.output:
         artifact.write(args.output)
         print(f"artifact: {args.output}")
     print(json.dumps(_summary(artifact), indent=2, sort_keys=True))
+    if args.judge == "deepseek":
+        comparisons = run_deepseek_judge(artifact, model=args.judge_model)
+        serialized = [comparison.to_dict() for comparison in comparisons]
+        if args.judge_output:
+            args.judge_output.parent.mkdir(parents=True, exist_ok=True)
+            args.judge_output.write_text(
+                json.dumps(serialized, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            print(f"judge artifact: {args.judge_output}")
+        print(json.dumps(serialized, ensure_ascii=False, sort_keys=True, indent=2))
     return 0
 
 
