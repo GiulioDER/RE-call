@@ -243,46 +243,51 @@ pip install -e ".[fastembed]"
 
 ## How it works
 
+The solid path is the default retrieval flow. The dashed branch is the optional Evidence Graph V1
+path, enabled only with `graph_expansion=one_hop`; it can add evidence, but it cannot bypass the
+normal trust checks.
+
 ```mermaid
 flowchart TB
-    M["Memo: markdown plus frontmatter"] --> CH["Chunk"]
-    CH --> EW["Embed locally"]
-    EW -. "optional" .-> SP["SPLADE encode"]
-    EW --> DB
-    SP -. "optional" .-> DB
+    subgraph BUILD["1. Build the memory index"]
+        direction LR
+        M["Memo<br/>markdown + frontmatter"] --> I["Chunk + embed"] --> DB[("PostgreSQL<br/>+ pgvector")]
+    end
 
-    Q["Query"] --> EQ["Query encoder"]
-    EQ --> DB[("PostgreSQL plus pgvector")]
+    subgraph QUERY["2. Every query · default path"]
+        direction LR
+        Q["Question"] --> H["Hybrid retrieval<br/>dense + full-text<br/>optional sparse / rerank"]
+        H --> GP{"Calibrated<br/>gap check"}
+        GP --> TR{"Trust layer<br/>validity + confidence"}
+        TR --> E["Trusted evidence<br/>with provenance"]
+    end
 
-    DB --> DN["Dense vector search"]
-    DB --> SL["Postgres full-text search"]
-    DB -. "optional" .-> LS["Learned sparse search"]
+    subgraph REASONING["3. Reasoning and citations"]
+        direction LR
+        E --> RP["Reasoning policy<br/>+ budget"]
+        RP --> RV{"Citation + trust<br/>validation"}
+        RV --> ROUT["Cited answer, review,<br/>clarification, or ABSTAIN"]
+        RG["Generation-bound reasoning graph<br/>authored edges + review proposals"] --> RP
+    end
 
-    DN --> F["Reciprocal Rank Fusion"]
-    SL --> F
-    LS -. "optional" .-> F
+    subgraph GRAPH["OPTIONAL · Evidence Graph V1 · off by default"]
+        direction LR
+        SG["Deterministic semantic graph<br/>entities + mentions + relations"] --> EC["Bounded one-hop<br/>neighbor evidence"]
+        EC --> GT["Run normal trust<br/>evaluation again"]
+    end
 
-    F -. "optional" .-> RR["Cross-encoder rerank"]
-    RR --> GP
-    F --> GP{"Gap check: calibrated threshold"}
-    GP --> TR{"Trust layer: supersession, validity, confidence"}
-    CAL["Calibration: fitted per embedder and corpus"] --> TR
-    TR -. "optional" .-> EJ{"Entailment judge"}
-    EJ --> OUT
-    TR --> OUT["Verdict, confidence, provenance, or ABSTAIN"]
-
-    TR -. "explicit opt-in" .-> RG["Reasoning graph projection"]
+    DB -. "generation-bound" .-> H
     DB -. "generation-bound" .-> RG
-    RG --> IP["Inference proposals: review candidates"]
-    RG -. "optional semantic branch" .-> SG["Evidence Graph V1:<br/>entities, mentions, authored relations"]
-    TR -. "graph_expansion=one_hop" .-> SG
-    SG -. "bounded one hop" .-> EC["Neighbor evidence candidates"]
-    EC --> GT["Normal trust evaluation again"]
+    CAL["Corpus calibration"] --> TR
+    TR -. "opt in:<br/>graph_expansion=one_hop" .-> SG
     GT -. "accepted evidence" .-> RP
-    TR --> RP["Reasoning policy plus budget"]
-    IP --> RP
-    RP --> RV{"Citation and trust validation"}
-    RV --> ROUT["Cited answer, needs review, clarification, or ABSTAIN"]
+
+    classDef defaultPath fill:#e8f3ff,stroke:#2b6cb0,color:#102a43,stroke-width:1px;
+    classDef optionalPath fill:#fff8e1,stroke:#b7791f,color:#5f370e,stroke-width:1px;
+    classDef trustPath fill:#e8f5e9,stroke:#2f855a,color:#163b27,stroke-width:1px;
+    class Q,H,GP,E,RP,RV,ROUT defaultPath;
+    class SG,EC,GT,RG optionalPath;
+    class TR,CAL trustPath;
 ```
 
 ## Product surface
