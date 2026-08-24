@@ -1,6 +1,7 @@
 # Pre-registration: does an expanded query set certify the voyage:voyage-4 memory corpus?
 
-**Date:** 2026-08-22   **Status:** predicted, not yet measured
+**Date:** 2026-08-22   **Status:** MEASURED 2026-08-22, see the Result section below.
+Prediction below is unedited.
 
 ## The question
 
