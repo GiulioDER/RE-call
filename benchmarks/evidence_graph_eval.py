@@ -119,11 +119,16 @@ def relation_control(
         relations: tuple[SemanticRelation, ...] = ()
     elif arm == "shuffled_relation_control":
         rng = random.Random(seed)
-        endpoints = [(relation.subject_id, relation.object_id) for relation in graph.relations]
-        rng.shuffle(endpoints)
+        # Rewire object endpoints rather than merely reordering relation rows.  Shuffling complete
+        # endpoint pairs preserves the original graph exactly and cannot serve as a falsification
+        # control.  Permuting only objects preserves each subject's out-degree and each object's
+        # in-degree while changing which entities are connected.
+        subjects = [relation.subject_id for relation in graph.relations]
+        objects = [relation.object_id for relation in graph.relations]
+        rng.shuffle(objects)
         relations = tuple(
             _relation_with_endpoints(relation, subject_id, object_id)
-            for relation, (subject_id, object_id) in zip(graph.relations, endpoints)
+            for relation, subject_id, object_id in zip(graph.relations, subjects, objects)
         )
     else:
         raise ValueError(f"unsupported relation control: {arm}")
