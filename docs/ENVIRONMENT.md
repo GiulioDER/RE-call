@@ -155,6 +155,9 @@ RECALL_QWEN_MODEL_PATH=
 # rather than present-and-blank, deliberately: a blank value is read as unset by this release but
 # as a malformed integer by earlier ones, so leaving them present would make a rollback fail.
 RECALL_RETRIEVAL_PROFILE=
+# shadow records the deterministic query class and route without changing retrieval;
+# active opts into the preregistered fast or quality route after promotion gates pass.
+RECALL_ROUTING_MODE=shadow
 # RECALL_SEARCH_CONCURRENCY=
 # RECALL_SEARCH_QUEUE=
 # Quality profile local artifact settings. The PATH is deployment specific; only the DIGEST is

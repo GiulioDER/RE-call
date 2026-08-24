@@ -2253,3 +2253,71 @@ class PgVectorStore:
                     )
                     for cid, source, text, metadata in cur:
                         yield Chunk(id=cid, source=source, text=text, metadata=metadata or {})
+
+    def related_chunks(
+        self, seed_chunk_id: str, relation: str, max_items: int
+    ) -> tuple[Chunk, list[Chunk]] | None:
+        """Fetch bounded source or ordinal neighbors without materializing the corpus.
+
+        Supersession relations still use the shared lineage resolver because that relation must
+        inspect every authored edge. Returning ``None`` for that relation keeps the generic
+        fallback explicit while making the common source and ordinal paths bounded at the store.
+        """
+        if relation not in {"source", "ordinal"}:
+            return None
+        if isinstance(max_items, bool) or not isinstance(max_items, int) or max_items < 1:
+            raise ValueError("max_items must be a positive int")
+
+        seed_row = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT id, source, text, metadata FROM {self._table} "
+                "WHERE tenant_id = %s AND id = %s",
+                (self._tenant, seed_chunk_id),
+            ).fetchone()
+        )
+        if seed_row is None:
+            raise ValueError(f"seed chunk not found: {seed_chunk_id!r}")
+        seed_id, seed_source, seed_text, seed_metadata = seed_row
+        seed_metadata = seed_metadata or {}
+        seed_file = seed_metadata.get("file") or seed_source
+        seed_ord = seed_metadata.get("ord")
+
+        file_match = "(metadata->>'file' = %s OR (NOT (metadata ? 'file') AND source = %s))"
+        if relation == "source":
+            where = file_match
+            params: tuple[object, ...] = (self._tenant, seed_file, seed_file, seed_id, max_items)
+            order = (
+                "CASE WHEN metadata->>'ord' ~ '^[0-9]+$' "
+                "THEN (metadata->>'ord')::int END NULLS LAST, id"
+            )
+        else:
+            if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
+                return (
+                    Chunk(seed_id, seed_source, seed_text, seed_metadata),
+                    [],
+                )
+            where = (
+                f"{file_match} AND (metadata->>'ord') ~ '^[0-9]+$' "
+                "AND abs((metadata->>'ord')::int - %s) <= 2"
+            )
+            order = "abs((metadata->>'ord')::int - %s), id"
+            params = (
+                self._tenant,
+                seed_file,
+                seed_file,
+                seed_ord,
+                seed_id,
+                seed_ord,
+                max_items,
+            )
+
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT id, source, text, metadata FROM {self._table} "
+                f"WHERE tenant_id = %s AND {where} AND id <> %s "
+                f"ORDER BY {order} LIMIT %s",
+                params,
+            ).fetchall()
+        )
+        seed = Chunk(seed_id, seed_source, seed_text, seed_metadata)
+        return seed, [Chunk(cid, source, text, metadata or {}) for cid, source, text, metadata in rows]

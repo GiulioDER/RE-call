@@ -7,7 +7,15 @@ from statistics import fmean, median
 from typing import Any
 
 from benchmarks.llm import Completer
+from benchmarks.evidence_tokens import TokenCounter, prompt_token_cost, truncate_evidence_context
 from recall.eval.locomo import _rate
+from recall.query_class import (
+    QUERY_CLASS_VERSION,
+    ROUTING_POLICY_VERSION,
+    classify_query,
+    route_query,
+    routing_mode,
+)
 
 #: The exact token the generator must emit when the memories don't answer the question.
 NO_ANSWER = "NO_ANSWER"
@@ -106,6 +114,14 @@ class Outcome:
     answer: str
     abstained: bool
     correct: bool | None
+    query_class: str = "unknown"
+    matched_rules: tuple[str, ...] = ()
+    routing_profile: str = "fast"
+    routing_expansion: str | None = None
+    routing_mode: str = "shadow"
+    evidence_budget: int | None = None
+    evidence_tokens_exact: int | None = None
+    input_tokens_exact: int | None = None
 
     def __post_init__(self) -> None:
         if (self.correct is None) != self.is_adversarial:
@@ -116,11 +132,22 @@ class Outcome:
 
 
 def run_question(
-    retrieve: Callable[[str], str], completer: Completer, q: dict[str, Any]
+    retrieve: Callable[[str], str],
+    completer: Completer,
+    q: dict[str, Any],
+    tokenizer: TokenCounter | None = None,
+    *,
+    evidence_budget: int | None = None,
+    routing_mode_setting: str = "shadow",
 ) -> Outcome:
-    """Run one LOCOMO question end-to-end: retrieve -> generate -> (maybe) judge."""
+    """Run one LOCOMO question end-to-end with optional exact evidence budgeting."""
     question = q["question"]
+    routing_mode_setting = routing_mode(routing_mode_setting)
     context = retrieve(question)
+    if evidence_budget is not None:
+        if tokenizer is None:
+            raise ValueError("an exact tokenizer is required for an evidence budget")
+        context = truncate_evidence_context(context, evidence_budget, tokenizer)
     answer = generate_answer(completer, context, question)
     abstained = is_abstention(answer)
     is_adversarial = bool(q["adversarial"])
@@ -133,6 +160,18 @@ def run_question(
     else:
         correct = judge_correct(completer, question, q["answer"], answer)
 
+    classification = classify_query(question)
+    routing = route_query(question)
+    exact_cost = (
+        prompt_token_cost(
+            GEN_SYSTEM_PROMPT,
+            f"<memories>\n{context}\n</memories>\n\nQuestion: {question}\nAnswer:",
+            tokenizer,
+            evidence_text=f"<memories>\n{context}\n</memories>",
+        )
+        if tokenizer is not None
+        else {}
+    )
     return Outcome(
         question_id=str(q["question_id"]),
         category=str(q["category"]),
@@ -141,6 +180,14 @@ def run_question(
         answer=answer,
         abstained=abstained,
         correct=correct,
+        query_class=classification.query_class,
+        matched_rules=classification.matched_rules,
+        routing_profile=routing.profile,
+        routing_expansion=routing.expansion_mode,
+        routing_mode=routing_mode_setting,
+        evidence_budget=evidence_budget,
+        evidence_tokens_exact=exact_cost.get("evidence_tokens_exact"),
+        input_tokens_exact=exact_cost.get("input_tokens_exact"),
     )
 
 
@@ -196,11 +243,35 @@ def context_size(outcomes: list[Outcome]) -> dict[str, Any]:
     """
     chars = [len(o.context) for o in outcomes]
     tokens = [approx_tokens(o.context) for o in outcomes]
-    return {
+    exact_evidence = [o.evidence_tokens_exact for o in outcomes if o.evidence_tokens_exact is not None]
+    exact_input = [o.input_tokens_exact for o in outcomes if o.input_tokens_exact is not None]
+    result = {
         "n": len(outcomes),
         "chars": _size_summary(chars),
         "tokens_approx": _size_summary(tokens),
     }
+    if exact_evidence or exact_input:
+        result["tokens_exact"] = _size_summary([int(value) for value in exact_evidence])
+        result["input_tokens_exact"] = _size_summary([int(value) for value in exact_input])
+    return result
+
+
+def _by_query_class(outcomes: list[Outcome]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for query_class in sorted({outcome.query_class for outcome in outcomes}):
+        subset = [outcome for outcome in outcomes if outcome.query_class == query_class]
+        answerable = [outcome for outcome in subset if not outcome.is_adversarial]
+        adversarial = [outcome for outcome in subset if outcome.is_adversarial]
+        exact = [o.evidence_tokens_exact for o in subset if o.evidence_tokens_exact is not None]
+        result[query_class] = {
+            "n": len(subset),
+            "routing_profiles": sorted({o.routing_profile for o in subset}),
+            "answerable_accuracy": _json_safe_rate(_rate([bool(o.correct) for o in answerable])),
+            "adversarial_abstention": _json_safe_rate(_rate([o.abstained for o in adversarial])),
+            "answerable_false_abstain": _json_safe_rate(_rate([o.abstained for o in answerable])),
+            "evidence_tokens_exact": _size_summary([int(value) for value in exact]),
+        }
+    return result
 
 
 def aggregate(outcomes: list[Outcome]) -> dict[str, Any]:
@@ -237,4 +308,14 @@ def aggregate(outcomes: list[Outcome]) -> dict[str, Any]:
         "answerable_false_abstain": _json_safe_rate(_rate([o.abstained for o in answerable])),
         "retrieved_context": context_size(outcomes),
         "by_category": by_category,
+        "by_query_class": _by_query_class(outcomes),
+        "routing": {
+            "classifier_version": QUERY_CLASS_VERSION,
+            "policy_version": ROUTING_POLICY_VERSION,
+            "modes": sorted({outcome.routing_mode for outcome in outcomes}),
+            "by_profile": {
+                profile: sum(1 for outcome in outcomes if outcome.routing_profile == profile)
+                for profile in sorted({outcome.routing_profile for outcome in outcomes})
+            },
+        },
     }

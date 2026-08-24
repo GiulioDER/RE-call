@@ -297,7 +297,7 @@ def _verdict(
         return "expired", validity
     if start is not None and now < start:
         return "not_yet_valid", validity
-    if hit.score < threshold:
+    if hit.score_kind == "dense_cosine" and hit.score < threshold:
         return "low_confidence", validity
     return "ok", validity
 

@@ -15,6 +15,7 @@ from typing import Any, Literal, Protocol
 
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
+from recall.semantic_graph import SemanticGraphProjection
 from recall.store import EdgeCandidates, resolve_supersession_candidates
 from recall.types import Chunk
 
@@ -129,6 +130,7 @@ class ReasoningGraphProjection:
     authored_edges: tuple[ReasoningGraphEdge, ...]
     inferred_candidate_edges: tuple[ReasoningGraphEdge, ...]
     diagnostics: tuple[ReasoningGraphDiagnostic, ...]
+    semantic_graph: SemanticGraphProjection | None = None
 
     def authored_supersession_map(self) -> dict[str, str]:
         return {
@@ -595,6 +597,7 @@ def build_reasoning_graph(
     unresolved_references: frozenset[str] | None = None,
     inferred_candidate_edges: tuple[ReasoningGraphEdge, ...] = (),
     include_text: bool = False,
+    semantic_graph: SemanticGraphProjection | None = None,
 ) -> ReasoningGraphProjection:
     """Project chunks and authored metadata into an immutable graph value."""
     ordered_chunks = sorted(chunks, key=lambda item: item.id)
@@ -658,6 +661,7 @@ def build_reasoning_graph(
             "authored_edges": [edge.id for edge in authored_edges],
             "inferred_candidate_edges": [edge.id for edge in inferred],
             "diagnostics": [diag.id for diag in diagnostics],
+            "semantic_graph_id": semantic_graph.graph_id if semantic_graph is not None else None,
         },
     )
     return ReasoningGraphProjection(
@@ -671,6 +675,7 @@ def build_reasoning_graph(
         authored_edges=authored_edges,
         inferred_candidate_edges=inferred,
         diagnostics=diagnostics,
+        semantic_graph=semantic_graph,
     )
 
 
@@ -723,6 +728,7 @@ def project_store_graph(
                 authored_edge_candidates=candidates,
                 unresolved_references=unresolved,
                 include_text=include_text,
+                semantic_graph=_load_semantic_graph(store, str(generation_id)),
             )
     pipeline, corpus = _store_binding_fingerprints(
         store,
@@ -739,4 +745,12 @@ def project_store_graph(
         authored_edge_candidates=candidates,
         unresolved_references=unresolved,
         include_text=include_text,
+        semantic_graph=_load_semantic_graph(store, store.generation_id),
     )
+
+
+def _load_semantic_graph(store: ChunkIterable, generation_id: str) -> SemanticGraphProjection | None:
+    loader = getattr(store, "load_semantic_graph", None)
+    if not callable(loader):
+        return None
+    return loader(generation_id)

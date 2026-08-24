@@ -443,6 +443,29 @@ def test_startup_accepts_the_pinned_reranker_and_loads_nothing() -> None:
     assert profile.inference_threads == 1
 
 
+def test_active_routing_validates_quality_and_sizes_for_fast_profile() -> None:
+    from recall.rerank import PINNED_RERANKER_SHA256
+    from recall_mcp.service import startup_retrieval_profile
+
+    profile = startup_retrieval_profile(
+        {
+            "RECALL_ROUTING_MODE": "active",
+            "RECALL_RERANK_PATH": "/nonexistent/path/that/is/never/opened",
+            "RECALL_RERANK_SHA256": PINNED_RERANKER_SHA256,
+        }
+    )
+    assert profile.name == "fast"
+    assert profile.max_concurrency == 8
+    assert profile.queue_capacity == 32
+
+
+def test_active_routing_refuses_missing_quality_artifact_at_startup() -> None:
+    from recall_mcp.service import startup_retrieval_profile
+
+    with pytest.raises(ValueError, match="RECALL_RERANK_PATH and RECALL_RERANK_SHA256"):
+        startup_retrieval_profile({"RECALL_ROUTING_MODE": "active"})
+
+
 def test_startup_accepts_the_code_profile_without_quality_artifact() -> None:
     from recall_mcp.service import startup_retrieval_profile
 

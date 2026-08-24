@@ -9,10 +9,13 @@ benchmarks, migrations, or experiments, and can change more freely.
 |---|---|---|
 | Trust search | `recall.trust.trusted_search` | Return verdicts, confidence, provenance, and abstention state. |
 | Reasoning | `recall.reasoning.reason` | Run explicit opt-in reasoning from trusted retrieval, bounded provider ports, graph projections, and citation validation. |
-| Reasoning graph | `recall.reasoning_graph.build_reasoning_graph` | Derive immutable, generation-bound graph projections for reasoning and proposal inspection. |
+| Reasoning graph | `recall.reasoning_graph.build_reasoning_graph` | Derive immutable, generation-bound authored and semantic graph projections for reasoning and proposal inspection. |
 | Embeddings | `recall.embeddings.make_embedder` | Construct supported embedding backends from configuration. |
 | Generation store | `recall.generation_store.GenerationStore` | Serve immutable, tenant-scoped generations. |
 | pgvector store | `recall.store.PgVectorStore` | Local indexing and retrieval over PostgreSQL plus pgvector. |
+| Related evidence | `recall.related.trusted_related` | Opt in, independently trusted source, ordinal, or supersession related evidence, bounded to 50 candidates. |
+| Current state | `recall.current_state.project_current_state` | Pure, generation-bound authored state projection. |
+| Query routing | `recall.query_class.classify_query` and `route_query` | Versioned deterministic query classes and shadow routing decisions. |
 | LangChain | `recall.integrations.langchain.RecallRetriever` | Use RE-call as a LangChain retriever. |
 | LlamaIndex | `recall.integrations.llamaindex.RecallRetriever` | Use RE-call as a LlamaIndex retriever. |
 
@@ -28,6 +31,7 @@ only from returned hits whose verdict and provenance satisfy the caller's policy
 | `recall index` | Index a markdown corpus. |
 | `recall search` | Query an indexed corpus through the trust layer. |
 | `recall reasoning` | Inspect projections, proposals, traces, audits, and opt-in reasoning queries without changing ordinary retrieval behavior. |
+| `recall graph rebuild` | Build the deterministic Evidence Graph V1 for an existing generation without changing chunks or generation identity. |
 | `recall extract` | Extract structured truth claims from memo prose. Reads only; writes nothing. Off unless `RECALL_TRUTH_EXTRACTION=1`. |
 | `recall rewrite` | Review extracted claims and declare accepted ones in corpus frontmatter. Dry run by default; `--reviewer` and `--note` are required. |
 | `recall lint` | Validate memo frontmatter and corpus shape. |
@@ -42,11 +46,13 @@ The MCP server is `python -m recall_mcp.server`. Its supported tools are:
 | Tool | Purpose |
 |---|---|
 | `recall_search` | Search trusted memory. |
+| `recall_related` | Retrieve independently trusted structural related evidence. |
+| `recall_current_state` | Inspect a deterministic authored current state projection. |
 | `recall_evidence` | Return evidence for a query. |
 | `recall_index` | Index allowed files beneath `RECALL_INDEX_ROOT`. |
 | `recall_forget` | Erase indexed source material. |
 | `recall_stats` | Report counters and operational state. |
-| `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. |
+| `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `graph_expansion` to `one_hop` to enable Evidence Graph V1. |
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
 | `recall_reasoning_audit` | Report reasoning integration state and diagnostics. |
@@ -68,6 +74,12 @@ The static README viewer uses these provider locale identifiers: `english`, `ita
 `hindi`, and `turkish`. Other provider identifiers may be passed to the MCP or CLI presentation
 surfaces. An unsupported identifier or provider failure leaves canonical text unchanged and marks
 the localized object as a fallback.
+
+Related expansion and structured retrieval explanations are disabled by default. Set
+`RECALL_ROUTING_MODE=active` only for a preregistered routing experiment. The default `shadow`
+mode records the deterministic decision without changing retrieval behavior. `recall_current_state`
+defaults to a fail closed maximum of 1000 source records and accepts an explicit `max_records`
+bound; use `source` to project one authored lineage when a tenant is larger.
 
 The CLI accepts the same additive presentation option, for example:
 

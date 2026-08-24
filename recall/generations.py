@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -28,6 +29,8 @@ from recall.lineage import (
     canonical_sha256,
 )
 from recall.manifest import ObjectReader
+from recall.observability import METRICS
+from recall.semantic_graph import GraphReadiness, SemanticGraphProjection, build_semantic_graph, write_semantic_graph
 from recall.types import Chunk
 
 Chunker = Callable[[str], list[str]]
@@ -157,6 +160,29 @@ def _effective_corpus_fingerprint(
             "excluded_sources": excluded,
         }
     )
+
+
+def _semantic_graph_marker(graph: SemanticGraphProjection) -> dict[str, Any]:
+    return {
+        "graph_id": graph.graph_id,
+        "graph_fingerprint": graph.fingerprint,
+        "entity_count": len(graph.entities),
+        "mention_count": len(graph.mentions),
+        "relation_count": len(graph.relations),
+        "diagnostic_count": len(graph.diagnostics),
+        "diagnostics": [
+            {
+                "id": diagnostic.id,
+                "kind": diagnostic.kind,
+                "reference": diagnostic.reference,
+                "message": diagnostic.message,
+                "entity_ids": list(diagnostic.entity_ids),
+                "relation_ids": list(diagnostic.relation_ids),
+            }
+            for diagnostic in graph.diagnostics
+        ],
+        "ready": True,
+    }
 
 
 def _record(row: tuple[Any, ...]) -> GenerationRecord:
@@ -667,6 +693,43 @@ class GenerationManager:
                     )
                     indexed_sources.append(entry.uri)
 
+            with self._connect() as conn, conn.transaction():
+                graph_started = time.perf_counter()
+                current = self._require_generation(conn, generation_id)
+                rows = conn.execute(
+                    "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
+                    "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
+                    (self.tenant_id, generation_id),
+                ).fetchall()
+                graph_chunks = [
+                    Chunk(
+                        str(row[0]),
+                        str(row[1]),
+                        str(row[2]),
+                        row[3] if isinstance(row[3], dict) else {},
+                    )
+                    for row in rows
+                ]
+                try:
+                    semantic_graph = build_semantic_graph(
+                        graph_chunks,
+                        tenant_id=self.tenant_id,
+                        generation_id=generation_id,
+                        pipeline_fingerprint=pipeline.fingerprint,
+                        corpus_fingerprint=current.corpus_fingerprint,
+                    )
+                    write_semantic_graph(conn, semantic_graph)
+                except BaseException:
+                    METRICS.increment("recall_graph_build_failure_total")
+                    METRICS.observe(
+                        "recall_graph_latency_ms",
+                        (time.perf_counter() - graph_started) * 1000.0,
+                    )
+                    raise
+                METRICS.increment("recall_graph_build_total")
+                METRICS.observe(
+                    "recall_graph_latency_ms", (time.perf_counter() - graph_started) * 1000.0
+                )
             summary = {
                 "objects": len(manifest.objects),
                 "chunks": chunks_written,
@@ -675,6 +738,7 @@ class GenerationManager:
                 "tombstoned_objects": tombstoned,
                 "empty_objects": empty,
                 "indexed_sources": sorted(indexed_sources),
+                "semantic_graph": _semantic_graph_marker(semantic_graph),
             }
             with self._connect() as conn, conn.transaction():
                 current = self._require_generation(conn, generation_id, lock=True)
@@ -766,6 +830,34 @@ class GenerationManager:
                     raise GenerationError(f"generation lineage mismatch for {source_uri}")
             chunks = sum(int(item[3]) for item in actual_rows)
             summary = dict(row[1])
+            graph_marker = summary.get("semantic_graph")
+            if not isinstance(graph_marker, Mapping) or graph_marker.get("ready") is not True:
+                raise GenerationError("generation semantic graph is not ready")
+            graph_rows = conn.execute(
+                "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
+                (self.tenant_id, generation_id),
+            ).fetchall()
+            graph = build_semantic_graph(
+                [
+                    Chunk(
+                        str(item[0]),
+                        str(item[1]),
+                        str(item[2]),
+                        item[3] if isinstance(item[3], dict) else {},
+                    )
+                    for item in graph_rows
+                ],
+                tenant_id=self.tenant_id,
+                generation_id=generation_id,
+                pipeline_fingerprint=current.pipeline_fingerprint,
+                corpus_fingerprint=current.corpus_fingerprint,
+            )
+            if (
+                graph_marker.get("graph_id") != graph.graph_id
+                or graph_marker.get("graph_fingerprint") != graph.fingerprint
+            ):
+                raise GenerationError("generation semantic graph fingerprint mismatch")
             summary.update({"validated_sources": len(actual), "validated_chunks": chunks})
             conn.execute(
                 "UPDATE recall_generations SET state = 'ready', ready_at = clock_timestamp(), "
@@ -789,6 +881,73 @@ class GenerationManager:
             except InvalidGenerationTransition:
                 pass
             raise
+
+    def rebuild_graph(self, generation_id: str) -> GraphReadiness:
+        """Build only the deterministic semantic graph for an existing v1 generation."""
+        with self._connect() as conn, conn.transaction():
+            current = self._require_generation(conn, generation_id, lock=True)
+            if current.state == GenerationState.LEGACY_UNVERIFIED:
+                raise GenerationError(
+                    "legacy_unverified generations have no v1 chunk projection; rebuild the "
+                    "generation before building its semantic graph"
+                )
+            if current.state in {GenerationState.BUILDING, GenerationState.VALIDATING}:
+                raise InvalidGenerationTransition(
+                    f"graph rebuild requires a stable generation, found {current.state.value}"
+                )
+            rows = conn.execute(
+                "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
+                (self.tenant_id, generation_id),
+            ).fetchall()
+            graph_started = time.perf_counter()
+            try:
+                graph = build_semantic_graph(
+                    [
+                        Chunk(
+                            str(row[0]),
+                            str(row[1]),
+                            str(row[2]),
+                            row[3] if isinstance(row[3], dict) else {},
+                        )
+                        for row in rows
+                    ],
+                    tenant_id=self.tenant_id,
+                    generation_id=generation_id,
+                    pipeline_fingerprint=current.pipeline_fingerprint,
+                    corpus_fingerprint=current.corpus_fingerprint,
+                )
+                write_semantic_graph(conn, graph)
+            except BaseException:
+                METRICS.increment("recall_graph_build_failure_total")
+                METRICS.observe(
+                    "recall_graph_latency_ms",
+                    (time.perf_counter() - graph_started) * 1000.0,
+                )
+                raise
+            METRICS.increment("recall_graph_build_total")
+            METRICS.observe(
+                "recall_graph_latency_ms", (time.perf_counter() - graph_started) * 1000.0
+            )
+            summary_row = conn.execute(
+                "SELECT validation_summary FROM recall_generations "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (self.tenant_id, generation_id),
+            ).fetchone()
+            summary = dict(summary_row[0]) if summary_row and isinstance(summary_row[0], Mapping) else {}
+            summary["semantic_graph"] = _semantic_graph_marker(graph)
+            conn.execute(
+                "UPDATE recall_generations SET validation_summary = %s "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (Jsonb(summary), self.tenant_id, generation_id),
+            )
+            self._audit(
+                conn,
+                "generation_graph_rebuilt",
+                generation_id=generation_id,
+                payload=summary["semantic_graph"],
+            )
+            return graph.readiness()
 
     def promote(self, generation_id: str, *, unsafe_development: bool = False) -> None:
         if self.environment == "production":
@@ -986,6 +1145,28 @@ class GenerationManager:
                     (self.tenant_id, list(selected), source_uri),
                 )
                 removed = result.rowcount
+                # Chunk foreign keys remove mentions and relation evidence. Relations and
+                # entities are derived rows, so remove any that no longer have surviving support
+                # and leave the generation marker mismatched until an explicit graph rebuild.
+                conn.execute(
+                    "DELETE FROM recall_graph_relations_v1 r "
+                    "WHERE r.tenant_id = %s AND r.generation_id = ANY(%s) "
+                    "AND NOT EXISTS (SELECT 1 FROM recall_graph_relation_evidence_v1 e "
+                    "WHERE e.tenant_id = r.tenant_id AND e.generation_id = r.generation_id "
+                    "AND e.relation_id = r.relation_id)",
+                    (self.tenant_id, list(selected)),
+                )
+                conn.execute(
+                    "DELETE FROM recall_graph_entities_v1 e "
+                    "WHERE e.tenant_id = %s AND e.generation_id = ANY(%s) "
+                    "AND NOT EXISTS (SELECT 1 FROM recall_graph_mentions_v1 m "
+                    "WHERE m.tenant_id = e.tenant_id AND m.generation_id = e.generation_id "
+                    "AND m.entity_id = e.entity_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM recall_graph_relations_v1 r "
+                    "WHERE r.tenant_id = e.tenant_id AND r.generation_id = e.generation_id "
+                    "AND (r.subject_id = e.entity_id OR r.object_id = e.entity_id))",
+                    (self.tenant_id, list(selected)),
+                )
             if legacy_table is not None:
                 # Migration 0008 adopts a v0.8 install's rows in place: they stay in the legacy
                 # table and remain readable through the legacy API. Erasing only

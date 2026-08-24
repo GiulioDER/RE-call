@@ -1008,6 +1008,16 @@ def main(argv: list[str] | None = None) -> None:
     p_gc.add_argument("--retention-days", type=int, default=7)
     p_gc.add_argument("--retain-previous", type=int, default=2)
 
+    p_graph = sub.add_parser(
+        "graph", help="inspect or rebuild the derived semantic evidence graph"
+    )
+    p_graph.set_defaults(_opens_db=True)
+    graph_sub = p_graph.add_subparsers(dest="graph_cmd", required=True)
+    p_graph_rebuild = graph_sub.add_parser(
+        "rebuild", help="rebuild deterministic graph rows for an existing generation"
+    )
+    p_graph_rebuild.add_argument("--generation", required=True)
+
     p_index = sub.add_parser("index", help="index a folder of supported documents or code")
 
     p_index.set_defaults(_opens_db=True)
@@ -1132,6 +1142,12 @@ def main(argv: list[str] | None = None) -> None:
     p_reasoning_query.add_argument("--max-steps", type=int, default=12)
     p_reasoning_query.add_argument("--max-graph-nodes", type=int, default=32)
     p_reasoning_query.add_argument("--max-evidence-tokens", type=int, default=2048)
+    p_reasoning_query.add_argument(
+        "--graph-expansion",
+        choices=["off", "one-hop"],
+        default="off",
+        help="opt-in deterministic semantic graph expansion, limited to one hop",
+    )
     p_reasoning_trace = reasoning_sub.add_parser(
         "trace", help="run a bounded query and export only the reasoning trace"
     )
@@ -1142,6 +1158,12 @@ def main(argv: list[str] | None = None) -> None:
     p_reasoning_trace.add_argument("--max-steps", type=int, default=12)
     p_reasoning_trace.add_argument("--max-graph-nodes", type=int, default=32)
     p_reasoning_trace.add_argument("--max-evidence-tokens", type=int, default=2048)
+    p_reasoning_trace.add_argument(
+        "--graph-expansion",
+        choices=["off", "one-hop"],
+        default="off",
+        help="opt-in deterministic semantic graph expansion, limited to one hop",
+    )
     p_reasoning_audit = reasoning_sub.add_parser(
         "audit", help="run the reasoning integration audit"
     )
@@ -1705,6 +1727,16 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
+    if args.cmd == "graph":
+        from recall.generations import GenerationManager
+
+        manager = GenerationManager(args.dsn, args.tenant)
+        if args.graph_cmd == "rebuild":
+            readiness = manager.rebuild_graph(args.generation)
+            print(json.dumps(readiness.__dict__, indent=2, default=str))
+            return
+        raise SystemExit(f"unknown graph subcommand: {args.graph_cmd}")
+
     if args.cmd == "lint":  # pure filesystem check — no embedder, no DB
         from recall.lint import lint_corpus
 
@@ -1956,6 +1988,7 @@ def main(argv: list[str] | None = None) -> None:
                     max_steps=args.max_steps,
                     max_graph_nodes=args.max_graph_nodes,
                     max_evidence_tokens=args.max_evidence_tokens,
+                    graph_expansion=args.graph_expansion.replace("-", "_"),
                     policy=_reasoning_policy,
                     calibration=_reasoning_calibration,
                 )
