@@ -1,0 +1,294 @@
+{
+  "capability_status": {
+    "action_feedback.outcome_linked_revision": "unverified_gap",
+    "action_feedback.outcome_storage": "emerging",
+    "action_feedback.policy_revision": "unverified_gap",
+    "authority_and_scope.multi_agent_handoff": "unverified_gap",
+    "authority_and_scope.tenant_scope": "established",
+    "authority_and_scope.user_consent": "unverified_gap",
+    "deletion_and_forgetting.derived_propagation": "emerging",
+    "deletion_and_forgetting.selective_forgetting": "emerging",
+    "deletion_and_forgetting.source_deletion": "unverified_gap",
+    "evaluation.action_impact": "emerging",
+    "evaluation.conflict_resolution": "unverified_gap",
+    "evaluation.continual_learning": "emerging",
+    "evaluation.temporal_reasoning": "emerging",
+    "provenance.evidence_receipts": "unverified_gap",
+    "provenance.source_attribution": "established",
+    "provenance.transformation_lineage": "emerging",
+    "representation.knowledge_graph": "established",
+    "representation.raw_episodes": "established",
+    "representation.structured_facts": "emerging",
+    "retrieval.dense": "emerging",
+    "retrieval.graph_traversal": "established",
+    "retrieval.lexical": "unverified_gap",
+    "retrieval.query_time_context": "emerging",
+    "security.egress_control": "emerging",
+    "security.memory_poisoning_resistance": "unverified_gap",
+    "security.prompt_injection_resistance": "unverified_gap",
+    "time.ingestion_time": "emerging",
+    "time.point_in_time": "unverified_gap",
+    "time.valid_time": "established",
+    "uncertainty.abstention": "emerging",
+    "uncertainty.calibration": "unverified_gap",
+    "uncertainty.entailment": "unverified_gap",
+    "validity_and_revision.contradiction": "unverified_gap",
+    "validity_and_revision.rollback": "unverified_gap",
+    "validity_and_revision.supersession": "emerging",
+    "write_path.agent_authored": "established",
+    "write_path.consolidation": "emerging",
+    "write_path.extraction": "established"
+  },
+  "claim_count": 37,
+  "review_count": 37,
+  "schema_version": "1.0",
+  "search_cutoff_date": "2026-08-24",
+  "source_count": 19,
+  "system_count": 15,
+  "target_combination": {
+    "capability_ids": [
+      "provenance.source_attribution",
+      "provenance.transformation_lineage",
+      "validity_and_revision.supersession",
+      "authority_and_scope.tenant_scope",
+      "deletion_and_forgetting.derived_propagation",
+      "uncertainty.abstention",
+      "action_feedback.outcome_linked_revision"
+    ],
+    "systems": {
+      "sys_agent_memory_bench": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_amem": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_amp": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_graphiti": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_hipporag": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_langmem": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_letta": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_longmemeval": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_longmemeval_v2": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_mem0": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_memmachine": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_memorybank": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_neo4j_agent_memory": {
+        "conflicts": [],
+        "missing": [
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "partial_combination",
+        "verified": [
+          "provenance.source_attribution"
+        ]
+      },
+      "sys_quipu": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "validity_and_revision.supersession",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "partial_combination",
+        "verified": [
+          "provenance.transformation_lineage",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation"
+        ]
+      },
+      "sys_recall": {
+        "conflicts": [],
+        "missing": [
+          "deletion_and_forgetting.derived_propagation",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [
+          "provenance.transformation_lineage"
+        ],
+        "status": "partial_combination",
+        "verified": [
+          "provenance.source_attribution",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "uncertainty.abstention"
+        ]
+      }
+    }
+  },
+  "unresolved_claim_ids": [
+    "clm_langmem_revision_001",
+    "clm_letta_eval_001"
+  ]
+}

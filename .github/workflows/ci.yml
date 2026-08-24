@@ -606,3 +606,40 @@ jobs:
           echo "::error::any dependency, run 'uv lock' and commit the result in the SAME commit."
           echo "::error::A stale lock means the committed pins are not what this project resolves."
           exit 1
+
+  prior-art:
+    name: Prior art evidence corpus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.11"
+
+      - name: Validate canonical prior art records
+        run: python -m tools.prior_art validate
+
+      - name: Verify generated prior art reports
+        run: python -m tools.prior_art render --check
+
+      - name: Check prior work declarations in changed experiments
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]]; then
+            exit 0
+          fi
+          mapfile -t files < <(git diff --name-only --diff-filter=AM "$base" "${{ github.sha }}" -- 'benchmarks/**/*.py' 'results/**/*.py')
+          if ((${#files[@]})); then
+            python -m tools.prior_art check-experiments "${files[@]}"
+          fi
