@@ -327,7 +327,7 @@ def test_an_on_topic_question_is_still_caught() -> None:
     subject_words = L._corpus_subject_words(chunks_from_directory(docs))
 
     for question in (
-        "how do i tune the abstention threshold for my corpus",
+        "how do i tune the answerability floor for my corpus",
         "what happens when a generation is promoted before it is calibrated",
         "which postgres extension does the index require",
         "how long does indexing take for a thousand documents",
