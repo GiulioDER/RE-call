@@ -19,6 +19,18 @@ Existing retrieval clients remain compatible.
 * Reasoning proposals are review candidates only. They are never promoted into corpus metadata by
   the API, CLI, or MCP server.
 
+Evidence Graph V1 is an additional opt in path. `ReasoningPolicy.graph_expansion` accepts `off`
+or `one_hop`, and `ReasoningBudget.max_graph_hops` accepts only the matching value `0` or `1`.
+The default is `off`, so ordinary retrieval and existing reasoning behavior do not traverse the
+semantic graph.
+
+When enabled, trusted chunks seed exact entity mentions. Authored semantic relations select
+neighboring chunks, which are then evaluated again by the ordinary trust layer. Graph relations do
+not promote evidence, replace authored frontmatter, or allow model generated proposals to drive
+traversal. Ambiguous entities, unavailable graph rows, fingerprint mismatches, and legacy
+generations fail closed with a typed graph readiness result while preserving original trusted
+evidence.
+
 The core library does not require a managed database or a managed reasoning service. The core uses
 typed Python APIs and provider ports. PostgreSQL is one supported durable store for RE-call
 retrieval and generation serving, not a managed reasoning dependency.
@@ -87,6 +99,8 @@ Privacy erasure and rebuild:
   metadata.
 * If erasure changes the corpus fingerprint, strict production mode requires recalibration before a
   trusted answer.
+* Graph rows are generation bound and are removed with their supporting chunks. Source erasure
+  invalidates the graph readiness marker until the deterministic graph is rebuilt.
 
 ## Failure and outage matrix
 
@@ -122,6 +136,14 @@ Counters:
   `budget_exhausted` stop reason.
 * `recall_reasoning_provider_failure_total{kind,provider_id,model_id}` counts optional provider
   failures.
+
+Evidence Graph V1 metrics:
+
+* `recall_graph_build_total` and `recall_graph_build_failure_total` count generation graph builds.
+* `recall_graph_query_total`, `recall_graph_expansion_total`, `recall_graph_candidates_total`,
+  `recall_graph_rejected_candidates_total`, and `recall_graph_diagnostics_total` describe query
+  expansion work.
+* `recall_graph_latency_ms` records graph build and expansion latency.
 
 Histograms:
 

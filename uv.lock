@@ -4133,6 +4133,7 @@ bench = [
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openai" },
     { name = "pyarrow" },
+    { name = "tiktoken" },
 ]
 desktop = [
     { name = "keyring" },
@@ -4262,6 +4263,7 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'entail'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'finetune'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'rerank'", specifier = ">=3.0" },
+    { name = "tiktoken", marker = "extra == 'bench'", specifier = "==0.13.0" },
     { name = "torch", marker = "extra == 'sparse'", specifier = ">=2.0,<3" },
     { name = "transformers", marker = "extra == 'sparse'", specifier = ">=4.40,<6" },
     { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.2.2" },

@@ -557,6 +557,16 @@ def resume(
         provider_metadata=None,
         dropped_question_ids=rescore_dropped,
     )
+    # Preserve records already paid for in the partial exactly.  Reconstructing them through
+    # Outcome would add fields that did not exist in an older sidecar and would make salvage look
+    # like a second scoring pass. Newly rescored records already have the current additive shape.
+    payload["outcomes"] = records
+    if system is None:
+        # A merge-only salvage performs no new measurement, so keep its top-level shape compatible
+        # with the legacy artifact while retaining the exact records and salvage provenance.
+        payload.pop("evidence_cost", None)
+        payload.pop("routing_experiment", None)
+        payload.pop("operational_metrics", None)
 
     known_ids = {str(q["question_id"]) for q in questions}
     final_ids = {str(record["question_id"]) for record in records}

@@ -52,6 +52,8 @@ class ScoredChunk:
     #: Using `indexed_at` for that made a re-indexed memory read `not_yet_known` for every past
     #: instant. `None` on stores predating the column, and then treated as visible, not hidden.
     first_indexed_at: datetime | None = None
+    #: Structural relatedness is not a dense cosine and must not be exposed as one.
+    score_kind: Literal["dense_cosine", "structural"] = "dense_cosine"
 
 
 @dataclass(frozen=True)

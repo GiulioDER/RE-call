@@ -75,6 +75,14 @@ def to_outcome(record: Mapping[str, Any]) -> Outcome:
         answer=str(record["answer"]),
         abstained=bool(record["abstained"]),
         correct=None if record["correct"] is None else bool(record["correct"]),
+        query_class=str(record.get("query_class", "unknown")),
+        matched_rules=tuple(str(value) for value in record.get("matched_rules", ())),
+        routing_profile=str(record.get("routing_profile", "fast")),
+        routing_expansion=record.get("routing_expansion"),
+        routing_mode=str(record.get("routing_mode", "shadow")),
+        evidence_budget=record.get("evidence_budget"),
+        evidence_tokens_exact=record.get("evidence_tokens_exact"),
+        input_tokens_exact=record.get("input_tokens_exact"),
     )
 
 

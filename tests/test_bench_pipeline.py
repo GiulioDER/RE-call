@@ -15,6 +15,7 @@ from benchmarks.pipeline import (
     judge_correct,
     run_question,
 )
+from benchmarks.evidence_tokens import PinnedReaderTokenizer
 
 #: Benchmark-harness coverage, not product coverage; product CI can deselect with
 #: `-m 'not benchharness'`.
@@ -136,7 +137,8 @@ def test_generate_answer_wraps_context_in_memories_delimiters() -> None:
     seen: dict[str, str] = {}
 
     def completer(system: str, user: str) -> str:
-        seen["user"] = user
+        if "user" not in seen:
+            seen["user"] = user
         return "500 rps"
 
     generate_answer(completer, context="rate limit is 500 rps", question="how many rps?")
@@ -238,6 +240,42 @@ def test_run_question_answerable_abstain_is_incorrect_without_judging() -> None:
     out = run_question(retrieve, completer, _q("3", "cat1", False))
     assert out.abstained is True
     assert out.correct is False
+
+
+def test_run_question_applies_and_records_an_exact_evidence_budget() -> None:
+    tokenizer = PinnedReaderTokenizer()
+    seen: dict[str, str] = {}
+
+    def retrieve(_q: str) -> str:
+        return "alpha beta gamma delta epsilon zeta eta theta"
+
+    def completer(system: str, user: str) -> str:
+        if "user" not in seen:
+            seen["user"] = user
+        return "500 rps"
+
+    budget = 12
+    out = run_question(
+        retrieve,
+        completer,
+        _q("4", "cat1", False),
+        tokenizer=tokenizer,
+        evidence_budget=budget,
+    )
+    evidence_start = seen["user"].index("<memories>")
+    evidence_end = seen["user"].index("</memories>") + len("</memories>")
+    assert tokenizer.count_tokens(seen["user"][evidence_start:evidence_end]) <= budget
+    assert out.evidence_budget == budget
+
+
+def test_run_question_records_the_selected_routing_mode() -> None:
+    out = run_question(
+        lambda _question: "context",
+        lambda _system, _user: "500 rps",
+        _q("5", "cat1", False),
+        routing_mode_setting="active",
+    )
+    assert out.routing_mode == "active"
 
 
 def test_aggregate_reports_both_columns() -> None:

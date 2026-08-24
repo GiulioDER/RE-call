@@ -10,8 +10,10 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import psycopg
+from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
 from recall.calibration_v2 import CalibrationRepository
@@ -37,6 +39,8 @@ from recall.generations import (
 )
 from recall.observability import METRICS, get_logger
 from recall.profiles import (
+    FAST_PROFILE,
+    QUALITY_PROFILE,
     RetrievalOverloaded,
     RetrievalProfile,
     resolve_retrieval_profile,
@@ -47,6 +51,10 @@ from recall.evidence import (
     build_evidence_bundle,
     render_evidence_prompt,
 )
+from recall.current_state import MAX_CURRENT_STATE_RECORDS, CurrentStateProjection, project_current_state
+from recall.explanations import RetrievalExplanation
+from recall.query_class import route_query, routing_mode
+from recall.related import RelatedEvidenceResult, trusted_related
 from recall.reasoning import (
     GenerationSelection,
     REASONING_API_VERSION,
@@ -58,6 +66,7 @@ from recall.reasoning import (
     ReasoningRequest,
     ReasoningResponse,
     ReasoningRetriever,
+    SemanticGraphExpansionResult,
     reason,
 )
 from recall.reasoning_expansion import (
@@ -82,8 +91,8 @@ from recall.rerank import (
 )
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
-from recall.trust import trusted_search
-from recall.types import TrustedResult
+from recall.trust import evaluate, is_trusted, trusted_search
+from recall.types import Chunk, RetrievalResult, ScoredChunk, TrustedResult
 from recall_mcp.factories import (  # noqa: F401 — re-exported; server.py and tests import via service
     _ADMISSION_LOCK,
     _ADMISSIONS,
@@ -211,7 +220,14 @@ def startup_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
     misconfiguration gets wrong; the artifact itself is verified when the reranker is built.
     """
     values = dict(os.environ) if env is None else env
+    selected_routing_mode = routing_mode(values.get("RECALL_ROUTING_MODE", "shadow"))
     profile = resolve_retrieval_profile(values)
+    if selected_routing_mode == "active" and profile.name == "legacy":
+        # Active routing may select QUALITY_PROFILE on temporal and status queries even when no
+        # process profile was configured. Validate that artifact at startup and size the worker
+        # pool for FAST_PROFILE, the larger of the two active admission pools.
+        _validate_quality_reranker_config(values)
+        return FAST_PROFILE
     if profile.name == "quality":
         _validate_quality_reranker_config(values)
     elif profile.name == "code":
@@ -225,6 +241,43 @@ def startup_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
         _require_remote_model_code_enabled(values, "coreb-code")
         _positive_env(values, "RECALL_RERANK_BATCH_SIZE", 4)
     return profile
+
+
+class CurrentStateRecordModel(BaseModel):
+    """One authored source state in a generation bound projection."""
+
+    state_id: str
+    source: str
+    state: str
+    chunk_ids: list[str]
+    successor_chain: list[str] = Field(default_factory=list)
+    valid_from: str | None = None
+    valid_until: str | None = None
+    diagnostics: list[str] = Field(default_factory=list)
+
+
+class CurrentStateResult(BaseModel):
+    """Bounded deterministic authored state projection returned by the MCP surface."""
+
+    schema_version: int
+    projection_id: str
+    tenant_id: str
+    generation_id: str
+    pipeline_fingerprint: str | None = None
+    corpus_fingerprint: str | None = None
+    as_of: str
+    records: list[CurrentStateRecordModel]
+
+
+class RelatedResult(BaseModel):
+    """Related evidence whose candidates each passed independent trust evaluation."""
+
+    seed_chunk_id: str
+    relation: str
+    generation_id: str
+    items: list[EvidenceItemModel]
+    rejected_count: int
+    explanation: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -271,6 +324,10 @@ def _retrieve_trusted(
             f"unbounded query is a shared-database denial of service. Ask a shorter question."
         )
     profile = resolve_retrieval_profile()
+    selected_mode = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow"))
+    if selected_mode == "active" and profile.name == "legacy":
+        decision = route_query(query)
+        profile = FAST_PROFILE if decision.profile == "fast" else QUALITY_PROFILE
     k = max(1, min(k, MAX_SEARCH_K))
     if profile.name != "legacy":
         # A client cannot buy its way onto a bigger result set than the process profile allows.
@@ -391,6 +448,10 @@ def search_memory(
     k: int = 5,
     calibration: Calibration | None = None,
     policy: TrustPolicy | None = None,
+    explain: bool = False,
+    include_related: bool = False,
+    related_relation: str = "source",
+    related_max_items: int = 3,
 ) -> SearchResult:
     """Run a trust-evaluated hybrid search and format it into actionable self-recall guidance.
 
@@ -406,6 +467,8 @@ def search_memory(
     """
     retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
     result, timed = retrieval.result, retrieval.timed
+    route = route_query(query)
+    active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
     # `evidence_assembly` is the last stage and the one the surface did not carry. It brackets
     # turning trusted hits into the client-facing evidence: provenance, validity, verdicts and
     # the library-authored advice. It is small, and that is the point — a stage nobody measures
@@ -427,6 +490,43 @@ def search_memory(
         )
         for h in result.hits
     ]
+    related_items: list[SearchHit] = []
+    related_diagnostics: list[str] = []
+    if (include_related or (active_routing and route.related_expansion)) and result.hits:
+        try:
+            related_result = trusted_related(
+                store,
+                result.hits[0].chunk.id,
+                relation=related_relation,  # type: ignore[arg-type]
+                max_items=related_max_items,
+                calibration=calibration,
+                policy=policy,
+            )
+            related_items = [
+                SearchHit(
+                    chunk_id=item.chunk.id,
+                    source=item.provenance.file or item.chunk.source,
+                    score=None,
+                    confidence=None,
+                    verdict=item.verdict,
+                    superseded_by=item.validity.superseded_by,
+                    valid_until=item.validity.valid_until.isoformat()
+                    if item.validity.valid_until
+                    else None,
+                    valid_from=item.validity.valid_from.isoformat()
+                    if item.validity.valid_from
+                    else None,
+                    ordinal=item.provenance.ord,
+                    indexed_at=item.provenance.indexed_at.isoformat()
+                    if item.provenance.indexed_at
+                    else None,
+                    text=item.chunk.text,
+                )
+                for item in related_result.items
+            ]
+            related_diagnostics.append(f"rejected_related:{related_result.rejected_count}")
+        except ValueError as exc:
+            related_diagnostics.append(f"related_refused:{type(exc).__name__}")
     superseded = [h for h in hits if h.verdict == "superseded"]
     # `advice` is assembled from LIBRARY-AUTHORED text only. Nothing corpus-controlled is
     # interpolated into it — not the blocking file's name, not the successor's, not the abstention
@@ -482,6 +582,22 @@ def search_memory(
         advice += STALE_INDEX_NOTE
 
     stage_ms, total_ms, budget_exceeded = _cost_surface(retrieval, assembly_started)
+    explanation = None
+    if explain:
+        explanation = RetrievalExplanation(
+            query_class=route.query_class,
+            routing_profile=route.profile,
+            routing_policy_version=route.policy_version,
+            routing_mode="active" if active_routing else "shadow",
+            matched_rules=route.matched_rules,
+            expansion_mode=route.expansion_mode,
+            candidate_pool_size=result.diagnostics.candidate_pool_size,
+            stage_names=tuple(sorted(result.diagnostics.stage_ms)),
+            selection_reason="retrieval_order_preserved",
+            trust_reason=None if not result.abstained else result.reason,
+            abstention_reason=result.reason if result.abstained else None,
+            generation_id=result.generation_id or "legacy",
+        ).as_dict()
     return SearchResult(
         query=query,
         abstained=result.abstained,
@@ -511,6 +627,9 @@ def search_memory(
         latency_budget_ms=retrieval.profile.enforced_budget_ms,
         budget_exceeded=budget_exceeded,
         hits=hits,
+        explanation=explanation,
+        related_items=related_items,
+        related_diagnostics=related_diagnostics,
     )
 
 
@@ -602,6 +721,10 @@ def evidence_memory(
     max_items: int | None = None,
     calibration: Calibration | None = None,
     policy: TrustPolicy | None = None,
+    explain: bool = False,
+    include_related: bool = False,
+    related_relation: str = "source",
+    related_max_items: int = 3,
 ) -> EvidenceResult:
     """Retrieve, evaluate trust, and return the evidence boundary — WITHOUT calling a generator.
 
@@ -609,12 +732,15 @@ def evidence_memory(
     "generator neutral" means here. So the tool stops one step short: it returns the bundle and
     the two rendered messages, and the client runs its own model against them.
 
-    Additive to `search_memory`, which is unchanged. Both go through `_retrieve_trusted` and
-    `_cost_surface`, so this path cannot skip the query-length refusal, the `k` clamp, the
-    admission block, the shed-versus-failure accounting or the budget verdict.
+    Additive to `search_memory`. Both go through `_retrieve_trusted` and `_cost_surface`, so this
+    path cannot skip the query-length refusal, the `k` clamp, the admission block, the
+    shed-versus-failure accounting or the budget verdict. Explanation and related fields remain
+    opt in and are additive to the existing response shape.
     """
     retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
     result = retrieval.result
+    route = route_query(query)
+    active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
     assembly_started = time.perf_counter()
     # Clamped against the EFFECTIVE `k` as well as `MAX_SEARCH_K`, because the tool documents
     # `max_items` as never exceeding `k` and this is the line that has to make that true.
@@ -626,6 +752,29 @@ def evidence_memory(
     # not the client's argument, so a fast/quality deployment bounds this at `returned_k`.
     requested = max_items if max_items is not None else retrieval.effective_k
     limit = max(1, min(requested, retrieval.effective_k, MAX_SEARCH_K))
+    related_result: RelatedEvidenceResult | None = None
+    related_ids: set[str] = set()
+    related_diagnostics: list[str] = []
+    if (include_related or (active_routing and route.related_expansion)) and result.hits:
+        try:
+            related_result = trusted_related(
+                store,
+                result.hits[0].chunk.id,
+                relation=related_relation,  # type: ignore[arg-type]
+                max_items=related_max_items,
+                calibration=calibration,
+                policy=policy,
+            )
+            related_ids = {item.chunk.id for item in related_result.items}
+            existing = {hit.chunk.id for hit in result.hits}
+            result = replace(
+                result,
+                hits=result.hits
+                + [hit for hit in related_result.items if hit.chunk.id not in existing],
+            )
+            related_diagnostics.append(f"rejected_related:{related_result.rejected_count}")
+        except ValueError as exc:
+            related_diagnostics.append(f"related_refused:{type(exc).__name__}")
     bundle = build_evidence_bundle(result, EvidencePolicy(max_items=limit))
     system, user = render_evidence_prompt(bundle)
     items = [
@@ -637,14 +786,55 @@ def evidence_memory(
             indexed_at=item.indexed_at.isoformat() if item.indexed_at else None,
             valid_from=item.valid_from.isoformat() if item.valid_from else None,
             valid_until=item.valid_until.isoformat() if item.valid_until else None,
-            cosine=round(item.cosine, 4),
-            confidence=round(item.confidence, 4),
+            cosine=None if item.chunk_id in related_ids else round(item.cosine, 4),
+            confidence=None if item.chunk_id in related_ids else round(item.confidence, 4),
             verdict=item.verdict,
         )
         for item in bundle.items
     ]
     advice = _evidence_advice(bundle)
     stage_ms, total_ms, budget_exceeded = _cost_surface(retrieval, assembly_started)
+    explanation = None
+    if explain:
+        explanation = RetrievalExplanation(
+            query_class=route.query_class,
+            routing_profile=route.profile,
+            routing_policy_version=route.policy_version,
+            routing_mode="active" if active_routing else "shadow",
+            matched_rules=route.matched_rules,
+            expansion_mode=route.expansion_mode,
+            candidate_pool_size=result.diagnostics.candidate_pool_size,
+            stage_names=tuple(sorted(result.diagnostics.stage_ms)),
+            selection_reason="evidence_bundle_prefix",
+            trust_reason=None if not bundle.trust_state else bundle.trust_state,
+            abstention_reason=bundle.reason_code,
+            related_seed_chunk_id=(related_result.seed_chunk_id if related_result else None),
+            related_relation=(related_result.relation if related_result else None),
+            generation_id=bundle.index_generation,
+        ).as_dict()
+    related_items = []
+    if related_result is not None:
+        related_items = [
+            EvidenceItemModel(
+                chunk_id=item.chunk.id,
+                text=item.chunk.text,
+                source=item.provenance.file or item.chunk.source,
+                ordinal=item.provenance.ord,
+                indexed_at=item.provenance.indexed_at.isoformat()
+                if item.provenance.indexed_at
+                else None,
+                valid_from=item.validity.valid_from.isoformat()
+                if item.validity.valid_from
+                else None,
+                valid_until=item.validity.valid_until.isoformat()
+                if item.validity.valid_until
+                else None,
+                cosine=round(item.cosine, 4),
+                confidence=round(item.confidence, 4),
+                verdict=item.verdict,
+            )
+            for item in related_result.items
+        ]
     return EvidenceResult(
         query=query,
         decision=bundle.decision,
@@ -667,18 +857,21 @@ def evidence_memory(
         total_ms=total_ms,
         latency_budget_ms=retrieval.profile.enforced_budget_ms,
         budget_exceeded=budget_exceeded,
+        explanation=explanation,
+        related_items=related_items,
+        related_diagnostics=related_diagnostics,
     )
 
 
-def _reasoning_policy(mode: str) -> ReasoningPolicy:
+def _reasoning_policy(mode: str, graph_expansion: str = "off") -> ReasoningPolicy:
     if mode == "retrieval_only":
-        return ReasoningPolicy(name="retrieval_only")
+        return ReasoningPolicy(name="retrieval_only", graph_expansion=graph_expansion)  # type: ignore[arg-type]
     if mode == "review_required":
-        return ReasoningPolicy(name="review_required")
+        return ReasoningPolicy(name="review_required", graph_expansion=graph_expansion)  # type: ignore[arg-type]
     if mode == "proposal_assisted":
-        return ReasoningPolicy(name="proposal_assisted")
+        return ReasoningPolicy(name="proposal_assisted", graph_expansion=graph_expansion)  # type: ignore[arg-type]
     if mode == "evidence_assembly":
-        return ReasoningPolicy(name="evidence_assembly")
+        return ReasoningPolicy(name="evidence_assembly", graph_expansion=graph_expansion)  # type: ignore[arg-type]
     raise ValueError("unknown reasoning mode")
 
 
@@ -699,6 +892,9 @@ def reasoning_projection(
     store: PgVectorStore, *, include_text: bool = False
 ) -> ReasoningProjectionResult:
     graph = project_store_graph(store, include_text=include_text)
+    semantic = graph.semantic_graph
+    readiness_reader = getattr(store, "graph_readiness", None)
+    readiness = readiness_reader() if callable(readiness_reader) else None
     return ReasoningProjectionResult(
         schema_version=graph.schema_version,
         graph_id=graph.graph_id,
@@ -711,6 +907,122 @@ def reasoning_projection(
         inferred_candidate_edge_count=len(graph.inferred_candidate_edges),
         diagnostic_count=len(graph.diagnostics),
         trust_state="trusted" if graph.generation_id != "legacy" else "degraded",
+        semantic_graph_ready=bool(readiness.ready) if readiness is not None else semantic is not None,
+        semantic_graph_reason=getattr(readiness, "reason", None) if readiness is not None else None,
+        semantic_entity_count=len(semantic.entities) if semantic is not None else 0,
+        semantic_mention_count=len(semantic.mentions) if semantic is not None else 0,
+        semantic_relation_count=len(semantic.relations) if semantic is not None else 0,
+        semantic_diagnostic_count=len(semantic.diagnostics) if semantic is not None else 0,
+    )
+
+
+def current_state_memory(
+    store: PgVectorStore,
+    *,
+    as_of: datetime | None = None,
+    source: str | None = None,
+    max_records: int = MAX_CURRENT_STATE_RECORDS,
+) -> CurrentStateResult:
+    """Return a bounded, deterministic authored current state projection.
+
+    ``as_of`` fixes the point in time, ``source`` narrows the projection, and ``max_records``
+    prevents a serving request from assembling an unbounded response.  The underlying library
+    function remains available without a bound for offline projection work.
+
+    Args:
+        store: tenant bound read store.
+        as_of: optional point in time for authored validity and supersession.
+        source: optional canonical source filter.
+        max_records: positive serving bound on projected source records.
+
+    Raises:
+        ValueError: if the bound is invalid or the projection exceeds it.
+    """
+    projection: CurrentStateProjection = project_current_state(
+        store, as_of=as_of, source=source, max_records=max_records
+    )
+    return CurrentStateResult(
+        schema_version=projection.schema_version,
+        projection_id=projection.projection_id,
+        tenant_id=projection.tenant_id,
+        generation_id=projection.generation_id,
+        pipeline_fingerprint=projection.pipeline_fingerprint,
+        corpus_fingerprint=projection.corpus_fingerprint,
+        as_of=projection.as_of.isoformat(),
+        records=[
+            CurrentStateRecordModel(
+                state_id=record.state_id,
+                source=record.source,
+                state=record.state,
+                chunk_ids=list(record.chunk_ids),
+                successor_chain=list(record.successor_chain),
+                valid_from=record.valid_from.isoformat() if record.valid_from else None,
+                valid_until=record.valid_until.isoformat() if record.valid_until else None,
+                diagnostics=list(record.diagnostics),
+            )
+            for record in projection.records
+        ],
+    )
+
+
+def related_memory(
+    store: PgVectorStore,
+    seed_chunk_id: str,
+    *,
+    relation: str = "source",
+    max_items: int = 5,
+    calibration: Calibration | None = None,
+    policy: TrustPolicy | None = None,
+    explain: bool = False,
+) -> RelatedResult:
+    """Return structurally related evidence after independent trust evaluation.
+
+    Args:
+        store: tenant and generation bound read store.
+        seed_chunk_id: chunk that defines the relation.
+        relation: `source`, `ordinal`, or `supersession`.
+        max_items: positive bounded candidate limit.
+        calibration: optional trust calibration, resolved from the store when omitted.
+        explain: include stable machine readable explanation metadata.
+
+    Raises:
+        ValueError: if the relation, seed, or item limit is invalid.
+    """
+    result = trusted_related(
+        store,
+        seed_chunk_id,
+        relation=relation,  # type: ignore[arg-type]
+        max_items=max_items,
+        calibration=calibration,
+        policy=policy,
+        explain=explain,
+    )
+    items = [
+        EvidenceItemModel(
+            chunk_id=item.chunk.id,
+            text=item.chunk.text,
+            source=item.provenance.file or item.chunk.source,
+            ordinal=item.provenance.ord,
+            indexed_at=item.provenance.indexed_at.isoformat()
+            if item.provenance.indexed_at
+            else None,
+            valid_from=item.validity.valid_from.isoformat() if item.validity.valid_from else None,
+            valid_until=item.validity.valid_until.isoformat()
+            if item.validity.valid_until
+            else None,
+            cosine=round(item.cosine, 4),
+            confidence=round(item.confidence, 4),
+            verdict=item.verdict,
+        )
+        for item in result.items
+    ]
+    return RelatedResult(
+        seed_chunk_id=result.seed_chunk_id,
+        relation=result.relation,
+        generation_id=result.generation_id,
+        items=items,
+        rejected_count=result.rejected_count,
+        explanation=result.explanation,
     )
 
 
@@ -846,6 +1158,172 @@ def _retrieval_graph(
     )
 
 
+def _expand_semantic_graph(
+    store: PgVectorStore,
+    request: ReasoningRequest,
+    retrieval: TrustedResult,
+    calibration: Calibration | None,
+) -> SemanticGraphExpansionResult:
+    """Expand trusted seeds through one persisted semantic hop and re-run trust evaluation."""
+    started = time.perf_counter()
+    readiness_reader = getattr(store, "graph_readiness", None)
+    readiness = readiness_reader() if callable(readiness_reader) else None
+    graph = project_store_graph(store, include_text=True)
+    semantic = graph.semantic_graph
+    if semantic is None or (readiness is not None and not readiness.ready):
+        return SemanticGraphExpansionResult(
+            retrieval=retrieval,
+            readiness="GRAPH_NOT_READY",
+            latency_ms=round((time.perf_counter() - started) * 1000.0, 3),
+        )
+
+    trusted_seed_ids = {hit.chunk.id for hit in retrieval.hits if is_trusted(hit)}
+    mentions_by_chunk: dict[str, set[str]] = {}
+    chunks_by_entity: dict[str, set[str]] = {}
+    for mention in semantic.mentions:
+        mentions_by_chunk.setdefault(mention.chunk_id, set()).add(mention.entity_id)
+        chunks_by_entity.setdefault(mention.entity_id, set()).add(mention.chunk_id)
+    ambiguous_entities = {
+        entity_id
+        for diagnostic in semantic.diagnostics
+        if diagnostic.kind == "ambiguous_entity"
+        for entity_id in diagnostic.entity_ids
+    }
+    seed_entities = {
+        entity_id
+        for chunk_id in trusted_seed_ids
+        for entity_id in mentions_by_chunk.get(chunk_id, ())
+        if entity_id not in ambiguous_entities
+    }
+
+    relation_rank: dict[str, tuple[float, int, str]] = {}
+    relation_count = 0
+    for relation in semantic.relations:
+        if relation.status != "authored":
+            continue
+        if relation.subject_id in ambiguous_entities or relation.object_id in ambiguous_entities:
+            continue
+        if relation.subject_id not in seed_entities and relation.object_id not in seed_entities:
+            continue
+        relation_count += 1
+        neighbor = (
+            relation.object_id
+            if relation.subject_id in seed_entities
+            else relation.subject_id
+        )
+        support_ids = chunks_by_entity.get(neighbor, set())
+        for chunk_id in support_ids:
+            if chunk_id in trusted_seed_ids:
+                continue
+            rank = (float(relation.confidence), len(support_ids), chunk_id)
+            if rank > relation_rank.get(chunk_id, (-1.0, -1, "")):
+                relation_rank[chunk_id] = rank
+
+    ordered_candidate_ids = tuple(
+        sorted(
+            relation_rank,
+            key=lambda chunk_id: (
+                -relation_rank[chunk_id][0],
+                -relation_rank[chunk_id][1],
+                chunk_id,
+            ),
+        )
+    )
+    max_candidates = max(0, request.budget.max_graph_nodes - len(trusted_seed_ids))
+    bounded_ids = ordered_candidate_ids[:max_candidates]
+    node_by_chunk = {
+        node.chunk_id: node
+        for node in graph.nodes
+        if node.kind == "chunk" and node.chunk_id is not None
+    }
+    scored: list[ScoredChunk] = []
+    for chunk_id in bounded_ids:
+        node = node_by_chunk.get(chunk_id)
+        text = node.metadata.get("_recall_evidence_text") if node is not None else None
+        if node is None or not isinstance(text, str):
+            continue
+        metadata = dict(node.metadata)
+        metadata.pop("_recall_evidence_text", None)
+        scored.append(
+            ScoredChunk(
+                chunk=Chunk(chunk_id, node.source, text, metadata),
+                score=relation_rank[chunk_id][0],
+            )
+        )
+
+    active_calibration = calibration
+    if active_calibration is None:
+        resolver = getattr(store, "resolve_calibration", None)
+        if callable(resolver):
+            resolution = resolver()
+            artifact = getattr(resolution, "artifact", None)
+            if artifact is not None:
+                active_calibration = artifact.runtime
+    supersession: dict[str, str] = {}
+    unresolved: frozenset[str] = frozenset()
+    if scored:
+        supersession, unresolved = store.supersession()
+    candidate_result = RetrievalResult(
+        query=retrieval.query,
+        hits=scored,
+        gap_warning=False,
+        staleness=retrieval.staleness,
+        diagnostics=retrieval.diagnostics,
+    )
+    generation_binding = cast(
+        dict[str, str],
+        {
+            key: value
+            for key, value in {
+                "tenant_id": retrieval.tenant_id or store.tenant,
+                "generation_id": retrieval.generation_id or graph.generation_id,
+                "pipeline_fingerprint": retrieval.pipeline_fingerprint or graph.pipeline_fingerprint,
+                "corpus_fingerprint": retrieval.corpus_fingerprint or graph.corpus_fingerprint,
+            }.items()
+            if value is not None
+        },
+    )
+    evaluated = evaluate(
+        candidate_result,
+        supersession,
+        active_calibration,
+        datetime.now(UTC),
+        unresolved,
+        calibration_id=retrieval.calibration_id,
+        calibration_status=retrieval.calibration_status,
+        generation_binding=generation_binding,
+        query_set_digest=retrieval.query_set_digest,
+    )
+    accepted = [hit for hit in evaluated.hits if is_trusted(hit)]
+    accepted_ids = {hit.chunk.id for hit in accepted}
+    merged = list(retrieval.hits)
+    merged.extend(hit for hit in accepted if hit.chunk.id not in {item.chunk.id for item in merged})
+    expanded = replace(
+        retrieval,
+        hits=merged,
+        abstained=not any(is_trusted(hit) for hit in merged),
+        reason="" if any(is_trusted(hit) for hit in merged) else evaluated.reason,
+    )
+    rejected = len(ordered_candidate_ids) - len(accepted_ids)
+    latency_ms = round((time.perf_counter() - started) * 1000.0, 3)
+    METRICS.increment("recall_graph_query_total")
+    METRICS.increment("recall_graph_expansion_total")
+    METRICS.increment("recall_graph_candidates_total", value=len(ordered_candidate_ids))
+    METRICS.increment("recall_graph_rejected_candidates_total", value=max(0, rejected))
+    METRICS.increment("recall_graph_diagnostics_total", value=len(semantic.diagnostics))
+    METRICS.observe("recall_graph_latency_ms", latency_ms)
+    return SemanticGraphExpansionResult(
+        retrieval=expanded,
+        readiness="ready",
+        entities_inspected=len(seed_entities),
+        relations_inspected=relation_count,
+        candidates_discovered=len(ordered_candidate_ids),
+        candidates_rejected=max(0, rejected),
+        diagnostics_encountered=len(semantic.diagnostics),
+        latency_ms=latency_ms,
+    )
+
+
 def _strict_reasoning_refusal(
     refusal: TrustRefusal,
     *,
@@ -917,6 +1395,7 @@ def reasoning_query(
     max_graph_nodes: int = 32,
     max_evidence_tokens: int = 2048,
     expand_retrieval: bool = False,
+    graph_expansion: str = "off",
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
 ) -> ReasoningResponse:
@@ -925,8 +1404,9 @@ def reasoning_query(
         max_graph_nodes=max_graph_nodes,
         max_model_calls=1 if expand_retrieval else 0,
         max_evidence_tokens=max_evidence_tokens,
+        max_graph_hops=1 if graph_expansion == "one_hop" else 0,
     )
-    reasoning_policy = _reasoning_policy(mode)
+    reasoning_policy = _reasoning_policy(mode, graph_expansion)
     if expand_retrieval:
         reasoning_policy = replace(reasoning_policy, allow_retrieval_expansion=True)
     if policy is not None and not policy.strict:
@@ -1000,6 +1480,11 @@ def reasoning_query(
             expansion_retriever if expand_retrieval else None
         )
 
+        def graph_expansion_provider(
+            request: ReasoningRequest, retrieval: TrustedResult
+        ) -> SemanticGraphExpansionResult:
+            return _expand_semantic_graph(store, request, retrieval, calibration)
+
         request = ReasoningRequest(
             query=query,
             tenant_id=store.tenant,
@@ -1010,6 +1495,7 @@ def reasoning_query(
                 proposal_provider=proposal_port,
                 expansion_provider=expansion_provider,
                 expansion_retriever=expansion_retriever_port,
+                graph_expansion_provider=graph_expansion_provider,
             ),
             policy=reasoning_policy,
             budget=budget,

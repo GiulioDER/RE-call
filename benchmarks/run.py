@@ -47,9 +47,11 @@ import warnings
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, TextIO, cast
 
 from benchmarks.llm import Completer, OpenRouterLLM, RunAborted, is_terminal
+from benchmarks.evidence_tokens import PinnedReaderTokenizer, TokenCounter
+from benchmarks.evidence_curve import evidence_cost_curve
 from benchmarks.artifact_contract import reject_unauditable_cost_claims
 from benchmarks.usage import install_openai_meter
 from benchmarks.usage import reset as reset_usage
@@ -76,6 +78,8 @@ from recall.eval.locomo import (
     CATEGORY_NAMES,
     DEFAULT_DSN,
 )
+from recall._env import load_dotenv
+from recall.query_class import QUERY_CLASS_VERSION, ROUTING_POLICY_VERSION
 
 
 #: Consecutive per-question failures that stop the run. Same constant and same argument as
@@ -86,7 +90,13 @@ CONSECUTIVE_FAILURE_LIMIT = 5
 
 
 def run_arm(
-    system: MemorySystem, completer: Completer, questions: list[dict[str, Any]]
+    system: MemorySystem,
+    completer: Completer,
+    questions: list[dict[str, Any]],
+    tokenizer: TokenCounter | None = None,
+    *,
+    evidence_budget: int | None = None,
+    routing_mode_setting: str = "shadow",
 ) -> tuple[list[Outcome], dict[str, Any], list[str]]:
     """Score `questions` against whatever `system` currently has ingested.
 
@@ -126,7 +136,16 @@ def run_arm(
     consecutive = 0
     for q in questions:
         try:
-            outcomes.append(run_question(system.retrieve, completer, q))
+            outcomes.append(
+                run_question(
+                    system.retrieve,
+                    completer,
+                    q,
+                    tokenizer=tokenizer,
+                    evidence_budget=evidence_budget,
+                    routing_mode_setting=routing_mode_setting,
+                )
+            )
         except Exception as exc:  # noqa: BLE001 - re-raised if terminal, quarantined otherwise
             if is_terminal(exc):
                 raise RunAborted(
@@ -354,11 +373,29 @@ def _outcome_record(
     `locomo10.json` by `question_id`. It is the empty string for an adversarial, which is the
     honest record: there is no gold answer to be correct about.
     """
-    return {
+    record = {
         **asdict(outcome),
         "question": text_by_id.get(outcome.question_id, ""),
         "gold": gold_by_id.get(outcome.question_id, ""),
     }
+    record["evidence_cost"] = {
+        "evidence_budget": outcome.evidence_budget,
+        "evidence_tokens_exact": outcome.evidence_tokens_exact,
+        "input_tokens_exact": outcome.input_tokens_exact,
+        "claim_family": "evidence_cost",
+    }
+    record["routing_decision"] = {
+        "query_class": outcome.query_class,
+        "matched_rules": list(outcome.matched_rules),
+        "profile": outcome.routing_profile,
+        "expansion_mode": outcome.routing_expansion,
+        "mode": outcome.routing_mode,
+    }
+    record["citation_metrics"] = {
+        "available": False,
+        "reason_code": "benchmark_answer_has_no_citation_channel",
+    }
+    return record
 
 
 def _append_records(path: Path, records: list[dict[str, Any]]) -> None:
@@ -391,7 +428,14 @@ def _run_stamp(arm: str, model: str, conversations: int, now: datetime) -> str:
 
 
 def _run_config(
-    arm: str, model: str, k: int, llm: OpenRouterLLM, system: MemorySystem
+    arm: str,
+    model: str,
+    k: int,
+    llm: OpenRouterLLM,
+    system: MemorySystem,
+    *,
+    evidence_budget: int | None = None,
+    routing_mode_setting: str = "shadow",
 ) -> dict[str, Any]:
     """Everything a reader needs to identify and reproduce this run, in the artifact itself.
 
@@ -409,6 +453,8 @@ def _run_config(
     describe = getattr(system, "describe", None)
     return {
         "k": k,
+        "evidence_budget": evidence_budget,
+        "routing_mode": routing_mode_setting,
         "arm": arm,
         "model": model,
         "temperature": llm.temperature,
@@ -451,6 +497,9 @@ def _results_payload(
         "usage": usage,
         "provider_metadata": provider_metadata or [],
         "cost_claims": [],
+        "evidence_cost": None,
+        "routing_experiment": None,
+        "operational_metrics": None,
         "aggregate": aggregate_,
         # Beside the aggregate, not inside it, and ALWAYS present. `n` shrinks silently when a
         # question is quarantined, so a reader diffing two runs cannot otherwise tell a short
@@ -483,14 +532,41 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     It is a parameter rather than a `datetime.now()` buried in the filename logic so a test can
     pin the artifact paths without freezing time process-wide.
     """
+    # Benchmark invocations often run from a deployment checkout whose secrets live in its
+    # adjacent `.env`. Load both the caller's working directory and this checkout's root without
+    # overriding explicitly exported variables.
+    load_dotenv()
+    checkout_env = Path(__file__).resolve().parents[1] / ".env"
+    if checkout_env.resolve() != Path(".env").resolve():
+        load_dotenv(checkout_env)
     p = argparse.ArgumentParser(
         prog="python -m benchmarks.run",
         description="Run one arm of the memory head-to-head benchmark over LOCOMO.",
     )
     p.add_argument("--arm", choices=["recall", "mem0", "mem0-default"], required=True)
     p.add_argument("--model", default="openai/gpt-4o-mini")
+    p.add_argument(
+        "--no-exact-evidence-cost",
+        action="store_true",
+        help="skip pinned reader token accounting; intended only for legacy offline reruns",
+    )
     p.add_argument("--data", type=Path, default=Path("locomo10.json"))
     p.add_argument("--conversations", type=_positive_int, default=1)
+    p.add_argument(
+        "--evidence-budget",
+        type=_positive_int,
+        default=None,
+        help=(
+            "exact rendered evidence token budget for this run. Repeat the preregistered ladder "
+            "across paired runs to publish a budgeted curve"
+        ),
+    )
+    p.add_argument(
+        "--routing-mode",
+        choices=["shadow", "active"],
+        default="shadow",
+        help="record shadow routing or opt into the preregistered active routing arm",
+    )
     p.add_argument(
         "--k",
         type=_positive_int,
@@ -540,6 +616,10 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     p.add_argument("--out", type=Path, default=Path("benchmarks/results"))
     args = p.parse_args(argv)
 
+    os.environ["RECALL_ROUTING_MODE"] = args.routing_mode
+    if args.evidence_budget is not None and args.no_exact_evidence_cost:
+        p.error("--evidence-budget requires the pinned exact evidence tokenizer")
+
     if not args.data.exists():
         p.error(
             f"{args.data} not found. Fetch it with:\n"
@@ -563,6 +643,8 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     install_openai_meter()
     llm = OpenRouterLLM(model=args.model, api_key=key)
     completer: Completer = llm.complete
+    reader_tokenizer = None if args.no_exact_evidence_cost else PinnedReaderTokenizer()
+    tokenizer_metadata = reader_tokenizer.metadata() if reader_tokenizer is not None else None
 
     convs, questions, skipped = _load(args.data, args.conversations)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -641,7 +723,14 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
                 )
                 ablation_ran = True
                 print(f"ablation preflight: {ablation}", flush=True)
-            conv_outcomes, _, conv_dropped = run_arm(system, completer, conv_questions)
+            conv_outcomes, _, conv_dropped = run_arm(
+                system,
+                completer,
+                conv_questions,
+                tokenizer=cast(TokenCounter | None, reader_tokenizer),
+                evidence_budget=args.evidence_budget,
+                routing_mode_setting=args.routing_mode,
+            )
             outcomes.extend(conv_outcomes)
             # Accumulated for the ARTIFACT, not just the console. A dropped question shrinks
             # `n` silently otherwise, and a reader cannot tell a short run from a small one.
@@ -677,6 +766,33 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
 
 
     agg = aggregate(outcomes)
+    if reader_tokenizer is not None:
+        input_exact = agg.get("retrieved_context", {}).get("input_tokens_exact", {})
+        curve_rows: list[dict[str, Any]] = []
+        for outcome in outcomes:
+            row: dict[str, Any] = {
+                "question_id": outcome.question_id,
+                "query_class": outcome.query_class,
+                "routing_profile": outcome.routing_profile,
+                "evidence_tokens_exact": outcome.evidence_tokens_exact,
+                "input_tokens_exact": outcome.input_tokens_exact,
+                "is_adversarial": outcome.is_adversarial,
+                "correct": outcome.correct,
+                "abstained": outcome.abstained,
+            }
+            if args.evidence_budget is not None:
+                row["evidence_budget"] = args.evidence_budget
+            curve_rows.append(row)
+        agg["evidence_cost_curve"] = evidence_cost_curve(
+            [row for row in curve_rows if row["evidence_tokens_exact"] is not None]
+        )
+        agg["evidence_cost_curve_metadata"] = {
+            "retrieval_budget_k": args.k,
+            "input_tokens_exact": input_exact,
+            "curve_is_cost_only": False,
+            "quality_is_budgeted": False,
+            "quality_is_observed_within_budget": True,
+        }
     total_usage = usage_snapshot()
     harness_usage = llm.usage()
     # memory_layer = everything the process sent to an LLM, minus the harness's own generator+judge.
@@ -699,12 +815,50 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         gold_by_id,
         outcomes,
         agg,
-        _run_config(args.arm, args.model, args.k, llm, system),
+        _run_config(
+            args.arm,
+            args.model,
+            args.k,
+            llm,
+            system,
+            evidence_budget=args.evidence_budget,
+            routing_mode_setting=args.routing_mode,
+        ),
         skipped,
         usage_block,
         provider_metadata,
         dropped_ids,
     )
+    payload["tokenizer_metadata"] = tokenizer_metadata
+    payload["evidence_cost"] = {
+        "claim_family": "evidence_cost",
+        "rendered_evidence_tokens": agg.get("retrieved_context", {}).get("tokens_exact"),
+        "total_input_tokens": agg.get("retrieved_context", {}).get("input_tokens_exact"),
+        "curve": agg.get("evidence_cost_curve"),
+        "curve_metadata": agg.get("evidence_cost_curve_metadata"),
+    }
+    payload["routing_experiment"] = {
+        "mode": args.routing_mode,
+        "classifier_version": QUERY_CLASS_VERSION,
+        "policy_version": ROUTING_POLICY_VERSION,
+        "fixed_profiles": {
+            "lookup": "fast",
+            "list": "fast",
+            "temporal": "quality",
+            "causal": "quality+structure",
+            "comparative": "quality+structure",
+            "status": "quality",
+            "entity": "quality+structure",
+            "unknown": "fast",
+        },
+        "promotion_gates": {
+            "quality_noninferiority_percentage_points": 1,
+            "max_query_class_regression_percentage_points": 3,
+            "max_false_refusal_increase_percentage_points": 1,
+            "max_p95_latency_multiplier": 2,
+            "max_matched_quality_evidence_cost_increase_percent": 10,
+        },
+    }
     payload["ablation_preflight"] = {
         "verdicts": ablation,
         "allow_inert_arm": bool(args.allow_inert_arm),

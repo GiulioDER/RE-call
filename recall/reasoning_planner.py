@@ -55,6 +55,7 @@ class ReasoningBudget:
     max_model_calls: int = 0
     max_evidence_tokens: int = 2048
     max_wall_time_ms: int = 1000
+    max_graph_hops: int = 0
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -63,9 +64,12 @@ class ReasoningBudget:
             ("max_model_calls", self.max_model_calls),
             ("max_evidence_tokens", self.max_evidence_tokens),
             ("max_wall_time_ms", self.max_wall_time_ms),
+            ("max_graph_hops", self.max_graph_hops),
         ):
             if value < 0:
                 raise ValueError(f"{name} must be non-negative")
+        if self.max_graph_hops > 1:
+            raise ValueError("max_graph_hops must be 0 or 1")
 
 
 @dataclass(frozen=True)
