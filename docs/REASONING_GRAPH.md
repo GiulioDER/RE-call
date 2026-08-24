@@ -23,6 +23,29 @@ explicit relation declarations. Exact Unicode normalized aliases are resolved; f
 embeddings are deliberately absent. Ambiguous candidates remain separate and produce diagnostics.
 Model extraction remains an ingest proposal path and cannot drive V1 graph expansion.
 
+### Authoring deterministic relations
+
+Markdown frontmatter can carry one namespaced, one line JSON object under `recall_graph`. The
+object may contain `entities`, `aliases`, and `relations`:
+
+```text
+---
+recall_graph: {"entities":[{"name":"Rate Limits V2","kind":"decision"},{"name":"API Gateway","kind":"service"}],"relations":[{"relation":"supports","subject":"Rate Limits V2","object":"API Gateway","confidence":1.0}]}
+---
+The decision supports the API Gateway policy.
+```
+
+The supported entity kinds and relation names are the V1 vocabularies above. Relation endpoints
+must be declared in the same supporting chunk, and every accepted relation keeps that chunk as its
+evidence. Invalid or incomplete declarations become graph diagnostics and never become trusted
+relations. `aliases` uses the canonical name to list of exact aliases form:
+`{"Rate Limits V2":["rate limits","RL v2"]}`.
+
+Markdown links and wikilinks are also extracted conservatively as authored `references` relations.
+They are accepted only when the target resolves to exactly one file in the generation. Missing and
+ambiguous targets do not drive expansion. This provides useful structure without treating a
+similar sentence as an authored semantic claim.
+
 The four persistence tables are `recall_graph_entities_v1`, `recall_graph_mentions_v1`,
 `recall_graph_relations_v1`, and `recall_graph_relation_evidence_v1`. They are tenant scoped,
 generation scoped, protected by RLS, and linked to chunks and generations with cascading foreign

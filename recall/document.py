@@ -31,7 +31,7 @@ class ParsedDocument:
     `structure_chunks` offsets identical whether or not the file carries a block.
     """
 
-    meta: dict[str, str]
+    meta: dict[str, object]
     human_body: str
     derived_text: str
 

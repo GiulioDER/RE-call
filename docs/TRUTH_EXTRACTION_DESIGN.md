@@ -8,7 +8,7 @@ survives, and that decision is recorded here so the next session does not build 
 ## The problem
 
 RE-call's model of truth is authored frontmatter, and exactly three keys are recognised
-(`recall/frontmatter.py:17`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
+(`recall/frontmatter.py:21`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
 those and nothing else. Prose is retrieved, never interpreted.
 
 On a real 792 memo corpus, **60 memos stated a supersession in prose against 2 declared

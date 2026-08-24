@@ -107,6 +107,78 @@ def test_explicit_aliases_resolve_to_one_canonical_entity():
     assert not any(diagnostic.kind == "ambiguous_entity" for diagnostic in graph.diagnostics)
 
 
+def test_frontmatter_graph_annotations_create_authored_relations():
+    graph = _graph(
+        Chunk(
+            "c1",
+            "decision.md",
+            "",
+            {
+                "file": "decision.md",
+                "recall_graph": {
+                    "entities": [
+                        {"name": "Rate Limits", "kind": "decision"},
+                        {"name": "Gateway", "kind": "service"},
+                    ],
+                    "relations": [
+                        {
+                            "relation": "supports",
+                            "subject": "Rate Limits",
+                            "object": "Gateway",
+                        }
+                    ],
+                },
+            },
+        )
+    )
+    assert len(graph.relations) == 1
+    assert graph.relations[0].relation == "supports"
+    assert graph.relations[0].evidence_chunk_ids == ("c1",)
+
+
+def test_explicit_markdown_references_create_deterministic_reference_edges():
+    graph = _graph(
+        Chunk("c1", "decision.md", "See [the policy](policy.md).", {"file": "decision.md"}),
+        Chunk("c2", "policy.md", "The policy.", {"file": "policy.md"}),
+    )
+    assert len(graph.relations) == 1
+    relation = graph.relations[0]
+    assert relation.relation == "references"
+    assert relation.extraction_method == "explicit_reference"
+    assert relation.evidence_chunk_ids == ("c1",)
+    assert any(
+        mention.chunk_id == "c1"
+        and mention.mention_text == "policy.md"
+        and mention.extraction_method == "explicit_reference"
+        for mention in graph.mentions
+    )
+
+
+def test_ambiguous_file_reference_does_not_create_a_reference_edge():
+    graph = _graph(
+        Chunk("c1", "notes/decision.md", "See [policy](policy.md).", {"file": "decision.md"}),
+        Chunk("c2", "one/policy.md", "one", {"file": "policy.md"}),
+        Chunk("c3", "two/policy.md", "two", {"file": "policy.md"}),
+    )
+    assert not graph.relations
+    assert any(
+        diagnostic.kind == "ambiguous_entity" and diagnostic.reference == "policy.md"
+        for diagnostic in graph.diagnostics
+    )
+
+
+def test_malformed_frontmatter_graph_annotation_is_diagnostic():
+    graph = _graph(
+        Chunk(
+            "c1",
+            "memo.md",
+            "",
+            {"file": "memo.md", "recall_graph": {"__parse_error__": "bad"}},
+        )
+    )
+    assert any(diagnostic.kind == "invalid_relation" for diagnostic in graph.diagnostics)
+
+
 def test_one_hop_expansion_appends_only_candidates_that_pass_trust():
     from recall_mcp.service import _expand_semantic_graph
     from recall.reasoning import (

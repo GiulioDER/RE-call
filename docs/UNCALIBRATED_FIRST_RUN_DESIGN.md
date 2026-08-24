@@ -607,7 +607,7 @@ narrowing. ⚠️ Forward hazard: `chunker_version` is now key material, so anyt
 it per chunker turns a chunker change into a forced re embed.
 
 So there is no stated value to check. The attestation **re derives the body with `parse_frontmatter`
-(`recall/frontmatter.py:186`), re chunks it with each of a fixed candidate set, and compares the
+(`recall/frontmatter.py:190`), re chunks it with each of a fixed candidate set, and compares the
 result against the stored chunks ordered by `ord` as an exact string list equality.** What it
 produces is the chunker's identity, or a refusal.
 
