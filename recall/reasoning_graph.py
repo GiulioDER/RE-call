@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
@@ -753,4 +753,4 @@ def _load_semantic_graph(store: ChunkIterable, generation_id: str) -> SemanticGr
     loader = getattr(store, "load_semantic_graph", None)
     if not callable(loader):
         return None
-    return loader(generation_id)
+    return cast(SemanticGraphProjection | None, loader(generation_id))

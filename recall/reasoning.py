@@ -290,6 +290,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             )
             _record_reasoning_metrics(response)
             return response
+        graph_failure: ProviderFailure | None = None
         try:
             graph_expansion = provider(request, retrieval)
         except TimeoutError as exc:
@@ -316,8 +317,6 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 provider_revision="v1",
                 message=type(exc).__name__,
             )
-        else:
-            graph_failure = None
         if graph_expansion.readiness != "ready":
             response = _response(
                 request=request,
