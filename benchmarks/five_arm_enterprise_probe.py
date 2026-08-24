@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
 
+from benchmarks._trust import bench_search
 from benchmarks.enterprise_rag import (
     EnterpriseDoc,
     _doc_from_text_file,
@@ -34,8 +35,6 @@ from recall.retriever import (
 )
 from recall.store import PgVectorStore
 from recall.trust_policy import TrustPolicy
-
-from benchmarks._trust import bench_search
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA = ROOT / ".benchdata" / "enterprise-rag-v1.0.0"
