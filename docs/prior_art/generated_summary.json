@@ -2,18 +2,19 @@
   "capability_status": {
     "action_feedback.outcome_linked_revision": "unverified_gap",
     "action_feedback.outcome_storage": "emerging",
-    "action_feedback.policy_revision": "unverified_gap",
+    "action_feedback.policy_revision": "emerging",
     "authority_and_scope.multi_agent_handoff": "unverified_gap",
     "authority_and_scope.tenant_scope": "established",
     "authority_and_scope.user_consent": "unverified_gap",
-    "deletion_and_forgetting.derived_propagation": "emerging",
-    "deletion_and_forgetting.selective_forgetting": "emerging",
-    "deletion_and_forgetting.source_deletion": "unverified_gap",
+    "deletion_and_forgetting.derived_propagation": "established",
+    "deletion_and_forgetting.selective_forgetting": "established",
+    "deletion_and_forgetting.source_deletion": "emerging",
     "evaluation.action_impact": "emerging",
     "evaluation.conflict_resolution": "unverified_gap",
     "evaluation.continual_learning": "emerging",
+    "evaluation.memory_security": "established",
     "evaluation.temporal_reasoning": "emerging",
-    "provenance.evidence_receipts": "unverified_gap",
+    "provenance.evidence_receipts": "emerging",
     "provenance.source_attribution": "established",
     "provenance.transformation_lineage": "emerging",
     "representation.knowledge_graph": "established",
@@ -32,19 +33,19 @@
     "uncertainty.abstention": "emerging",
     "uncertainty.calibration": "unverified_gap",
     "uncertainty.entailment": "unverified_gap",
-    "validity_and_revision.contradiction": "unverified_gap",
-    "validity_and_revision.rollback": "unverified_gap",
+    "validity_and_revision.contradiction": "emerging",
+    "validity_and_revision.rollback": "emerging",
     "validity_and_revision.supersession": "emerging",
     "write_path.agent_authored": "established",
-    "write_path.consolidation": "emerging",
+    "write_path.consolidation": "established",
     "write_path.extraction": "established"
   },
-  "claim_count": 37,
-  "review_count": 37,
+  "claim_count": 51,
+  "review_count": 51,
   "schema_version": "1.0",
   "search_cutoff_date": "2026-08-24",
-  "source_count": 19,
-  "system_count": 15,
+  "source_count": 29,
+  "system_count": 25,
   "target_combination": {
     "capability_ids": [
       "provenance.source_attribution",
@@ -56,6 +57,21 @@
       "action_feedback.outcome_linked_revision"
     ],
     "systems": {
+      "sys_agemem": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
       "sys_agent_memory_bench": {
         "conflicts": [],
         "missing": [
@@ -100,6 +116,52 @@
         "partial": [],
         "status": "unverified_combination",
         "verified": []
+      },
+      "sys_bad_memory": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_chronomem": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_dependency_rollback": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "partial_combination",
+        "verified": [
+          "deletion_and_forgetting.derived_propagation"
+        ]
       },
       "sys_graphiti": {
         "conflicts": [],
@@ -221,7 +283,82 @@
         "status": "unverified_combination",
         "verified": []
       },
+      "sys_memory_r1": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
       "sys_memorybank": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_memsecbench": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_merit": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_mindmemos": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
+      },
+      "sys_mpbench": {
         "conflicts": [],
         "missing": [
           "provenance.source_attribution",
@@ -284,6 +421,21 @@
           "authority_and_scope.tenant_scope",
           "uncertainty.abstention"
         ]
+      },
+      "sys_reflexion": {
+        "conflicts": [],
+        "missing": [
+          "provenance.source_attribution",
+          "provenance.transformation_lineage",
+          "validity_and_revision.supersession",
+          "authority_and_scope.tenant_scope",
+          "deletion_and_forgetting.derived_propagation",
+          "uncertainty.abstention",
+          "action_feedback.outcome_linked_revision"
+        ],
+        "partial": [],
+        "status": "unverified_combination",
+        "verified": []
       }
     }
   },

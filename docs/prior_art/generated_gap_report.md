@@ -38,11 +38,11 @@ Systems with reviewed claims: `sys_langmem`, `sys_mem0`.
 
 ### write_path.consolidation
 
-Group: `write_path`. Status: **emerging**.
+Group: `write_path`. Status: **established**.
 
 Definition: The system merges, compresses, or organizes multiple memories during maintenance.
 
-Systems with reviewed claims: `sys_neo4j_agent_memory`.
+Systems with reviewed claims: `sys_mindmemos`, `sys_neo4j_agent_memory`.
 
 ### write_path.agent_authored
 
@@ -50,7 +50,7 @@ Group: `write_path`. Status: **established**.
 
 Definition: The agent can deliberately decide what to write or update in persistent memory.
 
-Systems with reviewed claims: `sys_amem`, `sys_letta`.
+Systems with reviewed claims: `sys_agemem`, `sys_amem`, `sys_letta`, `sys_memory_r1`.
 
 ### retrieval.dense
 
@@ -94,19 +94,19 @@ Systems with reviewed claims: `sys_recall`.
 
 ### validity_and_revision.contradiction
 
-Group: `validity_and_revision`. Status: **unverified_gap**.
+Group: `validity_and_revision`. Status: **emerging**.
 
 Definition: The system detects or represents conflicting memories.
 
-Systems with reviewed claims: `sys_langmem`.
+Systems with reviewed claims: `sys_langmem`, `sys_mindmemos`.
 
 ### validity_and_revision.rollback
 
-Group: `validity_and_revision`. Status: **unverified_gap**.
+Group: `validity_and_revision`. Status: **emerging**.
 
 Definition: The system can restore or select an earlier memory state.
 
-No reviewed system claim exists for this capability.
+Systems with reviewed claims: `sys_chronomem`.
 
 ### time.valid_time
 
@@ -150,11 +150,11 @@ Systems with reviewed claims: `sys_quipu`, `sys_recall`.
 
 ### provenance.evidence_receipts
 
-Group: `provenance`. Status: **unverified_gap**.
+Group: `provenance`. Status: **emerging**.
 
 Definition: The system returns a machine readable record of evidence used for a memory result.
 
-No reviewed system claim exists for this capability.
+Systems with reviewed claims: `sys_quipu`.
 
 ### uncertainty.abstention
 
@@ -206,27 +206,27 @@ No reviewed system claim exists for this capability.
 
 ### deletion_and_forgetting.source_deletion
 
-Group: `deletion_and_forgetting`. Status: **unverified_gap**.
+Group: `deletion_and_forgetting`. Status: **emerging**.
 
 Definition: A source memory can be deleted from the system.
 
-No reviewed system claim exists for this capability.
+Systems with reviewed claims: `sys_memory_r1`.
 
 ### deletion_and_forgetting.derived_propagation
 
-Group: `deletion_and_forgetting`. Status: **emerging**.
+Group: `deletion_and_forgetting`. Status: **established**.
 
 Definition: Deleting a source removes or invalidates derived memories, graph edges, embeddings, and caches that depend on it.
 
-Systems with reviewed claims: `sys_quipu`.
+Systems with reviewed claims: `sys_dependency_rollback`, `sys_quipu`.
 
 ### deletion_and_forgetting.selective_forgetting
 
-Group: `deletion_and_forgetting`. Status: **emerging**.
+Group: `deletion_and_forgetting`. Status: **established**.
 
 Definition: The system can forget selected memories without clearing unrelated memory.
 
-Systems with reviewed claims: `sys_memorybank`.
+Systems with reviewed claims: `sys_agemem`, `sys_memorybank`.
 
 ### action_feedback.outcome_storage
 
@@ -234,7 +234,7 @@ Group: `action_feedback`. Status: **emerging**.
 
 Definition: The system stores observed results of agent actions as reusable memory.
 
-Systems with reviewed claims: `sys_neo4j_agent_memory`.
+Systems with reviewed claims: `sys_merit`, `sys_neo4j_agent_memory`.
 
 ### action_feedback.outcome_linked_revision
 
@@ -246,11 +246,11 @@ No reviewed system claim exists for this capability.
 
 ### action_feedback.policy_revision
 
-Group: `action_feedback`. Status: **unverified_gap**.
+Group: `action_feedback`. Status: **emerging**.
 
 Definition: Remembered outcomes modify future agent behavior or policy selection.
 
-No reviewed system claim exists for this capability.
+Systems with reviewed claims: `sys_reflexion`.
 
 ### security.prompt_injection_resistance
 
@@ -308,6 +308,14 @@ Definition: The system is evaluated over an ordered sequence of tasks or episode
 
 Systems with reviewed claims: `sys_agent_memory_bench`.
 
+### evaluation.memory_security
+
+Group: `evaluation`. Status: **established**.
+
+Definition: The system or benchmark is evaluated on persistent memory poisoning, prompt injection, downstream consequences, or selective repair.
+
+Systems with reviewed claims: `sys_bad_memory`, `sys_memsecbench`, `sys_mpbench`.
+
 ## RE-call research hypothesis
 
 The current hypothesis is a combination of evidence backed claims, explicit validity and supersession, reversible provenance lineage, authority and scope enforcement, deletion propagation through derived artifacts, abstention based on support and conflict, and action outcome feedback into future belief state.
@@ -322,9 +330,13 @@ Target capabilities: `provenance.source_attribution`, `provenance.transformation
 
 | System | Combination status | Verified support | Partial support | Missing evidence | Conflicting evidence |
 | --- | --- | --- | --- | --- | --- |
+| `sys_agemem` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
 | `sys_agent_memory_bench` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
 | `sys_amem` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
 | `sys_amp` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
+| `sys_bad_memory` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
+| `sys_chronomem` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
+| `sys_dependency_rollback` | `partial_combination` | `deletion_and_forgetting.derived_propagation` | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
 | `sys_graphiti` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
 | `sys_hipporag` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
 | `sys_langmem` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
@@ -333,7 +345,13 @@ Target capabilities: `provenance.source_attribution`, `provenance.transformation
 | `sys_longmemeval_v2` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
 | `sys_mem0` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
 | `sys_memmachine` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
+| `sys_memory_r1` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
 | `sys_memorybank` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
+| `sys_memsecbench` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
+| `sys_merit` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
+| `sys_mindmemos` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
+| `sys_mpbench` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
 | `sys_neo4j_agent_memory` | `partial_combination` | `provenance.source_attribution` | none | `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
 | `sys_quipu` | `partial_combination` | `provenance.transformation_lineage`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation` | none | `provenance.source_attribution`, `validity_and_revision.supersession`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
 | `sys_recall` | `partial_combination` | `provenance.source_attribution`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `uncertainty.abstention` | `provenance.transformation_lineage` | `deletion_and_forgetting.derived_propagation`, `action_feedback.outcome_linked_revision` | none|
+| `sys_reflexion` | `unverified_combination` | none | none | `provenance.source_attribution`, `provenance.transformation_lineage`, `validity_and_revision.supersession`, `authority_and_scope.tenant_scope`, `deletion_and_forgetting.derived_propagation`, `uncertainty.abstention`, `action_feedback.outcome_linked_revision` | none|
