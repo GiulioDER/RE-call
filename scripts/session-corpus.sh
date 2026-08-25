@@ -51,11 +51,18 @@ SELECT g.tenant_id
      || ' | ' || coalesce(
             (SELECT CASE
                       WHEN c.certified AND c.corpus_fingerprint = g.corpus_fingerprint
+                        -- Every interpolated value is coalesced. `separability`, `n_answerable`
+                        -- and `n_unanswerable` are all NULLABLE, and in SQL one NULL inside a
+                        -- `||` chain makes the WHOLE string NULL -- which the outer coalesce
+                        -- would then report as "NO PUBLISHED CALIBRATION". A certified artifact
+                        -- would be shown as a missing one, which is the wrong answer in the
+                        -- alarming direction.
                         THEN 'CERTIFIED thr=' || round(c.threshold::numeric, 3)
-                           || ' sep=' || round(c.separability::numeric, 3)
-                           || ' n=' || c.n_answerable || '/' || c.n_unanswerable
+                           || ' sep=' || coalesce(round(c.separability::numeric, 3)::text, '?')
+                           || ' n=' || coalesce(c.n_answerable::text, '?')
+                           || '/'   || coalesce(c.n_unanswerable::text, '?')
                       WHEN c.certified THEN 'STALE (fingerprint moved)'
-                      ELSE 'UNCERTIFIED'
+                      ELSE 'NOT-CERTIFIED'
                     END
              FROM recall_calibrations c
              WHERE c.tenant_id = g.tenant_id
@@ -92,11 +99,21 @@ fi
 
 printf '%s\n' "$out"
 
-# Named rather than left for the reader to spot. "CERTIFIED" on every line is the only state in
-# which a strict server answers `trust_state=trusted`, and any other line is the difference
-# between a corpus that answers and one that refuses.
-if printf '%s' "$out" | grep -qv 'CERTIFIED'; then
-    printf 'at least one tenant is not certified: strict refuses it, and the failure code names why.\n'
+# Named rather than left for the reader to spot. A `CERTIFIED` line is the only state in which a
+# strict server answers `trust_state=trusted`; any other line is the difference between a corpus
+# that answers and one that refuses.
+#
+# ⛔ Counted POSITIVELY, against `| CERTIFIED `, and not with `grep -v CERTIFIED`. The obvious
+# spelling is wrong and wrong in the direction this whole script exists to remove: the failure
+# state used to render as "UNCERTIFIED", which CONTAINS the substring "CERTIFIED", so an inverted
+# match selected nothing and a genuinely uncertified tenant was summarised as "all certified".
+# The status token is now `NOT-CERTIFIED` as well, so neither half of the check depends on the
+# other being careful. A summary line that can only ever say "fine" is worse than no summary.
+total="$(printf '%s\n' "$out" | grep -c '[^[:space:]]')"
+certified="$(printf '%s\n' "$out" | grep -cF '| CERTIFIED ')"
+if [ "$certified" -eq "$total" ]; then
+    printf 'all %s active tenants certified -- a strict server serves these as trusted.\n' "$total"
 else
-    printf 'all active tenants certified -- a strict server serves these as trusted.\n'
+    printf '%s of %s active tenants certified. Strict refuses the rest, and the line above names why.\n' \
+        "$certified" "$total"
 fi
