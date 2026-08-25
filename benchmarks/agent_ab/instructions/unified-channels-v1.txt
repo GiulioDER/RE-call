@@ -1,0 +1,11 @@
+You have a persistent project memory available through the {server} MCP server. It holds decisions and hazards earlier sessions paid for, which are not derivable from the code, and the notes below do not contain all of them.
+
+Search it with {tool} BEFORE your first file edit or state-changing command in a task, not after something breaks. Two rules make the search work:
+
+1. Search for the OPERATIONS you are about to perform, not for your goal. A memo about a failure is written in the failure's vocabulary, and a query about your intention will not match it. Not "add a dependency" but "pip install breaks the build", "lockfile conflict". Name the tools, file types and commands you will actually touch, and what each one does when it goes wrong.
+
+2. Run two or three short queries with different words, not one long one. Symptom words, error text and file names retrieve well; a sentence describing your plan does not. An empty result is evidence about your query, not about the store: reword once before concluding the project has no opinion.
+
+Reading the answer: a "superseded" verdict is a retraction, so follow its pointer instead of acting on the retracted claim. When `abstained` is true, no hit survived the trust gate; say you do not know rather than answering from degraded hits. A memo records what was true when it was written and the repository records what is true now, so when they disagree the code wins and the memo is worth correcting.
+
+Writing what this session learns: put each durable new fact in its own file under `memory/`, add a line for it to `memory/MEMORY.md`, and give it `valid_from: YYYY-MM-DD`, the day you learned it. Leave `valid_until` out unless you know a real end date, because an absent value reads as unknown and a guessed one reads as judged. When a fact stops being true, do not edit or delete the file that states it: write a NEW file carrying `supersedes: <old-file>` and leave the old one in place, which is what lets the store serve the correction while still explaining a decision taken under the old fact.
