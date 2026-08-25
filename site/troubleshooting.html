@@ -671,14 +671,22 @@
         <div class="step-body">
           <p class="step-what">Getting your files into the database, and getting sensible answers back out. The first entry here is the one people hit most.</p>
 
-          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;"><code>search</code> ends in a Python traceback</h3>
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;"><code>search</code> refuses with <code>INDEX_NOT_READY</code></h3>
 
           <div class="terminal terminal--output">
             <div class="terminal-bar"><span class="terminal-label">Error</span></div>
-            <div class="terminal-body"><pre><span class="dim">Traceback (most recent call last):</span>
-<span class="dim">  ...</span>
-<span class="warn">recall.trust_policy.TrustRefusal: INDEX_NOT_READY: refused in strict trust mode (tenant='default', generation=None, calibration_status='missing')</span></pre></div>
+            <div class="terminal-body"><pre><span class="warn">INDEX_NOT_READY: refused in strict trust mode.</span>
+
+<span class="line">No trustworthy decision was possible: this tenant has no active, usable</span>
+<span class="line">generation, so the trust gate never ran. Build and promote a generation,</span>
+<span class="line">then retry.</span>
+
+<span class="dim">  tenant             default</span>
+<span class="dim">  generation         -</span>
+<span class="dim">  calibration status missing</span></pre></div>
           </div>
+
+          <p>Up to and including RE-call 0.10.0 this arrived as a Python traceback ending in <code>recall.trust_policy.TrustRefusal: INDEX_NOT_READY</code>. Same cause, same remedy — a traceback here was the gate working, not a crash, which is exactly what it failed to convey. If you are on an older version and see the traceback form, read it as the message above.</p>
 
           <div class="notice notice--signal">
             <p class="notice-title">This is the most common failure in the whole install</p>
