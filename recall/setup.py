@@ -1003,13 +1003,45 @@ def _update_markdown_block(path: Path, begin: str, end: str, content: str) -> No
 
 
 def _claude_md_block() -> str:
+    """The standing instruction written into the project's `CLAUDE.md`.
+
+    ⚠️ **The wording of the search rule is measured, not stylistic.** This block used to say
+    "call `recall_search` before proposing an idea, forming a hypothesis, or repeating past
+    work", which is *goal* vocabulary, and run `agent-ab-skill-001` (54 pairs, 2026-08-23) showed
+    goal vocabulary is the framing whose misses were recorded: an agent asked about the task it
+    was doing while the memo that would have saved it was written about the failure, and neither
+    query retrieved the other. Searching for the OPERATION moved the governing-memo rate to 0.674
+    from 0.319 (p = 0.0006).
+
+    RE-call ships this instruction through four channels (this block, the `SessionStart` digest
+    in `recall_hooks`, the `check-memory-before-acting` skill, and the plugin's commands), and
+    until 2026-08-25 two of them taught the losing framing while one taught the winning one. So
+    the model was carrying a standing instruction to do the thing that does not work, injected
+    before every first turn, and the skill had to overcome it rather than merely be read.
+
+    Whether unifying them is worth anything *measurable* is a separate question and is
+    pre-registered rather than assumed:
+    `docs/preregistrations/2026-08-25-instruction-channel-unification.md` predicts it plausibly
+    null. Removing a standing instruction to use the vocabulary that provably does not retrieve is
+    correct on the evidence already in hand either way.
+    """
     return (
         "## Using recall\n"
         "\n"
-        "This project is indexed by recall. Call `recall_search` before proposing an idea, "
-        "forming a hypothesis, or repeating past work. If a closed decision or falsified "
+        "This project is indexed by recall: decisions and hazards earlier sessions paid for, which "
+        "are not derivable from the code. Call `recall_search` **before your first file edit or "
+        "state-changing command**, not after something breaks. If a closed decision or falsified "
         "hypothesis surfaces, do not re-litigate it.\n"
         "\n"
+        "- Search for the **operations** you are about to perform, not for your goal. A memo about "
+        "a failure is written in the failure's vocabulary, so a query about your intention will "
+        "not match it: not `add a dependency` but `lockfile conflict`, `pip install breaks the "
+        "build`. Name the tools, file types and commands the work will actually touch, and what "
+        "each does when it goes wrong.\n"
+        "- Two or three short queries with different words beat one long one. Symptom words, error "
+        "text and file names retrieve well; a sentence describing your plan does not. An empty "
+        "result is evidence about the query, not about the store. Reword once before concluding "
+        "the project has no opinion.\n"
         "- When `abstained` is true, no hit survived the trust gate (or `decision: abstain` from "
         "`recall_evidence`) — say you do not know instead of answering from degraded hits.\n"
         "- Use `recall_evidence` instead of `recall_search` when about to answer from memory "

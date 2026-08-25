@@ -213,8 +213,17 @@ does not keep the corpus current. `recall setup` also offers three hooks, writte
 | Event | What it does | Why there |
 |---|---|---|
 | `SessionStart` | Injects a one-line digest naming the indexed chunk count and the standing instruction | The only event that can add context before the first turn |
-| `PreCompact` | Indexes `memory/` | Compaction is where a long session loses the detail behind its conclusions |
-| `SessionEnd` | Indexes `memory/` and refreshes the cached count | Closes the write-to-searchable loop |
+| `PreCompact` | Indexes the project's memory stores | Compaction is where a long session loses the detail behind its conclusions |
+| `SessionEnd` | Indexes the project's memory stores and refreshes the cached count | Closes the write-to-searchable loop |
+
+"Memory stores" is plural since 2026-08-25, and the plural is the fix rather than a flourish. Two
+conventions exist and different things write them: `<project>/memory/`, which `recall setup`
+scaffolds, and `~/.claude/projects/<slug>/memory/`, which is where Claude Code's own memory feature
+puts what the model writes down. Only the first was ever read, so on any project using the client's
+store, **including recall's own, which has no in-repo `memory/` at all**, these two hooks indexed
+nothing and reported nothing. A session opened in a git worktree resolves to the main checkout's
+store, because the client keys its store on the directory the session opened in and a worktree
+otherwise gets a slug of its own with nothing behind it.
 
 Three properties are deliberate and worth knowing before you edit them:
 
@@ -227,11 +236,35 @@ Three properties are deliberate and worth knowing before you edit them:
 - **They run out of `recall_hooks`, not `recall`.** Importing the `recall` package costs about a
   second, and a session-start hook pays that on every launch.
 
+A fourth property, added at the same time: **a hook that cannot reach the database says so on
+stderr instead of serving its cached count in silence.** That sounds cosmetic and is not. A DSN
+that never resolves is permanent rather than transient, so the count sticks at the zero the
+installer wrote, `SessionStart` then emits nothing, and the integration becomes indistinguishable
+from one that was never installed. It stayed that way on the author's own machine, unnoticed, until
+2026-08-25. The hook config gained a `status` field recording which of `ok`, `unreachable` or
+`refused` produced the number in front of you.
+
 The hooks are removable exactly, without disturbing anything else in the file:
 
 ```bash
 python -c "from recall.claude_code import uninstall; uninstall()"
 ```
+
+### Two commands, for the halves a hook structurally cannot do
+
+These ship with the **plugin** rather than with `recall setup`, because a plugin namespaces them
+(`/recall:session-open`) while a user-level command would land on the bare names `/session-open`
+and `/session-close` and silently replace whatever you already had there.
+
+| Command | The gap it fills |
+|---|---|
+| `/recall:session-open` | `SessionStart` carries no user prompt, so it can announce the corpus but has no query to search it with. A command has your own words, so it can decompose the work into operations and search for each one's failure. |
+| `/recall:session-close` | The hooks index whatever is in the memory store. **Nothing makes anything be there.** This is the half that decides whether memory compounds or decays. |
+
+`session-close` collects the three validity keys while you still know the answers, which is the
+point: measured 2026-08-19, **zero of 152 memos** in recall's own store declared `valid_from`,
+`valid_until` or `supersedes`. A corpus like that is one where the trust layer can only ever return
+`ok`, which is this product's headline feature switched off.
 
 ## 5. Configure your project's memory files
 

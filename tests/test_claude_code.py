@@ -50,6 +50,32 @@ def never_touch_the_real_client_config(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "client-config"))
 
 
+def test_nothing_installs_a_command_into_the_users_own_command_directory(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """⛔ `/session-open` and `/session-close` are ordinary names somebody already owns.
+
+    The plugin namespaces its commands (`/recall:session-open`). A user-level command is a bare
+    file in `~/.claude/commands/`, so installing the same two files there would land on
+    `/session-open` and `/session-close` and silently replace whatever was already at those names.
+    The author's own machine carried unrelated commands at exactly both, checked 2026-08-25.
+
+    This asserts the absence, because the failure it guards against is a future convenience: an
+    installer that "also installs the commands, for symmetry with the skill". Read
+    `claude_code.COMMANDS_ARE_PLUGIN_ONLY` before deleting this test.
+    """
+    source = claude_code.plugin_skill_source()
+    if source is None:
+        pytest.skip("running from a wheel, where plugin/ is not shipped")
+    claude_code.install_hooks(
+        dsn="postgresql://u:p@h/db", path=tmp_path / "settings.json", print_fn=lambda *a: None
+    )
+    claude_code.install_user_skill(source, print_fn=lambda *a: None)
+
+    commands = claude_code.claude_config_home() / "commands"
+    assert not commands.exists(), f"a command was installed at user scope: {list(commands.rglob('*'))}"
+
+
 def _user_settings() -> dict[str, Any]:
     """A settings document with the user's own work in it, including inside our own event."""
     return {

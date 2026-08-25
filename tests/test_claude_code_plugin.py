@@ -222,6 +222,94 @@ def test_every_skill_has_a_description_so_the_model_can_invoke_it() -> None:
         assert re.search(r"^description:\s*\S", frontmatter, re.M), f"{skill.parent.name} has none"
 
 
+def test_the_session_commands_are_shipped() -> None:
+    """The half of the loop the hooks cannot do.
+
+    `SessionEnd` and `PreCompact` index whatever is in the memory store, and nothing makes
+    anything be there. `SessionStart` carries no user prompt, so it can announce the corpus but
+    cannot search it. Both gaps need a command, because a command is the only surface here that
+    has the user's own words to work from.
+    """
+    for name in ("session-open", "session-close"):
+        assert (PLUGIN / "commands" / f"{name}.md").is_file(), f"{name} is not shipped"
+
+
+def test_every_command_has_a_description_so_it_appears_in_the_menu() -> None:
+    """Same failure as a skill with no description: it exists and nobody finds it."""
+    commands = sorted((PLUGIN / "commands").glob("*.md"))
+    assert commands, "the plugin ships no commands"
+
+    for command in commands:
+        text = command.read_text(encoding="utf-8")
+        assert text.startswith("---\n"), f"{command.name} has no frontmatter"
+        frontmatter = text.split("---", 2)[1]
+        assert re.search(r"^description:\s*\S", frontmatter, re.M), f"{command.stem} has none"
+
+
+def test_the_commands_only_name_tools_the_server_actually_exposes() -> None:
+    """⚠️ A command naming a tool that does not exist fails at the worst possible moment.
+
+    Nothing validates a prompt's references, so `recall_remember` would read perfectly, ship, and
+    be discovered only when a user runs the command and the model reaches for a tool that is not
+    there. The tool names are read off the server rather than listed here, so a rename on either
+    side is caught from whichever side moves.
+    """
+    import ast
+    import inspect
+
+    from recall_mcp import server
+
+    # Read the `@mcp.tool(name=...)` declarations rather than the module namespace: the tools are
+    # defined inside a factory function, so they are not module attributes and `dir()` sees none
+    # of them. Importing is not enough either, since registering them means constructing a server.
+    tree = ast.parse(inspect.getsource(server))
+    exposed = {
+        keyword.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "name"
+        and isinstance(keyword.value, ast.Constant)
+        and isinstance(keyword.value.value, str)
+        and keyword.value.value.startswith("recall_")
+    }
+    assert "recall_search" in exposed, "the server surface could not be read"
+
+    for command in sorted((PLUGIN / "commands").glob("*.md")):
+        named = set(re.findall(r"`(recall_[a-z_]+)`", command.read_text(encoding="utf-8")))
+        unknown = sorted(named - exposed)
+        assert not unknown, f"{command.stem} names tools that do not exist: {unknown}"
+
+
+def test_the_commands_teach_operation_vocabulary_rather_than_goal_vocabulary() -> None:
+    """The one instruction in this product whose wording is measured rather than styled.
+
+    Run `agent-ab-skill-001` (54 pairs, 2026-08-23) put the governing-memo rate at 0.674 against
+    0.319 for the goal framing. A command that quietly reverts to "search before proposing an
+    idea" would undo that without failing anything else.
+    Pre-registration: `docs/preregistrations/2026-08-25-instruction-channel-unification.md`.
+    """
+    text = (PLUGIN / "commands" / "session-open.md").read_text(encoding="utf-8")
+
+    assert "operations" in text
+    assert "Do not search for the goal" in text
+    assert "proposing an idea" not in text
+
+
+def test_session_close_teaches_the_validity_keys_the_trust_layer_reads() -> None:
+    """Measured 2026-08-19: zero of 152 memos in recall's own store declared any of them.
+
+    A corpus whose memos carry no validity keys is one where the trust layer can only ever return
+    `ok`, which is the shipped feature switched off. A close command that collects prose without
+    the frontmatter would keep producing exactly that corpus.
+    """
+    text = (PLUGIN / "commands" / "session-close.md").read_text(encoding="utf-8")
+
+    for key in ("valid_from", "valid_until", "supersedes"):
+        assert key in text, f"session-close never mentions {key}"
+    assert "do not edit it, and do not delete it" in text.lower()
+
+
 def test_the_mcp_server_env_keys_are_ones_recall_actually_reads() -> None:
     """A renamed variable would leave the server on its defaults rather than erroring.
 

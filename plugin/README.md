@@ -51,6 +51,25 @@ memory as a tool.
 | `PreCompact` | Saves memory before a compaction discards the detail behind it |
 | `SessionEnd` | Indexes the session so the next one can find it |
 
+A hook that cannot reach the database says so on stderr rather than serving its cached count in
+silence. That sounds like a detail and is not: a DSN that never resolves sticks the count at the
+zero the installer wrote, the digest then emits nothing, and the integration becomes
+indistinguishable from one that was never installed. It stayed that way on the author's own
+machine until 2026-08-25.
+
+**Two commands**, which do the halves the hooks structurally cannot:
+
+| Command | Why a hook cannot do it |
+|---|---|
+| `/recall:session-open` | `SessionStart` carries no user prompt, so it can announce the corpus but has no query to search it with. A command has your own words. |
+| `/recall:session-close` | The hooks index whatever is in the memory store. Nothing makes anything *be* there. |
+
+`session-close` is the one that decides whether memory compounds or decays, and it exists because
+of a measurement: on 2026-08-19, **zero of 152 memos** in recall's own store declared any of the
+three validity keys the trust layer reads. A corpus like that is one where the trust layer can only
+ever return `ok`, which is the shipped feature switched off. The command collects the keys while
+the author still knows the answers.
+
 **A skill**, `check-memory-before-acting`, which teaches Claude *when* to search and, more
 importantly, *how*. That second half is not decoration: measured over 54 paired sessions, the
 memory layer eliminated a class of known hazard when the relevant memo reached the agent, and

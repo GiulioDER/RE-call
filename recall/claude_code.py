@@ -257,6 +257,23 @@ def user_skill_dir() -> Path:
     return claude_config_home() / "skills"
 
 
+#: ⛔ The plugin's commands are deliberately NOT installed the way the skill is, and this is a
+#: decision rather than an omission.
+#:
+#: A plugin's commands are namespaced by the plugin (`/recall:session-open`). A user-level command
+#: is a bare file in `~/.claude/commands/`, so the same two files would install as `/session-open`
+#: and `/session-close` and **silently replace whatever the user already had under those names**.
+#: Those are ordinary names: the author's own machine carries unrelated commands at exactly both
+#: of them, checked 2026-08-25. A memory tool that overwrites a person's session workflow to
+#: advertise itself has done more damage than the feature is worth.
+#:
+#: Renaming them on the way in (`recall-session-open`) would avoid the collision and cost more
+#: than it saves: the docs, the plugin and the README would then name a command that does not
+#: exist for half the users. So commands arrive with the plugin or not at all, and the wizard
+#: prints `PLUGIN_INSTALL_LINES` for anyone who wants them.
+COMMANDS_ARE_PLUGIN_ONLY = True
+
+
 def install_user_skill(
     source: Path,
     *,

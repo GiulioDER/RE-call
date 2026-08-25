@@ -55,6 +55,19 @@ def config_path() -> Path:
     return claude_config_home() / HOOK_CONFIG_NAME
 
 
+def _warn(message: str) -> None:
+    """Say something once, to stderr, and never let saying it become the failure.
+
+    Every path in this module fails open, and a fail-open path that crashes because it tried to
+    warn is worse than the silence it was trying to break. On a daemonised host stderr may be
+    closed outright, so even `print` is guarded.
+    """
+    try:
+        print(f"recall-hooks: {message}", file=sys.stderr)
+    except Exception:
+        pass
+
+
 def load_config() -> dict[str, Any]:
     path = config_path()
     if not path.exists():
@@ -91,9 +104,22 @@ def refresh_stats(config: dict[str, Any] | None = None) -> int:
         )
         try:
             connection = psycopg.connect(dsn, connect_timeout=3)
-        except Exception:
-            # CONNECT failed: the database is down or unreachable, which is transient by
-            # nature. Fail open with the cached count — the documented behaviour.
+        except Exception as exc:
+            # CONNECT failed: the database is down or unreachable. Transient by nature, so still
+            # fail open with the cached count, but SAY SO, and record it.
+            #
+            # This path used to be the silent one, and silence here is the worst outcome
+            # available: a DSN that never resolves (a placeholder left in the config, a container
+            # nobody starts, a renamed host) makes the count stick at whatever it was, which for a
+            # fresh install is the 0 the installer wrote. `session_start` then emits nothing, and
+            # the whole integration is indistinguishable from one that was never installed.
+            # Measured 2026-08-25 on the author's own machine, where exactly that had happened:
+            # `postgresql://example/recall`, `chunks: 0`, no diagnostic anywhere.
+            _warn(
+                f"cannot reach the database ({type(exc).__name__}); serving the cached count of "
+                f"{int(config.get('chunks', 0) or 0)}. Check the dsn in {config_path()}"
+            )
+            _remember(config, status="unreachable")
             return int(config.get("chunks", 0) or 0)
         with connection as conn:
             row = conn.execute(statement, (str(config.get("tenant", "default")),)).fetchone()
@@ -106,18 +132,27 @@ def refresh_stats(config: dict[str, Any] | None = None) -> int:
         # goes; a silent stale number was the audited defect here. The print itself is
         # guarded: on a daemonised host stderr may be closed, and a fail-open path must not
         # turn into a crash because it tried to warn.
-        try:
-            print(
-                f"recall-hooks: chunk count query refused ({type(exc).__name__}); "
-                f"the cached figure may be stale until the config is fixed",
-                file=sys.stderr,
-            )
-        except Exception:
-            pass
+        _warn(
+            f"chunk count query refused ({type(exc).__name__}); "
+            f"the cached figure may be stale until the config is fixed"
+        )
+        _remember(config, status="refused")
         return int(config.get("chunks", 0) or 0)
 
-    _save_config({**config, "chunks": count})
+    _save_config({**config, "chunks": count, "status": "ok"})
     return count
+
+
+def _remember(config: dict[str, Any], *, status: str) -> None:
+    """Record why the count could not be taken, without disturbing the count itself.
+
+    Separate from the success path's write because the two carry opposite information: one is a
+    fresh measurement, the other is a reason the measurement is stale. Writing `chunks` here would
+    quietly re-stamp a stale number as current.
+    """
+    if config.get("status") == status:
+        return  # nothing new to say; do not rewrite the file on every failed session
+    _save_config({**config, "status": status})
 
 
 def _save_config(config: dict[str, Any]) -> None:
@@ -168,14 +203,33 @@ def session_start(payload: dict[str, Any]) -> int:
     A digest and not a retrieval, deliberately. `SessionStart` carries no user prompt, so there is
     no query to retrieve against, and a similarity search with nothing to be similar to returns
     whatever happens to be nearest. The event that has a query is `UserPromptSubmit`, and that is
-    where per-turn retrieval belongs once this is proven out.
+    where per-turn retrieval belongs once this is proven out. The user-invoked version of the
+    retrieval this cannot do is the plugin's `/recall:session-open` command, which has the user's
+    own words to search with.
 
     Fails open, always: a hook that runs before every session must never be the reason Claude does
     not start, so anything unexpected is silence and exit 0.
+
+    **Two output channels, and they carry different things.** `additionalContext` on stdout is
+    charged to the model's context, so only a corpus worth searching goes there. A store that is
+    configured and cannot be reached goes to stderr instead: the user needs to know, the model does
+    not, and a broken memory tool that spends context complaining about itself has made the session
+    worse in exactly the way it was installed to avoid.
     """
     config = load_config()
     count = int(config.get("chunks", 0) or 0)
     if not count:
+        # Nothing to advertise. Two very different reasons land here, and only one of them is
+        # ordinary: an empty corpus, or a corpus this hook has never been able to reach. Say which
+        # on stderr rather than in `additionalContext`, because a broken memory tool must not
+        # spend the model's context complaining about itself, and hook stderr is where a user
+        # looking for the answer will actually find it.
+        if config.get("dsn") and config.get("status") in {"unreachable", "refused"}:
+            _warn(
+                f"memory is configured but the last count could not be taken "
+                f"({config.get('status')}), so nothing was injected this session. "
+                f"Check the dsn in {config_path()}"
+            )
         return 0
     cwd = str(payload.get("cwd", ""))
     project = Path(cwd).name if cwd else "this project"
@@ -184,11 +238,16 @@ def session_start(payload: dict[str, Any]) -> int:
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
                 "additionalContext": (
-                    f"RE-call memory is available for {project}: {count} indexed chunks. "
-                    "Call `recall_search` before proposing an idea, forming a hypothesis, or "
-                    "repeating past work, and treat an `abstained: true` result as 'no supported "
-                    "answer' rather than as an empty one. This corpus is uncalibrated, so trust "
-                    "thresholds are defaults rather than fitted to it."
+                    f"RE-call memory is available for {project}: {count} indexed chunks of "
+                    "decisions and hazards earlier sessions paid for. Search it with "
+                    "`recall_search` BEFORE your first file edit or state-changing command, and "
+                    "search for the OPERATIONS you are about to perform rather than for your "
+                    "goal: a memo about a failure is written in the failure's vocabulary, so "
+                    "'pip install breaks the build' retrieves what 'add a dependency' does not. "
+                    "Two or three short queries with different words beat one long one. Treat "
+                    "`abstained: true` as 'no supported answer' rather than as an empty one, and "
+                    "a `superseded` verdict as a retraction to follow rather than a claim to act "
+                    "on."
                 ),
             }
         },
@@ -197,8 +256,165 @@ def session_start(payload: dict[str, Any]) -> int:
     return 0
 
 
+def _claude_project_slug(path: Path) -> str:
+    r"""Claude Code's own encoding of a project path into a directory name under `projects/`.
+
+    Every character that is not an ASCII letter or digit becomes `-`, so `C:\Users\me\proj`
+    becomes `C--Users-me-proj`.
+
+    ⚠️ Derived from the directories the client had already written on this machine (1,755 of them,
+    read 2026-08-25) rather than from any documented contract. That is why every caller treats a
+    miss as "no such store" rather than as an error: if the client ever changes the encoding, this
+    resolves to a directory that does not exist, and the hook behaves exactly as it did before
+    this function was written. Re-check the encoding against reality with:
+
+    ```bash
+    ls ~/.claude/projects | head
+    ```
+    """
+    return "".join(
+        ch if ("a" <= ch <= "z" or "A" <= ch <= "Z" or "0" <= ch <= "9") else "-"
+        for ch in str(path)
+    )
+
+
+def _worktree_parent(cwd: Path) -> Path | None:
+    r"""The main checkout behind a git worktree, read from `.git` rather than by running git.
+
+    In a worktree, `.git` is a FILE holding `gitdir: <main>/.git/worktrees/<name>`. This matters
+    because Claude Code keys its memory store on the directory the session opened in: a session in
+    a worktree gets a slug of its own with nothing behind it, while the project's real store sits
+    under the MAIN checkout's slug. Without this, the case that matters most indexes nothing, since
+    an agent working in a worktree is the normal arrangement here rather than an exotic one.
+
+    No subprocess: this runs on every session end, and `git rev-parse` costs more than reading one
+    small file. Anything unexpected in that file returns None, which degrades to "not a worktree".
+    """
+    marker = cwd / ".git"
+    try:
+        if not marker.is_file():
+            return None
+        raw = marker.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not raw.startswith("gitdir:"):
+        return None
+    gitdir = raw[len("gitdir:") :].strip().replace("\\", "/")
+    head, separator, _ = gitdir.partition("/.git/worktrees/")
+    if not separator or not head:
+        return None
+    return Path(head)
+
+
+def _memory_directories(cwd: Path) -> list[Path]:
+    """Every memory store this session could plausibly have written to, in preference order.
+
+    Two conventions, and the hook has to serve both because different things write them:
+
+    - `<project>/memory/`, which is what `recall setup` scaffolds and what the `CLAUDE.md` block
+      tells the agent to write into.
+    - `~/.claude/projects/<slug>/memory/`, which is where Claude Code's own memory feature puts
+      what the model writes down. Nothing in recall creates it, and on a machine using that
+      feature it is where the memos actually accumulate.
+
+    Only the first was ever consulted, so on any project using the client's store,
+    including recall's own, which has no in-repo `memory/` at all, `SessionEnd` and `PreCompact` indexed
+    nothing and said nothing. A directory that does not exist is dropped rather than reported,
+    because "this project does not use that convention" is the common case rather than a fault.
+    """
+    roots = [cwd]
+    parent = _worktree_parent(cwd)
+    if parent is not None:
+        roots.append(parent)
+    projects = claude_config_home() / "projects"
+    candidates = [cwd / "memory"]
+    candidates += [projects / _claude_project_slug(root) / "memory" for root in roots]
+    seen: set[str] = set()
+    found: list[Path] = []
+    for candidate in candidates:
+        # Case-insensitive on Windows, where one store is reachable under several spellings and
+        # indexing it twice is wasted work rather than a correctness problem.
+        key = str(candidate).lower() if os.name == "nt" else str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if candidate.is_dir():
+                found.append(candidate)
+        except OSError:
+            continue
+    return found
+
+
+def _declared_embedder(cwd: Path) -> str | None:
+    """What the PROJECT says its embedder is, from the environment or its own `.env`.
+
+    The hook config records an embedder once, at install, and never reconciles it. That is fine
+    until the project changes model, at which point the hook keeps indexing with the old one while
+    `recall index` from the CLI uses the new one, and the tenant ends up holding vectors from two
+    models at once.
+
+    ⛔ Nothing raises when that happens. `bge-large`, `voyage-3` and `voyage-4` all emit 1024
+    dimensions, so pgvector computes a cosine between them happily and returns a confidently
+    ranked list that means nothing. **A dimension match is not a model match**, and the legacy
+    `chunks` table this hook writes to records no profile to check against.
+
+    Parsed here rather than through `recall._env` so the rule stays one function: take the first
+    assignment, strip one layer of matching quotes, ignore comments. Anything else returns None
+    and the recorded value stands.
+    """
+    from_env = os.environ.get("RECALL_EMBEDDER", "").strip()
+    if from_env:
+        return from_env
+    roots = [cwd]
+    parent = _worktree_parent(cwd)
+    if parent is not None:
+        roots.append(parent)
+    for root in roots:
+        try:
+            lines = (root / ".env").read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            key, separator, raw = line.partition("=")
+            # Compare the KEY exactly, not a prefix of the line, and note that this one comparison
+            # does two jobs. `RECALL_EMBEDDER_EXTRA=x` is a different variable, and the first
+            # version of this read it as a declaration; a commented `# RECALL_EMBEDDER=x` yields
+            # the key `# RECALL_EMBEDDER`, which is equally unequal. There was a separate
+            # `startswith("#")` skip here and it was removed rather than kept: no mutation of it
+            # could make a test fail, because the exact comparison already rejects every comment
+            # form, and unfalsifiable defensive code reads as a guard while guarding nothing.
+            if not separator or key.strip() != "RECALL_EMBEDDER":
+                continue
+            value = raw.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            if value:
+                return value
+    return None
+
+
+def _embedder_for(config: dict[str, Any], cwd: Path) -> str:
+    """The embedder to index with, preferring the project's own declaration over the recorded one.
+
+    The project wins because `recall index` from the CLI reads the same declaration: agreeing with
+    it is what keeps one tenant from being written by two models. The disagreement is reported
+    every time rather than once, because it stays wrong until somebody re-runs the installer.
+    """
+    recorded = str(config.get("embedder", "fastembed"))
+    declared = _declared_embedder(cwd)
+    if declared and declared != recorded:
+        _warn(
+            f"this project declares RECALL_EMBEDDER={declared} but the hook config records "
+            f"{recorded}; indexing with {declared} to agree with the CLI. Re-run `recall setup` "
+            f"to update {config_path()}"
+        )
+        return declared
+    return recorded
+
+
 def _index_and_refresh(payload: dict[str, Any]) -> int:
-    """Index this project's `memory/` and refresh the cached count. Never raises.
+    """Index this project's memory stores and refresh the cached count. Never raises.
 
     Shared by `SessionEnd` and `PreCompact`, which want the same thing at different moments: make
     whatever the session wrote down searchable, and leave an accurate count behind.
@@ -208,19 +424,35 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
     cwd = payload.get("cwd")
     if not dsn or not cwd:
         return 0
-    memory_dir = Path(str(cwd)) / "memory"
-    if memory_dir.is_dir():
+    embedder = _embedder_for(config, Path(str(cwd)))
+    for memory_dir in _memory_directories(Path(str(cwd))):
         try:
             from recall.setup import index_memory_directory
 
             index_memory_directory(
                 dsn=str(dsn),
-                embedder_name=str(config.get("embedder", "fastembed")),
+                embedder_name=embedder,
                 memory_dir=memory_dir,
-                print_fn=lambda *args, **kwargs: None,
+                # ⛔ These two were omitted, so the hook wrote to `DEFAULT_TENANT` and
+                # `DEFAULT_TABLE` no matter what the user configured, while `refresh_stats`
+                # counted the CONFIGURED tenant. A store set up with `tenant: memory` therefore
+                # had its memos written where nothing looks for them and its count read 0 forever:
+                # an index that reports success and lands somewhere else. The same defect is
+                # recorded in `index_memory_directory`'s own docstring as already fixed for its
+                # other callers. This caller never passed them.
+                tenant=str(config.get("tenant", "default")),
+                table=str(config.get("table", "chunks")),
+                # Not a discarding lambda. `index_memory_directory` catches its own exceptions and
+                # explains them through `print_fn`, so discarding it made every indexing failure
+                # silent, including the one that says the schema is applied for a different
+                # embedder's dimension, the failure most likely to happen here.
+                print_fn=lambda *args, **kwargs: _warn(" ".join(str(a) for a in args)),
             )
-        except Exception:
-            return 0
+        except Exception as exc:
+            # The import itself, or an argument this version of `recall` does not accept. Warn and
+            # try the next store rather than abandoning the refresh: a second store may index
+            # fine, and the count is worth taking either way.
+            _warn(f"could not index {memory_dir} ({type(exc).__name__})")
     refresh_stats(config)
     return 0
 
