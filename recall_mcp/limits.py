@@ -34,6 +34,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from mcp.server.mcpserver.exceptions import ToolError
 from recall.observability import get_logger
 from recall.errors import RecallError
 
@@ -66,8 +67,14 @@ _SECONDS_PER_HOUR = 3600.0
 OFF = "off"
 
 
-class RateLimited(RuntimeError, RecallError):
-    """A tenant exceeded its budget. Carries the wait so a caller can be told when to retry."""
+class RateLimited(RuntimeError, ToolError, RecallError):
+    """A tenant exceeded its budget and the MCP client should receive the retry guidance.
+
+    `ToolError` is an MCP transport classification, not a change to the domain contract. Keeping
+    `RuntimeError` first preserves existing callers that catch the historical builtin, while the
+    `ToolError` base prevents MCP 2.1 from redacting this anticipated, actionable refusal as an
+    unexpected tool crash.
+    """
 
     def __init__(self, message: str, *, retry_after_seconds: float) -> None:
         super().__init__(message)

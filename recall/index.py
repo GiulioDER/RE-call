@@ -822,6 +822,14 @@ class Indexer:
                 content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
             else:
                 content_hash = hashlib.sha256(source_bytes).hexdigest()
+            # Empty source files are valid corpus members but have no searchable content. Treat
+            # them as a zero chunk replacement so an empty file cannot abort a whole refresh, and
+            # so rows from a previously non-empty version are removed rather than left stale.
+            if not source_bytes.replace(b"\x00", b"").strip():
+                pending_sources.append(str(f))
+                indexed += 1
+                _log.info("indexed empty source %s as zero chunks", f)
+                continue
             # What the FINGERPRINT is derived from, which is not always what is stored: a file
             # whose leading `---` stopped being read as a fence has the same bytes and a bigger
             # body. See `_body_derivation_hash`.

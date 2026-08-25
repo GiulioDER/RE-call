@@ -38,6 +38,22 @@ def test_parse_frontmatter_extracts_keys_and_strips_block():
     assert "color" not in meta  # unknown keys ignored
 
 
+def test_parse_frontmatter_extracts_the_namespaced_graph_annotation():
+    meta, body = parse_frontmatter(
+        '---\nrecall_graph: {"entities":[{"name":"API","kind":"service"}]}\n---\nbody\n'
+    )
+    assert meta["recall_graph"] == {
+        "entities": [{"name": "API", "kind": "service"}]
+    }
+    assert body == "body\n"
+
+
+def test_malformed_graph_annotation_stays_visible_for_a_diagnostic():
+    meta, body = parse_frontmatter("---\nrecall_graph: not-json\n---\nbody\n")
+    assert meta["recall_graph"] == {"__parse_error__": "recall_graph must be one-line JSON"}
+    assert body == "body\n"
+
+
 def test_no_frontmatter_returns_empty_meta_and_full_text():
     text = "# Just a doc\n\nNo block here."
     assert parse_frontmatter(text) == ({}, text)

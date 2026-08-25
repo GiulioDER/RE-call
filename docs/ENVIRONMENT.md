@@ -140,6 +140,7 @@ OPENROUTER_API_KEY=
 # LOCAL profiles, from a provisioned artifact tree (set RECALL_EMBEDDER=fastembed):
 #   bge-small-symmetric-v1, bge-small-asymmetric-v1, bge-small-context-document-v1,
 #   bge-small-context-section-v1, bge-small-context-neighbor-v1,
+#   bge-large-symmetric-v1, bge-large-asymmetric-v1, bge-large-context-section-v1,
 # and qwen3-embedding-0.6b-384-v1, which is registered and REJECTED on CPU serving latency
 # (docs/ENTERPRISE_RETRIEVAL.md records the measurement). Selecting it logs a warning.
 # RECALL_MODEL_SHA256 is the SHA256 of the whole provisioned artifact tree. It is verified before
@@ -168,6 +169,15 @@ RECALL_EMBED_PROFILE=
 RECALL_MODEL_CACHE=
 RECALL_MODEL_SHA256=
 RECALL_QWEN_MODEL_PATH=
+
+# `RECALL_EMBED_PROFILE` is consumed consistently by the CLI, MCP service, setup, calibration,
+# and generation builders. Selecting a section profile changes the passage sent to the embedder
+# while leaving stored evidence text unchanged. The 384-dimensional BGE-small profile is useful on
+# a 384-dimensional schema; VPS2's current 1024-dimensional schema must use
+# `bge-large-context-section-v1`. Either profile requires a new generation, reindexing the corpus,
+# and independent profile-specific calibration. No database schema migration is required when the
+# selected profile matches the installed vector dimension; profile and heading metadata are stored
+# in JSONB.
 
 # Fixed service cost profile. Run separate processes for fast, quality, and code traffic; a client
 # cannot select the expensive path per request. Leaving this unset keeps the pre-profile

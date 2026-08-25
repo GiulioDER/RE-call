@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from recall.calibration import best_threshold
+from recall.context import context_policy_for_profile
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.eval.metrics import false_confident_rate, fraction_true
 from recall.index import Indexer
@@ -136,7 +137,11 @@ def calibrate(
     store = PgVectorStore(dsn, dim=embedder.dim, table=table)
     try:
         store.ensure_schema()
-        Indexer(store, embedder).index_path(corpus_dir)
+        Indexer(
+            store,
+            embedder,
+            context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+        ).index_path(corpus_dir)
         ans, unans = measure_top_cosines(store, embedder, queries)
     finally:
         try:

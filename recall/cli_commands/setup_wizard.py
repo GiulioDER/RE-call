@@ -6,6 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from recall.context import context_policy_for_profile
+from recall.embeddings import embedding_profile_id
 from recall.index import Indexer
 from recall.store import (
     DEFAULT_TABLE,
@@ -253,7 +255,11 @@ def _quickstart(args: argparse.Namespace) -> None:
         dsn, dim=embedder.dim, table=QUICKSTART_TABLE, tenant=QUICKSTART_TENANT
     ) as store:
         store.check_schema()
-        stats = Indexer(store, embedder).index_path(demo_corpus())
+        stats = Indexer(
+            store,
+            embedder,
+            context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+        ).index_path(demo_corpus())
         # ⚠️ Report what the STORE holds, not only what this run wrote. Re-indexing skips a file
         # whose content hash is unchanged, so the second run of the quickstart wrote nothing and
         # printed "indexed 0 chunks from 0 files", which reads as a failed index rather than as a

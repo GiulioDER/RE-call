@@ -34,6 +34,7 @@ EXPECTED_IDS = (
     "bge-base-symmetric-v1",
     "bge-large-symmetric-v1",
     "bge-large-asymmetric-v1",
+    "bge-large-context-section-v1",
     "minilm-l6-symmetric-v1",
     "minilm-multilingual-symmetric-v1",
     "arctic-embed-xs-symmetric-v1",
@@ -115,6 +116,18 @@ def test_the_registry_carries_the_whole_identity_of_a_profile() -> None:
     assert entry.backend == "fastembed"
     # Operator-provisioned: the digest is a property of the deployment's artifact tree, not of
     # the profile, so the registry declares its absence instead of inventing a value.
+    assert entry.artifact_digest is None
+
+
+def test_bge_large_context_section_profile_matches_vps2_width() -> None:
+    entry = registered_profile("bge-large-context-section-v1")
+    assert entry.model_name == "BAAI/bge-large-en-v1.5"
+    assert entry.dimension == 1024
+    assert entry.query_mode == "query_embed"
+    assert entry.passage_mode == "passage_embed"
+    assert entry.context_mode == "section"
+    assert entry.context_version == "context-section-v1"
+    assert entry.backend == "fastembed"
     assert entry.artifact_digest is None
 
 

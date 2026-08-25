@@ -6,7 +6,7 @@ Status: approved, not yet implemented
 ## Problem
 
 RE-call's model of truth is authored frontmatter, and exactly three keys are recognised
-(`recall/frontmatter.py:17`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
+(`recall/frontmatter.py:21`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
 those and nothing else.
 
 The extraction work being built upstream produces `contradicts` and `same_entity` relations. Those
@@ -36,7 +36,7 @@ document as evidence. That is the whole design.
 
 Not a preference. `structure_chunks` computes offsets with `body.find(text, ...)`
 (`recall/context.py:197`). If `human_body` is a strict prefix of `body`, every offset is identical
-with or without the block, so `text_start` / `text_end` (`recall/index.py:871`) are invariant.
+with or without the block, so `text_start` / `text_end` (`recall/index.py:879`) are invariant.
 Prepending shifts every offset in every chunk of every file that gains a block.
 
 End placement also keeps the block out of `document_title` (`recall/context.py:159`), which reads
@@ -116,7 +116,7 @@ Every rule in `parse_derived_block` is a refusal. The one apparent exception is 
 path *accepts* `deprecated` / `obsolete` and normalises them to `superseded`, because that is a
 proposal's vocabulary arriving at the boundary; the parse path *refuses* a file that literally
 contains them, because that is a file claiming something the grammar does not permit. Accepting on
-the way in and refusing on the way out is the same posture as `recall/fix.py:265` refusing to
+the way in and refusing on the way out is the same posture as `recall/fix.py:266` refusing to
 overwrite what a human wrote.
 
 ### `content_hash` is left alone
@@ -197,9 +197,9 @@ isolation.
 
 | Site | Note |
 |---|---|
-| `recall/index.py:837` | `contextual_passages(raw, body, ...)` keeps taking the unstripped `raw` for `document_title`, which reads frontmatter and the first H1 — both above the block. The `body` argument becomes `human_body`. |
-| `recall/generations.py:718` | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused under `RECALL_ENV=production` via `env_is_production` (`recall/cli_commands/index_search.py:203`), so hooking only the index path leaves the one build path that runs in production uncovered. |
-| `recall/lint.py:177` | The only reader of `derived_text`. |
+| `recall/index.py:926` | `contextual_passages(raw, body, ...)` keeps taking the unstripped `raw` for `document_title`, which reads frontmatter and the first H1 — both above the block. The `body` argument becomes `human_body`. |
+| `recall/generations.py:805` | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused under `RECALL_ENV=production` via `env_is_production` (`recall/cli_commands/index_search.py:205`), so hooking only the index path leaves the one build path that runs in production uncovered. |
+| `recall/lint.py:193` | The only reader of `derived_text`. |
 | `recall/check.py:53` | `_ANY_REF` over the body would otherwise hand the author the machine's own values back as `supersedes:` candidates. |
 | `recall/semantic_lint.py:126` | Fixes the `is_closed_decision` collision: `_DECISION_STATUS` matches `status:\s*superseded`, which is exactly the shape of the block's own `status:` entry. This module reaches the corpus twice — here, and via `Indexer.index_path` at `:138`, which the `index.py` site covers. |
 
