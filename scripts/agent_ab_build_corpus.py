@@ -4,10 +4,12 @@
 
 Six steps, each of which failed the first time in a way worth recording:
 
-1. **Its own database.** The shared `recall-dogfood` corpus serves other sessions' MCP servers,
-   and this build promotes a generation and publishes a calibration, which changes what those
-   servers return. It also uses a database *inside* the session container rather than the
-   container's default one, because the test suite DROPs tables and would take the corpus with it.
+1. **Its own database.** This build promotes a generation and publishes a calibration, which
+   changes what every reader of that corpus returns, so it must never run against a corpus other
+   sessions are served from. It also uses a database *inside* the session container rather than
+   the container's default one, because the test suite DROPs tables and would take the corpus with
+   it. (🔁 2026-08-25: the corpus named here was `recall-dogfood`, which no longer exists; this
+   project's corpora are on VPS2 now. The rule is unchanged, the example was retired.)
 2. **Schema.** `schema apply` refuses the serving DSN for DDL and wants `RECALL_MIGRATION_DSN`.
 3. **Manifest.** `manifest inventory` produces an object list; `generation build` wants the
    canonical manifest object that `manifest create` makes from it. `file://` access also requires

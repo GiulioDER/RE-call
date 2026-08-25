@@ -228,8 +228,22 @@ A privacy erasure changes the effective corpus fingerprint of every affected gen
 immediately makes prior calibration stale, prevents it from being republished, and carries the
 same tombstone-derived fingerprint into replacement generations built from the old manifest.
 
-Strict refusal before returning **corpus text** is still deferred: a missing or stale artifact
-produces a result marked uncalibrated rather than an error.
+🔁 **Corrected 2026-08-25.** This paragraph read *"Strict refusal before returning corpus text is
+still deferred: a missing or stale artifact produces a result marked uncalibrated rather than an
+error."* That was true before `TrustPolicy` landed and has not been true since, and it contradicted
+the section **"Why the refusal happens before retrieval"** forty lines below it in this same
+document. The stale sentence came first, so a reader who stopped there concluded that strict mode
+did not protect them.
+
+**Strict refusal has landed, and it happens before any corpus text is fetched.** The gate sits
+above `retriever.search(...)` in `trusted_search`, so a refusal cannot leak chunk text, source
+names or previews, because none were ever retrieved. `TestStrictRefusesBeforeAnyCorpusRead` in
+`tests/test_strict_trust_search.py` asserts this structurally, with a store whose retrieval methods
+raise if they are reached at all, rather than by inspecting the refusal's message.
+
+What the old sentence described is now **development mode only**: it retrieves, marks the result
+`trust_state=degraded` with `calibrated=false`, and names the reason in `failure_code`. Strict is
+the default for both the library and the MCP service, and omitting a policy cannot open the gate.
 
 Refusal at **promotion** time has landed. For a tenant served under production (see
 `GenerationManager.certification_required`, which reads the serving environment rather than the

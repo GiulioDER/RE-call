@@ -40,14 +40,21 @@ certain is abandoned.
 scripts/session-open.sh
 ```
 
-It is read-only apart from writing `.mcp.json`, and it prints what it found. Do the same three
+It is read-only apart from writing `.mcp.json`, and it prints what it found. Do the same four
 things by hand if you prefer:
 
 1. **Know which branch you are on.** A worktree's directory name is not its branch, and the local
    `master` ref here is routinely stale. Ask git, and diff against `origin/master`, never `master`.
 2. **Generate this checkout's MCP config** with `scripts/session-mcp.sh`, once per checkout.
-3. **Start a database only if you are going to run the DB-backed suite**, with
+3. **Ask the corpus what state it is in** with `scripts/session-corpus.sh status`.
+4. **Start a database only if you are going to run the DB-backed suite**, with
    `eval "$(scripts/session-db.sh up)"`.
+
+⚠️ **Step 3 is new as of 2026-08-25 and it replaces a line that was worse than nothing.** The
+report used to say `.mcp.json present (2 servers)`, which is a statement about a FILE and was read
+as a statement about a CORPUS. It stayed green while both servers pointed at a database that had
+been down for days. A cheap check standing in for an expensive one is not a weaker check, it is a
+misleading one, because nobody re-checks a green line.
 
 ## Close a session
 
@@ -71,8 +78,13 @@ about the code under test. Hours went into debugging tests that were never broke
 | Container | Port | Who owns it | Test suite may use it |
 |---|---|---|---|
 | `recall-sess-<hash>` | 5400 to 5919, on 127.0.0.1 | the checkout that started it | yes, this is the one |
-| `recall-dogfood` | 5433 | shared, long-lived corpus for the `recall` MCP server | **no** |
 | `recall-db-1` | 5432 | shared, from `docker compose up` at the repo root | **no**, demos and manual work only |
+
+🔁 **Corrected 2026-08-25: `recall-dogfood` on 5433 is gone from this table because it is gone.**
+It was listed here as the "shared, long-lived corpus for the `recall` MCP server", and on
+2026-08-25 it was not running, had not been for some time, and was not where this project's
+corpora live. They are on VPS2. Nothing local should be pointed at 5433; see **MCP servers**
+below for what replaced it.
 
 Consequences that follow from the rule:
 
@@ -113,9 +125,11 @@ cd ~/.claude/recall-vps2 && bash sync_memstores.sh     # ship the files
 bash index_memory_vps2.sh                              # embed THERE, under the guards below
 ```
 
-The one local corpus that stays local is the `recall-dogfood` container on port 5433, because its
-database is on this machine and shipping vectors to it from VPS2 would be the same trip backwards.
-It is small, and it is the exception that has to be named out loud rather than assumed.
+🔁 **Corrected 2026-08-25: there is no longer a named local exception.** This paragraph used to
+carve one out for the `recall-dogfood` container on port 5433, on the reasoning that its database
+was on this machine so embedding it on VPS2 would ship the vectors straight back. The reasoning was
+sound and the container is gone; every corpus this project serves now lives on VPS2, so the rule
+above has no exception to state.
 
 ### 2. Never two indexers against one corpus, and the check comes first
 
@@ -185,29 +199,65 @@ write-ordering race for a day (`docs/preregistrations/2026-08-16-sessionstart-ho
 `scripts/session_mcp_approve.py` does the approval, carries only server names into the client
 config (never a URL or a token), and will not reverse a server you have explicitly disabled.
 
-- **`recall`** serves recall's own `docs/` and **`recall-memory`** serves this project's memory
-  store, both out of the `recall-dogfood` corpus on port 5433 (tenants `default` and `memory`,
-  1688 and 308 chunks). These are the only servers whose corpus is this project.
+- **`recall-memory`** and **`recall-code`** serve this project's own corpora. They are the only
+  servers whose corpus is this repository, and they run **on VPS2 over ssh stdio**, because the
+  corpus postgres there listens on 127.0.0.1:55432 only and the Voyage API key lives in that
+  host's `.env`. `.mcp.json` therefore carries no secret: it sources that `.env` on the far side.
 
-  They run with `RECALL_TRUST_MODE=development`, set inside the `env` block that
-  `scripts/session-mcp.sh` writes rather than left to your shell: a stdio server launched with an
-  explicit `env` does not inherit exported variables, so a corpus that searches fine from the
-  terminal answered `INDEX_NOT_READY` through the client. Both corpora are uncalibrated and bound
-  to no generation, which a strict server correctly refuses. **That setting is right for a local
-  dogfood index and wrong for anything else**; lifting the refusal properly needs a calibration
-  bound to an immutable generation (`recall calibration calibrate --generation G --queries FILE
-  --publish`).
+  🔁 **Corrected 2026-08-25, and the correction is the useful part.** This entry used to describe
+  two servers against a `recall-dogfood` container on port 5433, running with
+  `RECALL_TRUST_MODE=development` because *"both corpora are uncalibrated and bound to no
+  generation, which a strict server correctly refuses"*. That sentence was true when it was
+  written and every clause of it had since stopped being true: the container was not running, the
+  corpora had moved to VPS2, and they are **certified**. Measured that day against the live
+  database, all three tenants resolve `certified`, and driving the server end to end returned
+  `trust_state=trusted, calibrated=true` with the strict default in force.
 
-  The same thing from the CLI:
+  🔑 **The workaround outlived the problem, and that is the general hazard.** A relaxed trust mode
+  is invisible when it is unnecessary: it does not error, it just stamps `degraded` on answers
+  that had earned `trusted`. Nothing reports a gate that is open wider than it needs to be. When
+  you write a mode that says "this is fine for now", write down the condition that retires it.
+
+  | tenant | embedder | threshold | separability | state |
+  |---|---|---:|---:|---|
+  | `memory` | `voyage:voyage-4` | 0.509 | 0.974 (50/28) | certified, promoted 2026-08-24 |
+  | `re-call-code-gen` | `voyage:voyage-code-3` | 0.662 | 0.988 (22/26) | certified |
+  | `re-call-docs` | `BAAI/bge-large-en-v1.5` | 0.637 | 0.976 (40/40) | certified, **off by default** |
+
+  ⛔ **All three are 1024 dimensions and all three are different models.** pgvector computes a
+  cosine between any two 1024-vectors without complaining, so the wrong embedder does not raise,
+  it returns a confidently ranked list that means nothing. `scripts/session-mcp.sh` passes the
+  embedder **per tenant** for this reason and must keep doing so.
+
+  `re-call-docs` is off by default because bge-large is a local ONNX model that goes resident in
+  every stdio session on the host that also runs the live trading services; the other two are
+  hosted APIs and load no model. Turn it on with `RECALL_MCP_INCLUDE_DOCS=1 scripts/session-mcp.sh`.
+
+  Re-measure the whole picture in about four seconds, and do this rather than trusting the table:
 
   ```bash
-  RECALL_DSN=postgresql://recall:recall@127.0.0.1:5433/recall RECALL_EMBEDDER=fastembed \
-    RECALL_TRUST_MODE=development python -m recall.cli --tenant memory search "your question"
+  scripts/session-corpus.sh status
   ```
 
-  Drop `--tenant memory` to search `docs/` instead. Rebuild either corpus with the recipe in
-  `scripts/session-mcp.sh`. **Index each tenant separately:** re-indexing prunes sources that have
-  vanished from disk, so pointing both corpora at one tenant deletes the other.
+  ⛔ **The serving checkout on VPS2 must sit at the DATABASE's migration level, and the default is
+  a moving target.** Measured 2026-08-25: the database is at migration **0016**, while
+  `~/recall-repos/engine` is recall **0.9.6** and knows only up to 0014, so the server refuses to
+  start against it:
+
+  ```text
+  SchemaTooNew: table 'chunks' has unknown schema migration(s) ['0015', '0016']; upgrade RE-call
+  ```
+
+  That refusal is correct and it is loud on the server's stderr, but an MCP client shows it as a
+  server that simply has no tools, which is also the symptom of a missing file, an unapproved
+  server and an unreachable host. `scripts/session-mcp.sh` therefore names the checkout in
+  `RECALL_VPS2_CHECKOUT` rather than assuming `engine`. When the corpus is migrated, that variable
+  is what has to move with it.
+
+  ⚠️ **Migration numbers have already collided across branches here.** `semantic_graph_foundation`
+  is `0016` on master and `0015` on the `engine-heading-contextualization-033a7fbc` checkout, where
+  master's `0015` is `learned_sparse_chunk_index`. The ledger records the filename next to the
+  version, so check the filename and not just the number before concluding two hosts agree.
 - **The remaining `http` servers are internal infrastructure for a different project.** They are
   reachable and useful for that system, but be clear-eyed here: their code and docs search does
   **not** search recall, and their read-only SQL tool does **not** reach recall's tables. Do not use

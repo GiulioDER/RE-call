@@ -3,10 +3,10 @@
 #
 # Removes this checkout's own database container, and sweeps ORPHANS: containers whose checkout
 # has been deleted, which no session can ever reclaim because the session that made them is gone.
-# Everything else is reported and left alone. Another session's live container, the shared
-# `recall-db-1` and the `recall-dogfood` corpus are never touched, because this script cannot know
-# whether somebody is mid-run against them, and a 12 minute suite killed at minute 9 reads exactly
-# like a code failure.
+# Everything else is reported and left alone. Another session's live container and the shared
+# `recall-db-1` are never touched, because this script cannot know whether somebody is mid-run
+# against them, and a 12 minute suite killed at minute 9 reads exactly like a code failure.
+# (🔁 2026-08-25: `recall-dogfood` was named here too and no longer exists.)
 #
 # Two conditions gate every removal, and neither is the fall-through:
 #
