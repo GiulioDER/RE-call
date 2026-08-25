@@ -51,6 +51,10 @@ memory as a tool.
 | `PreCompact` | Saves memory before a compaction discards the detail behind it |
 | `SessionEnd` | Indexes the session so the next one can find it |
 
+Set `"auto_index": false` in `~/.claude/recall-hook.json` if the corpus is indexed deliberately
+somewhere else, on a schedule or on the host that owns the embedding model. The hooks then keep
+counting and keep injecting the digest, and never write.
+
 A hook that cannot reach the database says so on stderr rather than serving its cached count in
 silence. That sounds like a detail and is not: a DSN that never resolves sticks the count at the
 zero the installer wrote, the digest then emits nothing, and the integration becomes

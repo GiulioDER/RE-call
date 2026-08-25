@@ -413,6 +413,42 @@ def _embedder_for(config: dict[str, Any], cwd: Path) -> str:
     return recorded
 
 
+#: Values that turn `auto_index` off and on in the hook config. Both spellings of each, because
+#: this file is edited by hand and `false` and `"false"` are the same intention.
+_AUTO_INDEX_OFF = frozenset({"false", "0", "no", "off"})
+_AUTO_INDEX_ON = frozenset({"true", "1", "yes", "on"})
+
+
+def _auto_index_enabled(config: dict[str, Any]) -> bool:
+    """Whether `SessionEnd` and `PreCompact` may WRITE, as opposed to only counting.
+
+    On by default, because for most users an automatic indexer is the entire point: it is what
+    makes memory compound rather than decay. It is switchable because for some corpora it is not.
+    A store indexed deliberately on another host, under a lock and a memory cap, does not want an
+    extra writer arriving from whichever workstation happened to close a session, even though
+    `Indexer.index_path` serialises them correctly.
+
+    ⚠️ An unrecognised value WARNS rather than picking a side, and that is the whole design of this
+    function. Both defaults are wrong in a different direction: failing on runs an indexer somebody
+    tried to disable, failing off silently stops indexing somebody expects, which is the exact
+    class of silent no-op the rest of this module was rewritten to eliminate. So a typo is loud and
+    the behaviour it falls back to is stated in the message.
+    """
+    raw = config.get("auto_index", True)
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower()
+    if text in _AUTO_INDEX_OFF:
+        return False
+    if text in _AUTO_INDEX_ON:
+        return True
+    _warn(
+        f"auto_index is set to {raw!r} in {config_path()}, which is neither true nor false; "
+        f"indexing anyway. Use true or false."
+    )
+    return True
+
+
 def _index_and_refresh(payload: dict[str, Any]) -> int:
     """Index this project's memory stores and refresh the cached count. Never raises.
 
@@ -423,6 +459,13 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
     dsn = config.get("dsn")
     cwd = payload.get("cwd")
     if not dsn or not cwd:
+        return 0
+    if not _auto_index_enabled(config):
+        # Deliberately switched off. Still refresh the count: reading is not writing, and a digest
+        # that reports the corpus as it currently stands is the half of this that costs the
+        # corpus nothing. Silent rather than warning, because a setting somebody chose on purpose
+        # must not nag on every session.
+        refresh_stats(config)
         return 0
     embedder = _embedder_for(config, Path(str(cwd)))
     for memory_dir in _memory_directories(Path(str(cwd))):

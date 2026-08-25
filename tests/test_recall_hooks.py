@@ -13,6 +13,8 @@ import sys
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+import pytest
+
 import recall_hooks
 
 
@@ -355,6 +357,89 @@ def test_a_missing_projects_root_is_not_an_error(tmp_path: Path, monkeypatch: An
     """A machine that has never run the client at all still has to end its sessions."""
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "never-created"))
     assert recall_hooks._memory_directories(tmp_path / "proj") == []
+
+
+# --------------------------------------------------------------------------------------------
+# Whether the hook may write at all
+# --------------------------------------------------------------------------------------------
+
+
+def _project_with_memory(tmp_path: Path, monkeypatch: Any, **config: Any) -> Path:
+    _isolate_client_home(tmp_path, monkeypatch)
+    monkeypatch.delenv("RECALL_EMBEDDER", raising=False)
+    project = tmp_path / "proj"
+    (project / "memory").mkdir(parents=True)
+    _configure(tmp_path, monkeypatch, dsn="postgresql://h/db", embedder="hashing", **config)
+    return project
+
+
+def test_auto_index_off_counts_but_does_not_write(tmp_path: Path, monkeypatch: Any) -> None:
+    """The switch a corpus indexed deliberately on another host needs.
+
+    `Indexer.index_path` serialises writers correctly, so this is not about corruption. It is
+    about a corpus whose indexing is a scheduled, locked, memory-capped operation on one machine
+    not wanting an extra writer arriving from whichever workstation closed a session. Reading is
+    still allowed: the count costs the corpus nothing and the digest is worth keeping accurate.
+    """
+    project = _project_with_memory(tmp_path, monkeypatch, auto_index=False)
+    calls: list[dict[str, Any]] = []
+    refreshed: list[int] = []
+    monkeypatch.setattr("recall.setup.index_memory_directory", lambda **kw: calls.append(kw))
+    monkeypatch.setattr(recall_hooks, "refresh_stats", lambda config=None: refreshed.append(1))
+
+    assert recall_hooks.session_end({"cwd": str(project)}) == 0
+    assert recall_hooks.pre_compact({"cwd": str(project)}) == 0
+
+    assert calls == []
+    assert refreshed == [1, 1]
+
+
+def test_auto_index_defaults_to_on_for_a_config_that_predates_it(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Every config written before this key existed must keep indexing."""
+    project = _project_with_memory(tmp_path, monkeypatch)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("recall.setup.index_memory_directory", lambda **kw: calls.append(kw))
+    monkeypatch.setattr(recall_hooks, "refresh_stats", lambda config=None: 0)
+
+    recall_hooks.session_end({"cwd": str(project)})
+
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (False, False), (True, True),
+        ("false", False), ("FALSE", False), ("no", False), ("off", False), ("0", False),
+        ("true", True), ("yes", True), ("on", True), ("1", True),
+    ],
+)
+def test_the_switch_reads_both_spellings_of_each_answer(
+    value: Any, expected: bool, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """This file is edited by hand, where `false` and `"false"` are the same intention."""
+    _configure(tmp_path, monkeypatch, dsn="postgresql://h/db", auto_index=value)
+    assert recall_hooks._auto_index_enabled(recall_hooks.load_config()) is expected
+
+
+def test_an_unreadable_switch_warns_instead_of_picking_a_side(
+    tmp_path: Path, monkeypatch: Any, capsys: Any
+) -> None:
+    """⚠️ Both defaults are wrong in a different direction, so a typo must be loud.
+
+    Failing on runs an indexer somebody tried to disable; failing off silently stops indexing
+    somebody expects, which is the class of silent no-op this whole module was rewritten to
+    eliminate. The fallback is stated in the message rather than left to be discovered.
+    """
+    _configure(tmp_path, monkeypatch, dsn="postgresql://h/db", auto_index="flase")
+
+    assert recall_hooks._auto_index_enabled(recall_hooks.load_config()) is True
+
+    err = capsys.readouterr().err
+    assert "flase" in err
+    assert "indexing anyway" in err
 
 
 # --------------------------------------------------------------------------------------------

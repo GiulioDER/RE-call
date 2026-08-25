@@ -244,6 +244,25 @@ from one that was never installed. It stayed that way on the author's own machin
 2026-08-25. The hook config gained a `status` field recording which of `ok`, `unreachable` or
 `refused` produced the number in front of you.
 
+### Turning the automatic indexing off, without turning the hooks off
+
+Set `auto_index` to `false` in `~/.claude/recall-hook.json`. The hooks then refresh the cached
+count and inject the digest as before, and never write.
+
+```json
+{ "dsn": "...", "tenant": "memory", "auto_index": false }
+```
+
+This is for a corpus whose indexing is a deliberate operation somewhere else: on a schedule, on the
+host that owns the embedding model, under a memory cap. `Indexer.index_path` already serialises
+writers with a Postgres advisory lock, so this is not about corruption, and a second indexer waits
+twenty seconds and then refuses by naming the holder. It is about not having an extra writer arrive
+from whichever workstation happened to close a session.
+
+An unrecognised value warns and indexes anyway, rather than quietly choosing. Both defaults are
+wrong in a different direction: failing on runs an indexer somebody tried to disable, failing off
+silently stops indexing somebody expects.
+
 The hooks are removable exactly, without disturbing anything else in the file:
 
 ```bash
