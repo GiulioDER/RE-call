@@ -202,7 +202,7 @@ def main() -> None:
                         "arguments": {
                             "query": query["query"],
                             "k": 5,
-                            "mode": "retrieval_only",
+                            "mode": "evidence_assembly",
                             "max_steps": args.max_steps,
                             "max_graph_nodes": args.max_graph_nodes,
                             "max_evidence_tokens": args.max_evidence_tokens,
