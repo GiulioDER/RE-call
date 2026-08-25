@@ -31,8 +31,10 @@ install the `pool` extra or an extra that includes it.
 
 ## MCP Extra
 
-The `mcp` floor is 2.0.0. RE-call uses the MCP 2 server import path, context injection, and
-snake_case tool annotation fields:
+`mcp` is **pinned exactly at 2.1.0**, not ranged. RE-call uses the MCP 2 server import path,
+context injection, and snake_case tool annotation fields. The boundaries below are why the floor
+sits where it does; they are kept as a record of what each version added, and as the map for a
+future bump:
 
 | Version boundary | Why it matters |
 |---|---|
@@ -40,11 +42,35 @@ snake_case tool annotation fields:
 | `>=1.27.2` | Adds `AccessToken.subject` and `.claims`, used to carry tenant identity. |
 | `>=2.0.0` | Provides `MCPServer`, typed request `Context` injection, and snake_case `ToolAnnotations` fields used by `recall_mcp.server`. |
 | `<3` | Next major is reserved as a port until its server, auth, and context APIs are tested here. |
+| `==2.1.0` | The pin itself. See below. |
+
+### Why this one is pinned rather than ranged
+
+Changed 2026-08-25, from `>=2,<3`. A minor release is enough to change behaviour this project
+asserts on: **2.1.0 redacts a tool exception's message** unless the exception derives from the
+SDK's `ToolError`, so the refusal raised by `recall_mcp.limits.RateLimited` reached clients as a
+bare `Error executing tool recall_search` instead of its retry guidance. Three tests in
+`tests/test_rate_limit_http.py` caught it, but only after it had broken master three times
+(#497, #498, #499), because nothing in the range said "2.1.0 is new here".
+
+Two things made the drift invisible, and both still hold:
+
+- **CI installs with `pip install -e`, which ignores `uv.lock`.** The lock said 2.0.0 the whole
+  time. It constrains `uv sync` and nothing else, so it is not a control on what CI resolves.
+- **A range admits a version no one has run the suite against.** The pin converts that into a
+  deliberate bump: a version change is now a diff, reviewed, with a full CI run behind it.
+
+`RateLimited` keeps its `ToolError` base regardless — the pin controls *when* a new SDK arrives,
+not whether the code survives it.
+
+**To bump:** change the three sites in `pyproject.toml` (`mcp`, `dev`, `desktop`) together, run
+`uv lock`, and run the suite. Watch `tests/test_rate_limit_http.py` in particular: it is the file
+that fails when the SDK changes how tool errors surface.
 
 `PyJWT[crypto]` is declared directly rather than inherited transitively from `mcp`, because
 `recall_mcp.oidc` imports RSA support at module import time.
 
-Keep the `mcp` extra and the `dev` extra in step so CI exercises the same API surface users install.
+Keep the `mcp`, `dev` and `desktop` extras in step so CI exercises the same API surface users install.
 
 ## Cloud Embedding Extras
 
