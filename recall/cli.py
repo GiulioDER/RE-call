@@ -82,8 +82,7 @@ Starting out? In order:
   recall wizard         `setup` as a scriptable pipeline (`--headless --config`), for CI and for
                         rebuilding an install from a file. Same engine, no questions.
 
-Everything else operates an install that already exists: index, search, schema, calibration,
-generation, forget, lint, check, reasoning, graph, extract, rewrite.
+Everything else operates an install that already exists, `index` and `search` first among them.
 """
 
 
