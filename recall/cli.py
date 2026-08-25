@@ -7,6 +7,13 @@ from collections.abc import Callable
 
 from recall._env import load_dotenv
 from recall.observability import configure_logging
+from recall.schema import (
+    ConcurrentMigrator,
+    InterruptedConcurrentIndex,
+    MigrationChecksumMismatch,
+    SchemaError,
+    SchemaIncompatible,
+)
 from recall.store import (
     DEFAULT_TABLE,
     DEFAULT_TENANT,
@@ -101,6 +108,61 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: What to do about each schema fault, for the ones whose message does not already say.
+#:
+#: Deliberately NOT a remedy for every class. `SchemaTooOld` already ends "run `recall schema
+#: apply`" and `SchemaTooNew` ends "upgrade RE-call", so adding a second sentence would restate
+#: the first in different words -- and a remedy that disagrees with the exception's own is worse
+#: than none, because the reader cannot tell which is current. Entries exist only where the
+#: message stops at the diagnosis.
+_SCHEMA_REMEDY: dict[type[SchemaError], str] = {
+    SchemaIncompatible: (
+        "This table was created for a different embedder or a different RE-call version. An "
+        "embedding dimension belongs to one model, so the fix is to pass the embedder this table "
+        "was built with (--embedder), or to point at a different table (--table). Re-indexing "
+        "into a table whose width does not match cannot work, and must not be forced."
+    ),
+    MigrationChecksumMismatch: (
+        "A migration file on disk no longer matches the one recorded as applied. That is a "
+        "question about which of the two is right, so it is not fixed by re-running anything: "
+        "an applied migration is history, and editing one after the fact is what produces this."
+    ),
+    ConcurrentMigrator: (
+        "Another migrator holds the lock. Wait for it and retry; two migrators against one "
+        "database is the case this refuses on purpose."
+    ),
+    InterruptedConcurrentIndex: (
+        "A concurrently-built index was left invalid, which happens when a migration is "
+        "interrupted partway. Drop the named index and re-run `recall schema apply`."
+    ),
+}
+
+
+def schema_error_message(exc: SchemaError) -> str:
+    """Render a schema fault as the CLI error it is, rather than a traceback.
+
+    Every member of this family is raised deliberately, with a message written for a person, and
+    every one of them used to reach the operator as a Python traceback -- so a database that
+    simply needed `recall schema apply` looked identical to a crash in the tool. The distinction
+    matters more here than almost anywhere else in the CLI, because the whole family is
+    *operator-fixable by construction*: none of them means recall is broken.
+
+    Rendered rather than re-raised bare so the remedy can be attached where the exception itself
+    stops at the diagnosis. `SchemaIncompatible` is the case that motivated this: its message,
+    `table 'chunks' uses vector(384), requested dimension is 64`, is a precise statement of fact
+    that tells a reader nothing about what to do, and it is the one people actually hit, because
+    it fires whenever a table meets an embedder it was not built for.
+
+    Looked up by exact type, not by `isinstance`, so a subclass added later gets no remedy rather
+    than silently inheriting a parent's -- wrong advice presented confidently is the failure this
+    whole audit kept finding, and an absent line is recoverable where a misleading one is not.
+    """
+    remedy = _SCHEMA_REMEDY.get(type(exc))
+    if remedy is None:
+        return str(exc)
+    return f"{exc}\n\n{remedy}"
+
+
 def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
@@ -147,7 +209,10 @@ def main(argv: list[str] | None = None) -> None:
         _require_secure(migration_dsn)
 
     handler: Callable[[argparse.Namespace], None] = args.func
-    handler(args)
+    try:
+        handler(args)
+    except SchemaError as exc:
+        raise SystemExit(schema_error_message(exc)) from exc
 
 
 if __name__ == "__main__":
