@@ -11,6 +11,15 @@ on:
   # commit something. `gh workflow run CI --ref master` now works.
   workflow_dispatch:
 
+# Least privilege for the whole workflow. Every job here only reads the tree: checkout,
+# setup-python, setup-uv and `run` steps, with no artifact upload, no `gh` call and no push.
+# Without this block the token inherits the repository default, which on `push` to master and on
+# `workflow_dispatch` can be write-capable. Fork pull requests are downgraded to read-only by
+# GitHub regardless, so those two events are the exposure this closes. A job that later needs a
+# grant should declare it at the JOB level rather than widening this one.
+permissions:
+  contents: read
+
 jobs:
   schema-migrations:
     name: Schema migrations (PostgreSQL ${{ matrix.postgres }})
