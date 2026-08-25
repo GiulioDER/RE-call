@@ -11,7 +11,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import psycopg
@@ -19,7 +19,7 @@ from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from recall.document import parse_document
-from recall.context import ContextPolicy, StructuredChunk, contextual_passages
+from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextual_passages
 from recall.embeddings import Embedder, embed_passages, embedding_profile, embedding_profile_id
 from recall.extraction import ExtractedDocument, chunk_extracted_document
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
@@ -56,7 +56,7 @@ def _context_policy_for_pipeline(pipeline: PipelineIdentity) -> ContextPolicy:
             f"pipeline context version {pipeline.embedder.context_version!r} does not match "
             f"context mode {mode!r}"
         )
-    return ContextPolicy(mode=mode)
+    return ContextPolicy(mode=cast(ContextMode, mode))
 
 
 def _context_source(uri: str) -> str:
