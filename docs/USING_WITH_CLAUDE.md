@@ -54,6 +54,7 @@ Both clients use the same `mcpServers` block; only the entry point differs.
       "args": ["-m", "recall_mcp.server"],
       "env": {
         "RECALL_SERVING_DSN": "postgresql://recall:recall@localhost:5432/recall",
+        "RECALL_TABLE": "chunks",
         "RECALL_TENANT": "default",
         "RECALL_TRUST_MODE": "development"
       }
@@ -61,6 +62,19 @@ Both clients use the same `mcpServers` block; only the entry point differs.
   }
 }
 ```
+
+⚠️ **`RECALL_TABLE` and `RECALL_TENANT` must name the corpus you actually indexed, and getting
+either wrong is SILENT.** The values above are what `recall setup` writes. `recall quickstart` uses
+`quickstart_chunks` and `quickstart` instead, deliberately, so that its 22 documents of fiction can
+never be retrieved beside real memory from the same database; it prints all four values when it
+finishes. Point the server at the wrong one and it starts cleanly, answers, and reports
+`0 relevant memory hit(s)` — indistinguishable from an empty corpus, because that is exactly what
+it found. `RECALL_TRUST_MODE` at least names its own cause (`INDEX_NOT_READY`); these two do not.
+
+`RECALL_TABLE` applies to the legacy single-tenant store only. Under `RECALL_ENV=production` or
+authenticated tenant routing the store reads the generation table `recall_chunks_v1`, and a server
+started with both refuses at startup rather than quietly serving a different corpus than the one it
+was told to.
 
 - **Claude Code** — register it at **local scope**, which is what
   `claude mcp add recall -- python -m recall_mcp.server` does by default. It writes the block into

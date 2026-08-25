@@ -8,6 +8,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Fixed
+
+* **The Claude Code plugin could not reach the corpus `recall quickstart` builds, and said
+  nothing.** The plugin collected a DSN, a tenant and a trust mode; the MCP server had no table
+  knob at all, so it opened the default `chunks` while the quickstart had indexed into
+  `quickstart_chunks`. Measured 2026-08-25 by driving the stdio server with exactly the plugin's
+  three variables against a live quickstart database: `recall_search` returned
+  `0 relevant memory hit(s)`, with no exception and nothing naming the table. A well-formed empty
+  answer is indistinguishable from an empty corpus, so the documented first-run path read as "this
+  product finds nothing". `RECALL_TABLE` now exists on the legacy single-tenant store, the plugin
+  asks for it, and `recall quickstart` prints all four values in the shape the plugin asks for
+  them. Under `RECALL_ENV=production` or authenticated tenant routing the variable is REFUSED at
+  startup rather than ignored, because those stores read `recall_chunks_v1` and could not honour
+  it. A value that is not a SQL identifier is refused at import.
+
+* **`recall quickstart`'s Docker preflight cost 14 seconds at the median and 56 at the worst.**
+  It ran `docker info`, which gathers the whole system inventory, so its cost scaled with what was
+  on the machine. Against the 60 second timeout it carried, that worst case was 1.07x the bound: a
+  marginally busier daemon would have reported a perfectly healthy Docker as "installed but did not
+  respond". Now `docker version`, measured at 0.48s median (29.1x) with the same verdict on a live
+  and a dead daemon, under a 20 second timeout. Record:
+  `docs/preregistrations/2026-08-25-docker-probe-latency.md`.
+
+* **The README told you to apply the schema by hand at `--dim 384` before running `recall setup`.**
+  `setup` migrates the database itself, at whichever width the embedder you pick needs, which is
+  why choosing the embedder comes first. Verified against an empty database: all fourteen
+  migrations applied unprompted, `schema_status` compatible with nothing pending. The manual
+  command is kept for the case it is actually for, a serving role that cannot create tables.
+
+### Added
+
+* **`recall doctor`.** Six independent failures in this product present as one of two symptoms
+  ("no tools" or "no hits") and only one of the six names its own cause. This checks the
+  interpreter, the package, the console scripts on `PATH` (which is what a plugin install with no
+  `pip install` behind it fails on), the embedder backend, Docker, the database, pgvector, the
+  schema, **whether the table and tenant you are configured for actually hold any chunks**, the
+  calibration and the Claude Code registration. It names the populated corpus when the configured
+  one is empty, prints the repair command for every problem, writes nothing, never constructs an
+  embedder (that downloads a model), and exits non-zero only when something is blocked. `--json`
+  for machines.
+
+### Changed
+
+* **`recall --help` now says which command to start with**, rather than only listing twenty. Four
+  of them can each be read as "the install". `recall setup` and `recall wizard` each explain how
+  they differ from the other, and ten install-path subcommands gained the `description` that
+  `recall <cmd> --help` shows; eleven operate-an-existing-install commands still lack one and are
+  held under a ratchet in `tests/test_cli_discoverability.py`.
+* The README uses one invocation style throughout (`recall <cmd>`) instead of switching to
+  `python -m recall.cli` halfway down, which is pinned by a test over its fenced code blocks.
+
 ## [0.10.0] (2026-08-23)
 
 ### Security

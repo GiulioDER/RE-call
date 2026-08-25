@@ -225,17 +225,64 @@ def test_every_skill_has_a_description_so_the_model_can_invoke_it() -> None:
 def test_the_mcp_server_env_keys_are_ones_recall_actually_reads() -> None:
     """A renamed variable would leave the server on its defaults rather than erroring.
 
-    `RECALL_TRUST_MODE` is the one that matters: unset, the server is strict, and a strict server
-    refuses every query against the uncalibrated corpus `recall quickstart` builds. The user's
-    first search returns nothing and they conclude the product does not work.
+    Two of these four have already failed this way, and both failures had the same shape: the
+    plugin asked the user a question, and nothing on the server side read the answer.
+
+    * `RECALL_TRUST_MODE` was documented before it was implemented. Unset, the server is strict,
+      and a strict server refuses every query against the uncalibrated corpus `recall quickstart`
+      builds.
+    * `RECALL_TABLE` did not exist at all. `recall quickstart` indexes into `quickstart_chunks`
+      deliberately, the plugin passed only a DSN, a tenant and a trust mode, and the store
+      therefore opened `chunks` — which the quickstart creates and leaves EMPTY. Measured
+      2026-08-25 against a live quickstart database, driving the stdio server with exactly the
+      three variables the plugin then shipped: `recall_search` returned 0 hits, with no error and
+      nothing naming the table.
+
+    The second is the worse one, and it is why this test asserts the whole SET rather than a
+    membership: a wrong trust mode says `INDEX_NOT_READY`, while a wrong table says nothing at
+    all. An empty answer from the wrong table is indistinguishable from an empty corpus.
     """
+    from recall.store import DEFAULT_TABLE
     from recall.trust_policy import TrustPolicy
 
     env = _json(MANIFEST)["mcpServers"]["memory"]["env"]
-    assert set(env) == {"RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_TRUST_MODE"}
+    assert set(env) == {
+        "RECALL_SERVING_DSN",
+        "RECALL_TABLE",
+        "RECALL_TENANT",
+        "RECALL_TRUST_MODE",
+    }
 
     assert TrustPolicy.from_env({"RECALL_TRUST_MODE": "development"}).strict is False
     assert TrustPolicy.from_env({}).strict is True
+
+    # Read from the server module rather than asserted as a literal: the point is that the
+    # variable REACHES something, which is exactly what the two failures above did not.
+    source = (REPO / "recall_mcp" / "server.py").read_text(encoding="utf-8")
+    assert 'os.environ.get("RECALL_TABLE"' in source
+    assert _json(MANIFEST)["userConfig"]["table"]["default"] == DEFAULT_TABLE
+
+
+def test_the_quickstart_prints_every_value_the_plugin_asks_for() -> None:
+    """The handoff, end to end: whatever the plugin asks, the quickstart must have printed.
+
+    ⚠️ This is a JOIN between two files that are edited by different people for different reasons,
+    which is why it is a test and not a docs note. Adding a `userConfig` key without teaching
+    `next_steps` to print it recreates the exact defect above: the user is asked for a value
+    nothing told them, guesses the default, and gets a server that finds nothing and says why not.
+
+    `trust_mode` is matched on its title rather than its value because the printed line explains
+    the choice ("development   (uncalibrated corpus; ...)") rather than only naming it.
+    """
+    from recall.quickstart import QUICKSTART_TABLE, QUICKSTART_TENANT, next_steps
+
+    printed = "\n".join(next_steps("postgresql://x", provisioned=True, compose_path=None))
+    assert QUICKSTART_TABLE in printed
+    assert QUICKSTART_TENANT in printed
+    assert "development" in printed
+
+    for key, spec in _json(MANIFEST)["userConfig"].items():
+        assert spec["title"] in printed, f"the plugin asks for {key!r} and nothing printed it"
 
 
 def test_every_plugin_file_is_tracked_by_git() -> None:

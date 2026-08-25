@@ -24,6 +24,7 @@ from recall.store import (
 
 from recall.cli_commands import (
     calibration_cmd,
+    doctor_cmd,
     extract_rewrite,
     generation_cmd,
     graph_cmd,
@@ -60,8 +61,40 @@ def _require_secure(dsn: str) -> None:
     require_secure_dsn(dsn)
 
 
+#: Printed under the subcommand list. `recall --help` names twenty commands in alphabetical-ish
+#: order with one line each, which answers "what exists" and not "which one do I want" — and a
+#: newcomer only ever has the second question. Four of these commands can each reasonably be read
+#: as "the install" (`quickstart`, `setup`, `wizard`, and the `recall-install` window), so the
+#: first job of this text is to say which one, and what the other three are for instead.
+#:
+#: Kept to what a person needs before their first successful query. Everything past that point they
+#: will reach through the docs, and a help epilogue long enough to scroll is one that gets skipped
+#: whole.
+_EPILOGUE = """\
+Starting out? In order:
+
+  recall quickstart     see it work in one command, on a sample corpus, in its own throwaway
+                        database. Calibrates nothing and wires nothing up. `--remove` undoes it.
+  recall setup          THE install. Asks what you need, points recall at your own notes, fits an
+                        abstention threshold to them, and registers the MCP server with Claude Code.
+  recall doctor         when something is wrong and the symptom does not say what. Reads only.
+
+  recall wizard         `setup` as a scriptable pipeline (`--headless --config`), for CI and for
+                        rebuilding an install from a file. Same engine, no questions.
+
+Everything else operates an install that already exists: index, search, schema, calibration,
+generation, forget, lint, check, reasoning, graph, extract, rewrite.
+"""
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="recall")
+    parser = argparse.ArgumentParser(
+        prog="recall",
+        epilog=_EPILOGUE,
+        # Without this argparse rewraps the epilogue into a single paragraph and the alignment that
+        # makes it a table becomes noise.
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--serving-dsn",
         "--dsn",
@@ -105,6 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     index_search.register_demo_code(sub)
     lint_check.register(sub)
     calibration_cmd.register(sub)
+    doctor_cmd.register(sub)
     return parser
 
 

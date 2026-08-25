@@ -197,22 +197,34 @@ volumes:
 docker compose up -d --wait
 ```
 
-Then install, create the schema, and run the guided setup wizard. The wizard records the selected
-embedder, retrieval options, and an optional calibration that is fitted to your labeled queries and
-your corpus.
+Then install and run the guided setup wizard. The wizard records the selected embedder, retrieval
+options, and an optional calibration that is fitted to your labeled queries and your corpus.
 
 ```bash
 pip install "recall-rag[fastembed]"
-python -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply
-python -m recall.cli setup
+recall setup
 ```
 
-Those three run unchanged in PowerShell.
+Both run unchanged in PowerShell.
 
-The schema command targets the default `chunks` table deliberately. Global migrations have to be
-applied there before any other table, so starting with `--table something_else` on a fresh database
-stops with `SchemaTooOld`. To add a separate index later, apply the default target first, then pass
-`--table`.
+**The schema is not a separate step.** `recall setup` migrates the database itself, at whichever
+width the embedder you pick needs, which is why choosing the embedder comes first: a schema applied
+by hand beforehand has to guess that width before the question has been asked. Measured
+2026-08-25 against an empty database: the wizard applied all fourteen migrations unprompted and
+`schema_status` reported compatible with nothing pending. Re-measure by pointing `recall setup` at a
+database you have just created and reading the line it prints (`Prepared 'chunks' for N
+dimensions.`).
+
+Apply it by hand only where the serving role cannot create tables, in which case pass the owner
+credential as `--migration-dsn` and the wizard will use it:
+
+```bash
+recall --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply
+```
+
+That targets the default `chunks` table deliberately. Global migrations have to be applied there
+before any other table, so starting with `--table something_else` on a fresh database stops with
+`SchemaTooOld`. To add a separate index later, apply the default target first, then pass `--table`.
 
 When the wizard asks whether to calibrate, it wants a labeled query file and the corpus those
 queries refer to. You do not have to build either to try it: both ship inside the installed
@@ -234,6 +246,22 @@ changed corpus needs a new one (`recall calibration drift` measures that), and w
 file must contain are covered in
 [docs/FIRST_CALIBRATION.md](docs/FIRST_CALIBRATION.md) and
 [docs/CALIBRATION.md](docs/CALIBRATION.md).
+
+### When something is wrong
+
+Five different problems in this product show up as one of two symptoms, and neither names its
+cause: the agent has no `recall` tools, or a search returns nothing. One command tells them apart,
+reads only, and prints the repair for whatever it finds.
+
+```bash
+recall doctor
+```
+
+It checks the interpreter, the console scripts on `PATH` (which is what a Claude Code plugin
+install with no `pip install` behind it fails on), the embedder backend, Docker, the database,
+pgvector, the schema, **whether the table and tenant you are configured for actually hold any
+chunks**, the calibration, and the MCP registration. It exits non-zero only when something is
+blocked, so a missing calibration will not fail a script.
 
 Working from a clone:
 
@@ -338,14 +366,17 @@ If you did not calibrate during setup, use development mode only for local evalu
 Replace `./notes` with your memo folder.
 
 ```bash
-python -m recall.cli --table recall_notes \
+recall --table recall_notes \
   --migration-dsn postgresql://recall:recall@localhost:5432/recall \
   schema --dim 384 apply
-RECALL_TRUST_MODE=development python -m recall.cli --table recall_notes index ./notes
-RECALL_TRUST_MODE=development python -m recall.cli --table recall_notes search "what did we decide about caching?"
-python -m recall.cli lint ./notes
-python -m recall.cli check ./notes/new-memo.md --strict
+RECALL_TRUST_MODE=development recall --table recall_notes index ./notes
+RECALL_TRUST_MODE=development recall --table recall_notes search "what did we decide about caching?"
+recall lint ./notes
+recall check ./notes/new-memo.md --strict
 ```
+
+`python -m recall.cli` is the same program under a longer name, and works anywhere the console
+script does not (a `pip install --user` whose scripts directory is off `PATH`, most often).
 
 PowerShell uses the same commands, but set development mode first when you are running an
 uncalibrated local evaluation:
@@ -398,8 +429,10 @@ teaches Claude when to search:
 /plugin install recall@re-call
 ```
 
-It asks for a DSN, a tenant and a trust mode, and keeps the DSN in your OS keychain rather than in
-`settings.json`. You still need a database first, which is what `recall quickstart` above is for.
+It asks for a DSN, a table, a tenant and a trust mode, and keeps the DSN in your OS keychain rather
+than in `settings.json`. You still need a database first, which is what `recall quickstart` above is
+for; it prints all four values when it finishes, and two of them are not the plugin's defaults.
+Point the server at the wrong table or tenant and it starts cleanly, answers, and finds nothing.
 See [plugin/README.md](plugin/README.md).
 
 For every other MCP client, the manual wiring (schema, server block, trust mode) is in

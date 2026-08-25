@@ -6,37 +6,64 @@ question the corpus cannot answer is refused rather than answered from the neare
 
 ## Install
 
-```
-/plugin marketplace add GiulioDER/RE-call
-/plugin install recall@re-call
-```
-
-Claude Code then asks for three things: the **DSN** of the database to read, the **tenant** inside
-it, and the **trust mode**. The DSN is stored in your OS keychain rather than in `settings.json`,
-because it carries a password.
-
-## You need a database first, and one command makes one
-
-This plugin is a client. It does not create a store, so get one first:
+**Install the package first.** This plugin is a client, not an engine: its MCP server and its three
+hooks are the console scripts `recall-mcp` and `recall-hooks`, invoked by bare name. A plugin
+manifest is written once and shipped to every machine, so it cannot name your interpreter, and
+without those scripts on `PATH` the server simply fails to spawn. Claude Code reports that as
+absent tools, which is also what a missing config, an unreachable database and pending migrations
+look like.
 
 ```bash
 pip install "recall-rag[fastembed]"
 recall quickstart
 ```
 
-That starts a throwaway PostgreSQL, indexes a sample corpus, answers three questions and prints the
-DSN. Use that DSN, tenant `quickstart`, and trust mode `development`, because a sample corpus has
-no calibration fitted to it and a strict server correctly refuses to answer from one.
+Then, inside Claude Code:
+
+```
+/plugin marketplace add GiulioDER/RE-call
+/plugin install recall@re-call
+```
+
+If the tools do not appear, do not guess which of the five causes it is:
+
+```bash
+recall doctor
+```
+
+It checks the scripts on `PATH`, the database, the schema, whether the table and tenant you gave
+the plugin actually hold anything, the calibration and the registration, prints the command that
+repairs whatever it found, and writes nothing.
+
+Claude Code then asks for four things: the **DSN** of the database to read, the **table** and the
+**tenant** inside it, and the **trust mode**. The DSN is stored in your OS keychain rather than in
+`settings.json`, because it carries a password.
+
+**Two of those four have to match whichever command built the store**, and the exact values are
+printed at the end of that command. Get the table or the tenant wrong and the server starts
+cleanly, answers, and finds nothing: there is no error to read, because an empty answer from the
+wrong table looks exactly like an empty corpus.
+
+## What the database has to look like
+
+`recall quickstart` above starts a throwaway PostgreSQL, indexes a sample corpus, answers three
+questions and prints the four values to paste back, verbatim. Trust mode is `development` there
+because a sample corpus has no calibration fitted to it and a strict server correctly refuses to
+answer from one.
 
 For your own notes, run `recall setup` instead. It indexes what you point it at, fits a threshold
-to it, and writes to tenant `default`, which is the trust mode `strict` case.
+to it, and writes to table `chunks` and tenant `default`, which is the trust mode `strict` case.
 
 | | `recall quickstart` | `recall setup` |
 |---|---|---|
+| Table | `quickstart_chunks` | `chunks` |
 | Tenant | `quickstart` | `default` |
 | Trust mode | `development` | `strict` |
 | Corpus | 22 sample documents | yours |
 | Calibrated | no | yes, if you accept the prompt |
+
+The quickstart uses a table of its own so that 22 documents of fiction about a fictional service
+can never be retrieved beside your real memory from the same database.
 
 ## What the plugin adds
 

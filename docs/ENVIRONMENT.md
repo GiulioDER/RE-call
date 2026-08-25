@@ -64,6 +64,14 @@ OPENROUTER_API_KEY=
 # RECALL_AUTH_ISSUER_URL=https://recall.example.com   # optional with OIDC: defaults to the issuer
 # RECALL_AUTH_RESOURCE_URL=https://recall.example.com
 # RECALL_TENANT=default                      # stdio only; on HTTP the token carries the tenant
+# RECALL_TABLE=chunks                        # stdio only, and only on the LEGACY store. The
+#                                            # chunk table this server opens. `recall
+#                                            # quickstart` writes to `quickstart_chunks`, so a
+#                                            # server left on the default answers that corpus
+#                                            # with zero hits and NO error. Refused outright
+#                                            # under RECALL_ENV=production or authenticated
+#                                            # routing, where the store is welded to
+#                                            # `recall_chunks_v1` and could not honour it.
 
 # Option 2, and the production one: identity from an OIDC provider, so revocation, rotation and
 # expiry belong to the IdP. The tenant list is MANDATORY — absent is not "every tenant", and the

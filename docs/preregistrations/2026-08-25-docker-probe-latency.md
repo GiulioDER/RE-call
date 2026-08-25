@@ -84,3 +84,61 @@ deterministic rather than noisy.
 - **`docker version` succeeds against a CLI with no engine.** Named above as a falsifier rather than
   a confound, but it is worth stating twice: the two commands do not ask exactly the same question,
   and cheaper is only better if the answer is still the one the caller needs.
+
+## Result (2026-08-25)
+
+**Status:** measured
+
+```
+info     median   14.11s  (n=5, all: 20.24, 14.45, 7.46, 4.01, 14.11)
+version  median    0.48s  (n=5, all: 0.48, 0.47, 0.35, 3.53, 0.63)
+speedup: 29.1x
+
+healthy       info: rc=0 (56.36s)  | version: rc=0 (0.53s)
+daemon dead   info: rc=1 (6.53s)   | version: rc=1 (0.21s)
+docker absent shutil.which -> None (shared by both probes; not an arm comparison)
+```
+
+**The speedup prediction held. The baseline prediction did not, and that is the interesting half.**
+
+| | Predicted | Measured | Gap |
+|---|---|---|---|
+| `docker info` median | 30 to 40s | **14.11s** | over-predicted by 2.1x to 2.8x |
+| `docker version` median | 1 to 3s | **0.48s** | faster than the floor I predicted |
+| speedup | 12x to 35x | **29.1x** | inside the band |
+| agreement on healthy and dead | identical | identical (rc=0 / rc=1) | none |
+
+Nothing here is falsified: the falsifiers were "under 5x" and "the two disagree on any state", and
+neither occurred. Both probes also emit an equally actionable error on a dead daemon
+(`error during connect: ... connectex: No connection could be made ...`), so the
+`Docker said: {detail}` line in `docker_unavailable_reason` keeps its content.
+
+**Two things I got wrong, recorded because they are worth more than the number.**
+
+1. **I anchored the baseline on a single observation and predicted a range around it.** The 34.77s
+   I had measured that morning is real, and it is near the TOP of this distribution rather than in
+   the middle: the five timed runs span **4.01s to 20.24s**, and the untimed healthy run in the
+   agreement pass hit **56.36s**. So the full observed spread of one command on one idle-ish machine
+   in one hour is **4s to 56s, a factor of 14**. A prediction built on n=1 was a prediction about
+   the sample, not the population, and this is the third time
+   [[i-over-predict-effect-magnitudes]] has described my error correctly in advance.
+
+2. **The variance, not the median, is the reason to make this change.** I justified the swap on
+   mean cost and the justification is weaker than the real one. `docker_unavailable_reason` carries
+   `timeout=60`; against a probe whose observed maximum is 56.36s, that backstop is **1.07x the
+   worst case seen today**, so a marginally busier daemon makes the quickstart report a perfectly
+   healthy Docker as "installed but did not respond" and send the user to fix something that is not
+   broken. That failure was reachable before this measurement and I had not noticed it. `docker
+   version` at 0.48s puts roughly two orders of magnitude between the probe and its timeout.
+
+**Confound that held as predicted:** this machine had 37 containers when measured, which is an
+artefact of a repository that starts one per checkout, and `docker info`'s cost scales with exactly
+that inventory. The 29.1x is an upper bound on what a new user with two containers would see. The
+claim carried forward is therefore the mechanism and its direction, plus the timeout-margin
+argument above, which does not depend on the multiple.
+
+Re-measure:
+
+```bash
+python scripts/bench_docker_probe.py
+```

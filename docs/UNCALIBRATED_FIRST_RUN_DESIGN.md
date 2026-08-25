@@ -32,7 +32,7 @@ a **tenant**.
 
 | Claim | Site | Verdict |
 |---|---|---|
-| Server builds `GenerationStore` only in production | `recall_mcp/server.py:763` | confirmed |
+| Server builds `GenerationStore` only in production <!-- cite-anchor: if generation_mode: --> | `recall_mcp/server.py:759` | confirmed. 🔁 **Line corrected 2026-08-25, and it was wrong before it drifted.** It read `:678`, which was a `retrieval_profile` logging argument, not the branch; the anchor is added so the next edit above it moves the pointer rather than silently invalidating it |
 | Missing `generation_id` degrades to `"legacy"` | `recall_mcp/service.py:999` | confirmed. A second site uses the same default but maps it to `None` immediately after, so the two do not behave identically |
 | `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:1239` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
@@ -126,7 +126,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:2506`, `recall/cli_commands/index_search.py:208`).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:376`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
-   `recall_mcp/server.py:763`, `recall/cli_commands/index_search.py:260`, and the `generation_mode` parameter threaded
+   `recall_mcp/server.py:760` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:298` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`recall_mcp/stores.py:154`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:423`). <!-- cite-anchor: wants_learned -->

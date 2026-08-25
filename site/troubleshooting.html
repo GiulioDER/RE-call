@@ -56,6 +56,17 @@
   <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 20ch; margin-bottom: 1.5rem;">The errors this install produces, and what each one means.</h1>
   <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
   <p class="lede">Find the message you are looking at, not the step you are on. Each entry shows the symptom first, says in plain language what it means, and ends with the command or the action that clears it.</p>
+
+  <p class="lede" style="margin-top: 1.5rem;"><strong>Start here if the symptom is silence.</strong> Two of the failures below produce no message at all: the agent shows no <code>recall</code> tools, or a search comes back with nothing found. Five different causes look identical from there, so run this before reading further.</p>
+
+  <div class="terminal">
+    <div class="terminal-bar"><span class="terminal-label">Run this first</span></div>
+    <div class="terminal-body"><pre>recall doctor</pre></div>
+  </div>
+
+  <p>It checks the interpreter, the package, the console scripts on your <code>PATH</code>, the embedder, Docker, the database, pgvector, the schema, whether the table and tenant you are configured for actually hold anything, the calibration, and the Claude Code registration. It prints the command that repairs whatever it finds, changes nothing, and exits non-zero only when something is genuinely blocking you.</p>
+
+  <p class="muted" style="font-size: 0.9375rem;">The check most worth knowing about is the corpus one. A server pointed at the wrong table starts cleanly, answers your question, and finds nothing — which looks exactly like an empty corpus. <code>recall doctor</code> is the only thing that will tell you the difference, because it looks at the other tables too and names the one that does hold your memory.</p>
 </section>
 
 <div class="shell guide-layout" style="padding-bottom: clamp(4rem, 9vw, 7rem);">
