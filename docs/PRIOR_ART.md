@@ -1,5 +1,26 @@
 # Prior art, and where this comes from
 
+## Structured prior art evidence system
+
+This page remains the public narrative, while the canonical comparison data now lives in the
+[RE-call prior art evidence system](prior_art/README.md). The structured corpus records sources,
+systems, capability definitions, atomic claims, evidence locations, and human review decisions.
+
+The generated [capability matrix](prior_art/generated_matrix.md) and [gap report](prior_art/generated_gap_report.md)
+are reproducible from the checked in JSON and JSON Lines records. They preserve `verified`,
+`partial`, `not_evidenced`, `contradicted`, and `unknown` as separate states. Missing evidence is
+not treated as proof that a system lacks a capability.
+
+The current RE-call research hypothesis combines evidence backed claims, explicit validity and
+supersession, reversible provenance lineage, authority and scope enforcement, deletion propagation
+through derived artifacts, support based abstention, and action outcome feedback. The matrix may
+identify this as an unverified research gap, but it does not automatically claim that RE-call is
+first, unique, or unprecedented.
+
+The collection scope covers agent memory systems, agent runtimes, benchmarks, privacy, governance,
+and continual learning. The search cutoff and evidence rules are recorded in
+[report_config.json](prior_art/report_config.json).
+
 ## Prior art — and where this genuinely differs
 
 Agent memory is a crowded field. Everything below is Apache-2.0 and further along than this

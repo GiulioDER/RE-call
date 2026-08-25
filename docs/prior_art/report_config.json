@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "report_title": "RE-call prior art capability matrix",
+  "search_cutoff_date": "2026-08-24",
+  "research_scope": "Agent memory systems, agent runtimes, benchmarks, privacy, governance, and continual learning.",
+  "novelty_policy": "The renderer may identify unverified gaps but may not assert first, unique, or never done.",
+  "target_hypothesis": [
+    "provenance.source_attribution",
+    "provenance.transformation_lineage",
+    "validity_and_revision.supersession",
+    "authority_and_scope.tenant_scope",
+    "deletion_and_forgetting.derived_propagation",
+    "uncertainty.abstention",
+    "action_feedback.outcome_linked_revision"
+  ]
+}

@@ -1,0 +1,116 @@
+{
+  "schema_version": "1.0",
+  "groups": [
+    {
+      "group_id": "representation",
+      "name": "Representation",
+      "capabilities": [
+        {"capability_id": "representation.raw_episodes", "name": "Raw episodes", "definition": "The system preserves source episodes or turns as retrievable memory.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe or demonstrate preservation of source episodes."},
+        {"capability_id": "representation.structured_facts", "name": "Structured facts", "definition": "The system represents memory as structured facts or attributes rather than only raw text.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe structured fact representation."},
+        {"capability_id": "representation.knowledge_graph", "name": "Knowledge graph", "definition": "The system represents entities and relations as a graph that can be queried.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe graph construction or graph retrieval."}
+      ]
+    },
+    {
+      "group_id": "write_path",
+      "name": "Write path",
+      "capabilities": [
+        {"capability_id": "write_path.extraction", "name": "Memory extraction", "definition": "The system extracts persistent memory from conversations or agent traces.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe extraction from an input trace."},
+        {"capability_id": "write_path.consolidation", "name": "Memory consolidation", "definition": "The system merges, compresses, or organizes multiple memories during maintenance.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe a consolidation or maintenance operation."},
+        {"capability_id": "write_path.agent_authored", "name": "Agent authored memory", "definition": "The agent can deliberately decide what to write or update in persistent memory.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must show agent controlled memory writes."}
+      ]
+    },
+    {
+      "group_id": "retrieval",
+      "name": "Retrieval",
+      "capabilities": [
+        {"capability_id": "retrieval.dense", "name": "Dense retrieval", "definition": "The system retrieves memory using vector similarity.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary implementation or documentation must identify vector retrieval."},
+        {"capability_id": "retrieval.lexical", "name": "Lexical retrieval", "definition": "The system retrieves memory using lexical or full text search.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary implementation or documentation must identify lexical retrieval."},
+        {"capability_id": "retrieval.graph_traversal", "name": "Graph traversal", "definition": "The system expands retrieval through graph relations or traversals.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe relation traversal during retrieval."},
+        {"capability_id": "retrieval.query_time_context", "name": "Query time context construction", "definition": "The system constructs or expands the memory context at query time using the retrieved evidence.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe query time context expansion or construction."}
+      ]
+    },
+    {
+      "group_id": "validity_and_revision",
+      "name": "Validity and revision",
+      "capabilities": [
+        {"capability_id": "validity_and_revision.supersession", "name": "Supersession", "definition": "The system represents that a newer memory replaces an older memory.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe supersession or replacement behavior."},
+        {"capability_id": "validity_and_revision.contradiction", "name": "Contradiction handling", "definition": "The system detects or represents conflicting memories.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe conflict detection or representation."},
+        {"capability_id": "validity_and_revision.rollback", "name": "Rollback", "definition": "The system can restore or select an earlier memory state.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe restoration of a previous memory state."}
+      ]
+    },
+    {
+      "group_id": "time",
+      "name": "Time",
+      "capabilities": [
+        {"capability_id": "time.valid_time", "name": "Valid time", "definition": "The system records when a fact was true in the world.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must identify fact validity intervals or equivalent semantics."},
+        {"capability_id": "time.ingestion_time", "name": "Ingestion time", "definition": "The system records when it learned or ingested a fact.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must identify ingestion or observation timestamps."},
+        {"capability_id": "time.point_in_time", "name": "Point in time retrieval", "definition": "The system can answer what was known or valid at a requested historical time.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must demonstrate or document historical time queries."}
+      ]
+    },
+    {
+      "group_id": "provenance",
+      "name": "Provenance",
+      "capabilities": [
+        {"capability_id": "provenance.source_attribution", "name": "Source attribution", "definition": "A returned memory can identify the source evidence supporting it.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must show source or document attribution in the returned memory."},
+        {"capability_id": "provenance.transformation_lineage", "name": "Transformation lineage", "definition": "Derived memories link back through transformations to their source evidence.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe links from derived memory to source material."},
+        {"capability_id": "provenance.evidence_receipts", "name": "Evidence receipts", "definition": "The system returns a machine readable record of evidence used for a memory result.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must show a structured evidence result or receipt."}
+      ]
+    },
+    {
+      "group_id": "uncertainty",
+      "name": "Uncertainty",
+      "capabilities": [
+        {"capability_id": "uncertainty.abstention", "name": "Abstention", "definition": "The system can return an explicit refusal when memory support is insufficient.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe or demonstrate an explicit abstention result."},
+        {"capability_id": "uncertainty.entailment", "name": "Entailment checking", "definition": "The system checks whether retrieved evidence actually supports the requested claim.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe an entailment or support check."},
+        {"capability_id": "uncertainty.calibration", "name": "Confidence calibration", "definition": "The system calibrates a trust or confidence decision against labeled examples.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe calibration data or a calibrated decision boundary."}
+      ]
+    },
+    {
+      "group_id": "authority_and_scope",
+      "name": "Authority and scope",
+      "capabilities": [
+        {"capability_id": "authority_and_scope.user_consent", "name": "User consent", "definition": "The system makes persistent memory subject to an explicit user consent or control decision.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe user control over persistence."},
+        {"capability_id": "authority_and_scope.tenant_scope", "name": "Tenant scope", "definition": "The system enforces tenant boundaries on memory storage and retrieval.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary implementation or documentation must describe tenant isolation."},
+        {"capability_id": "authority_and_scope.multi_agent_handoff", "name": "Multi agent handoff", "definition": "Memory can be intentionally shared or handed from one agent to another with scope semantics.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe cross agent memory sharing or handoff."}
+      ]
+    },
+    {
+      "group_id": "deletion_and_forgetting",
+      "name": "Deletion and forgetting",
+      "capabilities": [
+        {"capability_id": "deletion_and_forgetting.source_deletion", "name": "Source deletion", "definition": "A source memory can be deleted from the system.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe source deletion."},
+        {"capability_id": "deletion_and_forgetting.derived_propagation", "name": "Derived deletion propagation", "definition": "Deleting a source removes or invalidates derived memories, graph edges, embeddings, and caches that depend on it.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe deletion across derived artifacts."},
+        {"capability_id": "deletion_and_forgetting.selective_forgetting", "name": "Selective forgetting", "definition": "The system can forget selected memories without clearing unrelated memory.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must demonstrate selective deletion or forgetting."}
+      ]
+    },
+    {
+      "group_id": "action_feedback",
+      "name": "Action feedback",
+      "capabilities": [
+        {"capability_id": "action_feedback.outcome_storage", "name": "Outcome storage", "definition": "The system stores observed results of agent actions as reusable memory.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe action outcome persistence."},
+        {"capability_id": "action_feedback.outcome_linked_revision", "name": "Outcome linked revision", "definition": "An observed action result updates the memory claim that influenced that action.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe the link between action outcome and later memory behavior."},
+        {"capability_id": "action_feedback.policy_revision", "name": "Policy revision", "definition": "Remembered outcomes modify future agent behavior or policy selection.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must demonstrate outcome driven behavior change."}
+      ]
+    },
+    {
+      "group_id": "security",
+      "name": "Security",
+      "capabilities": [
+        {"capability_id": "security.prompt_injection_resistance", "name": "Prompt injection resistance", "definition": "The system limits memory content from changing agent instructions or tool authority through injection.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe an injection defense or evaluation."},
+        {"capability_id": "security.memory_poisoning_resistance", "name": "Memory poisoning resistance", "definition": "The system detects or limits malicious or misleading persistent memories.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe poisoning detection or prevention."},
+        {"capability_id": "security.egress_control", "name": "Egress control", "definition": "The system controls which memory fields can leave the memory boundary for a model or tool.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must describe purpose or policy aware memory egress."}
+      ]
+    },
+    {
+      "group_id": "evaluation",
+      "name": "Evaluation",
+      "capabilities": [
+        {"capability_id": "evaluation.temporal_reasoning", "name": "Temporal evaluation", "definition": "The system is evaluated on changing facts and historical validity.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must identify a temporal memory evaluation."},
+        {"capability_id": "evaluation.conflict_resolution", "name": "Conflict evaluation", "definition": "The system is evaluated on contradictory memories or conflicting claims.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must identify a conflict resolution evaluation."},
+        {"capability_id": "evaluation.action_impact", "name": "Action impact evaluation", "definition": "The system is evaluated by whether memory improves downstream agent actions or outcomes.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must identify an outcome or action based memory evaluation."},
+        {"capability_id": "evaluation.continual_learning", "name": "Continual learning evaluation", "definition": "The system is evaluated over an ordered sequence of tasks or episodes where memory must support transfer and forgetting.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must identify an online, continual, transfer, or forgetting evaluation."},
+        {"capability_id": "evaluation.memory_security", "name": "Memory security evaluation", "definition": "The system or benchmark is evaluated on persistent memory poisoning, prompt injection, downstream consequences, or selective repair.", "allowed_values": ["verified", "partial", "not_evidenced", "contradicted", "unknown"], "minimum_evidence": "Primary evidence must identify a memory security attack, lifecycle evaluation, or repair benchmark."}
+      ]
+    }
+  ]
+}

@@ -12,6 +12,12 @@ or, when nothing was found:
 Prior work: none found (docs_search "<query>", source_type=memory)
 ```
 
+For changed or newly added modules, run the repository check with the affected paths:
+
+```text
+python -m tools.prior_art check-experiments benchmarks/my_probe.py
+```
+
 ## Why this exists rather than a rule someone remembers
 
 On 2026-07-28 an abstention investigation was run that had already been run on 2026-07-24, and
