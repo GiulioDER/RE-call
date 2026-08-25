@@ -49,3 +49,7 @@ Secondary metrics are number of new trusted chunks, query novelty, graph nodes u
 ## Decision rule
 
 Prefer graph assisted query construction only if it rescues at least 5 of 15 misses, retains at least 30 of 31 controls, and produces no more than two provider calls per eligible session. Otherwise keep the current retrieval path and treat the result as diagnostic evidence for a different query or indexing intervention.
+
+## Pilot result
+
+The first four miss families were replayed after this preregistration was committed. The calibrated memory tenant was trusted and graph ready, but every one hop call inspected zero graph entities and zero relations, rejected one candidate at the selective gate, and discovered zero graph candidates. Baseline and one hop returned identical evidence sets for all four families. One family was already a baseline hit; the other three remained misses. The graph query arm therefore had zero eligible anchored sessions in this pilot. Full population measurement is not claimed. See `results/graph_query_construction_pilot_20260825.json`.
