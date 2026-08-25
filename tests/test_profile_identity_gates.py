@@ -170,6 +170,7 @@ def test_readiness_fails_when_the_profile_dimension_contradicts_the_runtime() ->
         "bge-small-context-document-v1",
         "bge-small-context-section-v1",
         "bge-small-context-neighbor-v1",
+        "bge-large-context-section-v1",
     ],
 )
 def test_every_active_profile_can_reach_a_ready_verdict(profile_id: str) -> None:

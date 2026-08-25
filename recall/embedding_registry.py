@@ -441,8 +441,9 @@ _PROFILES: tuple[RegisteredProfile, ...] = (
     #: identity, so each of these carries its own id and its own fingerprint.
     #:
     #: `context_mode="none"` and symmetric `embed` match how these corpora are indexed by
-    #: default; the asymmetric and context-carrying variants are separate profiles for bge-small
-    #: and would be separate profiles here too, not flags on these.
+    #: default; the asymmetric and context-carrying variants are separate profiles for each model
+    #: width, not flags on these. The 1024-dimensional section variant below is the VPS2-compatible
+    #: contextual candidate.
     RegisteredProfile(
         profile_id="bge-base-symmetric-v1",
         model_name=_BGE_BASE,
@@ -468,6 +469,15 @@ _PROFILES: tuple[RegisteredProfile, ...] = (
         query_mode="query_embed",
         passage_mode="passage_embed",
         context_mode="none",
+        backend="fastembed",
+    ),
+    RegisteredProfile(
+        profile_id="bge-large-context-section-v1",
+        model_name=_BGE_LARGE,
+        dimension=1024,
+        query_mode="query_embed",
+        passage_mode="passage_embed",
+        context_mode="section",
         backend="fastembed",
     ),
     #: The cheap local end. All three are fastembed-supported and CPU-friendly, and exist so a
