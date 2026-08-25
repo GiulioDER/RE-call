@@ -59,9 +59,14 @@ from benchmarks.agent_ab.summarize import (  # noqa: E402
 )
 from benchmarks.agent_ab.traps import score_record  # noqa: E402
 
-#: The benchmark owns its corpus. NOT the shared recall-dogfood on 5433, which serves other
-#: sessions and is uncalibrated, and not the session container's default database, which the
+#: The benchmark owns its corpus, and not the session container's default database, which the
 #: test suite DROPs tables in. Built by scripts/agent_ab_build_corpus.py.
+#:
+#: 🔁 2026-08-25: this used to name "the shared recall-dogfood on 5433, which serves other
+#: sessions and is uncalibrated" as the other thing to avoid. That container is gone and this
+#: project's corpora are on VPS2 and certified, so the specific warning is retired. The rule it
+#: was an instance of is not: a benchmark that promotes a generation and publishes a calibration
+#: changes what every reader of that corpus returns, so it must own the database it does that in.
 DEFAULT_DSN = "postgresql://recall:recall@127.0.0.1:5406/agent_ab"
 TASKS = REPO_ROOT / "benchmarks" / "agent_ab" / "tasks" / "traps.jsonl"
 STATIC_MEMORY_SOURCES = ("CLAUDE.md",)

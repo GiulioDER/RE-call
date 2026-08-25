@@ -21,6 +21,7 @@ from recall.index_lock import ConcurrentIndex
 from recall.retriever import DocumentExpansionPolicy
 from recall.store import PgVectorStore
 from recall.trust import terminal_safe, trusted_search
+from recall.trust_policy import TrustRefusal
 from recall.types import TrustedResult
 from recall_mcp.translation import provider_from_env, translate_for_display
 
@@ -344,6 +345,62 @@ def _cmd_forget(args: argparse.Namespace) -> None:
                     print(unseen_note)
 
 
+def refusal_message(exc: TrustRefusal) -> str:
+    """Render a strict-mode refusal as the CLI error it is, rather than a traceback.
+
+    A refusal is the gate working. Before this, `recall search` let `TrustRefusal` escape to the
+    top of the interpreter, so the single most common outcome of a fresh install -- documented as
+    exactly that on the troubleshooting page -- arrived as an eleven-frame Python traceback ending
+    in `recall.trust_policy.TrustRefusal: INDEX_NOT_READY: refused in strict trust mode`. That
+    reads as a crash in the tool, which is the opposite of what happened, and it buries the one
+    line that says what to do next.
+
+    Three things go in, and the choice of each is the point:
+
+    - **The code, first and alone on its line.** `TrustFailureCode` is a published interface that
+      callers automate on, and the spelling is pinned by test. Someone reading this error is one
+      grep away from the table in `docs/CALIBRATION.md` that explains it.
+    - **`exc.advice`**, which already exists for precisely this and states, per code, that no
+      trustworthy decision was possible. That distinction -- the gate could not run, as against
+      the gate ran and found nothing -- is the whole reason the codes exist, so it must survive
+      into the operator-facing text rather than being paraphrased here.
+    - **The identity**, because "which tenant, which generation" is the first question anyone
+      asks and it is already on the exception.
+
+    ⛔ **No corpus bytes, and that needs no filter here.** `TrustRefusal` is built only from
+    fields the system controls: no chunk text, no source names, no preview, not even the query.
+    This function cannot leak what it was never given, which is the property the exception was
+    designed around and the reason it is safe to print in full.
+
+    `terminal_safe` is still applied to the identifiers. They are system-controlled in the sense
+    that matters for leakage, but `--tenant` is operator-supplied and a tenant name carrying
+    `\\x1b[2K\\r` could erase the line it was printed on -- the same trick `terminal_safe` exists
+    to stop for corpus-controlled strings elsewhere in this module.
+    """
+    lines = [
+        f"{exc.code.value}: refused in strict trust mode.",
+        "",
+        exc.advice,
+        "",
+        f"  tenant             {terminal_safe(exc.tenant_id) or '-'}",
+        f"  generation         {terminal_safe(exc.generation_id) or '-'}",
+        f"  calibration status {terminal_safe(exc.calibration_status) or '-'}",
+    ]
+    if exc.calibration_id:
+        lines.append(f"  calibration        {terminal_safe(exc.calibration_id)}")
+    lines += [
+        "",
+        # Named as an INSPECTION mode with its cost stated, never as the fix. A relaxed gate has
+        # no failure mode once it is unnecessary -- it stops erroring and quietly stamps
+        # `degraded` on answers that had earned `trusted` -- so an error message that recommends
+        # it without saying what it costs is how a workaround outlives the problem it solved.
+        "To look at results while you finish setting up, RECALL_TRUST_MODE=development retrieves",
+        "and marks every result degraded with no certified threshold behind it. It is for",
+        "inspection, not for serving. docs/CALIBRATION.md explains every code above.",
+    ]
+    return "\n".join(lines)
+
+
 def _cmd_search(args: argparse.Namespace) -> None:
     embedder = _make_embedder(args.embedder)
     # ⚠️ Deliberately NOT `load_for(embedder.name)`, and a bug audit talked me into that once.
@@ -387,23 +444,29 @@ def _cmd_search(args: argparse.Namespace) -> None:
         # audit table. Off unless the operator asked; a malformed value warns and stays off.
         from recall.decision_ledger import DecisionLedger
 
-        _search_result = trusted_search(
-            store,
-            embedder,
-            args.query,
-            # `-k` has no lower bound and `trusted_search`
-            # refuses k < 1 as its FIRST statement, so `-k 0` tracebacked out of the
-            # library before any of this command's own guards were reached. Clamped at
-            # the source; the clamp in `_print_evidence` stays as defence in depth.
-            k=max(1, args.k),
-            calibration=_search_calibration,
-            entailment=entail_judge,
-            policy=_search_policy,
-            document_expansion=(
-                DocumentExpansionPolicy(enabled=True) if args.expand_documents else None
-            ),
-            ledger=DecisionLedger.from_env(store, actor="cli"),
-        )
+        # Caught at the call, not around the whole command: a refusal from `trusted_search` is a
+        # policy decision with a rendered form, while an exception from the printing below would
+        # be a real bug and must keep its traceback.
+        try:
+            _search_result = trusted_search(
+                store,
+                embedder,
+                args.query,
+                # `-k` has no lower bound and `trusted_search`
+                # refuses k < 1 as its FIRST statement, so `-k 0` tracebacked out of the
+                # library before any of this command's own guards were reached. Clamped at
+                # the source; the clamp in `_print_evidence` stays as defence in depth.
+                k=max(1, args.k),
+                calibration=_search_calibration,
+                entailment=entail_judge,
+                policy=_search_policy,
+                document_expansion=(
+                    DocumentExpansionPolicy(enabled=True) if args.expand_documents else None
+                ),
+                ledger=DecisionLedger.from_env(store, actor="cli"),
+            )
+        except TrustRefusal as exc:
+            raise SystemExit(refusal_message(exc)) from exc
         _print_result(_search_result)
         if args.locale:
             _print_localized_result(_search_result, args.locale)

@@ -20,23 +20,44 @@ SECRETS="${RECALL_MCP_SECRETS:-$HOME/.claude/recall-mcp-secrets.json}"
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 OUT="$ROOT/.mcp.json"
 
-# The corpus the dogfood servers serve. Deliberately NOT a session container and NOT the shared
-# `recall-db-1`: it is a long-lived, read-mostly index of this project's own docs and memory, and
-# the test suite must never point at it. Rebuild:
-#   docker run -d --name recall-dogfood -e POSTGRES_USER=recall -e POSTGRES_PASSWORD=recall \
-#     -e POSTGRES_DB=recall -p 127.0.0.1:5433:5432 -v recall_dogfood_pgdata:/var/lib/postgresql \
-#     pgvector/pgvector:pg18
-#   RECALL_MIGRATION_DSN=$DSN RECALL_DSN=$DSN python -m recall.cli schema apply
-#   RECALL_DSN=$DSN RECALL_EMBEDDER=fastembed python -m recall.cli index docs
-# Index each tenant SEPARATELY. Re-indexing prunes sources that have vanished from disk, so
-# pointing both corpora at one tenant deletes the other.
+# Where this project's own corpora actually live, and why the server runs THERE.
 #
-# ⚠️ This is the ONE corpus that is still embedded on this machine, and it is the named exception
-# to "embedding runs on VPS2" (CLAUDE.md). Its database is here, so embedding it there would ship
-# the vectors straight back. It is small; nothing else local should follow its example. The
-# single-writer lock still applies, so a second `recall index` against this corpus refuses rather
-# than interleaving.
-DOGFOOD_DSN="${RECALL_DOGFOOD_DSN:-postgresql://recall:recall@127.0.0.1:5433/recall}"
+# 🔁 Corrected 2026-08-25. This used to generate two stdio servers against a local
+# `recall-dogfood` container on 127.0.0.1:5433, with `RECALL_TRUST_MODE=development` hardcoded and
+# a comment calling those corpora "uncalibrated". Every part of that had stopped being true, and
+# it failed in the direction that HIDES a working system:
+#
+#   - the container was not running, and nothing said so. `session-open.sh` reported
+#     ".mcp.json present (2 servers)" and a session read that as healthy;
+#   - the corpora are on VPS2, not here;
+#   - they are CERTIFIED, not uncalibrated. Measured 2026-08-25 against the live database: all
+#     three tenants resolve `certified`, and a STRICT server answers `trust_state=trusted,
+#     calibrated=true`. The relaxed mode was a workaround for a condition that had since been
+#     fixed, and leaving it on downgraded a trusted corpus to `degraded` on every query.
+#
+# The corpus postgres on VPS2 listens on 127.0.0.1:55432 ONLY (loopback), and the memory and code
+# tenants are embedded with hosted Voyage models whose API key lives in VPS2's own `.env`. So the
+# server runs ON VPS2 over ssh stdio: corpus, key and models are already there, no tunnel is
+# needed, and `.mcp.json` carries NO secret at all because it sources that `.env` on the far side.
+#
+# ⚠️ The serving checkout must sit at the DATABASE's migration level. Measured 2026-08-25: the
+# database is at 0016, while `~/recall-repos/engine` is recall 0.9.6 and knows only up to 0014, so
+# the server refuses to start against it with `SchemaTooNew: table 'chunks' has unknown schema
+# migration(s) ['0015','0016']`. That refusal is correct and loud on the server's stderr; an MCP
+# client renders it as a server with no tools, which is also the symptom of a missing file, an
+# unapproved server and an unreachable host. So a stale value here costs a session its tools in
+# the one shape that is hardest to diagnose.
+#
+# 🔑 This names `serving`, a SYMLINK on VPS2, and not the checkout it currently resolves to
+# (`graph-annotations-6d3aeb28`, 0.10.0, migration 0016). The distinction is the whole point: a
+# branch worktree is a moving target that disappears when the branch is done, and pinning one here
+# would put the repair in this repository, on a machine that cannot see the breakage. With the
+# symlink, whoever migrates the corpus repoints `serving` on the host that migrated it, in the
+# same operation, and every checkout of this repository follows without being edited.
+VPS2_HOST="${RECALL_VPS2_HOST:-vps2}"
+VPS2_CHECKOUT="${RECALL_VPS2_CHECKOUT:-~/recall-repos/serving}"
+VPS2_PYTHON="${RECALL_VPS2_PYTHON:-~/recall-repos/.venv/bin/python}"
+VPS2_ENV_FILE="${RECALL_VPS2_ENV:-~/recall-repos/.env}"
 
 # The .mcp.json this writes carries secrets. Refuse to create it at all unless the ignore rule is
 # already in place: checking afterwards would mean warning about a file that already exists on disk
@@ -85,7 +106,8 @@ esac
 if [ "${1:-}" = "--check" ]; then
     echo "session-mcp: would write $OUT"
     echo "  secrets:      $SECRETS"
-    echo "  dogfood DSN:  $DOGFOOD_DSN"
+    echo "  VPS2 host:    $VPS2_HOST"
+    echo "  VPS2 checkout:$VPS2_CHECKOUT"
     echo "  .mcp.json is gitignored: yes"
     SECRETS="$SECRETS" python <<'PY'
 import json, os
@@ -94,7 +116,10 @@ try:
 except OSError:
     d = {}
 included = bool(os.environ.get("RECALL_MCP_INCLUDE_REMOTE"))
-print("  would write: recall, recall-memory (this project's own corpus)")
+docs = bool(os.environ.get("RECALL_MCP_INCLUDE_DOCS"))
+print("  would write: recall-memory, recall-code (this project's own corpora, on VPS2)")
+print(f"  docs tenant included: {'YES' if docs else 'no'}"
+      f"{'' if docs else '  (bge-large goes resident on VPS2; RECALL_MCP_INCLUDE_DOCS=1)'}")
 print(f"  remote servers available: {len(d)}, included: {'YES' if included else 'no'}")
 for name, cfg in sorted(d.items()):
     print(f"    - {name} (auth: {'yes' if cfg.get('token') else 'none'})")
@@ -105,13 +130,15 @@ PY
     exit 0
 fi
 
-SECRETS="$SECRETS" OUT="$OUT" ROOT="$ROOT" DOGFOOD_DSN="$DOGFOOD_DSN" python <<'PY'
-import json, os
+SECRETS="$SECRETS" OUT="$OUT" ROOT="$ROOT" VPS2_HOST="$VPS2_HOST" \
+VPS2_CHECKOUT="$VPS2_CHECKOUT" VPS2_PYTHON="$VPS2_PYTHON" VPS2_ENV_FILE="$VPS2_ENV_FILE" \
+python <<'PY'
+import json, os, shlex
 
 # Only the remote half needs the secrets file, so a checkout without one still
-# gets the two local dogfood servers instead of nothing. Requiring it
-# unconditionally survived the change that made the remote servers opt-in, and
-# turned "no secrets file" into "no MCP at all".
+# gets the recall servers instead of nothing. Requiring it unconditionally
+# survived the change that made the remote servers opt-in, and turned "no
+# secrets file" into "no MCP at all".
 want_remote = bool(os.environ.get("RECALL_MCP_INCLUDE_REMOTE"))
 remote = {}
 if want_remote:
@@ -122,42 +149,73 @@ if want_remote:
     if not remote:
         raise SystemExit("session-mcp: the secrets file has no 'servers' object")
 
-root, dsn = os.environ["ROOT"], os.environ["DOGFOOD_DSN"]
+host = os.environ["VPS2_HOST"]
+checkout = os.environ["VPS2_CHECKOUT"]
+python_bin = os.environ["VPS2_PYTHON"]
+env_file = os.environ["VPS2_ENV_FILE"]
 
 
-def dogfood(tenant=None):
-    """One stdio server against the dogfood corpus, optionally scoped to a tenant.
+def vps2(tenant, embedder):
+    """One stdio server run ON VPS2, against the certified generation for `tenant`.
 
-    RECALL_TRUST_MODE is set HERE and not left to the operator's shell. An MCP stdio server
-    launched with an explicit `env` block does not inherit exported variables, so a corpus that
-    searches fine from the terminal still answered INDEX_NOT_READY through the client. These two
-    servers are local, uncalibrated, developer-only corpora, which is exactly the case the relaxed
-    mode exists for; nothing else should be configured this way.
+    Three things are deliberate and each one was a measured failure before it was a rule.
+
+    **The embedder is passed per tenant, never defaulted.** The three tenants are all 1024
+    dimensions and all three are DIFFERENT models (memory `voyage:voyage-4`, code
+    `voyage:voyage-code-3`, docs `BAAI/bge-large-en-v1.5`). pgvector computes a cosine between any
+    two 1024-vectors without complaint, so the wrong embedder here does not raise, it returns a
+    confidently ranked list that means nothing. The old config sent `RECALL_EMBEDDER=fastembed`
+    (bge-small, 384d) to every server, which at least failed loudly on width; a 1024d mismatch
+    would not have.
+
+    **RECALL_ENV=production is required for the generation path.** Without it the server uses the
+    legacy store, which knows nothing about generations, so every search reports
+    `generation=None, calibration_status=missing` and a strict policy refuses it. That symptom
+    reads exactly like a broken calibration and has been misdiagnosed as one.
+
+    **RECALL_TRUST_MODE is NOT set, so the strict default stands.** These corpora are certified;
+    relaxing the gate here would mark a trusted answer `degraded` and drop `calibrated` to false.
+
+    The secrets stay on VPS2: the command sources that host's own `.env`, so nothing sensitive is
+    written into `.mcp.json`. `exec` replaces the shell so the server is the process ssh owns, and
+    a client that closes the pipe kills the server rather than orphaning it behind a live shell.
     """
-    env = {
-        "RECALL_DSN": dsn,
-        "RECALL_EMBEDDER": "fastembed",
-        "RECALL_TRUST_MODE": "development",
-    }
-    if tenant:
-        env["RECALL_TENANT"] = tenant
+    inner = (
+        f"cd {checkout} && set -a && . {env_file} && set +a && "
+        f"export RECALL_TENANT={shlex.quote(tenant)} "
+        f"RECALL_EMBEDDER={shlex.quote(embedder)} RECALL_ENV=production && "
+        f"unset RECALL_TRUST_MODE && exec {python_bin} -m recall_mcp.server"
+    )
     return {
         "type": "stdio",
-        "command": "python",
-        "args": ["-m", "recall_mcp.server"],
-        "cwd": root,
-        "env": env,
+        "command": "ssh",
+        # BatchMode: a server that blocks on a passphrase prompt is a server the client waits on
+        # forever. Fail immediately instead, so the tool list is visibly short rather than late.
+        "args": ["-o", "BatchMode=yes", host, inner],
     }
 
 
 servers = {
-    # This project's own docs, and its own memory store. The only servers whose corpus is this
-    # repository. They run with RECALL_TRUST_MODE=development, set in the env block above, because
-    # these corpora are uncalibrated and bound to no generation; a strict server refuses them with
-    # INDEX_NOT_READY, which is correct for anything but a local dogfood index.
-    "recall": dogfood(),
-    "recall-memory": dogfood("memory"),
+    # This project's own corpora, on VPS2, each bound to a certified calibration. These are the
+    # only servers whose corpus is this repository. Measured 2026-08-25, all three resolve
+    # `certified`; `recall-memory` was additionally driven end to end and answered
+    # `trust_state=trusted, calibrated=true` with the strict default in force.
+    "recall-memory": vps2("memory", "voyage:voyage-4"),
+    "recall-code": vps2("re-call-code-gen", "voyage:voyage-code-3"),
 }
+
+# The docs tenant is OFF by default, and the reason is VPS2's memory rather than its usefulness.
+# `re-call-docs` is embedded with `BAAI/bge-large-en-v1.5`, a local ONNX model that goes resident
+# in EVERY stdio server session on that host, which also runs the live trading services. The two
+# servers above are hosted-API embedders and load no model at all. Turn it on deliberately:
+#
+#   RECALL_MCP_INCLUDE_DOCS=1 scripts/session-mcp.sh
+#
+# ⚠️ Its active generation was promoted 2026-08-20 and its calibration is bound to that
+# generation, so it is certified but it does NOT contain docs written since. Certification binds
+# to a generation, never to what is on disk today.
+if os.environ.get("RECALL_MCP_INCLUDE_DOCS"):
+    servers["recall"] = vps2("re-call-docs", "BAAI/bge-large-en-v1.5")
 
 # The internal servers are OFF by default here, and that is a deliberate reversal.
 #

@@ -78,6 +78,19 @@ else
     fi
 fi
 
+# 🔁 Added 2026-08-25, because the line above was the whole report and it was NOT a health check.
+# "`.mcp.json` present (2 servers)" is true of a file pointing at a database that has been down
+# for days, and that is exactly what it was true of: both servers named a `recall-dogfood`
+# container on 127.0.0.1:5433 that was not running, and every session read the green line and
+# inferred a working corpus. A file-existence check that reads as a health check is worse than no
+# check, because it spends the reader's trust without earning it.
+#
+# So this asks the corpus itself, and reports whichever answer it gets. It never fails the
+# session: an unreachable corpus is a normal condition for a session doing something else, and a
+# setup script that refuses to open on it would just be routed around.
+say "Corpus"
+bash "$ROOT/scripts/session-corpus.sh" status 2>&1 | sed 's/^/  /'
+
 say "Database"
 bash "$ROOT/scripts/session-db.sh" status 2>&1 | sed 's/^/  /'
 printf '  start one only if you will run the DB suite:\n'

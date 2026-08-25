@@ -36,24 +36,35 @@ class TestPolicyResolution:
 
 @requires_db
 def test_cli_search_refuses_by_default_on_an_uncalibrated_table(tmp_path, cli_table, monkeypatch):
-    """No env var: the CLI must refuse rather than score against the 0.50 floor."""
+    """No env var: the CLI must refuse rather than score against the 0.50 floor.
+
+    🔁 The refusal now reaches the operator as a rendered `SystemExit`, not as a `TrustRefusal`
+    escaping to the top of the interpreter. This test used to assert the raw exception, which was
+    the behaviour rather than the requirement: letting it escape meant the most common outcome of
+    a fresh install arrived as an eleven-frame traceback, and a traceback reads as a crash in the
+    tool when what actually happened is the gate working.
+
+    What is asserted is therefore the CONTRACT, not the exception type: the code is named, the
+    remedy is named, and no traceback is involved. `recall.trust_policy` is still the home of the
+    exception, and `TestRefusalMessage` in `tests/test_cli_search_refusal.py` covers the rendering
+    itself without needing a database.
+    """
     monkeypatch.delenv("RECALL_TRUST_MODE", raising=False)
     (tmp_path / "note.md").write_text("the caching layer decision was adopted", encoding="utf-8")
     main(["--embedder", "hashing", "--dsn", TEST_DSN, "--table", cli_table,
           "index", str(tmp_path)])
 
-    from recall.trust_policy import TrustRefusal
-
-    with pytest.raises(TrustRefusal) as excinfo:
+    with pytest.raises(SystemExit) as excinfo:
         main(["--embedder", "hashing", "--dsn", TEST_DSN, "--table", cli_table,
               "search", "caching layer"])
 
-    assert excinfo.value.code in {
-        TrustFailureCode.INDEX_NOT_READY,
-        TrustFailureCode.CALIBRATION_MISSING,
-    }
+    message = str(excinfo.value.code)
+    assert any(
+        code.value in message
+        for code in (TrustFailureCode.INDEX_NOT_READY, TrustFailureCode.CALIBRATION_MISSING)
+    ), message
     # The refusal names a remedy rather than merely failing.
-    assert "no trustworthy decision" in excinfo.value.advice.lower()
+    assert "no trustworthy decision" in message.lower()
 
 
 @requires_db
