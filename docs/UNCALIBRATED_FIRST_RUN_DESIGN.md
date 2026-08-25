@@ -33,7 +33,7 @@ a **tenant**.
 | Claim | Site | Verdict |
 |---|---|---|
 | Server builds `GenerationStore` only in production | `recall_mcp/server.py:678` | confirmed |
-| Missing `generation_id` degrades to `"legacy"` | `recall_mcp/service.py:986` | confirmed. A second site uses the same default but maps it to `None` immediately after, so the two do not behave identically |
+| Missing `generation_id` degrades to `"legacy"` | `recall_mcp/service.py:999` | confirmed. A second site uses the same default but maps it to `None` immediately after, so the two do not behave identically |
 | `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:1239` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
 | `calibration = None` is deliberate, and names an open design question | `recall/cli_commands/index_search.py:349-361` | confirmed |
@@ -123,7 +123,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 
 `RECALL_ENV` is one string carrying at least six unrelated policies:
 
-1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:2254`, `recall/cli_commands/index_search.py:207`).
+1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:2506`, `recall/cli_commands/index_search.py:207`).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:376`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
    `recall_mcp/server.py:678`, `recall/cli_commands/index_search.py:259`, and the `generation_mode` parameter threaded
@@ -404,7 +404,7 @@ environment variables was really asking for.
 
 ### 4. Add `provisional` to the reasoning whitelist, and bump the API version
 
-**Decision: `recall/reasoning.py:1614` accepts `{trusted, degraded, refused, provisional}`, and
+**Decision: `recall/reasoning.py:1637` accepts `{trusted, degraded, refused, provisional}`, and
 `REASONING_API_VERSION` goes 1 → 2.** The several `!= "trusted"` comparisons keep their current
 behaviour and become an explicit named set, `_CERTIFIED_STATES = frozenset({"trusted"})`.
 
@@ -690,7 +690,7 @@ half the corpus, aborts** and reports that the candidate set does not describe t
    invalidate a calibration without touching tenant state, so a tenant can read `certified` while
    the live resolver says stale.
 4. **Adding `provisional` to `TrustState` hits an exhaustive whitelist that raises**, not a defaulted
-   mapping: `recall/reasoning.py:1614` rejects anything outside `{trusted, degraded, refused}`, on a
+   mapping: `recall/reasoning.py:1637` rejects anything outside `{trusted, degraded, refused}`, on a
    versioned API whose version is unbumped, plus several `!= "trusted"` comparisons that would
    silently downgrade.
 5. **The strict gate is binary on `CERTIFIED`.** `code_for_status` returns a failure code for

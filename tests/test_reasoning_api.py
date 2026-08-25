@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -764,6 +765,27 @@ def test_planner_trace_and_budget_usage_round_trip_as_typed_objects() -> None:
     assert isinstance(decoded.diagnostics.budget_used, ReasoningBudgetUsage)
     assert decoded.reasoning_trace.initial_retrieval.trusted_hit_ids == ("old",)
     assert decoded.diagnostics.budget_used.graph_nodes >= 1
+
+
+def test_graph_precision_diagnostics_round_trip_as_additive_fields() -> None:
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+    response = reason(_request(_result(_hit(chunk))))
+    response = replace(
+        response,
+        diagnostics=replace(
+            response.diagnostics,
+            graph_admission_rejections={"hub_entity": 2, "cosine_admission": 1},
+            graph_gate_reason="graph_gate_not_met",
+            graph_policy_fingerprint="f" * 64,
+        ),
+    )
+    decoded = reasoning_response_from_dict(json.loads(json.dumps(response.to_dict())))
+    assert decoded.diagnostics.graph_admission_rejections == {
+        "hub_entity": 2,
+        "cosine_admission": 1,
+    }
+    assert decoded.diagnostics.graph_gate_reason == "graph_gate_not_met"
+    assert decoded.diagnostics.graph_policy_fingerprint == "f" * 64
 
 
 def test_deserialization_requires_nested_trust_state_to_match_top_level() -> None:

@@ -63,6 +63,26 @@ authored semantic relations, re-evaluates every candidate through the ordinary t
 appends only trusted evidence. It cannot promote a demoted hit, bypass calibration, use model
 proposals, or change ordinary `recall_search` and `recall_evidence` behavior.
 
+### Precision admission policy
+
+The production `one_hop` path uses the combined precision policy. Positive traversal is directional
+for `supports`, `references`, `depends_on`, and `caused`. `contradicts` is retained as a diagnostic
+and `same_entity` is identity resolution only. Relation evidence must intersect the trusted seed
+chunks, and reverse traversal is refused. Candidate ranking uses the calibrated query cosine
+first, followed by distinct trusted seed corroboration, distinct supporting relations, relation
+confidence, and chunk id. Relation confidence never replaces the calibrated retrieval score.
+
+An entity mentioned by more than 32 distinct chunks is a hub and cannot seed traversal unless the
+normalized query contains an exact entity alias. A candidate must have a query cosine and be no
+more than 0.10 below the strongest trusted seed cosine. Selective expansion refuses to traverse
+when at least two trusted initial items exist without a retrieval gap. In every case, admitted
+chunks are sent through the ordinary trust layer again.
+
+The internal evaluation harness can isolate each policy component and run shuffled or removed
+relation controls with `RECALL_GRAPH_PRECISION_VARIANT` and
+`RECALL_GRAPH_RELATION_CONTROL`. The active policy fingerprint and sanitized rejection counters
+are included in reasoning diagnostics. These controls are not public graph modes.
+
 ## Purpose
 
 The reasoning graph is a derived, immutable projection over one index generation. It is a typed
