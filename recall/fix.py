@@ -239,8 +239,9 @@ def propose_fixes(
         except (UnicodeDecodeError, OSError):
             continue
         bodies[rel[f]] = body
-        if meta.get("supersedes"):
-            existing[rel[f]] = meta["supersedes"]
+        target = meta.get("supersedes")
+        if isinstance(target, str) and target:
+            existing[rel[f]] = target
 
     proposals: list[Proposal] = []
     unfixable: list[Unfixable] = []

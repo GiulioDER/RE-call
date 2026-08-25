@@ -309,7 +309,7 @@ def _run_rewrite(args: argparse.Namespace) -> None:
                 print(f"  UNREADABLE {_rel(path)}: {exc}")
                 continue
             target = meta.get("supersedes")
-            if not target:
+            if not isinstance(target, str) or not target:
                 continue
             matches = by_key.get(supersedes_key(target), [])
             if not matches:

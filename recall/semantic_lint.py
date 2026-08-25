@@ -130,7 +130,7 @@ def semantic_lint(
         document = parse_document(f.read_text(encoding="utf-8-sig"))
         meta, body = document.meta, document.human_body
         target = meta.get("supersedes")
-        supersedes[f.name] = {target} if target else set()
+        supersedes[f.name] = {target} if isinstance(target, str) and target else set()
         closed[f.name] = is_closed_decision(body)
         body_text[f.name] = body
         self_chunks[f.name] = max(1, len(chunk_text(body)))
