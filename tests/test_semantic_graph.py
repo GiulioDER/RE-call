@@ -1,9 +1,13 @@
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import timedelta
 
 import pytest
 
-from recall.semantic_graph import build_semantic_graph, normalize_entity_name
+from recall.semantic_graph import (
+    SemanticRelation,
+    build_semantic_graph,
+    normalize_entity_name,
+)
 from recall.types import Chunk, Provenance, StalenessReport, TrustedHit, TrustedResult, Validity
 
 
@@ -15,6 +19,94 @@ def _graph(*chunks: Chunk):
         pipeline_fingerprint="p" * 64,
         corpus_fingerprint="c" * 64,
     )
+
+
+def _run_precision_graph(
+    chunks: list[Chunk],
+    seed_ids: tuple[str, ...] = ("seed",),
+    *,
+    projection=None,
+    query_scores=None,
+    query: str = "q",
+    gap_warning: bool = False,
+    max_graph_nodes: int = 32,
+):
+    from recall_mcp.service import _expand_semantic_graph
+    from recall.reasoning import (
+        GenerationSelection,
+        ReasoningPolicy,
+        ReasoningProviderPorts,
+        ReasoningRequest,
+    )
+    from recall.reasoning_planner import ReasoningBudget
+
+    graph = projection or _graph(*chunks)
+    chunk_by_id = {chunk.id: chunk for chunk in chunks}
+    scores = query_scores or {}
+
+    class Store:
+        tenant = "tenant-a"
+        generation_id = "generation-a"
+
+        def iter_chunks(self):
+            return iter(chunks)
+
+        def load_semantic_graph(self, generation_id=None):
+            del generation_id
+            return graph
+
+        def graph_readiness(self):
+            return graph.readiness()
+
+        def supersession_all(self):
+            return {}, frozenset(), {}
+
+        def supersession(self):
+            return {}, frozenset()
+
+        def cosines_for(self, ids, vec):
+            del vec
+            return {chunk_id: scores.get(chunk_id, 0.95) for chunk_id in ids}
+
+    hits = [
+        TrustedHit(
+            chunk_by_id[chunk_id],
+            1.0 - index * 0.05,
+            1.0,
+            "ok",
+            Provenance(chunk_by_id[chunk_id].source, chunk_by_id[chunk_id].source, 0, None),
+            Validity(None, None, None),
+        )
+        for index, chunk_id in enumerate(seed_ids)
+    ]
+    retrieval = TrustedResult(
+        query=query,
+        hits=hits,
+        abstained=False,
+        reason="",
+        gap_warning=gap_warning,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="legacy_unbound",
+    )
+    request = ReasoningRequest(
+        query=query,
+        tenant_id="tenant-a",
+        generation=GenerationSelection("generation-a", "p" * 64, "c" * 64),
+        providers=ReasoningProviderPorts(retriever=lambda _: retrieval),
+        policy=ReasoningPolicy(graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_hops=1, max_graph_nodes=max_graph_nodes),
+    )
+
+    class Embedder:
+        def embed_query(self, text):
+            del text
+            return [1.0]
+
+    return _expand_semantic_graph(Store(), request, retrieval, None, Embedder())
 
 
 def test_entity_normalization_is_unicode_and_whitespace_stable():
@@ -229,6 +321,10 @@ def test_one_hop_expansion_appends_only_candidates_that_pass_trust():
         def supersession(self):
             return {}, frozenset()
 
+        def cosines_for(self, ids, vec):
+            del vec
+            return {chunk_id: 0.9 for chunk_id in ids}
+
     seed = TrustedHit(
         chunks[0],
         1.0,
@@ -258,8 +354,175 @@ def test_one_hop_expansion_appends_only_candidates_that_pass_trust():
         policy=ReasoningPolicy(graph_expansion="one_hop"),
         budget=ReasoningBudget(max_graph_hops=1),
     )
-    result = _expand_semantic_graph(Store(), request, retrieval, None)
+    class Embedder:
+        def embed_query(self, text):
+            del text
+            return [1.0]
+
+    result = _expand_semantic_graph(Store(), request, retrieval, None, Embedder())
     assert result.readiness == "ready"
     assert [hit.chunk.id for hit in result.retrieval.hits] == ["c1", "c2"]
     assert result.candidates_discovered == 2
     assert result.candidates_rejected == 1
+
+
+def test_directional_traversal_refuses_reverse_relation():
+    chunks = [
+        Chunk("seed", "seed.md", "seed", {"project": "A"}),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"project": "B"}),
+    ]
+    graph = _graph(*chunks)
+    entities = {entity.normalized_name: entity.id for entity in graph.entities}
+    reverse = SemanticRelation(
+        id="reverse-relation",
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        subject_id=entities["b"],
+        object_id=entities["a"],
+        relation="supports",
+        evidence_chunk_ids=("seed",),
+        extraction_method="explicit_relation",
+        confidence=1.0,
+    )
+    graph = replace(
+        graph,
+        mentions=tuple(mention for mention in graph.mentions if mention.entity_id == entities["a"]),
+        relations=(reverse,),
+    )
+    result = _run_precision_graph(chunks, projection=graph)
+    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed"]
+    assert dict(result.admission_rejections)["relation_direction"] == 1
+
+
+@pytest.mark.parametrize("relation_kind", ("supports", "references", "depends_on", "caused"))
+def test_directional_traversal_allows_supported_outgoing_relations(relation_kind):
+    chunks = [
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "project": ["A", "B"],
+                "relations": [{"relation": relation_kind, "subject": "A", "object": "B"}],
+            },
+        ),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"project": "B"}),
+    ]
+    result = _run_precision_graph(chunks)
+    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed", "neighbor"]
+    assert result.relations_inspected == 1
+
+
+def test_contradiction_and_identity_relations_do_not_expand():
+    for relation_kind in ("contradicts", "same_entity"):
+        chunks = [
+            Chunk(
+                "seed",
+                "seed.md",
+                "seed",
+                {
+                    "project": ["A", "B"],
+                    "relations": [
+                        {"relation": relation_kind, "subject": "A", "object": "B"}
+                    ],
+                },
+            ),
+            Chunk("neighbor", "neighbor.md", "neighbor", {"project": "B"}),
+        ]
+        result = _run_precision_graph(chunks)
+        assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed"]
+        assert dict(result.admission_rejections)["relation_type"] == 1
+
+
+def test_relative_cosine_gate_rejects_distant_candidates():
+    chunks = [
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "project": ["A", "B"],
+                "relations": [{"relation": "supports", "subject": "A", "object": "B"}],
+            },
+        ),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"project": "B"}),
+    ]
+    result = _run_precision_graph(chunks, query_scores={"neighbor": 0.7})
+    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed"]
+    assert dict(result.admission_rejections)["cosine_admission"] == 1
+
+
+def test_hub_entity_is_refused_without_exact_query_alias(monkeypatch):
+    monkeypatch.setenv("RECALL_GRAPH_PRECISION_VARIANT", "hub")
+    chunks = [
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "project": ["A", "B"],
+                "relations": [{"relation": "supports", "subject": "A", "object": "B"}],
+            },
+        ),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"project": "B"}),
+    ] + [Chunk(f"hub-{index}", f"hub-{index}.md", "hub", {"project": "A"}) for index in range(32)]
+    result = _run_precision_graph(chunks)
+    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed"]
+    assert dict(result.admission_rejections)["hub_entity"] == 1
+
+
+def test_hub_entity_exact_query_alias_can_expand(monkeypatch):
+    monkeypatch.setenv("RECALL_GRAPH_PRECISION_VARIANT", "hub")
+    chunks = [
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "project": ["A", "B"],
+                "relations": [{"relation": "supports", "subject": "A", "object": "B"}],
+            },
+        ),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"project": "B"}),
+    ] + [Chunk(f"hub-{index}", f"hub-{index}.md", "hub", {"project": "A"}) for index in range(32)]
+    result = _run_precision_graph(chunks, query="about A")
+    assert result.candidates_discovered >= 1
+    assert "hub_entity" not in dict(result.admission_rejections)
+
+
+def test_selective_gate_refuses_when_initial_retrieval_is_sufficient():
+    chunks = [
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "project": ["A", "B"],
+                "relations": [{"relation": "supports", "subject": "A", "object": "B"}],
+            },
+        ),
+        Chunk("seed-2", "seed-2.md", "seed two", {"project": "A"}),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"project": "B"}),
+    ]
+    result = _run_precision_graph(chunks, seed_ids=("seed", "seed-2"))
+    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed", "seed-2"]
+    assert result.gate_reason == "graph_gate_not_met"
+    assert dict(result.admission_rejections)["selective_gate"] == 1
+
+
+def test_selective_gate_allows_expansion_for_single_seed_with_gap():
+    chunks = [
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "project": ["A", "B"],
+                "relations": [{"relation": "supports", "subject": "A", "object": "B"}],
+            },
+        ),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"project": "B"}),
+    ]
+    result = _run_precision_graph(chunks, gap_warning=True)
+    assert result.gate_reason is None
+    assert result.candidates_discovered == 1

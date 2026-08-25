@@ -31,6 +31,25 @@ traversal. Ambiguous entities, unavailable graph rows, fingerprint mismatches, a
 generations fail closed with a typed graph readiness result while preserving original trusted
 evidence.
 
+Graph precision tuning is an internal admission policy for `one_hop`; it does not add a public
+mode and does not affect `off`. The combined policy applies directional outgoing traversal for
+positive relations, keeps `contradicts` and `same_entity` diagnostic or identity only, accumulates
+distinct seed and relation corroboration, suppresses high degree entity hubs unless the query has
+an exact alias, applies a relative query cosine gate, and refuses expansion when the initial
+retrieval is already sufficient. The default hub threshold is 32 chunks and the default cosine
+margin is 0.10. Every graph response includes a policy fingerprint and sanitized admission reason
+counters so evaluation artifacts cannot mix policies. These internal evaluation variables are not
+part of the public request surface:
+
+* `RECALL_GRAPH_PRECISION_VARIANT` selects one isolated tuning arm or `combined`.
+* `RECALL_GRAPH_RELATION_CONTROL` selects `none`, `shuffled`, or `removed` for evaluation only.
+* `RECALL_GRAPH_HUB_DEGREE_THRESHOLD` accepts 16, 32, or 64.
+* `RECALL_GRAPH_COSINE_MARGIN` accepts 0.05, 0.10, or 0.15.
+
+All graph candidates still pass normal trust evaluation and retain their original chunk citation.
+The precision evaluation protocol is recorded in
+`benchmarks/PREREGISTRATION-evidence-graph-precision-tuning-v1.md`.
+
 The core library does not require a managed database or a managed reasoning service. The core uses
 typed Python APIs and provider ports. PostgreSQL is one supported durable store for RE-call
 retrieval and generation serving, not a managed reasoning dependency.
@@ -143,6 +162,10 @@ Evidence Graph V1 metrics:
 * `recall_graph_query_total`, `recall_graph_expansion_total`, `recall_graph_candidates_total`,
   `recall_graph_rejected_candidates_total`, and `recall_graph_diagnostics_total` describe query
   expansion work.
+* `recall_graph_relations_rejected_total{reason}` and
+  `recall_graph_candidates_rejected_total{reason}` count sanitized admission refusals.
+* `recall_graph_gate_refused_total{reason}` counts selective gate refusals, and
+  `recall_graph_policy_total{policy}` records the active policy fingerprint prefix.
 * `recall_graph_latency_ms` records graph build and expansion latency.
 
 Histograms:

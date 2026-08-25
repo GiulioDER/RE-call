@@ -290,6 +290,13 @@ flowchart TB
     class TR,CAL trustPath;
 ```
 
+The optional path uses the combined precision admission policy: authored relations are followed
+outward only, high degree hubs are suppressed unless explicitly named, candidates must remain
+within the relative query cosine gate, and expansion is skipped when trusted retrieval is already
+sufficient. Every admitted neighbor returns through the same trust and citation validation path.
+The policy is diagnostic and opt in; `graph_expansion=off` keeps the default retrieval path
+unchanged.
+
 ## Product surface
 
 | Area | Ships today |

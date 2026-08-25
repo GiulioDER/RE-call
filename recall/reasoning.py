@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field as dataclass_field, fields, is_dataclass
 import time
 from datetime import datetime
 from enum import Enum
@@ -114,6 +114,9 @@ class SemanticGraphExpansionResult:
     candidates_rejected: int = 0
     diagnostics_encountered: int = 0
     latency_ms: float = 0.0
+    admission_rejections: tuple[tuple[str, int], ...] = ()
+    gate_reason: str | None = None
+    policy_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -218,6 +221,9 @@ class ReasoningDiagnostics:
     graph_candidates_rejected: int = 0
     graph_diagnostics_encountered: int = 0
     graph_expansion_latency_ms: float = 0.0
+    graph_admission_rejections: Mapping[str, int] = dataclass_field(default_factory=dict)
+    graph_gate_reason: str | None = None
+    graph_policy_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -642,6 +648,16 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         ),
         graph_expansion_latency_ms=_required_float(
             diagnostics_payload.get("graph_expansion_latency_ms", 0.0)
+        ),
+        graph_admission_rejections={
+            str(key): _required_int(value)
+            for key, value in _mapping(
+                diagnostics_payload.get("graph_admission_rejections", {})
+            ).items()
+        },
+        graph_gate_reason=_optional_str(diagnostics_payload.get("graph_gate_reason")),
+        graph_policy_fingerprint=_optional_str(
+            diagnostics_payload.get("graph_policy_fingerprint")
         ),
     )
     return ReasoningResponse(
@@ -1235,6 +1251,13 @@ def _response(
             graph_candidates_rejected=(graph_expansion.candidates_rejected if graph_expansion else 0),
             graph_diagnostics_encountered=(graph_expansion.diagnostics_encountered if graph_expansion else 0),
             graph_expansion_latency_ms=(graph_expansion.latency_ms if graph_expansion else 0.0),
+            graph_admission_rejections=(
+                dict(graph_expansion.admission_rejections) if graph_expansion else {}
+            ),
+            graph_gate_reason=(graph_expansion.gate_reason if graph_expansion else None),
+            graph_policy_fingerprint=(
+                graph_expansion.policy_fingerprint if graph_expansion else None
+            ),
         ),
     )
 
