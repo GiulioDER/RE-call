@@ -21,6 +21,7 @@ from recall.decision_ledger import DecisionLedger
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall.embeddings import (
     Embedder,
+    embed_query,
     embedder_artifact_digest,
     embedding_profile_id,
 )
@@ -1792,6 +1793,7 @@ def _expand_semantic_graph(
     request: ReasoningRequest,
     retrieval: TrustedResult,
     calibration: Calibration | None,
+    embedder: Embedder,
 ) -> SemanticGraphExpansionResult:
     """Expand trusted seeds through one persisted semantic hop and re-run trust evaluation."""
     started = time.perf_counter()
@@ -1830,6 +1832,8 @@ def _expand_semantic_graph(
     for relation in semantic.relations:
         if relation.status != "authored":
             continue
+        if not set(relation.evidence_chunk_ids).intersection(trusted_seed_ids):
+            continue
         if relation.subject_id in ambiguous_entities or relation.object_id in ambiguous_entities:
             continue
         if relation.subject_id not in seed_entities and relation.object_id not in seed_entities:
@@ -1848,10 +1852,14 @@ def _expand_semantic_graph(
             if rank > relation_rank.get(chunk_id, (-1.0, -1, "")):
                 relation_rank[chunk_id] = rank
 
+    graph_candidate_ids = tuple(relation_rank)
+    query_vector = embed_query(embedder, request.query)
+    query_scores = store.cosines_for(graph_candidate_ids, query_vector)
     ordered_candidate_ids = tuple(
         sorted(
             relation_rank,
             key=lambda chunk_id: (
+                -query_scores.get(chunk_id, float("-inf")),
                 -relation_rank[chunk_id][0],
                 -relation_rank[chunk_id][1],
                 chunk_id,
@@ -1876,7 +1884,7 @@ def _expand_semantic_graph(
         scored.append(
             ScoredChunk(
                 chunk=Chunk(chunk_id, node.source, text, metadata),
-                score=relation_rank[chunk_id][0],
+                score=query_scores.get(chunk_id, 0.0),
             )
         )
 
@@ -2107,7 +2115,7 @@ def reasoning_query(
         def graph_expansion_provider(
             request: ReasoningRequest, retrieval: TrustedResult
         ) -> SemanticGraphExpansionResult:
-            return _expand_semantic_graph(store, request, retrieval, calibration)
+            return _expand_semantic_graph(store, request, retrieval, calibration, embedder)
 
         retriever_port: ReasoningRetriever = retrieve
         graph_port: ReasoningGraphProvider = graph_provider

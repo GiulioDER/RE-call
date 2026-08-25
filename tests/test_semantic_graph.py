@@ -229,6 +229,10 @@ def test_one_hop_expansion_appends_only_candidates_that_pass_trust():
         def supersession(self):
             return {}, frozenset()
 
+        def cosines_for(self, ids, vec):
+            del vec
+            return {chunk_id: 0.9 for chunk_id in ids}
+
     seed = TrustedHit(
         chunks[0],
         1.0,
@@ -258,7 +262,12 @@ def test_one_hop_expansion_appends_only_candidates_that_pass_trust():
         policy=ReasoningPolicy(graph_expansion="one_hop"),
         budget=ReasoningBudget(max_graph_hops=1),
     )
-    result = _expand_semantic_graph(Store(), request, retrieval, None)
+    class Embedder:
+        def embed_query(self, text):
+            del text
+            return [1.0]
+
+    result = _expand_semantic_graph(Store(), request, retrieval, None, Embedder())
     assert result.readiness == "ready"
     assert [hit.chunk.id for hit in result.retrieval.hits] == ["c1", "c2"]
     assert result.candidates_discovered == 2
