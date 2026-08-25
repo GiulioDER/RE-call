@@ -719,7 +719,7 @@ refuses rather than assuming it.</span>
 
           <div class="notice">
             <p class="notice-title">Not an error. It is the label doing its job.</p>
-            <p>In development mode the threshold in use is an uncertified demonstration value, bound to no corpus and no model. The flag is RE-call telling you so on every single result, so that nothing downstream can present these answers as measured ones. It disappears when you calibrate, and not before.</p>
+            <p>In development mode the threshold in use is an uncertified demonstration value, bound to no corpus and no model. The flag is RE-call telling you so on every single result, so that nothing downstream can present these answers as measured ones. It disappears when a calibration is <em>published against a promoted generation</em>, and not before — running the single machine <code>calibrate</code> command writes a measurement you can read, but it does not clear this flag, because that file is bound to no tenant, generation or corpus. The <a href="calibration.html">calibration page</a> walks both steps and says which is which.</p>
           </div>
 
           <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Nothing was indexed</h3>
