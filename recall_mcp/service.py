@@ -1857,6 +1857,7 @@ def _expand_semantic_graph(
         ).encode("utf-8")
     ).hexdigest()
     rejections: dict[str, int] = {}
+    semantic_diagnostic_count = 0
 
     def reject(reason: str, count: int = 1) -> None:
         if count > 0:
@@ -1880,7 +1881,7 @@ def _expand_semantic_graph(
             "recall_graph_rejected_candidates_total",
             value=sum(rejections.values()),
         )
-        METRICS.increment("recall_graph_diagnostics_total", value=len(semantic.diagnostics))
+        METRICS.increment("recall_graph_diagnostics_total", value=semantic_diagnostic_count)
         METRICS.increment("recall_graph_policy_total", policy=policy_fingerprint[:16])
         if gate_reason is not None:
             METRICS.increment("recall_graph_gate_refused_total", reason=gate_reason)
@@ -1900,7 +1901,7 @@ def _expand_semantic_graph(
             relations_inspected=relations,
             candidates_discovered=candidates,
             candidates_rejected=sum(rejections.values()),
-            diagnostics_encountered=len(semantic.diagnostics),
+            diagnostics_encountered=semantic_diagnostic_count,
             latency_ms=latency_ms,
             admission_rejections=rejection_items,
             gate_reason=gate_reason,
@@ -1918,6 +1919,7 @@ def _expand_semantic_graph(
             readiness="GRAPH_NOT_READY",
             gate_reason="graph_not_ready",
         )
+    semantic_diagnostic_count = len(semantic.diagnostics)
     if (
         retrieval.generation_id
         and graph.generation_id
@@ -2068,7 +2070,7 @@ def _expand_semantic_graph(
                 relation.evidence_chunk_ids
             )
             candidate["best_confidence"] = max(
-                float(candidate["best_confidence"]), float(relation.confidence)
+                cast(float, candidate["best_confidence"]), relation.confidence
             )
 
     candidate_count = len(candidates_by_chunk)
@@ -2110,9 +2112,9 @@ def _expand_semantic_graph(
                 if use_corroboration
                 else 0
             ),
-            -float(candidates_by_chunk[chunk_id]["best_confidence"]),
+            -cast(float, candidates_by_chunk[chunk_id]["best_confidence"]),
             -(
-                int(candidates_by_chunk[chunk_id]["neighbor_chunk_count"])
+                cast(int, candidates_by_chunk[chunk_id]["neighbor_chunk_count"])
                 if not use_corroboration
                 else 0
             ),

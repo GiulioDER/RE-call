@@ -9,12 +9,24 @@ import math
 import os
 import time
 from types import SimpleNamespace
+from typing import Protocol
 from urllib import request
 from urllib.parse import urlparse
 
 from recall.provider_metadata import ProviderMetadata
 
 ANSWER_PROMPT_DIGEST = hashlib.sha256(b"recall-answer-provider-v1").hexdigest()
+
+
+class _AnswerClient(Protocol):
+    def chat(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        thinking: bool,
+    ) -> object: ...
 
 
 class OllamaAnswerProvider:
@@ -24,7 +36,7 @@ class OllamaAnswerProvider:
 
     def __init__(
         self,
-        client: object,
+        client: _AnswerClient,
         *,
         model_id: str,
         revision: str = "unpinned",
