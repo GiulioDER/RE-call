@@ -11,6 +11,7 @@ the env under test — the honest path, not a re-implementation of the parsing.
 """
 from __future__ import annotations
 
+import inspect
 import os
 import subprocess
 import sys
@@ -89,3 +90,76 @@ def test_streamable_http_run_passes_transport_security(monkeypatch):
     assert calls["transport_security"].enable_dns_rebinding_protection is True
     assert calls["transport_security"].allowed_hosts == ["recall.example.com"]
     assert calls["transport_security"].allowed_origins == ["https://recall.example.com"]
+
+
+# ---------------------------------------------------------------------------------------------
+# require_effective_rls: an RLS-bypassing role is fatal for multi-tenant serving (SEC audit)
+#
+# The decision lives in a free function precisely so BOTH verdicts are reachable without an
+# embedder, a database and a token registry. Inline in `_lifespan` the refusing half could only
+# be reached by a full startup, which is why it was a warning for as long as it was.
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("multi_tenant", [True, False])
+def test_an_effective_rls_role_produces_neither_warning_nor_refusal(multi_tenant):
+    assert server.require_effective_rls(rls_effective=True, multi_tenant=multi_tenant) is None
+
+
+def test_a_bypassing_role_only_warns_when_one_tenant_is_served():
+    """stdio and single-tenant keep the warning on purpose.
+
+    There is no second tenant to leak to, and `docker-compose.desktop.yml` ships the cluster
+    superuser deliberately, so refusing here would break every local install to defend a boundary
+    those deployments do not have.
+    """
+    warning = server.require_effective_rls(rls_effective=False, multi_tenant=False)
+    assert warning is not None
+    assert "bypasses row-level security" in warning
+
+
+def test_a_bypassing_role_refuses_to_serve_multiple_tenants():
+    with pytest.raises(RuntimeError) as excinfo:
+        server.require_effective_rls(rls_effective=False, multi_tenant=True)
+    message = str(excinfo.value)
+    # Names the condition, the consequence, and the fix. An operator hitting this at boot has to
+    # be able to act on it without reading the source; a bare "refusing to serve" cannot be acted
+    # on and is the failure mode that gets worked around with the wrong knob.
+    assert "bypasses row-level security" in message
+    assert "unprivileged role" in message
+
+
+def test_the_refusal_is_wired_to_the_registry_and_not_to_something_weaker():
+    """The guard must be asked the MULTI-TENANT question, not a proxy for it.
+
+    Asserted against the source because this is where a refactor silently defeats the gate: pass
+    `multi_tenant=False`, or a condition that is merely correlated with multi-tenancy, and every
+    test above still passes while the server goes back to warning. `registry is not None` holds
+    exactly when a token registry was built, which `build_auth` permits only for HTTP.
+    """
+    source = inspect.getsource(server)
+    assert "multi_tenant=registry is not None" in source, (
+        "the RLS gate is no longer driven by whether a store registry exists; if the call site "
+        "moved, re-derive the multi-tenant condition rather than relaxing this assertion"
+    )
+
+
+def test_the_refusal_releases_the_pool_it_was_holding():
+    """A raise out of the lifespan after the registry is open must not strand its connections.
+
+    Read from the module source rather than from `server._lifespan`: the lifespan is nested
+    inside `build_server`, so it is not a module attribute and `inspect.getsource` cannot reach
+    it. Slicing the source is the honest way to assert on a closure without building a server.
+    """
+    source = inspect.getsource(server)
+    # The CALL site, not the definition: the definition's docstring also names the function.
+    after_call = source.split("rls_effective=probe.check_rls_effective()", 1)[1]
+    handler = after_call.split("if rls_warning is not None", 1)[0]
+    # Comments stripped before the ordering check. The first version of this test matched the
+    # word "raises" inside the explanatory comment and reported the close as coming too late,
+    # which is a test failing on its own prose rather than on the code it guards.
+    statements = "\n".join(
+        ln for ln in handler.splitlines() if not ln.strip().startswith("#")
+    )
+    assert "registry.close()" in statements
+    assert statements.index("registry.close()") < statements.index("raise")
