@@ -250,9 +250,23 @@ config (never a URL or a token), and will not reverse a server you have explicit
 
   That refusal is correct and it is loud on the server's stderr, but an MCP client shows it as a
   server that simply has no tools, which is also the symptom of a missing file, an unapproved
-  server and an unreachable host. `scripts/session-mcp.sh` therefore names the checkout in
-  `RECALL_VPS2_CHECKOUT` rather than assuming `engine`. When the corpus is migrated, that variable
-  is what has to move with it.
+  server and an unreachable host.
+
+  🔑 **The fix is a symlink on VPS2, not a path in this repository.** `~/recall-repos/serving`
+  points at whichever checkout matches the database (`graph-annotations-6d3aeb28`, 0.10.0,
+  migration 0016, as of 2026-08-25), and `scripts/session-mcp.sh` names the symlink. A branch
+  worktree is a moving target that vanishes when the branch is done, so pinning one here would put
+  the repair in a repository that cannot see the breakage. **Whoever migrates the corpus repoints
+  `serving` on the host that migrated it, in the same operation**, and every checkout follows
+  without being edited. `RECALL_VPS2_CHECKOUT` overrides it for a one-off.
+
+  ```bash
+  ssh vps2 'cd ~/recall-repos && ln -sfn <checkout> serving && ls -ld serving'
+  ```
+
+  ⚠️ Use `ln -sfn`, not `ln -sf`. Without `-n`, if `serving` is an existing symlink to a directory
+  the link is created *inside* the target rather than replacing it, and the result resolves to
+  nothing while looking like it worked.
 
   ⚠️ **Migration numbers have already collided across branches here.** `semantic_graph_foundation`
   is `0016` on master and `0015` on the `engine-heading-contextualization-033a7fbc` checkout, where

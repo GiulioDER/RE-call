@@ -40,14 +40,22 @@ OUT="$ROOT/.mcp.json"
 # server runs ON VPS2 over ssh stdio: corpus, key and models are already there, no tunnel is
 # needed, and `.mcp.json` carries NO secret at all because it sources that `.env` on the far side.
 #
-# ⚠️ The serving checkout must sit at the DATABASE's migration level, which is why this is a
-# variable rather than `engine`. Measured 2026-08-25: the database is at 0016, while
-# `~/recall-repos/engine` is recall 0.9.6 and knows only up to 0014, so the server refuses to
-# start against it with `SchemaTooNew: table 'chunks' has unknown schema migration(s)
-# ['0015','0016']`. That refusal is correct and loud. It is also why a stale default here costs a
-# session its tools, silently, from the client's point of view.
+# ⚠️ The serving checkout must sit at the DATABASE's migration level. Measured 2026-08-25: the
+# database is at 0016, while `~/recall-repos/engine` is recall 0.9.6 and knows only up to 0014, so
+# the server refuses to start against it with `SchemaTooNew: table 'chunks' has unknown schema
+# migration(s) ['0015','0016']`. That refusal is correct and loud on the server's stderr; an MCP
+# client renders it as a server with no tools, which is also the symptom of a missing file, an
+# unapproved server and an unreachable host. So a stale value here costs a session its tools in
+# the one shape that is hardest to diagnose.
+#
+# 🔑 This names `serving`, a SYMLINK on VPS2, and not the checkout it currently resolves to
+# (`graph-annotations-6d3aeb28`, 0.10.0, migration 0016). The distinction is the whole point: a
+# branch worktree is a moving target that disappears when the branch is done, and pinning one here
+# would put the repair in this repository, on a machine that cannot see the breakage. With the
+# symlink, whoever migrates the corpus repoints `serving` on the host that migrated it, in the
+# same operation, and every checkout of this repository follows without being edited.
 VPS2_HOST="${RECALL_VPS2_HOST:-vps2}"
-VPS2_CHECKOUT="${RECALL_VPS2_CHECKOUT:-~/recall-repos/graph-annotations-6d3aeb28}"
+VPS2_CHECKOUT="${RECALL_VPS2_CHECKOUT:-~/recall-repos/serving}"
 VPS2_PYTHON="${RECALL_VPS2_PYTHON:-~/recall-repos/.venv/bin/python}"
 VPS2_ENV_FILE="${RECALL_VPS2_ENV:-~/recall-repos/.env}"
 
