@@ -169,6 +169,12 @@ RECALL_MODEL_CACHE=
 RECALL_MODEL_SHA256=
 RECALL_QWEN_MODEL_PATH=
 
+# `RECALL_EMBED_PROFILE` is consumed consistently by the CLI, MCP service, setup, calibration,
+# and generation builders. Selecting `bge-small-context-section-v1` changes the passage sent to
+# the embedder while leaving stored evidence text unchanged. It requires a new generation,
+# reindexing the corpus, and independent profile-specific calibration. No database schema
+# migration is required because profile and heading metadata are stored in JSONB.
+
 # Fixed service cost profile. Run separate processes for fast, quality, and code traffic; a client
 # cannot select the expensive path per request. Leaving this unset keeps the pre-profile
 # behaviour, in which the legacy RECALL_RERANK switch still decides reranking. Setting BOTH to

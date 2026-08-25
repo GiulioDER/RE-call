@@ -20,6 +20,13 @@ Registered identifiers: `bge-small-symmetric-v1`, `bge-small-asymmetric-v1`, `bg
 
 Passage encoding is used for indexing and for dimension discovery. Query encoding is used for retrieval, calibration, semantic lint, evaluation and the timing wrappers. An embedder that implements only `embed` keeps working: both helpers fall back to it, and its cached vectors are keyed under a legacy descriptor that no verified profile can collide with.
 
+Profile selection is shared by the CLI, MCP server, and immutable generation builder through
+`RECALL_EMBED_PROFILE`. It must name a registered profile and is valid only with `fastembed`.
+When it is unset, the legacy resolver and raw passage mode remain unchanged. The section profile
+is `bge-small-context-section-v1`; it requires a fresh generation, a full reindex, and a new
+generation bound calibration. An existing calibration must not be reused because the pipeline
+identity and passage representation differ.
+
 ## Embedding cache identity
 
 The embedding cache is keyed by the complete immutable profile identity, not by the profile identifier. `EmbeddingProfile.fingerprint` covers every identity field, including `artifact_digest`, `context_version` and the pinned inference library version, and the cache key adds the purpose (`query`, `passage` or `legacy`), the dimension and the text.
@@ -47,6 +54,12 @@ Three context modes build the text handed to the embedder. They are declared by 
 **The load-bearing invariant: raw chunk content and raw content hashes are byte-identical across generations and across all three modes.** A context mode changes what is embedded and nothing else, so a cutover between generations built under different modes changes how the corpus is retrieved, never what it says. `tests/test_context_modes.py` asserts it over five corpus shapes (with frontmatter, without, no headings, nested headings, and across chunker boundaries) and `tests/test_context_modes_index.py` asserts it again against stored PostgreSQL rows, including a real dual write with the two generations on different modes.
 
 The one field that deliberately **does** change with the mode is `index_fingerprint`, the value the indexer compares to decide whether a file needs re-indexing. If it did not move, switching a generation's context mode would skip every unchanged file and leave vectors built under the old mode in place.
+
+Immutable generation records carry the profile and context identity when a registered profile is
+used. This keeps raw and section generations on distinct pipeline fingerprints while preserving
+the serialized fingerprint of older raw generations. Generation builds use the same contextual
+passage renderer as direct indexing, so the shadow generation has identical raw evidence and only
+the embedding representation changes.
 
 The rendered form is one `field: value` per line. It is text to EMBED and never text to parse: the chunk itself is interpolated verbatim, because rule 5 preserves it, so a document containing a line that looks like a field will render one. Structural fields cannot forge a line (control characters are stripped) and neither can a neighbour excerpt (it is folded), but do not write a parser against this format.
 
