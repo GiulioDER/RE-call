@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-import math
 import random
 import sys
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
+from typing import cast
 
 
 def _values(rows: list[dict[str, object]], key: str) -> list[float]:
@@ -32,18 +33,43 @@ def _bootstrap_interval(values: list[float], seed: int = 20260825) -> list[float
     return [samples[250], samples[9749]]
 
 
-def _binomial_cdf(k: int, n: int) -> float:
-    return sum(math.comb(n, index) for index in range(k + 1)) / (2**n)
+def _paired_permutation_p(values: list[float]) -> tuple[float | None, str | None]:
+    """Paired sign-flip p value, exact for primary-sized pairs and bounded otherwise."""
 
+    values = [value for value in values if value != 0]
+    if not values:
+        return None, None
+    observed = abs(sum(values))
+    if observed == 0:
+        return 1.0, "exact_sign_flip"
+    if len(values) > 22:
+        rng = random.Random(20260825 + len(values))
+        extreme = 0
+        samples = 100_000
+        for _ in range(samples):
+            signed_total = sum(value if rng.getrandbits(1) else -value for value in values)
+            if abs(signed_total) >= observed:
+                extreme += 1
+        return (extreme + 1) / (samples + 1), "deterministic_monte_carlo_sign_flip"
+    midpoint = len(values) // 2
+    left_values = values[:midpoint]
+    right_values = values[midpoint:]
 
-def _sign_test(values: list[float]) -> float | None:
-    signs = [value for value in values if value != 0]
-    if not signs:
-        return None
-    positive = sum(value > 0 for value in signs)
-    n = len(signs)
-    lower = _binomial_cdf(min(positive, n - positive), n)
-    return min(1.0, 2.0 * lower)
+    left_sums = [0.0]
+    for value in left_values:
+        left_sums += [subtotal + value for subtotal in left_sums]
+    left_sums.sort()
+    right_sums = [0.0]
+    for value in right_values:
+        right_sums += [subtotal + value for subtotal in right_sums]
+    total = sum(values)
+    lower = (total - observed) / 2.0
+    upper = (total + observed) / 2.0
+    extreme = 0
+    for right_sum in right_sums:
+        extreme += bisect_right(left_sums, lower - right_sum)
+        extreme += len(left_sums) - bisect_left(left_sums, upper - right_sum)
+    return extreme / (2 ** len(values)), "exact_sign_flip"
 
 
 def _paired_delta(
@@ -117,13 +143,49 @@ def main() -> None:
             "graph_latency_ms",
         ):
             deltas = _paired_delta(baseline, candidate, metric)
+            permutation_p, permutation_method = _paired_permutation_p(deltas)
             metrics[metric] = {
                 "n": len(deltas),
                 "mean_delta": mean(deltas) if deltas else None,
                 "bootstrap_95": _bootstrap_interval(deltas),
-                "exact_paired_sign_p": _sign_test(deltas),
+                "paired_permutation_p": permutation_p,
+                "paired_permutation_method": permutation_method,
             }
         comparisons[f"{variant}:{control}"] = metrics
+
+    manual_review: dict[str, dict[str, object]] = {}
+    for (variant, control, query, arm), row in keyed.items():
+        if arm != "one_hop" or (variant == "baseline" and control == "none"):
+            continue
+        baseline_row = baseline.get(query)
+        if baseline_row is None:
+            continue
+        changed_fields = []
+        for field in (
+            "evidence_ids",
+            "citations",
+            "answer",
+            "trusted_items",
+            "response_refusal_reason",
+            "graph_gate_reason",
+        ):
+            if baseline_row.get(field) != row.get(field):
+                changed_fields.append(field)
+        if changed_fields:
+            entry = manual_review.setdefault(
+                query,
+                {"query": query, "variants": [], "changed_fields": []},
+            )
+            variants = cast(list[dict[str, object]], entry["variants"])
+            variants.append(
+                {
+                    "variant": variant,
+                    "control": control,
+                    "changed_fields": changed_fields,
+                }
+            )
+            fields = cast(list[str], entry["changed_fields"])
+            fields.extend(field for field in changed_fields if field not in fields)
 
     report = {
         "artifact": "RE-call graph precision tuning evaluation",
@@ -133,6 +195,7 @@ def main() -> None:
         "rows": len(rows),
         "groups": summaries,
         "comparisons_to_current_graph_baseline": comparisons,
+        "manual_review_queries": list(manual_review.values()),
         "raw_batches": sys.argv[2:],
         "observations": rows,
     }
