@@ -432,17 +432,24 @@ jobs:
   # The declared floors, actually installed and actually run.
   #
   # Every other job resolves the NEWEST of everything, so the `>=` bounds in pyproject.toml were
-  # never exercised: an old MCP floor and the current `mcp>=2` floor are indistinguishable to a
-  # green build once the newest resolver has moved on. MCP 2 is the supported server API now
-  # because it provides the `MCPServer` import path and typed request context injection used by
+  # never exercised: an old MCP floor and a `>=2` floor are indistinguishable to a green build
+  # once the newest resolver has moved on. MCP 2 is the supported server API now because it
+  # provides the `MCPServer` import path and typed request context injection used by
   # `recall_mcp.server`.
+  #
+  # NOTE (2026-08-25): `mcp` is now pinned at `==2.1.0`, so this job no longer varies it: lowest
+  # and newest are the same single version, and this job proves nothing about MCP specifically.
+  # That is the accepted cost of the pin, not an oversight: the range is what let 2.1.0 land
+  # unreviewed and break master three times. The floor coverage below is still real for every
+  # dependency that remains ranged. See docs/DEPENDENCIES.md.
   # `pgvector>=0.3` was wrong the same way: `from pgvector import Vector` is a 0.4.0 export, so the
   # declared floor named versions where `import recall.store` raises ImportError. A floor nothing
   # resolves at is documentation, not a constraint, and it is documentation that was false.
   #
   # Lowest supported Python as well as lowest dependencies: this is the whole floor, not half of
   # it. Verified green at py3.11.15 + mcp 2.0.0 + pgvector 0.4.0 + psycopg 3.3.4 + pytest 8.0.0,
-  # and verified RED against MCP 1 after the MCP 2 port.
+  # and verified RED against MCP 1 after the MCP 2 port. The `mcp 2.0.0` in that line is what this
+  # job resolved BEFORE the pin; it now resolves 2.1.0, and the rest of the floor is unchanged.
   floor:
     runs-on: ubuntu-latest
 

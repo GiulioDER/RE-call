@@ -60,7 +60,7 @@ Two things made the drift invisible, and both still hold:
 - **A range admits a version no one has run the suite against.** The pin converts that into a
   deliberate bump: a version change is now a diff, reviewed, with a full CI run behind it.
 
-`RateLimited` keeps its `ToolError` base regardless — the pin controls *when* a new SDK arrives,
+`RateLimited` keeps its `ToolError` base regardless. The pin controls *when* a new SDK arrives,
 not whether the code survives it.
 
 **To bump:** change the three sites in `pyproject.toml` (`mcp`, `dev`, `desktop`) together, run
