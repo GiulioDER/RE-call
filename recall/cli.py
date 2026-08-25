@@ -72,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("RECALL_EMBEDDER", "fastembed"),
         help="hashing, fastembed[:model], st:<model>, voyage[:model], openai[:model]; "
         "RECALL_EMBED_PROFILE selects a registered profile such as "
-        "bge-small-context-section-v1",
+        "bge-small-context-section-v1 or bge-large-context-section-v1",
     )
     parser.add_argument(
         "--table",

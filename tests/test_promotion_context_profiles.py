@@ -28,6 +28,7 @@ from recall.embedding_registry import context_version_for, registered_profile
         ("bge-small-context-document-v1", "document"),
         ("bge-small-context-section-v1", "section"),
         ("bge-small-context-neighbor-v1", "neighbor"),
+        ("bge-large-context-section-v1", "section"),
     ],
 )
 def test_the_derived_policy_matches_what_indexer_demands(profile_id, expected_mode):
@@ -183,6 +184,7 @@ def test_the_glob_reaches_the_indexer_and_an_empty_index_is_refused(monkeypatch,
         "bge-small-context-document-v1",
         "bge-small-context-section-v1",
         "bge-small-context-neighbor-v1",
+        "bge-large-context-section-v1",
     ],
 )
 def test_a_real_indexer_accepts_every_registered_profile_with_its_derived_policy(profile_id):
