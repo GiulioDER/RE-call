@@ -20,6 +20,32 @@ from recall.embeddings import resolve_embedder
 DSN = "postgresql://u:pw@127.0.0.1:1/recall"
 
 
+def assert_spelling_is_recognised(spec: str) -> None:
+    """The invariant is that `resolve_embedder` RECOGNISES this spelling, not that a model loads.
+
+    🔁 This started as a bare `resolve_embedder(spec)` and CI was right to red it. That call
+    CONSTRUCTS the embedder, so on a runner without the `fastembed` extra it raised
+    `ImportError: FastEmbedEmbedder requires the fastembed extra` -- a true statement about the
+    environment and nothing at all about the property under test. The `test` and `floor` jobs both
+    install the floor dependency set on purpose, so a test that needs an optional extra to check a
+    string is a test that cannot run where it matters most.
+
+    The defect this file pins produced `ValueError: unknown embedder: 'BAAI/bge-small-en-v1.5'` --
+    the resolver reached its "I do not know this spelling" branch. An `ImportError` is the opposite
+    evidence: the spelling was recognised, dispatch reached a constructor, and only the optional
+    package was missing. So it PASSES here, deliberately.
+
+    Written as an explicit two-branch check rather than `pytest.importorskip`, because skipping
+    would hide the regression on exactly the runners that would catch it first.
+    """
+    try:
+        resolve_embedder(spec)
+    except ImportError:
+        pass  # recognised, dispatched, optional extra absent -- not the failure under test
+    except ValueError as exc:  # pragma: no cover - the regression this file exists to catch
+        pytest.fail(f"{spec!r} is not a spelling resolve_embedder accepts: {exc}")
+
+
 def _queries(tmp_path: Path) -> Path:
     p = tmp_path / "queries.json"
     p.write_text(
@@ -54,9 +80,7 @@ class TestTheEmbedderArgumentIsASpecNotAName:
         with pytest.raises(SystemExit):
             main(["--dsn", DSN, "--embedder", spec, "calibrate", str(_queries(tmp_path))])
 
-        # The assertion that matters: not "it equals the spec" but "the resolver accepts it".
-        # `resolve_embedder` is the exact function `calibrate_from_files` calls on this value.
-        resolve_embedder(seen["embedder_name"])
+        assert_spelling_is_recognised(seen["embedder_name"])
 
     def test_the_default_embedder_is_not_special_cased_into_failing(self, tmp_path, monkeypatch):
         """The default is the one a new user hits, and it was the one that was broken."""
@@ -72,7 +96,7 @@ class TestTheEmbedderArgumentIsASpecNotAName:
             main(["--dsn", DSN, "calibrate", str(_queries(tmp_path))])
 
         assert seen["embedder_name"] == "fastembed"
-        resolve_embedder(seen["embedder_name"])
+        assert_spelling_is_recognised(seen["embedder_name"])
 
 
 class TestAFailureSaysWhy:
