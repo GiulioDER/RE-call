@@ -26,6 +26,7 @@ from recall.store import DEFAULT_TABLE
 from recall.store import (
     EdgeCandidates,
     PgVectorStore,
+    _EXACT_SCAN_GUARDS,
     resolve_supersession_candidates,
 )
 from recall.types import Chunk, ScoredChunk
@@ -341,7 +342,12 @@ class GenerationStore(PgVectorStore):
                 conn.execute(f"SET LOCAL hnsw.iterative_scan = {iterative_scan}")
                 return conn.execute(sql, params).fetchall()
 
-        return self._generation_rows(self._with_retry(_op))
+        rows = self._with_retry(_op)
+        if not rows:
+            # The filter-blind walk can exhaust its candidates on other tenants' / generations'
+            # rows and report an occupied generation as empty; see `_dense_exact_fallback`.
+            rows = self._dense_exact_fallback(sql, params)
+        return self._generation_rows(rows)
 
     def top_cosine(self, vector: list[float]) -> float:
         """Exact best cosine within the PINNED generation. See `PgVectorStore.top_cosine`.
@@ -353,15 +359,24 @@ class GenerationStore(PgVectorStore):
 
         `1 - min(distance)` rather than `max(1 - distance)` for the NaN reason the base method
         documents; the two forms disagree whenever one row of the scope is a zero-norm vector.
+
+        Runs under `_EXACT_SCAN_GUARDS` for the reason the base method documents: Postgres's
+        min/max optimization can otherwise hand this aggregate to the ordering index and make
+        the measurement approximate.
         """
         generation_id = self._generation_id()
-        row = self._with_retry(
-            lambda conn: conn.execute(
-                "SELECT 1 - min(embedding <=> %(vec)s) FROM recall_chunks_v1 "
-                "WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s",
-                {"vec": Vector(vector), "tenant": self._tenant, "generation": generation_id},
-            ).fetchone()
-        )
+
+        def _op(conn: psycopg.Connection):
+            with conn.transaction():
+                for guard in _EXACT_SCAN_GUARDS:
+                    conn.execute(guard)
+                return conn.execute(
+                    "SELECT 1 - min(embedding <=> %(vec)s) FROM recall_chunks_v1 "
+                    "WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s",
+                    {"vec": Vector(vector), "tenant": self._tenant, "generation": generation_id},
+                ).fetchone()
+
+        row = self._with_retry(_op)
         return 0.0 if row is None or row[0] is None else float(row[0])
 
     def _query_sparse(

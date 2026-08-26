@@ -296,6 +296,74 @@ def test_cosines_for_omits_a_chunk_from_a_generation_that_is_no_longer_active(ma
 
 
 @requires_db
+def test_dense_search_survives_a_filtered_walk_that_finds_no_matching_rows(
+    manager, monkeypatch
+) -> None:
+    """CI run 32988012712 (2026-08-26, commit aecc9dc1): three tests in this file drew ZERO rows
+    from `query_dense` against one-chunk generations that a green run of the same commit, with
+    identical resolved wheels, had found. The shared HNSW index is global and its walk is
+    filter-blind, so a filtered scan can spend its whole candidate budget on rows belonging to
+    other tenants or retired generations and report an occupied generation as empty.
+    `ef_search` / `iterative_scan` push that boundary out but cannot remove it: an iterative scan
+    still ends at `hnsw.max_scan_tuples`, and a graph region the walk cannot reach is unreachable
+    at any setting.
+
+    Here the truncation is forced deterministically — a candidate budget of one, iteration off, a
+    decoy row in ANOTHER tenant sitting exactly at the query point, and the planner pushed onto
+    the index (seqscan and sort disabled, so the ordering index is the only plan without a
+    disabled node) — and the search must still return the generation's chunk, which is
+    `_dense_exact_fallback` doing its job.
+    """
+    data = b"alpha generation text"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = _ready(
+        manager, manifest, _pipeline("model-a"), _reader(manifest, data), _Embedder(1)
+    )
+    manager.promote(generation, unsafe_development=True)
+
+    class _QueryPointEmbedder(_Embedder):
+        """Embeds every chunk exactly at the query vector, so the decoy is strictly nearest."""
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            self.calls += 1
+            return [[1.0] * self._dim for _ in texts]
+
+    decoy_tenant = "gen-decoy-" + uuid.uuid4().hex[:10]
+    decoy = GenerationManager(TEST_DSN, decoy_tenant, actor="pytest", environment="test")
+    try:
+        decoy_data = b"decoy text"
+        decoy_manifest = _manifest(decoy_tenant, decoy_data)
+        built = decoy.create(decoy_manifest, _pipeline("model-a"))
+        decoy.build(
+            built.generation_id,
+            _reader(decoy_manifest, decoy_data),
+            _QueryPointEmbedder(1),
+            lambda text: [text],
+        )
+
+        monkeypatch.setenv("RECALL_HNSW_EF_SEARCH_FILTERED", "1")
+        monkeypatch.setenv("RECALL_HNSW_ITERATIVE_SCAN_FILTERED", "off")
+        separator = "&" if "?" in TEST_DSN else "?"
+        forced = f"{TEST_DSN}{separator}options=-c%20enable_seqscan%3Doff%20-c%20enable_sort%3Doff"
+        with GenerationStore(forced, 64, tenant=manager.tenant_id) as store:
+            hits = store.query_dense([1.0] * 64, 1)
+        assert [hit.chunk.text for hit in hits] == [data.decode()], (
+            "the walk's only candidate is the decoy and the filter rejects it, so an empty "
+            "answer here means the exact fallback did not run"
+        )
+    finally:
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (decoy_tenant,))
+            conn.execute(
+                "DELETE FROM recall_source_tombstones WHERE tenant_id = %s", (decoy_tenant,)
+            )
+            conn.execute("DELETE FROM recall_audit_events WHERE tenant_id = %s", (decoy_tenant,))
+            conn.execute("DELETE FROM recall_ingest_jobs WHERE tenant_id = %s", (decoy_tenant,))
+            conn.execute("DELETE FROM recall_tenant_state WHERE tenant_id = %s", (decoy_tenant,))
+            conn.execute("DELETE FROM recall_generations WHERE tenant_id = %s", (decoy_tenant,))
+
+
+@requires_db
 def test_forget_survives_rollback_and_tombstone_survives_gc(manager) -> None:
     first_data = b"first revision"
     first_manifest = _manifest(manager.tenant_id, first_data, version="v1")

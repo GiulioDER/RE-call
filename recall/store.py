@@ -473,6 +473,31 @@ _HNSW_ITERATIVE_SCAN_VALUES = frozenset({"off", "relaxed_order", "strict_order"}
 #: unrecognised must too, because a typo in a security switch may not grant permission.
 _ENV_TRUE = frozenset({"1", "true", "yes", "on"})
 
+#: `SET LOCAL` statements that take every ORDERED index-scan path off the planner's table for the
+#: rest of the transaction. One property, two consumers: a query whose answer must be EXACT must
+#: not be servable by the approximate ordering index (`recall_chunks_v1_embedding_idx` and its
+#: legacy twin), whose walk is filter-blind and returns "reachable", not "nearest".
+#:
+#: `top_cosine` needs this because "an aggregate has no ORDER BY, so the ordering index cannot
+#: serve it" turned out to be false. Postgres's min/max optimization (planagg.c) rewrites
+#: `min(embedding <=> v)` into `ORDER BY embedding <=> v LIMIT 1` behind an InitPlan whenever
+#: that path costs less than the plain aggregate, and pgvector's HNSW index serves exactly that
+#: ORDER BY. Whether the rewrite fires is a COST decision, so it tracks table statistics: CI run
+#: 32988012712 (2026-08-26, commit aecc9dc1) planned the aggregate through the index that a green
+#: run of the same commit had seq-scanned twenty minutes earlier, with identical resolved wheels.
+#: `tests/test_calibration_scoring_is_exact.py` demonstrates the rewrite deterministically.
+#:
+#: `_dense_exact_fallback` needs it for the same reason from the other side: when a filtered HNSW
+#: walk has demonstrably failed (zero rows), the retry must be a plan the index cannot serve.
+#:
+#: `enable_indexscan` / `enable_indexonlyscan` are the only plan types that can satisfy an ORDER
+#: BY from an index. Bitmap scans stay enabled on purpose: they cannot produce ordering, and they
+#: are what serves the tenant/generation filter cheaply on a large corpus.
+_EXACT_SCAN_GUARDS: tuple[str, ...] = (
+    "SET LOCAL enable_indexscan = off",
+    "SET LOCAL enable_indexonlyscan = off",
+)
+
 
 #: PostgreSQL's OWN default trigger for an automatic analyze — `autovacuum_analyze_threshold` and
 #: `autovacuum_analyze_scale_factor`. Mirrored (not invented) so that `analyze_if_stale` can only
@@ -1608,7 +1633,45 @@ class PgVectorStore:
             rows = self._with_retry(_op_unfiltered)
         else:
             rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
+        if not rows:
+            rows = self._dense_exact_fallback(sql, params)
         return self._rows_to_hits(rows)
+
+    def _dense_exact_fallback(self, sql: str, params: dict) -> list[tuple]:
+        """Re-run a dense query that returned NOTHING, with ordered index scans disabled.
+
+        A filtered HNSW walk can spend its entire candidate budget on rows that fail the tenant /
+        generation / source filter and return zero rows while matching rows exist: the index is
+        global and its walk is filter-blind, so every candidate it surfaces can belong to someone
+        else. `ef_search` and `iterative_scan` push that boundary out (see the tuning above) but
+        cannot remove it — an iterative scan still ends at `hnsw.max_scan_tuples`, and a graph
+        region the walk cannot reach (duplicate-heavy clusters after vacuum) is unreachable at
+        any setting. CI run 32988012712 (2026-08-26) hit exactly this: three `test_generations`
+        tests got zero rows from one-chunk generations that a green run of the same commit had
+        found.
+
+        Zero is the one result that is CHEAP to distrust: if the scope is truly empty the exact
+        retry scans nothing and agrees, and if it is not, returning [] would have been wrong. A
+        partial result stays as-is — fewer-than-k from a populated scope is the approximate
+        contract this store documents, and re-running every short result would put an exact scan
+        on the serving path.
+        """
+
+        def _op(conn: "psycopg.Connection") -> list[tuple]:
+            with conn.transaction():
+                for guard in _EXACT_SCAN_GUARDS:
+                    conn.execute(guard)
+                return conn.execute(sql, params).fetchall()
+
+        rows = self._with_retry(_op)
+        if rows:
+            _log.warning(
+                "dense index scan over %s returned no rows where an exact scan finds %d; the "
+                "HNSW walk exhausted its candidates on rows outside the query's filter",
+                self._table,
+                len(rows),
+            )
+        return rows
 
     def top_cosine(self, vector: list[float]) -> float:
         """The BEST cosine any chunk in scope has with `vector`, computed EXACTLY.
@@ -1620,9 +1683,21 @@ class PgVectorStore:
         that happens is decided by the planner from table size and statistics, so the SAME corpus
         yields a different "best cosine" depending on how much unrelated data shares the table.
 
-        An aggregate has no ORDER BY and no LIMIT, so the ordering index cannot serve it at all
-        and the scan is exact by construction. That is the property this method exists for, not a
-        preference for aggregates.
+        An aggregate has no ORDER BY and no LIMIT of its own, which keeps the ordering index out
+        of the DIRECT plan.
+
+        🔁 Corrected 2026-08-26: the aggregate alone is NOT exact by construction, which is what
+        this docstring used to claim. Postgres's min/max optimization (planagg.c) rewrites
+        `min(embedding <=> v)` into `ORDER BY embedding <=> v LIMIT 1` behind an InitPlan
+        whenever that path costs less than the plain aggregate, and pgvector's HNSW index serves
+        exactly that ORDER BY — approximately. Whether the rewrite fires is a cost decision, so
+        it tracks table statistics: CI run 32988012712 (commit aecc9dc1) planned this aggregate
+        through `recall_chunks_v1_embedding_idx` while a green run of the same commit, same
+        wheels, twenty minutes earlier had seq-scanned it. So the statement runs under
+        `_EXACT_SCAN_GUARDS`, which disable ordered index scans for the transaction; the
+        aggregate FORM is still required, for the NaN semantics below, and the guards are what
+        make it exact. Bitmap scans stay available for the tenant filter; they cannot produce
+        ordering.
 
         ⛔ `1 - min(distance)`, NOT `max(1 - distance)`, and the two are not interchangeable. A
         zero-norm embedding makes pgvector's cosine distance NaN, and Postgres orders NaN as
@@ -1661,13 +1736,19 @@ class PgVectorStore:
         must gain a private `_top_cosine` twin and move into `TIMED_PUBLIC_METHODS`, or
         `GenerationStore`'s override silently drops the series for the third time.
         """
-        row = self._with_retry(
-            lambda conn: conn.execute(
-                f"SELECT 1 - min(embedding <=> %(vec)s) FROM {self._table} "
-                "WHERE tenant_id = %(tenant)s",
-                {"vec": Vector(vector), "tenant": self._tenant},
-            ).fetchone()
-        )
+        def _op(conn: "psycopg.Connection"):
+            # SET LOCAL needs a transaction block, and this store's connections are autocommit —
+            # same shape, same reason as the tuned arms of `_query_dense`.
+            with conn.transaction():
+                for guard in _EXACT_SCAN_GUARDS:
+                    conn.execute(guard)
+                return conn.execute(
+                    f"SELECT 1 - min(embedding <=> %(vec)s) FROM {self._table} "
+                    "WHERE tenant_id = %(tenant)s",
+                    {"vec": Vector(vector), "tenant": self._tenant},
+                ).fetchone()
+
+        row = self._with_retry(_op)
         return 0.0 if row is None or row[0] is None else float(row[0])
 
     def query_sparse(
