@@ -32,6 +32,7 @@ import asyncio
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 from dataclasses import replace
@@ -56,6 +57,12 @@ from benchmarks.agent_ab.claude_exec import (  # noqa: E402
 from benchmarks.agent_ab.gate import admit_pairs  # noqa: E402
 from benchmarks.agent_ab.io import write_jsonl  # noqa: E402
 from benchmarks.agent_ab.recall_server import StdioRecallSpec  # noqa: E402
+from benchmarks.agent_ab.sdk_exec import (  # noqa: E402
+    SDKExecConfig,
+    build_sdk_configs,
+    run_sdk_case,
+    sdk_version,
+)
 from benchmarks.agent_ab.runner import run_paired  # noqa: E402
 from benchmarks.agent_ab.sandbox import restore  # noqa: E402
 from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON, SessionRecord  # noqa: E402
@@ -93,25 +100,47 @@ def openrouter_env() -> dict[str, str]:
     }
 
 
-async def preflight(config_env: dict[str, str], model: str) -> None:
-    """Prove the CLI answers before spending a hundred sessions finding out that it does not."""
+def _cli_version_tuple(text: str | None) -> tuple[int, ...] | None:
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+async def preflight(config_env: dict[str, str], model: str, driver: str = "cli") -> None:
+    """Prove the driver answers before spending a hundred sessions finding out that it does not."""
 
     from benchmarks.agent_ab.claude_exec import ClaudeExecConfig
 
-    probe = ClaudeExecConfig(
-        model=model,
-        cwd=REPO_ROOT,
-        timeout_s=180.0,
-        env=config_env,
-        bare=True,
-        strict_mcp_config=False,
-        allowed_tools=(),
-    )
-    record = await run_claude_case(
-        {"task_id": "preflight", "user_input": "Reply with the single word READY and nothing else."},
-        RECALL_OFF,
-        probe,
-    )
+    row = {"task_id": "preflight", "user_input": "Reply with the single word READY and nothing else."}
+    if driver == "sdk":
+        sdk_probe = SDKExecConfig(
+            model=model,
+            cwd=REPO_ROOT,
+            timeout_s=180.0,
+            env=config_env,
+            bare=True,
+            allowed_tools=(),
+        )
+        record = await run_sdk_case(row, RECALL_OFF, sdk_probe)
+        # The SDK may resolve a different CLI than the shell does, and below 2.1.221 a session
+        # runs without a pending stdio MCP server while reporting success. The init-reported
+        # version is what THIS driver actually launched, so it is the one to assert on.
+        version = _cli_version_tuple(str(record.metadata.get("claude_code_version") or ""))
+        if version is not None and version < (2, 1, 221):
+            raise SystemExit(
+                f"the SDK launched Claude Code {version}, below the 2.1.221 stdio-MCP wait; "
+                f"an on arm under this version silently runs without its server"
+            )
+    else:
+        probe = ClaudeExecConfig(
+            model=model,
+            cwd=REPO_ROOT,
+            timeout_s=180.0,
+            env=config_env,
+            bare=True,
+            strict_mcp_config=False,
+            allowed_tools=(),
+        )
+        record = await run_claude_case(row, RECALL_OFF, probe)
     text = (record.response or "").strip()
     if not text:
         raise SystemExit(f"preflight produced no response; error={record.error!r}")
@@ -204,6 +233,7 @@ def environment_capture(
     check: dict[str, Any],
     *,
     instruction_file: str | None = None,
+    driver: str = "cli",
 ) -> dict[str, Any]:
     def run(*command: str) -> str:
         try:
@@ -229,6 +259,10 @@ def environment_capture(
         "recall_generation_id": check.get("generation_id"),
         "recall_calibration_id": check.get("calibration_id"),
         "write_tools": list(WRITE_TOOLS),
+        # Which driver launched the sessions. `cli` is claude_exec's subprocess over stream-json,
+        # the driver of every archived baseline; `sdk` is sdk_exec over claude-agent-sdk.
+        "driver": driver,
+        "claude_agent_sdk_version": sdk_version() if driver == "sdk" else None,
         # Which instruction the on arm ran under. The formatted text itself is already kept in the
         # artifact as static-plus-recall-prompt.txt; this names the committed source it came from,
         # so two runs differing only here can be told apart without diffing prompt files.
@@ -255,6 +289,17 @@ async def main() -> int:
             "field an instruction-variant run changes; everything else stays identical, so a "
             "behavioural difference against a baseline run on the same tasks is attributable to "
             "the instruction text and to nothing else."
+        ),
+    )
+    parser.add_argument(
+        "--driver",
+        choices=("cli", "sdk"),
+        default="cli",
+        help=(
+            "how sessions are launched: 'cli' (claude_exec subprocess over stream-json, the "
+            "driver of every archived baseline) or 'sdk' (sdk_exec over claude-agent-sdk, which "
+            "needs the agent extra installed). Everything else in the run is shared verbatim, "
+            "which is what makes a driver-equivalence comparison a comparison."
         ),
     )
     parser.add_argument(
@@ -292,7 +337,7 @@ async def main() -> int:
         print("nothing left to run; re-deriving the artifacts from the recorded sessions")
 
     agent_env = openrouter_env()
-    await preflight(agent_env, args.model)
+    await preflight(agent_env, args.model, args.driver)
 
     spec = StdioRecallSpec(dsn=args.dsn, cwd=REPO_ROOT, tenant=args.tenant)
     check = await spec.check()
@@ -335,18 +380,30 @@ async def main() -> int:
     on_spec = ArmSpec.claude_md_recall(spec, artifacts / "recall-mcp.json", combined)
     # One template pair, built once so everything except memory is identical by construction. The
     # per-session `cwd` is the only field replaced afterwards.
-    templates = build_configs(
-        {RECALL_ON: on_spec, RECALL_OFF: off_spec},
-        model=args.model,
-        cwd=work_root,
-        timeout_s=args.timeout_s,
-        env=agent_env,
-        extra_allowed_tools=WRITE_TOOLS,
-    )
+    if args.driver == "sdk":
+        templates: dict[str, Any] = build_sdk_configs(
+            {RECALL_ON: on_spec, RECALL_OFF: off_spec},
+            recall_spec=spec,
+            model=args.model,
+            cwd=work_root,
+            timeout_s=args.timeout_s,
+            env=agent_env,
+            extra_allowed_tools=WRITE_TOOLS,
+        )
+    else:
+        templates = build_configs(
+            {RECALL_ON: on_spec, RECALL_OFF: off_spec},
+            model=args.model,
+            cwd=work_root,
+            timeout_s=args.timeout_s,
+            env=agent_env,
+            extra_allowed_tools=WRITE_TOOLS,
+        )
     templates = {
         variant: replace(config, stream_dir=artifacts / "streams")
         for variant, config in templates.items()
     }
+    run_one = run_sdk_case if args.driver == "sdk" else run_claude_case
 
     progress_lock = asyncio.Lock()
     completed = 0
@@ -368,7 +425,7 @@ async def main() -> int:
         digest = restore(task.workspace, workdir)
         config = replace(templates[variant], cwd=workdir)
 
-        record = await run_claude_case(row, variant, config)
+        record = await run_one(row, variant, config)
 
         # Scored after the session, from the sandbox alone. `check_workspace` turns a checker
         # fault into passed=False with its traceback rather than aborting the run, and marks it so
@@ -434,7 +491,7 @@ async def main() -> int:
     for name, payload in (
         ("admission.json", report.summary()),
         ("recall-overhead.json", summarize_recall_overhead(admitted)),
-        ("environment.json", environment_capture(args.model, spec, check, instruction_file=args.instruction_file)),
+        ("environment.json", environment_capture(args.model, spec, check, instruction_file=args.instruction_file, driver=args.driver)),
         ("digest-parity.json", {"failures": parity_failures}),
     ):
         (artifacts / name).write_text(

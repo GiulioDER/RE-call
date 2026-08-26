@@ -12,7 +12,8 @@ finding that produced the admission gate is recorded in
 |---|---|
 | `schema.py` | the canonical `SessionRecord`; a missing measurement stays `null`, never 0 |
 | `runner.py` | paired execution, both arms of a task started together |
-| `claude_exec.py` | Claude Code adapter over `claude -p --output-format stream-json` |
+| `claude_exec.py` | Claude Code adapter over `claude -p --output-format stream-json`; the driver of every archived baseline, kept byte-stable |
+| `sdk_exec.py` | Claude Agent SDK adapter (`--driver sdk` on the task runner); normalizes typed messages back into the stream shapes and reuses `claude_exec`'s parsing core, so the two drivers share one field mapping |
 | `codex_exec.py` | Codex CLI adapter over `codex exec --json` |
 | `arms.py` | the three arm profiles, and the only place they may differ |
 | `recall_server.py` | one pre-warmed authenticated RE-call server for the whole run |
