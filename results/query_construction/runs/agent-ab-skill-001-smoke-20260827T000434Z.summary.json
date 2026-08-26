@@ -1,0 +1,110 @@
+{
+  "artifact": "RE-call original model query construction benchmark",
+  "arms": {
+    "baseline": {
+      "rows": 4,
+      "recovered": 0,
+      "recovery_rate": 0.0,
+      "rows_detail": [
+        {
+          "task_id": "ts-false-zero-search#r1",
+          "recovered": false,
+          "hit_count": 0,
+          "gold_count": 1,
+          "status": null
+        },
+        {
+          "task_id": "ts-false-zero-search#r2",
+          "recovered": false,
+          "hit_count": 0,
+          "gold_count": 1,
+          "status": null
+        },
+        {
+          "task_id": "ts-false-zero-search#r3",
+          "recovered": false,
+          "hit_count": 0,
+          "gold_count": 1,
+          "status": null
+        },
+        {
+          "task_id": "ts-false-zero-search#r4",
+          "recovered": false,
+          "hit_count": 3,
+          "gold_count": 1,
+          "status": null
+        }
+      ]
+    },
+    "original_loop": {
+      "rows": 4,
+      "recovered": 1,
+      "recovery_rate": 0.25,
+      "rows_detail": [
+        {
+          "task_id": "ts-false-zero-search#r1",
+          "recovered": false,
+          "hit_count": 0,
+          "gold_count": 1,
+          "status": null
+        },
+        {
+          "task_id": "ts-false-zero-search#r2",
+          "recovered": false,
+          "hit_count": 0,
+          "gold_count": 1,
+          "status": null
+        },
+        {
+          "task_id": "ts-false-zero-search#r3",
+          "recovered": false,
+          "hit_count": 0,
+          "gold_count": 1,
+          "status": null
+        },
+        {
+          "task_id": "ts-false-zero-search#r4",
+          "recovered": true,
+          "hit_count": 4,
+          "gold_count": 1,
+          "status": "complete"
+        }
+      ]
+    },
+    "pyramid": {
+      "rows": 4,
+      "recovered": 2,
+      "recovery_rate": 0.5,
+      "rows_detail": [
+        {
+          "task_id": "ts-false-zero-search#r1",
+          "recovered": true,
+          "hit_count": 6,
+          "gold_count": 1,
+          "status": "complete"
+        },
+        {
+          "task_id": "ts-false-zero-search#r2",
+          "recovered": true,
+          "hit_count": 4,
+          "gold_count": 1,
+          "status": "complete"
+        },
+        {
+          "task_id": "ts-false-zero-search#r3",
+          "recovered": false,
+          "hit_count": 0,
+          "gold_count": 1,
+          "status": null
+        },
+        {
+          "task_id": "ts-false-zero-search#r4",
+          "recovered": false,
+          "hit_count": 3,
+          "gold_count": 1,
+          "status": null
+        }
+      ]
+    }
+  }
+}
