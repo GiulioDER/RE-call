@@ -31,6 +31,7 @@ Provider ports:
 2. `graph_provider`: optional, returns `ReasoningGraphProjection`.
 3. `proposal_provider`: optional, returns proposals or a `ProposalProtocolReport`.
 4. `answer_provider`: optional, consumes the existing evidence prompt pair and returns `AnswerEnvelope` JSON.
+   The MCP server can provide a local Ollama adapter when `RECALL_REASONING_ANSWER_ENABLED=1`.
 5. `expansion_provider`: optional, returns bounded untrusted retrieval proposals.
 6. `expansion_retriever`: optional, executes proposals and must preserve tenant, generation, trust,
    and calibration binding.
@@ -57,8 +58,45 @@ Policies:
 
 1. `retrieval_only`: returns the evidence bundle after certification checks pass and never invokes the answer provider. If certification fails, it abstains with the original trust failure.
 2. `evidence_assembly`: assembles trusted evidence and may call the answer provider.
+
+The built in local adapter uses Ollama's native `/api/chat` endpoint, including its strict JSON
+schema and `think` switch. Configure it with `RECALL_REASONING_ANSWER_BASE_URL`,
+`RECALL_REASONING_ANSWER_MODEL`, `RECALL_REASONING_ANSWER_TIMEOUT`,
+`RECALL_REASONING_ANSWER_MAX_TOKENS`, `RECALL_REASONING_ANSWER_REVISION`, and
+`RECALL_REASONING_ANSWER_THINKING`. The provider is selected with
+`RECALL_REASONING_ANSWER_PROVIDER=ollama` and is disabled unless
+`RECALL_REASONING_ANSWER_ENABLED=1`. Provider failures are sanitized and never promote evidence.
+A local Qwen3 4B model is a suitable starting point for an 8 GB GPU; measure latency and answer
+quality on the target machine before enabling it for regular use.
 3. `proposal_assisted`: requires a graph provider, records proposals, and runs bounded planning.
 4. `review_required`: same as proposal assisted, but returns `needs_review` when proposals are present.
+
+## Original Model Query Construction
+
+`recall_query_construction_challenge` is an additive, read only MCP tool. The first call accepts
+`original_prompt` and the original retrieval `query`, then returns a bounded challenge prompt,
+trusted retrieval context, and the current generation identity. The calling model answers with the
+declared frame fields, then calls the same tool again with `frame` and
+`expected_generation_id`.
+
+The continuation frame is a proposal only. The server accepts only bounded JSON fields, limits
+each query to 2,000 characters, permits two construction rounds and three candidates per round,
+and refuses a continuation whose generation, pipeline, or corpus binding changed. The response
+reports accepted and rejected candidates, retrieval calls, model calls, graph diagnostics, and
+fallback reasons.
+
+The `original_loop` arm retrieves the model's single revised query. The `pyramid` arm deterministically
+derives up to three literal, intent, anchor, or decomposition candidates from the frame. All model
+text and controller output remains a proposal. Only ordinary trusted retrieval can become evidence.
+The controller permits two rounds, three candidates per round, and one challenge per round. A
+generation mismatch refuses continuation before retrieval. Graph expansion is deferred until a
+constructed query has produced trusted seed evidence.
+
+The reproducible remote runner is
+`scripts/run_query_construction_batch.py`. It calls the original DeepSeek model through the same
+OpenRouter settings used by the earlier replay and records challenge prompts, frames, provider
+metadata, tool responses, generation identities, graph diagnostics, and scoring inputs. The runner
+does not send gold labels to either model or MCP.
 
 ## Compatibility Matrix
 
