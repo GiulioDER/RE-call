@@ -182,7 +182,7 @@ services:
     volumes:
       - recall_pgdata:/var/lib/postgresql
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U recall"]
       interval: 2s

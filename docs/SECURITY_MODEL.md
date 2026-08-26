@@ -30,8 +30,26 @@ not be indexed in the first place — RE-call has no mechanism to selectively wi
 
 RLS is also **bypassed by a superuser or any `BYPASSRLS` role**, including the role shipped in this
 repo's `docker-compose.yml`. `store.check_rls_effective()` tells you whether your connection is
-actually enforcing the boundary; the MCP server logs a warning at startup if it is not. Treat that
-warning as a real finding, not noise.
+actually enforcing the boundary, and what the MCP server does about it depends on how many tenants
+it serves:
+
+| Deployment | On an RLS-bypassing role |
+|---|---|
+| Authenticated multi-tenant HTTP | **Refuses to start.** `require_effective_rls` in `recall_mcp/server.py` |
+| Single-tenant, or `stdio` | Warns at startup, and serves |
+
+The refusal is narrow on purpose. A multi-tenant server is the deployment where RLS is the control
+keeping two callers apart at the row level, so a role that ignores the policy leaves only the
+`WHERE tenant_id` predicates, and those make isolation a property you can confirm only by reading
+every statement in the package. One future query missing that predicate is then a silent
+cross-tenant read rather than an empty result. The enterprise path already refused this per store
+open (`recall_mcp/stores.py`, "has ineffective row level security"); it reached that check only
+with a control plane configured, so a legacy multi-tenant server never tested RLS at all.
+
+Single-tenant and `stdio` keep the warning because there is no second tenant to leak to, and
+because `docker-compose.desktop.yml` ships the cluster superuser deliberately. Treat that warning
+as a real finding rather than noise: it means the boundary you would get from RLS is not there,
+and only the query predicates remain.
 
 ## What goes into the corpus is what `recall_index` will read
 

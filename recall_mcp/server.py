@@ -562,6 +562,58 @@ def build_auth(
     return RecallTokenVerifier(registry), settings, registry
 
 
+#: Text used when an RLS bypass is tolerated. Module-level so the refusal and the warning cannot
+#: drift into describing the same database role differently.
+_RLS_BYPASS = "this database role bypasses row-level security (superuser or BYPASSRLS)"
+
+
+def require_effective_rls(*, rls_effective: bool, multi_tenant: bool) -> str | None:
+    """Decide what an RLS-bypassing database role means for this server.
+
+    Returns None when RLS is effective, a warning to log when the deployment can tolerate the
+    bypass, and raises RuntimeError when it cannot.
+
+    A free function over two booleans, for the reason `authorize` in `recall_mcp/auth.py` gives
+    for the same shape: this is a security branch, and inline in `_lifespan` it is reachable only
+    by standing up an embedder, a database and a token registry — which is precisely why the
+    refusing half had never been exercised. As a pure function both verdicts are one assertion.
+
+    `multi_tenant` is `registry is not None` at the call site, which holds exactly when a token
+    registry was built; `build_auth` permits that only for an HTTP transport. So it means
+    "authenticates remote callers and serves several tenants from one database", which is the
+    deployment where RLS is load-bearing rather than defensive.
+
+    Why the multi-tenant case REFUSES where it used to warn: the tenant predicates on every query
+    are real, and they were the reason a warning looked sufficient. They are not sufficient,
+    because they make isolation a property you can only confirm by reading every statement in the
+    package. One future query missing `WHERE tenant_id` is then a silent cross-tenant READ rather
+    than an empty result. RLS is the layer that fails closed instead, and a role that bypasses it
+    removes it entirely.
+
+    This is an asymmetry closed rather than a new rule. `recall_mcp/stores.py` already refuses
+    exactly this condition, per store open, with "has ineffective row level security" — but only
+    on the enterprise path, where a control plane is configured. A LEGACY multi-tenant server took
+    the `ensure_schema()` branch and never tested RLS at all.
+
+    Single-tenant and stdio keep the warning, deliberately: there is no second tenant to leak to,
+    `docker-compose.desktop.yml` ships the cluster superuser on purpose, and failing those closed
+    would break every local install to defend a boundary they do not have.
+    """
+    if rls_effective:
+        return None
+    if multi_tenant:
+        raise RuntimeError(
+            f"{_RLS_BYPASS}, and this server is configured for authenticated multi-tenant "
+            "serving, so tenant isolation would rest on query predicates alone. Connect as an "
+            "unprivileged role that owns neither the managed tables nor the cluster. See "
+            "SECURITY.md, \"Run application traffic with an unprivileged serving role.\""
+        )
+    return (
+        f"{_RLS_BYPASS}, so tenant isolation rests on query predicates alone. Connect as an "
+        "unprivileged role for defence in depth."
+    )
+
+
 def _transport_security_settings(resource_url: str) -> TransportSecuritySettings:
     parsed = urlsplit(resource_url)
     if not parsed.scheme or not parsed.netloc:
@@ -767,12 +819,25 @@ def _make_lifespan(
             _log.error("schema check failed", exc_info=True)
             raise
 
-        if not probe.check_rls_effective():
-            _log.warning(
-                "this database role bypasses row-level security (superuser or BYPASSRLS), so "
-                "tenant isolation rests on query predicates alone. Connect as an unprivileged "
-                "role for defence in depth."
+        try:
+            rls_warning = require_effective_rls(
+                rls_effective=probe.check_rls_effective(), multi_tenant=registry is not None
             )
+        except RuntimeError:
+            # Only the multi-tenant branch raises, and `registry` is what made it multi-tenant,
+            # so it is the pool that has to be released before this propagates. Mirrors the
+            # cleanup on the schema-check failure above.
+            #
+            # A plain `if`, not `assert registry is not None`. The narrowing would be correct and
+            # `python -O` would still strip it, turning a clean refusal into an AttributeError on
+            # None at the moment the server is trying to explain why it will not serve. Cheap to
+            # write the branch that cannot be stripped.
+            if registry is not None:
+                registry.close()
+            _log.error("refusing to serve: row-level security is not effective for this role")
+            raise
+        if rls_warning is not None:
+            _log.warning("%s", rls_warning)
         if enterprise:
             # The calibration argument is supplied again. #182 removed it, and because the
             # parameter defaults to None every enterprise boot since then took the
