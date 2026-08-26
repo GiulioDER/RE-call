@@ -17,6 +17,67 @@ from recall.index import (
 from recall.cli_commands._shared import _make_embedder, _positive_int
 
 
+def _verify_local_manifest(
+    path: str, *, sha256: str | None, size: int | None, environment: str
+) -> None:
+    """Hold a `file://` manifest to the integrity the `s3://` path already gets.
+
+    ⛔ **`--manifest-sha256` and `--manifest-size` were ACCEPTED AND IGNORED on the local path.**
+    They were read only to build the `ManifestObjectV1` reference that fetches an `s3://` manifest;
+    a local build parsed the file and checked nothing. `bin/build_generation_voyage.sh` passes both
+    on every run, so an operator watching those digests scroll past believed the manifest was
+    being verified. Silently discarding a checksum somebody supplied is worse than never accepting
+    one, because it manufactures exactly the confidence it fails to earn. They are verified in
+    every environment now, whenever they are given.
+
+    🔑 **What production additionally requires, and why this is not the S3 rule in disguise.** The
+    gate here used to be "production needs a versioned S3 manifest", full stop, which made a local
+    corpus unbuildable in production and left `RECALL_ENV=development` as the only route. That
+    variable also selects which table is read, so the workaround for this gate is what split
+    indexing from serving; the sibling half of that story is in `recall/lineage.py`.
+
+    The S3 path provides three properties: the objects are allowlisted, the objects are
+    content-verified, and the bytes are pinned forever by object versioning. `LocalObjectReader`
+    already delivers the first two — it refuses without `RECALL_LOCAL_ALLOWLIST`, resolves symlinks
+    and `..` before the containment check, and hashes every object it reads. It cannot deliver the
+    third, and says so in its own docstring: a local file can be rewritten after its manifest is
+    written, so this is DETECTION, not prevention.
+
+    Production therefore requires the two properties that are achievable and refuses to pretend
+    about the one that is not. Nothing here claims a local build is immutable.
+    """
+    import hashlib
+    import os
+    from pathlib import Path
+
+    if environment == "production":
+        if not os.environ.get("RECALL_LOCAL_ALLOWLIST", "").strip():
+            raise SystemExit(
+                "a local manifest in production requires RECALL_LOCAL_ALLOWLIST: without it a "
+                "manifest could name any file on the machine"
+            )
+        if sha256 is None or size is None:
+            raise SystemExit(
+                "a local manifest in production requires --manifest-sha256 and --manifest-size, "
+                "so the manifest is verified rather than merely parsed"
+            )
+    if sha256 is None and size is None:
+        return
+    try:
+        data = Path(path).read_bytes()
+    except OSError as exc:
+        raise SystemExit(f"cannot read manifest {path}: {exc}") from exc
+    if size is not None and len(data) != size:
+        raise SystemExit(f"manifest size mismatch for {path}: expected {size}, read {len(data)}")
+    if sha256 is not None:
+        digest = hashlib.sha256(data).hexdigest()
+        if digest.lower() != sha256.lower():
+            raise SystemExit(
+                f"manifest checksum mismatch for {path}: expected {sha256}, read {digest}. "
+                "The manifest changed after its digest was taken."
+            )
+
+
 def _non_negative_int(value: str) -> int:
     """A count where zero is meaningful but a negative one is not.
 
@@ -244,8 +305,12 @@ def _cmd_generation(args: argparse.Namespace) -> None:
         manifest = IndexManifestV1.from_json(base_reader.fetch(reference).data)
         reader = ExtractingS3ObjectReader(base_reader)
     else:
-        if environment == "production":
-            raise SystemExit("production generation builds require a versioned S3 manifest")
+        _verify_local_manifest(
+            args.manifest,
+            sha256=args.manifest_sha256,
+            size=args.manifest_size,
+            environment=environment,
+        )
         manifest = load_manifest(args.manifest)
     if reader is None:
         reader = reader_for_manifest(manifest)

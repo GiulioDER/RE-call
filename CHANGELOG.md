@@ -10,6 +10,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* **`--manifest-sha256` and `--manifest-size` were accepted and ignored on a local manifest.** They
+  were read only to build the reference that fetches an `s3://` manifest; a `file://` build parsed
+  the manifest and verified nothing. `bin/build_generation_voyage.sh` passes both on every run, so
+  an operator watching those digests scroll past believed a check was happening. Silently
+  discarding a checksum somebody supplied is worse than never accepting one, because it
+  manufactures exactly the confidence it fails to earn. They are verified now, in every
+  environment, whenever they are given.
+
+* **A local corpus could not be built in production at all**, which left `RECALL_ENV=development`
+  as the only route — and that variable also selects which table is read, so the workaround for
+  this gate is half of what split indexing from serving. The other half was the hosted-embedder
+  gate fixed alongside it.
+
+  The `s3://` path provides three things: allowlisted objects, content-verified objects, and bytes
+  pinned forever by object versioning. `LocalObjectReader` already delivered the first two — it
+  refuses without `RECALL_LOCAL_ALLOWLIST`, resolves symlinks and `..` before the containment
+  check, and hashes every object it reads. It cannot deliver the third, and its own docstring says
+  so: a local file can be rewritten after its manifest is written, so this is detection, not
+  prevention. Production now requires the two properties that are achievable, and refuses to
+  pretend about the one that is not. A whitespace-only allowlist is refused with the unset case.
+
 * **A hosted embedder could never back a production generation, so a hosted corpus could not accept
   an upload at all.** `require_production_identity` demanded an immutable revision or artifact
   digest, and a hosted provider has neither by definition: it serves weights it may replace behind
