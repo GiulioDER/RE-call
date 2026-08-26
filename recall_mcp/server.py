@@ -1001,8 +1001,14 @@ def ingest_into_serving_store(
     The branch is not a preference: the two paths each REFUSE the other's mode, so exactly one is
     legal for a given server. `index_memory` raises under `RECALL_ENV=production` ("local
     filesystem indexing is development-only"), and a production generation build requires an
-    immutable embedder revision or artifact digest. Calling the wrong one is therefore either an
-    error or, as here, a silent write to a table nobody reads.
+    immutable embedder revision or artifact digest, OR a hosted provider endpoint. Calling the
+    wrong one is therefore either an error or, as here, a silent write to a table nobody reads.
+
+    🔁 **The hosted clause is new as of 2026-08-26 and it is the whole reason this path is now
+    reachable for a hosted corpus.** Until then `verified` was false for every hosted endpoint
+    permanently, so the only way to run one was `RECALL_ENV=development` — which flips the branch
+    above and sends the write to the legacy table. The workaround for the gate therefore CAUSED
+    the split this docstring describes.
     """
     embedder = state["embedder"]
     if state.get("generation_mode"):

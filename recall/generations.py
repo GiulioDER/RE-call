@@ -405,7 +405,16 @@ class GenerationManager:
             )
         if self.environment == "production":
             pipeline.require_production_identity()
-            if allow_unverified:
+            # ⛔ **Hosted is exempt here, and without this the line above achieves nothing.**
+            # Both callers pass `allow_unverified=not pipeline.verified`, and `verified` is false
+            # for a hosted endpoint permanently and by design, so admitting hosted at the gate and
+            # then refusing it one line lower would leave the refusal exactly where it was. A fix
+            # that only moves an error message is the kind that passes review and ships inert.
+            #
+            # The flag means "this identity is not byte-pinned". For a local artifact that is a
+            # developer's shortcut and production should refuse it. For a hosted endpoint it is the
+            # permanent and honest state of the world, so there is no shortcut to refuse.
+            if allow_unverified and not pipeline.embedder.hosted:
                 raise GenerationError("allow_unverified is unavailable in production")
         elif not pipeline.verified and not allow_unverified:
             raise GenerationError(
