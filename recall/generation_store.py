@@ -366,7 +366,7 @@ class GenerationStore(PgVectorStore):
         """
         generation_id = self._generation_id()
 
-        def _op(conn: psycopg.Connection):
+        def _op(conn: psycopg.Connection) -> tuple[Any, ...] | None:
             with conn.transaction():
                 for guard in _EXACT_SCAN_GUARDS:
                     conn.execute(guard)

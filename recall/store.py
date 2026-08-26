@@ -1736,7 +1736,7 @@ class PgVectorStore:
         must gain a private `_top_cosine` twin and move into `TIMED_PUBLIC_METHODS`, or
         `GenerationStore`'s override silently drops the series for the third time.
         """
-        def _op(conn: "psycopg.Connection"):
+        def _op(conn: "psycopg.Connection") -> "tuple[Any, ...] | None":
             # SET LOCAL needs a transaction block, and this store's connections are autocommit —
             # same shape, same reason as the tuned arms of `_query_dense`.
             with conn.transaction():
