@@ -36,7 +36,17 @@ from recall._env import env_is_production
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    p_index = sub.add_parser("index", help="index a folder of supported documents or code")
+    p_index = sub.add_parser(
+        "index",
+        help="index a folder of supported documents or code",
+        description=(
+            "Read a folder, chunk and embed what is in it, and write the chunks into --table for "
+            "--tenant. Incremental: a file whose content hash is unchanged is skipped, and a file "
+            "that has vanished from disk is PRUNED, which is why two corpora must never share one "
+            "tenant. The embedder must be the same one the table was built with; a mismatch in "
+            "width is refused, and a mismatch in model at the same width is not detectable here."
+        ),
+    )
 
     p_index.set_defaults(_opens_db=True, func=_cmd_index)
     p_index.add_argument("path")
@@ -78,6 +88,16 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
 
     p_forget = sub.add_parser(
         "forget",
+        description=(
+            "Permanently delete every chunk belonging to the named source(s). This is the "
+            "right-to-erasure path and it is IRREVERSIBLE in both stores. On the legacy table the "
+            "rows are deleted, and only re-indexing a file still on disk restores them. Under "
+            "RECALL_ENV=production a PERMANENT TOMBSTONE is also written, and no future generation "
+            "build will re-admit that URI even if the file is there; nothing deletes a tombstone "
+            "and there is no `unforget`. Name a source exactly as stored, which is the `source` "
+            "field printed by `recall search`; a source this store has never seen is reported as NOT "
+            "erased and NOT tombstoned rather than acted on."
+        ),
         help="permanently delete indexed memory for the given source(s) — irreversible",
     )
 
@@ -97,7 +117,17 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "run must not silently wipe a corpus. Re-run with --yes once the preview looks right.",
     )
 
-    p_search = sub.add_parser("search", help="search the index")
+    p_search = sub.add_parser(
+        "search",
+        help="search the index",
+        description=(
+            "Query --table/--tenant through the trust layer, printing a verdict, confidence, "
+            "cosine and provenance for every hit rather than a ranked list. A hit whose memo was "
+            "retracted comes back marked `superseded`, and a query nothing answers well enough is "
+            "ABSTAINed on with a reason. DEGRADED:INDEX_NOT_READY means this corpus has no "
+            "calibration fitted to it, which is a statement about the corpus and not an error."
+        ),
+    )
 
     p_search.set_defaults(_opens_db=True, func=_cmd_search)
     p_search.add_argument("query")
@@ -136,11 +166,28 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
 
 
 def register_demo_code(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    sub.add_parser("demo", help="index corpus/ and run sample memory queries").set_defaults(
+    sub.add_parser(
+        "demo",
+        help="index corpus/ and run sample memory queries",
+        description=(
+            "Index the relative path `corpus` and run sample queries against it. ⚠️ That path "
+            "exists in a git clone and NOT in a `pip install`, so from an installed package this "
+            "indexes an absent directory. `recall quickstart` is the pip-install equivalent: it "
+            "carries its corpus inside the wheel and provisions its own database."
+        ),
+    ).set_defaults(
         _opens_db=True, func=_cmd_demo
     )
     sub.add_parser(
-        "code", help="index recall's own source and run sample code queries"
+        "code",
+        help="index recall's own source and run sample code queries",
+        description=(
+            "Index recall's own Python source and run sample code-retrieval queries against "
+            "it. Unlike `demo`, this resolves the installed package directory, so it works from a "
+            "wheel as well as a clone. It writes to the fixed table `recall_code` and ignores "
+            "--table. Useful for seeing what code chunking does before pointing `recall index "
+            "--glob` at a repository of your own."
+        ),
     ).set_defaults(_opens_db=True, func=_cmd_code)
 
 

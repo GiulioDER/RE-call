@@ -1456,7 +1456,18 @@ def run_setup_wizard(
         just completed. Everything above this point is already persisted in `.env`.
         """
         try:
-            register_mcp_server(dsn=dsn, project_root=project_root, print_fn=print_fn)
+            # ⚠️ Pass the embedder the interview actually chose. `recall_mcp.server` never
+            # calls `load_dotenv`, so an embedder recorded only in `.env` silently falls back to
+            # fastembed — and a same-width different model does not raise, it returns a confidently
+            # ranked list that means nothing. Widening `server_env` alone did not fix this: the
+            # anti-regression review caught that the new parameter had no caller and the defect was
+            # still open.
+            register_mcp_server(
+                dsn=dsn,
+                embedder=embedder.value,
+                project_root=project_root,
+                print_fn=print_fn,
+            )
             install_hooks(dsn=dsn, embedder=embedder.value, print_fn=print_fn)
             print_fn(
                 "Claude Code is wired up. The tools appear in the NEXT session, not this one: "

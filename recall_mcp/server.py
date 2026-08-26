@@ -29,7 +29,7 @@ from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
 from recall._env import env_is_production, truthy
-from recall.store import DEFAULT_TENANT, PgVectorStore, redacted_dsn
+from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore, redacted_dsn
 from recall.trust_policy import TrustPolicy
 from recall_mcp.auth import (
     SCOPE_ADMIN,
@@ -184,6 +184,34 @@ POOL_SIZE = _read_int_env("RECALL_POOL_SIZE", 8, min_value=1)
 #: multi-tenant deployment runs a server (or a store) per tenant rather than switching
 #: tenants on a shared connection — see PgVectorStore._prepare.
 TENANT = os.environ.get("RECALL_TENANT", DEFAULT_TENANT)
+#: Chunk table this server instance reads, for the LEGACY (non-generation) store only.
+#:
+#: This exists because it was documented before it was implemented, which is the same defect the
+#: `RECALL_TRUST_MODE` note below records. `recall quickstart` indexes into `quickstart_chunks`
+#: deliberately, so its fiction can never be retrieved beside a reader's real memory, and
+#: `plugin/README.md` tells a first-time reader to point the Claude Code plugin at that corpus.
+#: The plugin passed a DSN, a tenant and a trust mode, this server had no table knob at all, and
+#: the store therefore opened `chunks` — which the quickstart creates and leaves EMPTY. Measured
+#: 2026-08-25 by driving the stdio server with exactly the plugin's three variables against a
+#: live quickstart database: `recall_search` returned "0 relevant memory hit(s)", with no error
+#: and nothing naming the table. A silent empty answer is the worst available failure, because it
+#: reads as "this product finds nothing" rather than "you are pointed at the wrong table".
+#:
+#: ⛔ Generation mode has no table to choose: `GenerationStore` is welded to `recall_chunks_v1`,
+#: and the authenticated registry is generation-aware too. Setting this there is REFUSED at
+#: startup rather than ignored, because silently ignoring a knob is exactly the failure above.
+#: ⚠️ `.strip()`, and empty means UNSET, and both halves were audit findings.
+#:
+#: `recall/_env.py` records this project fixing the same class once already: "a padded value (a
+#: trailing space from a systemd EnvironmentFile or a Windows `set`) read as production at some
+#: gates and development at others". Measured here: `"chunks ".isidentifier()` is False, so a
+#: trailing space typed into the plugin's free-text Table field raised at MODULE scope, which an
+#: MCP client renders as a server with no tools — the exact silent symptom this variable was added
+#: to eliminate. `or DEFAULT_TABLE` covers `RECALL_TABLE=` used to clear the value, which
+#: `os.environ.get(name, default)` does NOT treat as absent.
+TABLE = os.environ.get("RECALL_TABLE", "").strip() or DEFAULT_TABLE
+if not TABLE.isidentifier():
+    raise ValueError(f"RECALL_TABLE={TABLE!r} is not a valid SQL identifier")
 #: Trust policy for this server instance, resolved from `RECALL_TRUST_MODE`.
 #:
 #: Strict unless the variable reads `development` after `strip().lower()`, which is
@@ -198,6 +226,28 @@ TENANT = os.environ.get("RECALL_TENANT", DEFAULT_TENANT)
 #: path returned INDEX_NOT_READY. The CLI honoured the same variable throughout, which is precisely
 #: what let the gap survive unnoticed: one entry point obeyed it and the other silently did not.
 TRUST_POLICY = TrustPolicy.from_env()
+
+
+def table_override_refusal(
+    table: str, *, generation_mode: bool, authenticated: bool
+) -> str | None:
+    """Why `RECALL_TABLE` cannot be honoured here, or `None` when it can.
+
+    A separate function rather than an inline `if`, because the interesting case needs neither a
+    database nor a running server to state, and a startup guard that can only be exercised by
+    booting the whole process is one nobody exercises.
+    """
+    if table == DEFAULT_TABLE:
+        return None
+    if not (generation_mode or authenticated):
+        return None
+    where = "generation mode" if generation_mode else "authenticated tenant routing"
+    return (
+        f"RECALL_TABLE={table!r} cannot be honoured under {where}: that store reads the "
+        "generation table 'recall_chunks_v1'. Unset RECALL_TABLE, or serve the legacy table "
+        "with RECALL_ENV unset."
+    )
+
 #: Server-side cap on any single statement. A runaway query otherwise holds its connection until
 #: the process dies, and a few of those exhaust the pool while the server still looks healthy.
 # min_value=1: 0 is a valid Postgres statement_timeout meaning "no limit", but here it would
@@ -745,13 +795,38 @@ def _make_lifespan(
             # SELECT-only and uses the serving credential.
             from recall.schema import SchemaTooOld, schema_status
 
-            schema = schema_status(DEFAULT_DSN, dim=embedder.dim)
+            # ⚠️ **Refuse FIRST.** This ran after `schema_status(table=TABLE)`, so an unmigrated
+            # `RECALL_TABLE` under generation mode surfaced as `SchemaTooOld: run `recall schema
+            # apply`` — advising a migration on a production database, for a table the server was
+            # never going to open, instead of naming the real problem twelve lines below. The
+            # refusal needs no database and no embedder, which is why it is a separate function.
+            # N5: ONE read, ONE name. This was `enterprise_early` here and `enterprise` 23 lines
+            # below, from the same variable, in the same function — the duplication class this
+            # repository keeps paying for. Startup is single-threaded and nothing between the two
+            # sites mutates the environment, so hoisting is behaviour-identical.
+            enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
+            refusal = table_override_refusal(
+                TABLE,
+                generation_mode=generation_mode,
+                authenticated=token_registry is not None or enterprise,
+            )
+            if refusal:
+                raise RuntimeError(refusal)
+
+            # Probe the table the store will ACTUALLY open. Under generation mode or authenticated
+            # routing that is the global ledger target, never `RECALL_TABLE` — which the refusal
+            # above has already established is the default there.
+            probe_table = (
+                DEFAULT_TABLE
+                if (generation_mode or token_registry is not None)
+                else TABLE
+            )
+            schema = schema_status(DEFAULT_DSN, table=probe_table, dim=embedder.dim)
             if not schema.compatible:
                 pending = [m.version for m in schema.pending]
                 raise SchemaTooOld(
                     f"database migrations pending: {pending}; run `recall schema apply`"
                 )
-            enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
             if enterprise and token_registry is None:
                 raise RuntimeError("enterprise control plane requires authenticated tenant routing")
             if token_registry is None:
@@ -771,6 +846,7 @@ def _make_lifespan(
                     store = PgVectorStore(
                         DEFAULT_DSN,
                         dim=embedder.dim,
+                        table=TABLE,
                         tenant=TENANT,
                         pool_size=POOL_SIZE,
                         statement_timeout_ms=STATEMENT_TIMEOUT_MS,
@@ -788,9 +864,11 @@ def _make_lifespan(
                 )
         except Exception:
             _log.error(
-                "startup failed (dsn=%s, embedder=%r)",
+                "startup failed (dsn=%s, embedder=%r, table=%r, tenant=%r)",
                 redacted_dsn(DEFAULT_DSN),
                 EMBEDDER_NAME,
+                TABLE,
+                TENANT,
                 exc_info=True,
             )
             raise
@@ -1829,7 +1907,13 @@ def main() -> None:
             HTTP_PORT,
         )
     else:
-        _log.info("starting stdio server", extra={"tenant": TENANT, "embedder": EMBEDDER_NAME})
+        # `table` is here for the same reason `tenant` is: when a stdio server answers "0
+        # relevant memory hit(s)", the only two facts that separate an empty corpus from a
+        # misdirected one are which table and which tenant it opened.
+        _log.info(
+            "starting stdio server",
+            extra={"tenant": TENANT, "table": TABLE, "embedder": EMBEDDER_NAME},
+        )
     if TRANSPORT == "stdio":
         mcp.run()
     elif TRANSPORT == "sse":

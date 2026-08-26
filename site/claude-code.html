@@ -209,9 +209,9 @@
           </div>
 
           <details class="why">
-            <summary>Why the server always reads the table named chunks</summary>
+            <summary>Why the table is chosen by you and never by the model</summary>
             <div class="why-body">
-              <p>The stdio server opens the default <code>chunks</code> table and takes no table flag. That is a deliberate narrowing: a server that could be pointed at any table would need the client to be trusted to name one, and the client here is a language model.</p>
+              <p>The stdio server opens the table <code>RECALL_TABLE</code> names, defaulting to <code>chunks</code>. It is read from the <code>env</code> block you write, never from a tool argument, so the model cannot name a table: no MCP tool takes one. The value is validated as a SQL identifier when the server starts, and refused outright under <code>RECALL_ENV=production</code> or authenticated tenant routing, where the corpus is bound to the active generation instead.</p>
               <p>The consequence is worth knowing before you debug it. If you indexed a demo corpus into a named table from the CLI, the server will not see those rows, and searches will come back empty with nothing obviously wrong. Index into the default table, or into the tenant you set in <code>RECALL_TENANT</code>, and the rows appear.</p>
             </div>
           </details>

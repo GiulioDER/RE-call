@@ -25,7 +25,21 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     # Deliberately does NOT say "wizard": `recall wizard` is a different command, and `recall
     # --help` listed both describing themselves as the install wizard with no way to tell which.
     sub.add_parser(
-        "setup", help="configure recall interactively and write a local .env file"
+        "setup",
+        help="configure recall interactively and write a local .env file",
+        # The canonical install, and the one the README and the epilogue in `recall.cli` both send
+        # people to, so it says what it will DO to the machine before it starts asking. It had no
+        # description at all, which meant `recall setup --help` printed four lines and none of them
+        # mentioned that it writes `.env`, touches the schema, or edits the Claude Code config.
+        description=(
+            "The guided install. Asks which embedder, reranker and entailment judge you need, "
+            "prepares the database schema at that embedder's width, offers to fit an abstention "
+            "threshold against your own corpus, and offers to register the MCP server and session "
+            "hooks with Claude Code. Writes a local .env with the answers; every step that touches "
+            "something outside this directory is asked for first. Run `recall doctor` afterwards "
+            "to check the result. If you want this scripted rather than asked, `recall wizard` "
+            "runs the same engine from a JSON config."
+        ),
     ).set_defaults(
         _opens_db=True,  # the wizard connects when the operator accepts the calibrate prompt
         func=_cmd_setup,
@@ -37,6 +51,18 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_wizard = sub.add_parser(
         "wizard",
         help="install recall: ask what is needed and build it, or run a saved JSON config",
+        # ⚠️ `help=` shows in `recall --help`; `description=` is what `recall wizard --help` shows,
+        # and without one this subcommand printed a bare usage line and its flags. So the command
+        # most likely to be reached by somebody unsure whether they wanted `setup` instead was the
+        # one that explained itself least. It says how it DIFFERS from `setup` rather than what it
+        # does, because a reader at this prompt has already seen both names and is choosing.
+        description=(
+            "Install recall as a repeatable pipeline: provision the database stack, build and "
+            "calibrate every corpus, promote a generation, and register the MCP servers. Same "
+            "engine as `recall setup`; the difference is that the answers become a JSON config "
+            "which is what actually runs, so the install can be replayed and driven headlessly by "
+            "CI. Prefer `recall setup` if you are installing this once, by hand, for yourself."
+        ),
     )
     p_wizard.set_defaults(_opens_db=True, func=_cmd_wizard)
     p_wizard.add_argument(
@@ -83,6 +109,13 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "uninstall",
         help="remove an install's containers, stack files and MCP registrations. Never removes the "
         "folders it was indexing.",
+        description=(
+            "Undo what an install created: its Docker containers and volumes, its generated stack "
+            "files, the MCP server registrations and the session hooks. It never touches the "
+            "folders you pointed it at, and never the memos in them. Requires --data-root, "
+            "because the thing being removed is one install rather than every install on the "
+            "machine, and guessing which would be the wrong way to be convenient."
+        ),
     )
     p_uninstall.set_defaults(func=_cmd_uninstall)
     p_uninstall.add_argument(

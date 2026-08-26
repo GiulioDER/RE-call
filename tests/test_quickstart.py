@@ -400,6 +400,57 @@ def test_docker_available_returns_none(monkeypatch) -> None:
     assert Q.docker_unavailable_reason() is None
 
 
+def test_the_daemon_probe_is_the_cheap_one_and_its_timeout_has_real_margin(monkeypatch) -> None:
+    """⚠️ `docker info` is not interchangeable with `docker version` here, and the reason is the
+    timeout rather than the average cost.
+
+    `info` gathers the whole system inventory, so its cost scales with what is on the machine.
+    Measured 2026-08-25 on a workstation holding 37 containers: median **14.11s** over five runs,
+    spread **4.01s to 56.36s**, a factor of 14 inside one hour. Against a 60 second bound that is
+    1.07x the observed maximum, so a marginally busier daemon makes this function report a
+    perfectly healthy Docker as "installed but did not respond" and sends the reader to fix
+    something that is not broken. `version` measured median **0.48s**, 29.1x faster.
+    Record: `docs/preregistrations/2026-08-25-docker-probe-latency.md`.
+
+    Two assertions, and the second is the one with teeth. Pinning the argv alone would let somebody
+    restore `info` under a generous timeout and stay green; pinning the RATIO says what the bound is
+    for. 20s against a 0.48s probe is a margin of roughly 40x, and anything under 10x means the
+    probe has grown expensive enough to trip its own backstop again.
+    """
+    seen: dict[str, object] = {}
+
+    def _capture(argv, **kwargs):
+        seen["argv"] = argv
+        seen["timeout"] = kwargs.get("timeout")
+        return _completed()
+
+    monkeypatch.setattr(Q.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(Q.subprocess, "run", _capture)
+    assert Q.docker_unavailable_reason() is None
+
+    argv = seen["argv"]
+    assert isinstance(argv, list)
+    assert argv[:2] == ["docker", "version"], (
+        f"{argv[:2]} is not the cheap probe; `docker info` costs 14s median and 56s worst case on "
+        "a machine with a normal number of containers"
+    )
+
+    # ⚠️ The denominator is the WORST observed sample, not the median, and it is looked up BY THE
+    # PROBE'S OWN ARGV. The first version divided by a frozen `0.48`, which made the assertion
+    # algebraically `timeout >= 4.8` — it could not fail on the condition its message named,
+    # because the probe's cost never entered it. Keyed this way, restoring `docker info` under a
+    # 60s timeout fails here (60/56.36 = 1.06), which is the regression worth catching.
+    observed_worst_case = {("docker", "version"): 3.53, ("docker", "info"): 56.36}
+    worst = observed_worst_case[tuple(argv[:2])]
+    timeout = seen["timeout"]
+    assert isinstance(timeout, (int, float))
+    assert timeout / worst >= 3, (
+        f"timeout={timeout}s leaves only {timeout / worst:.1f}x margin over the slowest observed "
+        f"{' '.join(argv[:2])} run ({worst}s), which is how the old probe came to report a healthy "
+        "daemon as unresponsive"
+    )
+
+
 # --------------------------------------------------------------------------------------------
 # The CLI surface.
 # --------------------------------------------------------------------------------------------
