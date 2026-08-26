@@ -15,12 +15,15 @@ import os
 import shlex
 import tempfile
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from urllib import error, request
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+import anyio
+import mcp_types as types
+from mcp import ClientSession
+from mcp.shared.message import SessionMessage
 
 
 MODEL = "deepseek/deepseek-v4-pro"
@@ -147,6 +150,76 @@ def _server_command(tenant: str, embedder: str, index_root: str, profile: str) -
     return ssh, ["-T", "-o", "BatchMode=yes", "-F", ssh_config, "vps2", remote]
 
 
+@asynccontextmanager
+async def _ssh_stdio_client(
+    command: str,
+    args: list[str],
+    *,
+    errlog: Any,
+) -> Any:
+    """Run SSH with asyncio pipes; AnyIO's Windows pipe bridge drops frames."""
+
+    process = await asyncio.create_subprocess_exec(
+        command,
+        *args,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+    assert process.stderr is not None
+    read_send, read_receive = anyio.create_memory_object_stream[SessionMessage | Exception](0)
+    write_send, write_receive = anyio.create_memory_object_stream[SessionMessage](0)
+
+    async def read_stdout() -> None:
+        try:
+            while line := await process.stdout.readline():
+                try:
+                    message = types.jsonrpc_message_adapter.validate_json(line, by_name=False)
+                except ValueError as exc:
+                    await read_send.send(exc)
+                else:
+                    await read_send.send(SessionMessage(message))
+        finally:
+            await read_send.aclose()
+
+    async def read_stderr() -> None:
+        while chunk := await process.stderr.readline():
+            errlog.write(chunk.decode("utf-8", errors="replace"))
+            errlog.flush()
+
+    async def write_stdin() -> None:
+        try:
+            async for message in write_receive:
+                process.stdin.write(message.message.model_dump_json(by_alias=True, exclude_unset=True).encode() + b"\n")
+                await process.stdin.drain()
+        finally:
+            process.stdin.close()
+            await process.stdin.wait_closed()
+
+    tasks = [
+        asyncio.create_task(read_stdout()),
+        asyncio.create_task(read_stderr()),
+        asyncio.create_task(write_stdin()),
+    ]
+    try:
+        yield read_receive, write_send
+    finally:
+        await write_send.aclose()
+        await write_receive.aclose()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=3)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await read_receive.aclose()
+
+
 async def _tool_payload(result: object) -> dict[str, object]:
     text = "".join(
         block.text
@@ -196,16 +269,40 @@ async def _run_arm(
         raise ValueError("MCP returned an invalid initial construction round")
     while payload.get("status") == "challenge":
         prompt = str(payload["challenge_prompt"] if "challenge_prompt" in payload else payload["next_challenge_prompt"])
-        frame, provider, raw_frame = _ask_original_model(
-            prompt,
-            endpoint=endpoint,
-            api_key=api_key,
-            model=model,
-            reasoning_effort=reasoning_effort,
-            max_tokens=max_tokens,
-            timeout=provider_timeout,
-            retries=retries,
-        )
+        try:
+            frame, provider, raw_frame = _ask_original_model(
+                prompt,
+                endpoint=endpoint,
+                api_key=api_key,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                max_tokens=max_tokens,
+                timeout=provider_timeout,
+                retries=retries,
+            )
+        except RuntimeError as exc:
+            fallback = await session.call_tool(
+                "recall_reasoning_query",
+                {
+                    "query": query,
+                    "k": 5,
+                    "mode": "retrieval_only",
+                    "graph_expansion": graph_expansion,
+                },
+            )
+            fallback_payload = await _tool_payload(fallback)
+            tool_calls.append(fallback_payload)
+            return {
+                "task_id": item.get("task_id"),
+                "arm": arm,
+                "original_prompt": original_prompt,
+                "query": query,
+                "gold": {key: value for key, value in item.items() if key.startswith("gold") or key.endswith("_ids")},
+                "final": fallback_payload,
+                "tool_calls": tool_calls,
+                "model_calls": model_calls,
+                "fallback": {"phase": "original_model", "reason": str(exc)},
+            }
         model_calls.append({"frame": frame, "raw": raw_frame, "provider": provider})
         if "next_round_index" in payload:
             next_round = payload["next_round_index"]
@@ -262,10 +359,9 @@ async def main_async(args: argparse.Namespace) -> None:
     diagnostics_file.close()
     rows: list[dict[str, object]] = []
     try:
-        params = StdioServerParameters(command=ssh, args=command)
         diagnostics_handle = diagnostics_path.open("w", encoding="utf-8")
         try:
-            async with stdio_client(params, errlog=diagnostics_handle) as (read, write):
+            async with _ssh_stdio_client(ssh, command, errlog=diagnostics_handle) as (read, write):
                 async with ClientSession(read, write) as session:
                     await asyncio.wait_for(session.initialize(), timeout=60)
                     listed = await asyncio.wait_for(session.list_tools(), timeout=30)
