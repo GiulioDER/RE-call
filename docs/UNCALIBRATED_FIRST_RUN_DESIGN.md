@@ -37,7 +37,7 @@ a **tenant**.
 | `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:1239` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
 | `calibration = None` is deliberate, and names an open design question | `recall/cli_commands/index_search.py:406-418` | confirmed |
-| Legacy `chunks` has no `source_sha256` **column** | `recall/store.py:372` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
+| Legacy `chunks` has no `source_sha256` **column** | `recall/store.py:376` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
 
 ### Four findings that change the available answers
 
@@ -727,7 +727,7 @@ Markdown body derivation is pure Python inside this repository, so a chunker mis
 diagnosable: the code that would differ is versioned by the repo. Extraction is not.
 `extract_document` (`recall/extraction.py:169`) dispatches to **six third party libraries** and, for
 five suffixes, to an **external LibreOffice binary** (`_extract_with_libreoffice`,
-`recall/extraction.py:727`). Those libraries
+`recall/extraction.py:743`). Those libraries
 are declared with open lower bounds in an optional extra (`pdfplumber>=0.11` and friends), and
 LibreOffice is not a Python dependency at all.
 
