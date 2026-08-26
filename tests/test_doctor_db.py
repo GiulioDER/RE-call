@@ -334,9 +334,23 @@ def test_a_role_that_can_read_almost_nothing_still_gets_the_index_command(
         )
         assert "These do hold rows" not in corpus.detail, corpus.detail
 
-        # The facts are not dropped, only moved somewhere they cannot be read as findings.
+        # ⚠️ Two SEPARATE assertions, not an `or`. This role is NOSUPERUSER NOBYPASSRLS, so
+        # `rls visibility` always fires and an `or` short-circuits before `corpus scan` is ever
+        # examined — the architect gate deleted the entire `if unreadable:` block and this test
+        # still passed. The unreadable half is the one RR1 was about, so it needs its own claim.
         names = {c.name for c in report.checks}
-        assert "corpus scan" in names or "rls visibility" in names, sorted(names)
+        assert "rls visibility" in names, sorted(names)
+
+        scan = next(c for c in report.checks if c.name == "corpus scan")
+        assert scan.status == "warn"
+        # Specific, not a presence check: this distinguishes "named the unreadable ones" from
+        # "named everything", which is the difference between a useful caveat and noise.
+        assert EMPTY_TABLE not in scan.detail, (
+            "the one corpus this role CAN read was listed as unreadable: " + scan.detail
+        )
+        assert CORPUS_TABLE in scan.detail, (
+            "a sibling corpus this role cannot read was silently omitted: " + scan.detail
+        )
     finally:
         with psycopg.connect(TEST_DSN, autocommit=True) as conn:
             _ddl(conn, "REVOKE ALL ON {} FROM {}", EMPTY_TABLE, blind)

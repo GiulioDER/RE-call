@@ -332,9 +332,19 @@ def _database_checks(dsn: str, conn: Any) -> Iterator[Check]:
             "fail",
             "the vector extension is not installed in this database"
             + ("" if available else ", and the server does not ship it"),
-            "CREATE EXTENSION vector;  (or use the pgvector/pgvector image)"
+            # ⚠️ Worded to AGREE with `recall/wizard/database.py::_check_vector`, the other
+            # command that reports on this exact condition. Two commands giving an operator two
+            # different repairs for one state is the confusion this project keeps paying for.
+            # Deduplicating the two modules is a design change and is filed separately; making the
+            # strings agree needed no design decision, so it is done here.
+            "run `CREATE EXTENSION vector;` in this database, then re-run"
             if available
-            else "use a PostgreSQL image that carries pgvector, such as pgvector/pgvector:pg18",
+            else (
+                "install the pgvector package for this PostgreSQL (for example `apt install "
+                "postgresql-16-pgvector`), or use an image that carries it such as "
+                "pgvector/pgvector:pg18, then `CREATE EXTENSION vector;`. On a managed or remote "
+                "server this is a job for whoever administers it."
+            ),
         )
     else:
         yield Check("pgvector", "ok", f"extension version {installed[0]}")
@@ -552,7 +562,7 @@ def _corpus_checks(conn: Any, *, table: str, tenant: str) -> Iterator[Check]:
         + (
             f"These do hold rows: {populated}"
             if populated
-            else "No corpus in this database holds rows yet."
+            else "No corpus this role can read holds rows."
         ),
         f"recall --table {table} --tenant {tenant} index <folder>"
         if not populated

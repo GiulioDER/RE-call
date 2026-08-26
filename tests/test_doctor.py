@@ -385,3 +385,99 @@ def test_a_role_that_cannot_see_other_tenants_still_gets_the_index_command() -> 
     # The fact is not dropped, only moved somewhere it cannot be mistaken for a finding.
     visibility = next(c for c in checks if c.name == "rls visibility")
     assert visibility.status == "warn"
+
+
+DEAD_DSN = "postgresql://recall:recall@127.0.0.1:1/recall"
+
+
+def test_a_divergent_server_config_is_reported_with_BOTH_pairs_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ **The P1 six auditors converged on, and it shipped with no test at all.**
+
+    `recall doctor` inspects its own `--table`/`--tenant` while the MCP server reads
+    `RECALL_TABLE`/`RECALL_TENANT`, so the diagnostic could bless one corpus while the server served
+    another. The fix reports the divergence rather than inheriting it, deliberately: defaulting the
+    CLI flags from the environment would silently redirect `recall index`, which PRUNES, and
+    `recall forget`, which is irreversible.
+
+    The architect gate deleted the whole emitting block and the audited set still passed 287/287.
+    A conditional emission with no test is indistinguishable from a comment, which is the third time
+    that exact shape has shipped in this branch.
+
+    Three assertions, and the third is the one with teeth: the REPAIR must name the SERVED pair, not
+    the reported one. It is a single `or` away from being backwards, and backwards would send the
+    reader to re-diagnose the corpus they already looked at.
+    """
+    monkeypatch.setenv("RECALL_TABLE", "quickstart_chunks")
+    monkeypatch.setenv("RECALL_TENANT", "work")
+    report = run_checks(
+        dsn=DEAD_DSN, embedder="hashing", table="chunks", tenant="default",
+        trust_mode="development",
+    )
+    check = next((c for c in report.checks if c.name == "server config"), None)
+    assert check is not None, "the divergence was not reported at all"
+    assert check.status == "warn"
+
+    assert "'chunks'/'default'" in check.detail, check.detail
+    assert "'quickstart_chunks'/'work'" in check.detail, check.detail
+
+    assert check.fix is not None
+    assert "--table quickstart_chunks --tenant work" in check.fix, (
+        "the repair must name the corpus the SERVER opens, not the one just inspected: " + check.fix
+    )
+
+
+def test_a_matching_server_config_produces_no_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The control. Without it, an unconditional warn satisfies the test above.
+
+    Every correctly configured install would then grow a spurious warning, and a diagnostic that
+    cries wolf on the common case is one people stop reading — the same argument the calibration
+    verdict turns on.
+    """
+    monkeypatch.setenv("RECALL_TABLE", "chunks")
+    monkeypatch.setenv("RECALL_TENANT", "default")
+    report = run_checks(
+        dsn=DEAD_DSN, embedder="hashing", table="chunks", tenant="default",
+        trust_mode="development",
+    )
+    assert not [c for c in report.checks if c.name == "server config"], (
+        "a server pointed at the corpus under audit is not a divergence"
+    )
+
+
+@pytest.mark.parametrize("mode", ["strict", "development"])
+def test_a_missing_calibration_is_a_WARNING_in_every_mode(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """⛔ **Asserted over the REAL run, because a hand-built Check is what hid this.**
+
+    `_calibration_check` returned `fail` under the default strict mode, which falsified five
+    published sentences promising a missing calibration will not fail a script. The fix made it
+    `warn` in every mode; the architect gate flipped it back to `fail` and the audited set still
+    passed 287/287.
+
+    `test_a_blocking_failure_exits_non_zero_and_a_warning_does_not` LOOKS like it covers this and
+    does not: it asserts over `Check` objects built by hand, so it pins `Report.exit_code()`'s
+    arithmetic and says nothing about the verdict this function actually returns.
+
+    Both modes, because "warn only in development" would satisfy a single-mode test while leaving
+    every fresh install exiting 1. The strictness must still be REPORTED, since it is what decides
+    whether queries are refused — that is the difference between softening the verdict and losing
+    the fact.
+    """
+    monkeypatch.delenv("RECALL_TRUST_MODE", raising=False)
+    report = run_checks(dsn=DEAD_DSN, embedder="hashing", trust_mode=mode)
+    calibration = next(c for c in report.checks if c.name == "calibration")
+
+    assert calibration.status == "warn", (
+        f"a missing calibration exits 1 in {mode} mode, which five published sentences say it does "
+        "not"
+    )
+    assert calibration.fix is not None
+    if mode == "strict":
+        assert "STRICT" in calibration.detail, calibration.detail
+
+    # The verdict must not be able to block on its own.
+    only_calibration = Report([Check("x", "ok", "d"), calibration])
+    assert only_calibration.exit_code() == 0
