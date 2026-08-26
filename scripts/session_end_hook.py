@@ -14,13 +14,18 @@ alone and writes down what it saw.
 It closes exactly two things, and both are THIS session's: the container carrying
 this checkout's label, and the MCP transports whose parent chain reaches this
 session's client process. The second was added on 2026-08-26 after measuring the
-cost of not doing it: **89 live `recall_mcp.server` processes on VPS2, 21.5 GB
-resident, oldest 69 hours**, on a 47 GB host that also runs live trading
-services. Each server lives exactly as long as its stdio transport, ssh sets no
-keepalive, and a client that vanishes therefore leaves ~850 MB running with
-nothing anywhere reporting it. The same measurement found transports with an
-IDENTICAL command line belonging to a different agent (`codex.exe`), which is
-why ownership is the parent chain and never the command line.
+cost of not doing it: **18 live servers on VPS2 holding 14.67 GB**, on a 47 GB
+host that also runs live trading services. Each server lives exactly as long as
+its stdio transport, ssh sets no keepalive, and a client that vanishes therefore
+leaves ~815 MB running with nothing anywhere reporting it. The same measurement
+found transports with an IDENTICAL command line belonging to a different agent
+(`codex.exe`), which is why ownership is the parent chain and never the command
+line.
+
+(An earlier version of this paragraph said "89 processes, 21.5 GB". The memory
+was right and the count was about double: a server and its ssh wrapper both carry
+the string `python -m recall_mcp.server`, one as the command it runs and one
+inside `--cmd=`, so a matching count reports every server twice.)
 
 Four rules, every one of them written because the first version of this file
 broke it and an audit caught it before it could do damage:
