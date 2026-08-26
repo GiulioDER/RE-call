@@ -292,9 +292,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"RESULT  {len(targets)} server(s) closeable, {freed:.2f} GB. Re-run with --kill.")
         return 0
 
-    pids: list[str] = []
-    for s in targets:
-        pids.extend([s.pid, s.wrapper_pid])
+    # ⛔ The SERVER only, never its recorded parent. The parent of a server whose wrapper has
+    # already exited is whatever adopted it, and on this host that is `tailscaled` itself: killing
+    # that pid would take down the daemon carrying every ssh session on the machine, including the
+    # one issuing the kill. The 815 MB is the server; the wrapper is ~22 MB and exits on its own
+    # when the command it runs is gone, because that is what ends an ssh session.
+    pids: list[str] = [s.pid for s in targets]
     if not kill_remote(args.host, pids):
         print("FAILED   the kill did not run; nothing is known to have closed.")
         return 1

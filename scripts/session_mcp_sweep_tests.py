@@ -180,8 +180,11 @@ def test_cli_kills_only_the_orphan():
         "RECALL_MCP_KILL_FILE": str(kills),
     })
     killed = kills.read_text(encoding="utf-8").split() if kills.exists() else []
-    check("9  --kill closes the orphan and its wrapper, and nothing else",
-          sorted(killed) == ["100", "101"], f"{killed} :: {p.stdout.strip()[-160:]}")
+    # The server pid ALONE. Its recorded parent may be whatever adopted it after the wrapper
+    # exited, which on the real host is `tailscaled`; killing that would end every ssh session on
+    # the machine, including the sweep's own.
+    check("9  --kill closes the orphan itself and nothing else, not its recorded parent",
+          killed == ["101"], f"{killed} :: {p.stdout.strip()[-160:]}")
 
 
 def test_cli_refuses_unmarked_while_one_could_be_live():
