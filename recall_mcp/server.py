@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Protocol, TypeVar, cast
+from typing import Literal, Protocol, TypeVar
 from urllib.parse import urlsplit
 
 import anyio.to_thread
@@ -80,6 +80,7 @@ from recall_mcp.service import (
     related_memory,
     rewrite_plan,
     search_memory,
+    serving_json,
     startup_retrieval_profile,
     tenant_scopes,
 )
@@ -93,17 +94,8 @@ from recall_mcp.translation import (
 from recall.desktop.uploads import discard_staging, stage_uploads
 
 
-def _serving_json(result: object) -> str:
-    """Serialize additive retrieval fields only when a caller opted into them."""
-    dump = cast(Callable[..., str], getattr(result, "model_dump_json"))
-    exclude: set[str] = set()
-    if getattr(result, "explanation", None) is None:
-        exclude.add("explanation")
-    if not getattr(result, "related_items", ()):
-        exclude.add("related_items")
-    if not getattr(result, "related_diagnostics", ()):
-        exclude.add("related_diagnostics")
-    return dump(indent=2, exclude=exclude)
+# Promoted to the service layer so `recall_agent` renders identically without importing `mcp`.
+_serving_json = serving_json
 
 #: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
 #: is metered the moment it declares a scope — there is no separate table to remember to update,

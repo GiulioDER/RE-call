@@ -118,6 +118,14 @@ finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "n
 # Adapter extras depend on the core packages only, not the framework meta-packages.
 langchain = ["langchain-core>=0.3"]
 llamaindex = ["llama-index-core>=0.11"]
+# Claude Agent SDK integration (`recall_agent`). Deliberately NOT in `dev`: the SDK spawns the
+# Claude Code CLI at runtime, CI installs without heavy extras, and a CI run without the SDK is
+# what proves every `recall_agent` module imports and its contract tests pass with the extra
+# absent — the same arrangement the fastembed suite uses. Floor 0.2 because the
+# `ClaudeAgentOptions` surface this package relies on (`setting_sources`, `extra_args`,
+# `cli_path`, SDK in-process servers in `mcp_servers`) is the 0.2 line's; `<1` because the SDK
+# is pre-1.0 and `recall_agent/_sdk.py` is deliberately the only module exposed to its churn.
+agent = ["claude-agent-sdk>=0.2,<1"]
 # Benchmark extra is deliberate and excluded from `dev`.
 bench = ["mem0ai==2.0.13", "openai>=1.0", "pyarrow>=15", "numpy>=1.26", "tiktoken==0.14.0"]
 dev = [
@@ -172,8 +180,8 @@ recall-install = "recall.desktop.main:install_main"
 recall-uninstall = "recall.desktop.main:uninstall_main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["recall", "recall_hooks", "recall_mcp"]
-artifacts = ["recall/py.typed", "recall_mcp/py.typed"]
+packages = ["recall", "recall_hooks", "recall_mcp", "recall_agent"]
+artifacts = ["recall/py.typed", "recall_mcp/py.typed", "recall_agent/py.typed"]
 # recall/eval ships only its load-bearing slice: calibrate/metrics (the wizard's calibration),
 # labelled and its deps (a documented CLI), synthetic/vocab (query generation), and the sample
 # corpus + labels the README points the wizard at. The one-off benchmark drivers and session

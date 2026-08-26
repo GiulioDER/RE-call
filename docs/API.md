@@ -18,6 +18,8 @@ benchmarks, migrations, or experiments, and can change more freely.
 | Query routing | `recall.query_class.classify_query` and `route_query` | Versioned deterministic query classes and shadow routing decisions. |
 | LangChain | `recall.integrations.langchain.RecallRetriever` | Use RE-call as a LangChain retriever. |
 | LlamaIndex | `recall.integrations.llamaindex.RecallRetriever` | Use RE-call as a LlamaIndex retriever. |
+| Claude Agent SDK | `recall_agent.RecallAgentMemory` | In-process SDK tools, SessionStart digest, and `ClaudeAgentOptions` assembly for Claude Agent SDK apps ([USING_WITH_AGENT_SDK.md](USING_WITH_AGENT_SDK.md)). |
+| Serving JSON | `recall_mcp.service.serving_json` | The one renderer every serving surface (MCP server, Agent SDK tools) uses, so results are byte-identical across transports. |
 | Errors | `recall.errors.RecallError` | Common base of every deliberate recall/recall_mcp exception. Each family also keeps its historical built-in base (`RuntimeError` or `ValueError`), so existing handlers keep working. |
 
 The expected application pattern is to call `trusted_search`, check `result.abstained`, and answer
