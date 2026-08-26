@@ -293,6 +293,34 @@ python -m pytest tests/ -q -n 4          # or: make test
 scripts/session-db.sh down
 ```
 
+- ⚠️ **A local run past 40 minutes means the RUN was serial or the BOX was loaded, not that the
+  suite regressed, and `make test` now checks which before launching.** Three facts, measured
+  2026-08-26, that close the recurring "the suite is slow, probably fastembed" diagnosis:
+
+  1. **CI runs the whole suite in 4:19** (6,623 passed, 151 skipped, `-n auto` with coverage on a
+     4-vCPU runner, run 32966542600). The suite is not intrinsically slow. Re-measure:
+     `gh run list --workflow ci.yml --branch master --limit 3` and read the `test` job.
+  2. **Every real-model test together — all `requires_fastembed`, the QNLI entailment judge, the
+     sentence-transformers reranker — is 73 tests and 80.35s serial, slowest single test 5.26s.**
+     They run only locally (CI installs without those extras, hence its 151 skips against a
+     healthy local 34). Fastembed is ~1.5 minutes of a ~50 minute serial suite. Re-measure:
+
+     ```bash
+     python -m pytest tests/test_their_harness_backend.py tests/test_membench_adapters.py \
+       tests/test_fallback_profile_id_distinctness.py tests/test_entailment.py \
+       tests/test_bench_beam_candidate_k.py -q --durations=10
+     ```
+  3. **The fastembed/onnxruntime processes that DO starve this machine are other sessions'
+     local `recall.cli index` and benchmark runs**, which the embedding-on-VPS2 rule above
+     already covers. One was live during this diagnosis (585 MB RSS, 834 CPU-seconds), beside a
+     concurrent pytest from a second session, with 1.4 GB of 12 GB available. On a box in that
+     state four workers are not slower, they are OOM-killed, and the retries are the 40+ minutes.
+
+  `scripts/suite-preflight.sh` is the mechanism: `make test` asks it for a worker count sized to
+  the memory actually available (≥6 GB → 4, ≥3 GB → 2, else serial), it warns about competing
+  pytest and indexing processes by command line, and `N=<n>` still overrides it verbatim.
+  Tests: `bash scripts/suite_preflight_tests.sh`, mutation-tested per the guard rule.
+
 - 🔁 **Corrected 2026-08-23: run it in PARALLEL. Serial is 50 minutes; `-n 4` is 14.**
   Measured that day on this workstation, same commit (`ec6ab9a0`), same container, back to back,
   at 6,563 tests: **serial 49:58** (52:27 of wall clock, collection and interpreter start
