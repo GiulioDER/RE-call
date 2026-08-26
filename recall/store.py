@@ -31,7 +31,11 @@ _DEFAULT_CREDS = ("recall", "recall")
 _NUMERIC_TOKEN_RE = re.compile(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)?%?(?![\w.])")
 #: "" covers a hostless/unix-socket DSN. Bracketed IPv6 is absent on purpose: urlsplit strips
 #: the brackets. All of 127.0.0.0/8 is handled numerically by `_is_local_host`.
-_LOCAL_HOSTS = ("", "localhost", "::1", "0.0.0.0")
+#: `0.0.0.0` is here as a CONNECT target, not a bind address: as a destination it resolves to
+#: the local host, so a DSN naming it carries the built-in credentials no further than
+#: `localhost` would. S104 is about binding a LISTENER to every interface, which this is not;
+#: the listener default lives in `recall_mcp/server.py` and is `127.0.0.1`.
+_LOCAL_HOSTS = ("", "localhost", "::1", "0.0.0.0")  # noqa: S104
 #: Hosts that get a WARNING but not a refusal. `host.docker.internal` used to sit in
 #: `_LOCAL_HOSTS`, which was wrong in one direction: from inside a container it reaches the
 #: container HOST, which can be a shared, network-reachable machine. It stays out of the

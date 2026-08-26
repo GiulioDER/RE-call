@@ -31,8 +31,17 @@ def _parser() -> argparse.ArgumentParser:
 def _check_links(dataset: dict[str, object], timeout: float) -> int:
     failures = 0
     for source in dataset["sources"]:  # type: ignore[index]
-        url = source["canonical_url"]  # type: ignore[index]
-        request = Request(str(url), method="HEAD", headers={"User-Agent": "RE-call-prior-art/1"})
+        url = str(source["canonical_url"])  # type: ignore[index]
+        # Scheme checked before opening. `urlopen` honours `file:`, so a dataset entry naming
+        # `file:///etc/passwd` would make this link CHECKER a local-file reader that prints the
+        # status of whatever it found. The dataset is repo-controlled, so this is a small hole,
+        # but it is the only call site in the repository whose URL comes from a data file rather
+        # than being built in code, which is exactly where the check belongs.
+        if not url.startswith(("http://", "https://")):
+            failures += 1
+            print(f"FAIL {url}: refusing a non-http(s) URL", file=sys.stderr)
+            continue
+        request = Request(url, method="HEAD", headers={"User-Agent": "RE-call-prior-art/1"})
         try:
             with urlopen(request, timeout=timeout) as response:
                 print(f"{response.status} {url}")

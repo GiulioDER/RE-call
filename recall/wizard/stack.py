@@ -177,12 +177,16 @@ class StackSpec:
             )
 
 
-def host_dsn(port: int, *, user: str = "recall", password: str = "recall") -> str:
+# The compose stack's own development credentials, which `docker-compose.yml` sets and
+# SECURITY.md documents as local-only. Not a secret being leaked: it is the value the wizard
+# must reproduce to reach the database it just started. `warn_if_insecure_dsn` is what
+# catches these reaching a remote host.
+def host_dsn(port: int, *, user: str = "recall", password: str = "recall") -> str:  # noqa: S107
     """The address a HOST process uses: the wizard, and every MCP server it registers."""
     return f"postgresql://{user}:{password}@127.0.0.1:{port}/recall"
 
 
-def container_dsn(*, user: str = "recall", password: str = "recall") -> str:
+def container_dsn(*, user: str = "recall", password: str = "recall") -> str:  # noqa: S107
     """The address a service INSIDE the compose network uses. Same database, shorter path."""
     return f"postgresql://{user}:{password}@db:{DB_INTERNAL_PORT}/recall"
 

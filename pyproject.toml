@@ -270,7 +270,94 @@ extend-exclude = [
 [tool.ruff.lint]
 # Ruff 0.16 expands the implicit default rule set from 59 rules to 413. RE-call keeps the previous
 # baseline explicit here so upgrading the binary is not also a repository-wide style rewrite.
-select = ["E4", "E7", "E9", "F"]
+#
+# `S` is flake8-bandit, added 2026-08-26 after a security audit found the repository carried
+# `# noqa: S310`, `# noqa: S603` and `# noqa: S608` markers while `S` was NOT selected. Those
+# comments were inert: they read as "somebody considered this and cleared it" and were enforcing
+# nothing, which is worse than an absent check because it answers the question a reviewer would
+# otherwise ask.
+#
+# What turning it on actually buys, stated honestly: the 28 highest-severity rules in the set
+# (S102, S307, S301, S302, S506 for code execution and unsafe deserialization, S601/S602 for shell
+# injection, plus the weak-cipher and cleartext-protocol rules) find ZERO across this repository
+# today, so the gate costs nothing now and refuses the day somebody adds the first one. That is the
+# whole value: it is a ratchet, not a cleanup.
+select = ["E4", "E7", "E9", "F", "S"]
+
+# Rules excluded with the reason, rather than a bare list. Each was measured across the repository
+# on 2026-08-26; re-measure any of them with `python -m ruff check --select S### --statistics .`
+ignore = [
+    # 10,662 hits, 10,603 of them under `tests/`. `assert` IS pytest's assertion mechanism, so the
+    # rule is measuring the test framework rather than this code. The 24 in shipped packages are a
+    # real (small) question, but they are a `python -O` argument rather than a security one, and
+    # `recall_mcp/server.py` already makes that argument explicitly where it matters.
+    "S101",
+    # 83 hits, every one a seeded sampler in the eval and benchmark harnesses, where
+    # reproducibility is the requirement and unpredictability would be a defect. No security
+    # decision in this package consumes `random`; `recall_mcp/auth.py` uses `secrets`.
+    "S311",
+    # 74 and 40 hits. Every `subprocess` call site in this repository passes an argv LIST, and
+    # `shell=True` appears nowhere (verified: `grep -rn "shell=True" --include=*.py` is empty).
+    # S607's partial names (`docker`, `git`, `soffice`) are deliberate: resolving them from PATH is
+    # how the wizard finds a user's own installation.
+    "S603", "S607",
+    # 23 and 6 hits, all best-effort cleanup where the failure genuinely does not matter and the
+    # surrounding comment says so. A style rule wearing a security number.
+    "S110", "S112",
+    # 17 hits, 14 of them scratch paths in `results/`. Not a shipped-code pattern.
+    "S108",
+    # 17 hits. `urlopen` honours `file:` and custom schemes, so the rule is asking "could this URL
+    # name something other than a web resource?". Reviewed site by site on 2026-08-26 rather than
+    # waved through, and the answer divides cleanly:
+    #
+    #   - BUILT IN CODE from a fixed `https://` prefix, so the scheme is not reachable by input:
+    #     `recall/desktop/github.py`, `recall/desktop/updates.py`.
+    #   - OPERATOR-CONFIGURED endpoints from environment variables (`recall/answer_provider.py`,
+    #     `recall/wizard/llm.py`, `recall_mcp/translation.py`). An operator who can set the
+    #     endpoint can already run code in the process; the scheme is not the boundary.
+    #   - HARNESS code under `benchmarks/`, `scripts/` and `docs/`, not shipped behaviour.
+    #
+    # The one site whose URL came from a DATA FILE was `tools/prior_art/cli.py`, and that one was
+    # fixed rather than excused: it now refuses a non-http(s) scheme before opening.
+    #
+    # ⚠️ Recorded as DEBT, not as a clean bill. Ignoring the rule globally means a future
+    # `urlopen` on an attacker-supplied URL will not be caught here. The durable fix is a single
+    # checked fetch helper (`recall_mcp/oidc.py::_http_get` is the shape: refuse non-https, refuse
+    # redirects, cap the body) that these call sites route through, which is a larger change than
+    # turning a linter on.
+    "S310",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# S608 flags SQL built by string interpolation. It is the most RELEVANT rule in the set for this
+# repository and it is switched off per-file rather than globally, which is the important
+# distinction: a NEW file that starts building SQL from strings is still caught.
+#
+# The 49 sites in these files interpolate an IDENTIFIER or a GUC value, neither of which PostgreSQL
+# can bind as a parameter, and both are validated before they reach an f-string:
+# `recall.control_plane.validate_table_name` is the allowlist chokepoint for table names, and the
+# HNSW knobs are int-cast and range-checked in `PgVectorStore._hnsw_filtered_tuning`. Every other
+# value in these queries travels as a psycopg bound parameter.
+#
+# ⚠️ Listed per-file rather than annotated per-line ON PURPOSE. 30 of the 49 are in `store.py`
+# alone, and a file sprinkled with 30 `# noqa: S608` markers teaches a reviewer to skim past the
+# one that is load-bearing. The exemption is stated once, here, with the chokepoint named.
+"recall/store.py" = ["S608"]
+"recall/generation_store.py" = ["S608"]
+"recall/generations.py" = ["S608"]
+"recall/schema.py" = ["S608"]
+"recall/control_plane.py" = ["S608"]
+"recall/calibration_v2.py" = ["S608"]
+"recall/truth_extraction/_sqlite_cache.py" = ["S608"]
+"recall/eval/longmemeval_perq.py" = ["S608"]
+# Test and harness trees. These build throwaway tables against a disposable database and are not
+# the security boundary; S105/S106 fire on the deliberate `recall:recall` development credentials.
+# S104 fires on the `0.0.0.0` in `test_streamable_http_run_passes_transport_security`, which
+# asserts the bind address is PASSED THROUGH to the transport. The literal is the fixture.
+"tests/**" = ["S104", "S105", "S106", "S107", "S608"]
+"benchmarks/**" = ["S105", "S106", "S107", "S608"]
+"results/**" = ["S105", "S106", "S107", "S608"]
+"scripts/**" = ["S105", "S106", "S107", "S608"]
 
 # Static typing. 81% of this package's functions already carried a return annotation before this
 # section existed, and nothing checked any of them — which is the state where the annotations are
