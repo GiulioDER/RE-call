@@ -3774,6 +3774,7 @@ def query_construction_challenge(
             },
         }
 
+    proposals: tuple[QueryProposal, ...]
     if arm == "original_loop":
         proposals = (
             QueryProposal(
