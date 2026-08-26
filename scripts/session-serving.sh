@@ -102,11 +102,21 @@ fi
 if git -C "$ROOT" rev-parse --verify --quiet origin/master >/dev/null 2>&1; then
     local_branch="$(git -C "$ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo '<detached>')"
     unmerged="$(git -C "$ROOT" rev-list --count origin/master..HEAD 2>/dev/null || echo 0)"
-    if [ "${unmerged:-0}" != "0" ]; then
+    if [ "${unmerged:-0}" = "0" ]; then
+        printf 'LOCAL       %s is contained in origin/master.\n' "$local_branch"
+    elif git -C "$ROOT" diff --quiet origin/master HEAD 2>/dev/null; then
+        # A SQUASH merge leaves the branch ahead by sha while its content is already on master,
+        # and `master` here refuses merge commits, so squashing is the ONLY way work lands. The
+        # count alone therefore raises a false alarm on every branch this repository merges: the
+        # first run of this script after its own PR landed said "3 commit(s) not on origin/master;
+        # a sync will NOT ship them" about work the sync had just shipped. Ask the trees, not the
+        # shas: identical content means nothing of yours is missing from what was synced.
+        printf 'LOCAL       %s is %s commit(s) ahead by sha, but identical in content to\n' \
+            "$local_branch" "$unmerged"
+        printf '            origin/master (a squash merge). A sync ships your work.\n'
+    else
         printf 'LOCAL       %s has %s commit(s) not on origin/master; a sync will NOT ship them.\n' \
             "$local_branch" "$unmerged"
-    else
-        printf 'LOCAL       %s is contained in origin/master.\n' "$local_branch"
     fi
 fi
 
@@ -132,6 +142,14 @@ case "$rc" in
     4) printf 'session-serving: verification failed; the serving checkout was put back.\n' >&2 ;;
     5) printf 'session-serving: rollback FAILED on %s. The MCP servers are down until this is fixed.\n' "$HOST" >&2 ;;
     124) printf 'session-serving: timed out after %ss. Nothing is known about what moved.\n' "$SSH_TIMEOUT" >&2 ;;
+    # 127 is the remote shell saying it could not run the command at all, and it is the one exit
+    # code that used to arrive with no explanation and no output. Observed once, unreproduced,
+    # immediately after a merge. Nothing had moved, and that is knowable rather than hopeful: the
+    # remote half prints SERVING, BRANCH and HEAD before it touches anything, so an empty report
+    # means it never started.
+    127) printf 'session-serving: the remote command never started (exit 127) and NOTHING moved.\n' >&2
+         printf 'session-serving: the remote half prints SERVING/BRANCH/HEAD before it acts, so an\n' >&2
+         printf 'session-serving: empty report above means it did not run. Re-run it.\n' >&2 ;;
     255) printf 'session-serving: ssh to %s failed. The serving checkout was not touched.\n' "$HOST" >&2 ;;
 esac
 exit $rc
