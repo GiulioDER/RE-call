@@ -100,6 +100,16 @@ DEFAULT_ALGORITHMS = ("RS256", "RS384", "RS512", "ES256", "ES384", "PS256", "PS3
 _ALG_KTY = {"RS": "RSA", "PS": "RSA", "ES": "EC"}
 
 _HTTP_TIMEOUT_S = 10
+#: Ceiling on an identity endpoint's response body. A timeout bounds how LONG a fetch runs; it does
+#: not bound how MUCH arrives, and `response.read()` with no argument reads to EOF. A provider that
+#: is compromised, misconfigured, or simply serving an error page from a CDN can therefore hand
+#: this process an unbounded body, and the read happens before anything validates a single byte of
+#: it. Both fetches here are small and known: an OIDC discovery document is a few kilobytes, and a
+#: JWKS carrying even a dozen keys is well under one hundred. 1 MiB is roughly two orders of
+#: magnitude of headroom over the largest plausible legitimate response, which is the right shape
+#: for a backstop — it should never fire in normal operation, and a provider that trips it is
+#: telling you something is wrong rather than being throttled.
+_HTTP_MAX_BYTES = 1024 * 1024
 #: Floor between forced (unknown-kid) refreshes, as a fraction of the refresh interval.
 _FORCED_REFRESH_DIVISOR = 10
 
@@ -341,7 +351,18 @@ def _http_get(url: str) -> bytes:
         )
     try:
         with _OPENER.open(url, timeout=_HTTP_TIMEOUT_S) as response:
-            return bytes(response.read())
+            # One byte PAST the cap, so "arrived at exactly the limit" and "was truncated" are
+            # distinguishable. Reading the cap exactly cannot tell a body that just fits from one
+            # that was cut off, and silently accepting a truncated JWKS is worse than refusing it:
+            # the JSON would fail to parse somewhere unhelpful, or worse, parse into a key set
+            # missing the kid this token needs and be cached as authoritative.
+            body = response.read(_HTTP_MAX_BYTES + 1)
+        if len(body) > _HTTP_MAX_BYTES:
+            raise IdentityProviderUnavailable(
+                "jwks_unavailable",
+                f"identity endpoint returned more than {_HTTP_MAX_BYTES} bytes",
+            )
+        return bytes(body)
     except urllib.error.HTTPError as exc:
         # HTTPError IS the response object and owns the socket; the `with` above never ran.
         exc.close()

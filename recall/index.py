@@ -944,7 +944,7 @@ class Indexer:
             for i, ct in enumerate(raw_chunks):
                 structured_chunk = structured[i] if content_blocks is None else None
                 embedding_text = embedding_texts[i]
-                cid = hashlib.md5(f"{f}:{i}".encode("utf-8")).hexdigest()
+                cid = hashlib.md5(f"{f}:{i}".encode("utf-8"), usedforsecurity=False).hexdigest()
                 extra_metadata = chunk_metadata[i]
                 pending_chunks.append(
                     Chunk(

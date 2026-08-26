@@ -802,7 +802,7 @@ class HashingEmbedder:
     def _embed_one(self, text: str) -> list[float]:
         vec = [0.0] * self._dim
         for tok in text.lower().split():
-            h = int(hashlib.md5(tok.encode("utf-8")).hexdigest(), 16)
+            h = int(hashlib.md5(tok.encode("utf-8"), usedforsecurity=False).hexdigest(), 16)
             vec[h % self._dim] += 1.0
         norm = math.sqrt(sum(v * v for v in vec)) or 1.0
         return [v / norm for v in vec]
