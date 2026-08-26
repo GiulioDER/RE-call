@@ -3,10 +3,16 @@
 #
 # What a recall MCP server actually costs, measured on VPS2 on 2026-08-26:
 #
-#   89 live `python -m recall_mcp.server` processes, 21.5 GB resident, oldest 69 hours,
-#   on a host with 47 GB that also runs the live trading services.
+#   18 live servers holding 14.67 GB, plus their 18 ssh transport wrappers at 0.39 GB,
+#   on a 47 GB host that also runs the live trading services. Oldest 13.9 hours.
 #
-# Each server is roughly 850 MB and it lives as long as its stdio transport does. A session that
+# 🔁 An earlier version of this header said "89 live `recall_mcp.server` processes, 21.5 GB". The
+# memory was right and the COUNT was about double, because both a server and its ssh wrapper carry
+# the string `python -m recall_mcp.server`: the server as the command it runs, the wrapper inside
+# `--cmd=...`. The fleet count below now excludes wrappers, which is why the number it prints is
+# roughly half what it printed yesterday on the same host.
+#
+# Each server is roughly 815 MB and it lives as long as its stdio transport does. A session that
 # ends without closing the pipe leaves the whole thing running: ssh sets no keepalive, so a client
 # that vanishes (a reboot, a closed laptop, a killed app) leaves a half-open connection the far
 # side never notices. Nothing on either machine reports this, because a leaked server looks exactly
@@ -34,6 +40,8 @@
 #
 #   scripts/session-mcp-close.sh              # report: this session's transports, and the fleet
 #   scripts/session-mcp-close.sh close        # close this session's transports, verify, report
+#   scripts/session-mcp-close.sh sweep        # what on the HOST has no client left (report only)
+#   scripts/session-mcp-close.sh sweep --kill # close those, by positive identity only
 #   scripts/session-mcp-close.sh close --dry-run    # name what would be closed, close nothing
 #   scripts/session-mcp-close.sh --no-fleet   # skip the ssh that counts servers on the host
 
@@ -50,15 +58,18 @@ SETTLE="${RECALL_MCP_CLOSE_SETTLE:-5}"
 FLEET_TIMEOUT="${RECALL_MCP_FLEET_TIMEOUT:-30}"
 
 MODE="report"
+SWEEP_ARGS=""
 DRY_RUN=0
 WANT_FLEET=1
 for arg in "$@"; do
     case "$arg" in
-        report|close) MODE="$arg" ;;
+        report|close|sweep) MODE="$arg" ;;
+        --kill|--unmarked)  SWEEP_ARGS="$SWEEP_ARGS $arg" ;;
         --dry-run)    DRY_RUN=1 ;;
         --no-fleet)   WANT_FLEET=0 ;;
         *)
-            echo "usage: scripts/session-mcp-close.sh [report|close] [--dry-run] [--no-fleet]" >&2
+            echo "usage: scripts/session-mcp-close.sh [report|close|sweep]" >&2
+            echo "       close: [--dry-run] [--no-fleet]   sweep: [--kill] [--unmarked]" >&2
             exit 2
             ;;
     esac
@@ -114,6 +125,19 @@ fi
 #: self-exclusion below works, and it cannot know it in advance. Nothing in production reads it.
 export SELF_PID
 
+# `sweep` is a different question from `close`: not "what did THIS session open" but "what on the
+# host has no client left at all". It needs a marker to answer safely, and it lives in Python
+# because the answer is a join between two process tables. One entry point, two questions.
+if [ "$MODE" = "sweep" ]; then
+    SWEEP_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/session_mcp_sweep.py"
+    if [ ! -f "$SWEEP_PY" ]; then
+        echo "session-mcp-close: missing $SWEEP_PY" >&2
+        exit 2
+    fi
+    # shellcheck disable=SC2086 -- SWEEP_ARGS is a deliberate word-split list of flags.
+    exec python "$SWEEP_PY" --host "$HOST" $SWEEP_ARGS
+fi
+
 TABLE="$(_ps_table)"
 
 _parent_of() {
@@ -150,6 +174,7 @@ _tenant_of() {
 _fleet() {
     timeout "$FLEET_TIMEOUT" ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" \
         "ps -eo rss,etimes,args | grep -F 'python -m $PATTERN' | grep -v grep | \
+         grep -vE 'be-child ssh|sshd' | \
          awk '{s+=\$1; n++; if (\$2>m) m=\$2} END {printf \"%d %.1f %.1f\", n, s/1048576, m/3600}'" \
         2>/dev/null
 }

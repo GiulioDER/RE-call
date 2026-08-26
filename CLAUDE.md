@@ -127,8 +127,17 @@ scripts/session-mcp-close.sh close        # close them, then count the fleet aga
 ```
 
 ⚠️ **An idle MCP server is not free, and nothing reports the ones that leak.** Measured on VPS2 on
-2026-08-26: **89 live `recall_mcp.server` processes, 21.5 GB resident, oldest 69 hours**, on a
-47 GB host that also runs the live trading services. Roughly 850 MB each.
+2026-08-26: **18 live servers holding 14.67 GB**, plus their 18 ssh transport wrappers at 0.39 GB,
+on a 47 GB host that also runs the live trading services. Roughly 815 MB each.
+
+🔁 **Corrected 2026-08-26, hours after it was written: the COUNT was about double, the memory
+was right.** This said "89 live `recall_mcp.server` processes, 21.5 GB resident, oldest 69 hours".
+Both a server and its ssh transport wrapper carry the string `python -m recall_mcp.server`, one as
+the command it runs and one inside `--cmd=...`, so a matching count reports every server twice.
+Measured the same day with the two separated: **18 servers holding 14.67 GB, and 18 wrappers
+holding 0.39 GB.** The wrappers are ~22 MB each, which is why the memory total barely moved and the
+count halved. `scripts/session-mcp-close.sh report` no longer counts wrappers.
+
 
 Each server lives exactly as long as its stdio transport, which is the whole mechanism: `.mcp.json`
 launches it as `ssh <host> '... exec python -m recall_mcp.server'`, and killing the LOCAL ssh
@@ -156,8 +165,36 @@ is a `claude.exe` whose own parent is the app root. So the client process is per
 parent chain reaching it separates two sessions of the same app, which a chain reaching the app
 root would not.
 
-Tests: `bash scripts/session_mcp_close_tests.sh`. The process table is a fixture and the killer is
-a log, so it needs no Claude, no ssh and no host. Mutation-tested five ways, and **one of the five
+### Sweeping what has ALREADY leaked
+
+```bash
+scripts/session-mcp-close.sh sweep              # what on the host has no client left
+scripts/session-mcp-close.sh sweep --kill       # close those, by positive identity only
+```
+
+Closing this session's transports stops a session leaking; it cannot touch what leaked before,
+because a server whose client vanished still has a live ssh wrapper on the host and is
+indistinguishable there from one somebody is querying right now.
+
+🔑 **`scripts/session-mcp.sh` now stamps `RECALL_MCP_CLIENT=<host>-<checkout id>` into every server
+command it generates**, which is what makes the question answerable: the wrapper on the host and
+the `ssh` transport here are two ends of one command line, so a mark with no live local transport
+has no client, and nothing can be querying it. The id is `session-db.sh id`, asked for rather than
+re-derived. The variable is inert to the server.
+
+Four things it will not do, measured against the real fleet the day it was written:
+
+| Bucket | What happens | Why |
+|---|---|---|
+| marked ours, no live transport | closed | positive identity: nothing can be querying it |
+| marked ours, transport live | left | somebody is using it |
+| marked, another machine | left | this workstation cannot speak for that one |
+| unmarked, another agent's config | left | **16 of the 18** live servers were launched by `codex.exe` on this same machine with a nearly identical command line |
+| unmarked, ours (pre-marker) | `--unmarked`, and only while zero unmarked transports of our shape are live here | until that is true, one of them may still be held by a client running here |
+
+Tests: `python scripts/session_mcp_sweep_tests.py` (16, both process tables are fixtures and the
+killer is a log), mutation-tested six ways, and `bash scripts/session_mcp_close_tests.sh`. The
+process table is a fixture and the killer is a log, so neither needs Claude, ssh or a host. Mutation-tested five ways, and **one of the five
 survived the first version of the tests**: the fixture excluded the script's own ssh for the wrong
 reason, so the self-exclusion guard could be deleted with everything still green. The repair and
 the reasoning are in the test header, and it is the clearest example in this repository of why a

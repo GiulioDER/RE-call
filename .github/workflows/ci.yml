@@ -422,6 +422,11 @@ jobs:
       - name: session-mcp-close.sh
         run: bash scripts/session_mcp_close_tests.sh
 
+      # The sweep kills processes on a shared host, so what it selects is the whole test. Both
+      # process tables are fixtures and the killer is a log; nothing here reaches VPS2.
+      - name: session_mcp_sweep.py
+        run: python scripts/session_mcp_sweep_tests.py
+
   # Documentation citations, which rot faster than anything else in this repository: one commit
   # (79a0d6ed) shifted recall/index.py by 26 lines and broke 23 `path:line` references across five
   # documents at once. `fetch-depth: 0` is load-bearing and not a habit — the check asks git how
