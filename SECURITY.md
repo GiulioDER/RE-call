@@ -27,6 +27,7 @@ Useful reports include:
 | Credential handling | A DSN, token, or API key is logged or returned in an exception, tool response, or result. |
 | Cloud egress | A cloud embedder is reached without the caller explicitly selecting it. |
 | Trust refusal | Strict mode returns corpus text when calibration or generation identity is not certified. |
+| Instruction channel | Corpus-controlled text reaches a field a model is told to obey (`SearchResult.advice`), or an adapter hands an agent a hit whose verdict is not `ok`. This is the prompt-injection surface; see the threat model's "Retrieved memory reaches an instruction channel". |
 
 Expected behavior that is not a vulnerability:
 

@@ -72,6 +72,12 @@ Prefer `token_sha256` over `token` so there is no recoverable credential on disk
 
 ## Retrieved memory reaches an instruction channel
 
+*This section is what this project has instead of a "prompt injection" heading. The term is not
+used below because the mechanism is more specific than the label, but it is the threat: corpus
+content reaching a channel a model treats as instructions. It is named here so a search for the
+usual phrase lands somewhere, which is a real failure this section has already had — an auditor
+grepping for "prompt injection" concluded the threat model did not cover it.*
+
 The consumer of this library is a language model, and `SearchResult.advice` is the field
 `recall_search`'s own tool description tells that model to obey ("`advice` states what to do").
 Anything interpolated into it is, functionally, an instruction.
