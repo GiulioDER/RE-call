@@ -402,6 +402,26 @@ jobs:
         shell: bash
         run: bash scripts/session_space_tests.sh
 
+  # `session-serving.sh` is the one guard in scripts/ that moves a LIVE deployment: it
+  # fast-forwards the checkout VPS2 serves the MCP corpora from, and rolls it back when the
+  # updated code fails to serve. It runs on Linux rather than beside its Windows siblings above
+  # because `flock` exists here, and the test that proves a live indexer's lock stops a sync skips
+  # itself where it does not. Nothing in the suite needs a database, a network or VPS2: git is
+  # real, python is stubbed, and the fake origin/serving pair is built per test.
+  session-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: session-serving.sh
+        run: bash scripts/session_serving_tests.sh
+
+      # The process table is a fixture and the killer is a log, so this one needs no Claude, no
+      # ssh and no VPS2. What it pins is which pids a close selects, on a machine where the same
+      # MCP command line belongs to more than one agent.
+      - name: session-mcp-close.sh
+        run: bash scripts/session_mcp_close_tests.sh
+
   # Documentation citations, which rot faster than anything else in this repository: one commit
   # (79a0d6ed) shifted recall/index.py by 26 lines and broke 23 `path:line` references across five
   # documents at once. `fetch-depth: 0` is load-bearing and not a habit — the check asks git how

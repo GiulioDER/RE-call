@@ -11,6 +11,17 @@ deletion. Uncommitted work at session end is a decision for a person, and a hook
 that quietly commits, or quietly discards, is worse than one that leaves the tree
 alone and writes down what it saw.
 
+It closes exactly two things, and both are THIS session's: the container carrying
+this checkout's label, and the MCP transports whose parent chain reaches this
+session's client process. The second was added on 2026-08-26 after measuring the
+cost of not doing it: **89 live `recall_mcp.server` processes on VPS2, 21.5 GB
+resident, oldest 69 hours**, on a 47 GB host that also runs live trading
+services. Each server lives exactly as long as its stdio transport, ssh sets no
+keepalive, and a client that vanishes therefore leaves ~850 MB running with
+nothing anywhere reporting it. The same measurement found transports with an
+IDENTICAL command line belonging to a different agent (`codex.exe`), which is
+why ownership is the parent chain and never the command line.
+
 Four rules, every one of them written because the first version of this file
 broke it and an audit caught it before it could do damage:
 
@@ -46,6 +57,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -208,6 +220,155 @@ def remove_own_container(root: Path) -> tuple[str, str]:
     return "removed", detail
 
 
+#: What marks a process as an MCP transport. A module path rather than a server
+#: name, because that string is what appears in the launch command `.mcp.json`
+#: writes: `ssh <host> '... exec python -m recall_mcp.server'`.
+MCP_PATTERN = os.environ.get("RECALL_MCP_PATTERN", "recall_mcp.server")
+
+#: Windows has no `ps`, and `wmic` is gone from current builds. One line per
+#: process, `pid ppid command line`, which is the shape the POSIX branch emits
+#: too. Interpolation rather than Format-List on purpose: the formatter WRAPS at
+#: the console width, and every MCP command line is long enough to be wrapped,
+#: which turns one process into several unparseable fragments.
+_PS_POWERSHELL = (
+    "Get-CimInstance Win32_Process | ForEach-Object "
+    '{ "$($_.ProcessId) $($_.ParentProcessId) $($_.CommandLine)" }'
+)
+
+
+def _process_table() -> tuple[list[tuple[str, str, str]] | None, str]:
+    """Every process as (pid, ppid, command line), plus why there are none.
+
+    Three outcomes, not two, which is the same rule `remove_own_container` states
+    above: "we never asked, the budget was gone" is not "we asked and could not
+    read it", and neither of them is "nothing was running". Collapsing the first
+    two is how a shutdown that ran out of time gets logged as a broken machine.
+    """
+    # A FILE rather than a command, and that is deliberate. `shlex.split` of a
+    # Windows path eats its backslashes, so a command-shaped seam is a seam that
+    # only works on POSIX, and this hook's own tests run on Windows.
+    override = os.environ.get("RECALL_MCP_PS_FILE")
+    if override:
+        try:
+            out = Path(override).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None, "unreadable"
+        rows = _parse_table(out)
+        return rows, ("" if rows else "unreadable")
+    if os.name == "nt":
+        cmd = ["powershell", "-NoProfile", "-Command", _PS_POWERSHELL]
+    else:
+        cmd = ["ps", "-eo", "pid=,ppid=,args="]
+    rc, out, _ = run(cmd, timeout=8, budget_left=budget_left)
+    if rc == NOT_ATTEMPTED:
+        return None, "not-attempted"
+    if rc != 0 or not out:
+        return None, "unreadable"
+    rows = _parse_table(out)
+    return rows, ("" if rows else "unreadable")
+
+
+def _parse_table(out: str) -> list[tuple[str, str, str]] | None:
+    rows = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            rows.append((parts[0], parts[1], parts[2] if len(parts) > 2 else ""))
+    return rows or None
+
+
+def _descends_from(pid: str, want: str, parents: dict) -> bool:
+    """Is `want` an ancestor of `pid`, within 8 hops?
+
+    The hop cap is a termination guarantee, not a performance choice: a recycled
+    pid can make a parent chain point back into its own descendants, and a walk
+    without a cap never returns from that.
+    """
+    hops = 0
+    while hops < 8:
+        if pid == want:
+            return True
+        parent = parents.get(pid)
+        if not parent or parent == pid:
+            return False
+        pid = parent
+        hops += 1
+    return False
+
+
+def _kill_pid(pid: str) -> bool:
+    # The test seam: record the pid instead of signalling it. Every subprocess
+    # test in this file sets it, because the alternative is a test run that kills
+    # the developer's own MCP servers.
+    log = os.environ.get("RECALL_MCP_KILL_FILE")
+    if log:
+        try:
+            with open(log, "a", encoding="utf-8") as fh:
+                print(pid, file=fh)
+        except OSError:
+            return False
+        return os.environ.get("RECALL_MCP_KILL_RC", "0") == "0"
+    if os.name == "nt":
+        # `/T` because the transport has children of its own: an ssh configured
+        # with a ProxyCommand spawns a second ssh, and killing only the parent
+        # leaves that one orphaned and connected.
+        rc, _, _ = run(["taskkill", "/PID", pid, "/T", "/F"], timeout=10,
+                       budget_left=budget_left)
+        return rc == 0
+    try:
+        os.kill(int(pid), signal.SIGTERM)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def close_own_mcp_transports(client_pid: str) -> tuple[str, str]:
+    """Close the MCP transports this session opened. Returns (status, detail).
+
+    ⛔ Ownership is the PARENT CHAIN, never the command line. Measured on this
+    machine on 2026-08-26: three live transports with a byte-identical
+    `recall_mcp.server` command line were parented to `codex.exe` rather than to
+    Claude, so a `pkill -f recall_mcp.server` here, or a pattern sweep on the
+    server, would have killed another agent's servers mid-query. Without a client
+    pid there is no positive identity, and this returns without killing anything
+    rather than guessing, exactly as the container branch does without a claim.
+
+    Killing the local transport is enough: the server is the process ssh owns on
+    the far side, and a marked probe on 2026-08-26 measured the remote server
+    gone in under 3 seconds, confirmed by pid. Nothing here reaches the host.
+    """
+    if not client_pid:
+        return "skipped", "no client pid; ownership could not be established"
+    rows, why = _process_table()
+    if rows is None:
+        if why == "not-attempted":
+            return "not-attempted", ("the time budget was gone before the process table "
+                                     "was read; nothing was closed")
+        return "unknown", "could not read the process table; nothing was closed"
+    parents = {pid: ppid for pid, ppid, _ in rows}
+    self_pid = str(os.getpid())
+    ours, others = [], 0
+    for pid, _ppid, cmd in rows:
+        if MCP_PATTERN not in cmd:
+            continue
+        # Anything this hook itself started. It spawns no transports, so this is
+        # belt and braces, and it costs one comparison.
+        if _descends_from(pid, self_pid, parents):
+            continue
+        if _descends_from(pid, client_pid, parents):
+            ours.append(pid)
+        else:
+            others += 1
+    if not ours:
+        return "none", f"no transport of this session's ({others} belong elsewhere)"
+    closed = [pid for pid in ours if _kill_pid(pid)]
+    failed = [pid for pid in ours if pid not in closed]
+    detail = f"closed {len(closed)} of {len(ours)}; {others} belong elsewhere and were left alone"
+    if failed:
+        return "partial" if closed else "failed", detail + f"; FAILED {', '.join(failed)}"
+    return "closed", detail
+
+
 def survey(root: Path) -> dict:
     """What is being left behind. Recorded, never acted on.
 
@@ -300,6 +461,25 @@ def main() -> int:
         if reason == "clear":
             row["outcome"] = "skipped-clear"
             return 0
+
+        # BEFORE the cwd and git checks, and outside the claim gate, because the
+        # transports are the SESSION's rather than the checkout's, and because
+        # every early return below would otherwise skip them. That is not
+        # hypothetical: measured 2026-08-26, the last three real rows in this
+        # log are `not-a-git-repo` with a home-directory cwd, which is where the
+        # app puts a session that never opened a repository. Those sessions have
+        # MCP servers like any other, and they were the ones leaking.
+        #
+        # `CLAUDE_PID` is present in a hook the CLIENT spawns, and that is
+        # measured rather than assumed: this worktree's claim file, written at
+        # session start by the client-spawned SessionStart hook, records
+        # `pid=9764`, and pid 9764 is a `claude.exe` whose own parent is the app
+        # root 14992. So the client is a per-SESSION process, and a parent chain
+        # reaching it separates two sessions of the same app, which a chain
+        # reaching the app root would not. If the variable is ever absent the row
+        # says `skipped`, naming the reason, rather than falling back to a guess.
+        row["mcp"], row["mcp_detail"] = close_own_mcp_transports(
+            os.environ.get("CLAUDE_PID", ""))
 
         cwd = row["cwd"] or os.getcwd()
         row["cwd_effective"] = cwd
