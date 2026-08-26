@@ -21,6 +21,8 @@
 #   `_verify_schema` drops the `compatible: yes` grep     11 red
 #   `_verify_all` ignores the skip flag                   10 red
 #   `if ! flock -n 8` -> `if false`                       19 red   (watched ON VPS2, see below)
+#   the wrapper's content comparison -> `false`           21 red   (the squash false alarm returns)
+#   the wrapper's 127 case removed                        23 red
 #
 # ⚠️ Tests 19 and 20 need `flock` and therefore SKIP on Windows, which is where this file is most
 # often run by hand. They were watched on VPS2 instead (`scp` the two scripts, run the suite under
@@ -383,6 +385,73 @@ else
     printf 'SKIP  19 embed.lock exclusion (no flock on this host; covered on Linux CI)\n'
     printf 'SKIP  20 status is not blocked by embed.lock (same reason)\n'
 fi
+
+# --- the wrapper's own reporting ----------------------------------------------------------------
+# `session-serving.sh` decides nothing about the deployment, but it does tell a session whether its
+# work is on master, and both tests below pin a line that was WRONG in a way that reads as fine.
+# ssh is stubbed, so nothing here reaches a host.
+WRAPPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/session-serving.sh"
+
+cat > "$BASE/bin/ssh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null           # swallow the piped remote script, as the real ssh does
+printf 'SERVING     /home/x/serving\nSTATUS      current\n'
+exit "${FAKE_SSH_RC:-0}"
+STUB
+chmod +x "$BASE/bin/ssh"
+
+wrapper() {
+    local repo="$1"; shift
+    OUT="$(cd "$repo" && env PATH="$BASE/bin:$PATH" FAKE_SSH_RC="${FAKE_SSH_RC:-0}" \
+        RECALL_VPS2_HOST=stub-host bash "$WRAPPER" "$@" 2>&1)"
+    RC=$?
+}
+
+# A branch that was SQUASHED onto master: ahead by sha, identical in content. `master` refuses
+# merge commits in this repository, so this is the state of every branch after its PR lands, and
+# the wrapper used to tell all of them that a sync would not ship their work.
+fresh
+printf 'squashed change\n' > "$WORK/recall/squashed.py"
+_git "$WORK" checkout -q -b feature
+_git "$WORK" add recall/squashed.py >/dev/null
+_git "$WORK" commit -qm "the branch's own commit" >/dev/null
+_git "$WORK" checkout -q master
+printf 'squashed change\n' > "$WORK/recall/squashed.py"
+_git "$WORK" add recall/squashed.py >/dev/null
+_git "$WORK" commit -qm "the same change, squashed onto master" >/dev/null
+_git "$WORK" push -q origin master
+_git "$WORK" checkout -q feature
+
+wrapper "$WORK" status
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'identical in content' \
+   && ! printf '%s' "$OUT" | grep -q 'will NOT ship them'; then
+    ok "21 a squash-merged branch is not reported as unshipped work"
+else
+    no "21 a squash-merged branch is not reported as unshipped work" "rc=$RC $OUT"
+fi
+
+# The control. Real unmerged work must still be called out, or the fix above would have replaced a
+# false alarm with silence, which is worse: this line is what tells a session the sync ships
+# somebody else's work rather than its own.
+printf 'genuinely new\n' > "$WORK/recall/unmerged.py"
+_git "$WORK" add recall/unmerged.py >/dev/null
+_git "$WORK" commit -qm "work that never landed" >/dev/null
+wrapper "$WORK" status
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'will NOT ship them'; then
+    ok "22 genuinely unmerged work is still reported as unshipped"
+else
+    no "22 genuinely unmerged work is still reported as unshipped" "rc=$RC $OUT"
+fi
+
+# 127 arrived once, in real use, with no output and no explanation, and an unexplained exit code on
+# a tool that moves a deployment is indistinguishable from one that moved something quietly.
+FAKE_SSH_RC=127 wrapper "$WORK" sync
+if [ "$RC" -eq 127 ] && printf '%s' "$OUT" | grep -q 'NOTHING moved'; then
+    ok "23 exit 127 says the remote never started and nothing moved"
+else
+    no "23 exit 127 says the remote never started and nothing moved" "rc=$RC $OUT"
+fi
+unset FAKE_SSH_RC
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
