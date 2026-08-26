@@ -10,6 +10,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* **A hosted embedder could never back a production generation, so a hosted corpus could not accept
+  an upload at all.** `require_production_identity` demanded an immutable revision or artifact
+  digest, and a hosted provider has neither by definition: it serves weights it may replace behind
+  a stable model name, which is exactly why `RegisteredProfile` refuses to let one pin a digest.
+  The two rules together made the gate unpassable rather than strict, and the only way through was
+  `RECALL_ENV=development` — which also redirects reads to the legacy `chunks` table, so the
+  workaround for the gate split indexing and serving across two tables with nothing reporting it.
+
+  `EmbedderIdentity` now carries `hosted`, and admissibility is a separate question from pinning.
+  `verified` is unchanged and still false for a hosted endpoint, so every caller asking "are these
+  bytes pinned?" keeps its answer and the lineage record still reads `verified: false`. Nothing is
+  claimed that cannot be checked.
+
+  Two details worth knowing rather than discovering. `hosted` is deliberately **absent from
+  `to_dict`**, so no pipeline fingerprint moves and no existing corpus is stranded from its
+  calibration history by the upgrade. And the exemption had to be made in **two** places: admitting
+  hosted at the gate alone leaves `create` refusing one line lower on `allow_unverified`, which
+  both callers pass as `not pipeline.verified` — permanently true for hosted. That version passes
+  every unit test of the gate and changes nothing a user can observe; a mutation run is what
+  caught it, along with a third case where the flag was wired but never set.
+
 * **The Claude Code plugin could not reach the corpus `recall quickstart` builds, and said
   nothing.** The plugin collected a DSN, a tenant and a trust mode; the MCP server had no table
   knob at all, so it opened the default `chunks` while the quickstart had indexed into

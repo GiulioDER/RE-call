@@ -76,11 +76,18 @@ __all__ = ["CorpusOutcome", "PipelineRefusal", "run_corpus"]
 #: refuses a non-S3 manifest there. It does not, and nothing in the tree gates `file://` on the
 #: environment: `lineage.py` accepts `file://` alongside `s3://` unconditionally, and `manifest.py`
 #: gates it on `RECALL_LOCAL_ALLOWLIST` being set. What `create` actually calls in production is
-#: `pipeline.require_production_identity()` (`lineage.py:184`), which refuses an embedder with no
-#: immutable revision or artifact digest. That is the real reason the wizard cannot build there:
-#: its embedders are unverified, which is the same fact `CorpusOutcome.unverified_embedder`
-#: already reports. The old wording sent an operator with a properly pinned embedder looking for a
-#: manifest problem they did not have.
+#: `pipeline.require_production_identity()`, which refuses an embedder with no immutable revision
+#: or artifact digest. That is the real reason the wizard cannot build there: its embedders are
+#: unverified, which is the same fact `CorpusOutcome.unverified_embedder` already reports. The old
+#: wording sent an operator with a properly pinned embedder looking for a manifest problem they did
+#: not have.
+#:
+#: 🔁 Corrected again 2026-08-26, and only the SCOPE changed: `require_production_identity` now
+#: also admits a HOSTED endpoint, which can never pin an artifact it does not have. The wizard's
+#: own embedders are local and unverified, so this tuple is unaffected and stays as it is. The
+#: line-number citation was dropped rather than re-pointed, because it has now been invalidated
+#: twice by edits to the file it names; `require_production_identity` is the symbol and does not
+#: move.
 _BUILD_ENVIRONMENTS = ("development", "test")
 
 

@@ -98,6 +98,20 @@ class EmbedderIdentity:
     #: records both values so a generation cannot reuse a raw pipeline fingerprint accidentally.
     context_mode: str = "none"
     context_version: str = "raw-v1"
+    #: Whether a provider's API produced these vectors rather than a local artifact tree.
+    #:
+    #: ⛔ **Deliberately absent from `to_dict`, and therefore from the fingerprint.** Adding a field
+    #: to the serialized shape re-partitions every pipeline identity in existence, which would hand
+    #: each live corpus a new `pipeline_fingerprint` and strand it from its own calibration history
+    #: the moment this shipped. This value answers a question asked at BUILD time about a live
+    #: embedder ("may this back a production generation?"), not a question asked later about a
+    #: stored record, so it need not survive serialization and must not disturb it.
+    #:
+    #: The consequence, stated rather than left to be discovered: an identity round-tripped through
+    #: `from_dict` comes back `hosted=False`. That is correct for every current caller, because
+    #: `GenerationManager.create` is the only gate and it is always handed a freshly built pipeline.
+    #: `production_admissible` is documented as a build-time question for exactly this reason.
+    hosted: bool = False
 
     def __post_init__(self) -> None:
         if not self.provider.strip() or not self.model.strip():
@@ -117,7 +131,20 @@ class EmbedderIdentity:
         immutable = bool(self.revision or self.artifact_digest)
         if immutable and self.unverified_reason is not None:
             raise LineageError("an immutable embedder identity cannot also be marked unverified")
-        if not immutable and not self.unverified_reason:
+        # ⛔ A hosted endpoint cannot pin an artifact, so claiming both is incoherent provenance.
+        # `RegisteredProfile.__post_init__` already refuses this for the profile; refusing it here
+        # too closes the hand-built path, which is the one a caller reaches by passing flags.
+        if self.hosted and self.artifact_digest is not None:
+            raise LineageError(
+                "a hosted embedder identity cannot pin an artifact digest: the provider serves "
+                "weights it may replace behind this model name, so the digest would be a claim "
+                "nothing can check"
+            )
+        # A hosted identity is exempt, and the exemption is the point of this field. It is not
+        # missing a reason: its reason is permanent and structural rather than a developer's
+        # shortcut, and demanding `unverified_reason` here forced every hosted caller to describe
+        # itself as a development build in order to run at all.
+        if not immutable and not self.unverified_reason and not self.hosted:
             raise LineageError(
                 "embedder identity needs an immutable revision or artifact digest; "
                 "development-only identities must state unverified_reason explicitly"
@@ -125,7 +152,32 @@ class EmbedderIdentity:
 
     @property
     def verified(self) -> bool:
+        """Whether the exact BYTES behind this identity are pinned.
+
+        Unchanged by the hosted work, deliberately. A hosted endpoint can never be `verified`, and
+        making it so would be the false-immutability trap the registry already refuses: a pinned
+        digest or revision for a model the provider can replace records a verification that never
+        happened. Every existing caller asking "is this pinned?" keeps its answer.
+        """
         return bool(self.revision or self.artifact_digest)
+
+    @property
+    def production_admissible(self) -> bool:
+        """Whether this identity may back a PRODUCTION generation. A build-time question.
+
+        🔑 **The distinction this property exists to draw: "pinned" and "admissible" are different
+        claims, not two grades of one claim.** Conflating them made hosted embedders permanently
+        unusable in production, because `verified` is false for them and always will be, so the
+        only way to run a hosted corpus was `RECALL_ENV=development`. That is a workaround with no
+        retiring condition, which is exactly the shape that outlives its problem silently: it also
+        redirects the CLI to the legacy `chunks` table, so a corpus could be indexed and served
+        from two different tables with nothing reporting the split.
+
+        A hosted identity is admissible because provider, model and width ARE its identity, and
+        they are recorded. It is not pinned, `verified` still says so, and the lineage record still
+        carries `verified: false`. Nothing is claimed here that cannot be checked.
+        """
+        return self.verified or self.hosted
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -198,14 +250,19 @@ class PipelineIdentity:
         return self.embedder.verified
 
     @property
+    def production_admissible(self) -> bool:
+        """See `EmbedderIdentity.production_admissible`. A build-time question, not a stored fact."""
+        return self.embedder.production_admissible
+
+    @property
     def fingerprint(self) -> str:
         return canonical_sha256(self.to_dict())
 
     def require_production_identity(self) -> None:
-        if not self.verified:
+        if not self.production_admissible:
             raise UnverifiedPipelineError(
                 "production generation builds require an immutable embedder revision or "
-                "artifact digest"
+                "artifact digest, or a hosted provider endpoint"
             )
 
     def to_dict(self) -> dict[str, Any]:
