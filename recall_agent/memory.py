@@ -119,9 +119,14 @@ class RecallAgentMemory:
     ) -> "RecallAgentMemory":
         """Resolve dsn/embedder/policy from `env` (default `os.environ`); overrides win."""
         values = dict(os.environ if env is None else env)
-        overrides.setdefault("dsn", resolve_dsn(values))
-        overrides.setdefault("embedder", resolve_embedder(values))
-        overrides.setdefault("policy", TrustPolicy.from_env(values))
+        if "dsn" not in overrides:
+            overrides["dsn"] = resolve_dsn(values)
+        if "embedder" not in overrides:
+            # Guarded, not setdefault: resolving an embedder can load a model, and a caller who
+            # supplied one must not pay for a second.
+            overrides["embedder"] = resolve_embedder(values)
+        if "policy" not in overrides:
+            overrides["policy"] = TrustPolicy.from_env(values)
         return cls(**overrides)
 
     @property
