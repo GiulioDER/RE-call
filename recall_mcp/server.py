@@ -800,11 +800,15 @@ def _make_lifespan(
             # apply`` — advising a migration on a production database, for a table the server was
             # never going to open, instead of naming the real problem twelve lines below. The
             # refusal needs no database and no embedder, which is why it is a separate function.
-            enterprise_early = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
+            # N5: ONE read, ONE name. This was `enterprise_early` here and `enterprise` 23 lines
+            # below, from the same variable, in the same function — the duplication class this
+            # repository keeps paying for. Startup is single-threaded and nothing between the two
+            # sites mutates the environment, so hoisting is behaviour-identical.
+            enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
             refusal = table_override_refusal(
                 TABLE,
                 generation_mode=generation_mode,
-                authenticated=token_registry is not None or enterprise_early,
+                authenticated=token_registry is not None or enterprise,
             )
             if refusal:
                 raise RuntimeError(refusal)
@@ -823,7 +827,6 @@ def _make_lifespan(
                 raise SchemaTooOld(
                     f"database migrations pending: {pending}; run `recall schema apply`"
                 )
-            enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
             if enterprise and token_registry is None:
                 raise RuntimeError("enterprise control plane requires authenticated tenant routing")
             if token_registry is None:

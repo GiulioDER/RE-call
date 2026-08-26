@@ -256,8 +256,15 @@ def test_the_mcp_server_env_keys_are_ones_recall_actually_reads() -> None:
     assert TrustPolicy.from_env({"RECALL_TRUST_MODE": "development"}).strict is False
     assert TrustPolicy.from_env({}).strict is True
 
-    # Read from the server module rather than asserted as a literal: the point is that the
-    # variable REACHES something, which is exactly what the two failures above did not.
+    # ⚠️ A SOURCE GREP, and it is labelled as one. This carried a comment claiming "the point is
+    # that the variable REACHES something", which a grep cannot show: an architect gate deleted
+    # `table=TABLE` from the store construction and this stayed green along with 362 other tests.
+    # A false comment in the file written to stop false comments.
+    #
+    # Reach is proven where it can be:
+    # tests/test_mcp_table_env.py::test_the_configured_table_reaches_the_store_the_server_actually_opens
+    # drives the real lifespan against a real database and asks the store what table it opened.
+    # This assertion is the cheap canary for the variable being renamed out of the module entirely.
     source = (REPO / "recall_mcp" / "server.py").read_text(encoding="utf-8")
     assert 'os.environ.get("RECALL_TABLE"' in source
     assert _json(MANIFEST)["userConfig"]["table"]["default"] == DEFAULT_TABLE

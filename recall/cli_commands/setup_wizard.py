@@ -37,7 +37,8 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "threshold against your own corpus, and offers to register the MCP server and session "
             "hooks with Claude Code. Writes a local .env with the answers; every step that touches "
             "something outside this directory is asked for first. Run `recall doctor` afterwards "
-            "to check the result."
+            "to check the result. If you want this scripted rather than asked, `recall wizard` "
+            "runs the same engine from a JSON config."
         ),
     ).set_defaults(
         _opens_db=True,  # the wizard connects when the operator accepts the calibrate prompt

@@ -58,6 +58,7 @@ import json
 import os
 import shutil
 import sys
+
 from recall.store import DEFAULT_TABLE
 import time
 from pathlib import Path

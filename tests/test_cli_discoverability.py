@@ -111,8 +111,13 @@ def test_setup_and_wizard_each_say_how_they_differ_from_the_other() -> None:
     other, or the reader has no way to learn that a choice was even being made.
     """
     parsers = _subparsers()
-    assert "wizard" in (parsers["setup"].description or "").lower() or "recall setup" in (
-        parsers["wizard"].description or ""
+    # ⚠️ Two assertions, one per direction. This was an `or` whose right operand was asserted
+    # unconditionally on the very next line, so it could never fail — and it was dead in the
+    # direction that mattered: `recall setup` did not name `wizard`, while CHANGELOG.md published
+    # "each explain how they differ from the other". The claim is now true and both halves are held.
+    assert "wizard" in (parsers["setup"].description or "").lower(), (
+        "`recall setup --help` never mentions `recall wizard`, so a reader who lands on setup is "
+        "not told a choice was being made"
     )
     assert "recall setup" in (parsers["wizard"].description or ""), (
         "`recall wizard --help` must name `recall setup`, since a reader who wanted the "

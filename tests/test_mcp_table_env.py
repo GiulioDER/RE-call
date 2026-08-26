@@ -27,10 +27,12 @@ loudly instead of ignoring it.
 from __future__ import annotations
 
 import importlib
+import os
 
 import pytest
 
 from recall.store import DEFAULT_TABLE
+from tests.conftest import TEST_DSN, requires_db
 
 
 @pytest.fixture
@@ -176,3 +178,93 @@ def test_a_store_with_no_table_to_choose_refuses_rather_than_ignores(
     assert expected in refusal
     assert "quickstart_chunks" in refusal
     assert "RECALL_ENV" in refusal, "a refusal must name the way out, not only the problem"
+
+
+# ------------------------------------------------------------------------------------------------
+# Does the value actually reach the STORE? Everything above this line proves it reaches the MODULE.
+# ------------------------------------------------------------------------------------------------
+
+
+@requires_db
+def test_the_configured_table_reaches_the_store_the_server_actually_opens() -> None:
+    """⛔ **The headline fix of this branch, and nothing bound it until now.**
+
+    Everything else in this file tests the module constant and the pure `table_override_refusal`.
+    The file's own title says "`RECALL_TABLE` must reach the MCP server", and it reached the module.
+    An architect gate deleted `table=TABLE` from the `PgVectorStore` construction in
+    `_make_lifespan` and ran everything that could plausibly see it: **363 tests passed** with the
+    defect fully restored.
+
+    That is worse than an untested fix. `tests/test_claude_code_plugin.py` asserted the variable
+    "REACHES something" by grepping the server's SOURCE, which cannot show reach and stayed green
+    under that same mutation — a false comment in the file written to stop false comments.
+
+    Six published surfaces now promise this behaviour: `site/troubleshooting.html`
+    ("add RECALL_TABLE ... and restart Claude. Re-indexing is not needed"), `site/claude-code.html`,
+    `docs/USING_WITH_CLAUDE.md`, `docs/ENVIRONMENT.md`, `.env.example`, and the plugin manifest,
+    which now asks a user for the value.
+
+    ⚠️ **Deliberately NOT a monkeypatched `PgVectorStore` capturing kwargs.** A kwargs-sink fake is
+    exactly what let `server_env` ship with a parameter no caller passed: it would stay green even
+    if the real constructor stopped accepting `table`. This drives the real lifespan against a real
+    database and asks the resulting store what table it opened.
+    """
+    import asyncio
+    import importlib
+
+    table = "mcp_wiring_chunks"
+    _rebuild_for_wiring(table, 64)
+
+    previous = {k: os.environ.get(k) for k in ("RECALL_TABLE", "RECALL_SERVING_DSN", "RECALL_EMBEDDER")}
+    os.environ["RECALL_TABLE"] = table
+    os.environ["RECALL_SERVING_DSN"] = TEST_DSN
+    os.environ["RECALL_EMBEDDER"] = "hashing"
+    try:
+        import recall_mcp.server as server
+
+        server = importlib.reload(server)
+        assert server.TABLE == table, "the module did not even read it"
+
+        opened: list[str] = []
+
+        async def _drive() -> None:
+            lifespan = server._make_lifespan(None)
+            async with lifespan(None) as state:  # type: ignore[arg-type]
+                opened.append(state["store"].table)
+
+        asyncio.run(_drive())
+        assert opened == [table], (
+            f"the server opened {opened!r} while RECALL_TABLE named {table!r}; the value reaches "
+            "the module and stops there, which is the silent-zero-hits bug this variable exists "
+            "to end"
+        )
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        import recall_mcp.server as server
+
+        importlib.reload(server)
+
+
+def _rebuild_for_wiring(table: str, dim: int) -> None:
+    """Drop `table`, forget it in the migration ledger, then migrate it fresh.
+
+    Dropping alone is not enough: `apply_migrations` records what it applied keyed by target table,
+    so a dropped table leaves the ledger claiming those migrations are still applied and the next
+    run finds `relation ... does not exist`. Same pattern as `tests/test_doctor_db.py::_rebuild`.
+    """
+    import psycopg
+    from psycopg import sql
+
+    from recall.schema import LEDGER_TABLE, apply_migrations
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute(sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(sql.Identifier(table)))
+        conn.execute(
+            sql.SQL("DELETE FROM {} WHERE target_table = %s").format(sql.Identifier(LEDGER_TABLE)),
+            (table,),
+        )
+    apply_migrations(TEST_DSN, table=table, dim=dim)
