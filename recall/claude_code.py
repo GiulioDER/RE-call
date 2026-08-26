@@ -178,6 +178,10 @@ def server_env(
     # that carries none — and `recall_mcp.server` never calls `load_dotenv`, so it silently falls
     # back to fastembed. A width mismatch raises into a log the client does not show; a same-width
     # different model does not raise at all, which is this project's documented worst case.
+    if table and table != DEFAULT_TABLE:
+        env["RECALL_TABLE"] = table
+    if embedder:
+        env["RECALL_EMBEDDER"] = embedder
     return env
 
 
