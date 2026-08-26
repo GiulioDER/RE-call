@@ -142,3 +142,36 @@ Re-measure:
 ```bash
 python scripts/bench_docker_probe.py
 ```
+
+## Correction, appended 2026-08-26 (nothing above this line is edited)
+
+A CCA audit of the commit that carried this record found three defects in it. All are corrected by
+appending, because a pre-registration is evidence of what was believed when it was written and a
+record that gets silently corrected cannot show that.
+
+**1. The Result claims two falsifiers where the prediction lists three.** Line 111 says "the
+falsifiers were 'under 5x' and 'the two disagree on any state', and neither occurred". The
+prediction lists a third: *`docker version` succeeds while the daemon cannot actually run a
+container (for example, a reachable CLI proxy with no engine behind it)*, restated in the confounds
+section as "worth stating twice". **It was never measured.** `scripts/bench_docker_probe.py`
+exercises healthy and dead-daemon only, and resolves the docker-absent state through `shutil.which`
+above the branch either probe would reach — sound reasoning that never made it into this record.
+
+So the conclusion "Nothing here is falsified" is unestablished for one third of its own criteria.
+**Untested is not un-occurred.** The third falsifier remains OPEN: there is no apparatus here for a
+CLI proxy with no engine behind it, and a probe that answers a weaker question than the caller asks
+would not have been caught by anything measured on 2026-08-25.
+
+**2. `1.07x` is a rounding slip, and the CHANGELOG inverted it.** 60 / 56.36 = 1.0646, so the bound
+was 1.06x the worst case. The prose in this record has the direction right ("that backstop is 1.07x
+the worst case"); `CHANGELOG.md` had it backwards ("that worst case was 1.07x the bound", which
+asserts the probe already always timed out). The CHANGELOG is not frozen and has been corrected;
+the number above is left exactly as committed.
+
+**3. The margin is stated against the median where the argument is about the tail.** This record's
+own conclusion is that "the variance, not the median, is the reason to make this change", and then
+measures the new probe's safety at 20 / 0.48 = 41.67x, which is 1.62 orders of magnitude rather
+than the "roughly two" claimed in `recall/quickstart.py`. Against the slowest `docker version`
+sample in this record's own five-run set (3.53s) the real margin is **5.67x**. That is still a large
+improvement on the old probe's 1.06x, and it is the honest number. Measuring the replacement by its
+median while faulting the original by its maximum re-imports the mistake the change was made to fix.
