@@ -62,9 +62,106 @@ misleading one, because nobody re-checks a green line.
 scripts/session-close.sh
 ```
 
-It removes this checkout's own database container, reports anything left uncommitted, and lists
-orphaned containers from checkouts that no longer exist. It never touches another session's
-container.
+It removes this checkout's own database container, closes the MCP transports this session opened,
+reports anything left uncommitted, and lists orphaned containers from checkouts that no longer
+exist. It never touches another session's container, and never another agent's MCP server: both
+are decided by positive identity, a label in one case and a parent chain in the other.
+
+It also reports how far the VPS2 serving checkout is behind master. Two sections below say what
+each of those is for: the serving sync, and the MCP close.
+
+## The serving checkout follows master, and a session is what makes it
+
+```bash
+scripts/session-serving.sh              # where the VPS2 serving checkout is, and what it lacks
+scripts/session-serving.sh sync         # fast-forward it to origin/master, verify, undo on failure
+```
+
+The MCP servers do not answer from the checkout you are editing. They answer from
+`~/recall-repos/serving` on VPS2, and the venv there holds an **editable** install pointing at that
+clone. Measured 2026-08-26:
+
+```text
+.venv/lib/python3.12/site-packages/_editable_impl_recall_rag.pth -> ~/recall-repos/serving
+python -c "import recall; print(recall.__file__)" -> ~/recall-repos/serving-master/recall/__init__.py
+```
+
+So a fast-forward there changes the code every future server session runs, with no reinstall and
+no restart, and until somebody does it a merged fix changes nothing anyone can search. **A stale
+server is a working server**: it does not error, it answers from older code, and no session
+reports the gap. `scripts/session-close.sh` prints the distance, `--sync-serving` closes it, and
+step 5 of `/session-close` is where it happens by default.
+
+Three refusals, each of which is a fact rather than caution:
+
+| Condition | Result | Why |
+|---|---|---|
+| the update touches `recall/migrations/` | refused unless `--with-migrations` | code that knows migration N against a database at N-1 raises `SchemaTooOld` at startup, and a client renders that as a server with NO tools, which is also the symptom of a missing file, an unapproved server and an unreachable host |
+| the serving tree is dirty, diverged, or detached | refused | uncommitted changes there mean somebody is hot-patching a live server, and local commits mean a diverged deployment rather than a stale one |
+| `embed.lock` is held | refused | swapping modules under a live indexer breaks a run in a way that surfaces hours later as a partial corpus |
+
+⚠️ **Verification is the point, and a green `git merge` is not it.** After the move: `recall schema
+status` must report `compatible: yes`, `recall_mcp.server` must import, and a real JSON-RPC
+handshake against the server launched exactly as `.mcp.json` launches it must return a non-empty
+tool list. Measured 2026-08-26 against the live host, with nothing to move: **18 tools, 58.6s for
+the whole `sync`**, of which the handshake is 21.0s. Any failure resets the checkout to where it
+was and says so, because the one state nobody may leave behind is a serving checkout that no
+longer serves.
+
+Re-measure, read-only, one ssh:
+
+```bash
+scripts/session-serving.sh status
+```
+
+Tests: `bash scripts/session_serving_tests.sh`. Git is real and python is stubbed, so it needs no
+database, no network and no VPS2; mutation-tested per the guard rule above. CI runs it on Linux
+rather than beside the Windows session hooks, because the test that proves a live indexer's
+`embed.lock` stops a sync skips itself where `flock` does not exist.
+
+## Close the MCP servers this session opened
+
+```bash
+scripts/session-mcp-close.sh              # report: this session's transports, and the fleet
+scripts/session-mcp-close.sh close        # close them, then count the fleet again
+```
+
+⚠️ **An idle MCP server is not free, and nothing reports the ones that leak.** Measured on VPS2 on
+2026-08-26: **89 live `recall_mcp.server` processes, 21.5 GB resident, oldest 69 hours**, on a
+47 GB host that also runs the live trading services. Roughly 850 MB each.
+
+Each server lives exactly as long as its stdio transport, which is the whole mechanism: `.mcp.json`
+launches it as `ssh <host> '... exec python -m recall_mcp.server'`, and killing the LOCAL ssh
+killed the remote server in **under 3 seconds** (measured the same day with a marked probe,
+confirmed by `ps -p`). ssh sets no keepalive, so a client that vanishes leaves its servers running
+until somebody looks, and a leaked server is indistinguishable from a working one.
+
+⛔ **Ownership is the parent chain, never the command line.** Three live transports with the
+IDENTICAL command line were parented to `codex.exe` rather than Claude the day this was written,
+so `pkill -f recall_mcp.server`, here or on the host, would have killed another agent's servers
+mid-query. Without `CLAUDE_PID` there is no positive identity and the script reports rather than
+guessing. Servers that are not this session's are counted and left alone: age does not prove
+abandonment, exactly as with somebody else's container.
+
+`scripts/session-close.sh` closes this session's transports by default; `--keep-mcp` leaves them
+open. The fleet is counted before and after, because a kill returning 0 says a signal was
+delivered, not that memory was freed on another machine.
+
+🔑 **The SessionEnd hook does the same close automatically, and that is the half that actually
+stops the leak**, because a session that leaks is by definition one where nobody ran a checklist.
+The script is the visible, verifying form; the hook is the one that catches the rest. Both decide
+ownership the same way, and the hook's identity is measured rather than assumed: this worktree's
+claim file, written at session start by the client-spawned hook, records `pid=9764`, and that pid
+is a `claude.exe` whose own parent is the app root. So the client process is per SESSION, and a
+parent chain reaching it separates two sessions of the same app, which a chain reaching the app
+root would not.
+
+Tests: `bash scripts/session_mcp_close_tests.sh`. The process table is a fixture and the killer is
+a log, so it needs no Claude, no ssh and no host. Mutation-tested five ways, and **one of the five
+survived the first version of the tests**: the fixture excluded the script's own ssh for the wrong
+reason, so the self-exclusion guard could be deleted with everything still green. The repair and
+the reasoning are in the test header, and it is the clearest example in this repository of why a
+guard nobody has watched fail has not been tested.
 
 ## Docker: one database per checkout
 
@@ -264,6 +361,12 @@ config (never a URL or a token), and will not reverse a server you have explicit
   ssh vps2 'cd ~/recall-repos && ln -sfn <checkout> serving && ls -ld serving'
   ```
 
+  🔑 **Repointing the symlink and keeping it CURRENT are different jobs.** The symlink is moved by
+  whoever migrates the corpus, by hand, on the host that migrated it. Keeping whatever it points
+  at at `origin/master` is `scripts/session-serving.sh sync`, which runs every session close. As
+  of 2026-08-26 it points at `serving-master`, a clone of this repository tracking master, so the
+  ordinary case is a fast-forward and no symlink work at all.
+
   ⚠️ Use `ln -sfn`, not `ln -sf`. Without `-n`, if `serving` is an existing symlink to a directory
   the link is created *inside* the target rather than replacing it, and the result resolves to
   nothing while looking like it worked.
@@ -446,6 +549,14 @@ already differ by 57 lines, and nothing reports it. The newer test files assert 
 copy matches the source, so a forgotten redeploy fails a test instead of silently disabling a
 guard. Add that assertion to any hook you write.
 
+- **`session_end_hook.py`** (deployed as `~/.claude/hooks/session_end_workspace.py`) closes,
+  at session end, the two things that are THIS session's: the container carrying this checkout's
+  label, and the MCP transports whose parent chain reaches `CLAUDE_PID`. The MCP close runs
+  **before** the cwd and git checks and outside the claim gate, because the transports belong to
+  the session rather than to the checkout, and because the sessions that leak are the ones that
+  never opened a repository: measured 2026-08-26, the last three real rows in the log were
+  `not-a-git-repo` with a home-directory cwd. It costs about 1.3s (one process listing) against a
+  15s budget, and it writes `mcp` and `mcp_detail` into the row, including when it declined.
 - **`preregistration_guard.py`** denies a measurement command while anything under
   `docs/preregistrations/` or `benchmarks/PREREGISTRATION.md` is uncommitted. An uncommitted
   prediction has no timestamp anyone can trust. It matches at **command position** only, so
