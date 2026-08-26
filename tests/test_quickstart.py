@@ -435,12 +435,19 @@ def test_the_daemon_probe_is_the_cheap_one_and_its_timeout_has_real_margin(monke
         "a machine with a normal number of containers"
     )
 
-    measured_median_seconds = 0.48
+    # ⚠️ The denominator is the WORST observed sample, not the median, and it is looked up BY THE
+    # PROBE'S OWN ARGV. The first version divided by a frozen `0.48`, which made the assertion
+    # algebraically `timeout >= 4.8` — it could not fail on the condition its message named,
+    # because the probe's cost never entered it. Keyed this way, restoring `docker info` under a
+    # 60s timeout fails here (60/56.36 = 1.06), which is the regression worth catching.
+    observed_worst_case = {("docker", "version"): 3.53, ("docker", "info"): 56.36}
+    worst = observed_worst_case[tuple(argv[:2])]
     timeout = seen["timeout"]
     assert isinstance(timeout, (int, float))
-    assert timeout / measured_median_seconds >= 10, (
-        f"timeout={timeout}s leaves under 10x margin over the measured {measured_median_seconds}s "
-        "probe, which is how the old one came to report a healthy daemon as unresponsive"
+    assert timeout / worst >= 3, (
+        f"timeout={timeout}s leaves only {timeout / worst:.1f}x margin over the slowest observed "
+        f"{' '.join(argv[:2])} run ({worst}s), which is how the old probe came to report a healthy "
+        "daemon as unresponsive"
     )
 
 

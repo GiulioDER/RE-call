@@ -25,7 +25,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 * **`recall quickstart`'s Docker preflight cost 14 seconds at the median and 56 at the worst.**
   It ran `docker info`, which gathers the whole system inventory, so its cost scaled with what was
-  on the machine. Against the 60 second timeout it carried, that worst case was 1.07x the bound: a
+  on the machine. Against the 60 second timeout it carried, that bound was only 1.06x the worst case: a
   marginally busier daemon would have reported a perfectly healthy Docker as "installed but did not
   respond". Now `docker version`, measured at 0.48s median (29.1x) with the same verdict on a live
   and a dead daemon, under a 20 second timeout. Record:
@@ -33,8 +33,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 * **The README told you to apply the schema by hand at `--dim 384` before running `recall setup`.**
   `setup` migrates the database itself, at whichever width the embedder you pick needs, which is
-  why choosing the embedder comes first. Verified against an empty database: all fourteen
-  migrations applied unprompted, `schema_status` compatible with nothing pending. The manual
+  why choosing the embedder comes first. Verified against an empty database: every pending
+  migration applied unprompted, `schema_status` compatible with nothing pending. The manual
   command is kept for the case it is actually for, a serving role that cannot create tables.
 
 ### Added

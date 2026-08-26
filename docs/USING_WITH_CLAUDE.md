@@ -32,7 +32,7 @@ The migration command is a deployment/provisioning step, not part of server star
 schema-owner DSN for it and an unprivileged `RECALL_SERVING_DSN` for the server; see
 [MIGRATIONS.md](MIGRATIONS.md).
 
-The MCP server opens the default `chunks` table. If you used a named table for a local CLI demo,
+The MCP server opens the table `RECALL_TABLE` names, defaulting to `chunks`; see the `RECALL_TABLE` note under the server block below for the production exception. If you used a named table for a local CLI demo, point `RECALL_TABLE` at it, or
 apply the default-table schema separately before starting MCP, or use an embedder whose dimension
 matches the existing `chunks` table.
 

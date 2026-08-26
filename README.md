@@ -210,7 +210,7 @@ Both run unchanged in PowerShell.
 **The schema is not a separate step.** `recall setup` migrates the database itself, at whichever
 width the embedder you pick needs, which is why choosing the embedder comes first: a schema applied
 by hand beforehand has to guess that width before the question has been asked. Measured
-2026-08-25 against an empty database: the wizard applied all fourteen migrations unprompted and
+2026-08-25 against an empty database: the wizard applied every pending migration unprompted and
 `schema_status` reported compatible with nothing pending. Re-measure by pointing `recall setup` at a
 database you have just created and reading the line it prints (`Prepared 'chunks' for N
 dimensions.`).
@@ -431,7 +431,7 @@ teaches Claude when to search:
 
 It asks for a DSN, a table, a tenant and a trust mode, and keeps the DSN in your OS keychain rather
 than in `settings.json`. You still need a database first, which is what `recall quickstart` above is
-for; it prints all four values when it finishes, and two of them are not the plugin's defaults.
+for; it prints all four values when it finishes, and none of them is what the plugin fills in by default.
 Point the server at the wrong table or tenant and it starts cleanly, answers, and finds nothing.
 See [plugin/README.md](plugin/README.md).
 

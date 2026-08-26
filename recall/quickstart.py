@@ -199,7 +199,9 @@ def docker_unavailable_reason() -> str | None:
             # maximum, which is the failure this replaces: a busy daemon made the quickstart report
             # a perfectly healthy Docker as "did not respond" and sent the reader to fix something
             # that was not broken. `version` is one round trip to the daemon's /version endpoint:
-            # median 0.48s, 29.1x faster, and roughly two orders of magnitude clear of the bound.
+            # median 0.48s, 29.1x faster. The margin against this bound is 41x at the median and 5.7x at
+            # the slowest sample observed (3.53s); the tail is the number that matters,
+            # because the tail is what tripped the old one.
             #
             # It answers the same question for this caller's purposes. Both return 0 against a live
             # daemon and non-zero against an unreachable one, and both emit the same actionable
@@ -350,7 +352,7 @@ def next_steps(dsn: str, *, provisioned: bool, compose_path: Path | None) -> tup
         [
             "",
             "Giving this to the Claude Code plugin (/plugin install recall@re-call)?",
-            "It asks for four values, and two of them are NOT its defaults:",
+            "It asks for four values, and NONE of them is what it fills in by default:",
             f"  PostgreSQL DSN  {shown}",
             f"  Table           {QUICKSTART_TABLE}",
             f"  Tenant          {QUICKSTART_TENANT}",

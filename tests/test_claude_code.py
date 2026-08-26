@@ -224,6 +224,40 @@ def test_a_password_never_reaches_a_log_line() -> None:
     assert _redacted("postgresql://127.0.0.1:5432/recall") == "postgresql://127.0.0.1:5432/recall"
 
 
+def test_server_env_carries_the_embedder_and_a_non_default_table() -> None:
+    """⛔ **A same-width different embedder does not raise; it returns a confident wrong answer.**
+
+    `recall setup` asks which embedder and writes it to `.env`. `recall_mcp.server` never calls
+    `load_dotenv`, so an embedder recorded only there silently falls back to fastembed. This
+    project's own CLAUDE.md records the consequence: three 1024-dimension models were queried
+    against each other's rows and nothing raised, because pgvector computes a cosine between any
+    two same-width vectors happily.
+
+    The second half pins the DELIBERATE omission. `RECALL_TABLE` is emitted only when it differs
+    from the default, so an existing registration is byte-identical to before this change; without
+    an assertion that says so, "absent because default" and "absent because broken" look the same.
+    """
+    from recall.store import DEFAULT_TABLE
+
+    rich = claude_code.server_env(
+        dsn="postgresql://example/recall",
+        tenant="acme",
+        trust_mode="strict",
+        table="quickstart_chunks",
+        embedder="voyage:voyage-3",
+    )
+    assert rich["RECALL_EMBEDDER"] == "voyage:voyage-3"
+    assert rich["RECALL_TABLE"] == "quickstart_chunks"
+
+    plain = claude_code.server_env(
+        dsn="postgresql://example/recall", tenant="acme", trust_mode="strict"
+    )
+    assert "RECALL_TABLE" not in plain, "the default table must not be written into the env block"
+    assert "RECALL_EMBEDDER" not in plain
+    assert set(plain) == {"RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_TRUST_MODE"}
+    assert DEFAULT_TABLE == "chunks"
+
+
 def test_server_env_always_sets_the_trust_mode() -> None:
     """Omitting it is how a correct install returns INDEX_NOT_READY on the user's first search."""
     env = claude_code.server_env(dsn="postgresql://h/db", tenant="default", trust_mode="development")

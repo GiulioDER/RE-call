@@ -39,7 +39,7 @@ Claude Code then asks for four things: the **DSN** of the database to read, the 
 **tenant** inside it, and the **trust mode**. The DSN is stored in your OS keychain rather than in
 `settings.json`, because it carries a password.
 
-**Two of those four have to match whichever command built the store**, and the exact values are
+**All four have to match whichever command built the store**, and the exact values are
 printed at the end of that command. Get the table or the tenant wrong and the server starts
 cleanly, answers, and finds nothing: there is no error to read, because an empty answer from the
 wrong table looks exactly like an empty corpus.

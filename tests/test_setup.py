@@ -1796,6 +1796,14 @@ def test_accepting_the_wiring_prompt_registers_the_server_and_installs_the_hooks
     )
 
     assert calls["register"]["dsn"] == "postgresql://example/recall"
+    # ⚠️ The embedder, not just the DSN. The first fix for this finding widened `server_env` and
+    # never extended `register_mcp_server`, so nothing could pass the value and the suite stayed
+    # green over a defect that was still open. Deleting `embedder=embedder.value` from
+    # `recall/setup.py` restores exactly that inert state, and must turn this red.
+    assert calls["register"].get("embedder"), (
+        "recall setup registered a server without the embedder the interview chose; the server "
+        "does not read .env, so it will silently fall back to fastembed"
+    )
     assert calls["hooks"]["embedder"] == "fastembed"
     # The tools land in the NEXT session, and a user who does not know that reads a working
     # install as a broken one when the current session shows no recall tools.

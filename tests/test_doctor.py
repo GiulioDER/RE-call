@@ -146,8 +146,21 @@ class _FakeConn:
     PostgreSQL is running. The queries themselves are covered by the DB-backed suite.
     """
 
-    def __init__(self, *, tables: dict[str, list[tuple[str, int]]]) -> None:
+    def __init__(
+        self,
+        *,
+        tables: dict[str, list[tuple[str, int]]],
+        shapes: dict[str, tuple[str, ...]] | None = None,
+        can_bypass_rls: bool = True,
+    ) -> None:
         self.tables = tables
+        #: Columns each table has. Absent means "a full corpus". A table listed here with fewer
+        #: columns is one the shape filter must EXCLUDE, which is the bookkeeping-table case.
+        self.shapes = shapes or {}
+        #: Whether this role can read past row-level security. False makes `_populated_corpora`
+        #: append its "other tenants are hidden" caveat, which is the honest answer for a role that
+        #: cannot see them rather than the confident "nothing holds rows" it used to print.
+        self.can_bypass_rls = can_bypass_rls
 
     def __enter__(self):
         return self
@@ -156,45 +169,62 @@ class _FakeConn:
         return None
 
     def transaction(self):
-        """⚠️ Added after this fake caused a VACUOUS PASS, which is worth recording.
+        """⚠️ Kept after this fake caused a VACUOUS PASS, which is worth recording.
 
-        `_populated_corpora` wraps each sibling-table count in `conn.transaction()` so it can apply
-        a `SET LOCAL statement_timeout`. A fake without this method raised `AttributeError`, the
-        broad `except` around the count treated it as "could not count in time", and the table's
-        name appeared in the detail under `[not counted in time: ...]` rather than with its row
-        count. The assertion was `"quickstart_chunks" in detail`, so it matched the failure text and
-        went green while the behaviour under test never ran.
+        `_populated_corpora` once wrapped each sibling count in `conn.transaction()`. A fake without
+        this method raised `AttributeError`, the broad `except` around the count treated it as
+        "could not count", and the table's name appeared in the detail under `[not counted: ...]`
+        rather than with its row count. The assertion was `"quickstart_chunks" in detail`, so it
+        matched the FAILURE text and went green while the behaviour under test never ran.
 
-        The test below now asserts the COUNT, which the timeout branch cannot produce.
+        The bound now lives on the session (`_connect` passes `options=-c statement_timeout=...`),
+        so nothing calls this any more. It stays because a fake that quietly lacks a method the
+        code later starts calling reproduces the same trap, and because the lesson is cheaper to
+        keep than to relearn.
         """
         return self
 
     def execute(self, query: Any, params: tuple | None = None) -> _FakeCursor:
-        text = str(getattr(query, "as_string", lambda: query)()) if hasattr(query, "as_string") else str(query)
-        if text.startswith("SET LOCAL"):
-            # The bound `_populated_corpora` puts around each sibling count. Answered rather than
-            # rejected: an unknown statement raises here, and the broad `except` around the count
-            # would turn that into "could not count in time", which is how this fake produced a
-            # green test over a code path that never ran.
-            return _FakeCursor([])
-        if "pg_tables" in text:
-            return _FakeCursor([(name,) for name in self.tables])
-        if "attname = 'tenant_id'" in text:
-            return _FakeCursor([(1,)])
-        if "attname = 'embedding'" in text:
+        """⛔ **Answer only what this fake actually understands, and RAISE otherwise.**
+
+        Every branch here is a place the fake can diverge from PostgreSQL, so the list is kept as
+        short as the code allows and anything unrecognised is a loud AssertionError rather than an
+        empty result. An empty result would be absorbed by `_populated_corpora`'s broad `except` and
+        reported as "not counted", which is exactly how this file produced a green test over code
+        that never ran. The DB-backed suite in `tests/test_doctor_db.py` is what covers the SQL
+        itself; these tests cover the REPORTING decisions, which are the same whatever the database.
+        """
+        text = (
+            str(query.as_string()) if hasattr(query, "as_string") else str(query)
+        )
+        if "a.atttypmod" in text:
+            # `_embedding_width`. ⚠️ Checked BEFORE the discovery branch: both queries join
+            # `pg_class` and both mention `a.attname`, so ordering is the only thing separating
+            # them. Matching the discovery branch first returned (relname, attname) rows and the
+            # width read got a string where it wanted an int — the fake diverging from the code by
+            # one dispatch line, which is this file's recurring failure mode.
             return _FakeCursor([(384,)])
+        if "pg_class" in text and "a.attname" in text:
+            # `_chunk_tables`: one round trip returning (relname, attname) for the whole schema.
+            # Every fixture table is given the full chunk shape unless it is declared otherwise, so
+            # a test that wants a NON-corpus table says so explicitly via `shapes`.
+            rows: list[tuple] = []
+            for name in self.tables:
+                for column in self.shapes.get(name, ("tenant_id", "embedding", "source")):
+                    rows.append((name, column))
+            return _FakeCursor(rows)
+        if "rolsuper" in text:
+            return _FakeCursor([(self.can_bypass_rls,)])
         if "GROUP BY tenant_id" in text:
-            for name, rows in self.tables.items():
-                if f'"{name}"' in text or f" {name} " in text:
-                    return _FakeCursor(list(rows))
+            for name, counts in self.tables.items():
+                if f'"{name}"' in text:
+                    return _FakeCursor(list(counts))
             return _FakeCursor([])
         if "count(*)" in text:
             assert params is not None
-            for name, rows in self.tables.items():
-                if f'"{name}"' in text or f" {name} " in text:
-                    return _FakeCursor(
-                        [(sum(c for t, c in rows if t == params[0]),)]
-                    )
+            for name, counts in self.tables.items():
+                if f'"{name}"' in text:
+                    return _FakeCursor([(sum(c for t, c in counts if t == params[0]),)])
             return _FakeCursor([(0,)])
         raise AssertionError(f"unexpected query: {text}")
 
@@ -244,7 +274,11 @@ def test_an_unreachable_database_skips_the_corpus_rather_than_reporting_zero(
     """
     attempts: list[str] = []
 
-    def _refuse(dsn: str):
+    def _refuse(dsn: str, *, tenant: str | None = None):
+        # The keyword matters: `_connect` now sets the RLS tenant GUC on the connection it opens
+        # (audit F01), so a stub with the old positional-only signature raises TypeError at CALL
+        # time and never records the attempt — which made this assertion read `0 == 1` and look
+        # like a behaviour change rather than a stale double.
         attempts.append(dsn)
         raise OSError("nope")
 
@@ -320,3 +354,34 @@ def test_a_password_never_reaches_the_report_even_from_inside_the_exception() ->
     database = next(c for c in report.checks if c.name == "database")
     assert database.status == "fail"
     assert secret not in database.detail
+
+
+def test_a_role_that_cannot_see_other_tenants_still_gets_the_index_command() -> None:
+    """⛔ **The regression the anti-regression gate caught, pinned.**
+
+    The RLS caveat was first APPENDED to the string `_populated_corpora` returns. Every caller
+    tests that string for truth, so on a `NOSUPERUSER NOBYPASSRLS` role with an empty corpus the
+    report read:
+
+        These do hold rows: [other tenants are hidden from this role by row-level security]
+
+    and the only correct instruction, `recall index <folder>`, was suppressed — the exact
+    wrong-population defect this command exists to end, reproduced on precisely the hardened role
+    the RLS fix was written for.
+
+    The caveat is now its own Check, so "cannot see" can never be read as "found something".
+    """
+    conn = _FakeConn(tables={"chunks": []}, can_bypass_rls=False)
+    checks = list(doctor._corpus_checks(conn, table="chunks", tenant="default"))
+
+    corpus = next(c for c in checks if c.name == "corpus")
+    assert corpus.status == "fail"
+    assert corpus.fix is not None
+    assert "index <folder>" in corpus.fix, (
+        "an unprivileged role with an empty corpus lost the index instruction: " + repr(corpus.fix)
+    )
+    assert "hidden from this role" not in corpus.detail, corpus.detail
+
+    # The fact is not dropped, only moved somewhere it cannot be mistaken for a finding.
+    visibility = next(c for c in checks if c.name == "rls visibility")
+    assert visibility.status == "warn"

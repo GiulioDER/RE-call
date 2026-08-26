@@ -200,7 +200,16 @@ TENANT = os.environ.get("RECALL_TENANT", DEFAULT_TENANT)
 #: ⛔ Generation mode has no table to choose: `GenerationStore` is welded to `recall_chunks_v1`,
 #: and the authenticated registry is generation-aware too. Setting this there is REFUSED at
 #: startup rather than ignored, because silently ignoring a knob is exactly the failure above.
-TABLE = os.environ.get("RECALL_TABLE", DEFAULT_TABLE)
+#: ⚠️ `.strip()`, and empty means UNSET, and both halves were audit findings.
+#:
+#: `recall/_env.py` records this project fixing the same class once already: "a padded value (a
+#: trailing space from a systemd EnvironmentFile or a Windows `set`) read as production at some
+#: gates and development at others". Measured here: `"chunks ".isidentifier()` is False, so a
+#: trailing space typed into the plugin's free-text Table field raised at MODULE scope, which an
+#: MCP client renders as a server with no tools — the exact silent symptom this variable was added
+#: to eliminate. `or DEFAULT_TABLE` covers `RECALL_TABLE=` used to clear the value, which
+#: `os.environ.get(name, default)` does NOT treat as absent.
+TABLE = os.environ.get("RECALL_TABLE", "").strip() or DEFAULT_TABLE
 if not TABLE.isidentifier():
     raise ValueError(f"RECALL_TABLE={TABLE!r} is not a valid SQL identifier")
 #: Trust policy for this server instance, resolved from `RECALL_TRUST_MODE`.
@@ -786,10 +795,29 @@ def _make_lifespan(
             # SELECT-only and uses the serving credential.
             from recall.schema import SchemaTooOld, schema_status
 
-            # The table the legacy store will actually open, so a `RECALL_TABLE` that has never
-            # been migrated is reported as pending migrations rather than as an empty corpus.
-            # Generation mode ignores it by construction, and refuses it a few lines down.
-            schema = schema_status(DEFAULT_DSN, table=TABLE, dim=embedder.dim)
+            # ⚠️ **Refuse FIRST.** This ran after `schema_status(table=TABLE)`, so an unmigrated
+            # `RECALL_TABLE` under generation mode surfaced as `SchemaTooOld: run `recall schema
+            # apply`` — advising a migration on a production database, for a table the server was
+            # never going to open, instead of naming the real problem twelve lines below. The
+            # refusal needs no database and no embedder, which is why it is a separate function.
+            enterprise_early = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
+            refusal = table_override_refusal(
+                TABLE,
+                generation_mode=generation_mode,
+                authenticated=token_registry is not None or enterprise_early,
+            )
+            if refusal:
+                raise RuntimeError(refusal)
+
+            # Probe the table the store will ACTUALLY open. Under generation mode or authenticated
+            # routing that is the global ledger target, never `RECALL_TABLE` — which the refusal
+            # above has already established is the default there.
+            probe_table = (
+                DEFAULT_TABLE
+                if (generation_mode or token_registry is not None)
+                else TABLE
+            )
+            schema = schema_status(DEFAULT_DSN, table=probe_table, dim=embedder.dim)
             if not schema.compatible:
                 pending = [m.version for m in schema.pending]
                 raise SchemaTooOld(
@@ -798,14 +826,6 @@ def _make_lifespan(
             enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
             if enterprise and token_registry is None:
                 raise RuntimeError("enterprise control plane requires authenticated tenant routing")
-            # Refused, not ignored. Both paths below are welded to `recall_chunks_v1`, so an
-            # operator who set this would be served a different corpus than the one they named,
-            # which is the silent-wrong-answer failure this variable exists to end.
-            refusal = table_override_refusal(
-                TABLE, generation_mode=generation_mode, authenticated=token_registry is not None
-            )
-            if refusal:
-                raise RuntimeError(refusal)
             if token_registry is None:
                 # Pooled + timed out: a server shares this store across concurrent tool calls,
                 # and one connection would serialise them however many threads are available.

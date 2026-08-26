@@ -90,9 +90,13 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "forget",
         description=(
             "Permanently delete every chunk belonging to the named source(s). This is the "
-            "right-to-erasure path and it is IRREVERSIBLE: there is no tombstone to undo and "
-            "re-indexing will not bring the rows back unless the file is still on disk. Name a "
-            "source exactly as stored, which is the `source` field printed by `recall search`."
+            "right-to-erasure path and it is IRREVERSIBLE in both stores. On the legacy table the "
+            "rows are deleted, and only re-indexing a file still on disk restores them. Under "
+            "RECALL_ENV=production a PERMANENT TOMBSTONE is also written, and no future generation "
+            "build will re-admit that URI even if the file is there; nothing deletes a tombstone "
+            "and there is no `unforget`. Name a source exactly as stored, which is the `source` "
+            "field printed by `recall search`; a source this store has never seen is reported as NOT "
+            "erased and NOT tombstoned rather than acted on."
         ),
         help="permanently delete indexed memory for the given source(s) — irreversible",
     )
@@ -178,10 +182,11 @@ def register_demo_code(sub: argparse._SubParsersAction[argparse.ArgumentParser])
         "code",
         help="index recall's own source and run sample code queries",
         description=(
-            "Index this repository's own Python source and run sample code-retrieval queries "
-            "against it. Like `demo`, it reads relative paths and therefore wants a clone rather "
-            "than an installed wheel. Useful for seeing what code chunking does before pointing "
-            "`recall index --glob` at a repository of your own."
+            "Index recall's own Python source and run sample code-retrieval queries against "
+            "it. Unlike `demo`, this resolves the installed package directory, so it works from a "
+            "wheel as well as a clone. It writes to the fixed table `recall_code` and ignores "
+            "--table. Useful for seeing what code chunking does before pointing `recall index "
+            "--glob` at a repository of your own."
         ),
     ).set_defaults(_opens_db=True, func=_cmd_code)
 

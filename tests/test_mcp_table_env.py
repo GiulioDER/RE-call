@@ -79,8 +79,8 @@ def test_the_quickstart_table_reaches_the_module(reload_server) -> None:
         "drop table; --",
         "chunks; SELECT 1",
         "chunks chunks",
-        "",
         "public.chunks",
+        "chunks-v2",
     ],
 )
 def test_a_value_that_is_not_an_identifier_is_refused_at_import(reload_server, value: str) -> None:
@@ -93,6 +93,30 @@ def test_a_value_that_is_not_an_identifier_is_refused_at_import(reload_server, v
     """
     with pytest.raises(ValueError, match="RECALL_TABLE"):
         reload_server(RECALL_TABLE=value)
+
+
+@pytest.mark.parametrize("value", ["", "   ", "\t"])
+def test_an_empty_or_padded_value_means_UNSET_rather_than_an_import_crash(
+    reload_server, value: str
+) -> None:
+    """⚠️ **Contract change, from audit finding F24.** This case used to assert a raise.
+
+    `os.environ.get("RECALL_TABLE", DEFAULT_TABLE)` returns `""` for a variable that is PRESENT and
+    empty, not the default — so `RECALL_TABLE=` in a `.env` or a compose file, which is the normal
+    way to clear a value, raised `ValueError` at module scope. An MCP client renders that as a
+    server with no tools: the exact silent symptom this variable was added to eliminate.
+
+    Padding is the same defect wearing a different hat, and this project has paid for it before:
+    `recall/_env.py` records that a trailing space from a systemd EnvironmentFile "read as
+    production at some gates and development at others". Measured here before the fix,
+    `"chunks ".isidentifier()` is False, so a trailing space typed into the plugin's free-text
+    Table field killed the server at import.
+
+    The parametrised list above is the control: every genuinely invalid value still raises, so this
+    is a normalisation, not a weakening of the gate.
+    """
+    server = reload_server(RECALL_TABLE=value)
+    assert server.TABLE == DEFAULT_TABLE
 
 
 def test_the_default_is_accepted_everywhere(reload_server) -> None:

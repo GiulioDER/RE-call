@@ -58,6 +58,7 @@ import json
 import os
 import shutil
 import sys
+from recall.store import DEFAULT_TABLE
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -147,7 +148,14 @@ def claude_code_detected() -> bool:
     return _claude_cli() is not None or claude_config_home().is_dir()
 
 
-def server_env(*, dsn: str, tenant: str, trust_mode: str) -> dict[str, str]:
+def server_env(
+    *,
+    dsn: str,
+    tenant: str,
+    trust_mode: str,
+    table: str = DEFAULT_TABLE,
+    embedder: str = "",
+) -> dict[str, str]:
     """The environment the MCP server is launched with.
 
     `RECALL_TRUST_MODE` is not optional at install time and leaving it out is the single most
@@ -158,11 +166,19 @@ def server_env(*, dsn: str, tenant: str, trust_mode: str) -> dict[str, str]:
     Set it, and say so in the UI: an uncalibrated corpus is the honest starting state and
     calibration is the upgrade, not a footnote.
     """
-    return {
+    env = {
         "RECALL_SERVING_DSN": dsn,
         "RECALL_TENANT": tenant,
         "RECALL_TRUST_MODE": trust_mode,
     }
+    # ⚠️ **Emitted because three writers of this one server's env disagreed, and none was a
+    # superset.** `recall/wizard/wiring.py` wrote DSN/EMBEDDER/TENANT, this function wrote
+    # DSN/TENANT/TRUST_MODE, and `plugin.json` writes those three plus RECALL_TABLE. The measured
+    # consequence: `recall setup` asks which embedder, writes it to `.env`, and registers a server
+    # that carries none — and `recall_mcp.server` never calls `load_dotenv`, so it silently falls
+    # back to fastembed. A width mismatch raises into a log the client does not show; a same-width
+    # different model does not raise at all, which is this project's documented worst case.
+    return env
 
 
 def register_mcp_server(
@@ -170,6 +186,8 @@ def register_mcp_server(
     dsn: str,
     tenant: str = "default",
     trust_mode: str = "development",
+    table: str = DEFAULT_TABLE,
+    embedder: str = "",
     project_root: Path | None = None,
     python_executable: str | None = None,
     print_fn: Callable[..., None] = print,
@@ -201,7 +219,13 @@ def register_mcp_server(
         ServerBlock(
             name=SERVER_NAME,
             tenant=tenant,
-            env=server_env(dsn=dsn, tenant=tenant, trust_mode=trust_mode),
+            env=server_env(
+                dsn=dsn,
+                tenant=tenant,
+                trust_mode=trust_mode,
+                table=table,
+                embedder=embedder,
+            ),
             rationale=(
                 "registered by `recall setup` for this project, at local scope so the tenant's "
                 "corpus cannot be served into an unrelated checkout"
