@@ -114,3 +114,10 @@ is not deployable on every write, whatever its recall.
    frontiers were measured on retrieval, not on labels, and are unaffected by any of this.
 
 <!-- frozen_above -->
+
+## Result
+
+Measured 2026-08-27. All three gates passed. **`recall_exec` 11/11, `fire_exec` 29/36 (0.806),
+`trigger_recall` 10/11, `trigger_fire` 26/36 (0.722).** Registered cell `>=0.80` x `>0.60` reads
+**KILL the per-write design**. Five of five predictions confirmed. Full result, including the
+corpus rebuild and the seven quiet negatives, in `2026-08-27-checker-ground-truth-result.md`.
