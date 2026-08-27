@@ -514,9 +514,14 @@ def build_sdk_configs(
             f"source: recall_spec (an external stdio server) OR in_process_servers (SDK tools "
             f"served in this process), not both and not neither"
         )
-    on_arm_servers = (
-        dict(in_process_servers) if in_process_servers is not None else sdk_mcp_servers(recall_spec)
-    )
+    # Written as an if/else on the same variable the check above narrowed, rather than a ternary
+    # on the other one: the exactly-one rule is obvious to a reader and invisible to a type
+    # checker, which cannot see that `recall_spec` is non-None in this branch.
+    if in_process_servers is not None:
+        on_arm_servers = dict(in_process_servers)
+    else:
+        assert recall_spec is not None  # guaranteed by the exactly-one check above
+        on_arm_servers = sdk_mcp_servers(recall_spec)
 
     configs: dict[str, SDKExecConfig] = {}
     for variant, spec in specs.items():
