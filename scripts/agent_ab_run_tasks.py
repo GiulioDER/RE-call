@@ -523,6 +523,10 @@ async def main() -> int:
         merged = {
             **record.metadata,
             "off_arm_profile": off_spec.profile,
+            # Carried on every record so the schema guard can see, from the record alone, why an
+            # off arm may hold RE-call calls. Without it a completed control session cannot be
+            # CONSTRUCTED and is recorded as "the session did not complete".
+            "identical_arms": identical_arms,
             "comparison": "additive",
             "base_task_id": base_id,
             "rep": row.get("rep"),
