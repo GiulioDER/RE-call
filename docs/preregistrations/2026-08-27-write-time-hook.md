@@ -317,3 +317,91 @@ and CLEAN against LEAKED is the part that decides anything.
 None of the three is licensed by this record. The hook itself is built, tested (10 groups, 8
 mutations killed), verified against the live corpus, and now verified to reach the agent; what
 remains is entirely the harness.
+
+## Stage A, second attempt, 2026-08-27: PASSED its gate, and both predictions FALSIFIED
+
+**Nothing above is edited.** The block recorded above is cleared: the `CLAUDE.md` leak was closed,
+and the closure is a path rather than a variable.
+
+### What closed it
+
+The user `CLAUDE.md` is found by **walking up from `cwd`**, not through any environment variable.
+Every `cwd` in the earlier failed attempts sat under `C:\Users\<user>\`, so the walk always
+reached `.claude\CLAUDE.md` no matter what the environment said. `--work-root` puts the sandboxes
+outside the profile, and the runner refuses `--hook-file` without it. Verified in-band, in the run
+itself, by a real session asked what it holds:
+
+    isolation check: 36,914 input tokens, USER=no PROJECT=no
+
+That check runs against the **control** arm's config directory, and the run stops if it is not
+clean. Its verdict is written into `environment.json` rather than only printed.
+
+⚠️ **Still open, and it is the reason the base rate cannot simply be carried over.** A non-bare
+session carries ~35,000 input tokens of system prompt against `--bare`'s ~2,900, identical in both
+arms. `--disable-slash-commands` moves that by ~1,700 and stops the hook firing, so it is not the
+lever. Any stage B under this apparatus reports its own control failure count beside the result.
+
+### The run
+
+`hook-stage-a-003`, `--limit 4 --reps 1 --pair-concurrency 1`, corpus `gen_f01fc522`, 1,006 chunks.
+**4 pairs admitted, 0 discarded, 8 of 8 sessions completed.** The hook fired in the ON arm's
+sandbox only, 31 times, with zero errors in the trace.
+
+### Prediction 1: injections per session 8 to 14. FALSIFIED, 0 of 4 inside the band
+
+| task | injections |
+|---|---:|
+| `ts-false-zero-search` | 2 |
+| `ts-lf-rewrite` | 2 |
+| `ts-raise-on-missing` | 2 |
+| `ts-worktree-import` | **25** |
+
+Not a miss in one direction: it is **bimodal**, three sessions far below the band and one far
+above. The band came from a recorded median of ~10 payloads a session, and that median described a
+different population. This matters beyond the prediction, because the mechanism's whole premise is
+forced reach: a session that writes twice gets **two** chances, not ten, and prediction 3's
+"rescues 2 to 6 of 11" was reasoned from the ten.
+
+By tool: 22 of 31 injections came from `Bash`, 5 from `Edit`, 4 from `Write`. Median payload 81
+characters. **Every injection returned exactly 5 memos**, because the hook has no relevance
+threshold, and `project_index.md` was among the three most-injected documents, which is an index
+file rather than a memo.
+
+### Prediction 6: input tokens rise 40% to 120%. FALSIFIED, 1 of 4 inside the band
+
+| task | on | off | ratio |
+|---|---:|---:|---:|
+| `ts-false-zero-search` | 164,111 | 144,568 | 1.14 |
+| `ts-lf-rewrite` | 277,198 | 490,657 | **0.56** |
+| `ts-raise-on-missing` | 277,185 | 240,994 | 1.15 |
+| `ts-worktree-import` | 2,030,340 | 240,335 | **8.45** |
+
+One arm cost **less** than its control and one cost **eight times** it. At n=4 the variance is
+session length, not treatment, and the 8.45 is the 25-injection session where five memos of ~1,200
+characters compound across every turn. The honest reading is that this endpoint needs the full n,
+and that the tail risk is larger than the band allowed for.
+
+### Prediction 2: not scored, because its endpoint is not observable
+
+The injected text appears nowhere in `stream-json` (see the previous section). The **mechanism** is
+verified in this exact configuration by an out-of-band nonce: a hook injecting `ZQX-NONCE-8823` from
+a sandbox outside the profile had it quoted back verbatim, with the agent reporting no memory
+documents. What is not verified is per-session delivery in these four sessions, and no apparatus
+available here can verify it from the transcript.
+
+### One defect the run itself exposed
+
+`vocabulary_would_fire` was `null` on all 31 lines, because nothing passed `RECALL_HOOK_VOCAB`. The
+decision rule's **BUILD WITH A GATE** cell requires that field, so the gated variant would not have
+been derivable from its own evidence, and `null` is also what an untriggered injection looks like.
+Fixed before any stage B: `--hook-vocab`, with `scripts/agent_ab_export_hazard_vocab.py` writing
+the 3,502 terms at `df<=2`. Smoked on one pair, the field now reads `False`.
+
+### Stage A's gate
+
+> "If the context does not reach the agent, stage B is not run."
+
+It reaches. **Stage B is not blocked.** Two things about it changed, though, and neither is
+absorbed silently: the control arm's environment is no longer the `--bare` one that produced 11 of
+48, and the per-session injection count is 2 rather than 10 for typical sessions, which is the
+mechanism's reach and it is five times smaller than assumed.
