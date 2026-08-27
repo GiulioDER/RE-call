@@ -51,6 +51,19 @@ OPENROUTER_API_KEY=
 # rather than refusing searches. See docs/DECISION_LEDGER.md.
 # RECALL_DECISION_LEDGER=0
 
+# --- Which tools the MCP server serves ---
+# Unset serves all 18, which is the historical behaviour. Every tool definition is re-sent on
+# every turn whether or not it is ever called: measured 2026-08-27 on claude-haiku-4.5, about
+# 153 input tokens per tool per turn, so all 18 cost 5,727 input tokens against 3,731 for the
+# `search` preset. A read-only client pays for the indexing and calibration tools regardless,
+# because scopes gate EXECUTION and not LISTING.
+# Presets: `all`; `search` (recall_search, recall_evidence); `read` (those plus recall_related,
+# recall_current_state, recall_stats). Explicit tool names compose with presets, separated by
+# commas or spaces. A name that is neither a tool nor a preset REFUSES to start, rather than
+# serving a smaller surface silently.
+# This narrows what is OFFERED and is not an authorisation boundary: scopes are that.
+# RECALL_MCP_TOOLS=search
+
 # --- MCP transport & authentication (see docs/AUTH.md) ---
 # Default is stdio: a private pipe to one client, which needs no authentication.
 # The HTTP transports open a socket and REFUSE TO START without either a token file or an OIDC

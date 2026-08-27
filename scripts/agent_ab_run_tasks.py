@@ -1,5 +1,12 @@
 """Run the preregistered task-success comparison: real work, executable endpoints.
 
+Prior work: `scripts/agent_ab_run.py` is the trap runner this deliberately does NOT extend, for
+the three reasons listed below. `benchmarks/agent_ab/tasksuccess.py`, `sandbox.py`, `gate.py` and
+`schema.py` own the endpoint, the isolation, the admission rule and the record shape, and are
+used here rather than reimplemented. The `--driver` and `--memory-transport` branches exist so a
+run can change exactly one thing about how a session is launched or how it reaches memory while
+sharing every other line of this orchestration, which is what makes those comparisons valid.
+
     python -u scripts/agent_ab_run_tasks.py --run-id agent-ab-tasksuccess-001 \
         --dsn postgresql://recall:recall@127.0.0.1:5407/agent_ab --tenant default \
         > benchmarks/artifacts/agent_ab/tasksuccess-001.log 2>&1
@@ -32,6 +39,7 @@ import asyncio
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 from dataclasses import replace
@@ -57,6 +65,12 @@ from benchmarks.agent_ab.claude_exec import (  # noqa: E402
 from benchmarks.agent_ab.gate import admit_pairs  # noqa: E402
 from benchmarks.agent_ab.io import write_jsonl  # noqa: E402
 from benchmarks.agent_ab.recall_server import StdioRecallSpec  # noqa: E402
+from benchmarks.agent_ab.sdk_exec import (  # noqa: E402
+    SDKExecConfig,
+    build_sdk_configs,
+    run_sdk_case,
+    sdk_version,
+)
 from benchmarks.agent_ab.runner import run_paired  # noqa: E402
 from benchmarks.agent_ab.sandbox import restore  # noqa: E402
 from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON, SessionRecord  # noqa: E402
@@ -101,25 +115,56 @@ def openrouter_env() -> dict[str, str]:
     }
 
 
-async def preflight(config_env: dict[str, str], model: str) -> None:
-    """Prove the CLI answers before spending a hundred sessions finding out that it does not."""
+def _cli_version_tuple(text: str | None) -> tuple[int, ...] | None:
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+async def preflight(config_env: dict[str, str], model: str, driver: str = "cli") -> None:
+    """Prove the driver answers before spending a hundred sessions finding out that it does not."""
 
     from benchmarks.agent_ab.claude_exec import ClaudeExecConfig
 
-    probe = ClaudeExecConfig(
-        model=model,
-        cwd=REPO_ROOT,
-        timeout_s=180.0,
-        env=config_env,
-        bare=True,
-        strict_mcp_config=False,
-        allowed_tools=(),
-    )
-    record = await run_claude_case(
-        {"task_id": "preflight", "user_input": "Reply with the single word READY and nothing else."},
-        RECALL_OFF,
-        probe,
-    )
+    row = {"task_id": "preflight", "user_input": "Reply with the single word READY and nothing else."}
+    if driver == "sdk":
+        sdk_probe = SDKExecConfig(
+            model=model,
+            cwd=REPO_ROOT,
+            timeout_s=180.0,
+            env=config_env,
+            bare=True,
+            allowed_tools=(),
+        )
+        record = await run_sdk_case(row, RECALL_OFF, sdk_probe)
+        # The SDK may resolve a different CLI than the shell does, and below 2.1.221 a session
+        # runs without a pending stdio MCP server while reporting success. The init-reported
+        # version is what THIS driver actually launched, so it is the one to assert on.
+        version = _cli_version_tuple(str(record.metadata.get("claude_code_version") or ""))
+        if version is None:
+            # Fails CLOSED. An unreadable version is the same evidential state as an unsupported
+            # one, and this check exists precisely because a CLI below 2.1.221 runs the session
+            # WITHOUT its stdio MCP server while reporting success. Skipping the gate when the
+            # answer is unknown reintroduces the failure the gate was written to catch.
+            raise SystemExit(
+                "preflight could not read the init-reported Claude Code version, so the "
+                "2.1.221 stdio-MCP wait cannot be verified; refusing rather than spending a run"
+            )
+        if version < (2, 1, 221):
+            raise SystemExit(
+                f"the SDK launched Claude Code {version}, below the 2.1.221 stdio-MCP wait; "
+                f"an on arm under this version silently runs without its server"
+            )
+    else:
+        probe = ClaudeExecConfig(
+            model=model,
+            cwd=REPO_ROOT,
+            timeout_s=180.0,
+            env=config_env,
+            bare=True,
+            strict_mcp_config=False,
+            allowed_tools=(),
+        )
+        record = await run_claude_case(row, RECALL_OFF, probe)
     text = (record.response or "").strip()
     if not text:
         raise SystemExit(f"preflight produced no response; error={record.error!r}")
@@ -218,6 +263,8 @@ def environment_capture(
     isolation: str = "bare",
     work_root: str | None = None,
     isolation_check: dict[str, Any] | None = None,
+    driver: str = "cli",
+    memory_transport: str = "stdio",
 ) -> dict[str, Any]:
     def run(*command: str) -> str:
         try:
@@ -243,6 +290,11 @@ def environment_capture(
         "recall_generation_id": check.get("generation_id"),
         "recall_calibration_id": check.get("calibration_id"),
         "write_tools": list(WRITE_TOOLS),
+        # Which driver launched the sessions. `cli` is claude_exec's subprocess over stream-json,
+        # the driver of every archived baseline; `sdk` is sdk_exec over claude-agent-sdk.
+        "driver": driver,
+        "memory_transport": memory_transport,
+        "claude_agent_sdk_version": sdk_version() if driver == "sdk" else None,
         # Which instruction the on arm ran under. The formatted text itself is already kept in the
         # artifact as static-plus-recall-prompt.txt; this names the committed source it came from,
         # so two runs differing only here can be told apart without diffing prompt files.
@@ -334,6 +386,29 @@ async def main() -> int:
         ),
     )
     parser.add_argument(
+        "--driver",
+        choices=("cli", "sdk"),
+        default="cli",
+        help=(
+            "how sessions are launched: 'cli' (claude_exec subprocess over stream-json, the "
+            "driver of every archived baseline) or 'sdk' (sdk_exec over claude-agent-sdk, which "
+            "needs the agent extra installed). Everything else in the run is shared verbatim, "
+            "which is what makes a driver-equivalence comparison a comparison."
+        ),
+    )
+    parser.add_argument(
+        "--memory-transport",
+        choices=("stdio", "in-process"),
+        default="stdio",
+        help=(
+            "how the ON arm reaches RE-call: 'stdio' (an external `python -m recall_mcp.server` "
+            "per session, what every archived run used) or 'in-process' (recall_agent's SDK "
+            "tools served from this process, no server and no per-session cold start). "
+            "Requires --driver sdk. Everything else in the run is shared verbatim, which is what "
+            "makes a transport comparison a comparison."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="continue a run that died, skipping pairs whose BOTH arms are already recorded",
@@ -374,7 +449,7 @@ async def main() -> int:
         print("nothing left to run; re-deriving the artifacts from the recorded sessions")
 
     agent_env = openrouter_env()
-    await preflight(agent_env, args.model)
+    await preflight(agent_env, args.model, args.driver)
 
     spec = StdioRecallSpec(dsn=args.dsn, cwd=REPO_ROOT, tenant=args.tenant)
     check = await spec.check()
@@ -459,16 +534,6 @@ async def main() -> int:
         print(f"  config dirs: {', '.join(str(p) for p in hook_dirs.values())}")
         print(f"  trace: {artifacts / 'hook-trace.jsonl'}")
 
-    templates = build_configs(
-        {RECALL_ON: on_spec, RECALL_OFF: off_spec},
-        model=args.model,
-        cwd=work_root,
-        timeout_s=args.timeout_s,
-        env=agent_env,
-        extra_allowed_tools=WRITE_TOOLS,
-        config_dirs=hook_dirs,
-        identical_arms=identical_arms,
-    )
     if hook_dirs is not None:
         # A path check proves where the sandboxes are, not what the session received. This asks a
         # real session, because every earlier attempt at this failed in the direction of looking
@@ -501,10 +566,69 @@ async def main() -> int:
             )
             return 1
 
+    in_process_memory = None
+    in_process_servers = None
+    if args.memory_transport == "in-process":
+        # Built from the SAME dsn/tenant this run's stdio `check()` just proved trusted, and
+        # pinned to the generation store, so the two transports serve one corpus rather than two.
+        from recall_agent import RecallAgentMemory
+
+        in_process_memory = RecallAgentMemory(
+            dsn=args.dsn,
+            tenant=args.tenant,
+            embedder=spec.embedder,
+            use_generation_store=True,
+        )
+        in_process_servers = {spec.server_name: in_process_memory.sdk_mcp_server()}
+        print(
+            f"memory transport: IN-PROCESS, server name {spec.server_name!r}, "
+            f"no per-session server\n"
+        )
+
+    if args.driver == "sdk":
+        if hook_dirs is not None:
+            # The write-time hook is delivered through a CLAUDE_CONFIG_DIR, which is a `claude`
+            # CLI mechanism. The SDK driver launches sessions itself and would simply not run it,
+            # so the combination is refused rather than silently producing an unhooked run whose
+            # artifacts claim a hook.
+            raise SystemExit(
+                "--driver sdk cannot host the write-time hook: it is delivered through a "
+                "CLAUDE_CONFIG_DIR that only the CLI reads. Drop --hook-file / "
+                "--arms-differ-only-by-hook, or run with --driver cli."
+            )
+        templates: dict[str, Any] = build_sdk_configs(
+            {RECALL_ON: on_spec, RECALL_OFF: off_spec},
+            recall_spec=None if in_process_servers else spec,
+            in_process_servers=in_process_servers,
+            model=args.model,
+            cwd=work_root,
+            timeout_s=args.timeout_s,
+            env=agent_env,
+            extra_allowed_tools=WRITE_TOOLS,
+            # Resolved once here, so every session in the run launches the same executable that
+            # environment.json versions, rather than re-resolving PATH per session.
+            cli_path=resolve_claude_executable(),
+        )
+    else:
+        templates = build_configs(
+            {RECALL_ON: on_spec, RECALL_OFF: off_spec},
+            model=args.model,
+            cwd=work_root,
+            timeout_s=args.timeout_s,
+            env=agent_env,
+            extra_allowed_tools=WRITE_TOOLS,
+            # ⚠️ Both of these MUST be here rather than on a second `build_configs` call above.
+            # A merge once left two assignments to `templates`, and the later one won: the hook was
+            # configured, printed and isolation-checked, then installed in nothing. That produces a
+            # clean null with no error anywhere.
+            config_dirs=hook_dirs,
+            identical_arms=identical_arms,
+        )
     templates = {
         variant: replace(config, stream_dir=artifacts / "streams")
         for variant, config in templates.items()
     }
+    run_one = run_sdk_case if args.driver == "sdk" else run_claude_case
 
     progress_lock = asyncio.Lock()
     completed = 0
@@ -526,7 +650,7 @@ async def main() -> int:
         digest = restore(task.workspace, workdir)
         config = replace(templates[variant], cwd=workdir)
 
-        record = await run_claude_case(row, variant, config)
+        record = await run_one(row, variant, config)
 
         # Scored after the session, from the sandbox alone. `check_workspace` turns a checker
         # fault into passed=False with its traceback rather than aborting the run, and marks it so
@@ -604,12 +728,18 @@ async def main() -> int:
     for name, payload in (
         ("admission.json", report.summary()),
         ("recall-overhead.json", summarize_recall_overhead(admitted)),
-        ("environment.json", environment_capture(args.model, spec, check, instruction_file=args.instruction_file,
-                            hook_file=args.hook_file, hook_vocab=args.hook_vocab,
-                            identical_arms=identical_arms,
-                            isolation="config_dir" if hook_dirs else "bare",
-                            work_root=str(work_root),
-                            isolation_check=isolation_check)),
+        ("environment.json", environment_capture(
+            args.model, spec, check,
+            instruction_file=args.instruction_file,
+            hook_file=args.hook_file,
+            hook_vocab=args.hook_vocab,
+            identical_arms=identical_arms,
+            isolation="config_dir" if hook_dirs else "bare",
+            work_root=str(work_root),
+            isolation_check=isolation_check,
+            driver=args.driver,
+            memory_transport=args.memory_transport,
+        )),
         ("digest-parity.json", {"failures": parity_failures}),
     ):
         (artifacts / name).write_text(
@@ -623,6 +753,13 @@ async def main() -> int:
     for task_id in report.discarded_task_ids:
         print(f"  discarded {task_id}")
     print(f"\nartifacts: {artifacts}")
+    # The in-process memory owns a pooled store for the whole run. Left open, psycopg_pool tries
+    # to join its workers during interpreter shutdown and raises PythonFinalizationError into the
+    # run log: harmless at exit, but it puts a traceback in the evidence and it is the exact
+    # hygiene the DAT-001 review was about. The stdio arm has nothing to close here because its
+    # servers are per-session subprocesses.
+    if in_process_memory is not None:
+        in_process_memory.close()
     if not admitted:
         print("No admitted pairs. This is a wiring result, not a measurement.")
         return 1

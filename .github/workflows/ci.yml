@@ -98,8 +98,14 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
 
-      # Coverage over the SHIPPED packages only (`recall`, `recall_mcp`) — putting the tests in
-      # the denominator inflates the number with code that is 100% covered by definition.
+      # Coverage over the SHIPPED packages only (`recall`, `recall_mcp`, `recall_agent`) — putting
+      # the tests in the denominator inflates the number with code that is 100% covered by
+      # definition.
+      #
+      # `recall_agent` joined the wheel and this line together: a package that ships is a package
+      # a gate should see, and it was outside both this denominator and `[tool.mypy] files` until
+      # the audit that added it to both. Measured 2026-08-27 with the DB and e2e tests skipped:
+      # 241 statements at 73%, so it carries its own weight rather than borrowing headroom.
       #
       # The floor is 70, measured against ~75% in exactly this environment (the `[dev]` extra,
       # no fastembed/voyage/rerank — the model-backed tests self-skip here, so their modules read
@@ -121,7 +127,7 @@ jobs:
       # whole run. If that combination ever breaks, coverage collapses rather than drifting, which
       # is the failure mode you want from a gate.
       - name: Test (pytest on real pgvector, with coverage)
-        run: pytest -q -n auto --cov=recall --cov=recall_mcp --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+        run: pytest -q -n auto --cov=recall --cov=recall_mcp --cov=recall_agent --cov-report=term-missing --cov-report=xml --cov-fail-under=70
 
       # The discoverability probe decides a scientific verdict, and it fails in a direction that
       # looks exactly like a real null: an arm pointed at control, a no-op exclusion, or a gate
@@ -535,7 +541,10 @@ jobs:
       # resolved normally. `lowest` would also pin every transitive to its floor, which tests
       # other projects' constraint hygiene rather than ours.
       - name: Install the declared minimums
-        run: uv pip install --system --resolution lowest-direct -e ".[dev,mcp,documents]"
+        # `agent` is included even though it is deliberately absent from `dev`: a floor nothing
+        # resolves at is documentation rather than a constraint, and `claude-agent-sdk>=0.2` was
+        # exactly that until this job installed it.
+        run: uv pip install --system --resolution lowest-direct -e ".[dev,mcp,documents,agent]"
 
       - name: Show what actually resolved
         run: uv pip list --system
