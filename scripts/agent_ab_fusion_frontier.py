@@ -52,44 +52,65 @@ CONTROL_MEMO = "python-write-text-crlf-churn"
 CONTROL_QUERY = "Path.write_text on Windows injects CRLF against a tree configured eol=lf"
 
 
-def ranked(retriever, query: str) -> list[tuple[str, float]]:
-    """(source name, score) for this leg, best first. Errors propagate: they are not misses."""
+def ranked(retriever, query: str) -> list[tuple[str, str, float]]:
+    """(chunk id, source name, score) for this leg, best first.
+
+    ⛔ The chunk id is load-bearing and keying on the NAME instead was this script's worst bug.
+    A document contributes SEVERAL chunks to a leg's list, so `fused[name] += 1/(k+rank)` sums a
+    document's chunks and rewards documents that are diffusely present over the one document a leg
+    ranks first: `lexical_only` then reordered the lexical leg it is supposed to reproduce, and
+    dropped a memo from rank 1 to rank 5. Production fuses on `chunk.id`; so does this.
+    """
 
     result = retriever.search(query, k=CANDIDATE_K)
-    return [(Path(str(h.chunk.source)).name, float(h.score)) for h in result.hits]
+    return [
+        (str(h.chunk.id), Path(str(h.chunk.source)).name, float(h.score)) for h in result.hits
+    ]
 
 
-def rrf(legs: dict[str, list[tuple[str, float]]], weights: dict[str, float]) -> list[tuple[str, float]]:
+def rrf(
+    legs: dict[str, list[tuple[str, str, float]]], weights: dict[str, float]
+) -> list[tuple[str, float]]:
+    """Reciprocal rank fusion over CHUNKS, returning (source name, score) best first."""
+
     fused: dict[str, float] = {}
+    names: dict[str, str] = {}
     for leg, items in legs.items():
         w = weights.get(leg, 0.0)
         if not w:
             continue
-        for rank, (name, _) in enumerate(items):
-            fused[name] = fused.get(name, 0.0) + w / (RRF_K + rank + 1)
-    return sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
+        for rank, (chunk_id, name, _) in enumerate(items):
+            names[chunk_id] = name
+            fused[chunk_id] = fused.get(chunk_id, 0.0) + w / (RRF_K + rank + 1)
+    ordered = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
+    return [(names[chunk_id], score) for chunk_id, score in ordered]
 
 
 def score_fuse(
-    legs: dict[str, list[tuple[str, float]]], lam: float
+    legs: dict[str, list[tuple[str, str, float]]], lam: float
 ) -> list[tuple[str, float]]:
     """Min-max normalise each leg, then blend. RRF discards magnitude; a threshold needs it."""
 
     norm: dict[str, dict[str, float]] = {}
+    names: dict[str, str] = {}
     for leg, items in legs.items():
         if not items:
             norm[leg] = {}
             continue
-        vals = [s for _, s in items]
+        vals = [s for _, _, s in items]
         lo, hi = min(vals), max(vals)
         span = (hi - lo) or 1.0
-        norm[leg] = {name: (s - lo) / span for name, s in items}
+        norm[leg] = {}
+        for chunk_id, name, score in items:
+            names[chunk_id] = name
+            norm[leg][chunk_id] = (score - lo) / span
     fused: dict[str, float] = {}
-    for name in set(norm.get("lexical", {})) | set(norm.get("dense", {})):
-        fused[name] = lam * norm.get("lexical", {}).get(name, 0.0) + (1 - lam) * norm.get(
-            "dense", {}
-        ).get(name, 0.0)
-    return sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
+    for chunk_id in set(norm.get("lexical", {})) | set(norm.get("dense", {})):
+        fused[chunk_id] = lam * norm.get("lexical", {}).get(chunk_id, 0.0) + (
+            1 - lam
+        ) * norm.get("dense", {}).get(chunk_id, 0.0)
+    ordered = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
+    return [(names[chunk_id], score) for chunk_id, score in ordered]
 
 
 def variants(legs: dict[str, list[tuple[str, float]]]) -> dict[str, list[tuple[str, float]]]:
@@ -103,12 +124,24 @@ def variants(legs: dict[str, list[tuple[str, float]]]) -> dict[str, list[tuple[s
 
 
 def sessions(archive: Path, keep: set[str]) -> list[dict]:
+    """The registered miss sessions, ON-ARM only.
+
+    ⛔ The `variant` filter is load-bearing and its absence is not subtle in hindsight: the archive
+    holds a `recall_on` AND a `recall_off` record for every task_id, so matching on task_id alone
+    recovered 28 records for 14 sessions and printed `best recall@5: 21/14`. An impossible
+    denominator is the lucky case; the same bug with a smaller overlap would have produced a
+    plausible number. The population gate below now refuses rather than relying on the arithmetic
+    looking wrong.
+    """
+
     rows = []
     for line in (archive / "records.jsonl").read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         record = json.loads(line)
-        if record.get("task_id") not in keep:
+        if record.get("task_id") not in keep or record.get("variant") != "recall_on":
+            continue
+        if (record.get("metadata") or {}).get("locus") != "memory_only":
             continue
         drafts = []
         for call in record.get("tool_calls") or []:
@@ -146,6 +179,12 @@ def main() -> int:
     if len(miss_ids) != 14:
         raise SystemExit(f"expected the registered 14 miss sessions, found {len(miss_ids)}")
     positives = sessions(Path(args.archive).expanduser(), miss_ids)
+    if len(positives) != 14:
+        raise SystemExit(
+            f"recovered {len(positives)} records for the registered 14 miss sessions "
+            f"({len({p['task_id'] for p in positives})} distinct task ids). The population is not "
+            "the one the record fixes, so this is not run."
+        )
 
     precision = json.loads(Path(args.precision).expanduser().read_text(encoding="utf-8"))
     neg_queries = [
@@ -167,13 +206,29 @@ def main() -> int:
     }
 
     for leg, retriever in legs_r.items():
-        names = [n for n, _ in ranked(retriever, CONTROL_QUERY)[:TOP_K]]
+        names = [n for _, n, _ in ranked(retriever, CONTROL_QUERY)[:TOP_K]]
         if f"{CONTROL_MEMO}.md" not in names:
             raise SystemExit(
                 f"POSITIVE CONTROL FAILED on {leg}: quoting a memo's own content did not return "
                 f"it in the top {TOP_K} (got {names}). Nothing below is a measurement."
             )
-    print("positive control: OK on both legs\n")
+    print("positive control: OK on both legs")
+
+    # ⛔ The control above validates the LEGS and says nothing about the FUSION, which is the half
+    # this script actually contributes — and the half that was silently broken. The invariant that
+    # catches it: `lexical_only` is the degenerate fusion of one leg, so it MUST reproduce that
+    # leg's ordering exactly. When fusion was keyed on document name instead of chunk id, it did
+    # not, and every variant was wrong while both leg controls passed.
+    control_legs = {leg: ranked(r, CONTROL_QUERY) for leg, r in legs_r.items()}
+    lex_order = [name for _, name, _ in control_legs["lexical"]]
+    fused_order = [name for name, _ in rrf(control_legs, {"lexical": 1.0})]
+    if lex_order[:20] != fused_order[:20]:
+        raise SystemExit(
+            "FUSION CONTROL FAILED: lexical_only does not reproduce the lexical leg's order.\n"
+            f"  leg   : {lex_order[:5]}\n  fused : {fused_order[:5]}\n"
+            "A one-leg fusion that reorders its own leg means every variant below is wrong."
+        )
+    print("fusion control: OK, lexical_only reproduces the lexical leg exactly\n")
 
     def capture(query: str) -> dict[str, list[tuple[str, float]]]:
         return {leg: ranked(r, query) for leg, r in legs_r.items()}

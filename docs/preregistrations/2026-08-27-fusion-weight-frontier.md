@@ -119,3 +119,96 @@ recall. That is the same standard the threshold record was held to.
    branch inherits the obligation to re-measure at 20.
 
 <!-- frozen_above -->
+
+## Result (2026-08-27)
+
+**Status: measured. Recall is solved; separability is not, by any of the twelve variants.**
+Artifact: `benchmarks/artifacts/agent_ab/fusion-frontier.json`.
+
+| variant | recall@5 | viable points | min false_trigger at recall >= 9 |
+|---|---:|---:|---:|
+| `lexical_only` | **14/14** | 0 | 1.000 |
+| `unweighted_rrf` (production) | 11/14 | 0 | 1.000 |
+| `weighted_rrf_w2` | 10/14 | 0 | **0.833** |
+| `weighted_rrf_w3` | 11/14 | 0 | 0.889 |
+| `weighted_rrf_w5` | 11/14 | 0 | 1.000 |
+| `weighted_rrf_w10` | **14/14** | 0 | 1.000 |
+| `weighted_rrf_w20` | **14/14** | 0 | 0.944 |
+| `score_fusion` (λ 0.5–1.0) | 9/14 | 0 | 1.000 |
+
+**Viable points across all twelve variants: zero.**
+
+🔑 **The apparatus cross-validates against an independent implementation, which is the check that
+makes this readable.** `lexical_only` reproduces the screen's `draft_lexical` exactly (14/14) and
+`unweighted_rrf` reproduces its `draft_fused` exactly (11/14). Two separately written probes,
+agreeing to the session.
+
+| # | predicted | measured | verdict |
+|---|---|---|---|
+| 1 | `lexical_only` recall 13 or 14 | **14** | confirmed |
+| 2 | best `weighted_rrf` 12–14, **monotone** in the weight | best **14**, but 11→10→11→11→14→14 | magnitude confirmed, **monotonicity falsified** |
+| 3 | no variant with recall >= 9 and ft <= 0.35 | **0 of 12** | confirmed |
+| 4 | at recall 9, best ft is 0.70–1.00 | **0.833** | confirmed |
+| 5 | `score_fusion` beats `weighted_rrf` on separability | score fusion is **worse** (1.000 vs 0.833) and worse on recall (9 vs 14) | **falsified** |
+| 6 | one pass under 25 minutes, 0.00 USD | ~15 minutes, 0.00 USD | confirmed |
+
+**Prediction 5 was wrong for a reason worth keeping.** I argued RRF discards magnitude and a
+threshold needs magnitude. True, and irrelevant: min-max normalising each leg PER QUERY destroys
+exactly the cross-query comparability a threshold needs. Every query's best hit normalises to 1.0
+whether it is a governing memo or a coincidence, which is why score fusion's false-trigger rate is
+1.000 everywhere. A magnitude that is rescaled per query is not a magnitude.
+
+**Decision, per the registered cross product.** A = best recall@5 over all variants = **14**
+(band `>=12`). B = lowest false_trigger at recall >= 9 = **0.833** (band `>0.70`). That cell reads:
+
+> **KILL the fusion lever, and record that recall is solved while gating is not — the remaining
+> question is a TRIGGER, not a retriever.**
+
+No gap this time, and no branch invented after the fact. The cross-product grid produced a verdict
+on the first reading.
+
+## What this closes
+
+**Recall is solved and was never the problem.** Weighting the lexical leg to 10 or routing draft
+queries to it outright reaches 14 of 14 — every recorded miss, at top-5, on the shipped retriever.
+
+**Gating is unreachable from the retriever.** Twelve variants, spanning unweighted RRF through
+lexical-only through score-level blending, and not one produces a score at which a hazard-bearing
+draft outranks a hazard-free one reliably enough to threshold. The best any variant manages at
+useful recall is firing on 15 of 18 hazard-free queries. **The signal that finds the memo — a
+draft's literal overlap with this repository's vocabulary — is present in equal measure when there
+is nothing to find.** No weighting separates a thing from itself.
+
+**So the retrieval-side lane is finished.** Four generation-side attempts, one threshold frontier,
+one fusion frontier. The two remaining questions are both about WHEN to ask, not what to ask or how
+to rank the answer:
+
+1. a **trigger** that decides which writes deserve a search at all, using something other than the
+   retrieval score, since the score demonstrably cannot decide it;
+2. accepting the noise and measuring whether an agent given ~10 searches of mostly-irrelevant
+   memos per session does better or worse work, which is a task-success question and needs the
+   executable harness rather than a retrieval probe.
+
+Neither is licensed by this record. Both need their own registration, and the second one should
+note that this project has already measured a null on task success once
+(`[[agent-ab-task-success-result-2026-08-22]]`).
+
+## The apparatus, again, and the guard that finally caught it
+
+This probe was run three times and the first two were invalid:
+
+1. **Population doubled.** `sessions()` matched on `task_id` without filtering `variant`, and the
+   archive holds a `recall_on` and a `recall_off` record per task. 28 records for 14 sessions,
+   announced by an impossible `best recall@5: 21/14`. A smaller overlap would have printed a
+   plausible number.
+2. **Fusion keyed on the document NAME instead of the chunk id**, so `fused[name] += 1/(k+rank)`
+   summed a document's chunks and rewarded diffuse presence over a leg's first-ranked hit.
+   `lexical_only` reordered the very leg it is defined to reproduce, dropping the governing memo
+   from rank 1 to rank 5.
+
+**Both leg positive controls PASSED through both failures**, because retrieval was never broken —
+the defect was in the code this script contributes, which the control did not touch. The guard that
+catches it is an invariant on the script's own output: `lexical_only` is a one-leg fusion, so it
+must reproduce that leg's ordering exactly. That check is now in the script and fails loudly
+against the old code. The lesson generalises past this file:
+**a positive control on your inputs is not a control on your contribution.**
