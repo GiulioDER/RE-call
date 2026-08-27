@@ -558,6 +558,13 @@ async def main() -> int:
     for task_id in report.discarded_task_ids:
         print(f"  discarded {task_id}")
     print(f"\nartifacts: {artifacts}")
+    # The in-process memory owns a pooled store for the whole run. Left open, psycopg_pool tries
+    # to join its workers during interpreter shutdown and raises PythonFinalizationError into the
+    # run log: harmless at exit, but it puts a traceback in the evidence and it is the exact
+    # hygiene the DAT-001 review was about. The stdio arm has nothing to close here because its
+    # servers are per-session subprocesses.
+    if in_process_memory is not None:
+        in_process_memory.close()
     if not admitted:
         print("No admitted pairs. This is a wiring result, not a measurement.")
         return 1
