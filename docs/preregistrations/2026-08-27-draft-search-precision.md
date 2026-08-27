@@ -134,3 +134,83 @@ in favour of the direction.
 `MAX_QUERY_CHARS = 4096` rather than truncating it. Measured: **3 of 501** payloads exceed it, no
 session loses all of its. Such a payload is recorded as `refused_too_long` and excluded from every
 rate rather than scored as a miss; the count is reported in the result.
+
+## Result (2026-08-27)
+
+**Status: measured, positive control passed (memo at rank 1), 3 of 475 queries refused for
+length.** 454 positive draft queries over 48 sessions, 18 negative draft queries over 4 sessions,
+165 judged slots. Artifact: `benchmarks/artifacts/agent_ab/draft-precision.json`.
+
+| # | predicted | measured | verdict |
+|---|---|---|---|
+| 1 | production recall@5 on the 14 misses: 9 to 13 | **7 of 14** | **falsified, below** |
+| 2 | recall@5 across all 48 positives: 30 to 42 | **34 of 48** | confirmed |
+| 3 | judged precision@5 on the misses: 0.20 to 0.45 | **0.253** (19 of 75) | confirmed |
+| 4 | negatives abstain or return no `ok`: 0.10 to 0.35 | **0.000** (0 of 18, both measures) | **falsified, below** |
+| 5 | another task's memo in top-5 for 0.20 to 0.45 of queries | **0.119** (54 of 454) | **falsified, below** |
+| 6 | median 8 searches/session, +150k to +400k input tokens | median **10** searches, **~7,870 tokens** of retrieved text | searches confirmed, **token cost falsified by 20 to 50x** |
+
+🔑 **The mechanism, which is worth more than any of the six numbers: the production path loses
+the finding in TWO separable places, and neither is retrieval.** The lexical leg reached 14 of 14
+and production reaches 7. Of the 7 losses:
+
+- **5 are the TRUST LAYER rejecting a correctly-retrieved memo.** In five of the six
+  `ts-lf-rewrite` sessions the governing memo IS in the top 5, every time, with verdict
+  `low_confidence`. Retrieval did its job; the calibrated threshold threw the answer away. That
+  calibration was fitted on a query set of goal-style questions, and a draft query has a different
+  score distribution.
+- **2 are FUSION**: in `ts-worktree-import#r1` and `#r2` the memo is never returned at all, because
+  unweighted RRF over a leg that ranks it 1 and a leg that ranks it ~127 does not preserve it.
+
+**Per-family production recall on the registered 14:** `ts-sample-covers-tail` 3/3,
+`ts-worktree-import` 3/5, `ts-lf-rewrite` **1/6**. The family where the draft signal is strongest
+lexically is the family production serves worst.
+
+⚠️ **The false-trigger result is unambiguous and it is the bad news: 0 of 18.** The trust layer
+never abstained and never withheld an `ok` verdict on a draft with no relevant memo in the corpus.
+Every negative draft query returned five confident hits. With a median of 10 searches per session,
+that is ~50 confident slots per session, most of them on writes with no hazard. The judge puts
+actionable relevance on those negative slots at **0.056** (5 of 90), so ~94% of what a hazard-free
+write retrieves is noise the agent must read and discard.
+
+The consolation is prediction 5: hard noise is **lower** than I predicted (0.119, not 0.20 to
+0.45). The five slots are mostly unlabelled corpus text rather than another task's hazard memo, so
+the failure mode is dilution rather than active misdirection.
+
+⚠️ **The token cost I predicted was wrong by 20 to 50x, and the correction does NOT make this
+cheap.** Retrieved text is ~7,870 tokens per session, not the +150k to +400k I registered. But I
+anchored that band on the skill A/B's +107k, which measured the FULL cost of a behaviour change
+(extra turns, reasoning about each result), not the retrieved bytes. This run measures only the
+bytes. The behavioural cost of ten searches per session is unmeasured and the +107k precedent for
+two searches says it is the larger number. Do not quote 7,870 as the cost of this feature.
+
+## ⛔ The decision rule has a GAP, and this result landed in it
+
+Recall 7 of 14 with judged precision 0.253 satisfies **none** of the four registered branches:
+BUILD needs recall >= 9, BUILD-WITH-A-GATE needs recall >= 9, DEMOTE needs precision < 0.20 **and**
+abstention < 0.20 (precision is 0.253), KILL needs recall <= 5.
+
+I am not inventing a fifth branch after seeing the number. The registered outcome is **no verdict**,
+and the honest reading is that the rule was written as though recall and precision would move
+together, when the measurement shows they did not.
+
+**This is the SECOND time in this project that a registered partition has left a gap and a result
+has fallen into it.** `[[query-side-expansion-reproduces-the-blind-spot]]` recorded exactly this
+("3 landed in the unregistered gap between build at >= 5 and dead at <= 2; state the whole
+partition next time"), and I read that record while designing this one. Writing "full partition"
+above a rule does not make it total. The lesson is mechanical, not attitudinal: **enumerate the
+branches over the CROSS PRODUCT of the endpoints, and check that every cell has a branch, before
+committing.**
+
+## What this licenses, and what it does not
+
+**Not a build.** Nothing here clears a build bar, and the false-trigger rate alone would make
+draft-time search a noise generator on the ~9 of 10 writes per session that carry no hazard.
+
+**The next registered question is narrow and cheap, and it is not about authoring or retrieval:**
+the draft signal survives retrieval and dies at the trust threshold in 5 of 7 failures. Fit a
+calibration on draft-style queries (or a separate threshold for them) and re-measure recall AND the
+0-of-18 false-trigger rate together — because a lower threshold that rescues the 5 will also admit
+more of the negatives, and those two move in opposite directions. That trade is the whole question,
+it is one calibration run, and it must be preregistered with a partition over both endpoints at
+once rather than one after the other.
