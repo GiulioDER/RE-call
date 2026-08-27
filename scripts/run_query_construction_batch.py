@@ -144,18 +144,31 @@ def _ask_original_model(
     raise RuntimeError(f"original model failed after {retries} attempts: {last_error}")
 
 
-def _server_command(tenant: str, embedder: str, index_root: str, profile: str) -> tuple[str, list[str]]:
+def _server_command(
+    tenant: str,
+    embedder: str,
+    index_root: str,
+    profile: str,
+    pinned_generation_id: str | None,
+) -> tuple[str, list[str]]:
     ssh = os.environ.get(
         "RECALL_SSH_EXECUTABLE",
         str(Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "OpenSSH" / "ssh.exe"),
     )
     ssh_config = str(Path.home() / ".ssh" / "config").replace("\\", "/")
+    pin = (
+        f"RECALL_PINNED_GENERATION_ID={shlex.quote(pinned_generation_id)} "
+        if pinned_generation_id
+        else ""
+    )
     remote = (
         "cd ~/recall-repos && set -a && . ./.env && set +a && "
         "RECALL_ENV=production RECALL_TRUST_MODE=production "
+        "RECALL_BENCHMARK_PIN=1 "
         f"RECALL_TENANT={shlex.quote(tenant)} RECALL_EMBEDDER={shlex.quote(embedder)} "
         f"RECALL_INDEX_ROOT={shlex.quote(index_root)} "
         f"RECALL_RETRIEVAL_PROFILE={shlex.quote(profile)} "
+        f"{pin}"
         "exec .venv/bin/python -m recall_mcp.server"
     )
     return ssh, ["-T", "-o", "BatchMode=yes", "-F", ssh_config, "vps2", remote]
@@ -245,6 +258,25 @@ async def _tool_payload(result: object) -> dict[str, object]:
     return payload
 
 
+def _assert_generation(payload: dict[str, object], expected_generation_id: str | None) -> None:
+    """Fail the apparatus if a pinned benchmark response is not from that snapshot."""
+
+    if expected_generation_id is None:
+        return
+    generation = payload.get("generation")
+    if isinstance(generation, dict):
+        actual = generation.get("generation_id")
+    else:
+        actual = payload.get("generation_id")
+        if actual is None and isinstance(payload.get("retrieval"), dict):
+            actual = payload["retrieval"].get("generation_id")
+    if actual != expected_generation_id:
+        raise RuntimeError(
+            "benchmark generation mismatch: "
+            f"expected {expected_generation_id!r}, got {actual!r}"
+        )
+
+
 async def _run_arm(
     session: ClientSession,
     item: dict[str, object],
@@ -258,6 +290,8 @@ async def _run_arm(
     max_tokens: int,
     provider_timeout: float,
     retries: int,
+    expected_generation_id: str | None,
+    challenge_marker: str | None,
 ) -> dict[str, object]:
     original_prompt = str(item["original_prompt"])
     query = str(item["query"])
@@ -271,15 +305,21 @@ async def _run_arm(
             "arm": arm,
             "round_index": 0,
             "graph_expansion": graph_expansion,
+            **({"expected_generation_id": expected_generation_id} if expected_generation_id else {}),
         },
     )
     payload = await _tool_payload(challenge)
+    _assert_generation(payload, expected_generation_id)
     tool_calls.append(payload)
     initial_round = payload.get("round_index")
     if type(initial_round) is not int or initial_round != 0:
         raise ValueError("MCP returned an invalid initial construction round")
     while payload.get("status") == "challenge":
         prompt = str(payload["challenge_prompt"] if "challenge_prompt" in payload else payload["next_challenge_prompt"])
+        if challenge_marker and challenge_marker not in prompt:
+            raise RuntimeError(
+                f"challenge prompt marker missing; expected {challenge_marker!r}"
+            )
         try:
             frame, provider, raw_frame = await asyncio.to_thread(
                 _ask_original_model,
@@ -303,6 +343,7 @@ async def _run_arm(
                 },
             )
             fallback_payload = await _tool_payload(fallback)
+            _assert_generation(fallback_payload, expected_generation_id)
             tool_calls.append(fallback_payload)
             return {
                 "task_id": item.get("task_id"),
@@ -314,6 +355,10 @@ async def _run_arm(
                 "tool_calls": tool_calls,
                 "model_calls": model_calls,
                 "fallback": {"phase": "original_model", "reason": str(exc)},
+                "apparatus": {
+                    "expected_generation_id": expected_generation_id,
+                    "challenge_marker": challenge_marker,
+                },
             }
         model_calls.append({"frame": frame, "raw": raw_frame, "provider": provider})
         if "next_round_index" in payload:
@@ -334,13 +379,17 @@ async def _run_arm(
                 "arm": arm,
                 "round_index": next_round,
                 "frame": frame,
-                "expected_generation_id": payload.get("generation", {}).get("generation_id")
-                if isinstance(payload.get("generation"), dict)
-                else None,
+                "expected_generation_id": expected_generation_id
+                or (
+                    payload.get("generation", {}).get("generation_id")
+                    if isinstance(payload.get("generation"), dict)
+                    else None
+                ),
                 "graph_expansion": graph_expansion,
             },
         )
         payload = await _tool_payload(continuation)
+        _assert_generation(payload, expected_generation_id)
         tool_calls.append(payload)
         if len(model_calls) >= 2:
             break
@@ -353,6 +402,10 @@ async def _run_arm(
         "final": payload,
         "tool_calls": tool_calls,
         "model_calls": model_calls,
+        "apparatus": {
+            "expected_generation_id": expected_generation_id,
+            "challenge_marker": challenge_marker,
+        },
     }
 
 
@@ -381,6 +434,8 @@ def _checkpoint_settings(args: argparse.Namespace, input_sha256: str) -> dict[st
         "profile": args.profile,
         "graph_expansion": args.graph_expansion,
         "gold_class": args.gold_class,
+        "pinned_generation_id": args.pinned_generation_id,
+        "challenge_marker": args.challenge_marker,
     }
 
 
@@ -441,7 +496,13 @@ async def main_async(args: argparse.Namespace) -> None:
     if not api_key:
         raise SystemExit(f"{args.api_key_env} is required")
     endpoint = args.base_url.rstrip("/") + "/chat/completions"
-    ssh, command = _server_command(args.tenant, args.embedder, args.index_root, args.profile)
+    ssh, command = _server_command(
+        args.tenant,
+        args.embedder,
+        args.index_root,
+        args.profile,
+        args.pinned_generation_id,
+    )
     diagnostics_file = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False)
     diagnostics_path = Path(diagnostics_file.name)
     diagnostics_file.close()
@@ -488,6 +549,7 @@ async def main_async(args: argparse.Namespace) -> None:
                     },
                 )
                 payload = await _tool_payload(result)
+                _assert_generation(payload, args.pinned_generation_id)
                 row = {
                     "task_id": item.get("task_id"),
                     "arm": arm,
@@ -497,6 +559,10 @@ async def main_async(args: argparse.Namespace) -> None:
                     "final": payload,
                     "tool_calls": [payload],
                     "model_calls": [],
+                    "apparatus": {
+                        "expected_generation_id": args.pinned_generation_id,
+                        "challenge_marker": args.challenge_marker,
+                    },
                 }
             else:
                 row = await _run_arm(
@@ -511,6 +577,8 @@ async def main_async(args: argparse.Namespace) -> None:
                     max_tokens=args.max_tokens,
                     provider_timeout=args.timeout,
                     retries=args.retries,
+                    expected_generation_id=args.pinned_generation_id,
+                    challenge_marker=args.challenge_marker,
                 )
             return key, row
 
@@ -564,6 +632,8 @@ async def main_async(args: argparse.Namespace) -> None:
         "graph_expansion": args.graph_expansion,
         "workers": args.workers,
         "gold_class": args.gold_class,
+        "pinned_generation_id": args.pinned_generation_id,
+        "challenge_marker": args.challenge_marker,
         "checkpoint": str(checkpoint_path),
         "rows": rows,
     }
@@ -585,6 +655,8 @@ def main() -> None:
     parser.add_argument("--api-key-env", default="OPENROUTER_API_KEY")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--gold-class", choices=("miss", "control"), help="run only one frozen population class")
+    parser.add_argument("--pinned-generation-id", help="read one immutable VPS2 generation snapshot")
+    parser.add_argument("--challenge-marker", help="require this literal marker in every challenge prompt")
     parser.add_argument("--tenant", default="memory")
     parser.add_argument("--embedder", default="voyage:voyage-4")
     parser.add_argument("--index-root", default="/home/sentiment/recall-repos/memory")
