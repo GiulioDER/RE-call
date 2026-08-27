@@ -89,17 +89,24 @@ def sessions(archive: Path) -> list[dict]:
 
 
 def rank_of(retriever, query: str, memo: str) -> int | None:
-    """1-based rank of the memo's best chunk in this retriever's result, or None if absent."""
+    """1-based rank of the memo's best chunk in this retriever's result, or None if absent.
+
+    ⛔ **A retrieval error is NOT a miss and must never be caught here.** The first version of this
+    function swallowed exceptions and returned None, and every one of the 84 retrievals failed with
+    `UndefinedColumn` while the screen printed a flawless 0/14 across all six columns — a perfect,
+    entirely fabricated null, in a probe written to decide which direction to pursue. It is the
+    exact failure `[[a-null-is-the-cheapest-result-to-fabricate]]` was written about, one hour
+    after writing it. Let the exception kill the run.
+    """
 
     wanted = f"{memo}.md"
-    try:
-        hits = retriever.search(query, k=CANDIDATE_K)
-    except Exception as error:  # a leg can refuse a degenerate query; that is a miss, not a crash
-        print(f"      (retrieval refused: {type(error).__name__}: {str(error)[:90]})")
-        return None
-    for index, hit in enumerate(hits, start=1):
-        uri = str(getattr(getattr(hit, "chunk", None), "source_uri", "") or "")
-        if Path(uri).name == wanted:
+    result = retriever.search(query, k=CANDIDATE_K)
+    for index, hit in enumerate(result.hits, start=1):
+        # `Chunk.source`, not `.source_uri`. Getting this wrong was the THIRD defect in this one
+        # script that produced a flawless 0/14: a `getattr(..., "source_uri", "")` default meant
+        # every comparison was against an empty string and nothing ever matched. Read the field,
+        # do not default it.
+        if Path(str(hit.chunk.source)).name == wanted:
             return index
     return None
 
@@ -119,9 +126,13 @@ def main() -> int:
 
     import psycopg
 
-    from recall.embeddings import resolve_registered_embedder
+    # `resolve_embedder`, not `resolve_registered_embedder`: the corpus was built by the CLI with
+    # RECALL_EMBEDDER=fastembed, and that is the resolver the CLI uses. Asking the registry for a
+    # profile id would silently pick a DIFFERENT model, and every tenant here is 384/1024-wide, so
+    # a wrong choice returns a confidently ranked list rather than an error.
+    from recall.embeddings import resolve_embedder
+    from recall.generation_store import GenerationStore
     from recall.retriever import HybridRetriever
-    from recall.store import PgVectorStore
 
     generation = args.generation
     if not generation:
@@ -146,16 +157,35 @@ def main() -> int:
             "population is not the one the record fixes, so it is not run"
         )
 
-    embedder = resolve_registered_embedder(EMBEDDER_ID)
-    store = PgVectorStore(
-        dsn=args.dsn, dim=DIM, table="recall_chunks_v1", tenant="default",
-        generation_id=generation,
-    )
+    embedder = resolve_embedder(EMBEDDER_ID)
+    # `GenerationStore`, constructed exactly as `recall_mcp/stores.py` constructs it for a served
+    # tenant. A plain `PgVectorStore` pointed at `recall_chunks_v1` reads the LEGACY column set
+    # (`id`, `source`, ...) and every query raises `UndefinedColumn`, which the first version of
+    # this screen then reported as a clean 0/14.
+    store = GenerationStore(args.dsn, dim=DIM, tenant="default")
+    store.check_schema()
     legs = {
         "dense": HybridRetriever(store, embedder, candidate_k=CANDIDATE_K, use_sparse=False),
         "lexical": HybridRetriever(store, embedder, candidate_k=CANDIDATE_K, use_dense=False),
         "fused": HybridRetriever(store, embedder, candidate_k=CANDIDATE_K),
     }
+
+    # ⛔ POSITIVE CONTROL, and the reason it exists: the first run of this screen reported a
+    # flawless 0/14 in all six columns while every single retrieval was failing with
+    # `UndefinedColumn`. An all-zero screen and a broken screen are the same output. So: query each
+    # leg with a memo's own distinctive text and require it back at rank 1. If a retriever cannot
+    # find a document by quoting it, no number below means anything.
+    control_memo = "python-write-text-crlf-churn"
+    control_query = "Path.write_text on Windows injects CRLF against a tree configured eol=lf"
+    for leg_name, retriever in legs.items():
+        rank = rank_of(retriever, control_query, control_memo)
+        print(f"  positive control [{leg_name}]: {control_memo} at rank {rank}")
+        if rank is None or rank > TOP_K:
+            raise SystemExit(
+                f"POSITIVE CONTROL FAILED on the {leg_name} leg: quoting a memo's own content did "
+                f"not return it in the top {TOP_K} (rank {rank}). The instrument is broken, and "
+                "every screen below it would read as a clean null. Not run."
+            )
 
     results: list[dict] = []
     for row in missed:

@@ -127,3 +127,90 @@ discounting.
    generous to A and B, so a null there is strong and a positive there is not yet deployable.
 
 <!-- frozen_above -->
+
+## Result (2026-08-27)
+
+**Status: measured, positive control passed on all three legs, and direction C wins outright.**
+
+Coverage of the 14 scored misses, governing memo at rank <= k:
+
+| screen | k<=5 | k<=20 | k<=40 | k<=100 | k<=200 |
+|---|---|---|---|---|---|
+| goal_dense | 0/14 | 6/14 | 6/14 | 8/14 | 9/14 |
+| goal_lexical | 0/14 | 1/14 | 3/14 | 11/14 | 12/14 |
+| goal_fused (what production serves) | 1/14 | 6/14 | 6/14 | 8/14 | **14/14** |
+| draft_dense | 7/14 | 9/14 | 12/14 | 14/14 | 14/14 |
+| **draft_lexical** | **14/14** | 14/14 | 14/14 | 14/14 | 14/14 |
+| draft_fused | 11/14 | 14/14 | 14/14 | 14/14 | 14/14 |
+
+Artifact: `benchmarks/artifacts/agent_ab/direction-screen.json`.
+
+🔑 **The single most important line: querying with the agent's OWN DRAFT retrieves the governing
+memo at top-5 for 14 of 14 misses, lexically, most of them at rank 1.** `ts-lf-rewrite`, the family
+that resisted every previous direction 0 for 6 across four registered attempts, is **6 of 6**, at
+ranks 1, 1, 1, 1, 1, 3.
+
+🔑 **And the diagnosis this settles: retrieval was never broken. The QUERY was.** The same fused
+retriever that returns the memo at rank 1 from a draft ranks it **127 to 142** for the same
+session's goal query. `goal_fused` reaches 14/14 by k=200, so every governing memo was always
+findable in this corpus, at a depth no consumer ever reads. Four generation-side attempts tried to
+move the document toward the query. The document was fine; the query was asked at the wrong moment.
+
+**Predictions against measurements:**
+
+| # | predicted | measured | verdict |
+|---|---|---|---|
+| 1 | A: 4 to 8 in fused pool by k=40; 9 to 13 by k=200 | 6/14 by k=40; **14/14** by k=200 | first half confirmed, **second half falsified (above band)** |
+| 2 | B: 0 to 2 at top-5 lexical-only from goal | **0/14** | confirmed |
+| 3 | C: 6 to 10 at top-5, lexical beating dense | **14/14**, lexical 14 vs dense 7 | **falsified on magnitude (above band)**, direction confirmed |
+| 4 | C, `ts-lf-rewrite` >= 4 of 6 | **6/6** | confirmed |
+| 5 | under 20 minutes, 0.00 USD | ~10 minutes, 0.00 USD | confirmed |
+
+Prediction 3 is the fourth consecutive under-prediction of an intervention that changes what
+INFORMATION reaches the system, exactly as `[[i-over-predict-effect-magnitudes]]` says happens for
+decision-side changes. I applied that memo's rule ("predict at the arithmetic, do not discount")
+and was still low by 40%. The rule needs strengthening again, not the discount.
+
+**Decisions, per the registered partition:**
+
+- **B is DEAD.** Lexical-only from a goal query rescued 0 of 14 at top-5, below the bar of 3. It is
+  already fused into production and it does not reach these memos from goal vocabulary in any
+  weighting, so weighted fusion is not a lever for this failure class.
+- **A is NOT dead but is demoted.** 6 of 14 in the served fused pool at k=40 misses the bar of 8, so
+  a causal scorer over today's pool has material for fewer than half the cases. It is alive only in
+  the form "widen the pool AND rerank", which must be preregistered against the existing negative
+  pool result (547 candidates lost 0.0513 R@100).
+- ✅ **C WINS, and by the registered rule it is the priority**: 14 of 14 against A's 6, and it needs
+  no new model, no new index and no retrieval surgery. The retrieval it requires already ships.
+  What changes is WHEN the agent searches and WITH WHAT: not "before I plan", but "before I save
+  this file", using the text it is about to write.
+
+⚠️ **The half this screen did NOT measure, and no build may proceed without it: PRECISION.** Every
+number above is recall of a known governing memo. A draft query is ~3,900 characters OR-ing many
+identifiers, and nothing here establishes what ELSE comes back, or what a draft returns when there
+is no relevant memo at all. A search that returns the right memo at rank 1 and four irrelevant ones
+every time, on every write, is a different proposition from this table. The next registered step is
+precision and false-trigger rate on drafts whose hazard is not in the corpus, plus the token and
+latency cost of searching per write, which the skill instruction measured at +107k median input
+tokens for a much cheaper behaviour.
+
+⚠️ **Also unmeasured: whether an agent would act on it.** This screen shows the memo can be
+retrieved. `[[agent-ab-task-success-result-2026-08-22]]` measured that reaching the agent and
+changing the outcome are different things.
+
+## The apparatus, and why this record spends a paragraph on it
+
+This screen produced a **flawless, entirely fabricated `0/14` across all six columns on its first
+run**, and would have done so on the second and third for different reasons: a `PgVectorStore`
+pointed at a generation-aware table (every query raised `UndefinedColumn`), a `search()` result
+read as a list when it is a wrapper, and `Chunk.source_uri` read with a `getattr` default when the
+field is `Chunk.source` (so every comparison was against an empty string). Any one of those alone
+yields a perfect null that reads exactly like "none of the three directions works", and the first
+version of the script caught retrieval exceptions and scored them as misses.
+
+What caught all three was a **positive control**: query each leg with a memo's own content and
+refuse to run if it does not come back at rank 1. It was added because
+`[[a-null-is-the-cheapest-result-to-fabricate]]` was written one hour earlier, from an audit of the
+previous probe in this same lane — and then the very next script reproduced the same failure three
+times over. The guard is now in the script, and a retrieval error kills the run instead of
+counting as a miss.
