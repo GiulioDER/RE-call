@@ -45,6 +45,15 @@ ISOLATION_PROMPT = (
 )
 
 
+class IsolationCheckUnavailable(RuntimeError):
+    """The check could not be PERFORMED. Not the same as the check failing.
+
+    A run still refuses to proceed, because unverified isolation is not verified isolation.
+    But the operator has to know whether they are looking at a leak or at an API failure,
+    because the fixes have nothing in common.
+    """
+
+
 def user_profile_root() -> Path:
     """The directory whose ancestors carry the user's `CLAUDE.md`."""
 
@@ -115,5 +124,10 @@ async def verify_isolation(
         {"task_id": "isolation-check", "user_input": ISOLATION_PROMPT}, RECALL_OFF, config
     )
     response = (record.response or "").strip().replace("\n", " ")
+    # "the check found a leak" and "the check could not run" are both not-clean, and a caller
+    # needs to tell them apart: one is a broken experiment, the other a broken API call.
+    # Reporting the second as the first sends the operator hunting a leak that is not there.
+    if record.error or response.startswith("API Error") or not response:
+        raise IsolationCheckUnavailable(record.error or response or "no response at all")
     clean = "USER=no" in response and "PROJECT=no" in response
     return clean, int(record.input_tokens or 0), response

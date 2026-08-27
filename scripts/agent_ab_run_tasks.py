@@ -64,7 +64,11 @@ from benchmarks.agent_ab.summarize import summarize_recall_overhead  # noqa: E40
 from benchmarks.agent_ab.tasksuccess import TASKS, TASKS_BY_ID, check_workspace  # noqa: E402
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
-from agent_ab_isolation import assert_sandbox_isolated, verify_isolation  # noqa: E402
+from agent_ab_isolation import (  # noqa: E402
+    IsolationCheckUnavailable,
+    assert_sandbox_isolated,
+    verify_isolation,
+)
 
 DEFAULT_DSN = "postgresql://recall:recall@127.0.0.1:5407/agent_ab"
 STATIC_MEMORY_SOURCES = ("CLAUDE.md",)
@@ -472,12 +476,20 @@ async def main() -> int:
         # clean, and only the token count and the agent's own answer disagree.
         probe_dir = work_root / "isolation-check"
         probe_dir.mkdir(parents=True, exist_ok=True)
-        clean, tokens, answer = await verify_isolation(
-            model=args.model,
-            config_dir=hook_dirs[RECALL_OFF],
-            cwd=probe_dir,
-            env=agent_env,
-        )
+        try:
+            clean, tokens, answer = await verify_isolation(
+                model=args.model,
+                config_dir=hook_dirs[RECALL_OFF],
+                cwd=probe_dir,
+                env=agent_env,
+            )
+        except IsolationCheckUnavailable as error:
+            print(
+                f"\nREFUSED: the isolation check could not RUN ({error}), so isolation is "
+                "unverified rather than broken. This is an API or apparatus failure, not a "
+                "leak: fix that and re-run. Nothing about the arms is implicated."
+            )
+            return 1
         isolation_check = {"clean": clean, "input_tokens": tokens, "answer": answer[:200],
                            "cwd": str(probe_dir)}
         print(f"  isolation check: {tokens} input tokens, {answer[:70]}")
