@@ -210,6 +210,7 @@ def environment_capture(
     instruction_file: str | None = None,
     hook_file: str | None = None,
     hook_vocab: str | None = None,
+    identical_arms: str | None = None,
     work_root: str | None = None,
     isolation_check: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -247,6 +248,10 @@ def environment_capture(
         # comparable runs and two runs nobody can tell apart.
         "hook_file": hook_file,
         "hook_vocab": hook_vocab,
+        # Why the two arms were allowed to share a profile. A reader who finds identical arms and
+        # no stated reason is looking at a broken experiment; one who finds this sentence is
+        # looking at the registered one.
+        "identical_arms": identical_arms,
         "isolation": "config_dir" if hook_file else "bare",
         "work_root": work_root,
         # The verdict of the preflight, not just the fact that one ran. A run whose control
@@ -289,6 +294,17 @@ async def main() -> int:
         ),
     )
     parser.add_argument(
+        "--arms-differ-only-by-hook",
+        action="store_true",
+        help=(
+            "Both arms become the INSTRUCTION arm and differ only by the write-time hook, which "
+            "is what the registration's stage B specifies: control is the instruction arm with "
+            "the hook off, not the no-memory arm. Without --hook-file this is an A/A run whose "
+            "recall_on sessions ARE the control condition, which is how the base rate is measured "
+            "under the same apparatus as the treatment."
+        ),
+    )
+    parser.add_argument(
         "--hook-vocab",
         default=None,
         help=(
@@ -328,7 +344,7 @@ async def main() -> int:
     already, carried = completed_pairs(progress_path) if args.resume else (set(), [])
     (artifacts / "streams").mkdir(parents=True, exist_ok=True)
     work_root = Path(args.work_root) if args.work_root else artifacts / "work"
-    if args.hook_file:
+    if args.hook_file or args.arms_differ_only_by_hook:
         # Checked HERE, before the corpus handshake, because a refusal that arrives after nine
         # seconds of setup reads as a failure rather than as a usage error. Refused rather than
         # warned: the leak produces a COMPLETE run whose artifacts are indistinguishable from a
@@ -391,14 +407,30 @@ async def main() -> int:
 
     off_spec = ArmSpec.claude_md(static_prompt)
     on_spec = ArmSpec.claude_md_recall(spec, artifacts / "recall-mcp.json", combined)
+    identical_arms = None
+    if args.arms_differ_only_by_hook:
+        # The control is the instruction arm with the hook off. Using the no-memory arm here would
+        # compare memory-plus-hook against no-memory and attribute the whole difference to the
+        # hook, which is the confound this flag exists to avoid.
+        off_spec = on_spec
+        identical_arms = (
+            "stage B compares the instruction arm against itself with a write-time hook added; "
+            "the arms share a profile by design and differ only in the hook installed in the "
+            "recall_on config directory"
+            if args.hook_file
+            else "base-rate A/A: both arms are the instruction arm with no hook anywhere, so "
+                 "every session is a control session under the treatment's own apparatus"
+        )
     # One template pair, built once so everything except memory is identical by construction. The
     # per-session `cwd` is the only field replaced afterwards.
     hook_dirs = None
     isolation_check: dict[str, Any] | None = None
-    if args.hook_file:
-        hook_path = Path(args.hook_file)
-        if not hook_path.is_file():
-            raise SystemExit(f"--hook-file does not exist: {hook_path}")
+    if args.hook_file or args.arms_differ_only_by_hook:
+        hook_path = None
+        if args.hook_file:
+            hook_path = Path(args.hook_file)
+            if not hook_path.is_file():
+                raise SystemExit(f"--hook-file does not exist: {hook_path}")
         # Isolation for BOTH arms, the hook for the ON arm only. See `prepare_hook_config_dirs`:
         # giving the off arm the hook would inject memory into the arm defined by not having any.
         hook_dirs = prepare_hook_config_dirs(artifacts / "config", hook_script=hook_path)
@@ -414,7 +446,7 @@ async def main() -> int:
             if not vocab_path.is_file():
                 raise SystemExit(f"--hook-vocab does not exist: {vocab_path}")
             agent_env = {**agent_env, "RECALL_HOOK_VOCAB": str(vocab_path.resolve())}
-        print(f"write-time hook: {hook_path}")
+        print(f"write-time hook: {hook_path or 'NONE (A/A base rate: every session is control)'}")
         print(f"  vocabulary: {args.hook_vocab or 'NONE, so vocabulary_would_fire is null'}")
         print(f"  config dirs: {', '.join(str(p) for p in hook_dirs.values())}")
         print(f"  trace: {artifacts / 'hook-trace.jsonl'}")
@@ -427,6 +459,7 @@ async def main() -> int:
         env=agent_env,
         extra_allowed_tools=WRITE_TOOLS,
         config_dirs=hook_dirs,
+        identical_arms=identical_arms,
     )
     if hook_dirs is not None:
         # A path check proves where the sandboxes are, not what the session received. This asks a
@@ -485,7 +518,7 @@ async def main() -> int:
         verdict = check_workspace(task, workdir)
         merged = {
             **record.metadata,
-            "off_arm_profile": "claude_md",
+            "off_arm_profile": off_spec.profile,
             "comparison": "additive",
             "base_task_id": base_id,
             "rep": row.get("rep"),
@@ -553,6 +586,7 @@ async def main() -> int:
         ("recall-overhead.json", summarize_recall_overhead(admitted)),
         ("environment.json", environment_capture(args.model, spec, check, instruction_file=args.instruction_file,
                             hook_file=args.hook_file, hook_vocab=args.hook_vocab,
+                            identical_arms=identical_arms,
                             work_root=str(work_root),
                             isolation_check=isolation_check)),
         ("digest-parity.json", {"failures": parity_failures}),

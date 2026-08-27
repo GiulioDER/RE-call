@@ -15,12 +15,16 @@ named directory contains.
 ⛔ The risk this file exists to cover: a harness that silently admits a SECOND hook, or silently
 drops the one it was given, would corrupt a run without failing. Every test below is about that.
 
-Mutation-tested 2026-08-27 by `scripts/agent_ab_config_dir_mutations.py`, four ways, all killed.
-Re-measure with that script; a surviving mutation means this file is not evidence.
+Mutation-tested 2026-08-27 by `scripts/agent_ab_config_dir_mutations.py`, eight ways across two
+files, all killed. One survived the first version: dropping the OFF-arm profile guard entirely
+stayed green, because every test here used an OFF-legal profile on both sides and nothing ever
+put an ON-arm profile in the OFF slot. Re-measure with that script; a surviving mutation means
+this file is not evidence.
 """
 
 from __future__ import annotations
 
+import pathlib
 import sys
 from pathlib import Path
 
@@ -90,6 +94,100 @@ def test_isolation_reaches_the_subprocess_environment() -> None:
     check("it is set AFTER config.env, so a caller cannot silently override the isolation",
           env_index != -1 and cfg_index != -1 and cfg_index > env_index,
           f"env at {env_index}, config_dir at {cfg_index}")
+
+
+def test_identical_arms_needs_a_stated_reason() -> None:
+    """The registered stage B compares the instruction arm against ITSELF with a hook added, so
+    the arms legitimately share a profile. Relaxing the guard on a BOOLEAN would make that
+    indistinguishable from the commonest way to build an experiment that measures nothing, so the
+    relaxation demands a sentence and the runner records it."""
+
+    import tempfile
+
+    from benchmarks.agent_ab.arms import ArmSpec, build_configs, prepare_hook_config_dirs
+    from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        prompt = root / "prompt.txt"
+        prompt.write_text("x", encoding="utf-8")
+        spec = ArmSpec.claude_md(prompt)
+        specs = {RECALL_ON: spec, RECALL_OFF: spec}
+        dirs = prepare_hook_config_dirs(root / "cfg", hook_script=None)
+
+        try:
+            build_configs(specs, model="m", cwd=root, timeout_s=1.0, config_dirs=dirs)
+        except ValueError as error:
+            check("identical arms are refused by default", "recall_on arm must use" in str(error),
+                  str(error)[:100])
+        else:
+            check("identical arms are refused by default", False, "they were accepted")
+
+        configs = build_configs(specs, model="m", cwd=root, timeout_s=1.0, config_dirs=dirs,
+                                identical_arms="base-rate A/A, every session is a control")
+        check("a stated reason permits them", set(configs) == {RECALL_ON, RECALL_OFF})
+
+        for reason, label in (("   ", "an empty reason"), ("", "a blank reason")):
+            try:
+                build_configs(specs, model="m", cwd=root, timeout_s=1.0, config_dirs=dirs,
+                              identical_arms=reason)
+            except ValueError as error:
+                check(f"{label} is refused", "state WHY" in str(error), str(error)[:80])
+            else:
+                check(f"{label} is refused", False, "it was accepted")
+
+        try:
+            build_configs(specs, model="m", cwd=root, timeout_s=1.0, identical_arms="a reason")
+        except ValueError as error:
+            check("identical arms without config_dirs are refused",
+                  "NOTHING different" in str(error), str(error)[:80])
+        else:
+            check("identical arms without config_dirs are refused", False, "accepted")
+
+        # And the guard the relaxation carves an exception out of must still hold for everyone
+        # else. Without this, dropping the OFF-arm profile check entirely stays green, which is
+        # exactly what a mutation of this file did.
+        from dataclasses import replace as _replace
+
+        on_only = _replace(spec, profile="claude_md_recall")
+        try:
+            build_configs({RECALL_ON: on_only, RECALL_OFF: on_only},
+                          model="m", cwd=root, timeout_s=1.0, config_dirs=dirs)
+        except ValueError as error:
+            check("an ON-arm profile in the OFF slot is still refused",
+                  "recall_off arm must use" in str(error), str(error)[:110])
+        else:
+            check("an ON-arm profile in the OFF slot is still refused", False,
+                  "the off arm silently carried memory")
+
+
+def test_the_hook_is_optional_and_asymmetric() -> None:
+    """No hook means the control condition, which the base rate has to be measured under. With a
+    hook, exactly one arm may carry it: giving it to both erases the treatment, giving it to the
+    off arm inverts the experiment."""
+
+    import json
+    import tempfile
+
+    from benchmarks.agent_ab.arms import prepare_hook_config_dirs
+    from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        dirs = prepare_hook_config_dirs(root / "none", hook_script=None)
+        settings = {v: json.loads((d / "settings.json").read_text(encoding="utf-8"))
+                    for v, d in dirs.items()}
+        check("with no hook, NEITHER arm gets one",
+              settings[RECALL_ON] == {} and settings[RECALL_OFF] == {}, str(settings))
+
+        script = root / "hook.py"
+        script.write_text("print('{}')\n", encoding="utf-8")
+        dirs = prepare_hook_config_dirs(root / "one", hook_script=script)
+        settings = {v: json.loads((d / "settings.json").read_text(encoding="utf-8"))
+                    for v, d in dirs.items()}
+        check("with a hook, the ON arm gets one", "hooks" in settings[RECALL_ON])
+        check("with a hook, the OFF arm gets none", settings[RECALL_OFF] == {},
+              str(settings[RECALL_OFF]))
 
 
 def main() -> int:
