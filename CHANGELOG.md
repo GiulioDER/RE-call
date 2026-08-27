@@ -10,6 +10,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* **A `PreToolUse` hook that searches project memory with the text the agent is about to write,
+  and injects what matches.** Installed by default by `recall setup`, which asks before enabling
+  it. It exists because an agent that has to decide to search mostly does not: an explicit
+  instruction to search before writing measured an adoption rate of **0.067**, where this reaches
+  1.00 by construction. The query is the DRAFT TEXT rather than a goal description, because draft
+  text surfaced the governing memo for 11 of 11 sessions that needed it against 1 of 14 for
+  goal-shaped queries.
+
+  ⚠️ **Its benefit is plausible and unproven, and the pre-registration says so.** Paired A/B on
+  executed checker endpoints: 17 of 34 control tasks failed against 12 of 34 with the hook, which
+  is **6 rescues, 1 regression, McNemar exact p = 0.125** on 34 of a registered 48 pairs. That is
+  not significant, and the record committed in advance that nothing ships on a non-significant
+  positive. It is a default by owner decision. Full record and its four amendments:
+  `docs/preregistrations/2026-08-27-write-time-hook.md`.
+
+  What IS measured and is not in doubt: token cost is **-1% aggregate**, because it fires a median
+  of 3 times a session rather than the ten the design assumed; and it rescued **nothing** on the
+  hardest task family, which failed 6 of 6 in both arms with its governing memo in the corpus and
+  in front of the agent on every write.
+
+  The real cost is latency, and it is per TOOL CALL: **0.14s** when the payload is too short to
+  query, **~1.0s** against a reachable corpus, **2.9s** against an unreachable one. That last
+  number is why the handler stands down for five minutes after a failed connection, which brings
+  a dead corpus from 2.89s to 0.19s per call. Turn it off with `write_time.enabled: false` in
+  `~/.claude/recall-hook.json`; the hook is silent and costs 0.19s when disabled or unconfigured.
+
+  Three properties it cannot lose, each tested and mutation-tested: it never denies a tool call, it
+  never raises, and it never loads an embedder.
+
 * **`RECALL_MCP_TOOLS`: serve a subset of the server's tools, to stop paying for the ones nobody
   calls.** Every tool definition is re-sent on every turn whether or not it is invoked. Measured
   2026-08-27 on `claude-haiku-4.5`: about 153 input tokens per tool per turn, so the full surface
