@@ -274,6 +274,13 @@ def main(argv: list[str] | None = None) -> int:
         return session_end(payload)
     if args[0] == "pre-compact":
         return pre_compact(payload)
+    if args[0] == "pre-tool-use":
+        # Imported HERE, not at module scope. This dispatch is shared with SessionStart, whose
+        # whole design is that it imports nothing it does not need, and `write_time` is only
+        # reached on its own event.
+        from .write_time import pre_tool_use
+
+        return pre_tool_use(payload)
     return 0
 
 
