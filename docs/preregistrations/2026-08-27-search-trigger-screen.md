@@ -121,3 +121,93 @@ result about agent memory, not a failure to find a trick.
    and stated here so it cannot be read as a new choice.
 
 <!-- frozen_above -->
+
+## Result (2026-08-27)
+
+**Status: measured. Both controls passed** (retrieval positive control, and the T0 scoring control
+reproducing the always-search baseline at 14 / 1.000 / 0.000 exactly).
+Artifact: `benchmarks/artifacts/agent_ab/trigger-screen.json`, which persists all 196 per-draft
+records so no future trigger question pays for retrieval again.
+
+Population: 178 positive drafts across the 14 sessions, of which **46 (26%) are hazard-bearing**
+(they retrieve the governing memo at top-5); 132 `N_wide`; 18 `N_clean`.
+
+| trigger | kind | coverage | ft_clean | ft_wide | suppression |
+|---|---|---:|---:|---:|---:|
+| `T0_always` | — | 14/14 | 1.000 | 1.000 | 0.000 |
+| `T1_margin_0.0` | post | 11/14 | 0.556 | 0.568 | 0.438 |
+| `T1_margin_0.01` | post | 11/14 | 0.500 | 0.477 | 0.506 |
+| `T1_margin_0.02` | post | 10/14 | 0.389 | 0.326 | 0.652 |
+| `T1_margin_0.05` | post | 5/14 | 0.056 | 0.099 | 0.888 |
+| **`T2_vocab_df2`** | **pre** | **10/14** | **0.167** | 0.258 | **0.674** |
+| `T2_vocab_df3` | pre | 10/14 | 0.278 | 0.326 | 0.601 |
+| `T2_vocab_df5` | pre | 10/14 | 0.333 | 0.348 | 0.567 |
+| `T2_vocab_df10` | pre | 10/14 | 0.389 | 0.553 | 0.405 |
+| `T3_operation` | pre | 10/14 | **1.000** | **0.159** | 0.753 |
+| `T4_llm_gate` | pre | 9/14 | 0.389 | 0.561 | 0.405 |
+
+**Triggers clearing coverage >= 10 AND ft_clean <= 0.35: three, all `T2` (df2, df3, df5).**
+
+| # | predicted | measured | verdict |
+|---|---|---|---|
+| 1 | `T3` fires on >= 0.85 of drafts | fires on **0.247** (suppression 0.753) | **falsified, badly** |
+| 2 | `T2` coverage 12–14 | **10** at every df | **falsified, below** |
+| 3 | `T2` ft_clean 0.40–0.80 | **0.167–0.389** | **falsified, below** (better than predicted) |
+| 4 | `T4` is the best discriminator, coverage >= 12 and ft_clean <= 0.35 | coverage **9**, ft_clean **0.389** | **falsified on both** |
+| 5 | `T1` fails: no δ with coverage >= 12 and ft_clean <= 0.35 | no δ reaches coverage 12 at all | confirmed |
+| 6 | under 30 minutes, under 1.00 USD | ~25 minutes, ~196 haiku calls, ~0.05 USD | confirmed |
+
+🔑 **The headline: a dumb string-membership test beat the LLM gate on every axis.** `T2_vocab_df2`
+covers 10 of 14 while firing on 3 of 18 hazard-free writes and suppressing 67% of searches;
+`T4_llm_gate` covers 9 while firing on 7 of 18 and suppressing 41%. The candidate I predicted would
+win because it "reasons about the code rather than matching strings" was dominated by matching
+strings, at a fraction of the cost and with no model call per write.
+
+⚠️ **`T3` is the registered population-disagreement case, and it fired.** Its `ft_clean` is 1.000
+and its `ft_wide` is 0.159 — the widest divergence in the table. The cause is the confound this
+record named in advance: `N_clean` is `ctl-stage-by-pathspec`, whose every draft is a git command,
+and `T3` fires on git commands by construction. **`T3`'s clean false-trigger rate measures the
+negative set, not the trigger.** That is exactly why the two populations were registered separately
+and never pooled, and it is the clearest argument in this lane for a bigger, more varied negative
+set before any trigger is trusted.
+
+## ⛔ The decision rule is ambiguous in its SELECTION, and this is a third distinct failure
+
+The rule scores "the BEST trigger by coverage". Read literally, that is `T1_margin_0.01` at 11 of
+14, whose `ft_clean` of 0.500 lands in the `0.36-0.70` band, giving the cell **GATE: preregister
+one iteration on the best candidate only.**
+
+But `T2_vocab_df2`, at coverage 10 with `ft_clean` 0.167, sits squarely in the **BUILD** cell. A
+selection by coverage alone picks a dominated candidate.
+
+**The registered outcome is GATE, and I am not substituting the friendlier reading after the
+fact.** Recording the flaw rather than routing around it:
+
+- The previous record's failure was an incomplete partition over OUTCOMES.
+  `[[state-the-partition-over-the-cross-product]]` fixed that, and this record's nine cells are
+  complete and were read without a gap.
+- **This failure is different: the outcome space was partitioned, the CANDIDATE space was not.**
+  A rule that scores one selected candidate silently assumes a dominant one exists. With a
+  frontier of candidates, "best by X" can select something another candidate dominates on both
+  axes.
+- The fix is mechanical and belongs beside the partition rule: **when a probe compares more than
+  one candidate, register the SELECTION as a Pareto rule over the endpoint pair, not a sort on one
+  endpoint** — "the candidate on the Pareto frontier maximising coverage subject to ft_clean <=
+  0.35, and if that set is empty, the one maximising coverage".
+
+## What this licenses
+
+**GATE**: one registered iteration on `T2`, which is the candidate the rule's own cell language
+points at ("the best candidate"), read as the best by the rule's stated intent rather than by its
+literal sort. That iteration must, before anything is built:
+
+1. **Enlarge `N_clean`.** Eighteen drafts from one git-flavoured task have now distorted one
+   trigger's headline number outright (`T3`) and are the binding limit on every other. This is the
+   single highest-value thing left in this lane.
+2. Fit the `df` threshold on **held-out families**, since df2/df3/df5 were all read from the same
+   14 sessions that define coverage.
+3. Price the coverage loss honestly: 10 of 14 against the retriever's 14 of 14 means the trigger
+   discards 4 sessions the retrieval had already solved.
+
+**Not licensed:** building `T2` into anything, or quoting 0.167 as a false-trigger rate outside
+this record. It is 3 of 18.
