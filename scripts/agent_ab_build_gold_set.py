@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 from pathlib import Path
 
 SEED = 20260827
@@ -50,9 +51,7 @@ def main() -> int:
     parser.add_argument("--out", default="benchmarks/artifacts/agent_ab/gold")
     args = parser.parse_args()
 
-    from recall.embeddings import resolve_embedder
-    from recall.generation_store import GenerationStore
-    from recall.retriever import HybridRetriever
+    import psycopg
 
     validation = json.loads(Path(args.validation).expanduser().read_text(encoding="utf-8"))
     trigger = json.loads(Path(args.trigger).expanduser().read_text(encoding="utf-8"))
@@ -72,10 +71,22 @@ def main() -> int:
     print(f"{len(split)} split, {len(yes)} unanimous-yes, {len(no)} unanimous-no")
     print(f"selected {len(chosen)} items for labelling")
 
-    embedder = resolve_embedder("fastembed")
-    store = GenerationStore(args.dsn, dim=384, tenant="default")
-    store.check_schema()
-    lexical = HybridRetriever(store, embedder, candidate_k=200, use_dense=False)
+    # Pick the memo chunk to DISPLAY with `ts_rank` in SQL rather than through the retriever.
+    # The retriever would load fastembed, and the embedder is not needed to choose a chunk for a
+    # human to read: this is a display decision, not a measurement. It also avoids the documented
+    # onnxruntime `bad allocation` on this 12 GB box, which is exactly how the first attempt died.
+    def best_chunk(conn, memo: str, draft: str) -> str:
+        terms = " | ".join(
+            sorted({t.lower() for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", draft)})[:200]
+        )
+        if not terms:
+            terms = "the"
+        row = conn.execute(
+            "SELECT text FROM recall_chunks_v1 WHERE source_uri LIKE %s "
+            "ORDER BY ts_rank(tsv, to_tsquery('english', %s)) DESC LIMIT 1",
+            (f"%/{memo}.md", terms),
+        ).fetchone()
+        return row[0] if row else ""
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -97,16 +108,10 @@ def main() -> int:
     )
     sheet.append("---\n")
 
+    conn = psycopg.connect(args.dsn, connect_timeout=20)
     for number, item in enumerate(chosen, 1):
         draft = full.get((item["task_id"], item["draft_prefix"][:200]), item["draft_prefix"])
-        note = next(
-            (
-                str(h.chunk.text)
-                for h in lexical.search(draft, k=200).hits[:5]
-                if Path(str(h.chunk.source)).name == f"{item['memo']}.md"
-            ),
-            "",
-        )
+        note = best_chunk(conn, item["memo"], draft)
         sheet.append(f"## Item {number}\n")
         sheet.append("**Code about to be saved:**\n")
         sheet.append("```\n" + draft.strip()[:2500] + "\n```\n")
@@ -121,6 +126,7 @@ def main() -> int:
                     else ("unanimous_yes" if item["haiku"] else "unanimous_no"),
         })
 
+    conn.close()
     (out / "gold-set.md").write_text("\n".join(sheet), encoding="utf-8", newline="\n")
     (out / "gold-key.json").write_text(
         json.dumps({"seed": SEED, "question": QUESTION, "items": key}, indent=2) + "\n",
