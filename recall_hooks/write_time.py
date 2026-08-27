@@ -35,8 +35,16 @@ Measured on this machine, 2026-08-27:
 | condition | wall clock |
 |---|---|
 | payload below `min_chars` (no `psycopg` import) | **0.14s** |
-| corpus reachable, query runs | ~1.0s |
+| corpus reachable on the same machine | ~1.0s |
+| corpus reachable on ANOTHER host, over an ssh tunnel | **2.21s median** |
 | corpus UNREACHABLE | **2.9s** |
+
+⚠️ The remote row is the honest one and it is expensive. `search` makes exactly ONE round trip
+because at three it measured **2.54s median, 3.93s max** against the same corpus; folding them
+gained only ~0.3s, which is the useful finding: the cost is the `psycopg` import (~0.9s) and the
+connection handshake, not the queries. A remote corpus therefore costs roughly 2s on every
+qualifying tool call, and whether that is worth 6 rescues in 34 tasks is a deployment decision, not
+a default. `write_time.enabled: false` is the answer where it is not.
 
 The third row is why `_cooldown` exists. An offline laptop would otherwise pay ~3s on every tool
 call, silently, because a failing hook returns nothing and merely makes the session drag. After a
@@ -184,24 +192,33 @@ def search(query: str, config: dict[str, Any], options: dict[str, Any]) -> list[
     if not terms:
         return []
     tenant = str(config.get("tenant", "default"))
-    with psycopg.connect(str(config["dsn"]), connect_timeout=options["connect_timeout"]) as conn:
-        conn.execute("SET LOCAL statement_timeout = '5s'")
-        # ⛔ Bind to the ACTIVE generation. `recall_chunks_v1` holds every generation ever built,
-        # retired ones included, and `GenerationStore` is what normally applies this filter; raw
-        # SQL does not inherit it. Without this the hook silently serves a retired corpus.
-        active = conn.execute(
-            "SELECT generation_id FROM recall_generations "
-            "WHERE tenant_id = %s AND state = 'active' ORDER BY created_at DESC LIMIT 1",
-            (tenant,),
-        ).fetchone()
-        if not active:
-            return []
+    # ⚠️ ONE round trip, deliberately. Measured against a corpus on another host: three round
+    # trips cost a median of 2.54s per tool call, against ~1.0s for a corpus on the same machine,
+    # and the difference is almost entirely latency rather than work. The statement timeout rides
+    # on the connection's options instead of a `SET LOCAL`, and the generation lookup is a scalar
+    # subquery instead of a separate SELECT.
+    #
+    # ⛔ Binding to the ACTIVE generation is NOT relaxed by folding it in. `recall_chunks_v1`
+    # holds every generation ever built, retired ones included, and `GenerationStore` is what
+    # normally applies this filter; raw SQL does not inherit it. A subquery that matches no row
+    # yields NULL, `generation_id = NULL` matches nothing, and the caller gets no hits, which is
+    # what the explicit `if not active: return []` did.
+    with psycopg.connect(
+        str(config["dsn"]),
+        connect_timeout=options["connect_timeout"],
+        options="-c statement_timeout=5s",
+    ) as conn:
         rows = conn.execute(
             "SELECT source_uri, text, ts_rank(tsv, to_tsquery('english', %s)) AS rank "
             "FROM recall_chunks_v1 "
-            "WHERE tenant_id = %s AND generation_id = %s AND tsv @@ to_tsquery('english', %s) "
+            "WHERE tenant_id = %s "
+            "  AND generation_id = ("
+            "        SELECT generation_id FROM recall_generations "
+            "        WHERE tenant_id = %s AND state = 'active' "
+            "        ORDER BY created_at DESC LIMIT 1) "
+            "  AND tsv @@ to_tsquery('english', %s) "
             "ORDER BY rank DESC LIMIT %s",
-            (terms, tenant, active[0], terms, int(options["k"])),
+            (terms, tenant, tenant, terms, int(options["k"])),
         ).fetchall()
     return [(Path(str(uri)).name, str(text), float(rank)) for uri, text, rank in rows]
 
