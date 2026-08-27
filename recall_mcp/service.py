@@ -3618,6 +3618,8 @@ def _query_construction_graph(
             "candidates_rejected": 0,
             "diagnostics_encountered": 0,
             "latency_ms": 0.0,
+            "admission_rejections": {},
+            "gate_reason": None,
         }
     graph_request = ReasoningRequest(
         query=query,
@@ -3641,6 +3643,8 @@ def _query_construction_graph(
             "candidates_rejected": 0,
             "diagnostics_encountered": 0,
             "latency_ms": 0.0,
+            "admission_rejections": {},
+            "gate_reason": "graph_provider_error",
         }
     return expanded.retrieval, {
         "readiness": expanded.readiness,
@@ -3650,6 +3654,8 @@ def _query_construction_graph(
         "candidates_rejected": expanded.candidates_rejected,
         "diagnostics_encountered": expanded.diagnostics_encountered,
         "latency_ms": expanded.latency_ms,
+        "admission_rejections": dict(expanded.admission_rejections),
+        "gate_reason": expanded.gate_reason,
     }
 
 
@@ -3752,7 +3758,11 @@ def query_construction_challenge(
                 "accepted_candidate_count": 0,
                 "rejected_candidate_count": 0,
                 "original_model_calls": 1,
-                "graph": {"readiness": "deferred_until_trusted_seed"},
+                "graph": {
+                    "readiness": "deferred_until_trusted_seed",
+                    "admission_rejections": {},
+                    "gate_reason": "deferred_until_trusted_seed",
+                },
             },
         }
 
@@ -3854,6 +3864,8 @@ def query_construction_challenge(
             "candidates_rejected": 0,
             "diagnostics_encountered": 0,
             "latency_ms": 0.0,
+            "admission_rejections": {},
+            "gate_reason": "trusted_seed_not_new",
         }
     signal = RetrievalSignal(
         trusted_items=len([hit for hit in graph_result.hits if is_trusted(hit)]),

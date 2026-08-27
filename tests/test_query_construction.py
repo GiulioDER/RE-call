@@ -29,6 +29,7 @@ def _request() -> QueryConstructionRequest:
 def test_original_model_challenge_is_data_delimited_and_bounded() -> None:
     challenge = build_original_model_challenge(_request())
     assert "Return JSON only" in challenge.prompt
+    assert "governing invariant" in challenge.prompt
     assert "<retrieval_data>" in challenge.prompt
     payload = json.loads(challenge.prompt.split("<retrieval_data>", 1)[1].split("</retrieval_data>", 1)[0])
     assert payload["evidence"][0]["chunk_id"] == "c1"

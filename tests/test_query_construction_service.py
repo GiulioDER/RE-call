@@ -148,6 +148,39 @@ def test_pyramid_is_bounded_and_graph_runs_after_trusted_seed(monkeypatch) -> No
     assert len(calls) == 4
 
 
+def test_graph_diagnostics_preserve_gate_and_admission_reasons(monkeypatch) -> None:
+    expanded = type(
+        "Expanded",
+        (),
+        {
+            "retrieval": _result("query", ("c0",)),
+            "readiness": "ready",
+            "entities_inspected": 2,
+            "relations_inspected": 3,
+            "candidates_discovered": 4,
+            "candidates_rejected": 5,
+            "diagnostics_encountered": 6,
+            "latency_ms": 7.5,
+            "admission_rejections": (("relation_evidence_not_trusted", 5),),
+            "gate_reason": "graph_gate_not_met",
+        },
+    )()
+    monkeypatch.setattr(service, "_expand_semantic_graph", lambda *_args: expanded)
+    retrieval = _result("query", ("c0",))
+    _, diagnostics = service._query_construction_graph(
+        _Store(),
+        object(),
+        "query",
+        retrieval,
+        service.GenerationSelection(),
+        None,
+        "one_hop",
+        32,
+    )
+    assert diagnostics["admission_rejections"] == {"relation_evidence_not_trusted": 5}
+    assert diagnostics["gate_reason"] == "graph_gate_not_met"
+
+
 def test_invalid_frame_falls_back_without_promoting_model_text(monkeypatch) -> None:
     monkeypatch.setattr(
         service,

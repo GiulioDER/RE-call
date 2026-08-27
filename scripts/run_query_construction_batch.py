@@ -104,13 +104,22 @@ def _ask_original_model(
                 raise ValueError("provider returned no choices")
             message = choices[0].get("message")
             content = _message_text(message.get("content") if isinstance(message, dict) else None)
+            usage = response.get("usage")
+            usage = usage if isinstance(usage, dict) else {}
+            details = usage.get("completion_tokens_details")
+            details = details if isinstance(details, dict) else {}
+            finish_reason = str(choices[0].get("finish_reason") or "unreported")
             if not content:
-                raise ValueError("provider returned empty content")
+                raise ValueError(
+                    "provider returned empty content "
+                    f"(finish_reason={finish_reason}, "
+                    f"prompt_tokens={int(usage.get('prompt_tokens', 0) or 0)}, "
+                    f"completion_tokens={int(usage.get('completion_tokens', 0) or 0)}, "
+                    f"reasoning_tokens={int(details.get('reasoning_tokens', 0) or 0)})"
+                )
             frame = json.loads(content)
             if not isinstance(frame, dict):
                 raise ValueError("provider frame must be a JSON object")
-            usage = response.get("usage")
-            usage = usage if isinstance(usage, dict) else {}
             metadata = {
                 "provider_id": "openrouter",
                 "model_id": model,
@@ -118,6 +127,8 @@ def _ask_original_model(
                 "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
                 "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
                 "total_tokens": int(usage.get("total_tokens", 0) or 0),
+                "reasoning_tokens": int(details.get("reasoning_tokens", 0) or 0),
+                "finish_reason": finish_reason,
                 "latency_ms": max(0, int((time.perf_counter() - started) * 1000)),
                 "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
             }
@@ -369,6 +380,7 @@ def _checkpoint_settings(args: argparse.Namespace, input_sha256: str) -> dict[st
         "index_root": args.index_root,
         "profile": args.profile,
         "graph_expansion": args.graph_expansion,
+        "gold_class": args.gold_class,
     }
 
 
@@ -416,6 +428,10 @@ async def main_async(args: argparse.Namespace) -> None:
     if not isinstance(items, list):
         raise SystemExit("input must contain a JSON list")
     items = [dict(item) for item in items[: args.limit or None]]
+    if args.gold_class:
+        items = [item for item in items if item.get("gold_class") == args.gold_class]
+    if not items:
+        raise SystemExit("population filter selected no input items")
     input_sha256 = hashlib.sha256(args.input.read_bytes()).hexdigest()
     checkpoint_path = args.checkpoint or args.output.with_name(args.output.name + ".checkpoint.jsonl")
     checkpoint_exists = checkpoint_path.exists()
@@ -547,6 +563,7 @@ async def main_async(args: argparse.Namespace) -> None:
         "max_tokens": args.max_tokens,
         "graph_expansion": args.graph_expansion,
         "workers": args.workers,
+        "gold_class": args.gold_class,
         "checkpoint": str(checkpoint_path),
         "rows": rows,
     }
@@ -567,6 +584,7 @@ def main() -> None:
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--api-key-env", default="OPENROUTER_API_KEY")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--gold-class", choices=("miss", "control"), help="run only one frozen population class")
     parser.add_argument("--tenant", default="memory")
     parser.add_argument("--embedder", default="voyage:voyage-4")
     parser.add_argument("--index-root", default="/home/sentiment/recall-repos/memory")
