@@ -1,5 +1,11 @@
 """The SDK driver, exercised entirely without `claude-agent-sdk` installed.
 
+Prior work: `tests/test_claude_exec.py` covers the CLI driver this one mirrors, including the
+out-of-order tool-result and bare-string-error fixtures whose semantics are reproduced here
+against typed messages instead of JSONL. Nothing in `tests/` exercised an SDK-driven session
+before this file. The assertions the two drivers share live in `claude_exec`'s parsing core,
+which both call, so they are made once there rather than duplicated per driver.
+
 Canned dict-shaped message entries go through the normalizer into `claude_exec`'s own parsing
 core, so every assertion here is also an assertion that the two drivers share one field mapping.
 The one gated live test at the bottom needs the SDK, the CLI, and an explicit env opt-in.
