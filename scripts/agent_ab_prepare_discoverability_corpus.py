@@ -413,7 +413,7 @@ def main() -> int:
                 "govern any scored session, and say so in the record.\n"
                 f"  affected: {', '.join(sorted(reconstructed))}"
             )
-        print(f"  ⚠️  building on approximate reconstructions anyway: {reason}")
+        print(f"  WARNING: building on approximate reconstructions anyway: {reason}")
 
     for name, data in resolved:
         (dirs["control"] / name).write_bytes(data)

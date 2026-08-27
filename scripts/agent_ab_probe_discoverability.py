@@ -230,7 +230,7 @@ async def main() -> int:
     print(f"  misses reproduced: {apparatus_miss}/{len(misses)}  (gate >= {GATE_MISSES})")
     print(f"  hits reproduced:   {apparatus_hit}/{len(hits)}  (gate >= {GATE_HITS})")
     if not registered:
-        print(f"  ⛔ POPULATION: {population_reason}")
+        print(f"  REFUSED POPULATION: {population_reason}")
 
     # An arm that is secretly control passes every check above, because every check above looks
     # only at control. This is the one remaining route to a manufactured null.
@@ -241,11 +241,11 @@ async def main() -> int:
         if not distinct_arm:
             void = True
             print(
-                f"  ⛔ ARM {arm}: top-5 differs from control on only {share:.1%} of queries "
+                f"  REFUSED ARM {arm}: top-5 differs from control on only {share:.1%} of queries "
                 f"(needs >= {MIN_ARM_DIVERGENCE:.0%}); this arm is indistinguishable from control."
             )
     if void:
-        print("  ⛔ GATE FAILED: the probe is VOID; treatment numbers below are not a verdict.")
+        print("  GATE FAILED: the probe is VOID; treatment numbers below are not a verdict.")
 
     arm_summary: dict[str, dict] = {}
     for arm in arms:
