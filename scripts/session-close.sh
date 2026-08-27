@@ -21,6 +21,8 @@
 #   scripts/session-close.sh                 # tear down this checkout's DB, sweep orphans
 #   scripts/session-close.sh --keep-db       # leave this checkout's container up
 #   scripts/session-close.sh --keep-orphans  # report orphans, remove none
+#   scripts/session-close.sh --sync-serving  # also fast-forward the VPS2 serving checkout
+#   scripts/session-close.sh --keep-mcp      # leave this session's MCP transports open
 #   scripts/session-close.sh --dry-run       # report everything, remove nothing
 
 set -uo pipefail
@@ -28,13 +30,18 @@ set -uo pipefail
 KEEP_DB=0
 KEEP_ORPHANS=0
 DRY_RUN=0
+SYNC_SERVING=0
+KEEP_MCP=0
 for arg in "$@"; do
     case "$arg" in
         --keep-db)      KEEP_DB=1 ;;
         --keep-orphans) KEEP_ORPHANS=1 ;;
+        --sync-serving) SYNC_SERVING=1 ;;
+        --keep-mcp)     KEEP_MCP=1 ;;
         --dry-run)      DRY_RUN=1; KEEP_DB=1; KEEP_ORPHANS=1 ;;
         *)
-            echo "usage: scripts/session-close.sh [--keep-db] [--keep-orphans] [--dry-run]" >&2
+            echo "usage: scripts/session-close.sh [--keep-db] [--keep-orphans] [--sync-serving]" >&2
+            echo "                                [--keep-mcp] [--dry-run]" >&2
             exit 2
             ;;
     esac
@@ -123,6 +130,26 @@ else
     printf '  no upstream set for %s\n' "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 fi
 
+# The checkout VPS2 serves the MCP corpora from is a DIFFERENT clone, and it does not follow
+# master on its own. Reported here rather than synced, because a sync moves a live deployment and
+# this script is also run by people who only wanted their container removed; `--sync-serving`, and
+# step 5 of /session-close, are the deliberate forms. The status call is read-only and its cost is
+# one ssh, so an unreachable host costs a few seconds rather than the report.
+say "Serving checkout on VPS2"
+if [ -f "$ROOT/scripts/session-serving.sh" ]; then
+    if [ "$SYNC_SERVING" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
+        RECALL_SERVING_SSH_TIMEOUT="${RECALL_SERVING_SSH_TIMEOUT:-300}" \
+            bash "$ROOT/scripts/session-serving.sh" sync 2>&1 | sed 's/^/  /'
+    else
+        RECALL_SERVING_SSH_TIMEOUT="${RECALL_SERVING_SSH_TIMEOUT:-45}" \
+            bash "$ROOT/scripts/session-serving.sh" status 2>&1 | sed 's/^/  /'
+        printf '  A "behind" line above means the MCP servers answer from OLDER code than master.\n'
+        printf '  Ship it: scripts/session-serving.sh sync\n'
+    fi
+else
+    printf '  no scripts/session-serving.sh in this checkout\n'
+fi
+
 say "This checkout's database"
 if [ "$KEEP_DB" -eq 1 ]; then
     bash "$ROOT/scripts/session-db.sh" status 2>&1 | sed 's/^/  /'
@@ -198,6 +225,29 @@ EOF
         printf '  %s removed, %s left alone.\n' "$removed" "$skipped"
         [ "$skipped" -gt 0 ] && printf '  Left-alone entries are in use, unreachable, or not ours. Re-run later; never force them.\n'
     fi
+fi
+
+# An idle recall MCP server is not free. Measured on VPS2 on 2026-08-26: 89 of them alive, 21.5 GB
+# resident, oldest 69 hours, on a 47 GB host that also runs the live trading services. Each one
+# lives exactly as long as its stdio transport, and ssh sets no keepalive, so a session that ends
+# without closing the pipe leaves 850 MB running until somebody notices, which nobody does.
+#
+# Only THIS session's transports are closed, decided by parent chain rather than by command line:
+# on this machine the identical command line also belongs to other agents (three live ones were
+# parented to codex.exe the day this was written), and a pattern sweep would kill their servers
+# mid-query.
+say "This session's MCP transports"
+if [ -f "$ROOT/scripts/session-mcp-close.sh" ]; then
+    if [ "$KEEP_MCP" -eq 1 ]; then
+        bash "$ROOT/scripts/session-mcp-close.sh" report 2>&1 | sed 's/^/  /'
+        printf '  left open at your request\n'
+    elif [ "$DRY_RUN" -eq 1 ]; then
+        bash "$ROOT/scripts/session-mcp-close.sh" close --dry-run 2>&1 | sed 's/^/  /'
+    else
+        bash "$ROOT/scripts/session-mcp-close.sh" close 2>&1 | sed 's/^/  /'
+    fi
+else
+    printf '  no scripts/session-mcp-close.sh in this checkout\n'
 fi
 
 say "Workspace"

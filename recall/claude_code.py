@@ -76,6 +76,13 @@ SERVER_NAME = "recall"
 #: collide with a hand-written hook that is not ours.
 HOOK_MODULE = "recall_hooks"
 
+#: A PreToolUse hook is on the critical path of EVERY tool call, so its timeout is a latency
+#: budget rather than a safety net. Measured 2026-08-27: 0.14s when the payload is too short to
+#: query, ~1.0s against a reachable corpus, 2.9s against an unreachable one. Five seconds leaves
+#: room for a slow first connection without letting a wedged database stall a session; the
+#: handler's own cooldown is what stops the unreachable case repeating on every call.
+PRE_TOOL_USE_TIMEOUT_SECONDS = 5
+
 #: A session-start hook runs before the user's first turn, so its cost is felt every single time
 #: Claude opens. The documented default timeout is 600 seconds, which for this event is a way to
 #: make a broken database look like a hung client.
@@ -319,7 +326,7 @@ def install_user_skill(
 
 
 def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[str, Any]]]:
-    """The two hook groups this installer owns, keyed by event name.
+    """The hook groups this installer owns, keyed by event name.
 
     `args` rather than a single command string: an absolute interpreter path on Windows routinely
     contains a space, and passing it as `command` with the module appended would hand the client a
@@ -377,6 +384,35 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
                         # compaction the user is waiting on.
                         "async": True,
                         "statusMessage": "Saving memory before compaction",
+                    }
+                ],
+            }
+        ],
+        # Injects the memos that match what the agent is ABOUT to write, on every write. It
+        # exists because an agent that must decide to search mostly does not: an explicit
+        # instruction to search first measured an adoption rate of 0.067, against 1.00 here.
+        #
+        # ⚠️ Its measured benefit is 6 rescues against 1 regression at p = 0.125 on a partial n,
+        # which is NOT significant. See `recall_hooks/write_time.py` and
+        # `docs/preregistrations/2026-08-27-write-time-hook.md`. It is a default by owner decision,
+        # not because the evidence reached the bar the pre-registration set.
+        #
+        # Synchronous, and it must be: `additionalContext` that arrives after the tool call has
+        # run is context the model never saw. That is why the handler's own guards (a cooldown
+        # after a failed connection, an early return below `min_chars`) matter more here than on
+        # any other event: this one is on the critical path of every tool call.
+        "PreToolUse": [
+            {
+                # Alphabetic, `|`-separated: a matcher of only letters, digits, `_`, `-`, spaces,
+                # `,` and `|` is read as exact strings rather than as a regular expression, and
+                # adding a `.` or `*` would silently move it onto the regex path.
+                "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": python_executable,
+                        "args": ["-m", HOOK_MODULE, "pre-tool-use"],
+                        "timeout": PRE_TOOL_USE_TIMEOUT_SECONDS,
                     }
                 ],
             }
@@ -448,15 +484,22 @@ def install_hooks(
     dsn: str,
     tenant: str = "default",
     embedder: str = "fastembed",
+    write_time: bool = True,
     python_executable: str | None = None,
     path: Path | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
-    """Write the hook config, then merge the hook entries into the client's settings."""
+    """Write the hook config, then merge the hook entries into the client's settings.
+
+    `write_time` controls the `PreToolUse` memo injection. It defaults to on, and the ENTRY is
+    installed either way: the handler reads `write_time.enabled` from its own config, so turning
+    it off is a config edit rather than a settings-file surgery the user has to repeat. That also
+    means a user who disables it keeps a working `recall hooks upgrade`.
+    """
     target = path or settings_path()
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    _write_hook_config(dsn=dsn, tenant=tenant, embedder=embedder)
+    _write_hook_config(dsn=dsn, tenant=tenant, embedder=embedder, write_time=write_time)
 
     settings: dict[str, Any] = {}
     if target.exists():
@@ -537,10 +580,28 @@ def uninstall(
         print_fn(f"Removed MCP server '{SERVER_NAME}' from {len(removed)} key(s): " + ", ".join(removed))
 
 
-def _write_hook_config(*, dsn: str, tenant: str, embedder: str, table: str = "chunks") -> None:
+def _write_hook_config(
+    *,
+    dsn: str,
+    tenant: str,
+    embedder: str,
+    table: str = "chunks",
+    write_time: bool = True,
+) -> None:
     path = hook_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    config = {"dsn": dsn, "tenant": tenant, "embedder": embedder, "table": table, "chunks": 0}
+    config = {
+        "dsn": dsn,
+        "tenant": tenant,
+        "embedder": embedder,
+        "table": table,
+        "chunks": 0,
+        # Written explicitly even when true, so the file SAYS what the session will do. An absent
+        # block also means enabled (an upgraded config predating the feature should get it), and
+        # the difference between "absent" and "absent because someone chose it" is exactly what a
+        # user reads this file to find out.
+        "write_time": {"enabled": bool(write_time)},
+    }
     _write_json(path, config)
     try:
         path.chmod(0o600)

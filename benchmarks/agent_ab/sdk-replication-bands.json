@@ -1,0 +1,12 @@
+{
+  "_comment": "Equivalence bands for agent-ab-sdk-replication-001, committed BEFORE the run as part of docs/preregistrations/2026-08-26-sdk-driver-equivalence.md. Consumed by scripts/agent_ab_compare_drivers.py, which refuses any compared metric that has no row here. max_abs_diff bands are falsifiers; min is a wiring floor that voids the run rather than falsifying equivalence; record_only rows are recorded and never falsify, because the driver changes them mechanically.",
+  "admitted_pairs": { "min": 48 },
+  "search_rate": { "max_abs_diff": 0.15 },
+  "governing_memo_rate": { "max_abs_diff": 0.15 },
+  "per_task_mean_delta": { "max_abs_diff": 0.15 },
+  "per_pair_delta_mean": { "max_abs_diff": 0.15 },
+  "control_on_mean": { "max_abs_diff": 0.125 },
+  "control_off_mean": { "max_abs_diff": 0.125 },
+  "input_tokens_delta_median": { "max_abs_diff": 55000 },
+  "wall_time_delta_median_ms": { "record_only": true }
+}

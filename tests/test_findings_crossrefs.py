@@ -70,6 +70,9 @@ EXPECTED: dict[str, tuple[str, str]] = {
     "9n": ("FINDINGS", "regime sweep"),
     "10b": ("FINDINGS", "abstention layer failed here"),
     "10c": ("FINDINGS", "bounded domain"),
+    # Cited from docs/preregistrations/2026-08-26-sdk-driver-equivalence.md, whose Result section
+    # points at the published table for the driver-equivalence replication.
+    "13f": ("RESULTS", "Driver-equivalence replication"),
 }
 
 _HEADER = re.compile(r"^#{2,4}\s+(\d+[a-z]?)\.\s+(.*)$", re.MULTILINE)

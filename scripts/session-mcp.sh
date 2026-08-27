@@ -56,6 +56,28 @@ OUT="$ROOT/.mcp.json"
 # same operation, and every checkout of this repository follows without being edited.
 VPS2_HOST="${RECALL_VPS2_HOST:-vps2}"
 VPS2_CHECKOUT="${RECALL_VPS2_CHECKOUT:-~/recall-repos/serving}"
+
+# Who launched the server, stamped into its command line so a sweep can tell one client's servers
+# from another's ON THE HOST, where nothing else can.
+#
+# The problem it solves, measured 2026-08-26: VPS2 held 18 live servers holding 14.67 GB, each
+# reachable only through a transport whose client may or may not still exist, and nothing on either
+# machine could say which. Sixteen of the eighteen were launched by a DIFFERENT agent on this same
+# workstation with a nearly identical command line, so "kill what looks like mine" is not available:
+# it would take down another agent's tools mid-query.
+#
+# The mark is `<host>-<checkout id>` and both halves earn their place. The host is what stops a
+# sweep run here from touching a server launched from another machine. The checkout id comes from
+# `session-db.sh id`, the same sha256 prefix of the absolute checkout path that names this
+# checkout's container, ASKED FOR rather than re-derived: two copies of one derivation drift, and
+# that script already carries a comment about the two spellings of a Windows path hashing
+# differently.
+#
+# It is inert to the server: `recall_mcp.server` reads named variables with `os.environ.get` and
+# validates no prefix, so an extra RECALL_* variable changes no behaviour. It exists to be read out
+# of `ps`. It is not a secret either: the checkout id is a hash, and the host name is this
+# workstation's, appearing in the process list of a machine we own.
+CLIENT_MARK="${RECALL_MCP_CLIENT:-$(hostname 2>/dev/null || echo unknown)-$(bash "$(dirname "${BASH_SOURCE[0]}")/session-db.sh" id 2>/dev/null || echo nocheckout)}"
 VPS2_PYTHON="${RECALL_VPS2_PYTHON:-~/recall-repos/.venv/bin/python}"
 VPS2_ENV_FILE="${RECALL_VPS2_ENV:-~/recall-repos/.env}"
 
@@ -108,6 +130,7 @@ if [ "${1:-}" = "--check" ]; then
     echo "  secrets:      $SECRETS"
     echo "  VPS2 host:    $VPS2_HOST"
     echo "  VPS2 checkout:$VPS2_CHECKOUT"
+    echo "  client mark:  $CLIENT_MARK  (stamped into every server command line)"
     echo "  .mcp.json is gitignored: yes"
     SECRETS="$SECRETS" python <<'PY'
 import json, os
@@ -132,6 +155,7 @@ fi
 
 SECRETS="$SECRETS" OUT="$OUT" ROOT="$ROOT" VPS2_HOST="$VPS2_HOST" \
 VPS2_CHECKOUT="$VPS2_CHECKOUT" VPS2_PYTHON="$VPS2_PYTHON" VPS2_ENV_FILE="$VPS2_ENV_FILE" \
+CLIENT_MARK="$CLIENT_MARK" \
 python <<'PY'
 import json, os, shlex
 
@@ -153,6 +177,7 @@ host = os.environ["VPS2_HOST"]
 checkout = os.environ["VPS2_CHECKOUT"]
 python_bin = os.environ["VPS2_PYTHON"]
 env_file = os.environ["VPS2_ENV_FILE"]
+client_mark = os.environ.get("CLIENT_MARK") or "unknown"
 
 
 def vps2(tenant, embedder):
@@ -183,7 +208,11 @@ def vps2(tenant, embedder):
     inner = (
         f"cd {checkout} && set -a && . {env_file} && set +a && "
         f"export RECALL_TENANT={shlex.quote(tenant)} "
-        f"RECALL_EMBEDDER={shlex.quote(embedder)} RECALL_ENV=production && "
+        f"RECALL_EMBEDDER={shlex.quote(embedder)} RECALL_ENV=production "
+        # Inert to the server, load-bearing for the sweep: the only thing on the HOST that says
+        # which client and which checkout launched a given server. Without it an idle server and a
+        # live one are indistinguishable, and so are mine and another agent's.
+        f"RECALL_MCP_CLIENT={shlex.quote(client_mark)} && "
         f"unset RECALL_TRUST_MODE && exec {python_bin} -m recall_mcp.server"
     )
     return {

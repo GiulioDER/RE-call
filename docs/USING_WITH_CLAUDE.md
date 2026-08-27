@@ -18,6 +18,9 @@ You still need a database first (`recall quickstart` makes a throwaway one). See
 [plugin/README.md](../plugin/README.md). Everything below is the manual wiring, for other
 clients and for anyone who wants to see what the plugin writes.
 
+**Building an agent with the Claude Agent SDK instead of a client?** The same tools are available
+in-process, no MCP server required: [USING_WITH_AGENT_SDK.md](USING_WITH_AGENT_SDK.md).
+
 ## 1. Install & run
 
 ```bash
@@ -185,6 +188,39 @@ retrieval behavior when they are used directly.
 `decision: "abstain"` means the bundle is empty and the agent must not answer from memory. Validate
 generated answers with `recall.validate_answer`, which checks that every citation resolves to a
 supplied `chunk_id`.
+
+### Serve fewer of them, because unused tools are not free
+
+Every tool definition is injected into the session's context and re-sent on **every turn**, whether
+or not the agent ever calls it. Measured 2026-08-27 on `claude-haiku-4.5` through Claude Code, on
+one-turn sessions that called nothing:
+
+| `RECALL_MCP_TOOLS` | tools served | input tokens, one turn |
+|---|---:|---:|
+| unset | 18 | 5,727 |
+| `read` | 5 | 4,124 |
+| `search` | 2 | 3,731 |
+
+That is about **153 input tokens per tool per turn**, or roughly 30,000 tokens over a 15-turn
+session for the sixteen tools a search-only client never touches. Scopes gate *execution*, not
+*listing*, so a read-only caller pays for the calibration and ingest tools it is not allowed to use.
+
+```bash
+RECALL_MCP_TOOLS=search python -m recall_mcp.server
+```
+
+Presets are `all`, `search` (`recall_search`, `recall_evidence`) and `read` (those three plus
+`recall_related`, `recall_current_state`, `recall_stats`). Explicit tool names compose with a
+preset, separated by commas or spaces: `RECALL_MCP_TOOLS="read, recall_index"`.
+
+Unset serves everything, so nothing changes for an existing deployment. A name that is neither a
+tool nor a preset makes the server **refuse to start**, because a server that quietly serves a
+smaller surface than its operator configured is indistinguishable from an agent that chose not to
+call the missing tool.
+
+⚠️ This decides what is **offered**. It is not an authorisation boundary and must never be used as
+one: a caller who must not erase memory is stopped by not holding `recall:forget`, not by
+`recall_forget` being absent from the list.
 
 ## 4. The self-recall loop (redacted)
 

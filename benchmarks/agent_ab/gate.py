@@ -28,6 +28,12 @@ require the agent to have called them. Those are different facts:
   correct.
 
 Conflating the two is exactly the mistake that made the Codex run look like a null.
+
+Prior work: same `recall_search` as `claude_exec.py`, 2026-08-27. `arms_share_recall`
+exists for the design that memo describes: with both arms the instruction arm, the off
+arm CARRIES RE-call, and the default off-arm check refused every pair for exactly the
+property the design requires. It judges the off arm by the ON-arm rules rather than
+skipping the check, which is stricter.
 """
 
 from __future__ import annotations
@@ -71,9 +77,18 @@ def _recall_tools(record: SessionRecord, prefix: str) -> list[str]:
 
 
 def check_session(
-    record: SessionRecord, *, recall_tool_prefix: str = DEFAULT_RECALL_TOOL_PREFIX
+    record: SessionRecord,
+    *,
+    recall_tool_prefix: str = DEFAULT_RECALL_TOOL_PREFIX,
+    arms_share_recall: bool = False,
 ) -> AdmissionVerdict:
-    """Decide whether one session is admissible evidence for its arm."""
+    """Decide whether one session is admissible evidence for its arm.
+
+    `arms_share_recall` is for the design where both arms are the SAME arm and differ by something
+    outside the memory configuration, which is the write-time hook experiment. There the off arm
+    must carry RE-call, so it is checked by the on-arm rules. That is stricter than skipping the
+    check: the servers still have to have connected.
+    """
 
     reasons: list[str] = []
     notes: list[str] = []
@@ -94,7 +109,9 @@ def check_session(
         else []
     )
 
-    if record.variant == RECALL_ON:
+    # The default off-arm check would reject every pair of the hook design for exactly the
+    # property that design requires, so the off arm is judged by the on-arm rules instead.
+    if record.variant == RECALL_ON or arms_share_recall:
         if not tools:
             unhealthy = [
                 f"{item.get('name')}={item.get('status')}"
@@ -175,13 +192,25 @@ def admit_pairs(
     records: Iterable[SessionRecord],
     *,
     recall_tool_prefix: str = DEFAULT_RECALL_TOOL_PREFIX,
+    arms_share_recall: str | None = None,
 ) -> AdmissionReport:
     """Keep only the pairs where both arms are admissible evidence.
 
     A pair is the unit, not a session: an on arm whose treatment was verified is still useless
     without the off arm it is being compared against, and admitting it alone would quietly turn a
     paired design into an unpaired one partway through the task set.
+
+    `arms_share_recall` is a stated REASON, not a flag, for the design where both arms are the same
+    arm. A boolean would be indistinguishable from switching the gate off, so the caller writes the
+    sentence and the runner records it in the artifact.
     """
+
+    if arms_share_recall is not None and not arms_share_recall.strip():
+        raise ValueError(
+            "arms_share_recall must state WHY both arms may carry RE-call; an empty reason turns "
+            "off the check that catches an off arm which was never actually memory-free."
+        )
+    share = arms_share_recall is not None
 
     by_task: dict[str, dict[str, SessionRecord]] = defaultdict(dict)
     ordered_tasks: list[str] = []
@@ -209,7 +238,8 @@ def admit_pairs(
                 )
                 continue
             pair_verdicts.append(
-                check_session(arm, recall_tool_prefix=recall_tool_prefix)
+                check_session(arm, recall_tool_prefix=recall_tool_prefix,
+                              arms_share_recall=share)
             )
         verdicts.extend(pair_verdicts)
         if all(verdict.admitted for verdict in pair_verdicts):
