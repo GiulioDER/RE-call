@@ -175,3 +175,48 @@ failing.
 built, tested (9 groups, 6 mutations killed) and verified against the live corpus, so the only
 remaining work is the harness, and that the noise premise is now demonstrated rather than
 predicted.
+
+## 🔁 Second amendment appended 2026-08-27, before stage A ran: the block is cleared
+
+**Nothing above is edited, including the first amendment.** The harness work the amendment above
+priced out has been done, so stage A runs. Two things about it change the run condition from what
+the frozen predictions assumed, and both are stated here rather than absorbed silently.
+
+### Both arms now run under an isolated `CLAUDE_CONFIG_DIR` instead of `--bare`
+
+Measured against CLI 2.1.238 before the field was added:
+
+| condition | hooks | plugins |
+|---|---|---|
+| `--bare` alone, hook supplied via `--settings` | **skipped** | 7 loaded |
+| `CLAUDE_CONFIG_DIR`, no `--bare` | **fired** | 0 loaded, 0 MCP servers |
+
+So this is not a weakening of `--bare`'s isolation. It is stricter on plugins, and it admits
+exactly what the named directory contains. `prepare_hook_config_dirs` writes one directory per
+variant and installs the hook in the ON arm only; a reader can diff the two directories and find
+exactly one difference. `build_configs` refuses `config_dirs` that do not cover every variant,
+because one arm bare and one arm isolated differ in two ways at once and can attribute nothing.
+
+⚠️ **This still changes the environment of the CONTROL arm** relative to every earlier result in
+this lane, which ran `--bare`. The change is in the direction of less admitted context, not more,
+but "less" is not "identical". Stage A therefore reads the control as well as the treatment, and
+**no treatment number is read until the control is shown to behave as the `--bare` control did**.
+
+### What the artifact records
+
+`environment.json` gains `hook_file` and `isolation`. Without them a hooked run and an unhooked one
+produce identical artifacts, which is the whole reason the first amendment asked for the resolved
+hook set to be recorded the way `instruction_file` already is.
+
+### Two hook defects found while wiring it, both fixed before the run
+
+1. Trace lines carried no session key. Stage A's endpoint is injections **per session** and the
+   whole run appends to one file, so the trace would have held a correct total from which no
+   per-session number could be recovered. Every line now carries `session_id`, `cwd` and a stamp.
+2. A well-formed but non-object event (`[]`, `3`, `"x"` are all valid json without a `.get`) raised
+   an `AttributeError` into the session, from a hook whose design rule is that it must never break
+   the session it measures.
+
+Mutation coverage is now eight, all eight killed, including one per defect.
+
+**The predictions above stand unscored and unedited.** Stage A is measured against them as written.
