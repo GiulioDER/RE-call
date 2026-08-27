@@ -78,7 +78,7 @@ def generate_rewrite(text: str, key: str) -> dict:
         {
             "model": REWRITE_MODEL,
             "temperature": 0,
-            "max_tokens": 600,
+            "max_tokens": 800,
             "messages": [{"role": "user", "content": REWRITE_PROMPT + text[:6000]}],
         }
     ).encode("utf-8")
@@ -101,7 +101,12 @@ def generate_rewrite(text: str, key: str) -> dict:
         raise SystemExit(f"generation failed after retries: {last_error}")
     content = payload["choices"][0]["message"]["content"].strip()
     content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content)
-    parsed = json.loads(content)
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        # Deterministic repair for the one malformation seen: a literal newline inside a JSON
+        # string, which temperature 0 reproduces identically on every retry.
+        parsed = json.loads(re.sub(r"[\r\n]+", " ", content))
     title = str(parsed["title"]).strip()
     description = str(parsed["description"]).strip()
     tasks = [str(t).strip() for t in parsed["tasks"] if str(t).strip()][:5]
@@ -228,7 +233,10 @@ def main() -> int:
     print(f"generating searcher-oriented surfaces for {len(memos)} memos with {REWRITE_MODEL}")
 
     def one(path: Path) -> tuple[str, dict]:
-        rewrite = generate_rewrite(path.read_text(encoding="utf-8"), key)
+        try:
+            rewrite = generate_rewrite(path.read_text(encoding="utf-8"), key)
+        except Exception as error:
+            raise SystemExit(f"generation failed for {path.name}: {error}") from error
         return path.name, rewrite
 
     rewrites: dict[str, dict] = {}
