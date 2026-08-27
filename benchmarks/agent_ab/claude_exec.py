@@ -120,6 +120,24 @@ class ClaudeExecConfig:
     #: stream is the evidence; every number in the summary is derived from it and can be
     #: recomputed, so it is written by the adapter itself rather than by whatever calls it.
     stream_dir: str | Path | None = None
+    #: An ISOLATED `CLAUDE_CONFIG_DIR` for this session, which is the only way to run a hook
+    #: without losing the isolation `--bare` provides. Measured 2026-08-27 against the live CLI
+    #: (2.1.238), because none of this is documented and all of it decides whether an arm is
+    #: comparable:
+    #:
+    #:   `--bare` alone                      hooks SKIPPED even from `--settings`; 7 plugins loaded
+    #:   `CLAUDE_CONFIG_DIR` + no `--bare`   hooks FIRE; 0 plugins, 0 MCP servers
+    #:
+    #: So config-dir isolation is not a weakening of `--bare`, it is STRICTER on plugins while
+    #: allowing exactly the hooks written into the directory this field names. Setting it turns
+    #: `--bare` off, because the two are mutually exclusive in effect: `--bare` would skip the very
+    #: hook the directory exists to supply.
+    #:
+    #: ⚠️ Changing this changes the CONTROL arm too. Every prior result in this lane was produced
+    #: under `--bare`, so a run that uses this must use it for BOTH arms — otherwise the arms
+    #: differ in isolation as well as in treatment — and must show that the control still behaves
+    #: as the `--bare` control did before any treatment number is read.
+    config_dir: str | Path | None = None
 
     def __post_init__(self) -> None:
         if not self.executable.strip():
@@ -128,6 +146,15 @@ class ClaudeExecConfig:
             raise ValueError("timeout_s must be positive")
         if not self.recall_tool_prefix.strip():
             raise ValueError("recall_tool_prefix must not be empty")
+        if self.config_dir is not None and self.bare:
+            # Refused rather than silently preferring one: a caller that sets both has asked for a
+            # hook AND for hooks to be skipped, and guessing which they meant is how an arm ends up
+            # measuring something nobody registered.
+            raise ValueError(
+                "config_dir and bare are mutually exclusive: --bare skips hooks even when they "
+                "are supplied through the config directory (measured against CLI 2.1.238), so a "
+                "session with both would silently run without the hook. Pass bare=False."
+            )
         if self.strict_mcp_config and self.mcp_config is None:
             # --strict-mcp-config only means "ignore discovered servers"; with no --mcp-config it
             # silently produces a session with no MCP at all. For the off arm that is the intent,
@@ -568,6 +595,12 @@ async def run_claude_case(
     command = config.command(prompt)
     environment = dict(os.environ)
     environment.update({str(key): str(value) for key, value in config.env.items()})
+    if config.config_dir is not None:
+        # Set AFTER config.env so the isolation cannot be silently overridden by a caller's env
+        # block. This is the whole isolation mechanism when `--bare` is off: it decides which
+        # settings, hooks, plugins and MCP the session sees, and pointing it at a prepared
+        # directory is what makes a hook arm comparable to its control.
+        environment["CLAUDE_CONFIG_DIR"] = str(config.config_dir)
 
     started = time.perf_counter()
     process = await asyncio.create_subprocess_exec(
