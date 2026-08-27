@@ -1,6 +1,6 @@
 # Pre-registration: does the Claude Agent SDK driver reproduce agent-ab-skill-001?
 
-**Date:** 2026-08-26   **Status:** predicted, not yet measured
+**Date:** 2026-08-26   **Status:** measured, see the Result section appended below
 
 ## The question
 
@@ -128,3 +128,36 @@ from the result, and exists to catch wiring (the skill-001 pattern).
   on arrival. `recall_latency_ms` and wall time are therefore recorded-not-falsifying.
 - The SDK's own transport overhead lands inside measured wall time, in the same direction for
   both arms.
+
+## Result (2026-08-27)
+
+**Status:** measured. **Verdict: equivalent.** Every falsifier landed inside its committed band;
+the committed summary is `results/agent_ab/agent_ab_sdk_replication_2026-08-26.json` and the
+published table is `results/RESULTS.md` §13f. Per the decision rule stated above, the SDK driver
+is now the default for subsequent measured runs.
+
+Measured against predicted, including the misses:
+
+| metric | predicted | measured | gap |
+|---|---|---|---|
+| admitted pairs | at least 52 | 50 of 56 | **missed by 2.** All six discards carry one admission reason (on-arm stdio server never available) and cluster around two host reboots that interrupted the run; the wiring floor of 48 held and the gate discarded visibly. |
+| search rate | at least 0.95 | 0.905 (38 of 42) | **missed by 0.045.** Four on-arm sessions never searched; band held. |
+| governing-memo reach | within 0.10 of 0.674 | 0.605 (diff 0.069) | hit |
+| per-task mean delta | within 0.10 of +0.208, same sign | +0.325 (diff +0.117) | **missed the 0.10 point prediction**, inside the 0.15 band; same sign, and larger rather than smaller |
+| control means | both 1.000 | 1.000 / 1.000 | hit |
+| median input-token overhead | within 25,000 of +106,946 | +103,329 (diff 3,617) | hit |
+| median wall-time overhead | HIGHER than +36.5 s | +12.4 s median, negative mean | **wrong in direction.** Recorded-not-falsifying as preregistered; the resumed segments also ran on a host in different load states, which this record cannot separate from the driver. |
+
+Run integrity notes, stated because they are part of the evidence: the run was interrupted twice
+by host reboots and resumed under the same id with `--resume` (34 then 48 pairs carried forward);
+resumed segments ran in later OpenRouter serving hours, the cross-hour confound named above, and
+the paired design carries it. The corpus database had to be migrated to schema 0016 before the
+run could start (the serving refusal named the migrations); chunks, generation and calibration
+were re-verified intact afterwards. Spend accounting stays with the gateway; the driver's
+`total_cost_usd` remains recorded untrusted.
+
+The prediction-calibration note above proved apt in the usual direction: both effect-adjacent
+point predictions that missed (admitted pairs, search rate) were optimistic, and the one
+directional prediction about a mechanical quantity (wall time) was simply wrong. The bands, set
+by decision relevance rather than by the point predictions, absorbed all of it, which is what
+they were for.
