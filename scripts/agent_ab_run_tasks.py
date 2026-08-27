@@ -209,6 +209,7 @@ def environment_capture(
     *,
     instruction_file: str | None = None,
     hook_file: str | None = None,
+    hook_vocab: str | None = None,
     work_root: str | None = None,
     isolation_check: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -245,6 +246,7 @@ def environment_capture(
         # one are indistinguishable in the artifact, which is the difference between two
         # comparable runs and two runs nobody can tell apart.
         "hook_file": hook_file,
+        "hook_vocab": hook_vocab,
         "isolation": "config_dir" if hook_file else "bare",
         "work_root": work_root,
         # The verdict of the preflight, not just the fact that one ran. A run whose control
@@ -284,6 +286,16 @@ async def main() -> int:
             "hooks even from --settings, and loads 7 plugins where a config dir loads 0), and "
             "the hook is installed for the ON arm only. Isolation belongs to both arms; the "
             "treatment belongs to one."
+        ),
+    )
+    parser.add_argument(
+        "--hook-vocab",
+        default=None,
+        help=(
+            "JSON list of hazard-vocabulary terms, from agent_ab_export_hazard_vocab.py. The hook "
+            "RECORDS whether each injection would have passed this trigger and never acts on it, "
+            "so a gated variant stays an offline re-analysis. Without it the field is null on "
+            "every line and the gated variant cannot be derived from the run at all."
         ),
     )
     parser.add_argument(
@@ -397,7 +409,13 @@ async def main() -> int:
             "RECALL_HOOK_TENANT": args.tenant,
             "RECALL_HOOK_TRACE": str(artifacts / "hook-trace.jsonl"),
         }
+        if args.hook_vocab:
+            vocab_path = Path(args.hook_vocab)
+            if not vocab_path.is_file():
+                raise SystemExit(f"--hook-vocab does not exist: {vocab_path}")
+            agent_env = {**agent_env, "RECALL_HOOK_VOCAB": str(vocab_path.resolve())}
         print(f"write-time hook: {hook_path}")
+        print(f"  vocabulary: {args.hook_vocab or 'NONE, so vocabulary_would_fire is null'}")
         print(f"  config dirs: {', '.join(str(p) for p in hook_dirs.values())}")
         print(f"  trace: {artifacts / 'hook-trace.jsonl'}")
 
@@ -534,7 +552,8 @@ async def main() -> int:
         ("admission.json", report.summary()),
         ("recall-overhead.json", summarize_recall_overhead(admitted)),
         ("environment.json", environment_capture(args.model, spec, check, instruction_file=args.instruction_file,
-                            hook_file=args.hook_file, work_root=str(work_root),
+                            hook_file=args.hook_file, hook_vocab=args.hook_vocab,
+                            work_root=str(work_root),
                             isolation_check=isolation_check)),
         ("digest-parity.json", {"failures": parity_failures}),
     ):
