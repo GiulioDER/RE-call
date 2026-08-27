@@ -78,7 +78,10 @@ def generate_rewrite(text: str, key: str) -> dict:
         {
             "model": REWRITE_MODEL,
             "temperature": 0,
-            "max_tokens": 800,
+            "max_tokens": 2000,
+            # Sonnet 5 reasons by default through OpenRouter, and the reasoning spend counts
+            # toward max_tokens: an 800 budget returned 90 characters of content cut mid-string.
+            "reasoning": {"enabled": False},
             "messages": [{"role": "user", "content": REWRITE_PROMPT + text[:6000]}],
         }
     ).encode("utf-8")
