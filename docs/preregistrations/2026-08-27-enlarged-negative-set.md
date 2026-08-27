@@ -115,3 +115,66 @@ with false-trigger on `N_repo` (`<=0.35`, `0.36-0.70`, `>0.70`). Nine cells:
    sample can be enlarged rather than re-drawn.
 
 <!-- frozen_above -->
+
+## Result (2026-08-27): VOID by the registered judge control, and the void is the finding
+
+**The judge called only 6 of 14 known governing memos actionable, below the registered floor of
+11. Per the rule above, the run stopped before sampling and no trigger number is read from it.**
+The 200-block negative set was never built.
+
+**The judge was right and the ground truth was wrong**, which is the opposite of what the control
+was written to catch. Inspecting the eight disagreements:
+
+| session | its memo-retrieving draft | chars | rank |
+|---|---|---:|---:|
+| `ts-lf-rewrite#r1` | `ls -la scripts/ \| head -20` | 26 | **1** |
+| `ts-worktree-import#r1` | `ls -la benchmarks/` | 18 | 4 |
+| `ts-worktree-import#r5` | `ls -la benchmarks/` | 18 | 4 |
+
+⛔ **"The draft retrieves the governing memo" is not "the governing memo applies to this draft",
+and that proxy has been the measure underneath this entire lane since the direction screen.** A
+directory listing retrieves the CRLF memo at rank 1 because it shares the token `scripts`.
+
+Structural extent, measured on the committed trigger artifact: **7 of 14 sessions have no
+memo-retrieving draft longer than 200 characters**, and 15 of 46 retrieving drafts are shell
+one-liners under 60 characters.
+
+## Verification of the affected headline (`scripts/agent_ab_actionable_recall.py`)
+
+All 46 memo-retrieving drafts judged, rather than the first per session, so the corrected figure is
+measured rather than bounded:
+
+| measure | value |
+|---|---|
+| retrieval-only recall, **as previously published** | 14/14 |
+| **ACTIONABLE recall** (>= 1 draft where the memo truly applies) | **10/14** |
+| memo-retrieving drafts where the memo actually applies | **27/46 (0.587)** |
+
+The four sessions that fall away are `ts-lf-rewrite#r3` and `ts-worktree-import#r1/#r2/#r5`, each
+of which had exactly one retrieving draft, and in three cases that draft is `ls -la benchmarks/`.
+
+**What survives:** draft-time search still vastly outperforms goal-vocabulary search, 10 of 14
+against 1 of 14, and the mechanism is unchanged for the ten sessions where a real operation
+retrieves a memo that really applies. **What does not:** the 14/14 figure, and any statement built
+on it.
+
+⚠️ **Consequence for the trigger screen, stated rather than quietly absorbed:** its populations
+were built on the same proxy — "hazard-bearing" meant "retrieves the memo", so 46 of 178 drafts
+were labelled hazard-bearing when 27 are actionable. Its coverage numbers are therefore measured
+against a population that is 41% mislabelled, and they need re-derivation against the judged labels
+before any trigger claim is repeated. The false-trigger side is unaffected, because `N_clean` was
+labelled by the benchmark rather than by retrieval.
+
+## What this licenses
+
+The enlarged negative set is still the right next step and is now **blocked on a prerequisite**:
+the positive labels must come from actionability, not retrieval. The order is:
+
+1. Re-derive the trigger screen's populations from `actionable-recall.json`'s judged labels.
+2. Re-run this record's sampling with the judge control re-measured against the CORRECTED control
+   set — that is, drafts where the memo is known to apply, not merely known to be retrieved. The
+   floor of 11 of 14 was written against a control set that was itself 8/14 wrong, so the floor
+   needs restating in a new record rather than reused.
+
+**Neither is done here, and the void stands.** The run cost ~70 judge calls and about two minutes,
+and it prevented a 200-block population from being built on a broken label.

@@ -215,6 +215,34 @@ previous probe in this same lane — and then the very next script reproduced th
 times over. The guard is now in the script, and a retrieval error kills the run instead of
 counting as a miss.
 
+## 🔁 Correction appended 2026-08-27: the 14/14 above counts RETRIEVAL, not APPLICABILITY
+
+**Nothing above is edited.** This record's headline — draft queries retrieve the governing memo at
+top-5 for 14 of 14 misses — is correct as a statement about retrieval and **overstates the finding
+it was read as**.
+
+A judge control in `2026-08-27-enlarged-negative-set.md` exposed that **"the draft retrieves the
+governing memo" is not "the governing memo applies to this draft"**. Three sessions' only
+memo-retrieving draft is `ls -la benchmarks/` — eighteen characters, retrieving the memo on a
+shared directory name.
+
+Verified by judging all 46 memo-retrieving drafts
+(`benchmarks/artifacts/agent_ab/actionable-recall.json`):
+
+| measure | value |
+|---|---|
+| retrieval-only recall, **as published above** | 14/14 |
+| **actionable recall** | **10/14** |
+| retrieving drafts where the memo applies | 27/46 (0.587) |
+
+**The comparison this record was written to make survives**: 10 of 14 against 1 of 14 for the
+goal-vocabulary queries the same sessions actually issued, and the mechanism is unchanged wherever
+a real operation retrieves a memo that really applies. **The number 14/14 does not survive**, and
+neither does anything built on it. The lesson is one this project already had in another form
+(`[[a-memo-can-be-in-the-corpus-and-unreachable]]`): retrieval is not the endpoint anyone cares
+about, and a proxy that is obviously right can be wrong for 4 of 14 cases.
+
+
 ## 🔁 Correction appended 2026-08-27: the query length in this record is wrong, twice
 
 **Nothing above is edited.** Two numbers in this document are wrong and both are the same mistake:
