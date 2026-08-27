@@ -69,3 +69,47 @@ does not settle the question, which is itself a finding about the task.
   bias about whether a hazard "really" applies. Named here because it cannot be removed.
 
 <!-- frozen_above -->
+
+## 🔁 Correction and supersession appended 2026-08-27, before any label was written
+
+**Nothing above is edited.** Two things in this record are wrong, and the second retires it.
+
+**1. The confound "the labeller wrote the memos" is FALSE.** The user states plainly: *"I didn't
+write all the memos."* They were written by prior agent sessions. So the hindsight-bias confound I
+named does not exist, and neither does the justification I built on it — that the labeller would
+know each memo's meaning better than a model. **The opposite is closer to true**, which is why the
+instrument met the honest answer it deserved: *"I can't label, I don't know the right answer."*
+
+That inability is not a labeller failing. It is evidence that **"would this note's failure strike
+this code" has no accessible ground truth by inspection**, which is a property of the question I
+chose, not of the person asked.
+
+**2. A judge-free, EXECUTABLE ground truth already existed in the archive and I did not look for
+it.** Every session carries `metadata.check`, the result of running the agent's artifact against
+the task's oracle, with trap-specific evidence. For the 14 registered miss sessions:
+
+| outcome | sessions | evidence |
+|---|---:|---|
+| fell into exactly the trap the memo describes | **8** | 5 × `rewrote the file with 27 carriage returns against eol=lf`; 3 × `reached only 6 of 51 files over 120 seeds: head bias` |
+| avoided the trap WITHOUT the memo | **5** | all `ts-worktree-import`: `reported this checkout's number with the decoy on the path` |
+| failed before reaching the trap | 1 | `ts-lf-rewrite#r4`: `scripts/bump_version.py was not written` |
+
+**So the memo was actually needed in 8 of 14 sessions, was demonstrably NOT needed in 5, and 1 is
+indeterminate** — determined by execution, not opinion, and recorded months before any of today's
+probes ran.
+
+🔑 **This lands inside the judges' range (6 to 10) and settles it from outside.** It also supplies
+what no judge could: **five objective NEGATIVES** — sessions where the agent avoided the hazard
+unaided, so surfacing the memo would have been noise. Every negative population used today was
+either 18 git commands or a retrieval-defined proxy.
+
+**This record is SUPERSEDED.** The gold set is not built, the labels are not collected, and the
+predictions above are left standing and unscored. The replacement is a re-derivation on checker
+outcomes, which needs its own registration because its endpoint ("would draft search have surfaced
+the memo in the sessions that actually needed it") is a different quantity from the one measured
+today.
+
+⚠️ **The lesson is the expensive part, and it is mine.** I reached for an LLM judge, then a second
+and third judge, then a human labeller — three escalating attempts to manufacture a label — while
+an executable oracle sat in the same archive I had been reading all day. **Look for a ground truth
+that was RECORDED before reaching for one that must be produced.**
