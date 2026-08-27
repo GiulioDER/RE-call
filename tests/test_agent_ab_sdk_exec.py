@@ -463,3 +463,42 @@ def test_sdk_live_readiness() -> None:
     assert record.metadata["init_present"] is True
     assert record.input_tokens is not None and record.input_tokens > 0
     assert "READY" in (record.response or "").upper()
+
+
+def test_the_on_arm_takes_exactly_one_memory_source(tmp_path) -> None:
+    """Neither source, or both, is a refusal rather than a silent pick.
+
+    The in-process arm exists to differ from the stdio arm in the TRANSPORT and nothing else, so
+    the two are built by the same function from the same specs. If passing both quietly chose one,
+    a run could answer a different question than its preregistration says it asked.
+    """
+    from benchmarks.agent_ab.recall_server import StdioRecallSpec
+
+    prompt = tmp_path / "static.txt"
+    prompt.write_text("static", encoding="utf-8")
+    specs = {
+        RECALL_ON: ArmSpec(profile="claude_md_recall", append_system_prompt_file=prompt),
+        RECALL_OFF: ArmSpec.claude_md(prompt),
+    }
+    spec = StdioRecallSpec(dsn="postgresql://x/y", cwd=tmp_path)
+    served = {"recall": object()}
+
+    with pytest.raises(ValueError, match="exactly one memory source"):
+        build_sdk_configs(specs, model="m", cwd=tmp_path)
+    with pytest.raises(ValueError, match="exactly one memory source"):
+        build_sdk_configs(
+            specs, recall_spec=spec, in_process_servers=served, model="m", cwd=tmp_path
+        )
+
+    in_process = build_sdk_configs(
+        specs, in_process_servers=served, model="m", cwd=tmp_path
+    )
+    assert in_process[RECALL_ON].mcp_servers == served
+    assert in_process[RECALL_OFF].mcp_servers is None
+
+    stdio = build_sdk_configs(specs, recall_spec=spec, model="m", cwd=tmp_path)
+    assert stdio[RECALL_ON].mcp_servers is not None
+    assert stdio[RECALL_ON].mcp_servers != served
+    # Everything except the memory source must be identical between the two builds.
+    for field in ("allowed_tools", "disallowed_tools", "permission_mode", "bare", "model"):
+        assert getattr(in_process[RECALL_ON], field) == getattr(stdio[RECALL_ON], field)

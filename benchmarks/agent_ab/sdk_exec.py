@@ -471,7 +471,8 @@ async def run_sdk_case(
 def build_sdk_configs(
     specs: Mapping[str, ArmSpec],
     *,
-    recall_spec: "StdioRecallSpec | None",
+    recall_spec: "StdioRecallSpec | None" = None,
+    in_process_servers: Mapping[str, Any] | None = None,
     model: str,
     cwd: str | Path,
     timeout_s: float = 1800.0,
@@ -503,11 +504,19 @@ def build_sdk_configs(
             f"the {RECALL_OFF} arm must use one of {OFF_ARM_PROFILES}, got "
             f"{specs[RECALL_OFF].profile!r}"
         )
-    if recall_spec is None:
+    # Exactly ONE memory source for the on arm. Both are accepted because the point of the
+    # in-process arm is to differ from the stdio arm in the transport and in nothing else, and
+    # "nothing else" is only checkable if the two are built by the same function from the same
+    # specs. Passing both would silently pick one and quietly answer a different question.
+    if (recall_spec is None) == (in_process_servers is None):
         raise ValueError(
-            f"the {RECALL_ON} arm profile {specs[RECALL_ON].profile!r} needs a recall_spec to "
-            f"build its stdio server config"
+            f"the {RECALL_ON} arm profile {specs[RECALL_ON].profile!r} needs exactly one memory "
+            f"source: recall_spec (an external stdio server) OR in_process_servers (SDK tools "
+            f"served in this process), not both and not neither"
         )
+    on_arm_servers = (
+        dict(in_process_servers) if in_process_servers is not None else sdk_mcp_servers(recall_spec)
+    )
 
     configs: dict[str, SDKExecConfig] = {}
     for variant, spec in specs.items():
@@ -519,7 +528,7 @@ def build_sdk_configs(
             env=dict(env or {}),
             bare=True,
             cli_path=cli_path,
-            mcp_servers=sdk_mcp_servers(recall_spec) if variant == RECALL_ON else None,
+            mcp_servers=on_arm_servers if variant == RECALL_ON else None,
             allowed_tools=allowed,
             disallowed_tools=DENIED_TOOLS,
             append_system_prompt_file=spec.append_system_prompt_file,

@@ -1,5 +1,12 @@
 """Run the preregistered task-success comparison: real work, executable endpoints.
 
+Prior work: `scripts/agent_ab_run.py` is the trap runner this deliberately does NOT extend, for
+the three reasons listed below. `benchmarks/agent_ab/tasksuccess.py`, `sandbox.py`, `gate.py` and
+`schema.py` own the endpoint, the isolation, the admission rule and the record shape, and are
+used here rather than reimplemented. The `--driver` and `--memory-transport` branches exist so a
+run can change exactly one thing about how a session is launched or how it reaches memory while
+sharing every other line of this orchestration, which is what makes those comparisons valid.
+
     python -u scripts/agent_ab_run_tasks.py --run-id agent-ab-tasksuccess-001 \
         --dsn postgresql://recall:recall@127.0.0.1:5407/agent_ab --tenant default \
         > benchmarks/artifacts/agent_ab/tasksuccess-001.log 2>&1
@@ -243,6 +250,7 @@ def environment_capture(
     *,
     instruction_file: str | None = None,
     driver: str = "cli",
+    memory_transport: str = "stdio",
 ) -> dict[str, Any]:
     def run(*command: str) -> str:
         try:
@@ -271,6 +279,7 @@ def environment_capture(
         # Which driver launched the sessions. `cli` is claude_exec's subprocess over stream-json,
         # the driver of every archived baseline; `sdk` is sdk_exec over claude-agent-sdk.
         "driver": driver,
+        "memory_transport": memory_transport,
         "claude_agent_sdk_version": sdk_version() if driver == "sdk" else None,
         # Which instruction the on arm ran under. The formatted text itself is already kept in the
         # artifact as static-plus-recall-prompt.txt; this names the committed source it came from,
@@ -309,6 +318,18 @@ async def main() -> int:
             "driver of every archived baseline) or 'sdk' (sdk_exec over claude-agent-sdk, which "
             "needs the agent extra installed). Everything else in the run is shared verbatim, "
             "which is what makes a driver-equivalence comparison a comparison."
+        ),
+    )
+    parser.add_argument(
+        "--memory-transport",
+        choices=("stdio", "in-process"),
+        default="stdio",
+        help=(
+            "how the ON arm reaches RE-call: 'stdio' (an external `python -m recall_mcp.server` "
+            "per session, what every archived run used) or 'in-process' (recall_agent's SDK "
+            "tools served from this process, no server and no per-session cold start). "
+            "Requires --driver sdk. Everything else in the run is shared verbatim, which is what "
+            "makes a transport comparison a comparison."
         ),
     )
     parser.add_argument(
@@ -389,10 +410,30 @@ async def main() -> int:
     on_spec = ArmSpec.claude_md_recall(spec, artifacts / "recall-mcp.json", combined)
     # One template pair, built once so everything except memory is identical by construction. The
     # per-session `cwd` is the only field replaced afterwards.
+    in_process_memory = None
+    in_process_servers = None
+    if args.memory_transport == "in-process":
+        # Built from the SAME dsn/tenant this run's stdio `check()` just proved trusted, and
+        # pinned to the generation store, so the two transports serve one corpus rather than two.
+        from recall_agent import RecallAgentMemory
+
+        in_process_memory = RecallAgentMemory(
+            dsn=args.dsn,
+            tenant=args.tenant,
+            embedder=spec.embedder,
+            use_generation_store=True,
+        )
+        in_process_servers = {spec.server_name: in_process_memory.sdk_mcp_server()}
+        print(
+            f"memory transport: IN-PROCESS, server name {spec.server_name!r}, "
+            f"no per-session server\n"
+        )
+
     if args.driver == "sdk":
         templates: dict[str, Any] = build_sdk_configs(
             {RECALL_ON: on_spec, RECALL_OFF: off_spec},
-            recall_spec=spec,
+            recall_spec=None if in_process_servers else spec,
+            in_process_servers=in_process_servers,
             model=args.model,
             cwd=work_root,
             timeout_s=args.timeout_s,
@@ -503,7 +544,7 @@ async def main() -> int:
     for name, payload in (
         ("admission.json", report.summary()),
         ("recall-overhead.json", summarize_recall_overhead(admitted)),
-        ("environment.json", environment_capture(args.model, spec, check, instruction_file=args.instruction_file, driver=args.driver)),
+        ("environment.json", environment_capture(args.model, spec, check, instruction_file=args.instruction_file, driver=args.driver, memory_transport=args.memory_transport)),
         ("digest-parity.json", {"failures": parity_failures}),
     ):
         (artifacts / name).write_text(
