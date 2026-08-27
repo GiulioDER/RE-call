@@ -1,5 +1,11 @@
 """Compare a driver-equivalence replication against its archived baseline, band by band.
 
+Prior work: `scripts/agent_ab_analyze_tasks.py` already computes every metric compared here, and
+its definitions are the ones this script consumes rather than recomputing, so the two cannot
+disagree about what "search rate" means. `benchmarks/agent_ab/stats.py` owns the paired tests.
+No prior equivalence comparator existed: the earlier runs compared arms WITHIN one run, and
+nothing in this repository compared one run against another, which is the gap this fills.
+
     python scripts/agent_ab_compare_drivers.py \
         --run benchmarks/artifacts/agent_ab/agent-ab-sdk-replication-001/analysis.json \
         --baseline ~/.claude/archive/agent-ab-skill-001/analysis.json \

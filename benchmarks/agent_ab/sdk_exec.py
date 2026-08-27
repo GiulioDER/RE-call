@@ -1,5 +1,14 @@
 """Claude Agent SDK adapter for the paired benchmark runner.
 
+Prior work: `benchmarks/agent_ab/claude_exec.py` is the driver this supersedes, and its parsing
+core is REUSED here rather than reimplemented, so its three recorded stream findings keep one
+owner. `benchmarks/agent_ab/NEXT-BENCHMARK-MULTI-PRODUCT.md` (approved 2026-08-22) is the plan
+this is shaped for: the `MemoryAdapter` seam and per-session `CLAUDE_CONFIG_DIR` hermeticity are
+its decisions, not new ones. `recall_interop/memory_benchmarks.py` is the existing example of
+adapting RE-call to a foreign client contract and supplied the sync-in-thread pattern. No prior
+SDK-driven harness existed in this repository: `claude_agent_sdk` appeared nowhere before this
+module, which is why the driver is new and the endpoint, gate and schema around it are not.
+
 Supersedes `claude_exec`'s subprocess-and-parse driver without touching it: `claude_exec.py`
 produced every archived baseline and stays byte-identical so those runs remain reproducible from
 the code that ran them, and so "only the driver differs" is checkable as a diff. This module
