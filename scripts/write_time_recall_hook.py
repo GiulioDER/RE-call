@@ -28,6 +28,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 #: Matches `recall_mcp.service.MAX_QUERY_CHARS`; the server refuses a longer query rather than
@@ -153,6 +154,22 @@ def main() -> int:
         event = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         return 0
+    # `[]`, `3` and `"x"` are all VALID json and none of them has `.get`. Catching only a decode
+    # error left an AttributeError to escape into the session, which is the one outcome this hook
+    # is designed never to produce. Well-formed but wrong is the likelier malformation of the two.
+    if not isinstance(event, dict):
+        return 0
+
+    # Every trace line carries the session it came from. Stage A's endpoint is injections PER
+    # SESSION, and the whole run appends to ONE file, so without this the counts are a total that
+    # no per-session number can be recovered from. `session_id` is the client's own id; `cwd` is
+    # the harness's per-session sandbox, and is the key the harness can join on without having to
+    # know what id the client chose.
+    identity = {
+        "session_id": str(event.get("session_id") or ""),
+        "cwd": str(event.get("cwd") or ""),
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
 
     tool_name = str(event.get("tool_name") or "")
     tool_input = event.get("tool_input")
@@ -172,11 +189,13 @@ def main() -> int:
     try:
         hits = search(query, dsn)
     except Exception as error:  # noqa: BLE001 - a retrieval failure must not break the session
-        trace({"tool": tool_name, "chars": len(query), "error": f"{type(error).__name__}: {error}"})
+        trace({**identity, "tool": tool_name, "chars": len(query),
+               "error": f"{type(error).__name__}: {error}"})
         return 0
 
     vocab = load_vocabulary()
     trace({
+        **identity,
         "tool": tool_name,
         "chars": len(query),
         "query": query[:400],

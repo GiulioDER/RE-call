@@ -9,7 +9,8 @@ question: can this hook affect a session other than by adding context?
 Nothing needs a database, a corpus or a model — retrieval is injected, so the tests pin the hook's
 own decisions rather than the retriever's.
 
-Mutation-tested 2026-08-27 by `scripts/write_time_hook_mutations.py`, six ways, all six killed.
+Mutation-tested 2026-08-27 by `scripts/write_time_hook_mutations.py`, eight ways, all eight
+killed.
 These are the MEASURED reds, not the predicted ones, and they are wider than I expected because a
 hook that mis-extracts its payload or starts denying breaks several tests at once:
 
@@ -21,6 +22,10 @@ hook that mis-extracts its payload or starts denying breaks several tests at onc
                                                             which is the defect exactly)
     `additionalContext` swapped for `permissionDecision`  -> can_never_deny (all four checks),
                                                             broken_trace, vocabulary_not_applied
+    the session identity dropped from the trace           -> every_trace_line_names_its_session
+                                                            (session_id, cwd and the stamp)
+    a non-object event is accepted (json.load only)       -> malformed_stdin_is_survivable
+                                                            (RAISED on `[]` and `3`)
     trace() lets OSError escape                           -> RAISED
 
 Re-measure with `python scripts/write_time_hook_mutations.py`; it copies the hook, mutates the
@@ -31,6 +36,7 @@ from __future__ import annotations
 
 import io
 import json
+import pathlib
 import sys
 from pathlib import Path
 
@@ -158,13 +164,21 @@ def test_a_broken_trace_is_not_fatal() -> None:
 def test_malformed_stdin_is_survivable() -> None:
     """The hook is fed by a client; a malformed event must not raise into the session."""
 
+    for payload in ('not json at all', '[]', '3', '"x"', 'null'):
+        _malformed(payload)
+
+
+def _malformed(payload: str) -> None:
+    """`[]` and `3` are VALID json without a `.get`, so a decode-error-only guard let an
+    AttributeError escape into the session. Well-formed but wrong is the likelier malformation."""
+
     import os
 
     saved = dict(os.environ)
     saved_stdin, saved_stdout = sys.stdin, sys.stdout
     try:
         os.environ.clear()
-        sys.stdin = io.StringIO("not json at all")
+        sys.stdin = io.StringIO(payload)
         sys.stdout = io.StringIO()
         code = hook.main()
         # Captured BEFORE stdout is restored, and checked AFTER. Calling check() here would print
@@ -174,8 +188,8 @@ def test_malformed_stdin_is_survivable() -> None:
         sys.stdin, sys.stdout = saved_stdin, saved_stdout
         os.environ.clear()
         os.environ.update(saved)
-    check("malformed stdin returns 0 and prints nothing", code == 0 and printed == "",
-          f"code={code} printed={printed!r}")
+    check(f"malformed stdin {payload!r} returns 0 and prints nothing",
+          code == 0 and printed == "", f"code={code} printed={printed!r}")
 
 
 def test_vocabulary_is_recorded_not_applied() -> None:
@@ -192,6 +206,54 @@ def test_vocabulary_is_recorded_not_applied() -> None:
               {"RECALL_HOOK_DSN": "postgresql://x/y"}, lambda q, d: HIT)
     check("a payload the trigger would reject is STILL injected",
           "additionalContext" in out, "the trigger gated an injection")
+
+
+def test_every_trace_line_names_its_session() -> None:
+    """Stage A's endpoint is injections PER SESSION, and every session of the run appends to ONE
+    trace file. A record without a session key makes that endpoint uncomputable: the file holds a
+    correct total that no per-session number can be recovered from, which is worse than an empty
+    file because it looks like data.
+
+    Both keys are asserted for a reason. `session_id` is the client's, so it is the true grouping;
+    `cwd` is the harness's per-session sandbox, so it is the one the harness can join on without
+    knowing what id the client chose. Losing either costs an analysis step.
+    """
+
+    import tempfile
+
+    for label, monkey, expect_error in (
+        ("on an injection", lambda q, d: HIT, False),
+        ("on a retrieval failure", _raise, True),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = pathlib.Path(tmp) / "trace.jsonl"
+            run(
+                {
+                    "tool_name": "Write",
+                    "tool_input": {"content": "print('hello')" * 20},
+                    "session_id": "sess-abc",
+                    "cwd": "/sandbox/task-7",
+                },
+                {"RECALL_HOOK_DSN": "postgresql://x/y", "RECALL_HOOK_TRACE": str(destination)},
+                monkey,
+            )
+            lines = [json.loads(line) for line in
+                     destination.read_text(encoding="utf-8").splitlines() if line.strip()]
+            check(f"a line was written {label}", len(lines) == 1, f"{len(lines)} lines")
+            if not lines:
+                continue
+            record = lines[0]
+            check(f"session_id is carried {label}", record.get("session_id") == "sess-abc",
+                  repr(record.get("session_id")))
+            check(f"cwd is carried {label}", record.get("cwd") == "/sandbox/task-7",
+                  repr(record.get("cwd")))
+            check(f"the line is timestamped {label}", bool(record.get("at")), repr(record.get("at")))
+            check(f"the record still says what it was {label}",
+                  ("error" in record) is expect_error, sorted(record))
+
+
+def _raise(query, dsn):
+    raise RuntimeError("no database")
 
 
 def main() -> int:

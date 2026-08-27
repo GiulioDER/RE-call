@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Break the write-time hook six ways and watch the named test go red.
+"""Break the write-time hook eight ways and watch the named test go red.
 
     python scripts/write_time_hook_mutations.py
 
@@ -48,10 +48,20 @@ MUTATIONS = [
         "    try:\n        hits = search(query, dsn)\n"
         "    except Exception as error:  # noqa: BLE001 - a retrieval failure must not break "
         "the session\n"
-        '        trace({"tool": tool_name, "chars": len(query), '
-        '"error": f"{type(error).__name__}: {error}"})\n'
+        '        trace({**identity, "tool": tool_name, "chars": len(query),\n'
+        '               "error": f"{type(error).__name__}: {error}"})\n'
         "        return 0",
         "    hits = search(query, dsn)",
+    ),
+    (
+        "the session identity is dropped from the trace, so per-session counts are lost",
+        '    trace({\n        **identity,\n        "tool": tool_name,',
+        '    trace({\n        "tool": tool_name,',
+    ),
+    (
+        "a non-object event is accepted, so `[]` raises into the session",
+        "    if not isinstance(event, dict):\n        return 0",
+        "    if False:\n        return 0",
     ),
     (
         "additionalContext swapped for a deny decision",
