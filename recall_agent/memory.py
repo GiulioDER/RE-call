@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from recall.calibration import Calibration
 from recall.embeddings import Embedder
 from recall.generation_store import GenerationStore
+from recall.observability import get_logger
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall_agent.rendering import render_refusal, render_result, render_tool_error
@@ -48,6 +49,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the SDK is an optional extr
 #: The MCP server's own default, kept identical so pointing both surfaces at one corpus needs no
 #: configuration.
 DEFAULT_DSN = "postgresql://recall:recall@localhost:5432/recall"
+
+_log = get_logger("agent.memory")
 
 
 def resolve_dsn(env: Mapping[str, str], explicit: str | None = None) -> str:
@@ -401,10 +404,22 @@ class RecallAgentMemory:
     async def _session_start(
         self, input_data: Any, tool_use_id: Any, context: Any
     ) -> dict[str, Any]:
-        """Digest injection, fail-open: a hook must never be the reason a session does not start."""
+        """Digest injection, fail-open: a hook must never be the reason a session does not start.
+
+        Fail-open, but never fail-SILENT. A bare `return {}` made every reason for a missing
+        digest look identical: an empty corpus, an unreachable database, and a schema the serving
+        checkout cannot read all produced the same nothing. A persistent failure here (a schema
+        mismatch is persistent) then recurs once per session with no trace anywhere, which is how
+        it becomes expensive to diagnose later rather than obvious now. The session still starts.
+        """
         try:
             stats = await self._call(lambda: memory_stats(self._store_or_create()))
         except Exception:
+            _log.warning(
+                "RE-call memory digest skipped: memory is unavailable for tenant %r",
+                self._tenant,
+                exc_info=True,
+            )
             return {}
         if not stats.chunks:
             return {}
