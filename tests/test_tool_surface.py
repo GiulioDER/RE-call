@@ -8,7 +8,10 @@ the served tool list before.
 """
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -147,3 +150,44 @@ def test_narrowing_the_surface_is_not_an_authorisation_boundary() -> None:
         Path(__file__).resolve().parents[1] / "recall_mcp" / "tool_surface.py"
     ).read_text(encoding="utf-8")
     assert "not an authorisation boundary" in module
+
+
+def _server_tools(tools_env: str) -> "subprocess.CompletedProcess[str]":
+    """Import the real server in a subprocess and ask it what it serves.
+
+    A subprocess rather than `importlib.reload`, because `recall_mcp.server` builds its server at
+    module scope: the env var is read once at import, and a reload would leave the previous
+    server object reachable from anything that already imported it.
+    """
+    env = {**os.environ, "RECALL_MCP_TOOLS": tools_env}
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import asyncio, recall_mcp.server as s;"
+            "print(sorted(t.name for t in asyncio.run(s.mcp.list_tools())))",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+    )
+
+
+def test_the_real_server_serves_exactly_the_selected_tools() -> None:
+    """The end-to-end claim, which no fake can make.
+
+    `FilteredToolRegistrar` is only correct if every real `@mcp.tool` site goes through it. The
+    fake above proves the wrapper's logic; this proves it is actually in the path.
+    """
+    done = _server_tools("search")
+    assert done.returncode == 0, done.stderr
+    assert "['recall_evidence', 'recall_search']" in done.stdout
+
+
+def test_the_real_server_refuses_to_start_on_an_unknown_tool() -> None:
+    """A typo must be a dead server, not a quietly diminished one."""
+    done = _server_tools("recall_serch")
+    assert done.returncode != 0
+    assert "ToolSurfaceError" in done.stderr
+    assert "recall_serch" in done.stderr
