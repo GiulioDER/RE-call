@@ -211,6 +211,7 @@ def environment_capture(
     hook_file: str | None = None,
     hook_vocab: str | None = None,
     identical_arms: str | None = None,
+    isolation: str = "bare",
     work_root: str | None = None,
     isolation_check: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -252,7 +253,10 @@ def environment_capture(
         # no stated reason is looking at a broken experiment; one who finds this sentence is
         # looking at the registered one.
         "identical_arms": identical_arms,
-        "isolation": "config_dir" if hook_file else "bare",
+        # Derived from the config dirs, NOT from the hook: a base-rate A/A run has no hook and
+        # is still config-dir isolated, and reporting it as "bare" would say the control ran under
+        # the conditions of every earlier result in this lane, which is the opposite of true.
+        "isolation": isolation,
         "work_root": work_root,
         # The verdict of the preflight, not just the fact that one ran. A run whose control
         # arm could still see memory documents is not comparable to one whose could not, and
@@ -574,7 +578,7 @@ async def main() -> int:
     if carried:
         print(f"\ncarried forward {len(carried)} recorded sessions from earlier attempts")
 
-    report = admit_pairs(records)
+    report = admit_pairs(records, arms_share_recall=identical_arms)
     admitted = list(report.admitted)
     parity_failures = digest_parity_failures(admitted)
     if parity_failures:
@@ -587,6 +591,7 @@ async def main() -> int:
         ("environment.json", environment_capture(args.model, spec, check, instruction_file=args.instruction_file,
                             hook_file=args.hook_file, hook_vocab=args.hook_vocab,
                             identical_arms=identical_arms,
+                            isolation="config_dir" if hook_dirs else "bare",
                             work_root=str(work_root),
                             isolation_check=isolation_check)),
         ("digest-parity.json", {"failures": parity_failures}),
