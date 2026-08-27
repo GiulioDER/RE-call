@@ -138,6 +138,9 @@ class ClaudeExecConfig:
     #: differ in isolation as well as in treatment — and must show that the control still behaves
     #: as the `--bare` control did before any treatment number is read.
     config_dir: str | Path | None = None
+    #: Merged into every record's metadata. For facts the record needs at CONSTRUCTION time,
+    #: which is anything SessionRecord validates: merging afterwards is too late.
+    record_metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.executable.strip():
@@ -512,6 +515,10 @@ def build_record(
     ]
 
     metadata: dict[str, Any] = {
+        # First, so a caller cannot overwrite anything the gate reads. It is here at all because
+        # SessionRecord validates its own metadata at construction, so a justification the record
+        # needs to EXIST has to arrive with it rather than be merged on afterwards.
+        **dict(config.record_metadata),
         "command": list(command),
         "exit_code": exit_code,
         # Explicit, because every other gate signal below is read off `init`, and an absent init

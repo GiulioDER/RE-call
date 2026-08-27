@@ -269,6 +269,11 @@ def build_configs(
             env=dict(env or {}),
             bare=config_dirs is None,
             config_dir=None if config_dirs is None else config_dirs[variant],
+            # The reason travels ON the record, because SessionRecord validates its own metadata
+            # at construction: an off arm that legitimately called RE-call cannot be built without
+            # it, and the failure reads as "the session did not complete".
+            record_metadata=({} if identical_arms is None
+                             else {"identical_arms": identical_arms}),
             mcp_config=spec.mcp_config,
             # For the on arm this guarantees the only server present is the one named. The off
             # arm has no --mcp-config to be strict about, and ClaudeExecConfig refuses the
