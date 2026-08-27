@@ -526,3 +526,87 @@ was a pair the pre-specified admission gate had already refused, and the refusal
   direction memory helps. Fixed before the final attempt.
 
 The first attempt's records are preserved beside the final ones as `records.attempt1.jsonl`.
+
+## Stage B result, 2026-08-27: 6 rescues, 1 regression, p = 0.125, and it does NOT ship
+
+**Nothing above is edited.** `stage-b-001`, both arms the instruction arm, hook in `recall_on`
+only, sandboxes outside the user profile, isolation verified in-band (`USER=no PROJECT=no`).
+
+⚠️ **STOPPED AT 34 OF 48 PAIRS**, on the operator's instruction, because the OpenRouter balance ran
+out mid-run. The run was **not** stopped because of what the data showed, and no interim result was
+read before the decision. Two families never ran at all (`ts-autouse-tmp-path`, `ts-separator-canary`)
+and `ts-sample-covers-tail` got 4 pairs of 6. Everything below is a partial run and is reported as
+one.
+
+### The result
+
+|  | control (hook off) | treatment (hook on) |
+|---|---:|---:|
+| failures | **17 of 34** | **12 of 34** |
+
+| | count | tasks |
+|---|---:|---|
+| **rescues** (control failed, hook passed) | **6** | `ts-bounded-runner` r1 r2 r4, `ts-false-zero-search` r3 r6, `ts-sample-covers-tail` r3 |
+| **regressions** (control passed, hook failed) | **1** | `ts-sample-covers-tail` r2 |
+
+**McNemar exact, two-sided: p = 0.125** on 7 discordant pairs. Net **+5**.
+
+### ⛔ It lands in the BUILD cell and it still does not ship
+
+The decision table's `>= 6 rescues` x `0-1 regressions` cell reads **BUILD**. It does not ship,
+because the same record committed in advance that **"nothing ships on a non-significant positive"**,
+and p = 0.125 is not significant.
+
+🔑 **The cell boundary and the significance commitment disagree, and that is a defect in the table
+rather than a close call.** The `>= 6` boundary was drawn where 6 rescues and **zero** regressions
+reach p about 0.03. One regression moves the identical cell to p = 0.125, and the cell alone cannot
+see it. A decision rule written on counts, justified by a power calculation on a different
+quantity, will sooner or later ship on evidence it was designed to refuse. The scorer now applies
+the commitment explicitly and prints the override.
+
+### Scoring the frozen predictions
+
+| # | prediction | observed | verdict |
+|---|---|---|---|
+| 3 | rescues 2 to 6 | **6** (of 17 control failures) | **confirmed**, at the top edge |
+| 4 | regressions 0 to 4 | **1** | **confirmed** |
+| 5 | net 0 to +5 | **+5** | **confirmed**, at the top edge |
+| 6 | input tokens +40% to +120% | **-1% aggregate**, median ratio 1.01, only 5 of 32 pairs in band | **falsified** |
+
+Prediction 6 is the interesting miss. Ten mostly-irrelevant injections a session was supposed to be
+real context pressure; the hook actually fired a **median of 3 times** (123 injections across 34
+sessions, max 9), and five memos of about 1,200 characters against sessions of roughly 300,000
+cumulative input tokens is noise. **The context cost I priced as the main risk is not the risk.**
+Note this is the second time the 8-to-14 band has been falsified downward: the mechanism's reach is
+persistently about a third of what the design assumed.
+
+### Where the effect is, and where it is not
+
+| family | pairs | control failures | hook failures |
+|---|---:|---:|---:|
+| `ts-bounded-runner` | 6 | 4 | **1** |
+| `ts-false-zero-search` | 6 | 6 | **4** |
+| `ts-lf-rewrite` | 6 | **6** | **6** |
+| `ts-sample-covers-tail` | 4 | 1 | 1 |
+| `ts-raise-on-missing` | 6 | 0 | 0 |
+| `ts-worktree-import` | 6 | 0 | 0 |
+
+⛔ **`ts-lf-rewrite` fails 6 of 6 in BOTH arms.** It is the family the base rate flagged as the
+hardest, its governing memo is in the corpus, and the hook put memos in front of the agent on every
+write. Zero rescues. That is the clearest evidence in this lane that for some failures the loss is
+**downstream of the memo arriving**, which is the outcome the decision table called the most
+informative of its nine.
+
+### The gated variant, now derivable
+
+The hook recorded `vocabulary_would_fire` on every injection without acting on it: **57 of 123
+injections (46%)** would have passed the `df<=2` trigger. So the gated variant is an offline
+re-analysis rather than a second A/B, exactly as intended. It is not run here, because with 7
+discordant pairs a subset analysis would be noise.
+
+### What this run does and does not license
+
+It **does not** license shipping. It **does** license finishing: 34 pairs at this rate extrapolate
+to roughly 8 or 9 rescues at the registered 48, which would be significant, and the run stopped for
+budget rather than for evidence. Completing the remaining 14 pairs is the cheapest informative next
+step, and it is the same registered run rather than a new one.
