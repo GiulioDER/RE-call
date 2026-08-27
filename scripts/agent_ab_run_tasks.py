@@ -475,7 +475,15 @@ async def main() -> int:
             "locus": loci.get(base_id),
             "governing_memo": task.governing_memo,
             "workspace_digest": digest,
-            "workdir": str(workdir.relative_to(REPO_ROOT)),
+            # Repo-relative while the sandboxes live in the tree, absolute once they do not.
+            # `--work-root` deliberately puts them outside it (see agent_ab_isolation), and a bare
+            # relative_to raised there, which killed the SCORING of every session in a run whose
+            # agents had all worked correctly.
+            "workdir": str(
+                workdir.relative_to(REPO_ROOT)
+                if REPO_ROOT in workdir.resolve().parents
+                else workdir.resolve()
+            ),
             "check": verdict.to_dict(),
         }
         stamped = record.__class__.from_mapping(
