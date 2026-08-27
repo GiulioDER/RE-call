@@ -101,3 +101,69 @@ levers, which the cells route to explicitly.
    recalibration; a non-monotone one would be a different system and is not contemplated here.
 
 <!-- frozen_above -->
+
+## Result (2026-08-27)
+
+**Status: measured. Zero viable operating points. The threshold lever is dead, and the frontier
+argument makes that conclusive rather than indicative.**
+
+Artifact: `benchmarks/artifacts/agent_ab/threshold-frontier.json`.
+
+| t | recall | false_trigger | rate |
+|---:|---:|---:|---:|
+| 0.00 | 12/14 | 18/18 | 1.000 |
+| 0.05 – 0.20 | **9/14** | 18/18 | 1.000 |
+| 0.30 – 0.50 | 7/14 | 18/18 | 1.000 |
+| 0.65 | 6/14 | 17/18 | 0.944 |
+| 0.70 – 0.75 | 6/14 | 12/18 | 0.667 |
+| 0.90 | 5/14 | 8/18 | 0.444 |
+| 0.94 | **5/14** | 5/18 | **0.278** |
+| 1.00 | 0/14 | 0/18 | 0.000 |
+
+**Thresholds with recall >= 9 AND false_trigger <= 0.35: zero.**
+
+| # | predicted | measured | verdict |
+|---|---|---|---|
+| 1 | no point with recall >= 9 and ft <= 0.35 | **0 such points** | confirmed |
+| 2 | where recall first reaches 9, ft >= 0.80 | recall reaches 9 at t=0.00–0.20, **ft = 1.000** | confirmed |
+| 3 | ft <= 0.35 costs recall <= 4 | best is **5** of 14, at t=0.94 | **falsified by one session** |
+| 4 | max achievable recall 11 to 14 | **12** of 14 | confirmed |
+| 5 | under 2 minutes, 0.00 USD | seconds, 0.00 USD | confirmed |
+
+🔑 **The shape of the frontier is the finding: confidence does not separate "relevant to this
+draft" from "shares vocabulary with this draft".** Across the entire usable range the negatives
+track the positives. Every threshold that keeps 9 of 14 also fires on **all 18** hazard-free
+queries, and the first threshold that meaningfully suppresses noise (t=0.70, 12 of 18) has already
+given up half the recall. There is no knee. Two further details sharpen it: recall falls 12 → 9 the
+moment `t` leaves zero, so three sessions' memos are surfaced only at essentially zero confidence;
+and **2 of 14 are never returned at all**, which is what caps max recall at 12 and is beyond any
+threshold's reach by construction.
+
+**Decision, per the registered cross product.** Recall at ft<=0.35 is **5** (band `5-8`), max
+achievable recall is **12** (band `>=12`). That cell reads **GATE: build a trigger discipline, not
+a threshold, and recalibrate to the identified point.**
+
+I record that cell as registered, and two honest observations about it that I am NOT using to
+overturn it:
+
+1. **The "identified point" is worse than today on recall.** t=0.94 gives 5 of 14 where the
+   current threshold gives 7. The trade on offer is two sessions of recall for a fall in false
+   triggers from 18 of 18 to 5 of 18. Whether that is worth taking is a product question this
+   record did not register and should not answer after the fact.
+2. **A trigger discipline attacks the denominator, not the frontier.** Searching only on writes
+   likely to be hazardous shrinks how often the noise is paid, which is real, but every point above
+   stays exactly where it is. The frontier moves only if the RANKING changes.
+
+⛔ **What is now closed: recalibration.** A calibration fits a monotone score-to-confidence map and
+a threshold on it, so it can only select a point on the curve above, and no point on that curve is
+acceptable. The "one calibration run" the precision record licensed is hereby **not licensed** —
+it cannot reach a better outcome, and this sweep cost seconds where the refit would have cost a
+build.
+
+**Where the headroom actually is, stated as the routed-to lever rather than a new proposal:** the
+lexical leg alone reached 14 of 14 and production's unweighted RRF reaches 11 of 14 raw, so the
+ranking lever has measured headroom that the threshold lever does not. Weighted or score-level
+fusion is the genuinely absent mechanism the stack map identified, and it is the only thing
+measured in this lane that could move these points rather than slide along them. It needs its own
+registration, with both endpoints partitioned together, and with the 2 never-returned sessions
+counted as its ceiling.
