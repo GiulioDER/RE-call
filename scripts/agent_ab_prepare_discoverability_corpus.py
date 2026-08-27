@@ -233,7 +233,20 @@ def main() -> int:
     print(f"recovered: {kept} sha-verified live files, {len(reconstructed)} reconstructed")
 
     memos = sorted(p for p in dirs["control"].glob("*.md") if p.name not in INDEX_FILES)
-    print(f"generating searcher-oriented surfaces for {len(memos)} memos with {REWRITE_MODEL}")
+
+    # Resume cache: two runs have already died mid-pass (a malformed response, then a network
+    # drop), and at temperature 0 a finished triple never changes, so completed memos are kept
+    # across runs rather than re-bought.
+    partial = out / "rewrites.partial.json"
+    rewrites: dict[str, dict] = {}
+    if partial.is_file():
+        rewrites = json.loads(partial.read_text(encoding="utf-8"))
+        print(f"resuming: {len(rewrites)} rewrites already generated")
+    todo = [p for p in memos if p.name not in rewrites]
+    print(
+        f"generating searcher-oriented surfaces for {len(todo)} of {len(memos)} memos "
+        f"with {REWRITE_MODEL}"
+    )
 
     def one(path: Path) -> tuple[str, dict]:
         try:
@@ -242,11 +255,13 @@ def main() -> int:
             raise SystemExit(f"generation failed for {path.name}: {error}") from error
         return path.name, rewrite
 
-    rewrites: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        for index, (name, rewrite) in enumerate(pool.map(one, memos), start=1):
+        for index, (name, rewrite) in enumerate(pool.map(one, todo), start=1):
             rewrites[name] = rewrite
-            print(f"  [{index}/{len(memos)}] {name}: {rewrite['title'][:70]}")
+            partial.write_text(
+                json.dumps(rewrites, indent=2) + "\n", encoding="utf-8", newline="\n"
+            )
+            print(f"  [{index}/{len(todo)}] {name}: {rewrite['title'][:70]}")
 
     for path in sorted(dirs["control"].glob("*.md")):
         raw = path.read_bytes()
