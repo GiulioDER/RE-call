@@ -25,6 +25,8 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
+from recall.errors import RecallError
+
 #: Every tool the server can register, as the single source of truth for validation. Pinned
 #: against the live registry by `tests/test_tool_surface.py`, so a tool added to `server.py`
 #: without a line here fails a test rather than becoming quietly unselectable.
@@ -83,8 +85,12 @@ class ToolRegistrar(Protocol):
     def tool(self, *args: Any, **kwargs: Any) -> Callable[[Any], Any]: ...
 
 
-class ToolSurfaceError(ValueError):
-    """Raised when the configured tool surface cannot be honoured exactly as written."""
+class ToolSurfaceError(ValueError, RecallError):
+    """Raised when the configured tool surface cannot be honoured exactly as written.
+
+    `ValueError` stays the FIRST base, per the convention in `recall.errors`: a caller already
+    catching it keeps working, and `except RecallError` starts working too.
+    """
 
 
 def resolve_tool_surface(env: Mapping[str, str] | None = None) -> frozenset[str]:
