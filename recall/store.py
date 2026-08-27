@@ -7,6 +7,7 @@ import warnings
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import uuid4
 from ipaddress import ip_address
@@ -750,6 +751,30 @@ def _chunk_identity(chunks: list[Chunk]) -> tuple[str | None, list[str]]:
     return projects.pop(), list(names)
 
 
+def _prepare_connection(
+    conn: "psycopg.Connection", tenant: str, statement_timeout_ms: int | None
+) -> None:
+    """Per-connection setup, as a FREE function so a pool's `configure` need not hold the store.
+
+    `ConnectionPool` keeps its `configure` callable for the pool's whole life. Passing a bound
+    method here made `store -> _pool -> configure -> store` a reference cycle, so refcounting
+    alone could never free a store and its connections; release waited on the cyclic collector.
+    That is invisible while stores are long-lived and shows up when they are not: a store built
+    and then rejected (a schema mismatch, say) held a live backend and its pool threads until a
+    generational collection happened to run.
+
+    Both values a connection needs are fixed at construction, so capturing them costs nothing and
+    keeps the pool from pinning the store.
+    """
+    register_vector(conn)
+    # Per-connection tenant for the RLS policy. Safe to set once at connection setup because a
+    # store is bound to ONE tenant: the pool belongs to the store, so no connection is ever shared
+    # between tenants. A server handling many tenants opens a store per tenant.
+    conn.execute(f"SELECT set_config('{TENANT_GUC}', %s, false)", (tenant,))
+    if statement_timeout_ms is not None:
+        conn.execute(f"SET statement_timeout = {int(statement_timeout_ms)}")
+
+
 class PgVectorStore:
     """The single, production-grade vector store: PostgreSQL + pgvector."""
 
@@ -872,7 +897,14 @@ class PgVectorStore:
             min_size=1,
             max_size=size,
             kwargs=self._connect_kwargs(),
-            configure=self._prepare,
+            # `partial` over a free function, NOT `self._prepare`: a bound method would make the
+            # pool hold the store (`store -> _pool -> configure -> store`), a cycle only the
+            # collector can break. See `_prepare_connection`.
+            configure=partial(
+                _prepare_connection,
+                tenant=self._tenant,
+                statement_timeout_ms=self._statement_timeout_ms,
+            ),
             open=False,
         )
         pool.open(wait=True, timeout=self._connect_timeout_s or 30)
@@ -884,13 +916,7 @@ class PgVectorStore:
         Deliberately contains no DDL. A missing pgvector extension is a pending migration, not
         something a serving credential is allowed to repair during startup.
         """
-        register_vector(conn)
-        # Per-connection tenant for the RLS policy. Safe to set once at connection setup because
-        # a store is bound to ONE tenant: the pool belongs to the store, so no connection is ever
-        # shared between tenants. A server handling many tenants opens a store per tenant.
-        conn.execute(f"SELECT set_config('{TENANT_GUC}', %s, false)", (self._tenant,))
-        if self._statement_timeout_ms is not None:
-            conn.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
+        _prepare_connection(conn, self._tenant, self._statement_timeout_ms)
 
     def _connect(self) -> "psycopg.Connection":
         """Open one autocommit serving connection and prepare its session state."""

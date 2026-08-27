@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Added
+
+* **`recall_agent`: RE-call as in-process memory for Claude Agent SDK applications.**
+  `RecallAgentMemory` wraps the same `recall_mcp.service` functions the MCP server calls as
+  in-process SDK tools (`recall_search`, `recall_evidence`; writes behind an explicit
+  `write_tools=True`), with the same tool names, the same model-facing descriptions (drift-tested
+  against the server docstrings), and byte-identical result rendering via the promoted
+  `recall_mcp.service.serving_json`. Trust semantics survive the wrapping: a `TrustRefusal` is
+  rendered as its wire form with `advice`, never conflated with an empty result. Ships as the
+  optional `agent` extra; the package imports without the SDK installed.
+  See `docs/USING_WITH_AGENT_SDK.md`.
+
 ### Fixed
 
 * **`--manifest-sha256` and `--manifest-size` were accepted and ignored on a local manifest.** They

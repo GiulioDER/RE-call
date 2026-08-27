@@ -18,6 +18,9 @@ You still need a database first (`recall quickstart` makes a throwaway one). See
 [plugin/README.md](../plugin/README.md). Everything below is the manual wiring, for other
 clients and for anyone who wants to see what the plugin writes.
 
+**Building an agent with the Claude Agent SDK instead of a client?** The same tools are available
+in-process, no MCP server required: [USING_WITH_AGENT_SDK.md](USING_WITH_AGENT_SDK.md).
+
 ## 1. Install & run
 
 ```bash
