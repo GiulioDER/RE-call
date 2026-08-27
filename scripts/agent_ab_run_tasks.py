@@ -63,6 +63,9 @@ from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON, SessionRecord  # n
 from benchmarks.agent_ab.summarize import summarize_recall_overhead  # noqa: E402
 from benchmarks.agent_ab.tasksuccess import TASKS, TASKS_BY_ID, check_workspace  # noqa: E402
 
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from agent_ab_isolation import assert_sandbox_isolated, verify_isolation  # noqa: E402
+
 DEFAULT_DSN = "postgresql://recall:recall@127.0.0.1:5407/agent_ab"
 STATIC_MEMORY_SOURCES = ("CLAUDE.md",)
 QUALIFICATION = REPO_ROOT / "benchmarks" / "agent_ab" / "task-qualification.json"
@@ -206,6 +209,8 @@ def environment_capture(
     *,
     instruction_file: str | None = None,
     hook_file: str | None = None,
+    work_root: str | None = None,
+    isolation_check: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     def run(*command: str) -> str:
         try:
@@ -241,6 +246,11 @@ def environment_capture(
         # comparable runs and two runs nobody can tell apart.
         "hook_file": hook_file,
         "isolation": "config_dir" if hook_file else "bare",
+        "work_root": work_root,
+        # The verdict of the preflight, not just the fact that one ran. A run whose control
+        # arm could still see memory documents is not comparable to one whose could not, and
+        # a reader six months from now cannot re-run the check against that day's machine.
+        "isolation_check": isolation_check,
     }
 
 
@@ -277,6 +287,17 @@ async def main() -> int:
         ),
     )
     parser.add_argument(
+        "--work-root",
+        default=None,
+        help=(
+            "Where session sandboxes are created. Defaults to <artifacts>/work. REQUIRED with "
+            "--hook-file to point outside the user profile: a hooked arm runs under "
+            "CLAUDE_CONFIG_DIR instead of --bare, and CLAUDE.md is found by walking UP from cwd, "
+            "so sandboxes under the profile silently admit this machine's user memory into every "
+            "session of both arms."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="continue a run that died, skipping pairs whose BOTH arms are already recorded",
@@ -294,7 +315,13 @@ async def main() -> int:
         return 1
     already, carried = completed_pairs(progress_path) if args.resume else (set(), [])
     (artifacts / "streams").mkdir(parents=True, exist_ok=True)
-    work_root = artifacts / "work"
+    work_root = Path(args.work_root) if args.work_root else artifacts / "work"
+    if args.hook_file:
+        # Checked HERE, before the corpus handshake, because a refusal that arrives after nine
+        # seconds of setup reads as a failure rather than as a usage error. Refused rather than
+        # warned: the leak produces a COMPLETE run whose artifacts are indistinguishable from a
+        # clean one, so a warning would only ever be read after the spend.
+        assert_sandbox_isolated(work_root)
     work_root.mkdir(parents=True, exist_ok=True)
 
     loci = load_loci()
@@ -355,6 +382,7 @@ async def main() -> int:
     # One template pair, built once so everything except memory is identical by construction. The
     # per-session `cwd` is the only field replaced afterwards.
     hook_dirs = None
+    isolation_check: dict[str, Any] | None = None
     if args.hook_file:
         hook_path = Path(args.hook_file)
         if not hook_path.is_file():
@@ -382,6 +410,30 @@ async def main() -> int:
         extra_allowed_tools=WRITE_TOOLS,
         config_dirs=hook_dirs,
     )
+    if hook_dirs is not None:
+        # A path check proves where the sandboxes are, not what the session received. This asks a
+        # real session, because every earlier attempt at this failed in the direction of looking
+        # isolated while not being: the transcript does not record injected context, so grep says
+        # clean, and only the token count and the agent's own answer disagree.
+        probe_dir = work_root / "isolation-check"
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        clean, tokens, answer = await verify_isolation(
+            model=args.model,
+            config_dir=hook_dirs[RECALL_OFF],
+            cwd=probe_dir,
+            env=agent_env,
+        )
+        isolation_check = {"clean": clean, "input_tokens": tokens, "answer": answer[:200],
+                           "cwd": str(probe_dir)}
+        print(f"  isolation check: {tokens} input tokens, {answer[:70]}")
+        if not clean:
+            print(
+                "\nREFUSED: the control arm can still see memory documents, so both arms would "
+                "carry unrecorded context and the run could attribute nothing. See "
+                "scripts/agent_ab_isolation.py for what closes this."
+            )
+            return 1
+
     templates = {
         variant: replace(config, stream_dir=artifacts / "streams")
         for variant, config in templates.items()
@@ -474,7 +526,8 @@ async def main() -> int:
         ("admission.json", report.summary()),
         ("recall-overhead.json", summarize_recall_overhead(admitted)),
         ("environment.json", environment_capture(args.model, spec, check, instruction_file=args.instruction_file,
-                            hook_file=args.hook_file)),
+                            hook_file=args.hook_file, work_root=str(work_root),
+                            isolation_check=isolation_check)),
         ("digest-parity.json", {"failures": parity_failures}),
     ):
         (artifacts / name).write_text(
