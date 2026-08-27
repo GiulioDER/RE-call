@@ -1,0 +1,95 @@
+{
+  "baseline_run_id": "agent-ab-sdk-replication-001",
+  "replication_run_id": "agent-ab-inprocess-001",
+  "metrics": {
+    "admitted_pairs": {
+      "baseline": 50,
+      "replication": 54,
+      "difference": 4,
+      "band": {
+        "min": 48
+      },
+      "verdict": "ok"
+    },
+    "search_rate": {
+      "baseline": 0.9047619047619048,
+      "replication": 0.8913043478260869,
+      "difference": -0.01345755693581785,
+      "band": {
+        "max_abs_diff": 0.15
+      },
+      "inside_band": true,
+      "verdict": "equivalent"
+    },
+    "governing_memo_rate": {
+      "baseline": 0.6052631578947368,
+      "replication": 0.6341463414634146,
+      "difference": 0.028883183568677806,
+      "band": {
+        "max_abs_diff": 0.15
+      },
+      "inside_band": true,
+      "verdict": "equivalent"
+    },
+    "per_task_mean_delta": {
+      "baseline": 0.325,
+      "replication": 0.19583333333333336,
+      "difference": -0.12916666666666665,
+      "band": {
+        "max_abs_diff": 0.15
+      },
+      "inside_band": true,
+      "verdict": "equivalent"
+    },
+    "per_pair_delta_mean": {
+      "baseline": 0.3333333333333333,
+      "replication": 0.1956521739130435,
+      "difference": -0.13768115942028983,
+      "band": {
+        "max_abs_diff": 0.15
+      },
+      "inside_band": true,
+      "verdict": "equivalent"
+    },
+    "control_on_mean": {
+      "baseline": 1.0,
+      "replication": 1.0,
+      "difference": 0.0,
+      "band": {
+        "max_abs_diff": 0.125
+      },
+      "inside_band": true,
+      "verdict": "equivalent"
+    },
+    "control_off_mean": {
+      "baseline": 1.0,
+      "replication": 1.0,
+      "difference": 0.0,
+      "band": {
+        "max_abs_diff": 0.125
+      },
+      "inside_band": true,
+      "verdict": "equivalent"
+    },
+    "input_tokens_delta_median": {
+      "baseline": 103329.0,
+      "replication": 32014.5,
+      "difference": -71314.5,
+      "band": {
+        "max_abs_diff": 55000
+      },
+      "inside_band": false,
+      "verdict": "outside_band"
+    },
+    "wall_time_delta_median_ms": {
+      "baseline": 12364.704749998738,
+      "replication": 1053.6999499990998,
+      "difference": -11311.004799999639,
+      "verdict": "recorded"
+    }
+  },
+  "outside_band": [
+    "input_tokens_delta_median"
+  ],
+  "verdict": "not_equivalent"
+}

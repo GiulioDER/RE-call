@@ -1,6 +1,6 @@
 # Pre-registration: does in-process Agent SDK memory beat an external MCP server?
 
-**Date:** 2026-08-27   **Status:** predicted, not yet measured
+**Date:** 2026-08-27   **Status:** measured, see the Result section appended below
 
 ## The question
 
@@ -159,3 +159,99 @@ arm, which is the property the whole comparison rests on.
 - The six baseline discards were caused by host reboots, not by the transport. If this run
   discards fewer, that is at least partly luck and must not be read as an in-process advantage
   without checking the discard reasons.
+
+## Result (2026-08-27)
+
+**Status:** measured. **Verdict: `not_equivalent`, and it broke on the metric I was most confident
+about, for a reason I failed to name in advance.**
+
+Committed summary: `results/agent_ab/agent_ab_inprocess_2026-08-27.json`. Run
+`agent-ab-inprocess-001`: 112 records, 54 pairs admitted, 2 discarded, zero checker errors.
+
+| metric | MCP (baseline) | in-process | band | verdict |
+|---|---|---|---|---|
+| admitted pairs | 50 | 54 | floor 48 | ok |
+| search rate | 0.905 | 0.891 | ±0.15 | equivalent |
+| governing-memo reach | 0.605 | 0.634 | ±0.15 | equivalent |
+| per-task success delta | +0.325 | +0.196 | ±0.15 | equivalent |
+| per-pair success delta | +0.333 | +0.196 | ±0.15 | equivalent |
+| control tasks (on / off) | 1.000 / 1.000 | 1.000 / 1.000 | ±0.125 | equivalent |
+| median input-token overhead | +106,946 → +103,329 | **+32,014** | ±55,000 | **OUTSIDE** |
+| median wall-time overhead | +12.4 s | +1.1 s | recorded | recorded |
+
+### The band that broke, and why it is not the finding it looks like
+
+Median input-token overhead fell by 71,315, a 69% reduction, far outside the ±55,000 band. Read
+naively that is "in-process delivery costs a third of the tokens MCP does", which is close to the
+claim the industry makes about MCP's context cost.
+
+It is not what I measured, and the reason is a confound I did not name in the confounds section:
+
+**The two arms did not expose the same number of tools.** Counted from the sessions' own `init`
+events: the MCP arm carried **18** memory tools in every on-arm session, the in-process arm
+carried **2** (`recall_search` and `recall_evidence`; write tools are opt-in and were off). Each
+tool definition is injected into the session's context, so 16 extra schemas were paid for on
+every MCP session before the agent did anything.
+
+So the token difference is overwhelmingly a **tool-surface** effect, not a **transport** effect.
+The MCP server could expose two tools; `recall_agent` could expose eighteen. Nothing about where
+the tool executes causes this.
+
+That reframes the industry claim rather than confirming it: the context cost attributed to "MCP
+versus in-process" is largely the cost of *how many tools are in context*, which is why tool
+search and deferred loading close the gap without changing transport at all. Anyone quoting a
+token multiple for MCP should check whether they are comparing transports or tool counts.
+
+### What the run does answer
+
+**In-process delivery did not improve agent task success.** Per-task +0.196 against the
+baseline's +0.325; per-pair +0.196 (n=46, CI [0.065, 0.326], p=0.012) against +0.333. Both sit
+inside the band, so the two transports are equivalent on the endpoint at this n, and the
+numerically lower value is in the wrong direction for the claim under test. The superiority band
+that would have supported "the SDK makes agents perform better" was not approached.
+
+Mechanism transferred intact: 41 of 46 on-arm sessions searched, reach 0.634 among searchers,
+off-arm memory calls zero. Both controls at 1.000/1.000 in both runs.
+
+### Predicted against measured, including the misses
+
+| prediction | measured | gap |
+|---|---|---|
+| per-task within 0.10 of +0.325, same sign | +0.196, diff 0.129 | **missed the point prediction**, inside the 0.15 band, same sign |
+| per-pair within 0.10 of +0.333 | +0.196, diff 0.138 | **missed**, inside band |
+| reach within 0.08 of 0.605 | 0.634, diff 0.029 | hit |
+| search rate at or ABOVE 0.905 | 0.891 | **wrong in direction**, by 0.013 |
+| tokens within 20,000 of +103,329 | +32,014, diff 71,315 | **badly wrong**, and the reason was a confound I did not name |
+| admitted pairs at least 52, fewer discards than stdio | 54 admitted, 2 discarded vs 6 | hit, both parts |
+| wall time lower than +12.4 s | +1.1 s | hit |
+
+The token miss is the one worth keeping. I predicted a tight match because "both transports
+render through the same `serving_json` and the descriptions are drift-tested identical", which
+was true and irrelevant: I reasoned about the bytes of a RESULT and forgot the bytes of the TOOL
+DEFINITIONS, which are paid once per session whether or not a tool is ever called. The
+preregistration's confound list has four entries and none of them is this one.
+
+### Honest limits
+
+- ~50 pairs is powered for a large effect only. "Equivalent on task success" means no large
+  effect was detectable at this n, never that the two are identical.
+- The token comparison is confounded as described and must not be cited as a transport result.
+  A clean version would expose the same tool set on both sides; that is a different run.
+- Cross-run confound stands: the baseline ran earlier the same day and OpenRouter may serve
+  differently. The paired within-run control absorbs it, which is why the comparison is of deltas.
+- The two discards were `ts-raise-on-missing#r6` and `ts-autouse-tmp-path#r6`; fewer than the
+  baseline's six, but the baseline's were caused by host reboots rather than by the transport, so
+  this is not evidence of in-process reliability.
+
+### Decision
+
+Per the rule stated before the run: all task-success falsifiers landed inside their bands, so
+**transport does not move agent performance at this n**, and "MCP versus the Agent SDK" is an
+ergonomics and safety-surface question rather than a capability one. I will say it in those terms
+and stop presenting it as a capability question.
+
+The token band breach does not reverse that, because it is not a transport measurement. It
+generates the next question instead: how much of the context cost attributed to MCP is simply
+tool-definition bytes, and does trimming the served tool surface capture it without changing
+transport at all. That is preregisterable and cheap, and it is a better question than the one
+this run asked.
