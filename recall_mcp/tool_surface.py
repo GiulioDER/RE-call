@@ -37,6 +37,12 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         "recall_related",
         "recall_current_state",
         "recall_reasoning_query",
+        # Added when #516 landed. Absent from this list the tool is not merely
+        # unselectable, it is never registered at all, so every per-tool test in
+        # tests/test_mcp_tool_authorization.py fails with a KeyError rather than an
+        # authorization message. It is deliberately NOT in the `read` preset: that preset
+        # is a curated minimum, and `all` is the default, which is what serves it today.
+        "recall_query_construction_challenge",
         "recall_reasoning_projection",
         "recall_reasoning_proposals",
         "recall_rewrite_plan",

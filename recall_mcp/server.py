@@ -74,6 +74,7 @@ from recall_mcp.service import (
     publish_calibration,
     run_calibration,
     reasoning_audit,
+    query_construction_challenge,
     reasoning_projection,
     reasoning_proposals,
     reasoning_query,
@@ -1363,6 +1364,60 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                         graph_expansion=graph_expansion.replace("-", "_"),
                         policy=TRUST_POLICY,
                     ).to_dict(),
+                    indent=2,
+                    default=str,
+                )
+            )
+
+    @mcp.tool(
+        name="recall_query_construction_challenge",
+        annotations=ToolAnnotations(
+            title="Construct a bounded retrieval query",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_query_construction_challenge(
+        original_prompt: str,
+        query: str,
+        ctx: Context[dict, object],
+        arm: str = "original_loop",
+        source: str | None = None,
+        k: int = 5,
+        round_index: int = 0,
+        frame: dict[str, object] | None = None,
+        expected_generation_id: str | None = None,
+        graph_expansion: str = "off",
+        max_graph_nodes: int = 32,
+    ) -> str:
+        """Run one bounded query-construction phase over trusted retrieval.
+
+        The first call returns a challenge prompt. The original model may answer with the
+        documented JSON frame, which is supplied in a continuation call. Model text remains a
+        proposal and is never promoted to evidence.
+        """
+        state = _state(ctx)
+        store = _require(SCOPE_READ, ctx)
+        with METRICS.timer("recall_tool_latency_ms", tool="query_construction"):
+            return await _to_thread(
+                lambda: json.dumps(
+                    query_construction_challenge(
+                        store,
+                        state["embedder"],
+                        original_prompt,
+                        query,
+                        arm=arm,  # type: ignore[arg-type]
+                        source=source,
+                        k=k,
+                        round_index=round_index,
+                        frame=frame,
+                        expected_generation_id=expected_generation_id,
+                        graph_expansion=graph_expansion.replace("-", "_"),
+                        max_graph_nodes=max_graph_nodes,
+                        policy=TRUST_POLICY,
+                    ),
                     indent=2,
                     default=str,
                 )

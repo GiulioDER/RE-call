@@ -1,0 +1,147 @@
+{
+  "status": "pilot_apparatus_gate_failed_for_graph_query_arm",
+  "measured_on": "2026-08-25",
+  "tenant": "memory",
+  "generation_id": "gen_269b5735ac204d62956a00dd6587d6e0",
+  "corpus_fingerprint": "e80afe06af9c500a0c3c2d1889fe199e836577cfe76a4061882a85c17cc2c379",
+  "graph_projection": {
+    "graph_id": "rg_graph_908a3e79ecc3f430028e2859",
+    "trust_state": "trusted",
+    "semantic_graph_ready": true,
+    "semantic_entity_count": 5899,
+    "semantic_mention_count": 27962,
+    "semantic_relation_count": 3586
+  },
+  "population_measured": 4,
+  "population_planned": 15,
+  "rows": [
+    {
+      "id": "ts-lf-rewrite",
+      "query": "version bump release script",
+      "gold": "python-write-text-crlf-churn.md",
+      "baseline": {
+        "trust_state": "trusted",
+        "files": [
+          "reference-recall-version-lives-in-four-files-and-uv-lock-is-platform-sensitive-2026-08-02.md",
+          "recall-public-distribution.md",
+          "mcp-registry-search-index-lags-the-publish.md"
+        ],
+        "gold_in_top5": false
+      },
+      "one_hop": {
+        "trust_state": "trusted",
+        "files": [
+          "reference-recall-version-lives-in-four-files-and-uv-lock-is-platform-sensitive-2026-08-02.md",
+          "recall-public-distribution.md",
+          "mcp-registry-search-index-lags-the-publish.md"
+        ],
+        "gold_in_top5": false,
+        "graph_entities_inspected": 0,
+        "graph_relations_inspected": 0,
+        "graph_candidates_discovered": 0,
+        "graph_candidates_rejected": 1,
+        "graph_gate_reason": "graph_gate_not_met"
+      }
+    },
+    {
+      "id": "ts-worktree-import",
+      "query": "probe.py chunk count corpus",
+      "gold": "benchmark-scripts-import-the-main-checkout.md",
+      "baseline": {
+        "trust_state": "trusted",
+        "files": [
+          "project-recall-generation-parity-measured-2026-08-06.md",
+          "generation-tenants-are-invisible-to-the-legacy-store.md",
+          "vps2-memory-corpus-is-keyed-by-windows-paths.md",
+          "chunker-is-not-in-the-index-fingerprint.md",
+          "project-recall-external-support-outreach-strategy-2026-07-26.md"
+        ],
+        "gold_in_top5": false
+      },
+      "one_hop": {
+        "trust_state": "trusted",
+        "files": [
+          "project-recall-generation-parity-measured-2026-08-06.md",
+          "generation-tenants-are-invisible-to-the-legacy-store.md",
+          "vps2-memory-corpus-is-keyed-by-windows-paths.md",
+          "chunker-is-not-in-the-index-fingerprint.md",
+          "project-recall-external-support-outreach-strategy-2026-07-26.md"
+        ],
+        "gold_in_top5": false,
+        "graph_entities_inspected": 0,
+        "graph_relations_inspected": 0,
+        "graph_candidates_discovered": 0,
+        "graph_candidates_rejected": 1,
+        "graph_gate_reason": "graph_gate_not_met"
+      }
+    },
+    {
+      "id": "ts-raise-on-missing",
+      "query": "summarise.py records.jsonl elapsed_ms",
+      "gold": "missing-input-becomes-a-clean-null.md",
+      "baseline": {
+        "trust_state": "trusted",
+        "files": [
+          "project-recall-mtrag-symmetric-baseline-2026-08-04.md",
+          "claude-p-runs-through-openrouter.md",
+          "a-buffered-pipe-makes-a-live-run-look-hung.md",
+          "cast-is-not-a-conversion.md",
+          "report-the-median-beside-the-mean.md"
+        ],
+        "gold_in_top5": false
+      },
+      "one_hop": {
+        "trust_state": "trusted",
+        "files": [
+          "project-recall-mtrag-symmetric-baseline-2026-08-04.md",
+          "claude-p-runs-through-openrouter.md",
+          "a-buffered-pipe-makes-a-live-run-look-hung.md",
+          "cast-is-not-a-conversion.md",
+          "report-the-median-beside-the-mean.md"
+        ],
+        "gold_in_top5": false,
+        "graph_entities_inspected": 0,
+        "graph_relations_inspected": 0,
+        "graph_candidates_discovered": 0,
+        "graph_candidates_rejected": 1,
+        "graph_gate_reason": "graph_gate_not_met"
+      }
+    },
+    {
+      "id": "ts-sample-covers-tail",
+      "query": "corpus.jsonl sampling chunks random seed",
+      "gold": "sorted-sample-plus-early-stop-is-head-bias.md",
+      "baseline": {
+        "trust_state": "trusted",
+        "files": [
+          "sorted-sample-plus-early-stop-is-head-bias.md",
+          "project_finetune_v6_phase3b_reward_saturation_2026-05-04.md",
+          "chunker-is-not-in-the-index-fingerprint.md",
+          "project_finetune_v6_pipeline_2026-05-03.md"
+        ],
+        "gold_in_top5": true
+      },
+      "one_hop": {
+        "trust_state": "trusted",
+        "files": [
+          "sorted-sample-plus-early-stop-is-head-bias.md",
+          "project_finetune_v6_phase3b_reward_saturation_2026-05-04.md",
+          "chunker-is-not-in-the-index-fingerprint.md",
+          "project_finetune_v6_pipeline_2026-05-03.md"
+        ],
+        "gold_in_top5": true,
+        "graph_entities_inspected": 0,
+        "graph_relations_inspected": 0,
+        "graph_candidates_discovered": 0,
+        "graph_candidates_rejected": 1,
+        "graph_gate_reason": "graph_gate_not_met"
+      }
+    }
+  ],
+  "conclusion": "The first four miss families supplied no graph starting point. One hop was behaviorally identical to off and cannot be credited with query construction or recovery. The remaining 11 planned misses and 31 controls are not eligible for a graph query arm under the preregistered anchor rule.",
+  "apparatus_notes": [
+    "The archived agent run did not preserve graph traces.",
+    "The current re-call-docs tenant refused with LINEAGE_MISMATCH, so the calibrated memory tenant was used.",
+    "The reasoning endpoint is generator free. This pilot measures retrieval and graph diagnostics, not answer quality or model reasoning."
+  ]
+}

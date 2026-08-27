@@ -75,6 +75,11 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
     "recall_related": (SCOPE_READ, "read", {"seed_chunk_id": "c1"}),
     "recall_current_state": (SCOPE_READ, "read", {}),
     "recall_reasoning_query": (SCOPE_READ, "read", {"query": "q"}),
+    "recall_query_construction_challenge": (
+        SCOPE_READ,
+        "read",
+        {"original_prompt": "task", "query": "q"},
+    ),
     "recall_reasoning_projection": (SCOPE_READ, "read", {}),
     "recall_reasoning_proposals": (SCOPE_READ, "read", {}),
     "recall_reasoning_audit": (SCOPE_READ, "read", {}),

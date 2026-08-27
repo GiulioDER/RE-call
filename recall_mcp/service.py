@@ -7,7 +7,7 @@ from contextlib import suppress
 import mimetypes
 import threading
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -59,6 +59,20 @@ from recall.evidence import (
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, CurrentStateProjection, project_current_state
 from recall.explanations import RetrievalExplanation
 from recall.query_class import route_query, routing_mode
+from recall.query_construction import (
+    MAX_QUERY_CHARS as MAX_QUERY_CONSTRUCTION_QUERY_CHARS,
+    MAX_QUERY_CANDIDATES,
+    MAX_QUERY_CONSTRUCTION_ROUNDS,
+    QueryConstructionArm,
+    QueryConstructionRequest,
+    QueryProposal,
+    RetrievalSignal,
+    build_control_proposals,
+    build_original_model_challenge,
+    parse_query_frame,
+    should_request_original_model_refinement,
+    validate_query_proposals,
+)
 from recall.related import RelatedEvidenceResult, trusted_related
 from recall.reasoning import (
     GenerationSelection,
@@ -78,6 +92,7 @@ from recall.reasoning_expansion import (
     ExpansionProposal,
     ReasoningRequestLike,
     ReasoningExpansionRetriever,
+    merge_trusted_results,
     resolve_expansion_provider,
 )
 from recall.reasoning_graph import (
@@ -106,12 +121,15 @@ from recall_mcp.models import RewritePlanResult
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import evaluate, is_trusted, trusted_search
-from recall.types import Chunk, RetrievalResult, ScoredChunk, TrustedResult
+from recall.types import Chunk, RetrievalResult, ScoredChunk, TrustedHit, TrustedResult
 
 _log = get_logger("mcp.service")
 
 #: Stands in for a redacted server-side path in a client-facing error.
 REDACTED_PATH = "<server index root>"
+
+MAX_QUERY_CONSTRUCTION_PROMPT_CHARS = 4_000
+MAX_QUERY_CONSTRUCTION_GRAPH_NODES = 128
 
 GRAPH_PRECISION_POLICY_VERSION = "semantic_graph_precision_v1"
 GRAPH_DIRECTIONAL_RELATIONS = frozenset({"supports", "references", "depends_on", "caused"})
@@ -3522,3 +3540,400 @@ def publish_calibration(store: PgVectorStore, calibration_id: str) -> dict[str, 
     """Publish a certified artifact after the user explicitly confirms the action."""
     artifact = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp").publish(calibration_id)
     return artifact.to_dict()
+
+def _query_construction_generation(generation: GenerationSelection) -> dict[str, object]:
+    return {
+        "generation_id": generation.generation_id,
+        "pipeline_fingerprint": generation.pipeline_fingerprint,
+        "corpus_fingerprint": generation.corpus_fingerprint,
+    }
+
+
+def _query_construction_hit(trusted_hit: TrustedHit) -> dict[str, object]:
+    chunk = trusted_hit.chunk
+    return {
+        "chunk_id": chunk.id,
+        "source": chunk.source,
+        "text": chunk.text[:2_000],
+        "score": trusted_hit.cosine,
+        "confidence": trusted_hit.confidence,
+        "verdict": trusted_hit.verdict,
+        "ordinal": trusted_hit.provenance.ord,
+    }
+
+
+def _query_construction_retrieval(result: TrustedResult) -> dict[str, object]:
+    return {
+        "query": result.query,
+        "abstained": result.abstained,
+        "reason": result.reason,
+        "gap_warning": result.gap_warning,
+        "trust_state": result.trust_state,
+        "calibration_status": result.calibration_status,
+        "tenant_id": result.tenant_id,
+        "generation_id": result.generation_id,
+        "pipeline_fingerprint": result.pipeline_fingerprint,
+        "corpus_fingerprint": result.corpus_fingerprint,
+        "hits": [_query_construction_hit(hit) for hit in result.hits],
+    }
+
+
+def _query_construction_evidence(result: TrustedResult) -> tuple[Mapping[str, object], ...]:
+    return tuple(
+        {
+            "chunk_id": hit.chunk.id,
+            "source": hit.chunk.source,
+            "text": hit.chunk.text,
+            "verdict": hit.verdict,
+        }
+        for hit in result.hits[:5]
+        if is_trusted(hit)
+    )
+
+
+def _query_construction_anchors(result: TrustedResult) -> tuple[str, ...]:
+    """Expose only bounded corpus identifiers as graph anchors, never generated text."""
+
+    anchors: list[str] = []
+    for hit in result.hits:
+        if hit.verdict != "ok":
+            continue
+        for value in (hit.chunk.source, hit.chunk.id):
+            if value and value not in anchors:
+                anchors.append(value)
+            if len(anchors) >= 8:
+                return tuple(anchors)
+    return tuple(anchors)
+
+
+def _same_generation(expected: GenerationSelection, result: TrustedResult) -> None:
+    checks = (
+        ("generation_id", expected.generation_id, result.generation_id),
+        ("pipeline_fingerprint", expected.pipeline_fingerprint, result.pipeline_fingerprint),
+        ("corpus_fingerprint", expected.corpus_fingerprint, result.corpus_fingerprint),
+    )
+    for name, requested, actual in checks:
+        if requested is not None and actual != requested:
+            raise ValueError(f"retrieval {name} does not match the construction generation")
+
+
+def _query_construction_graph(
+    store: PgVectorStore,
+    embedder: Embedder,
+    query: str,
+    retrieval: TrustedResult,
+    generation: GenerationSelection,
+    calibration: Calibration | None,
+    graph_expansion: str,
+    max_graph_nodes: int,
+) -> tuple[TrustedResult, dict[str, object]]:
+    if graph_expansion == "off":
+        return retrieval, {
+            "readiness": "not_requested",
+            "entities_inspected": 0,
+            "relations_inspected": 0,
+            "candidates_discovered": 0,
+            "candidates_rejected": 0,
+            "diagnostics_encountered": 0,
+            "latency_ms": 0.0,
+        }
+    graph_request = ReasoningRequest(
+        query=query,
+        tenant_id=store.tenant,
+        generation=generation,
+        providers=ReasoningProviderPorts(retriever=lambda _request: retrieval),
+        policy=ReasoningPolicy(name="retrieval_only", graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_nodes=max_graph_nodes, max_graph_hops=1),
+    )
+    try:
+        expanded = _expand_semantic_graph(
+            store, graph_request, retrieval, calibration, embedder
+        )
+    except Exception as exc:
+        return retrieval, {
+            "readiness": "GRAPH_PROVIDER_ERROR",
+            "error": type(exc).__name__,
+            "entities_inspected": 0,
+            "relations_inspected": 0,
+            "candidates_discovered": 0,
+            "candidates_rejected": 0,
+            "diagnostics_encountered": 0,
+            "latency_ms": 0.0,
+        }
+    return expanded.retrieval, {
+        "readiness": expanded.readiness,
+        "entities_inspected": expanded.entities_inspected,
+        "relations_inspected": expanded.relations_inspected,
+        "candidates_discovered": expanded.candidates_discovered,
+        "candidates_rejected": expanded.candidates_rejected,
+        "diagnostics_encountered": expanded.diagnostics_encountered,
+        "latency_ms": expanded.latency_ms,
+    }
+
+
+def query_construction_challenge(
+    store: PgVectorStore,
+    embedder: Embedder,
+    original_prompt: str,
+    query: str,
+    *,
+    arm: QueryConstructionArm = "original_loop",
+    source: str | None = None,
+    k: int = 5,
+    round_index: int = 0,
+    frame: Mapping[str, object] | None = None,
+    expected_generation_id: str | None = None,
+    graph_expansion: str = "off",
+    max_graph_nodes: int = 32,
+    policy: TrustPolicy | None = None,
+    calibration: Calibration | None = None,
+) -> dict[str, object]:
+    """Run one stateless phase of original model query construction.
+
+    With no frame, this retrieves the original query and returns a challenge prompt. With a frame,
+    it validates the model output, executes the selected bounded controller, and returns either a
+    final retrieval result or the next challenge. The original model is always outside this
+    service, which keeps the MCP tool deterministic and makes the benchmark replayable.
+    """
+
+    if arm not in {"original_loop", "pyramid"}:
+        raise ValueError("arm must be 'original_loop' or 'pyramid'")
+    if graph_expansion not in {"off", "one_hop"}:
+        raise ValueError("graph_expansion must be 'off' or 'one_hop'")
+    if not 0 <= round_index < MAX_QUERY_CONSTRUCTION_ROUNDS:
+        raise ValueError("round_index must be 0 or 1")
+    if not original_prompt.strip():
+        raise ValueError("original_prompt must be non-empty")
+    if len(original_prompt) > MAX_QUERY_CONSTRUCTION_PROMPT_CHARS:
+        raise ValueError("original_prompt is too long")
+    if not query.strip():
+        raise ValueError("query must be non-empty")
+    if len(query) > MAX_QUERY_CONSTRUCTION_QUERY_CHARS:
+        raise ValueError("query is too long")
+    if not 1 <= max_graph_nodes <= MAX_QUERY_CONSTRUCTION_GRAPH_NODES:
+        raise ValueError(
+            f"max_graph_nodes must be between 1 and {MAX_QUERY_CONSTRUCTION_GRAPH_NODES}"
+        )
+
+    generation = _reasoning_generation(store)
+    if expected_generation_id is not None and expected_generation_id != generation.generation_id:
+        return {
+            "status": "refused",
+            "arm": arm,
+            "round_index": round_index,
+            "refusal_reason": "generation_mismatch",
+            "generation": _query_construction_generation(generation),
+            "diagnostics": {"retrieval_calls": 0, "challenge_issued": False},
+        }
+
+    baseline = _retrieve_trusted(
+        store, embedder, query, source, k, calibration, policy
+    ).result
+    baseline = replace(
+        baseline,
+        tenant_id=baseline.tenant_id or store.tenant,
+        generation_id=baseline.generation_id or generation.generation_id,
+    )
+    _same_generation(generation, baseline)
+    baseline_evidence = _query_construction_evidence(baseline)
+    request = QueryConstructionRequest(
+        original_prompt=original_prompt,
+        original_query=query,
+        trusted_evidence=baseline_evidence,
+        graph_anchors=_query_construction_anchors(baseline),
+        gap_reason=baseline.reason or "retrieval_gap",
+        round_index=round_index,
+    )
+
+    if frame is None:
+        challenge = build_original_model_challenge(request)
+        return {
+            "status": "challenge",
+            "arm": arm,
+            "round_index": round_index,
+            "challenge_prompt": challenge.prompt,
+            "frame_schema": [
+                "task_object",
+                "intended_action",
+                "failure_or_risk",
+                "memory_need",
+                "artifacts",
+                "query",
+                "need_more",
+            ],
+            "generation": _query_construction_generation(generation),
+            "retrieval": _query_construction_retrieval(baseline),
+            "diagnostics": {
+                "retrieval_calls": 1,
+                "challenge_issued": True,
+                "candidate_count": 0,
+                "accepted_candidate_count": 0,
+                "rejected_candidate_count": 0,
+                "original_model_calls": 1,
+                "graph": {"readiness": "deferred_until_trusted_seed"},
+            },
+        }
+
+    try:
+        parsed_frame = parse_query_frame(frame)
+    except (TypeError, ValueError) as exc:
+        return {
+            "status": "fallback",
+            "arm": arm,
+            "round_index": round_index,
+            "refusal_reason": "invalid_frame",
+            "error": str(exc),
+            "generation": _query_construction_generation(generation),
+            "retrieval": _query_construction_retrieval(baseline),
+            "diagnostics": {
+                "retrieval_calls": 1,
+                "challenge_issued": False,
+                "original_model_calls": 1,
+            },
+        }
+
+    proposals: tuple[QueryProposal, ...]
+    if arm == "original_loop":
+        proposals = (
+            QueryProposal(
+                parsed_frame.query,
+                "literal",
+                "original model refinement",
+                tuple(
+                    str(item["chunk_id"])
+                    for item in baseline_evidence
+                    if item.get("verdict") == "ok"
+                ),
+            ),
+        )
+    else:
+        proposals = build_control_proposals(
+            parsed_frame,
+            original_query=query,
+            trusted_evidence=baseline_evidence,
+        )
+    validation = validate_query_proposals(
+        QueryConstructionRequest(
+            original_prompt=original_prompt,
+            original_query=query,
+            trusted_evidence=baseline_evidence,
+            graph_anchors=_query_construction_anchors(baseline),
+            gap_reason=baseline.reason or "retrieval_gap",
+            round_index=round_index,
+            max_candidates=MAX_QUERY_CANDIDATES,
+        ),
+        proposals,
+    )
+
+    expanded_results: list[TrustedResult] = []
+    failures: list[str] = []
+    for proposal in validation.accepted:
+        try:
+            candidate = _retrieve_trusted(
+                store, embedder, proposal.query, source, k, calibration, policy
+            ).result
+            candidate = replace(
+                candidate,
+                tenant_id=candidate.tenant_id or store.tenant,
+                generation_id=candidate.generation_id or generation.generation_id,
+            )
+            _same_generation(generation, candidate)
+            expanded_results.append(candidate)
+        except Exception as exc:
+            failures.append(type(exc).__name__)
+
+    merged = merge_trusted_results(baseline, expanded_results, original_query=query)
+    merged = replace(
+        merged,
+        tenant_id=merged.tenant_id or store.tenant,
+        generation_id=merged.generation_id or generation.generation_id,
+    )
+    baseline_ids = {hit.chunk.id for hit in baseline.hits if is_trusted(hit)}
+    merged_ids = {hit.chunk.id for hit in merged.hits if is_trusted(hit)}
+    new_ids = tuple(sorted(merged_ids - baseline_ids))
+    if new_ids:
+        graph_result, graph_diagnostics = _query_construction_graph(
+            store,
+            embedder,
+            parsed_frame.query,
+            merged,
+            generation,
+            calibration,
+            graph_expansion,
+            max_graph_nodes,
+        )
+    else:
+        graph_result = merged
+        graph_diagnostics = {
+            "readiness": "deferred_until_trusted_seed",
+            "entities_inspected": 0,
+            "relations_inspected": 0,
+            "candidates_discovered": 0,
+            "candidates_rejected": 0,
+            "diagnostics_encountered": 0,
+            "latency_ms": 0.0,
+        }
+    signal = RetrievalSignal(
+        trusted_items=len([hit for hit in graph_result.hits if is_trusted(hit)]),
+        new_trusted_items=len(new_ids),
+        gap_warning=graph_result.gap_warning or graph_result.abstained,
+        agent_says_need_more=parsed_frame.need_more,
+    )
+    needs_followup = should_request_original_model_refinement(
+        signal, round_index=round_index
+    )
+    response: dict[str, object] = {
+        "status": "challenge" if needs_followup else "complete",
+        "arm": arm,
+        "round_index": round_index,
+        "frame": {
+            "task_object": parsed_frame.task_object,
+            "intended_action": parsed_frame.intended_action,
+            "failure_or_risk": parsed_frame.failure_or_risk,
+            "memory_need": parsed_frame.memory_need,
+            "artifacts": list(parsed_frame.artifacts),
+            "query": parsed_frame.query,
+            "need_more": parsed_frame.need_more,
+        },
+        "generation": _query_construction_generation(generation),
+        "retrieval": _query_construction_retrieval(graph_result),
+        "new_trusted_chunk_ids": list(new_ids),
+        "accepted_candidates": [
+            {
+                "query": proposal.query,
+                "kind": proposal.kind,
+                "rationale": proposal.rationale,
+                "parent_chunk_ids": list(proposal.parent_chunk_ids),
+            }
+            for proposal in validation.accepted
+        ],
+        "rejected_candidates": [
+            {"query": proposal.query, "kind": proposal.kind, "reason": reason}
+            for proposal, reason in validation.rejected
+        ],
+        "diagnostics": {
+            "retrieval_calls": 1 + len(expanded_results),
+            "challenge_issued": needs_followup,
+            "candidate_count": len(proposals),
+            "accepted_candidate_count": len(validation.accepted),
+            "rejected_candidate_count": len(validation.rejected),
+            "new_trusted_items": len(new_ids),
+            "original_model_calls": 1 + (1 if needs_followup else 0),
+            "provider_failures": failures,
+            "graph": graph_diagnostics,
+        },
+    }
+    if needs_followup:
+        followup_request = QueryConstructionRequest(
+            original_prompt=original_prompt,
+            original_query=parsed_frame.query,
+            trusted_evidence=_query_construction_evidence(graph_result),
+            graph_anchors=_query_construction_anchors(graph_result),
+            gap_reason=graph_result.reason or "retrieval_gap",
+            round_index=round_index + 1,
+        )
+        response["next_challenge_prompt"] = build_original_model_challenge(
+            followup_request
+        ).prompt
+        response["next_round_index"] = round_index + 1
+    return response
