@@ -46,7 +46,9 @@ The full run was started on VPS2-backed retrieval at `2026-08-27T003343Z` and st
 - Retrieval profile: `fast`
 - Graph expansion: `one_hop`
 
-Use the Python 3.12 temporary environment with MCP 2.0.0:
+Use the Python 3.12 temporary environment with MCP 2.0.0. The runner now uses two bounded
+concurrent cases and writes a crash-safe checkpoint sidecar. Reuse the same output path with
+`--resume` after a crash; do not change the frozen input or retrieval/model settings.
 
 ```powershell
 $benchPy = 'C:\Users\gde00\AppData\Local\Temp\recall-query-bench-py312-20260826\Scripts\python.exe'
@@ -63,6 +65,8 @@ $output = "results/query_construction/runs/agent-ab-skill-001-full-$stamp.json"
   --embedder voyage:voyage-4 `
   --index-root /home/sentiment/recall-repos/memory `
   --profile fast `
+  --workers 2 `
+  --resume `
   --graph-expansion one_hop
 ```
 
@@ -74,7 +78,7 @@ After completion, create the deterministic summary:
 & $benchPy scripts/summarize_query_construction_batch.py $output "$output.summary.json"
 ```
 
-Expected completion shape is 138 rows (46 inputs × three arms). Keep the raw JSON and summary immutable; do not overwrite the smoke artifacts.
+Expected completion shape is 138 rows (46 inputs × three arms). Keep the raw JSON and summary immutable; do not overwrite the smoke artifacts. The checkpoint remains beside the raw artifact as `*.checkpoint.jsonl` and is the recovery record if the controller exits before writing the final JSON.
 
 ## Deployment fingerprints recorded on VPS2
 
