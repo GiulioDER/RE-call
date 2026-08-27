@@ -255,3 +255,32 @@ generates the next question instead: how much of the context cost attributed to 
 tool-definition bytes, and does trimming the served tool surface capture it without changing
 transport at all. That is preregisterable and cheap, and it is a better question than the one
 this run asked.
+
+---
+
+## 🔁 Correction appended 2026-08-27, same day, by measurement
+
+The result above attributes the 71,315-token gap to the tool-surface confound (18 tools served
+versus 2). **The direction is right and the magnitude is overstated by roughly twofold.** Nothing
+above is edited, per the rule; this is what the measurement found.
+
+`docs/preregistrations/2026-08-27-tool-definition-context-cost.md` measured the per-tool cost
+directly: **153 input tokens per tool per turn**, so 16 extra tools over a 15-turn session costs
+about **36,000**, not 71,315.
+
+The remainder is not a second mechanism, it is an error in my arithmetic. 71,315 is a *difference
+of differences*, and its two control arms, which serve no memory tools at all and should
+therefore be identical, differed by **42,031 tokens in the opposite direction** (MCP off 180,022,
+in-process off 222,053). That is run-to-run variation between two runs executed hours apart, and
+it inflated the estimate.
+
+Comparing the ON arms directly, which is what the tool count actually changed: **28,460 tokens**,
+against 33,642 to 36,045 predicted from the per-turn measurement. Those agree.
+
+Two lessons, recorded because they are cheaper to read than to repeat:
+
+1. **A difference of differences is only as good as the agreement between its controls.** I never
+   checked that the two off arms agreed before building a claim on their difference. They did not,
+   and by a margin comparable to the effect.
+2. **An explanation that nobody measured is a hypothesis.** Naming the confound was right; stating
+   its magnitude from a tool count rather than from a measurement was not.

@@ -1,0 +1,209 @@
+{
+  "prompt": "Reply with the single word READY and nothing else.",
+  "arms": [
+    {
+      "arm": "none",
+      "tools_intended": 0,
+      "tools_observed": [
+        0
+      ],
+      "n": 5,
+      "median_input_tokens": 2795,
+      "min_input_tokens": 2795,
+      "max_input_tokens": 2795,
+      "median_turns": 1,
+      "rows": [
+        {
+          "rep": 1,
+          "input_tokens": 2795,
+          "turns": 1,
+          "mcp_tools_in_init": 0,
+          "error": null
+        },
+        {
+          "rep": 2,
+          "input_tokens": 2795,
+          "turns": 1,
+          "mcp_tools_in_init": 0,
+          "error": null
+        },
+        {
+          "rep": 3,
+          "input_tokens": 2795,
+          "turns": 1,
+          "mcp_tools_in_init": 0,
+          "error": null
+        },
+        {
+          "rep": 4,
+          "input_tokens": 2795,
+          "turns": 1,
+          "mcp_tools_in_init": 0,
+          "error": null
+        },
+        {
+          "rep": 5,
+          "input_tokens": 2795,
+          "turns": 1,
+          "mcp_tools_in_init": 0,
+          "error": null
+        }
+      ],
+      "delta_vs_none": 0,
+      "tokens_per_tool": null
+    },
+    {
+      "arm": "read",
+      "tools_intended": 2,
+      "tools_observed": [
+        2
+      ],
+      "n": 5,
+      "median_input_tokens": 3324,
+      "min_input_tokens": 3324,
+      "max_input_tokens": 3324,
+      "median_turns": 1,
+      "rows": [
+        {
+          "rep": 1,
+          "input_tokens": 3324,
+          "turns": 1,
+          "mcp_tools_in_init": 2,
+          "error": null
+        },
+        {
+          "rep": 2,
+          "input_tokens": 3324,
+          "turns": 1,
+          "mcp_tools_in_init": 2,
+          "error": null
+        },
+        {
+          "rep": 3,
+          "input_tokens": 3324,
+          "turns": 1,
+          "mcp_tools_in_init": 2,
+          "error": null
+        },
+        {
+          "rep": 4,
+          "input_tokens": 3324,
+          "turns": 1,
+          "mcp_tools_in_init": 2,
+          "error": null
+        },
+        {
+          "rep": 5,
+          "input_tokens": 3324,
+          "turns": 1,
+          "mcp_tools_in_init": 2,
+          "error": null
+        }
+      ],
+      "delta_vs_none": 529,
+      "tokens_per_tool": 264.5
+    },
+    {
+      "arm": "read+write",
+      "tools_intended": 4,
+      "tools_observed": [
+        4
+      ],
+      "n": 5,
+      "median_input_tokens": 3582,
+      "min_input_tokens": 3582,
+      "max_input_tokens": 3582,
+      "median_turns": 1,
+      "rows": [
+        {
+          "rep": 1,
+          "input_tokens": 3582,
+          "turns": 1,
+          "mcp_tools_in_init": 4,
+          "error": null
+        },
+        {
+          "rep": 2,
+          "input_tokens": 3582,
+          "turns": 1,
+          "mcp_tools_in_init": 4,
+          "error": null
+        },
+        {
+          "rep": 3,
+          "input_tokens": 3582,
+          "turns": 1,
+          "mcp_tools_in_init": 4,
+          "error": null
+        },
+        {
+          "rep": 4,
+          "input_tokens": 3582,
+          "turns": 1,
+          "mcp_tools_in_init": 4,
+          "error": null
+        },
+        {
+          "rep": 5,
+          "input_tokens": 3582,
+          "turns": 1,
+          "mcp_tools_in_init": 4,
+          "error": null
+        }
+      ],
+      "delta_vs_none": 787,
+      "tokens_per_tool": 196.75
+    },
+    {
+      "arm": "full",
+      "tools_intended": 18,
+      "tools_observed": [
+        18
+      ],
+      "n": 5,
+      "median_input_tokens": 5727,
+      "min_input_tokens": 5727,
+      "max_input_tokens": 5727,
+      "median_turns": 1,
+      "rows": [
+        {
+          "rep": 1,
+          "input_tokens": 5727,
+          "turns": 1,
+          "mcp_tools_in_init": 18,
+          "error": null
+        },
+        {
+          "rep": 2,
+          "input_tokens": 5727,
+          "turns": 1,
+          "mcp_tools_in_init": 18,
+          "error": null
+        },
+        {
+          "rep": 3,
+          "input_tokens": 5727,
+          "turns": 1,
+          "mcp_tools_in_init": 18,
+          "error": null
+        },
+        {
+          "rep": 4,
+          "input_tokens": 5727,
+          "turns": 1,
+          "mcp_tools_in_init": 18,
+          "error": null
+        },
+        {
+          "rep": 5,
+          "input_tokens": 5727,
+          "turns": 1,
+          "mcp_tools_in_init": 18,
+          "error": null
+        }
+      ],
+      "delta_vs_none": 2932,
+      "tokens_per_tool": 162.88888888888889
+    }
+  ]
+}
