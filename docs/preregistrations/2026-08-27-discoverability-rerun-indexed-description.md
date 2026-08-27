@@ -129,3 +129,72 @@ python -u scripts/agent_ab_probe_discoverability.py --archive ~/.claude/archive/
    satisfied both post hoc, so they are not fitted to produce a particular answer here.
 
 <!-- frozen_above -->
+
+## Result (2026-08-27)
+
+**Status: measured, valid, and all five predictions confirmed.** The apparatus gate passed on the
+registered population: **14 of 14** misses and **26 of 26** hits reproduced, `population_matches_
+registration=true`, `top_k=5`, `void=false`, exit 0.
+
+**Measured: rescue 0 of 14 in every arm, with the treatment demonstrably live.**
+
+| arm | rescue | direct | retention | direct | divergence from control | vs RUN 1's same arm |
+|---|---|---|---|---|---:|---:|
+| retitle | 0/14 | 0 | **25/26** | 25 | 0.923 | **98.7%** |
+| restructured | 0/14 | 0 | 26/26 | 26 | 0.987 | 93.6% |
+| pointer | 0/14 | 0 | 26/26 | 26 | 0.962 | 84.6% |
+
+Artifact: `benchmarks/artifacts/agent_ab/discoverability-rerun/rerun-probe.json`.
+
+**The apparatus validated itself in a way the first run could not.** Control was rebuilt
+independently and answered **identically to run 1 on 78 of 78 queries**, at the same 1,019 chunks.
+Two rebuilds, five days of corpus drift apart in their inputs, bit-stable baseline: that is the
+evidence a single run's passing gate cannot supply.
+
+**Predictions against measurements:**
+
+| # | predicted | measured | verdict |
+|---|---|---|---|
+| 1 | best-arm rescue 0 to 2 of 14 | **0** | confirmed, at the bottom of the band |
+| 2 | retitle differs from run 1's retitle on >= 50% of 78 queries | **98.7%** (77 of 78) | confirmed, far above |
+| 3 | retention >= 25 of 26 in every arm | 25, 26, 26 | confirmed, retitle exactly at the bound |
+| 4 | `ts-lf-rewrite` 0 of 6 | **0 of 6** | confirmed |
+| 5 | under 40 minutes and under 0.10 USD | ~28 minutes, **0.00 USD** | confirmed (zero generation calls: triples reused) |
+
+Five for five is not a sign of insight; four of them are the classes
+`[[i-over-predict-effect-magnitudes]]` already says I estimate well (mechanism rates, costs, and a
+benefit predicted at the bottom of its band per that memo's revised rule). Recorded because a
+predicted null is information, and because the rule that produced prediction 1 has now earned a
+fourth consecutive confirmation.
+
+**Decision, per the registered partition: rescue 0 with prediction 2 CONFIRMED, so the first
+record's conclusion stands and is strengthened rather than corrected. The generation-side lane
+closes for good.** The fully-applied treatment has now been measured: every one of the 190 memos
+carried a searcher-oriented title, a searcher-oriented description and (in two arms) five task
+phrasings into the indexed text; the rankings moved on 98.7%, 93.6% and 84.6% of queries; and not
+one of the 14 recorded misses was rescued in any arm.
+
+🔑 **The retention loss is the most informative single number in this run.** `retitle` lost
+`ts-sample-covers-tail#r4`, and it lost it by **displacement, not substitution**: for the query
+`chunk_id file text sampling`, `sorted-sample-plus-early-stop-is-head-bias.md` sat at rank 1 in
+control and fell out of the top 5 entirely, replaced by neighbours that gained the same treatment.
+Nothing about that memo got worse. Everything around it got a searcher-oriented sentence, and the
+ranking is a competition. That is the mechanism this whole lane has been circling stated in one
+case: **uniform authoring improvements do not accumulate, they cancel, and past the cancellation
+they can cost you the hit you already had.** A memo cannot be written into first place when every
+competitor is written the same way, and the one query where the treatment changed a scored outcome,
+it changed it for the worse.
+
+**What this closes and what it leaves.** Four registered attempts, four directions, all measured:
+query-side expansion 3/15, bottom-appended aliases 0 effect, authored surfaces with the treatment
+partly unindexed 0/14, and now authored surfaces fully indexed 0/14 with a live instrument. No
+fifth generation-side variant is licensed. The formulation gap is a RELEVANCE problem: the
+governing memo is frequently not the semantically closest document to a goal query, and cannot be
+made so by writing, because writing is available to every document at once. What remains is
+retrieval-side (a scorer that can follow a task-to-hazard causal link, or lexical/hybrid matching
+where an exact trigger term exists) or interactive search behaviour, and either needs its own
+registration.
+
+See [[a-null-is-the-cheapest-result-to-fabricate]] for why prediction 2 was registered at all: it
+is the check whose absence made the first run's null unprovable, and here it is what turns a second
+0 of 14 from a repeat into a verdict.
