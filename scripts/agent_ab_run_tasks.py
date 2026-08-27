@@ -125,7 +125,16 @@ async def preflight(config_env: dict[str, str], model: str, driver: str = "cli")
         # runs without a pending stdio MCP server while reporting success. The init-reported
         # version is what THIS driver actually launched, so it is the one to assert on.
         version = _cli_version_tuple(str(record.metadata.get("claude_code_version") or ""))
-        if version is not None and version < (2, 1, 221):
+        if version is None:
+            # Fails CLOSED. An unreadable version is the same evidential state as an unsupported
+            # one, and this check exists precisely because a CLI below 2.1.221 runs the session
+            # WITHOUT its stdio MCP server while reporting success. Skipping the gate when the
+            # answer is unknown reintroduces the failure the gate was written to catch.
+            raise SystemExit(
+                "preflight could not read the init-reported Claude Code version, so the "
+                "2.1.221 stdio-MCP wait cannot be verified; refusing rather than spending a run"
+            )
+        if version < (2, 1, 221):
             raise SystemExit(
                 f"the SDK launched Claude Code {version}, below the 2.1.221 stdio-MCP wait; "
                 f"an on arm under this version silently runs without its server"
@@ -389,6 +398,9 @@ async def main() -> int:
             timeout_s=args.timeout_s,
             env=agent_env,
             extra_allowed_tools=WRITE_TOOLS,
+            # Resolved once here, so every session in the run launches the same executable that
+            # environment.json versions, rather than re-resolving PATH per session.
+            cli_path=resolve_claude_executable(),
         )
     else:
         templates = build_configs(

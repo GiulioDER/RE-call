@@ -43,7 +43,21 @@ RE-call's own server name raises; pick a different `server_name` at construction
 
 Write tools are off by default because an in-process server has no scope or auth layer: the MCP
 server gates these operations behind authenticated scopes, and here the host application is the
-authority, so it must opt in visibly.
+authority, so it must opt in visibly. Three boundaries to know before you do:
+
+- **`RECALL_INDEX_ROOT` defaults to the host process's working directory.** Set it to a directory
+  you would be content for the model to read, because indexing something makes it retrievable
+  through `recall_search`. Indexing is also refused outright under `RECALL_ENV=production`, which
+  builds corpora from immutable manifests instead.
+- **The model cannot widen the file scan.** `recall_index` takes a path and nothing else, matching
+  the MCP server: the safe default scan excludes config and secret files (`tokens.json`,
+  `credentials.json`, dotfiles), and no tool argument turns that off. If your host genuinely needs
+  a different glob, that is a decision for the host, not for the model.
+- **Erasure here does not reach a shadow generation or the migration outbox.** The MCP server
+  passes a shadow store and a control plane to `forget_memory`; this surface has neither, so while
+  a shadow migration is in flight for the tenant, erased text can survive in the shadow table or
+  the outbox and be replayed back. Do not point the in-process write tools at a corpus that is
+  mid-migration; use the server for erasure there.
 
 ## Trust semantics
 
@@ -63,15 +77,26 @@ The trust policy applies on every call, exactly as it does behind the MCP server
 
 ## Configuration
 
-Explicit arguments win; the environment is the fallback: `dsn` falls back to
-`RECALL_SERVING_DSN` then `RECALL_DSN`; `embedder` (an `Embedder` instance or a factory name)
-falls back to `RECALL_EMBEDDER`; `policy` falls back to `RECALL_TRUST_MODE`.
-`use_generation_store=True` serves the generation-bound table and is a constructor decision,
-deliberately not an environment variable. `RecallAgentMemory.from_env(env)` resolves everything
-from an explicit mapping for testability.
+Explicit arguments win; the environment is the fallback, and the variables are the same ones the
+MCP server reads, so pointing both surfaces at one corpus needs no extra configuration:
 
-The store is created lazily and owned by the object (`close()` or the context manager releases
-it); pass `store=` to bring your own, which then stays yours to close.
+| Setting | Falls back to |
+|---|---|
+| `dsn` | `RECALL_SERVING_DSN`, then `RECALL_DSN` |
+| `embedder` | `RECALL_EMBEDDER` (an `Embedder` instance also passes through) |
+| `policy` | `RECALL_TRUST_MODE` |
+| `tenant` | `RECALL_TENANT` |
+| `table` | `RECALL_TABLE` |
+
+`use_generation_store=True` serves the generation-bound table and is a constructor decision,
+deliberately not an environment variable: which store class answers is something the host should
+see at the construction site. `RecallAgentMemory.from_env(env)` resolves everything from an
+explicit mapping for testability.
+
+The store and the embedder are both created lazily, on first use in a worker thread, so
+constructing this object on an event loop does not stall it while a model loads. The store is
+owned by the object (`close()` or the context manager releases it, and a closed memory refuses to
+reopen); pass `store=` to bring your own, which then stays yours to close.
 
 ## Example
 

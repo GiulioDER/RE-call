@@ -1,14 +1,22 @@
-"""Model-facing tool descriptions, copied verbatim from the MCP server's tool docstrings.
+"""Model-facing tool descriptions for the in-process tools.
 
 The MCP server's docstrings ARE the product's model-facing guidance: the
 `check-memory-before-acting` skill and every measured search-rate result were built against this
-exact wording, so the in-process tools must say the same thing or the guidance stops transferring.
-`tests/test_recall_agent_descriptions.py` pins each string to the `recall_mcp/server.py` source so
-the two surfaces cannot drift apart silently.
+exact wording, so the in-process READ tools must say the same thing or the guidance stops
+transferring. `RECALL_SEARCH_DESCRIPTION` and `RECALL_EVIDENCE_DESCRIPTION` are therefore copied
+verbatim from `recall_mcp/server.py`, and `tests/test_recall_agent_descriptions.py` pins those two
+against that source so they cannot drift apart silently.
+
+⚠️ The two WRITE descriptions are authored here, not copied, and are not pinned. They must be:
+the in-process write tools differ from the server's on purpose (no scope gating, no glob, no
+shadow-store or control-plane wiring), so quoting the server's wording would describe a tool that
+does not exist here. An earlier version of this docstring claimed all four were verbatim and
+pinned, which was untrue of these two and made the drift test look broader than it is.
 
 Only the lead paragraphs are copied. The Args sections of the server docstrings describe
 FastMCP-bound signatures (`ctx`, `locale`) that the in-process tools do not carry; parameter
-documentation for these tools lives in their JSON schemas instead.
+documentation for these tools lives in their JSON schemas instead, and
+`tests/test_recall_agent_tool_surface.py` pins those schemas to be no wider than the server's.
 """
 from __future__ import annotations
 
@@ -41,7 +49,8 @@ RECALL_EVIDENCE_DESCRIPTION = (
 RECALL_INDEX_DESCRIPTION = (
     "Index a markdown file or directory into the agent's own memory. Write operation: exposed "
     "only when the host application opted into write tools. Paths are confined to "
-    "RECALL_INDEX_ROOT."
+    "RECALL_INDEX_ROOT, which defaults to the host process's working directory, and the safe "
+    "default file scan applies: config and secret files are excluded and cannot be opted out of."
 )
 
 RECALL_FORGET_DESCRIPTION = (

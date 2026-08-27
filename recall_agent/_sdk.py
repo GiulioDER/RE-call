@@ -73,6 +73,20 @@ EVIDENCE_SCHEMA: dict[str, Any] = {
     "required": ["query"],
 }
 
+#: ⛔ No `glob`, deliberately, and this is a security boundary rather than a parity nicety.
+#:
+#: `recall.index._safe_default_file` returns True unconditionally for any glob other than the
+#: default, which switches off the exclusion list keeping `tokens.json`, `credentials.json` and
+#: `secrets.json` out of a searchable corpus, and `candidate_files` drops the document-extension
+#: gate and the dot-directory prune with it. The MCP server's `recall_index` takes `path` alone
+#: for that reason, so a client can never widen what the corpus admits.
+#:
+#: This schema shipped a `glob` and an audit caught it: the same `tokens.json` is refused under
+#: the default and admitted under a model-chosen glob, then read back verbatim through
+#: `recall_search`. An operator choosing `recall index --glob` is a human scoping a scan; a tool
+#: argument is reachable by any text that reaches the model. A host that genuinely needs a
+#: different glob should take it as a constructor argument, where the HOST chooses it.
+#: Pinned by `tests/test_recall_agent_tool_surface.py`.
 INDEX_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -80,7 +94,6 @@ INDEX_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": "Markdown file or directory to index, inside RECALL_INDEX_ROOT.",
         },
-        "glob": {"type": "string", "description": "Optional glob when path is a directory."},
     },
     "required": ["path"],
 }
@@ -129,7 +142,10 @@ def build_sdk_mcp_server(
             ("recall_index", RECALL_INDEX_DESCRIPTION, INDEX_SCHEMA, memory._recall_index),
             ("recall_forget", RECALL_FORGET_DESCRIPTION, FORGET_SCHEMA, memory._recall_forget),
         ]
-    tools = [sdk.tool(name, description, schema)(handler) for name, description, schema, handler in specs]
+    tools = [
+        sdk.tool(name, description, schema)(handler)
+        for name, description, schema, handler in specs
+    ]
     return sdk.create_sdk_mcp_server(
         name=memory.server_name, version=_package_version(), tools=tools
     )

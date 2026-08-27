@@ -11,7 +11,9 @@ import gzip
 import json
 import os
 import shutil
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -77,9 +79,27 @@ def _result_entry(**overrides) -> dict:
 
 
 def test_importing_sdk_exec_never_imports_the_sdk() -> None:
-    assert "benchmarks.agent_ab.sdk_exec" in sys.modules
-    SDKExecConfig(model="m")
-    assert "claude_agent_sdk" not in sys.modules
+    """Proven in a FRESH interpreter, because `sys.modules` is session-wide.
+
+    Asserting `"claude_agent_sdk" not in sys.modules` inside the suite tests the collection order,
+    not this module: `tests/test_recall_agent_e2e.py` importorskips the SDK at module scope, so on
+    any machine (or CI job) where the `agent` extra is installed, the SDK is already imported by
+    the time this runs and the assertion fails for a reason that has nothing to do with
+    `sdk_exec`. A subprocess is the only place the claim means what it says.
+    """
+    probe = (
+        "import sys;"
+        "import benchmarks.agent_ab.sdk_exec as m;"
+        "m.SDKExecConfig(model='m');"
+        "assert 'claude_agent_sdk' not in sys.modules, sorted(sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
 
 
 def test_the_config_has_no_system_prompt_field_so_replacement_is_unrepresentable() -> None:
@@ -222,6 +242,30 @@ def test_usage_is_the_fallback_when_model_usage_is_absent() -> None:
     assert record.output_tokens == 3
 
 
+def test_an_unobserved_stderr_is_distinguishable_from_a_clean_one() -> None:
+    """`metadata["stderr"]` is "" either way, so the flag is what carries the distinction.
+
+    Derived from the argument rather than hardcoded, so wiring a stderr channel later cannot
+    leave the flag asserting the opposite of the field it describes.
+    """
+    entries = [_init_entry(["Read"]), _result_entry()]
+    unobserved = build_sdk_record(
+        ROW, RECALL_OFF, entries=entries, wall_time_ms=1.0, config=SDKExecConfig()
+    )
+    assert unobserved.metadata["stderr"] == ""
+    assert unobserved.metadata["stderr_observed"] is False
+
+    observed = build_sdk_record(
+        ROW,
+        RECALL_OFF,
+        entries=entries,
+        wall_time_ms=1.0,
+        config=SDKExecConfig(),
+        stderr="a warning from the CLI",
+    )
+    assert observed.metadata["stderr_observed"] is True
+
+
 def test_result_cost_is_recorded_as_untrusted_never_as_spend() -> None:
     entries = [_init_entry(["Read"]), _result_entry(total_cost_usd=1.23)]
     record = build_sdk_record(
@@ -309,6 +353,52 @@ def test_the_raw_typed_stream_is_written_as_messages_arrive(tmp_path, monkeypatc
         lines = [json.loads(line) for line in handle]
     assert len(lines) == 2
     assert lines[0]["message_type"] == "dict"
+
+
+def test_cli_version_parsing() -> None:
+    import scripts.agent_ab_run_tasks as run_tasks
+
+    assert run_tasks._cli_version_tuple("2.1.238 (Claude Code)") == (2, 1, 238)
+    assert run_tasks._cli_version_tuple("") is None
+    assert run_tasks._cli_version_tuple("unknown build") is None
+
+
+@pytest.mark.parametrize(
+    ("version", "refuses"),
+    [(None, True), ("2.1.220", True), ("2.1.221", False), ("2.1.238", False)],
+    ids=["unreadable", "too-old", "exactly-the-floor", "current"],
+)
+def test_the_preflight_version_gate_fails_closed(version, refuses, monkeypatch) -> None:
+    """An unknown CLI version is REFUSED, not waved through (STAKES-003 / BUG-002).
+
+    Below 2.1.221 a session runs WITHOUT its stdio MCP server while reporting success, which is
+    the failure this gate exists to catch, so "we could not tell" has to refuse too.
+
+    Driven through `preflight` rather than asserted against its source: a source-text check passes
+    against a mutant that keeps the comment and replaces the refusal with a warning, which is the
+    very hole being pinned.
+    """
+    import scripts.agent_ab_run_tasks as run_tasks
+    from benchmarks.agent_ab.schema import SessionRecord
+
+    async def fake_run_sdk_case(row, variant, config):
+        metadata = {} if version is None else {"claude_code_version": version}
+        return SessionRecord(
+            task_id=str(row["task_id"]),
+            variant=variant,
+            success=True,
+            response="READY",
+            input_tokens=10,
+            metadata=metadata,
+        )
+
+    monkeypatch.setattr(run_tasks, "run_sdk_case", fake_run_sdk_case)
+    if refuses:
+        with pytest.raises(SystemExit) as excinfo:
+            asyncio.run(run_tasks.preflight({}, "model", "sdk"))
+        assert "2.1.221" in str(excinfo.value)
+    else:
+        asyncio.run(run_tasks.preflight({}, "model", "sdk"))
 
 
 def test_make_sdk_runner_requires_a_config_per_variant() -> None:

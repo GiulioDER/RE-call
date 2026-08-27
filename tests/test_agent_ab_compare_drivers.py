@@ -88,6 +88,34 @@ def test_underscore_keys_in_the_bands_file_are_commentary_not_metrics() -> None:
     assert summary["verdict"] == "equivalent"
 
 
+def test_a_metric_missing_from_the_run_voids_the_wiring_rather_than_falsifying() -> None:
+    """A comparison that never ran must not publish as a measured non-equivalence.
+
+    An absent key (a renamed field, a schema drift between analyzer versions) used to land in
+    `outside_band`, so the summary would report the drivers as not equivalent when the truth was
+    that the number was never computed.
+    """
+    run = _analysis(mechanism={"governing_memo_rate": 0.674})  # search_rate key removed
+    summary = compare(run, _analysis(), _bands())
+    assert summary["verdict"] == "wiring_void"
+    assert summary["metrics"]["search_rate"]["verdict"] == "missing_value"
+    assert "search_rate" not in summary["outside_band"]
+
+
+def test_a_metric_missing_from_the_baseline_voids_too() -> None:
+    baseline = _analysis(primary_per_task={})
+    summary = compare(_analysis(), baseline, _bands())
+    assert summary["verdict"] == "wiring_void"
+    assert summary["metrics"]["per_task_mean_delta"]["verdict"] == "missing_value"
+
+
+def test_a_non_numeric_metric_value_voids_instead_of_crashing() -> None:
+    run = _analysis(primary_per_task={"mean_delta": "n/a"})
+    summary = compare(run, _analysis(), _bands())
+    assert summary["verdict"] == "wiring_void"
+    assert summary["metrics"]["per_task_mean_delta"]["verdict"] == "missing_value"
+
+
 def test_every_compared_metric_has_a_key_path() -> None:
     payload = _analysis()
     for metric, path in METRIC_PATHS.items():

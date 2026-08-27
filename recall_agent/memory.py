@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Mapping
+import threading
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from recall.calibration import Calibration
@@ -31,7 +32,7 @@ from recall.embeddings import Embedder
 from recall.generation_store import GenerationStore
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
 from recall.trust_policy import TrustPolicy, TrustRefusal
-from recall_agent.rendering import render_refusal, render_result
+from recall_agent.rendering import render_refusal, render_result, render_tool_error
 from recall_mcp.factories import make_embedder
 from recall_mcp.service import (
     evidence_memory,
@@ -57,7 +58,12 @@ def resolve_dsn(env: Mapping[str, str], explicit: str | None = None) -> str:
 
 
 def resolve_embedder(env: Mapping[str, str], explicit: Embedder | str | None = None) -> Embedder:
-    """An instance passes through; a name (explicit, else `RECALL_EMBEDDER`) goes to the factory."""
+    """An instance passes through; a name (explicit, else `RECALL_EMBEDDER`) goes to the factory.
+
+    ⚠️ Constructing an embedder is not cheap and not always local: fastembed loads an ONNX model
+    and voyage makes a blocking probe request. Callers on an event loop must reach this through
+    `RecallAgentMemory`, which defers it to a worker thread, rather than calling it directly.
+    """
     if isinstance(explicit, Embedder):
         return explicit
     name = explicit or env.get("RECALL_EMBEDDER", "fastembed")
@@ -93,40 +99,71 @@ class RecallAgentMemory:
         pool_size: int = 2,
         server_name: str = "recall",
         store: PgVectorStore | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         if store is not None and (dsn is not None or table is not None or use_generation_store):
             raise ValueError(
                 "pass either an existing store or (dsn/table/use_generation_store), not both: "
                 "an injected store already decided all three"
             )
-        env = os.environ
+        # ONE mapping decides every environment-derived setting, including the embedder resolved
+        # later. `from_env(env=...)` passes its mapping straight through, so a caller who supplies
+        # one is never silently topped up from the host process: a test or a multi-tenant host
+        # would otherwise get the process's RECALL_TENANT or RECALL_EMBED_PROFILE mixed into a
+        # configuration it thought it had stated in full.
+        env = dict(os.environ if env is None else env)
+        self._env = env
         self._dsn = resolve_dsn(env, dsn)
-        self._embedder = resolve_embedder(env, embedder)
+        # Held unresolved until first use: constructing an embedder loads an ONNX model (fastembed)
+        # or makes a blocking probe request (voyage), and a host naturally builds this object on
+        # its event loop, right before assembling ClaudeAgentOptions. Every other blocking call in
+        # this class is moved off the loop by `_call`; resolving here would make the constructor
+        # the one exception, stalling the loop for the whole model load.
+        self._embedder_spec = embedder
+        self._embedder: Embedder | None = embedder if isinstance(embedder, Embedder) else None
         self._policy = policy if policy is not None else TrustPolicy.from_env(dict(env))
         self._calibration = calibration
-        self._tenant = tenant if tenant is not None else DEFAULT_TENANT
-        self._table = table if table is not None else DEFAULT_TABLE
+        # Both mirror `recall_mcp.server`: RECALL_TENANT, and RECALL_TABLE with
+        # empty-means-unset. The server additionally REFUSES a non-identifier table at import
+        # and refuses RECALL_TABLE together with generation mode; here a bad value surfaces
+        # later, from `PgVectorStore`'s own validation, and `table` is simply unused when
+        # `use_generation_store` is set. Parity on the values, not yet on the refusals.
+        self._tenant = (
+            tenant if tenant is not None else env.get("RECALL_TENANT") or DEFAULT_TENANT
+        )
+        self._table = (
+            table
+            if table is not None
+            else env.get("RECALL_TABLE", "").strip() or DEFAULT_TABLE
+        )
         self._use_generation_store = use_generation_store
         self._pool_size = pool_size
         self._server_name = server_name
         self._store: PgVectorStore | None = store
         self._owns_store = store is None
+        self._closed = False
         self._lock = asyncio.Lock()
+        # A THREAD lock, not the asyncio one: the `embedder` property is reachable from a host
+        # thread while a tool call is resolving the same embedder in a worker, and two fastembed
+        # model loads for one object is a real cost even though either result would be correct.
+        self._embedder_lock = threading.Lock()
 
     @classmethod
     def from_env(
         cls, env: Mapping[str, str] | None = None, **overrides: Any
     ) -> "RecallAgentMemory":
-        """Resolve dsn/embedder/policy from `env` (default `os.environ`); overrides win."""
+        """Construct from an explicit environment mapping (default `os.environ`); overrides win.
+
+        The mapping is handed to the constructor, which derives every environment-backed setting
+        from it and from nothing else.
+        """
         values = dict(os.environ if env is None else env)
-        if "dsn" not in overrides:
+        overrides.setdefault("env", values)
+        if "dsn" not in overrides and "store" not in overrides:
+            # Not when a store is injected: the constructor refuses `store` together with `dsn`,
+            # so defaulting one here made `from_env(store=...)` raise unconditionally, which is
+            # the same shape as the embedder defect fixed in e7ae27c1.
             overrides["dsn"] = resolve_dsn(values)
-        if "embedder" not in overrides:
-            # Guarded, not setdefault: resolving an embedder can load a model, and a caller who
-            # supplied one must not pay for a second.
-            overrides["embedder"] = resolve_embedder(values)
-        if "policy" not in overrides:
-            overrides["policy"] = TrustPolicy.from_env(values)
         return cls(**overrides)
 
     @property
@@ -135,10 +172,32 @@ class RecallAgentMemory:
 
     @property
     def embedder(self) -> Embedder:
-        return self._embedder
+        """The resolved embedder, constructing it on first access if it was named rather than given.
+
+        ⚠️ On an event loop, prefer letting a tool call resolve it in the worker thread; reading
+        this property directly pays the model load on the calling thread.
+        """
+        return self._embedder_or_create()
 
     def close(self) -> None:
-        if self._owns_store and self._store is not None:
+        """Release the store this object owns. Sticky: a closed memory refuses to reopen.
+
+        The stickiness matters because `_store is None` is also the not-yet-created state, so
+        without the flag a tool call arriving after close (a SessionStart hook firing during
+        teardown, say) would silently open a fresh pool that nothing is left to close.
+        `PgVectorStore.close` is deliberately sticky for the same reason; this mirrors it.
+
+        Not synchronised with in-flight calls: it must stay callable from `__exit__`, which is
+        sync, while `_call` holds an async lock. Close a memory when its session is over, not
+        underneath one.
+        """
+        if not self._owns_store:
+            # An injected store is the caller's to close, so close() releases nothing and must
+            # not disable this object either: refusing afterwards would brick a memory whose
+            # store is still perfectly usable by its owner.
+            return
+        self._closed = True
+        if self._store is not None:
             self._store.close()
             self._store = None
 
@@ -182,14 +241,28 @@ class RecallAgentMemory:
 
     # -- store plumbing ------------------------------------------------------------------------
 
+    def _embedder_or_create(self) -> Embedder:
+        """Resolve the named embedder once, on whichever thread first needs it.
+
+        Resolved against `self._env`, the mapping this object was constructed with, because
+        `make_embedder` reads far more than the name from it (`RECALL_EMBED_PROFILE`, model
+        digests, API keys), and a caller who passed an explicit mapping must not have the host
+        process's variables mixed into the result.
+        """
+        with self._embedder_lock:
+            if self._embedder is None:
+                self._embedder = resolve_embedder(self._env, self._embedder_spec)
+            return self._embedder
+
     def _make_store(self) -> PgVectorStore:
+        dim = self._embedder_or_create().dim
         if self._use_generation_store:
             return GenerationStore(
-                self._dsn, self._embedder.dim, tenant=self._tenant, pool_size=self._pool_size
+                self._dsn, dim, tenant=self._tenant, pool_size=self._pool_size
             )
         return PgVectorStore(
             self._dsn,
-            self._embedder.dim,
+            dim,
             table=self._table,
             tenant=self._tenant,
             pool_size=self._pool_size,
@@ -197,9 +270,25 @@ class RecallAgentMemory:
 
     def _store_or_create(self) -> PgVectorStore:
         """Runs inside the worker thread, under the lock, so creation cannot race."""
+        if self._closed:
+            raise RuntimeError("this RecallAgentMemory is closed; construct a new one")
         if self._store is None:
             store = self._make_store()
-            store.check_schema()
+            try:
+                store.check_schema()
+            except BaseException:
+                # The pool opens eagerly in the constructor, so a rejected schema would otherwise
+                # drop a store holding live connections and a maintenance thread, and the next
+                # tool call would build another (`_store` is assigned only on success, and a
+                # schema mismatch is persistent). `recall_mcp.server` closes on this same failure
+                # for the same reason.
+                #
+                # `BaseException`, where that precedent catches `Exception`: this runs in a worker
+                # thread a cancelled tool call can abandon, and a pool leaked on cancellation is
+                # leaked just as thoroughly as one leaked on error. A deliberate deviation from
+                # the precedent rather than a copy of it.
+                store.close()
+                raise
             self._store = store
         return self._store
 
@@ -209,79 +298,100 @@ class RecallAgentMemory:
 
     # -- tool implementations (plain async callables; the SDK wrapping lives in _sdk) ----------
 
+    def _retrieval_kwargs(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Forward only the arguments the caller actually supplied.
+
+        Nothing here restates the service layer's defaults (`k`, `related_relation`,
+        `related_max_items`). Copying them would make `recall_mcp.service` and this wrapper two
+        owners of one default, and the wrapper would keep passing yesterday's value after the
+        service changed its mind. An absent key is simply not forwarded.
+        """
+        kwargs: dict[str, Any] = {"calibration": self._calibration, "policy": self._policy}
+        if args.get("source") is not None:
+            kwargs["source"] = str(args["source"])
+        for name in ("k", "related_max_items"):
+            if args.get(name) is not None:
+                kwargs[name] = int(args[name])
+        for name in ("explain", "include_related"):
+            if args.get(name) is not None:
+                kwargs[name] = bool(args[name])
+        if args.get("related_relation") is not None:
+            kwargs["related_relation"] = str(args["related_relation"])
+        return kwargs
+
+    async def _retrieve(self, run: Any) -> dict[str, Any]:
+        """Run a retrieval and render it, turning a refusal into its wire form rather than an error.
+
+        Scoped to `TrustRefusal` alone. What the service layer raises (a production refusal, a
+        path outside the index root, a budget cap) is its own signal and must not be flattened
+        into "invalid tool arguments"; argument coercion is guarded at each call site instead,
+        before the call, where the error really is the caller's.
+        """
+        try:
+            result = await self._call(run)
+        except TrustRefusal as refusal:
+            return render_refusal(refusal)
+        return render_result(result)
+
     async def _recall_search(self, args: dict[str, Any]) -> dict[str, Any]:
-        query = str(args["query"])
-        source = None if args.get("source") is None else str(args["source"])
-        k = int(args.get("k", 5))
-        explain = bool(args.get("explain", False))
-        include_related = bool(args.get("include_related", False))
-        related_relation = str(args.get("related_relation", "source"))
-        related_max_items = int(args.get("related_max_items", 3))
+        # Coerced before the call: model-supplied arguments are untrusted, and `int(None)` or a
+        # missing `query` would otherwise leave this method as a raw exception through the SDK's
+        # tool channel, indistinguishable from the transport failing.
+        try:
+            query = str(args["query"])
+            kwargs = self._retrieval_kwargs(args)
+        except (TypeError, ValueError, KeyError) as error:
+            return render_tool_error(f"{type(error).__name__}: {error}")
 
         def run() -> Any:
             return search_memory(
-                self._store_or_create(),
-                self._embedder,
-                query,
-                source=source,
-                k=k,
-                calibration=self._calibration,
-                policy=self._policy,
-                explain=explain,
-                include_related=include_related,
-                related_relation=related_relation,
-                related_max_items=related_max_items,
+                self._store_or_create(), self._embedder_or_create(), query, **kwargs
             )
 
-        try:
-            result = await self._call(run)
-        except TrustRefusal as refusal:
-            return render_refusal(refusal)
-        return render_result(result)
+        return await self._retrieve(run)
 
     async def _recall_evidence(self, args: dict[str, Any]) -> dict[str, Any]:
-        query = str(args["query"])
-        source = None if args.get("source") is None else str(args["source"])
-        k = int(args.get("k", 5))
-        max_items = None if args.get("max_items") is None else int(args["max_items"])
-        explain = bool(args.get("explain", False))
-        include_related = bool(args.get("include_related", False))
-        related_relation = str(args.get("related_relation", "source"))
-        related_max_items = int(args.get("related_max_items", 3))
+        try:
+            query = str(args["query"])
+            kwargs = self._retrieval_kwargs(args)
+            if args.get("max_items") is not None:
+                kwargs["max_items"] = int(args["max_items"])
+        except (TypeError, ValueError, KeyError) as error:
+            return render_tool_error(f"{type(error).__name__}: {error}")
 
         def run() -> Any:
             return evidence_memory(
-                self._store_or_create(),
-                self._embedder,
-                query,
-                source=source,
-                k=k,
-                max_items=max_items,
-                calibration=self._calibration,
-                policy=self._policy,
-                explain=explain,
-                include_related=include_related,
-                related_relation=related_relation,
-                related_max_items=related_max_items,
+                self._store_or_create(), self._embedder_or_create(), query, **kwargs
             )
 
-        try:
-            result = await self._call(run)
-        except TrustRefusal as refusal:
-            return render_refusal(refusal)
-        return render_result(result)
+        return await self._retrieve(run)
 
     async def _recall_index(self, args: dict[str, Any]) -> dict[str, Any]:
-        path = str(args["path"])
-        glob = None if args.get("glob") is None else str(args["glob"])
+        # No `glob`: see the INDEX_SCHEMA comment in `recall_agent._sdk`. A model-chosen glob
+        # switches off the exclusion list that keeps `tokens.json` out of the corpus, so the
+        # argument is not read here even if a caller sends one the schema does not advertise.
+        try:
+            path = str(args["path"])
+        except (TypeError, ValueError, KeyError) as error:
+            return render_tool_error(f"{type(error).__name__}: {error}")
 
         def run() -> Any:
-            return index_memory(self._store_or_create(), self._embedder, path, glob=glob)
+            return index_memory(self._store_or_create(), self._embedder_or_create(), path)
 
         return render_result(await self._call(run))
 
     async def _recall_forget(self, args: dict[str, Any]) -> dict[str, Any]:
-        sources = [str(item) for item in args["sources"]]
+        try:
+            raw = args["sources"]
+        except KeyError as error:
+            return render_tool_error(f"KeyError: {error}")
+        if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence):
+            # A bare string is iterable, so `[str(x) for x in "notes.md"]` would ask to erase
+            # eight one-character sources: the requested erasure silently does nothing while a
+            # one-character source elsewhere in the tenant is erased instead. On the
+            # right-to-erasure path that must be a refusal, not a shrug.
+            return render_tool_error("sources must be a list of source identifiers")
+        sources = [str(item) for item in raw]
 
         def run() -> Any:
             return forget_memory(self._store_or_create(), sources)

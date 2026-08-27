@@ -35,6 +35,12 @@ classifiers = [
 dependencies = [
     "psycopg[binary]>=3.3.4",
     "pgvector>=0.4",
+    # `recall_mcp.service` and `recall_mcp.models` import pydantic AT MODULE LOAD, and
+    # `recall_agent` (shipped in the wheel, importable with no extras) imports that service layer.
+    # It used to arrive only as a transitive of `mcp`, so a plain `pip install recall-rag` then
+    # `import recall_agent` raised ModuleNotFoundError: pydantic. Relying on somebody else's
+    # transitive for a module-scope import is a dependency whether or not it is declared.
+    "pydantic>=2",
 ]
 
 [project.optional-dependencies]
@@ -386,7 +392,7 @@ ignore = [
 # above), but it is type-checked anyway: it is the code path that produces PUBLISHED benchmark
 # numbers, and a shape mismatch against the third-party harness it feeds does not raise — it
 # degrades into a worse score that reads as a retrieval result.
-files = ["recall", "recall_mcp", "recall_interop", "recall_consistency", "benchmarks"]
+files = ["recall", "recall_mcp", "recall_agent", "recall_interop", "recall_consistency", "benchmarks"]
 # The agent-benchmark fixtures and oracles are INPUT, not source, and one of them is a decoy
 # `recall/` package: `oracles/ts-worktree-import/installed/recall/` stands in for the editable
 # install shared across every worktree on this machine, and the task is whether the agent's script
@@ -426,6 +432,12 @@ no_implicit_optional = true
 # CI run without it must agree, or the gate is advisory.
 [[tool.mypy.overrides]]
 module = [
+    # `agent` extra, deliberately excluded from `dev` so CI proves the SDK-absent import path.
+    # That is why it needs an entry here: `benchmarks/agent_ab/sdk_exec.py` and
+    # `recall_agent/_sdk.py` import it, and the typecheck job installs `.[dev]` only, so without
+    # this line mypy fails on a module the design intends to be missing.
+    "claude_agent_sdk",
+    "claude_agent_sdk.*",
     "fastembed.*",
     "transformers",
     "transformers.*",

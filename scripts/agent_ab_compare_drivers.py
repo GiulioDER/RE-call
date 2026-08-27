@@ -82,22 +82,33 @@ def compare(
         base_value = _lookup(baseline, path)
         run_value = _lookup(run, path)
         row: dict[str, Any] = {"baseline": base_value, "replication": run_value}
-        if base_value is not None and run_value is not None:
+        numeric = all(
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            for value in (base_value, run_value)
+        )
+        if numeric:
             row["difference"] = run_value - base_value
+        elif not band.get("record_only"):
+            # A metric absent from an analysis file (a renamed key, a schema drift between
+            # analyzer versions) is NOT a measured difference, and folding it into `falsified`
+            # would publish "the drivers are not equivalent" when the comparison never ran. This
+            # is the missing-input-becomes-a-clean-null shape: a wiring fault must not be able to
+            # wear a scientific result's clothes.
+            row["verdict"] = "missing_value"
+            rows[metric] = row
+            wiring_void = True
+            continue
         if band.get("record_only"):
             row["verdict"] = "recorded"
         elif "min" in band:
+            # Both values are numeric here: a missing one took the `missing_value` branch above.
             row["band"] = {"min": band["min"]}
-            ok = run_value is not None and run_value >= band["min"]
+            ok = run_value >= band["min"]
             row["verdict"] = "ok" if ok else "wiring_void"
             wiring_void = wiring_void or not ok
         elif "max_abs_diff" in band:
             row["band"] = {"max_abs_diff": band["max_abs_diff"]}
-            ok = (
-                base_value is not None
-                and run_value is not None
-                and abs(run_value - base_value) <= band["max_abs_diff"]
-            )
+            ok = abs(run_value - base_value) <= band["max_abs_diff"]
             row["inside_band"] = ok
             row["verdict"] = "equivalent" if ok else "outside_band"
             if not ok:

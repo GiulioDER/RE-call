@@ -37,3 +37,23 @@ def render_result(result: object) -> dict[str, Any]:
 def render_refusal(refusal: TrustRefusal) -> dict[str, Any]:
     """Serialize a refusal's wire form; see the module docstring for why `is_error` stays unset."""
     return tool_text(json.dumps(refusal.to_dict(), indent=2))
+
+
+def render_tool_error(detail: str) -> dict[str, Any]:
+    """A bad tool ARGUMENT, rendered rather than raised.
+
+    Distinct from a refusal, which is the trust layer declining to answer: this is the caller
+    sending something the tool cannot use (`k: "five"`, a missing `query`, a string where a list
+    of sources belongs). It is marked `is_error` because it genuinely is one and the model should
+    retry with corrected arguments, where a refusal must NOT be marked so its advice survives.
+
+    `detail` is an exception's type and message from ARGUMENT coercion only, which every caller
+    performs before the retrieval starts, so nothing the corpus controls can reach this string.
+    Service-layer failures are deliberately not routed here: they are the library's own signals,
+    not the caller's mistake, and flattening them into "invalid tool arguments" would tell the
+    model to retry an argument when the real answer was a refusal.
+    """
+    return {
+        "content": [{"type": "text", "text": f"invalid tool arguments: {detail}"}],
+        "is_error": True,
+    }

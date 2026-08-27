@@ -39,6 +39,7 @@ import os
 import re
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib import metadata as importlib_metadata
@@ -366,6 +367,15 @@ def build_sdk_record(
                 "driver": "sdk",
                 "sdk_version": sdk_version(),
                 "options": config.summary(),
+                # `metadata["stderr"]` is "" on every SDK record, and `claude_exec.build_record`
+                # (frozen) collapses even an explicit None to "", so an unobserved stderr is
+                # byte-identical to a clean one. This flag is the distinction, in this driver's
+                # own metadata layer: the SDK gives no stderr channel here, so nothing was seen
+                # rather than nothing was written. Null-not-zero, in the only place it can be said.
+                #
+                # Derived from the argument rather than hardcoded False, so that wiring a stderr
+                # channel later cannot leave the flag asserting the opposite of the field.
+                "stderr_observed": bool(stderr),
             },
         }
     )
@@ -400,18 +410,27 @@ async def run_sdk_case(
     try:
         try:
             async with asyncio.timeout(config.timeout_s):
-                async for message in query(prompt=prompt, options=options):
-                    entry = {
-                        "message_type": type(message).__name__,
-                        "data": _jsonable(message),
-                        "received_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    entries.append(entry)
-                    if handle is not None:
-                        # Written as messages arrive, so a session the normalizer later rejects
-                        # is still on disk to look at.
-                        handle.write(json.dumps(entry) + "\n")
-                        handle.flush()
+                # `aclosing`, because `async for` does NOT close its iterator when the loop body
+                # raises (PEP 533 was deferred), and the SDK's `query()` is a bare
+                # async-for-yield with no try/finally of its own. Without this, a failure in the
+                # body below (a gzip write on a full disk, say) leaves the generator suspended
+                # and the spawned Claude Code process alive, outliving the case that started it
+                # and competing with the next one for tokens and for the stdio recall server.
+                # The timeout path was already safe (cancellation is thrown INTO the generator,
+                # so its finally runs); this makes both paths deterministic.
+                async with aclosing(query(prompt=prompt, options=options)) as stream:
+                    async for message in stream:
+                        entry = {
+                            "message_type": type(message).__name__,
+                            "data": _jsonable(message),
+                            "received_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        entries.append(entry)
+                        if handle is not None:
+                            # Written as messages arrive, so a session the normalizer later
+                            # rejects is still on disk to look at.
+                            handle.write(json.dumps(entry) + "\n")
+                            handle.flush()
         except TimeoutError:
             raise SDKTranscriptError(
                 f"claude-agent-sdk exceeded timeout_s={config.timeout_s} for task "
@@ -450,8 +469,16 @@ def build_sdk_configs(
     env: Mapping[str, str] | None = None,
     permission_mode: str = "acceptEdits",
     extra_allowed_tools: tuple[str, ...] = (),
+    cli_path: str | None = None,
 ) -> dict[str, SDKExecConfig]:
-    """Build one `SDKExecConfig` per variant. Mirror of `arms.build_configs`: everything except
+    """Build one `SDKExecConfig` per variant, with `cli_path` resolved ONCE by the caller.
+
+    `cli_path` is a parameter rather than something resolved here, because resolving it here
+    would make merely BUILDING a config require the Claude Code CLI on PATH, which no test and no
+    CI job has. The run script resolves it once and passes it, so a run still pins one executable
+    for all its sessions (`SDKExecConfig.options` falls back to a lazy resolve otherwise).
+
+    Mirror of `arms.build_configs`: everything except
     the memory configuration is passed identically to both arms from this one call."""
 
     missing = [variant for variant in VARIANTS if variant not in specs]
@@ -482,6 +509,7 @@ def build_sdk_configs(
             timeout_s=timeout_s,
             env=dict(env or {}),
             bare=True,
+            cli_path=cli_path,
             mcp_servers=sdk_mcp_servers(recall_spec) if variant == RECALL_ON else None,
             allowed_tools=allowed,
             disallowed_tools=DENIED_TOOLS,
