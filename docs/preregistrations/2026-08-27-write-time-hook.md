@@ -461,3 +461,68 @@ stage A's instruction-plus-hook arm failing 1 of 4.
 ⚠️ **B3 is the one that can invalidate everything else.** A systematic winner between two identical
 arms means the harness itself favours a side, and no result from stage B could be attributed to the
 hook rather than to that.
+
+## Base-rate result, 2026-08-27: 17 of 48, and stage B is powered
+
+**Nothing above is edited.** `base-rate-001`, A/A, no hook anywhere, 8 `ts-*` families x 3 repeats,
+**24 pairs admitted, 0 discarded, 48 sessions, every one with a checker verdict.**
+
+| # | prediction | observed | verdict |
+|---|---|---|---|
+| B1 | control failures 11 to 20 of 48 | **17 of 48** | **confirmed** |
+| B2 | A/A arms disagree on 4 to 10 of 24 pairs | **3 of 24** | **falsified, below the band** |
+| B3 | neither arm takes more than 70% of discordant pairs | 1 on / 2 off, **67%** | not falsified, but n=3 makes it weak |
+| B4 | worst family at least 3x the best | **0% to 100%**, ratio unbounded | **confirmed, far past the band** |
+
+### B1 puts stage B back on its registered footing
+
+17 control failures under this apparatus against 11 of 48 under `--bare`, so the added system
+prompt did not rescue the hazards, and the power table's arithmetic is unchanged: McNemar at these
+counts still needs roughly **6 rescues with no regressions** (p about 0.03) and cannot see 4.
+
+### B2 is the useful surprise, and it cuts in the experiment's favour
+
+Two IDENTICAL arms disagreed on only 3 of 24 pairs. I predicted 4 to 10. So the tasks are close to
+deterministic and the **noise floor a treatment has to clear is low**, which is the opposite of the
+usual reason a paired agent benchmark fails to show anything. It also means a 6-rescue effect would
+be plainly visible rather than buried in variance.
+
+⚠️ The same fact bounds the ceiling: a task that fails 6 times out of 6 fails for a stable reason,
+and a stable reason is either fixed by the injected memo or not. There is little room for a
+partial effect.
+
+### B4 is the finding that changes how stage B should be read
+
+| family | control failures |
+|---|---|
+| `ts-lf-rewrite` | **6 of 6** |
+| `ts-bounded-runner` | 5 of 6 |
+| `ts-false-zero-search` | 5 of 6 |
+| `ts-autouse-tmp-path` | 1 of 6 |
+| `ts-raise-on-missing` | 0 of 6 |
+| `ts-sample-covers-tail` | 0 of 6 |
+| `ts-separator-canary` | 0 of 6 |
+| `ts-worktree-import` | 0 of 6 |
+
+**Four of the eight families never fail.** Half of stage B's 48 pairs are therefore spent on tasks
+that cannot contribute a rescue, and the whole effect has to come from the other half. Stage B is
+still run **exactly as registered** rather than narrowed to the failing families, because choosing
+the task set after seeing which ones fail is selection, and the registered n is what the power
+table describes. The consequence is stated here instead: the effective sample for detecting a
+rescue is about **24 pairs, not 48**, and a null result has to be read against that.
+
+### What was re-run, and why, stated because it could bias the number
+
+Four attempts were needed to admit all 24 pairs. Nothing was re-run for its RESULT: every re-run
+was a pair the pre-specified admission gate had already refused, and the refusals were
+
+- **6 sessions** where the `recall-memory` MCP server failed to connect or the stream carried no
+  result event, which are transient apparatus failures, and
+- **3 sessions** killed by a bug in the recording layer, not the agent: `SessionRecord` refused to
+  be CONSTRUCTED for an off arm that had called RE-call, which in the shared-arm design is legal.
+  Those sessions had completed and produced checker verdicts, and were recorded as `the session
+  did not complete`. ⛔ Note the direction: the sessions lost were exactly the ones where the agent
+  **searched memory**, so leaving the bug in place would have biased the base rate in whichever
+  direction memory helps. Fixed before the final attempt.
+
+The first attempt's records are preserved beside the final ones as `records.attempt1.jsonl`.
