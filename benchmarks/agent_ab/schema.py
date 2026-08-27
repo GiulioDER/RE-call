@@ -1,4 +1,11 @@
-"""Canonical JSON compatible records for agent comparison runs."""
+"""Canonical JSON compatible records for agent comparison runs.
+
+Prior work: same `recall_search` as `claude_exec.py`, 2026-08-27, plus
+`missing-input-becomes-a-clean-null`. The `identical_arms` escape on the off-arm RE-call
+guard exists because refusing to CONSTRUCT the record turned a completed control session
+into `the session did not complete`, which lost exactly the sessions where the agent had
+searched memory.
+"""
 
 from __future__ import annotations
 

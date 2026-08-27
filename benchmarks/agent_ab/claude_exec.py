@@ -19,6 +19,15 @@ and each of them breaks a parser written the obvious way:
 
 Every subprocess here is started with `create_subprocess_exec`, which takes an argument vector and
 never involves a shell, so a task prompt cannot become a command.
+
+Prior work: searched `recall_search("agent A/B harness isolation config dir bare arms
+comparability")` against the `memory` tenant on 2026-08-27, generation
+`gen_aabc4d31`, trusted and certified. It returns `claude-config-dir-is-not-bare`, which
+measured that `CLAUDE_CONFIG_DIR` restores hooks but does NOT relocate `CLAUDE.md`
+discovery (3,037 tokens under `--bare` against 66,167 under a config dir), and
+`feedback-prove-the-arms-differ-before-running-a-paired-comparison-2026-08-05`. The
+`config_dir` and `record_metadata` fields here exist because of the first; the refusal to
+accept `bare` and `config_dir` together exists because of the second.
 """
 
 from __future__ import annotations

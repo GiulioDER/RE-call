@@ -28,6 +28,12 @@ require the agent to have called them. Those are different facts:
   correct.
 
 Conflating the two is exactly the mistake that made the Codex run look like a null.
+
+Prior work: same `recall_search` as `claude_exec.py`, 2026-08-27. `arms_share_recall`
+exists for the design that memo describes: with both arms the instruction arm, the off
+arm CARRIES RE-call, and the default off-arm check refused every pair for exactly the
+property the design requires. It judges the off arm by the ON-arm rules rather than
+skipping the check, which is stricter.
 """
 
 from __future__ import annotations

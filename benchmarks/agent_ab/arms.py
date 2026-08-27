@@ -19,6 +19,13 @@ product argument, because a corpus outgrows a file that has to fit in the contex
 memory and whatever `CLAUDE.md` sits above the working directory, so the off arm quietly acquires
 a memory layer nobody recorded, and the measured difference shrinks for a reason no artifact
 explains.
+
+Prior work: same `recall_search` as `claude_exec.py`, 2026-08-27. `identical_arms` is a
+deliberate exception to
+`feedback-prove-the-arms-differ-before-running-a-paired-comparison-2026-08-05`: the
+write-time hook experiment compares the instruction arm against ITSELF with a hook added,
+so the arms share a profile by design and the exception takes a stated reason rather than
+a boolean, recorded in `environment.json`.
 """
 
 from __future__ import annotations
