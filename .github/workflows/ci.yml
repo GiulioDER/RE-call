@@ -123,6 +123,21 @@ jobs:
       - name: Test (pytest on real pgvector, with coverage)
         run: pytest -q -n auto --cov=recall --cov=recall_mcp --cov-report=term-missing --cov-report=xml --cov-fail-under=70
 
+      # The discoverability probe decides a scientific verdict, and it fails in a direction that
+      # looks exactly like a real null: an arm pointed at control, a no-op exclusion, or a gate
+      # applied to the wrong denominator each print `rescue 0/14, retention 26/26`, which is what
+      # the genuine 2026-08-27 result printed. Its session rows and retrieval answers are
+      # fixtures, so it needs no database, no corpus and no OpenRouter key.
+      #
+      # It lives HERE rather than beside the other `scripts/*_tests.py` suites in
+      # `session-scripts`, which installs nothing on purpose: this one asserts the treated
+      # description against the REAL chunker (`recall.document.parse_document`), and `import
+      # recall` pulls psycopg. Asserting against a local reimplementation instead would remove
+      # the dependency and the test's whole value in one move, since the defect it pins was
+      # precisely that the treated bytes were on disk and not in the index.
+      - name: agent_ab discoverability apparatus
+        run: python scripts/agent_ab_discoverability_tests.py
+
   # Static typing, in its own job: it needs no database, so a type error surfaces in ~30s instead
   # of behind the full integration suite, and a red DB service never hides a red type check.
   #

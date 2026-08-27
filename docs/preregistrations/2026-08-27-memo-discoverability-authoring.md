@@ -237,3 +237,65 @@ bumps. But this also bounds the true-author ceiling: the origin author would hav
 "refactor scripts", which bridges the recorded version-bump queries no better. When the future
 tasks that strike a hazard are semantically diverse, no finite task list written at authoring time
 covers them, and that is now an argument from mechanism, not just a null.
+
+## 🔁 Correction appended 2026-08-27, from a DEEP audit of the apparatus
+
+Nothing above is edited: this section records what the audit found after the result was written,
+which is the only honest way to carry it. Nine auditors plus an adversarial verification pass
+returned 14 confirmed defects in the apparatus. **Three change what this record may claim, and
+none of them overturns the headline.** The fixes land in the same commit as this correction;
+`scripts/agent_ab_discoverability_tests.py` pins each one, and CI runs it.
+
+**1. The `retitle` arm was measured as TITLE-ONLY. The generated description reached no index.**
+The description was written into YAML frontmatter, and the corpus builder chunks
+`parse_document(text).human_body`, which is the document with frontmatter removed, so it entered
+neither the embedding nor the lexical column. Measured against the built corpora before any fix:
+the generated description appears in indexed chunk text for **0 of 40** memos sampled, the
+generated title for **40 of 40**. The registered description of the arm ("frontmatter
+`description:` replaced by the generated one") therefore describes bytes on disk, not a treatment.
+
+What the three arms actually put into the index:
+
+| arm | in the indexed body | lost |
+|---|---|---|
+| retitle | generated title | generated description |
+| restructured | generated title + 5 task phrasings | generated description |
+| pointer | separate document: title + 5 task phrasings + the memo's ORIGINAL description | generated description (frontmatter only) |
+
+**The conclusion survives, and rests on the two arms that were fully applied.** `restructured` and
+`pointer` carried title and task phrasings into the index, `pointer`'s documents reached top-5 for
+67 of 78 queries, and both rescued 0 of 14. What may no longer be claimed is that a
+searcher-oriented *description* was tested at all.
+
+**2. 27 of 190 memos received only half the retitle/restructured treatment even on disk.** With no
+frontmatter block, the code dropped the description instead of inserting it; 21 of those 27 lacked
+frontmatter only because chunk reconstruction had destroyed it. Given (1) this changed no
+retrieval, but the artifact overstated what was applied. None of the three scored miss families'
+governing memos is affected; the only governing memo among them is
+`missing-input-becomes-a-clean-null`, which this registration already excludes.
+
+**3. The corpus was rebuilt with a joiner of measured zero fidelity.** The run log records
+`'' reproduces 0/167`, and 25 of 194 sources were reconstructed with it anyway, arriving with
+frontmatter stripped and chunk boundaries glued together. `learn_joiner` returns the FIRST
+candidate on an all-zero tie, which is the empty string. Blast radius bounded and checked: exactly
+one governing memo is among the 25, and it is the excluded family's. The other 24 are ranking
+competitors, identical across all four arms. The preparation script now refuses this state unless
+`--allow-lossy-reconstruction` is passed.
+
+**Latent hazards that did not fire here but would have on a re-run**, all now closed in code: the
+apparatus gate compared bare numerators, so dropping `--exclude-base` would have applied a
+13-of-14 bar to a 15-miss population and still published (the artifact confirms this run used the
+registered 14 and 26); an exclusion matching no session was accepted silently; nothing asserted
+that a treatment arm's corpus differed from control, and an arm pointed at control produces
+`rescue 0/14, retention 26/26` — character for character the genuine null; a VOID run exited 0 and
+printed its arm tables anyway; the resume cache was keyed on filename with no binding to prompt,
+model or sampling parameters, while `rewrites.json` attested the current terms over whatever it
+held; and `local_path_for` was re-derived with the decoder `recall/manifest.py` documents as
+wrong, which on POSIX yields a relative path and silently reconstructs the entire corpus.
+
+🔑 **The lesson worth more than the fixes: every one of those defects fails toward the published
+answer.** A null is the cheapest thing an instrument can fabricate, and four separate paths here
+produced `rescue 0/14, retention 26/26` exactly. This run's numbers survived because the
+post-hoc divergence check (72 to 77 of 78 top-5s changed per arm) happened to be done by hand and
+recorded in the result above. It should have been an assertion in the instrument, and now is.
+See [[a-null-is-the-cheapest-result-to-fabricate]].
