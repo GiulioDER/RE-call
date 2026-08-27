@@ -29,6 +29,7 @@ manual step-by-step for anyone who wants to see each command the wizard runs.
 | [AUTH.md](AUTH.md) | Authentication, scopes, tenant isolation, and deployment limits. |
 | [SECURITY_MODEL.md](SECURITY_MODEL.md) | Detailed threat model behind the root security policy. |
 | [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) | MCP setup and tool behavior. |
+| [USING_WITH_AGENT_SDK.md](USING_WITH_AGENT_SDK.md) | In-process tools for a Claude Agent SDK application: no MCP server, the same tool surface, and the boundaries the server was providing for you. |
 | [ENTERPRISE_RETRIEVAL.md](ENTERPRISE_RETRIEVAL.md) | The enterprise control plane: routes, profiles, and multi-store serving. |
 | [REASONING_OPERATIONS.md](REASONING_OPERATIONS.md) | Opt-in reasoning commands, MCP tools, failure behavior, review policy, and metrics. |
 | [DECISION_LEDGER.md](DECISION_LEDGER.md) | Opt-in append-only records of every search decision: trigger, evidence, verdicts, governing calibration, and refusals. |

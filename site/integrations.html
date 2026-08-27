@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Integrations · RE-call</title>
-<meta name="description" content="Use RE-call from LangChain or LlamaIndex: retrievers that return trust-evaluated memories with verdict, confidence and provenance, or nothing at all when the corpus cannot answer.">
+<meta name="description" content="Use RE-call from LangChain, LlamaIndex, the Claude Agent SDK or any MCP client: trust-evaluated memories with verdict, confidence and provenance, or nothing at all when the corpus cannot answer.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
@@ -30,6 +30,7 @@
       <a href="start.html">Install</a>
       <a href="corpus.html">Your memory</a>
       <a href="claude-code.html">Claude Code</a>
+      <a href="integrations.html">Integrations</a>
       <a href="calibration.html">Calibration</a>
       <a href="troubleshooting.html">Troubleshooting</a>
       <a href="blog/index.html">Blog</a>
@@ -41,10 +42,10 @@
 
 <section class="shell integrations" style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(4rem, 9vw, 7rem);">
 
-  <p class="eyebrow">LangChain · LlamaIndex · MCP</p>
+  <p class="eyebrow">LangChain · LlamaIndex · Agent SDK · MCP</p>
   <h1 style="font-size: clamp(2rem, 5vw, 3.25rem); max-width: 22ch; margin-bottom: 1rem;">Use RE-call from your framework</h1>
   <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
-  <p class="lede">RE-call ships retrievers for LangChain and LlamaIndex, and an MCP server for any MCP client. All three return the same thing: trust-evaluated memories carrying verdict, confidence, cosine and provenance, or an explicit abstention when the corpus cannot answer. The adapters depend only on each framework's core package.</p>
+  <p class="lede">RE-call ships retrievers for LangChain and LlamaIndex, in-process tools for the Claude Agent SDK, and an MCP server for any MCP client. All of them return the same thing: trust-evaluated memories carrying verdict, confidence, cosine and provenance, or an explicit abstention when the corpus cannot answer. The adapters depend only on each framework's core package.</p>
 
   <p>Every integration sits on the same store: your own PostgreSQL with pgvector. Set one up first with the <a href="start.html">install guide</a>, or in one command with <code>recall quickstart</code>.</p>
 
@@ -85,6 +86,30 @@
   </div>
 
   <p>Nodes carry the same trust metadata. One option matters in production: constructed with <code>return_abstention_reason=True</code>, an abstention returns a single empty node whose metadata carries <code>recall_abstained</code> and <code>recall_reason</code>, so an application can tell "the corpus cannot answer this" apart from "retrieval broke" and say so, instead of debugging a silent empty response. The adapter depends only on <code>llama-index-core</code>.</p>
+
+  <h2 id="agent-sdk">Claude Agent SDK</h2>
+
+  <p>For a Python application built on the Claude Agent SDK, RE-call's tools can run <strong>in the same process</strong>: no MCP server, no stdio handshake, no per-session start-up. The tool names, the model-facing descriptions and the rendered results are identical to the MCP server's, so a skill or prompt written against <code>recall_search</code> transfers unchanged.</p>
+
+  <div class="terminal terminal--command">
+    <div class="terminal-bar"><span class="terminal-label">Shell</span><button class="copy-button" type="button">Copy</button></div>
+    <div class="terminal-body"><pre><span class="line">pip install "recall-rag[agent,fastembed]"</span></pre></div>
+  </div>
+
+  <div class="terminal terminal--command">
+    <div class="terminal-bar"><span class="terminal-label">Python</span><button class="copy-button" type="button">Copy</button></div>
+    <div class="terminal-body"><pre><span class="line">from claude_agent_sdk import query</span>
+<span class="line">from recall_agent import RecallAgentMemory</span>
+<span class="line"></span>
+<span class="line">with RecallAgentMemory.from_env() as memory:</span>
+<span class="line">    options = memory.options(model="claude-sonnet-5")</span>
+<span class="line">    async for message in query(prompt="What do we already know about X?", options=options):</span>
+<span class="line">        print(message)</span></pre></div>
+  </div>
+
+  <p><code>options()</code> assembles a <code>ClaudeAgentOptions</code> carrying the in-process server, the fully qualified tool names and a <code>SessionStart</code> hook that injects a short memory digest. It merges with anything you pass rather than replacing it: your own servers, tools and hooks survive. Configuration comes from the same environment variables the MCP server reads (<code>RECALL_SERVING_DSN</code>, <code>RECALL_EMBEDDER</code>, <code>RECALL_TRUST_MODE</code>, <code>RECALL_TENANT</code>, <code>RECALL_TABLE</code>), so pointing both surfaces at one corpus needs no extra configuration.</p>
+
+  <p>Read tools are exposed by default. <code>recall_index</code> and <code>recall_forget</code> require an explicit <code>write_tools=True</code>, because in-process there is no scope or authentication layer between the model and the corpus: the MCP server gates those operations behind authenticated scopes, and here the host application is the authority. Erasure through this surface also does not reach a shadow generation or the migration outbox, so use the server for erasure on a tenant that is mid-migration. The <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_AGENT_SDK.md">Agent SDK guide</a> states each boundary.</p>
 
   <h2 id="mcp">MCP, for every other agent</h2>
 

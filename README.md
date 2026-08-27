@@ -462,7 +462,7 @@ trust metadata, including verdict, confidence, cosine, and supersession details.
 ## Claude Agent SDK
 
 ```bash
-pip install "recall-rag[agent]"
+pip install "recall-rag[agent,fastembed]"
 ```
 
 ```python

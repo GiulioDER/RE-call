@@ -6,8 +6,14 @@ call, and the model-facing surface is identical to the MCP server's, so skills a
 written against `recall_search`/`recall_evidence` transfer unchanged.
 
 ```bash
-pip install "recall-rag[agent]"   # claude-agent-sdk; the CLI must be installed separately
+pip install "recall-rag[agent,fastembed]"
 ```
+
+`agent` brings the Claude Agent SDK; `fastembed` brings the default local embedder. Installing
+`agent` alone succeeds and then fails on the first tool call, because resolving the default
+embedder needs the fastembed extra. Swap it for `voyage` or `openai` if you serve a corpus built
+with a hosted model, and note that the Claude Code CLI is a separate install the SDK expects to
+find on PATH.
 
 ## Quickstart
 
