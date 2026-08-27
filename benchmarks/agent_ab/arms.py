@@ -200,11 +200,21 @@ def build_configs(
     env: Mapping[str, str] | None = None,
     permission_mode: str = "acceptEdits",
     extra_allowed_tools: tuple[str, ...] = (),
+    config_dirs: Mapping[str, str | Path] | None = None,
 ) -> dict[str, ClaudeExecConfig]:
     """Build one `ClaudeExecConfig` per variant from the arm specs.
 
     Everything except the memory configuration is passed identically to both arms from this one
     call, which is the property that makes the comparison a comparison.
+
+    `config_dirs` maps every variant to an isolated `CLAUDE_CONFIG_DIR` and turns `--bare` off,
+    which is the only way to run a hook without losing isolation (measured: `--bare` skips hooks
+    even from `--settings`, while a config dir loads 0 plugins against `--bare`'s 7).
+
+    ⚠️ **It must be given for EVERY variant or none.** Isolation is part of what makes the arms
+    comparable, so an experiment where one arm runs bare and the other runs from a config dir
+    differs in two ways at once and can attribute nothing. The hook itself belongs in one arm's
+    directory; the ISOLATION belongs in both.
     """
 
     missing = [variant for variant in VARIANTS if variant not in specs]
@@ -221,6 +231,15 @@ def build_configs(
             f"{specs[RECALL_OFF].profile!r}"
         )
 
+    if config_dirs is not None:
+        absent = [variant for variant in specs if variant not in config_dirs]
+        if absent:
+            raise ValueError(
+                "config_dirs must cover every variant or be omitted entirely; missing "
+                f"{absent}. One arm bare and one arm config-dir-isolated differ in isolation as "
+                "well as in treatment, and such a run can attribute nothing."
+            )
+
     configs: dict[str, ClaudeExecConfig] = {}
     for variant, spec in specs.items():
         allowed = BASE_TOOLS + extra_allowed_tools + spec.extra_allowed_tools
@@ -229,7 +248,8 @@ def build_configs(
             cwd=cwd,
             timeout_s=timeout_s,
             env=dict(env or {}),
-            bare=True,
+            bare=config_dirs is None,
+            config_dir=None if config_dirs is None else config_dirs[variant],
             mcp_config=spec.mcp_config,
             # For the on arm this guarantees the only server present is the one named. The off
             # arm has no --mcp-config to be strict about, and ClaudeExecConfig refuses the
@@ -328,3 +348,56 @@ def write_claude_md_prompt(
         )
     target.write_text("\n\n".join(chunks), encoding="utf-8")
     return target
+
+
+def prepare_hook_config_dirs(
+    root: str | Path,
+    *,
+    hook_script: str | Path,
+    matchers: tuple[str, ...] = ("Write", "Edit", "Bash"),
+) -> dict[str, Path]:
+    """Build one isolated `CLAUDE_CONFIG_DIR` per variant; only the ON arm gets the hook.
+
+    Returns a mapping suitable for `build_configs(config_dirs=...)`.
+
+    Two properties this exists to hold, both of which decide whether the run means anything:
+
+    - **Isolation is symmetric.** Both arms get a pristine config directory, so neither sees the
+      developer's `~/.claude` and the arms differ only in what this function puts there.
+    - **The hook is asymmetric, and it belongs to the memory arm.** Giving it to the off arm would
+      inject memory into the arm whose definition is that it has none, which is not a hook
+      experiment but a broken control.
+
+    The written settings are the audit trail: a reader can diff the two directories and see
+    exactly one difference.
+    """
+
+    import json
+
+    base = Path(root)
+    script = Path(hook_script).resolve()
+    if not script.is_file():
+        raise ValueError(f"hook script does not exist: {script}")
+
+    dirs: dict[str, Path] = {}
+    for variant in VARIANTS:
+        directory = base / f"config-{variant}"
+        directory.mkdir(parents=True, exist_ok=True)
+        settings: dict[str, Any] = {}
+        if variant == RECALL_ON:
+            settings["hooks"] = {
+                "PreToolUse": [
+                    {
+                        "matcher": matcher,
+                        "hooks": [
+                            {"type": "command", "command": f'python "{script}"'}
+                        ],
+                    }
+                    for matcher in matchers
+                ]
+            }
+        (directory / "settings.json").write_text(
+            json.dumps(settings, indent=2) + "\n", encoding="utf-8", newline="\n"
+        )
+        dirs[variant] = directory
+    return dirs

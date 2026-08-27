@@ -46,6 +46,7 @@ if str(REPO_ROOT) not in sys.path:
 from benchmarks.agent_ab.arms import (  # noqa: E402
     ArmSpec,
     build_configs,
+    prepare_hook_config_dirs,
     write_claude_md_prompt,
     write_claude_md_recall_prompt,
 )
@@ -204,6 +205,7 @@ def environment_capture(
     check: dict[str, Any],
     *,
     instruction_file: str | None = None,
+    hook_file: str | None = None,
 ) -> dict[str, Any]:
     def run(*command: str) -> str:
         try:
@@ -233,6 +235,12 @@ def environment_capture(
         # artifact as static-plus-recall-prompt.txt; this names the committed source it came from,
         # so two runs differing only here can be told apart without diffing prompt files.
         "instruction_file": instruction_file or "arms.RECALL_SYSTEM_PROMPT",
+        # Which write-time hook the ON arm ran under, and therefore whether the run used
+        # config-dir isolation instead of --bare. Without this a hooked run and an unhooked
+        # one are indistinguishable in the artifact, which is the difference between two
+        # comparable runs and two runs nobody can tell apart.
+        "hook_file": hook_file,
+        "isolation": "config_dir" if hook_file else "bare",
     }
 
 
@@ -255,6 +263,17 @@ async def main() -> int:
             "field an instruction-variant run changes; everything else stays identical, so a "
             "behavioural difference against a baseline run on the same tasks is attributable to "
             "the instruction text and to nothing else."
+        ),
+    )
+    parser.add_argument(
+        "--hook-file",
+        default=None,
+        help=(
+            "COMMITTED PreToolUse hook script. When given, BOTH arms run from an isolated "
+            "CLAUDE_CONFIG_DIR instead of --bare (measured against CLI 2.1.238: --bare skips "
+            "hooks even from --settings, and loads 7 plugins where a config dir loads 0), and "
+            "the hook is installed for the ON arm only. Isolation belongs to both arms; the "
+            "treatment belongs to one."
         ),
     )
     parser.add_argument(
@@ -335,6 +354,25 @@ async def main() -> int:
     on_spec = ArmSpec.claude_md_recall(spec, artifacts / "recall-mcp.json", combined)
     # One template pair, built once so everything except memory is identical by construction. The
     # per-session `cwd` is the only field replaced afterwards.
+    hook_dirs = None
+    if args.hook_file:
+        hook_path = Path(args.hook_file)
+        if not hook_path.is_file():
+            raise SystemExit(f"--hook-file does not exist: {hook_path}")
+        # Isolation for BOTH arms, the hook for the ON arm only. See `prepare_hook_config_dirs`:
+        # giving the off arm the hook would inject memory into the arm defined by not having any.
+        hook_dirs = prepare_hook_config_dirs(artifacts / "config", hook_script=hook_path)
+        # The hook reads these from its own environment; the corpus is the one the ON arm serves.
+        agent_env = {
+            **agent_env,
+            "RECALL_HOOK_DSN": args.dsn,
+            "RECALL_HOOK_TENANT": args.tenant,
+            "RECALL_HOOK_TRACE": str(artifacts / "hook-trace.jsonl"),
+        }
+        print(f"write-time hook: {hook_path}")
+        print(f"  config dirs: {', '.join(str(p) for p in hook_dirs.values())}")
+        print(f"  trace: {artifacts / 'hook-trace.jsonl'}")
+
     templates = build_configs(
         {RECALL_ON: on_spec, RECALL_OFF: off_spec},
         model=args.model,
@@ -342,6 +380,7 @@ async def main() -> int:
         timeout_s=args.timeout_s,
         env=agent_env,
         extra_allowed_tools=WRITE_TOOLS,
+        config_dirs=hook_dirs,
     )
     templates = {
         variant: replace(config, stream_dir=artifacts / "streams")
@@ -434,7 +473,8 @@ async def main() -> int:
     for name, payload in (
         ("admission.json", report.summary()),
         ("recall-overhead.json", summarize_recall_overhead(admitted)),
-        ("environment.json", environment_capture(args.model, spec, check, instruction_file=args.instruction_file)),
+        ("environment.json", environment_capture(args.model, spec, check, instruction_file=args.instruction_file,
+                            hook_file=args.hook_file)),
         ("digest-parity.json", {"failures": parity_failures}),
     ):
         (artifacts / name).write_text(
