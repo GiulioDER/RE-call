@@ -52,7 +52,10 @@ def main() -> int:
     records = load(run)
 
     verdicts = {(r["task_id"], r["variant"]): passed(r) for r in records}
-    families = {r["task_id"]: r.get("metadata", {}).get("family", "?") for r in records}
+    # `metadata["family"]` is "primary" for every ts-* task, so grouping on it collapses all
+    # eight into one row and B4 reads as a perfectly flat spread no matter what the data says.
+    # The eight task families this prediction is about are `base_task_id`.
+    families = {r["task_id"]: r.get("metadata", {}).get("base_task_id", "?") for r in records}
 
     incomplete = [k for k, v in verdicts.items() if v is None]
     print(f"sessions: {len(records)}, without a checker verdict: {len(incomplete)}")
