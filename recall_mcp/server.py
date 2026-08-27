@@ -662,6 +662,30 @@ def require_effective_rls(*, rls_effective: bool, multi_tenant: bool) -> str | N
     )
 
 
+def benchmark_generation_setting(
+    generation_id: str | None,
+    *,
+    benchmark_pin: bool,
+    generation_mode: bool,
+    authenticated: bool,
+) -> str | None:
+    """Validate the explicit retired-snapshot pin used by reproducible stdio benchmarks."""
+
+    value = (generation_id or "").strip()
+    if not value:
+        return None
+    if not benchmark_pin:
+        raise RuntimeError(
+            "RECALL_PINNED_GENERATION_ID requires RECALL_BENCHMARK_PIN=1"
+        )
+    if not generation_mode or authenticated:
+        raise RuntimeError(
+            "RECALL_PINNED_GENERATION_ID is allowed only for unauthenticated generation-mode "
+            "stdio serving"
+        )
+    return value
+
+
 def _transport_security_settings(resource_url: str) -> TransportSecuritySettings:
     parsed = urlsplit(resource_url)
     if not parsed.scheme or not parsed.netloc:
@@ -787,6 +811,12 @@ def _make_lifespan(
         try:
             embedder = make_embedder(EMBEDDER_NAME)
             generation_mode = env_is_production()
+            pinned_generation_id = benchmark_generation_setting(
+                os.environ.get("RECALL_PINNED_GENERATION_ID"),
+                benchmark_pin=truthy(os.environ.get("RECALL_BENCHMARK_PIN")),
+                generation_mode=generation_mode,
+                authenticated=token_registry is not None,
+            )
             # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
             # database the extension deliberately does not exist yet; reporting "migrations
             # pending" is more useful than leaking the driver's missing-type error. This path is
@@ -874,6 +904,13 @@ def _make_lifespan(
         try:
             if store is not None:
                 store.check_schema()
+                if pinned_generation_id is not None:
+                    store.set_fixed_generation(pinned_generation_id)
+                    _log.warning(
+                        "benchmark generation pin enabled: tenant=%s generation=%s",
+                        TENANT,
+                        pinned_generation_id,
+                    )
                 probe = store
             else:
                 assert registry is not None
@@ -966,6 +1003,7 @@ def _make_lifespan(
                 # `RECALL_ENV` are two chances to disagree, and the whole defect was a disagreement
                 # about which store was in play.
                 "generation_mode": generation_mode and not enterprise,
+                "pinned_generation_id": pinned_generation_id,
                 "limiter": limiter,
                 "translation_provider": translation_provider,
                 "shadow_embedders": {},
