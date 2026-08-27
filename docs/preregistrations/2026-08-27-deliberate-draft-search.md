@@ -120,3 +120,9 @@ different problem from anything this lane has measured.
    model's sampling.
 
 <!-- frozen_above -->
+
+## Result: stage 1 GATE FAILED
+
+Measured 2026-08-27. Adoption **0.067** on the registered `ts-*` families against a gate of 0.40,
+so **stage 2 is not run**. The agent searched once at the start and composed keyword queries rather
+than pasting drafts. Full result in `2026-08-27-deliberate-draft-search-stage1-result.md`.
