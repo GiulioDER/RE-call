@@ -405,3 +405,59 @@ It reaches. **Stage B is not blocked.** Two things about it changed, though, and
 absorbed silently: the control arm's environment is no longer the `--bare` one that produced 11 of
 48, and the per-session injection count is 2 rather than 10 for typical sessions, which is the
 mechanism's reach and it is five times smaller than assumed.
+
+## Base-rate run, registered 2026-08-27 BEFORE its result was read
+
+**Nothing above is edited.** Stage A established that the control arm's environment is no longer
+the `--bare` one that produced 11 of 48, so that number does not transfer and the power table
+built on it is not valid for this apparatus. This measures the replacement first, so stage B's
+power is known before stage B is paid for.
+
+### Design
+
+An **A/A run**: `--arms-differ-only-by-hook` with **no hook anywhere**, 8 `ts-*` families x 3
+repeats = 24 pairs = **48 control sessions**, every one under exactly the apparatus stage B will
+use (non-bare, config-dir isolated, sandboxes outside the user profile, `hazard-query-v2.txt`).
+
+Two things it buys beyond the count. It is a **null control**: two identical arms should show no
+systematic difference, and a systematic one would be apparatus bias that stage B would otherwise
+attribute to the hook. And its per-arm disagreement rate is the **session-to-session variance**
+against which any McNemar result has to be read.
+
+### Three guards were relaxed to run it, each against a stated reason recorded in the artifact
+
+The registered control is "the instruction arm, hook off", not the no-memory arm, and the harness
+could not express two arms that differ only by a hook. Each relaxation takes a **sentence**, not a
+boolean, because "the arms are identical" is otherwise indistinguishable from the commonest way to
+build an experiment that measures nothing:
+
+| guard | why it refused | what replaced it |
+|---|---|---|
+| the off arm must use an off-arm profile | both arms are the instruction arm by design | a stated reason, recorded in `environment.json`; the guard still holds for every other caller |
+| the off arm must have no RE-call tools | the off arm carries RE-call by design | the off arm is judged by the **on-arm** rules, which is stricter than skipping: its servers must still have connected |
+| `--hook-file` requires sandboxes outside the profile | unchanged | unchanged, and now also enforced for a hookless config-dir run |
+
+### What I predict
+
+Per `[[i-over-predict-effect-magnitudes]]`, mechanism rates I estimate well and I take the bottom
+of any band that flatters a mechanism. The relevant priors are the old 11 of 48 under `--bare`, and
+stage A's instruction-plus-hook arm failing 1 of 4.
+
+| # | Prediction | Falsified by |
+|---|---|---|
+| B1 | **Control sessions failing: 11 to 20 of 48.** The added system prompt is generic CLI instruction, not project hazard knowledge, so it should not rescue a hazard the old apparatus fell into | outside the band |
+| B2 | **The A/A arms disagree on 4 to 10 of the 24 pairs.** Identical configurations, so every disagreement is session variance, and this is the floor any McNemar effect has to clear | outside the band |
+| B3 | **No systematic direction to that disagreement**: neither arm wins more than 70% of the discordant pairs | one arm takes more than 70% |
+| B4 | **Failures concentrate by family rather than spreading evenly**: the worst family contributes at least 3x the best | the spread is flatter |
+
+### What each outcome does to stage B
+
+| control failures | consequence |
+|---|---|
+| **>= 11** | the registered power table roughly holds; run stage B at 48 pairs as written |
+| **6 to 10** | underpowered before it starts: McNemar at 48 pairs could not detect a plausible effect, and stage B is registered at a larger n or not run |
+| **<= 5** | ⛔ the apparatus has removed most of the failures the hook was meant to rescue. Stage B measures nothing and is not run; the finding is about the apparatus, not the hook |
+
+⚠️ **B3 is the one that can invalidate everything else.** A systematic winner between two identical
+arms means the harness itself favours a side, and no result from stage B could be attributed to the
+hook rather than to that.
