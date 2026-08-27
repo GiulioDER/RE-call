@@ -10,6 +10,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* **`RECALL_MCP_TOOLS`: serve a subset of the server's tools, to stop paying for the ones nobody
+  calls.** Every tool definition is re-sent on every turn whether or not it is invoked. Measured
+  2026-08-27 on `claude-haiku-4.5`: about 153 input tokens per tool per turn, so the full surface
+  costs 5,727 input tokens per turn where the new `search` preset costs 3,731. Across 112 measured
+  agent sessions the agents called exactly one tool, `recall_search`, and never invoked the other
+  seventeen, which at that rate is roughly 30,000 wasted input tokens per fifteen-turn session.
+  Presets are `all`, `search` and `read`; explicit tool names compose with them. Unset serves every
+  tool, so an existing deployment is unaffected, and an unrecognised name refuses to start rather
+  than silently serving less than the operator configured. This narrows what is *offered* and is
+  not an authorisation boundary: scopes remain the only thing that gates execution.
+
 * **`recall_agent`: RE-call as in-process memory for Claude Agent SDK applications.**
   `RecallAgentMemory` wraps the same `recall_mcp.service` functions the MCP server calls as
   in-process SDK tools (`recall_search`, `recall_evidence`; writes behind an explicit
