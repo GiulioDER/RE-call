@@ -86,6 +86,11 @@ from recall_mcp.service import (
 )
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
+from recall_mcp.tool_surface import (
+    FilteredToolRegistrar,
+    ToolRegistrar,
+    resolve_tool_surface,
+)
 from recall_mcp.translation import (
     provider_from_env,
     render_evidence_response,
@@ -1045,7 +1050,7 @@ class _ToolDeps:
     current_tenant: Callable[[dict], str | None]
 
 
-def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
 
@@ -1217,7 +1222,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             )
 
 
-def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
 
@@ -1463,7 +1468,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             )
 
 
-def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_ingest_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
     _current_tenant = deps.current_tenant
@@ -1654,7 +1659,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         return json.dumps(result, indent=2)
 
 
-def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_calibration_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
 
@@ -1734,7 +1739,7 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         return json.dumps(result, indent=2, default=str)
 
 
-def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_memory_admin_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
     _current_tenant = deps.current_tenant
@@ -1880,11 +1885,25 @@ def build_server() -> MCPServer:
         return registry.get(tenant)
 
     deps = _ToolDeps(require=_require, state=_state, current_tenant=_current_tenant)
-    _register_search_tools(mcp, deps)
-    _register_reasoning_tools(mcp, deps)
-    _register_ingest_tools(mcp, deps)
-    _register_calibration_tools(mcp, deps)
-    _register_memory_admin_tools(mcp, deps)
+    # Every tool definition is re-sent to the model on every turn, so an unused tool is a standing
+    # context charge rather than a dormant capability. `RECALL_MCP_TOOLS` lets a deployment serve
+    # only what it uses; unset, every tool is served exactly as before. See `tool_surface`.
+    registrar = FilteredToolRegistrar(mcp, resolve_tool_surface())
+    _register_search_tools(registrar, deps)
+    _register_reasoning_tools(registrar, deps)
+    _register_ingest_tools(registrar, deps)
+    _register_calibration_tools(registrar, deps)
+    _register_memory_admin_tools(registrar, deps)
+    if registrar.skipped:
+        # Logged at INFO, not DEBUG: from outside, "the tool was never served" and "the agent
+        # chose not to call it" look identical, so the operator is told which one this is.
+        _log.info(
+            "serving %d of %d tools (%s); not served: %s",
+            len(registrar.registered),
+            len(registrar.registered) + len(registrar.skipped),
+            ", ".join(sorted(registrar.registered)),
+            ", ".join(sorted(registrar.skipped)),
+        )
     return mcp
 
 
