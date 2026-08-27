@@ -40,6 +40,12 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from benchmarks.agent_ab.recall_server import StdioRecallSpec  # noqa: E402
 
 TOP_K = 5
+#: `recall_mcp.service.MAX_QUERY_CHARS`. The server REFUSES a longer query rather than truncating
+#: it, on the stated ground that searching a prefix answers a question the caller did not ask.
+#: Measured over the archive: 3 of 501 recorded payloads exceed it, and no session loses all of
+#: its. Such a payload is recorded as `refused_too_long` and excluded from every rate, never
+#: silently scored as a miss.
+MAX_QUERY_CHARS = 4096
 JUDGE_MODEL = "anthropic/claude-haiku-4.5"
 #: Actionable relevance, deliberately not topical similarity: the question is whether the note
 #: would change what the author of THIS draft should do, which is the only thing worth an agent's
@@ -105,11 +111,17 @@ async def search(spec: StdioRecallSpec, queries: list[str]) -> dict[str, dict]:
                 text = next(
                     (getattr(b, "text", "") for b in result.content if getattr(b, "text", None)), ""
                 )
-                payload = json.loads(text)
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    # The server refused. That is data about the production path, never a miss.
+                    answers[query] = {"refused": text[:300], "abstained": None, "hits": []}
+                    continue
                 if isinstance(payload, dict) and "result" in payload:
                     payload = json.loads(payload["result"])
                 hits = payload.get("hits") or []
                 answers[query] = {
+                    "refused": None,
                     "abstained": bool(payload.get("abstained")),
                     "hits": [
                         {
@@ -207,7 +219,13 @@ async def main() -> int:
         out = []
         for draft in row["drafts"]:
             answer = answers[draft]
-            out.append({"draft": draft, "abstained": answer["abstained"], "hits": answer["hits"]})
+            out.append({
+                "draft": draft,
+                "chars": len(draft),
+                "refused": answer.get("refused"),
+                "abstained": answer["abstained"],
+                "hits": answer["hits"],
+            })
         return out
 
     pos_results = []
@@ -260,7 +278,13 @@ async def main() -> int:
         v = by_family[base]
         print(f"    {base:<26} {sum(v)}/{len(v)}")
 
-    neg_queries = [d for r in neg_results for d in r["per_draft"]]
+    all_slots = [d for r in pos_results + neg_results for d in r["per_draft"]]
+    refused = [d for d in all_slots if d["refused"]]
+    print(f"\nserver refusals (query over {MAX_QUERY_CHARS} chars): {len(refused)}/{len(all_slots)}")
+    lengths = sorted(d["chars"] for d in all_slots)
+    print(f"query length: median {lengths[len(lengths) // 2]}  max {lengths[-1]} characters")
+
+    neg_queries = [d for r in neg_results for d in r["per_draft"] if not d["refused"]]
     abstained = sum(1 for d in neg_queries if d["abstained"])
     no_ok = sum(1 for d in neg_queries if not any(h["verdict"] == "ok" for h in d["hits"]))
     print(f"\nNEGATIVES ({len(neg_queries)} draft queries, {len(neg_results)} sessions):")

@@ -110,3 +110,27 @@ change (14/14 against a registered 6 to 10) says the recall side may again beat 
    (`[[agent-ab-task-success-result-2026-08-22]]`).
 
 <!-- frozen_above -->
+
+## 🔁 Correction appended 2026-08-27, BEFORE the measurement ran
+
+**Nothing above is edited, including the prediction this corrects.** Prediction 4's rationale says
+"a 3,900-character draft overlaps lexically with something in any corpus about this repository".
+**That length is wrong.** 3,900 is the median TOTAL across all of a session's payloads; the probe
+issues one query per payload, and per-payload length is **median 60 characters, mean 354, maximum
+5,125** over the 501 recorded payloads.
+
+The prediction's BAND (0.10 to 0.35) is left exactly as registered and will be scored as written.
+Recording the correction here rather than restating the band, because the reasoning behind a
+prediction is part of the evidence of what I believed, and a rationale quietly repaired after the
+fact would make the prediction unfalsifiable in the way that matters. If the measurement lands
+outside the band, the wrong premise is part of why, and that is the useful half.
+
+**Direction of the error:** a 60-character query overlaps with far LESS of a corpus than a
+3,900-character one, so the true premise argues for MORE abstention on negatives than I assumed,
+i.e. the prediction is more likely to be falsified upward — against my own stated expectation and
+in favour of the direction.
+
+**A production constraint this record also did not anticipate:** the server refuses any query over
+`MAX_QUERY_CHARS = 4096` rather than truncating it. Measured: **3 of 501** payloads exceed it, no
+session loses all of its. Such a payload is recorded as `refused_too_long` and excluded from every
+rate rather than scored as a miss; the count is reported in the result.

@@ -214,3 +214,28 @@ refuse to run if it does not come back at rank 1. It was added because
 previous probe in this same lane — and then the very next script reproduced the same failure three
 times over. The guard is now in the script, and a retrieval error kills the run instead of
 counting as a miss.
+
+## 🔁 Correction appended 2026-08-27: the query length in this record is wrong, twice
+
+**Nothing above is edited.** Two numbers in this document are wrong and both are the same mistake:
+line 52 says the recorded payloads have a "median ~3,900 characters" and the result section says
+"a draft query is ~3,900 characters OR-ing many identifiers".
+
+**3,900 is the median TOTAL across all of a session's payloads, not the length of a query.** This
+screen issues **one query per payload**, and measured over the 501 recorded payloads the
+per-payload length is **median 60 characters, mean 354, maximum 5,125**. Re-measure:
+
+```bash
+python -c "import json,pathlib,statistics; ..."   # see scripts/agent_ab_draft_precision.py
+```
+
+**The correction strengthens the result rather than weakening it**, which is why it matters
+enough to append. The 14/14 was achieved from short, realistic queries — a single edit hunk or a
+single shell command — not from pasting a whole file into the search box. Every conclusion above
+stands; the described mechanism was more deployable than the description.
+
+It also revealed a real production constraint the record did not anticipate: the server
+**refuses** any query over `MAX_QUERY_CHARS = 4096` rather than truncating it, on the stated
+ground that searching a prefix answers a question the caller did not ask. That excludes **3 of
+501** payloads and leaves no session without a usable one, so it bounds the direction without
+threatening it. The precision record measures against that limit explicitly.
