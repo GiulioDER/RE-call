@@ -220,3 +220,100 @@ hook set to be recorded the way `instruction_file` already is.
 Mutation coverage is now eight, all eight killed, including one per defect.
 
 **The predictions above stand unscored and unedited.** Stage A is measured against them as written.
+
+## Stage A result, 2026-08-27: BLOCKED again, and this time the block is measured
+
+**Nothing above is edited.** That includes the second amendment's claim that a config dir is
+"stricter on plugins" and "admits exactly what the named directory contains", which is **wrong**,
+and is left standing because how it was wrong is the useful part: I measured plugins and MCP
+servers, saw zeros, and generalised the word "isolation" from the two things I had checked to the
+one I had not. `--bare` skips four things. I tested two.
+
+### What ran
+
+`--limit 4 --reps 1`, hook on in the ON arm only, corpus `gen_f01fc522`, 1,006 chunks.
+**0 pairs admitted of 4.** One pair completed; the other three died on OpenRouter HTTP 402
+("would exceed your available credits given your current in-flight requests"), in **both** arms.
+That is a funding and concurrency failure, not a hook failure, and it is not the reason for the
+block below.
+
+### Three things that did work, and are worth keeping
+
+| claim | evidence |
+|---|---|
+| the hook fires inside the sandbox | 2 trace lines, both from the ON arm's sandbox `cwd`, none from the OFF arm |
+| the trace can answer a per-session question | every line carries `session_id`, `cwd` and a stamp |
+| **PreToolUse `additionalContext` reaches the AGENT** | a hook injecting the nonce `ZQX-NONCE-8823` was quoted back verbatim by the agent, unprompted as to its content |
+
+⚠️ **The third of those nearly went the other way, and the reason generalises.** The injected text
+appears **nowhere in the captured stream-json**: not in the tool result, not as a system message,
+zero occurrences of the marker or the memo name. Grepping the stream would have scored the
+mechanism as broken. `stream-json` does not record system-reminders at all, so for stage B
+**"injected text appears in the agent's context" cannot be measured from the transcript** and needs
+an in-band probe like the nonce. Prediction 2 is therefore not scored: its endpoint as written is
+not observable with the apparatus available.
+
+### ⛔ The block: a config dir admits the developer's CLAUDE.md, and `--bare` does not
+
+One trivial prompt, no tools, one turn, asking the agent to report whether specific documents are
+in its context:
+
+| condition | input tokens | user CLAUDE.md | project CLAUDE.md |
+|---|---:|---|---|
+| `--bare`, outside the repo | 7,875 | no | no |
+| `--bare`, in a sandbox | 3,037 | no | no |
+| config dir, outside the repo | 47,676 | **yes** | no |
+| config dir, in a sandbox | 66,167 | **yes** | **yes** |
+
+Two leaks with different causes: the project file is found by walking up from a `cwd` that lives
+inside this worktree, and the user file is found some other way entirely. Two fixes were measured
+and **both failed**:
+
+| attempt | result |
+|---|---|
+| set `HOME` and `USERPROFILE` to an empty directory | 48,758 tokens, user file **still loaded** |
+| plant a `CLAUDE.md` inside the config dir, hoping it shadows | 47,837 tokens, **both** loaded; the planted marker came back too, so the config dir's memory is ADDITIVE |
+
+So the config dir cannot be made equivalent to `--bare`, and there is no CLI flag for it:
+`--setting-sources` governs settings files, not memory discovery.
+
+### Why this is not simply run anyway
+
+The leak is symmetric, so the A/B stays internally valid, and a run under it would answer a real
+question. It would not answer **this** one. The registered control is the `--bare` instruction arm
+whose base failure rate is 11 of 48, and the whole power table is built on that number. The repo's
+own `CLAUDE.md` documents several of the hazards the `ts-*` tasks are built from, so a control that
+receives it is not the control that produced 11 of 48. Running stage B against a base rate measured
+under different context, and reporting McNemar against a power analysis computed for the old one,
+would be a worse error than not running it.
+
+**The predictions stand unscored.** Prediction 1 (injections per session 8 to 14) has n=1 and that
+session was truncated, so it is not read. Prediction 2 is unobservable as written, see above.
+
+### What would unblock it, priced honestly
+
+1. **Move the sandboxes outside the repository.** Closes the project half. Cheap, but it changes
+   the ground every earlier result in this lane stands on, so it needs its own parity check.
+2. **Run the sessions where no user `CLAUDE.md` exists** — a container, or an account without one.
+   Closes the user half. This is the real cost, and it is harness-and-infrastructure work, not
+   experiment work.
+3. **Or re-register the experiment under the leaked condition**, which means paying for a fresh
+   base-rate measurement first, since 11 of 48 does not transfer.
+
+### Re-measure it rather than citing it
+
+The probe is committed, because a claim about a CLI's behaviour has a short half-life and this one
+already reversed once inside a day. Four sessions, about two minutes, needs `OPENROUTER_API_KEY`:
+
+```bash
+PYTHONUTF8=1 python scripts/agent_ab_isolation_probe.py
+```
+
+Run independently from the committed script the same afternoon, it printed 3,171 / 59,580 /
+59,573 / 3,164 against the 7,875 / 47,676 / 66,167 / 3,037 in the table above. The absolute numbers
+move with what the leaked files currently say; **the two orders of magnitude are the measurement**,
+and CLEAN against LEAKED is the part that decides anything.
+
+None of the three is licensed by this record. The hook itself is built, tested (10 groups, 8
+mutations killed), verified against the live corpus, and now verified to reach the agent; what
+remains is entirely the harness.
