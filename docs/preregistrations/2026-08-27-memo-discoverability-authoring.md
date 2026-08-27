@@ -169,3 +169,71 @@ python -u scripts/agent_ab_probe_discoverability.py --archive ~/.claude/archive/
    memos formally untested.
 
 <!-- frozen_above -->
+
+## Result (2026-08-27)
+
+**Status: measured, and the probe is VALID: the apparatus gate passed cleanly.** Control rebuild
+reproduced **14 of 14** non-excluded misses (gate >= 13) and **26 of 26** non-excluded hits
+(gate >= 24). Control chunk count 1,019 against the original 1,006 and the prior rebuild's 1,016;
+25 sources reconstructed this time against 20 then (the live store keeps drifting), and the only
+governing memo among them is the excluded family's, exactly as registered.
+
+**Measured: rescue 0 of 14, in every arm. Retention 26 of 26, in every arm.**
+
+| arm | rescue | rescue direct | `ts-lf-rewrite` | retention |
+|---|---|---|---|---|
+| retitle | 0/14 | 0/14 | 0/6 | 26/26 |
+| restructured | 0/14 | 0/14 | 0/6 | 26/26 |
+| pointer | 0/14 | 0/14 | 0/6 | 26/26 |
+
+Artifact: `benchmarks/artifacts/agent_ab/discoverability-probe/` (rewrites.json holds all 190
+generated triples verbatim; discoverability-probe.json holds every retrieved top-5).
+
+**The instrument was live, which is what makes this null informative.** Post-hoc diagnostics,
+labelled as such: per arm, 72 to 77 of the 78 distinct queries returned a DIFFERENT top-5 than
+control, and in the pointer arm the `--tasks` documents appear in top-5 for **67 of 78** queries.
+So the treatment was present, retrievable, and reranking the corpus; it still rescued nothing.
+
+**Why, visible in the retrievals:** for "version bump release script" the pointer arm's top-5 is
+led by `recall-public-distribution--tasks.md`, a memo genuinely ABOUT releases. Uniform
+goal-vocabulary surfaces make goal queries retrieve the goal-adjacent memos' surfaces, and the
+governing memo loses to documents that are legitimately closer to the stated goal. That is dense
+retrieval working correctly. The link from "bump the version" to "a script will write a file with
+CRLF" is a causal chain, not a similarity, and no wording of the CRLF memo makes it more about
+version bumping than the memos that are about version bumping, in a corpus where every memo now
+speaks goal vocabulary.
+
+**Predictions against measurements:**
+
+| # | predicted | measured | verdict |
+|---|---|---|---|
+| 1 | pointer >= restructured >= retitle | 0 = 0 = 0 | vacuously satisfied, uninformative |
+| 2 | best arm rescue 3 to 6 of 14 | 0 of 14 | **falsified, too high again** |
+| 3 | `ts-lf-rewrite` >= 1 of 6 | 0 of 6 | **falsified** |
+| 4 | retention: retitle, restructured >= 25; pointer >= 23 | 26, 26, 26 | confirmed, and the predicted pointer damage never came |
+| 5 | under 3 hours and under 5 USD | ~1h50m of wall clock across attempts, ~1 USD | confirmed |
+
+Prediction 2 extends the pattern in `i-over-predict-effect-magnitudes` a third time for
+wording-side interventions: the quarter-to-half discount was applied and the measurement still
+came in at zero, below the discounted band. Three consecutive wording-side results (appended
+aliases, query expansion, authored surfaces) have now landed at or under the bottom of their
+bands.
+
+**Decision, per the registered partition: rescue <= 3, so write-side authoring does not bridge
+the formulation gap, and the triangle is complete.** Query-side expansion 3/15, bottom-appended
+generated aliases 0 effect, and now authored searcher-oriented surfaces 0/14 across three
+structural variants with a stronger generator and a passing apparatus gate. No fourth
+generation-side variant is licensed. The formulation gap is a RELEVANCE problem, not a vocabulary
+problem: the governing memo is often not the semantically closest document to the goal query, and
+cannot be made so without displacing documents that answer the goal better. What remains is
+retrieval-side (bridging the task-to-hazard causal link at query time with corpus knowledge, or
+lexical/hybrid scoring where an exact trigger term exists) or interactive search behaviour, and a
+proposal in either direction needs its own registration.
+
+**One registered confound survives and is sharpened, not resolved:** the generator saw only memo
+text (confound 5). The one query term that would have bridged `ts-lf-rewrite` is "version", and it
+appears nowhere in the memo because the ORIGIN session was doing scripted refactors, not version
+bumps. But this also bounds the true-author ceiling: the origin author would have written
+"refactor scripts", which bridges the recorded version-bump queries no better. When the future
+tasks that strike a hazard are semantically diverse, no finite task list written at authoring time
+covers them, and that is now an argument from mechanism, not just a null.
