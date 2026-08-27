@@ -211,3 +211,54 @@ literal sort. That iteration must, before anything is built:
 
 **Not licensed:** building `T2` into anything, or quoting 0.167 as a false-trigger rate outside
 this record. It is 3 of 18.
+
+## 🔁 Re-derivation appended 2026-08-27, with JUDGED labels (licensed by the section above)
+
+The populations above were built on "hazard-bearing = the draft retrieves the governing memo". A
+judge control later showed that proxy wrong for **19 of the 46** so-labelled drafts — three
+sessions' only "hazard-bearing" draft is `ls -la benchmarks/`. Re-derived with judged labels
+(`scripts/agent_ab_trigger_rederive.py`, all 46 joined, scoring control passed):
+
+| population | as published above | corrected |
+|---|---:|---:|
+| hazard-bearing drafts | 46 of 178 | **27 of 178** |
+| `N_wide` | 132 | **151** |
+| `N_clean` | 18 | 18 (benchmark-labelled, untouched) |
+| **sessions reachable at all** | 14 | **10** |
+
+| trigger | coverage /10 | ft_clean | ft_wide | suppression |
+|---|---:|---:|---:|---:|
+| `T0_always` | 10/10 | 1.000 | 1.000 | 0.000 |
+| `T1_margin_0.0` | 10/10 | 0.556 | 0.523 | 0.438 |
+| `T1_margin_0.01` | 10/10 | 0.500 | 0.444 | 0.506 |
+| **`T2_vocab_df2`** | **9/10** | **0.167** | 0.258 | **0.674** |
+| `T2_vocab_df3` | 9/10 | 0.278 | 0.318 | 0.601 |
+| `T3_operation` | 10/10 | 1.000 | 0.159 | 0.753 |
+| `T4_llm_gate` | 9/10 | 0.389 | 0.530 | 0.405 |
+
+🔑 **The headline is unchanged and strengthened. `T2_vocab_df2` still dominates `T4_llm_gate`
+outright**: identical coverage (9 of 10), **less than half** the false-trigger rate (0.167 against
+0.389), and higher suppression (0.674 against 0.405) — at a set lookup instead of a model call per
+write. Correcting the labels moved both triggers' coverage *rate* up (0.64 → 0.90 for the LLM gate,
+0.71 → 0.90 for the vocabulary test), because the four sessions no trigger could ever reach left
+the denominator.
+
+⛔ **The registered decision grid cannot be applied to the corrected populations, and re-banding
+after seeing the data is not available.** Its coverage bands are ABSOLUTE counts (`<=9`, `10-12`,
+`>=13`) calibrated to a ceiling of 14. The ceiling is now 10, so `>=13` is unreachable and `10-12`
+means "perfect", and a candidate at 9 of 10 achievable lands in the `<=9` band that was written to
+mean "misses a third of them".
+
+**This is the same defect as the very first gate this session fixed** — the apparatus gate whose
+bare numerators were compared against denominators that could move
+(`population_matches_registration`). An absolute-count band is only meaningful against the
+denominator it was written for, and I wrote one anyway, four records later. The lesson generalises
+past gates to any band in any registration: **state a band as a RATE, or state the denominator
+alongside it and refuse when it changes.**
+
+**So: no verdict from the grid.** What survives the correction without needing it is the
+comparison, which is a dominance relation rather than a threshold: the string test beats the model
+on every axis. The Pareto selection registered in the (voided) negative-set record picks
+`T2_vocab_df2` at 9 of 10 with 0.167; the trigger record's literal max-coverage rule picks
+`T1_margin_0.0` at 10 of 10 with 0.556, which the vocabulary test dominates on false-trigger and
+suppression. Both selections are reported rather than one being chosen after the fact.
