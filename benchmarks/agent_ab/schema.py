@@ -1,4 +1,11 @@
-"""Canonical JSON compatible records for agent comparison runs."""
+"""Canonical JSON compatible records for agent comparison runs.
+
+Prior work: same `recall_search` as `claude_exec.py`, 2026-08-27, plus
+`missing-input-becomes-a-clean-null`. The `identical_arms` escape on the off-arm RE-call
+guard exists because refusing to CONSTRUCT the record turned a completed control session
+into `the session did not complete`, which lost exactly the sessions where the agent had
+searched memory.
+"""
 
 from __future__ import annotations
 
@@ -96,7 +103,18 @@ class SessionRecord:
         ):
             _check_optional_nonnegative(name, getattr(self, name))
         if self.variant == RECALL_OFF and self.recall_call_count:
-            raise ValueError("recall_off records cannot contain RE-call calls")
+            # The record carries its OWN justification, so the guard needs no global state and a
+            # reader of one line can see why it was allowed. In the write-time hook design both
+            # arms are the instruction arm and the off arm legitimately calls RE-call; without
+            # this the record could not be CONSTRUCTED, so a completed control session was thrown
+            # away and labelled "the session did not complete", which is the worst of both.
+            shared = self.metadata.get("identical_arms")
+            if not (isinstance(shared, str) and shared.strip()):
+                raise ValueError(
+                    "recall_off records cannot contain RE-call calls unless metadata carries a "
+                    "non-empty 'identical_arms' reason saying why both arms share the memory "
+                    "configuration"
+                )
 
     @property
     def total_tokens(self) -> int | None:

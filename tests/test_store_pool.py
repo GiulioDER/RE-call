@@ -142,3 +142,36 @@ def test_single_connection_mode_is_still_the_default(make_store):
     store = make_store(8)
     assert store._pool is None
     assert store._conn is not None
+
+
+@requires_db
+def test_a_pool_does_not_pin_the_store_that_owns_it(make_store) -> None:
+    """`configure` must not be a bound method, or the store can only be freed by the cyclic GC.
+
+    `ConnectionPool` keeps its `configure` callable for the pool's whole life, so passing
+    `self._prepare` made `store -> _pool -> configure -> store` a reference cycle. Refcounting
+    could then never free a store, and a store that is built and immediately discarded — the
+    schema-rejected case in `recall_agent`, where `check_schema()` raises — held a live backend
+    and its pool threads until a generational collection happened to run.
+
+    Pinned with the cyclic collector DISABLED, because with it enabled both forms look identical
+    and the regression would be invisible: that is precisely why an adversarial review panel
+    split on whether the growth was bounded.
+    """
+    import gc
+    import weakref
+
+    store = PgVectorStore(TEST_DSN, dim=8, table=make_store(8).table, pool_size=2)
+    store.check_schema()
+    reference = weakref.ref(store)
+
+    gc.disable()
+    try:
+        del store
+        assert reference() is None, (
+            "the store outlived its last reference, so something still holds it — check that "
+            "`_open_pool` passes a free function to `configure`, not a bound method"
+        )
+    finally:
+        gc.enable()
+        gc.collect()

@@ -2738,6 +2738,24 @@ def _delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:
     return delete_staged_sources(tenant, sources)
 
 
+def serving_json(result: object) -> str:
+    """Serialize a service result for a model-facing tool, additive fields only when opted into.
+
+    Promoted from `recall_mcp.server._serving_json` so every serving surface (the MCP server, the
+    in-process Agent SDK tools in `recall_agent`) renders results byte-identically without
+    importing the server module, which drags in the `mcp` package.
+    """
+    dump = cast(Callable[..., str], getattr(result, "model_dump_json"))
+    exclude: set[str] = set()
+    if getattr(result, "explanation", None) is None:
+        exclude.add("explanation")
+    if not getattr(result, "related_items", ()):
+        exclude.add("related_items")
+    if not getattr(result, "related_diagnostics", ()):
+        exclude.add("related_diagnostics")
+    return dump(indent=2, exclude=exclude)
+
+
 def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -> MemoryStatsResult:
     """Report memory size and freshness (`stale` is True when the newest chunk is older than `max_age`, default 2 days)."""
     newest = store.newest_indexed_at()

@@ -8,7 +8,80 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Added
+
+* **A `PreToolUse` hook that searches project memory with the text the agent is about to write,
+  and injects what matches.** Installed by default by `recall setup`, which asks before enabling
+  it. It exists because an agent that has to decide to search mostly does not: an explicit
+  instruction to search before writing measured an adoption rate of **0.067**, where this reaches
+  1.00 by construction. The query is the DRAFT TEXT rather than a goal description, because draft
+  text surfaced the governing memo for 11 of 11 sessions that needed it against 1 of 14 for
+  goal-shaped queries.
+
+  ⚠️ **Its benefit is plausible and unproven, and the pre-registration says so.** Paired A/B on
+  executed checker endpoints: 17 of 34 control tasks failed against 12 of 34 with the hook, which
+  is **6 rescues, 1 regression, McNemar exact p = 0.125** on 34 of a registered 48 pairs. That is
+  not significant, and the record committed in advance that nothing ships on a non-significant
+  positive. It is a default by owner decision. Full record and its four amendments:
+  `docs/preregistrations/2026-08-27-write-time-hook.md`.
+
+  What IS measured and is not in doubt: token cost is **-1% aggregate**, because it fires a median
+  of 3 times a session rather than the ten the design assumed; and it rescued **nothing** on the
+  hardest task family, which failed 6 of 6 in both arms with its governing memo in the corpus and
+  in front of the agent on every write.
+
+  The real cost is latency, and it is per TOOL CALL: **0.14s** when the payload is too short to
+  query, **~1.0s** against a reachable corpus, **2.9s** against an unreachable one. That last
+  number is why the handler stands down for five minutes after a failed connection, which brings
+  a dead corpus from 2.89s to 0.19s per call. Turn it off with `write_time.enabled: false` in
+  `~/.claude/recall-hook.json`; the hook is silent and costs 0.19s when disabled or unconfigured.
+
+  Three properties it cannot lose, each tested and mutation-tested: it never denies a tool call, it
+  never raises, and it never loads an embedder.
+
+* **`RECALL_MCP_TOOLS`: serve a subset of the server's tools, to stop paying for the ones nobody
+  calls.** Every tool definition is re-sent on every turn whether or not it is invoked. Measured
+  2026-08-27 on `claude-haiku-4.5`: about 153 input tokens per tool per turn, so the full surface
+  costs 5,727 input tokens per turn where the new `search` preset costs 3,731. Across 112 measured
+  agent sessions the agents called exactly one tool, `recall_search`, and never invoked the other
+  seventeen, which at that rate is roughly 30,000 wasted input tokens per fifteen-turn session.
+  Presets are `all`, `search` and `read`; explicit tool names compose with them. Unset serves every
+  tool, so an existing deployment is unaffected, and an unrecognised name refuses to start rather
+  than silently serving less than the operator configured. This narrows what is *offered* and is
+  not an authorisation boundary: scopes remain the only thing that gates execution.
+
+* **`recall_agent`: RE-call as in-process memory for Claude Agent SDK applications.**
+  `RecallAgentMemory` wraps the same `recall_mcp.service` functions the MCP server calls as
+  in-process SDK tools (`recall_search`, `recall_evidence`; writes behind an explicit
+  `write_tools=True`), with the same tool names, the same model-facing descriptions (drift-tested
+  against the server docstrings), and byte-identical result rendering via the promoted
+  `recall_mcp.service.serving_json`. Trust semantics survive the wrapping: a `TrustRefusal` is
+  rendered as its wire form with `advice`, never conflated with an empty result. Ships as the
+  optional `agent` extra; the package imports without the SDK installed.
+  See `docs/USING_WITH_AGENT_SDK.md`.
+
 ### Fixed
+
+* **`--manifest-sha256` and `--manifest-size` were accepted and ignored on a local manifest.** They
+  were read only to build the reference that fetches an `s3://` manifest; a `file://` build parsed
+  the manifest and verified nothing. `bin/build_generation_voyage.sh` passes both on every run, so
+  an operator watching those digests scroll past believed a check was happening. Silently
+  discarding a checksum somebody supplied is worse than never accepting one, because it
+  manufactures exactly the confidence it fails to earn. They are verified now, in every
+  environment, whenever they are given.
+
+* **A local corpus could not be built in production at all**, which left `RECALL_ENV=development`
+  as the only route — and that variable also selects which table is read, so the workaround for
+  this gate is half of what split indexing from serving. The other half was the hosted-embedder
+  gate fixed alongside it.
+
+  The `s3://` path provides three things: allowlisted objects, content-verified objects, and bytes
+  pinned forever by object versioning. `LocalObjectReader` already delivered the first two — it
+  refuses without `RECALL_LOCAL_ALLOWLIST`, resolves symlinks and `..` before the containment
+  check, and hashes every object it reads. It cannot deliver the third, and its own docstring says
+  so: a local file can be rewritten after its manifest is written, so this is detection, not
+  prevention. Production now requires the two properties that are achievable, and refuses to
+  pretend about the one that is not. A whitespace-only allowlist is refused with the unset case.
 
 * **A hosted embedder could never back a production generation, so a hosted corpus could not accept
   an upload at all.** `require_production_identity` demanded an immutable revision or artifact

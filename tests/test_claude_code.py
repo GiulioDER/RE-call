@@ -143,11 +143,21 @@ def test_session_start_reinjects_after_a_compaction() -> None:
 
 
 def test_matchers_use_only_documented_values() -> None:
+    # ⚠️ Two different kinds of value live in this table. A lifecycle event's matcher names the
+    # REASON it fired (`startup`, `manual`); a tool event's matcher names the TOOLS it applies to.
+    # Listing them together is deliberate: the property under test is that no matcher can name
+    # something the client will never send, and for PreToolUse that means a tool that does not
+    # exist, which would make the hook silently inert.
     documented = {
         "SessionStart": {"startup", "resume", "clear", "compact", "fork"},
         "SessionEnd": {"clear", "resume", "logout", "prompt_input_exit", "other"},
         "PreCompact": {"manual", "auto"},
+        "PreToolUse": {"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"},
     }
+    assert set(hook_entries(PYTHON)) <= set(documented), (
+        "a new hook event was added without documenting the matcher values it may use, so this "
+        "test would skip it silently"
+    )
     for event, groups in hook_entries(PYTHON).items():
         for group in groups:
             assert set(group["matcher"].split("|")) <= documented[event]

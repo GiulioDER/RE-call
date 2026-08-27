@@ -1,5 +1,12 @@
 """Run the preregistered task-success comparison: real work, executable endpoints.
 
+Prior work: `scripts/agent_ab_run.py` is the trap runner this deliberately does NOT extend, for
+the three reasons listed below. `benchmarks/agent_ab/tasksuccess.py`, `sandbox.py`, `gate.py` and
+`schema.py` own the endpoint, the isolation, the admission rule and the record shape, and are
+used here rather than reimplemented. The `--driver` and `--memory-transport` branches exist so a
+run can change exactly one thing about how a session is launched or how it reaches memory while
+sharing every other line of this orchestration, which is what makes those comparisons valid.
+
     python -u scripts/agent_ab_run_tasks.py --run-id agent-ab-tasksuccess-001 \
         --dsn postgresql://recall:recall@127.0.0.1:5407/agent_ab --tenant default \
         > benchmarks/artifacts/agent_ab/tasksuccess-001.log 2>&1
@@ -32,6 +39,7 @@ import asyncio
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 from dataclasses import replace
@@ -46,6 +54,7 @@ if str(REPO_ROOT) not in sys.path:
 from benchmarks.agent_ab.arms import (  # noqa: E402
     ArmSpec,
     build_configs,
+    prepare_hook_config_dirs,
     write_claude_md_prompt,
     write_claude_md_recall_prompt,
 )
@@ -56,11 +65,24 @@ from benchmarks.agent_ab.claude_exec import (  # noqa: E402
 from benchmarks.agent_ab.gate import admit_pairs  # noqa: E402
 from benchmarks.agent_ab.io import write_jsonl  # noqa: E402
 from benchmarks.agent_ab.recall_server import StdioRecallSpec  # noqa: E402
+from benchmarks.agent_ab.sdk_exec import (  # noqa: E402
+    SDKExecConfig,
+    build_sdk_configs,
+    run_sdk_case,
+    sdk_version,
+)
 from benchmarks.agent_ab.runner import run_paired  # noqa: E402
 from benchmarks.agent_ab.sandbox import restore  # noqa: E402
 from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON, SessionRecord  # noqa: E402
 from benchmarks.agent_ab.summarize import summarize_recall_overhead  # noqa: E402
 from benchmarks.agent_ab.tasksuccess import TASKS, TASKS_BY_ID, check_workspace  # noqa: E402
+
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from agent_ab_isolation import (  # noqa: E402
+    IsolationCheckUnavailable,
+    assert_sandbox_isolated,
+    verify_isolation,
+)
 
 DEFAULT_DSN = "postgresql://recall:recall@127.0.0.1:5407/agent_ab"
 STATIC_MEMORY_SOURCES = ("CLAUDE.md",)
@@ -93,25 +115,56 @@ def openrouter_env() -> dict[str, str]:
     }
 
 
-async def preflight(config_env: dict[str, str], model: str) -> None:
-    """Prove the CLI answers before spending a hundred sessions finding out that it does not."""
+def _cli_version_tuple(text: str | None) -> tuple[int, ...] | None:
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+async def preflight(config_env: dict[str, str], model: str, driver: str = "cli") -> None:
+    """Prove the driver answers before spending a hundred sessions finding out that it does not."""
 
     from benchmarks.agent_ab.claude_exec import ClaudeExecConfig
 
-    probe = ClaudeExecConfig(
-        model=model,
-        cwd=REPO_ROOT,
-        timeout_s=180.0,
-        env=config_env,
-        bare=True,
-        strict_mcp_config=False,
-        allowed_tools=(),
-    )
-    record = await run_claude_case(
-        {"task_id": "preflight", "user_input": "Reply with the single word READY and nothing else."},
-        RECALL_OFF,
-        probe,
-    )
+    row = {"task_id": "preflight", "user_input": "Reply with the single word READY and nothing else."}
+    if driver == "sdk":
+        sdk_probe = SDKExecConfig(
+            model=model,
+            cwd=REPO_ROOT,
+            timeout_s=180.0,
+            env=config_env,
+            bare=True,
+            allowed_tools=(),
+        )
+        record = await run_sdk_case(row, RECALL_OFF, sdk_probe)
+        # The SDK may resolve a different CLI than the shell does, and below 2.1.221 a session
+        # runs without a pending stdio MCP server while reporting success. The init-reported
+        # version is what THIS driver actually launched, so it is the one to assert on.
+        version = _cli_version_tuple(str(record.metadata.get("claude_code_version") or ""))
+        if version is None:
+            # Fails CLOSED. An unreadable version is the same evidential state as an unsupported
+            # one, and this check exists precisely because a CLI below 2.1.221 runs the session
+            # WITHOUT its stdio MCP server while reporting success. Skipping the gate when the
+            # answer is unknown reintroduces the failure the gate was written to catch.
+            raise SystemExit(
+                "preflight could not read the init-reported Claude Code version, so the "
+                "2.1.221 stdio-MCP wait cannot be verified; refusing rather than spending a run"
+            )
+        if version < (2, 1, 221):
+            raise SystemExit(
+                f"the SDK launched Claude Code {version}, below the 2.1.221 stdio-MCP wait; "
+                f"an on arm under this version silently runs without its server"
+            )
+    else:
+        probe = ClaudeExecConfig(
+            model=model,
+            cwd=REPO_ROOT,
+            timeout_s=180.0,
+            env=config_env,
+            bare=True,
+            strict_mcp_config=False,
+            allowed_tools=(),
+        )
+        record = await run_claude_case(row, RECALL_OFF, probe)
     text = (record.response or "").strip()
     if not text:
         raise SystemExit(f"preflight produced no response; error={record.error!r}")
@@ -204,6 +257,14 @@ def environment_capture(
     check: dict[str, Any],
     *,
     instruction_file: str | None = None,
+    hook_file: str | None = None,
+    hook_vocab: str | None = None,
+    identical_arms: str | None = None,
+    isolation: str = "bare",
+    work_root: str | None = None,
+    isolation_check: dict[str, Any] | None = None,
+    driver: str = "cli",
+    memory_transport: str = "stdio",
 ) -> dict[str, Any]:
     def run(*command: str) -> str:
         try:
@@ -229,10 +290,34 @@ def environment_capture(
         "recall_generation_id": check.get("generation_id"),
         "recall_calibration_id": check.get("calibration_id"),
         "write_tools": list(WRITE_TOOLS),
+        # Which driver launched the sessions. `cli` is claude_exec's subprocess over stream-json,
+        # the driver of every archived baseline; `sdk` is sdk_exec over claude-agent-sdk.
+        "driver": driver,
+        "memory_transport": memory_transport,
+        "claude_agent_sdk_version": sdk_version() if driver == "sdk" else None,
         # Which instruction the on arm ran under. The formatted text itself is already kept in the
         # artifact as static-plus-recall-prompt.txt; this names the committed source it came from,
         # so two runs differing only here can be told apart without diffing prompt files.
         "instruction_file": instruction_file or "arms.RECALL_SYSTEM_PROMPT",
+        # Which write-time hook the ON arm ran under, and therefore whether the run used
+        # config-dir isolation instead of --bare. Without this a hooked run and an unhooked
+        # one are indistinguishable in the artifact, which is the difference between two
+        # comparable runs and two runs nobody can tell apart.
+        "hook_file": hook_file,
+        "hook_vocab": hook_vocab,
+        # Why the two arms were allowed to share a profile. A reader who finds identical arms and
+        # no stated reason is looking at a broken experiment; one who finds this sentence is
+        # looking at the registered one.
+        "identical_arms": identical_arms,
+        # Derived from the config dirs, NOT from the hook: a base-rate A/A run has no hook and
+        # is still config-dir isolated, and reporting it as "bare" would say the control ran under
+        # the conditions of every earlier result in this lane, which is the opposite of true.
+        "isolation": isolation,
+        "work_root": work_root,
+        # The verdict of the preflight, not just the fact that one ran. A run whose control
+        # arm could still see memory documents is not comparable to one whose could not, and
+        # a reader six months from now cannot re-run the check against that day's machine.
+        "isolation_check": isolation_check,
     }
 
 
@@ -258,6 +343,72 @@ async def main() -> int:
         ),
     )
     parser.add_argument(
+        "--hook-file",
+        default=None,
+        help=(
+            "COMMITTED PreToolUse hook script. When given, BOTH arms run from an isolated "
+            "CLAUDE_CONFIG_DIR instead of --bare (measured against CLI 2.1.238: --bare skips "
+            "hooks even from --settings, and loads 7 plugins where a config dir loads 0), and "
+            "the hook is installed for the ON arm only. Isolation belongs to both arms; the "
+            "treatment belongs to one."
+        ),
+    )
+    parser.add_argument(
+        "--arms-differ-only-by-hook",
+        action="store_true",
+        help=(
+            "Both arms become the INSTRUCTION arm and differ only by the write-time hook, which "
+            "is what the registration's stage B specifies: control is the instruction arm with "
+            "the hook off, not the no-memory arm. Without --hook-file this is an A/A run whose "
+            "recall_on sessions ARE the control condition, which is how the base rate is measured "
+            "under the same apparatus as the treatment."
+        ),
+    )
+    parser.add_argument(
+        "--hook-vocab",
+        default=None,
+        help=(
+            "JSON list of hazard-vocabulary terms, from agent_ab_export_hazard_vocab.py. The hook "
+            "RECORDS whether each injection would have passed this trigger and never acts on it, "
+            "so a gated variant stays an offline re-analysis. Without it the field is null on "
+            "every line and the gated variant cannot be derived from the run at all."
+        ),
+    )
+    parser.add_argument(
+        "--work-root",
+        default=None,
+        help=(
+            "Where session sandboxes are created. Defaults to <artifacts>/work. REQUIRED with "
+            "--hook-file to point outside the user profile: a hooked arm runs under "
+            "CLAUDE_CONFIG_DIR instead of --bare, and CLAUDE.md is found by walking UP from cwd, "
+            "so sandboxes under the profile silently admit this machine's user memory into every "
+            "session of both arms."
+        ),
+    )
+    parser.add_argument(
+        "--driver",
+        choices=("cli", "sdk"),
+        default="cli",
+        help=(
+            "how sessions are launched: 'cli' (claude_exec subprocess over stream-json, the "
+            "driver of every archived baseline) or 'sdk' (sdk_exec over claude-agent-sdk, which "
+            "needs the agent extra installed). Everything else in the run is shared verbatim, "
+            "which is what makes a driver-equivalence comparison a comparison."
+        ),
+    )
+    parser.add_argument(
+        "--memory-transport",
+        choices=("stdio", "in-process"),
+        default="stdio",
+        help=(
+            "how the ON arm reaches RE-call: 'stdio' (an external `python -m recall_mcp.server` "
+            "per session, what every archived run used) or 'in-process' (recall_agent's SDK "
+            "tools served from this process, no server and no per-session cold start). "
+            "Requires --driver sdk. Everything else in the run is shared verbatim, which is what "
+            "makes a transport comparison a comparison."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="continue a run that died, skipping pairs whose BOTH arms are already recorded",
@@ -275,7 +426,13 @@ async def main() -> int:
         return 1
     already, carried = completed_pairs(progress_path) if args.resume else (set(), [])
     (artifacts / "streams").mkdir(parents=True, exist_ok=True)
-    work_root = artifacts / "work"
+    work_root = Path(args.work_root) if args.work_root else artifacts / "work"
+    if args.hook_file or args.arms_differ_only_by_hook:
+        # Checked HERE, before the corpus handshake, because a refusal that arrives after nine
+        # seconds of setup reads as a failure rather than as a usage error. Refused rather than
+        # warned: the leak produces a COMPLETE run whose artifacts are indistinguishable from a
+        # clean one, so a warning would only ever be read after the spend.
+        assert_sandbox_isolated(work_root)
     work_root.mkdir(parents=True, exist_ok=True)
 
     loci = load_loci()
@@ -292,7 +449,7 @@ async def main() -> int:
         print("nothing left to run; re-deriving the artifacts from the recorded sessions")
 
     agent_env = openrouter_env()
-    await preflight(agent_env, args.model)
+    await preflight(agent_env, args.model, args.driver)
 
     spec = StdioRecallSpec(dsn=args.dsn, cwd=REPO_ROOT, tenant=args.tenant)
     check = await spec.check()
@@ -333,20 +490,145 @@ async def main() -> int:
 
     off_spec = ArmSpec.claude_md(static_prompt)
     on_spec = ArmSpec.claude_md_recall(spec, artifacts / "recall-mcp.json", combined)
+    identical_arms = None
+    if args.arms_differ_only_by_hook:
+        # The control is the instruction arm with the hook off. Using the no-memory arm here would
+        # compare memory-plus-hook against no-memory and attribute the whole difference to the
+        # hook, which is the confound this flag exists to avoid.
+        off_spec = on_spec
+        identical_arms = (
+            "stage B compares the instruction arm against itself with a write-time hook added; "
+            "the arms share a profile by design and differ only in the hook installed in the "
+            "recall_on config directory"
+            if args.hook_file
+            else "base-rate A/A: both arms are the instruction arm with no hook anywhere, so "
+                 "every session is a control session under the treatment's own apparatus"
+        )
     # One template pair, built once so everything except memory is identical by construction. The
     # per-session `cwd` is the only field replaced afterwards.
-    templates = build_configs(
-        {RECALL_ON: on_spec, RECALL_OFF: off_spec},
-        model=args.model,
-        cwd=work_root,
-        timeout_s=args.timeout_s,
-        env=agent_env,
-        extra_allowed_tools=WRITE_TOOLS,
-    )
+    hook_dirs = None
+    isolation_check: dict[str, Any] | None = None
+    if args.hook_file or args.arms_differ_only_by_hook:
+        hook_path = None
+        if args.hook_file:
+            hook_path = Path(args.hook_file)
+            if not hook_path.is_file():
+                raise SystemExit(f"--hook-file does not exist: {hook_path}")
+        # Isolation for BOTH arms, the hook for the ON arm only. See `prepare_hook_config_dirs`:
+        # giving the off arm the hook would inject memory into the arm defined by not having any.
+        hook_dirs = prepare_hook_config_dirs(artifacts / "config", hook_script=hook_path)
+        # The hook reads these from its own environment; the corpus is the one the ON arm serves.
+        agent_env = {
+            **agent_env,
+            "RECALL_HOOK_DSN": args.dsn,
+            "RECALL_HOOK_TENANT": args.tenant,
+            "RECALL_HOOK_TRACE": str(artifacts / "hook-trace.jsonl"),
+        }
+        if args.hook_vocab:
+            vocab_path = Path(args.hook_vocab)
+            if not vocab_path.is_file():
+                raise SystemExit(f"--hook-vocab does not exist: {vocab_path}")
+            agent_env = {**agent_env, "RECALL_HOOK_VOCAB": str(vocab_path.resolve())}
+        print(f"write-time hook: {hook_path or 'NONE (A/A base rate: every session is control)'}")
+        print(f"  vocabulary: {args.hook_vocab or 'NONE, so vocabulary_would_fire is null'}")
+        print(f"  config dirs: {', '.join(str(p) for p in hook_dirs.values())}")
+        print(f"  trace: {artifacts / 'hook-trace.jsonl'}")
+
+    if hook_dirs is not None:
+        # A path check proves where the sandboxes are, not what the session received. This asks a
+        # real session, because every earlier attempt at this failed in the direction of looking
+        # isolated while not being: the transcript does not record injected context, so grep says
+        # clean, and only the token count and the agent's own answer disagree.
+        probe_dir = work_root / "isolation-check"
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            clean, tokens, answer = await verify_isolation(
+                model=args.model,
+                config_dir=hook_dirs[RECALL_OFF],
+                cwd=probe_dir,
+                env=agent_env,
+            )
+        except IsolationCheckUnavailable as error:
+            print(
+                f"\nREFUSED: the isolation check could not RUN ({error}), so isolation is "
+                "unverified rather than broken. This is an API or apparatus failure, not a "
+                "leak: fix that and re-run. Nothing about the arms is implicated."
+            )
+            return 1
+        isolation_check = {"clean": clean, "input_tokens": tokens, "answer": answer[:200],
+                           "cwd": str(probe_dir)}
+        print(f"  isolation check: {tokens} input tokens, {answer[:70]}")
+        if not clean:
+            print(
+                "\nREFUSED: the control arm can still see memory documents, so both arms would "
+                "carry unrecorded context and the run could attribute nothing. See "
+                "scripts/agent_ab_isolation.py for what closes this."
+            )
+            return 1
+
+    in_process_memory = None
+    in_process_servers = None
+    if args.memory_transport == "in-process":
+        # Built from the SAME dsn/tenant this run's stdio `check()` just proved trusted, and
+        # pinned to the generation store, so the two transports serve one corpus rather than two.
+        from recall_agent import RecallAgentMemory
+
+        in_process_memory = RecallAgentMemory(
+            dsn=args.dsn,
+            tenant=args.tenant,
+            embedder=spec.embedder,
+            use_generation_store=True,
+        )
+        in_process_servers = {spec.server_name: in_process_memory.sdk_mcp_server()}
+        print(
+            f"memory transport: IN-PROCESS, server name {spec.server_name!r}, "
+            f"no per-session server\n"
+        )
+
+    if args.driver == "sdk":
+        if hook_dirs is not None:
+            # The write-time hook is delivered through a CLAUDE_CONFIG_DIR, which is a `claude`
+            # CLI mechanism. The SDK driver launches sessions itself and would simply not run it,
+            # so the combination is refused rather than silently producing an unhooked run whose
+            # artifacts claim a hook.
+            raise SystemExit(
+                "--driver sdk cannot host the write-time hook: it is delivered through a "
+                "CLAUDE_CONFIG_DIR that only the CLI reads. Drop --hook-file / "
+                "--arms-differ-only-by-hook, or run with --driver cli."
+            )
+        templates: dict[str, Any] = build_sdk_configs(
+            {RECALL_ON: on_spec, RECALL_OFF: off_spec},
+            recall_spec=None if in_process_servers else spec,
+            in_process_servers=in_process_servers,
+            model=args.model,
+            cwd=work_root,
+            timeout_s=args.timeout_s,
+            env=agent_env,
+            extra_allowed_tools=WRITE_TOOLS,
+            # Resolved once here, so every session in the run launches the same executable that
+            # environment.json versions, rather than re-resolving PATH per session.
+            cli_path=resolve_claude_executable(),
+        )
+    else:
+        templates = build_configs(
+            {RECALL_ON: on_spec, RECALL_OFF: off_spec},
+            model=args.model,
+            cwd=work_root,
+            timeout_s=args.timeout_s,
+            env=agent_env,
+            extra_allowed_tools=WRITE_TOOLS,
+            # ⚠️ Both of these MUST be here rather than on a second `build_configs` call above.
+            # A merge once left two assignments to `templates`, and the later one won: the hook was
+            # configured, printed and isolation-checked, then installed in nothing. That produces a
+            # clean null with no error anywhere.
+            config_dirs=hook_dirs,
+            identical_arms=identical_arms,
+        )
     templates = {
         variant: replace(config, stream_dir=artifacts / "streams")
         for variant, config in templates.items()
     }
+    run_one = run_sdk_case if args.driver == "sdk" else run_claude_case
 
     progress_lock = asyncio.Lock()
     completed = 0
@@ -368,7 +650,7 @@ async def main() -> int:
         digest = restore(task.workspace, workdir)
         config = replace(templates[variant], cwd=workdir)
 
-        record = await run_claude_case(row, variant, config)
+        record = await run_one(row, variant, config)
 
         # Scored after the session, from the sandbox alone. `check_workspace` turns a checker
         # fault into passed=False with its traceback rather than aborting the run, and marks it so
@@ -376,7 +658,11 @@ async def main() -> int:
         verdict = check_workspace(task, workdir)
         merged = {
             **record.metadata,
-            "off_arm_profile": "claude_md",
+            "off_arm_profile": off_spec.profile,
+            # Carried on every record so the schema guard can see, from the record alone, why an
+            # off arm may hold RE-call calls. Without it a completed control session cannot be
+            # CONSTRUCTED and is recorded as "the session did not complete".
+            "identical_arms": identical_arms,
             "comparison": "additive",
             "base_task_id": base_id,
             "rep": row.get("rep"),
@@ -384,7 +670,15 @@ async def main() -> int:
             "locus": loci.get(base_id),
             "governing_memo": task.governing_memo,
             "workspace_digest": digest,
-            "workdir": str(workdir.relative_to(REPO_ROOT)),
+            # Repo-relative while the sandboxes live in the tree, absolute once they do not.
+            # `--work-root` deliberately puts them outside it (see agent_ab_isolation), and a bare
+            # relative_to raised there, which killed the SCORING of every session in a run whose
+            # agents had all worked correctly.
+            "workdir": str(
+                workdir.relative_to(REPO_ROOT)
+                if REPO_ROOT in workdir.resolve().parents
+                else workdir.resolve()
+            ),
             "check": verdict.to_dict(),
         }
         stamped = record.__class__.from_mapping(
@@ -424,7 +718,7 @@ async def main() -> int:
     if carried:
         print(f"\ncarried forward {len(carried)} recorded sessions from earlier attempts")
 
-    report = admit_pairs(records)
+    report = admit_pairs(records, arms_share_recall=identical_arms)
     admitted = list(report.admitted)
     parity_failures = digest_parity_failures(admitted)
     if parity_failures:
@@ -434,7 +728,18 @@ async def main() -> int:
     for name, payload in (
         ("admission.json", report.summary()),
         ("recall-overhead.json", summarize_recall_overhead(admitted)),
-        ("environment.json", environment_capture(args.model, spec, check, instruction_file=args.instruction_file)),
+        ("environment.json", environment_capture(
+            args.model, spec, check,
+            instruction_file=args.instruction_file,
+            hook_file=args.hook_file,
+            hook_vocab=args.hook_vocab,
+            identical_arms=identical_arms,
+            isolation="config_dir" if hook_dirs else "bare",
+            work_root=str(work_root),
+            isolation_check=isolation_check,
+            driver=args.driver,
+            memory_transport=args.memory_transport,
+        )),
         ("digest-parity.json", {"failures": parity_failures}),
     ):
         (artifacts / name).write_text(
@@ -448,6 +753,13 @@ async def main() -> int:
     for task_id in report.discarded_task_ids:
         print(f"  discarded {task_id}")
     print(f"\nartifacts: {artifacts}")
+    # The in-process memory owns a pooled store for the whole run. Left open, psycopg_pool tries
+    # to join its workers during interpreter shutdown and raises PythonFinalizationError into the
+    # run log: harmless at exit, but it puts a traceback in the evidence and it is the exact
+    # hygiene the DAT-001 review was about. The stdio arm has nothing to close here because its
+    # servers are per-session subprocesses.
+    if in_process_memory is not None:
+        in_process_memory.close()
     if not admitted:
         print("No admitted pairs. This is a wiring result, not a measurement.")
         return 1

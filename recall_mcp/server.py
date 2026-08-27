@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Protocol, TypeVar, cast
+from typing import Literal, Protocol, TypeVar
 from urllib.parse import urlsplit
 
 import anyio.to_thread
@@ -81,11 +81,17 @@ from recall_mcp.service import (
     related_memory,
     rewrite_plan,
     search_memory,
+    serving_json,
     startup_retrieval_profile,
     tenant_scopes,
 )
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
+from recall_mcp.tool_surface import (
+    FilteredToolRegistrar,
+    ToolRegistrar,
+    resolve_tool_surface,
+)
 from recall_mcp.translation import (
     provider_from_env,
     render_evidence_response,
@@ -94,17 +100,8 @@ from recall_mcp.translation import (
 from recall.desktop.uploads import discard_staging, stage_uploads
 
 
-def _serving_json(result: object) -> str:
-    """Serialize additive retrieval fields only when a caller opted into them."""
-    dump = cast(Callable[..., str], getattr(result, "model_dump_json"))
-    exclude: set[str] = set()
-    if getattr(result, "explanation", None) is None:
-        exclude.add("explanation")
-    if not getattr(result, "related_items", ()):
-        exclude.add("related_items")
-    if not getattr(result, "related_diagnostics", ()):
-        exclude.add("related_diagnostics")
-    return dump(indent=2, exclude=exclude)
+# Promoted to the service layer so `recall_agent` renders identically without importing `mcp`.
+_serving_json = serving_json
 
 #: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
 #: is metered the moment it declares a scope — there is no separate table to remember to update,
@@ -1054,7 +1051,7 @@ class _ToolDeps:
     current_tenant: Callable[[dict], str | None]
 
 
-def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
 
@@ -1226,7 +1223,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             )
 
 
-def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
 
@@ -1526,7 +1523,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             )
 
 
-def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_ingest_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
     _current_tenant = deps.current_tenant
@@ -1717,7 +1714,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         return json.dumps(result, indent=2)
 
 
-def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_calibration_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
 
@@ -1797,7 +1794,7 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         return json.dumps(result, indent=2, default=str)
 
 
-def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_memory_admin_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
     _current_tenant = deps.current_tenant
@@ -1943,11 +1940,25 @@ def build_server() -> MCPServer:
         return registry.get(tenant)
 
     deps = _ToolDeps(require=_require, state=_state, current_tenant=_current_tenant)
-    _register_search_tools(mcp, deps)
-    _register_reasoning_tools(mcp, deps)
-    _register_ingest_tools(mcp, deps)
-    _register_calibration_tools(mcp, deps)
-    _register_memory_admin_tools(mcp, deps)
+    # Every tool definition is re-sent to the model on every turn, so an unused tool is a standing
+    # context charge rather than a dormant capability. `RECALL_MCP_TOOLS` lets a deployment serve
+    # only what it uses; unset, every tool is served exactly as before. See `tool_surface`.
+    registrar = FilteredToolRegistrar(mcp, resolve_tool_surface())
+    _register_search_tools(registrar, deps)
+    _register_reasoning_tools(registrar, deps)
+    _register_ingest_tools(registrar, deps)
+    _register_calibration_tools(registrar, deps)
+    _register_memory_admin_tools(registrar, deps)
+    if registrar.skipped:
+        # Logged at INFO, not DEBUG: from outside, "the tool was never served" and "the agent
+        # chose not to call it" look identical, so the operator is told which one this is.
+        _log.info(
+            "serving %d of %d tools (%s); not served: %s",
+            len(registrar.registered),
+            len(registrar.registered) + len(registrar.skipped),
+            ", ".join(sorted(registrar.registered)),
+            ", ".join(sorted(registrar.skipped)),
+        )
     return mcp
 
 

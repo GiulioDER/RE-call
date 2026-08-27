@@ -332,7 +332,7 @@ unchanged.
 | Retrieval | Dense, sparse, hybrid RRF, optional SPLADE, optional cross-encoder reranking, calibrated confidence, provenance, and trust verdicts. |
 | Configuration | Guided setup, local and hosted embedder choices, retrieval cost profiles, optional reranking, strict or development trust policy, and per-corpus calibration. |
 | Storage | PostgreSQL with pgvector, ordered SQL migration path, immutable generations, incremental indexing, pruning, and source-scoped erasure. |
-| Agent integration | CLI, MCP server, LangChain retriever, LlamaIndex retriever, and injectable search seams for tests. |
+| Agent integration | CLI, MCP server, in-process Claude Agent SDK tools, LangChain retriever, LlamaIndex retriever, and injectable search seams for tests. |
 | Reasoning | Explicit opt-in reasoning API, CLI, and MCP tools over trusted retrieval, generation-bound authored and semantic Evidence Graph V1 projections <!--@ citation-pending: Evidence Graph V1 implementation artifact -->, proposal inspection, budgets, and citation validation. |
 | Security | Tenant isolation, row-level security checks, serving and migration DSNs, bearer-token HTTP transports, scopes, quotas, and unsafe-DSN refusal. |
 | Operations | Timeouts, reconnect policy, structured logging, counters, latency percentiles, and MCP stats. |
@@ -458,6 +458,23 @@ docs = retriever.invoke("what is the rate limit?")
 
 When the trust layer abstains, the adapters return no document by default. Returned documents carry
 trust metadata, including verdict, confidence, cosine, and supersession details.
+
+## Claude Agent SDK
+
+```bash
+pip install "recall-rag[agent,fastembed]"
+```
+
+```python
+from recall_agent import RecallAgentMemory
+
+with RecallAgentMemory.from_env() as memory:
+    options = memory.options()  # in-process recall_search/recall_evidence tools + digest hook
+```
+
+The tools run in-process (no MCP server), the trust policy applies per call, and the model-facing
+surface is identical to the MCP server's. Details:
+[docs/USING_WITH_AGENT_SDK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_AGENT_SDK.md).
 
 ## Documentation
 

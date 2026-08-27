@@ -98,8 +98,14 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
 
-      # Coverage over the SHIPPED packages only (`recall`, `recall_mcp`) — putting the tests in
-      # the denominator inflates the number with code that is 100% covered by definition.
+      # Coverage over the SHIPPED packages only (`recall`, `recall_mcp`, `recall_agent`) — putting
+      # the tests in the denominator inflates the number with code that is 100% covered by
+      # definition.
+      #
+      # `recall_agent` joined the wheel and this line together: a package that ships is a package
+      # a gate should see, and it was outside both this denominator and `[tool.mypy] files` until
+      # the audit that added it to both. Measured 2026-08-27 with the DB and e2e tests skipped:
+      # 241 statements at 73%, so it carries its own weight rather than borrowing headroom.
       #
       # The floor is 70, measured against ~75% in exactly this environment (the `[dev]` extra,
       # no fastembed/voyage/rerank — the model-backed tests self-skip here, so their modules read
@@ -121,7 +127,22 @@ jobs:
       # whole run. If that combination ever breaks, coverage collapses rather than drifting, which
       # is the failure mode you want from a gate.
       - name: Test (pytest on real pgvector, with coverage)
-        run: pytest -q -n auto --cov=recall --cov=recall_mcp --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+        run: pytest -q -n auto --cov=recall --cov=recall_mcp --cov=recall_agent --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+
+      # The discoverability probe decides a scientific verdict, and it fails in a direction that
+      # looks exactly like a real null: an arm pointed at control, a no-op exclusion, or a gate
+      # applied to the wrong denominator each print `rescue 0/14, retention 26/26`, which is what
+      # the genuine 2026-08-27 result printed. Its session rows and retrieval answers are
+      # fixtures, so it needs no database, no corpus and no OpenRouter key.
+      #
+      # It lives HERE rather than beside the other `scripts/*_tests.py` suites in
+      # `session-scripts`, which installs nothing on purpose: this one asserts the treated
+      # description against the REAL chunker (`recall.document.parse_document`), and `import
+      # recall` pulls psycopg. Asserting against a local reimplementation instead would remove
+      # the dependency and the test's whole value in one move, since the defect it pins was
+      # precisely that the treated bytes were on disk and not in the index.
+      - name: agent_ab discoverability apparatus
+        run: python scripts/agent_ab_discoverability_tests.py
 
   # Static typing, in its own job: it needs no database, so a type error surfaces in ~30s instead
   # of behind the full integration suite, and a red DB service never hides a red type check.
@@ -402,6 +423,31 @@ jobs:
         shell: bash
         run: bash scripts/session_space_tests.sh
 
+  # `session-serving.sh` is the one guard in scripts/ that moves a LIVE deployment: it
+  # fast-forwards the checkout VPS2 serves the MCP corpora from, and rolls it back when the
+  # updated code fails to serve. It runs on Linux rather than beside its Windows siblings above
+  # because `flock` exists here, and the test that proves a live indexer's lock stops a sync skips
+  # itself where it does not. Nothing in the suite needs a database, a network or VPS2: git is
+  # real, python is stubbed, and the fake origin/serving pair is built per test.
+  session-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: session-serving.sh
+        run: bash scripts/session_serving_tests.sh
+
+      # The process table is a fixture and the killer is a log, so this one needs no Claude, no
+      # ssh and no VPS2. What it pins is which pids a close selects, on a machine where the same
+      # MCP command line belongs to more than one agent.
+      - name: session-mcp-close.sh
+        run: bash scripts/session_mcp_close_tests.sh
+
+      # The sweep kills processes on a shared host, so what it selects is the whole test. Both
+      # process tables are fixtures and the killer is a log; nothing here reaches VPS2.
+      - name: session_mcp_sweep.py
+        run: python scripts/session_mcp_sweep_tests.py
+
   # Documentation citations, which rot faster than anything else in this repository: one commit
   # (79a0d6ed) shifted recall/index.py by 26 lines and broke 23 `path:line` references across five
   # documents at once. `fetch-depth: 0` is load-bearing and not a habit — the check asks git how
@@ -495,7 +541,10 @@ jobs:
       # resolved normally. `lowest` would also pin every transitive to its floor, which tests
       # other projects' constraint hygiene rather than ours.
       - name: Install the declared minimums
-        run: uv pip install --system --resolution lowest-direct -e ".[dev,mcp,documents]"
+        # `agent` is included even though it is deliberately absent from `dev`: a floor nothing
+        # resolves at is documentation rather than a constraint, and `claude-agent-sdk>=0.2` was
+        # exactly that until this job installed it.
+        run: uv pip install --system --resolution lowest-direct -e ".[dev,mcp,documents,agent]"
 
       - name: Show what actually resolved
         run: uv pip list --system
