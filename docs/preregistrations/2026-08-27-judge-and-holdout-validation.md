@@ -106,3 +106,85 @@ was written for — the defect that voided the trigger grid one record ago.
    rather than reporting Part B as though it were independent.
 
 <!-- frozen_above -->
+
+## Result (2026-08-27)
+
+Positive control passed. Artifact: `benchmarks/artifacts/agent_ab/validation.json`.
+
+### Part A — the label is UNSTABLE, and that is the headline
+
+| judge | agreement vs haiku | Cohen's κ | implied actionable recall |
+|---|---:|---:|---:|
+| `claude-haiku-4.5` (the one everything used) | — | — | **10/14** |
+| `claude-sonnet-5` (stronger, same family) | 0.630 | **0.327** | **6/14** |
+| `gemini-2.5-pro` (different family) | 0.739 | 0.508 | **9/14** |
+| sonnet vs gemini | — | 0.405 | — |
+
+**Spread: 4 sessions.** The registered rule at `>= 3` reads:
+
+> ⛔ **the label is unstable.** Actionable recall, the 27 labels and the re-derived trigger
+> populations all become provisional, and no product decision may rest on them until a labelling
+> protocol with measured agreement replaces the single judge.
+
+Every κ is in the "fair to moderate" range for a label that is load-bearing, and **the strongest
+judge is the strictest**: sonnet finds 6 of 14 where haiku found 10. So today's correction from
+14/14 to 10/14 may not have gone far enough. **The honest statement of draft-time search's
+actionable recall is now a range: 6 to 10 of 14, and a single-judge protocol cannot narrow it.**
+
+### Part B — held-out families
+
+| measure | fitted (3 families) | held out (4 families) |
+|---|---:|---:|
+| actionable recall | 10/14 = 0.714 | **15/24 = 0.625** |
+| vocabulary trigger coverage at `df<=2` | 9/10 = 0.900 | **14/15 = 0.933** |
+
+Per family, counts rather than rates (6 sessions each): `ts-autouse-tmp-path` 6/6 reached and 6/6
+covered; `ts-bounded-runner` 4/6 and 4/6; `ts-separator-canary` 3/6 and 2/6;
+`ts-false-zero-search` **2/6** and 2/6.
+
+The registered grid cell is (recall `>=0.60`, coverage `>=0.80`) = **GENERALISES**.
+
+⚠️ **But that cell may not be read as independent confirmation, exactly as this record required in
+advance**: Part B's labels come from the haiku judge that Part A just showed unstable. Its recall
+figure inherits the instability in full.
+
+🔑 **One asymmetry rescues part of it, and it is a methodological point worth keeping.** Trigger
+coverage is a RATIO whose numerator and denominator are both drawn from the same labels — of the
+sessions judged reachable, how many does the trigger fire on. A systematic judge bias moves both
+together and largely cancels. **Actionable recall has no such protection**: it is a count against a
+fixed denominator of sessions, so a stricter judge lowers it directly. That is why coverage
+transferred at 0.933 while recall fell to 0.625, and it means **the trigger result is materially
+more robust to label instability than the recall result is.**
+
+### Predictions
+
+| # | predicted | measured | verdict |
+|---|---|---|---|
+| 1 | sonnet agrees 0.75–0.90 | **0.630** | **falsified, below** |
+| 2 | gemini agrees 0.65–0.85 and LOWER than sonnet | 0.739, and **higher** than sonnet | **falsified on both clauses** |
+| 3 | implied recall moves by at most 2 sessions | **4** | **falsified** |
+| 4 | held-out recall 0.60–0.85 | **0.625** | confirmed |
+| 5 | held-out trigger coverage 0.55–0.80 (some shrinkage) | **0.933**, no shrinkage | **falsified, above** |
+| 6 | held-out false-trigger stays 0.167 | **not measured** — the probe computes no `N_clean` figure for the held-out families | **untested; my error in the script, not a result** |
+| 7 | under 45 minutes, under 0.50 USD | ~15 minutes, ~230 calls | confirmed |
+
+Two confirmed, four falsified, one untested. Prediction 2 is the instructive miss: I assumed a
+different-family judge would decorrelate and therefore agree LESS, and the opposite happened —
+the same-family stronger model was the outlier. **Capability, not family, was the axis that
+mattered**, which is the reverse of the reasoning that chose the two judges.
+
+### What this licenses, and what it retracts
+
+- ⛔ **Retracted as a point estimate: "actionable recall is 10 of 14."** It is 6 to 10 of 14
+  depending on the judge, and no number in that range is currently defensible over the others.
+  Everywhere that figure appears it must carry the range.
+- **The trigger comparison survives** — the vocabulary test dominating the LLM gate is a dominance
+  relation between two candidates scored on identical labels, and it transferred to four unseen
+  families at 0.933 coverage with the threshold fitted elsewhere. That is the most robust result
+  in this lane.
+- **Nothing is licensed for a build.** The prerequisite is now a labelling protocol with measured
+  agreement — multiple judges with a resolution rule, or a small human-labelled gold set to
+  calibrate against — and that is a registration of its own.
+- **`ts-false-zero-search` at 2 of 6 is the family to look at first** if anyone continues: it has
+  13 drafts across 6 sessions, the fewest of any family, and both the recall and the sample are
+  small enough that the difference may be draft volume rather than difficulty.
