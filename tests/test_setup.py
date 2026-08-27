@@ -1723,6 +1723,7 @@ def test_seeding_runs_before_the_hooks_are_installed(tmp_path, monkeypatch):
             "y",   # scaffold
             "y",   # seed
             "y",   # wire up Claude Code
+            "y",   # search memory on every write (the write-time hook)
             "n",   # calibrate declined
         ],
     )
@@ -1791,6 +1792,7 @@ def test_accepting_the_wiring_prompt_registers_the_server_and_installs_the_hooks
             "n",   # reasoning arm declined
             "n",   # scaffold declined
             "y",   # wire up Claude Code
+            "y",   # search memory on every write (the write-time hook)
             "n",   # calibrate declined
         ],
     )
@@ -1837,7 +1839,9 @@ def test_a_failed_wiring_step_does_not_lose_the_completed_interview(tmp_path, mo
     env, output = _run_wizard(
         tmp_path,
         monkeypatch,
-        ["y", "2", "1", "1", "n", "n", "y", "n"],
+        # security y, embedder 2, reranker 1, sparse 1, reasoning n, scaffold n,
+        # wiring y, write-time hook y, calibrate n
+        ["y", "2", "1", "1", "n", "n", "y", "y", "n"],
     )
 
     assert "RECALL_EMBEDDER=fastembed" in env

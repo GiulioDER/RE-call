@@ -1400,11 +1400,26 @@ def run_setup_wizard(
     # an MCP server with a program they do not have is noise dressed up as a choice.
     claude_detected = claude_code_detected()
     claude_wiring_requested = False
+    write_time_requested = True
     if claude_detected:
         claude_wiring_requested = _ask_yes_no(
             input_fn,
             print_fn,
             "Register the recall MCP server with Claude Code and install session hooks?",
+            default=True,
+        )
+    # Asked separately because it is the only hook on the critical path of every tool call, and
+    # because its evidence is weaker than a default usually carries: 6 rescues against 1
+    # regression at p = 0.125 on a partial sample, which the pre-registration itself calls
+    # insufficient to ship on. Defaulting to yes is the owner's decision; making the reader see
+    # the cost and the caveat before accepting it is the least this can do.
+    if claude_wiring_requested:
+        write_time_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            "Search memory on every write and inject what matches?\n"
+            "  Adds about 1 second to each Write, Edit and Bash call, and roughly 1% to tokens.\n"
+            "  Measured benefit: 6 task rescues against 1 regression, p = 0.125, not significant.",
             default=True,
         )
 
@@ -1468,7 +1483,8 @@ def run_setup_wizard(
                 project_root=project_root,
                 print_fn=print_fn,
             )
-            install_hooks(dsn=dsn, embedder=embedder.value, print_fn=print_fn)
+            install_hooks(dsn=dsn, embedder=embedder.value,
+                          write_time=write_time_requested, print_fn=print_fn)
             print_fn(
                 "Claude Code is wired up. The tools appear in the NEXT session, not this one: "
                 "the client reads its server list at startup."
