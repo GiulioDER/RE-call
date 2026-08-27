@@ -121,3 +121,57 @@ the agent — which no amount of retrieval work can address.
    and recorded here rather than applied.
 
 <!-- frozen_above -->
+
+## 🔁 Amendment appended 2026-08-27, before stage A ran: the harness cannot host this hook
+
+**Nothing above is edited.** Two things measured after the record was committed.
+
+### The hook itself works, verified end to end against the live corpus
+
+`gen_f01fc522`, 1,006 chunks, the corpus the whole lane is anchored to:
+
+| case | result | latency |
+|---|---|---|
+| a hazard draft, `version_file.write_text(content, encoding="utf-8")` | **injected**, top hit `python-write-text-crlf-churn` at rank 1 | 0.99s |
+| an innocuous `ls -la scripts/ \| head -20` | **injected**, top hit `clean-automerge-is-the-dangerous-case` | 0.98s |
+| `ls` | no output, the `MIN_QUERY_CHARS` guard held | 0.15s |
+
+The second row is the registration's premise happening live: the hook fires on a directory listing
+and injects an irrelevant memo. That is the 29-of-36 noise rate, not a defect.
+
+Three defects were found and fixed by reviewing and smoke-testing the hook before this: an ~11s
+embedder load per write (one process per tool call, so ~110s a session — replaced with `ts_rank`
+in SQL), a 10s `connect_timeout` on every write when the corpus is down (now 2s, measured 10.9s →
+3.0s), and raw SQL that did not bind the ACTIVE generation and so would have served retired rows.
+
+### ⛔ But stage A cannot run on this harness as designed
+
+`benchmarks/agent_ab/claude_exec.py` runs every arm with `--bare`, and its docstring states why:
+
+> "`bare` defaults to True and is what makes the arms comparable: `--bare` skips hooks, plugins,
+> auto memory, MCP auto-discovery and `CLAUDE.md`, so context reaches the session only through the
+> flags recorded here. Without it, whatever happens to sit in the working directory or in
+> `~/.claude` joins the experiment as an unrecorded variable."
+
+**So the harness skips hooks by design, and that design is the reason its results are trustworthy.**
+Running this experiment means either turning `--bare` off — which admits every hook, plugin and
+MCP server on the machine into the comparison as unrecorded variables, and would invalidate the A/B
+far more seriously than the hook could inform it — or teaching the harness to admit exactly one
+named hook while still excluding everything else.
+
+**Stage A is therefore BLOCKED, not failed**, and this record does not treat the blockage as a
+result. The predictions above stand unscored.
+
+### What unblocking costs, stated so the decision is informed
+
+A selective-hook capability in `ClaudeExecConfig`: a `hooks_file` that is written into an isolated
+settings file for that session only, passed alongside `--bare`, with the session's resolved hook
+set recorded in `environment.json` the way `instruction_file` already is. That is real harness
+work, it touches the component whose isolation guarantees every other result in this lane, and it
+needs its own tests — a harness that silently admits a second hook would corrupt runs without
+failing.
+
+**It is not licensed by this record.** Whoever picks it up should note that the hook is already
+built, tested (9 groups, 6 mutations killed) and verified against the live corpus, so the only
+remaining work is the harness, and that the noise premise is now demonstrated rather than
+predicted.
