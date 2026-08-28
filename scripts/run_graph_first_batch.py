@@ -46,6 +46,33 @@ def _settings(args: argparse.Namespace, input_sha256: str) -> dict[str, object]:
     }
 
 
+def _serving_server_command(
+    tenant: str,
+    embedder: str,
+    index_root: str,
+    profile: str,
+    pinned_generation_id: str | None,
+) -> tuple[str, list[str]]:
+    """Launch the guarded serving checkout, not the separate development clone."""
+
+    ssh, args = _server_command(
+        tenant,
+        embedder,
+        index_root,
+        profile,
+        pinned_generation_id,
+    )
+    remote = args[-1]
+    remote = remote.replace("cd ~/recall-repos &&", "cd ~/recall-repos/serving &&", 1)
+    remote = remote.replace(
+        "exec .venv/bin/python -m recall_mcp.server",
+        "exec ~/recall-repos/.venv/bin/python -m recall_mcp.server",
+        1,
+    )
+    args[-1] = remote
+    return ssh, args
+
+
 def _load_checkpoint(
     path: Path, *, expected_settings: dict[str, object], resume: bool
 ) -> dict[str, dict[str, object]]:
@@ -99,7 +126,7 @@ async def main_async(args: argparse.Namespace) -> None:
     completed = _load_checkpoint(
         checkpoint_path, expected_settings=settings, resume=args.resume
     )
-    ssh, command = _server_command(
+    ssh, command = _serving_server_command(
         args.tenant,
         args.embedder,
         args.index_root,
