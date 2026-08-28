@@ -508,10 +508,14 @@ def install_hooks(
             session. `cold` preserves the process-per-call path. Any other value is rejected so
             an installation cannot silently select a different latency and lifecycle contract.
         project_root: Project directory allowed to use this hook configuration. It defaults to
-            the current working directory and is stored as an absolute path.
+            the current working directory and is stored as an absolute path. ⛔ There is ONE hook
+            config per machine, so this is not a per-project setting: installing in a second
+            project rewrites it, and write-time retrieval then returns nothing in the first. The
+            install prints the root for that reason.
     """
     if write_time_connection_mode not in WRITE_TIME_CONNECTION_MODES:
         raise ValueError("write_time_connection_mode must be 'cold' or 'relay'")
+    root = (project_root or Path.cwd()).resolve()
     target = path or settings_path()
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -521,7 +525,7 @@ def install_hooks(
         embedder=embedder,
         write_time=write_time,
         write_time_connection_mode=write_time_connection_mode,
-        project_root=project_root,
+        project_root=root,
     )
 
     settings: dict[str, Any] = {}
@@ -532,6 +536,16 @@ def install_hooks(
 
     _write_json(target, merge_hooks(settings, hook_entries(python_executable)))
     print_fn(f"Installed SessionStart and SessionEnd hooks in {target}")
+    if write_time:
+        # ⛔ Say which project the write-time hook is bound to, because there is exactly ONE hook
+        # config for the machine and installing in a second project MOVES this root. The hook then
+        # returns nothing for every event in the first project, silently and by design: it must
+        # never speak up during a tool call. The install is the only moment where the change can be
+        # stated, so it is stated here rather than left to be discovered.
+        print_fn(
+            f"Write-time memory search is bound to {root}. It is the only project it answers in, "
+            "and installing in another one moves it."
+        )
 
 
 def uninstall(

@@ -235,6 +235,52 @@ def test_install_enables_the_authenticated_relay_for_new_hook_configs(tmp_path: 
     assert config["project_root"] == str(Path.cwd().resolve())
 
 
+def test_install_names_the_one_project_the_write_time_hook_answers_in(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The single hook config is the whole reason this line exists.
+
+    Installing in a second project rewrites `project_root`, and the write-time hook then returns
+    nothing in the first one, silently, because a PreToolUse hook must never speak up. The install
+    is the only moment at which that move can be announced.
+    """
+    lines: list[str] = []
+    monkeypatch.setattr(claude_code, "hook_config_path", lambda: tmp_path / "recall-hook.json")
+    monkeypatch.setattr(claude_code, "refresh_stats", lambda config: 0)
+
+    claude_code.install_hooks(
+        dsn="postgresql://u:p@h/db",
+        path=tmp_path / "settings.json",
+        project_root=tmp_path,
+        print_fn=lambda *a: lines.append(" ".join(str(x) for x in a)),
+    )
+
+    printed = "\n".join(lines)
+    assert str(tmp_path.resolve()) in printed
+    assert "moves it" in printed
+    config = json.loads((tmp_path / "recall-hook.json").read_text(encoding="utf-8"))
+    assert config["project_root"] == str(tmp_path.resolve())
+
+
+def test_install_says_nothing_about_a_project_when_write_time_is_off(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A user who declined the hook must not be told about a binding that does nothing."""
+    lines: list[str] = []
+    monkeypatch.setattr(claude_code, "hook_config_path", lambda: tmp_path / "recall-hook.json")
+    monkeypatch.setattr(claude_code, "refresh_stats", lambda config: 0)
+
+    claude_code.install_hooks(
+        dsn="postgresql://u:p@h/db",
+        path=tmp_path / "settings.json",
+        write_time=False,
+        project_root=tmp_path,
+        print_fn=lambda *a: lines.append(" ".join(str(x) for x in a)),
+    )
+
+    assert "moves it" not in "\n".join(lines)
+
+
 def test_install_rejects_an_unknown_write_time_connection_mode(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="write_time_connection_mode"):
         claude_code.install_hooks(
