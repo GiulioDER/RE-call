@@ -65,7 +65,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from recall.atomic_write import atomic_write_bytes
-from recall_hooks import claude_config_home, config_path as hook_config_path, refresh_stats
+from recall_hooks import (
+    WRITE_TIME_CONNECTION_MODES,
+    claude_config_home,
+    config_path as hook_config_path,
+    refresh_stats,
+)
 
 #: The MCP server name registered with the client. Also the name `claude mcp get` is probed with.
 SERVER_NAME = "recall"
@@ -486,6 +491,7 @@ def install_hooks(
     embedder: str = "fastembed",
     write_time: bool = True,
     write_time_connection_mode: str = "relay",
+    project_root: Path | None = None,
     python_executable: str | None = None,
     path: Path | None = None,
     print_fn: Callable[..., None] = print,
@@ -496,7 +502,16 @@ def install_hooks(
     installed either way: the handler reads `write_time.enabled` from its own config, so turning
     it off is a config edit rather than a settings-file surgery the user has to repeat. That also
     means a user who disables it keeps a working `recall hooks upgrade`.
+
+    Args:
+        write_time_connection_mode: `relay` (the default) keeps one database connection per
+            session. `cold` preserves the process-per-call path. Any other value is rejected so
+            an installation cannot silently select a different latency and lifecycle contract.
+        project_root: Project directory allowed to use this hook configuration. It defaults to
+            the current working directory and is stored as an absolute path.
     """
+    if write_time_connection_mode not in WRITE_TIME_CONNECTION_MODES:
+        raise ValueError("write_time_connection_mode must be 'cold' or 'relay'")
     target = path or settings_path()
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -506,6 +521,7 @@ def install_hooks(
         embedder=embedder,
         write_time=write_time,
         write_time_connection_mode=write_time_connection_mode,
+        project_root=project_root,
     )
 
     settings: dict[str, Any] = {}
@@ -601,6 +617,7 @@ def _write_hook_config(
     table: str = "chunks",
     write_time: bool = True,
     write_time_connection_mode: str = "relay",
+    project_root: Path | None = None,
 ) -> None:
     path = hook_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -610,13 +627,18 @@ def _write_hook_config(
         "embedder": embedder,
         "table": table,
         "chunks": 0,
+        "project_root": str((project_root or Path.cwd()).resolve()),
         # Written explicitly even when true, so the file SAYS what the session will do. An absent
         # block also means enabled (an upgraded config predating the feature should get it), and
         # the difference between "absent" and "absent because someone chose it" is exactly what a
         # user reads this file to find out.
         "write_time": {
             "enabled": bool(write_time),
-            "connection_mode": write_time_connection_mode if write_time_connection_mode in {"cold", "relay"} else "cold",
+            "connection_mode": (
+                write_time_connection_mode
+                if write_time_connection_mode in WRITE_TIME_CONNECTION_MODES
+                else "cold"
+            ),
         },
     }
     _write_json(path, config)

@@ -28,6 +28,20 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|BashOutput",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "recall-hooks",
+            "args": ["pre-tool-use"],
+            "timeout": 5,
+            "statusMessage": "Searching project memory before the write"
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "matcher": "clear|resume|logout|prompt_input_exit|other",

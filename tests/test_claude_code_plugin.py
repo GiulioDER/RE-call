@@ -44,6 +44,7 @@ MARKETPLACE = REPO / ".claude-plugin" / "marketplace.json"
 #: differ: the installer knows the machine's interpreter and the plugin cannot.
 EXPECTED_HOOKS = {
     "SessionStart": "session-start",
+    "PreToolUse": "pre-tool-use",
     "PreCompact": "pre-compact",
     "SessionEnd": "session-end",
 }
@@ -124,7 +125,7 @@ def test_hooks_invoke_a_console_script_that_pyproject_declares() -> None:
     assert callable(getattr(imported, attribute)), f"{scripts[HOOK_SCRIPT]} is not callable"
 
 
-def test_hooks_cover_the_three_events_with_the_right_subcommand() -> None:
+def test_hooks_cover_the_four_events_with_the_right_subcommand() -> None:
     """Each event has to pass the subcommand `recall_hooks.main` dispatches on.
 
     An unrecognised subcommand returns 0, so a typo here is a hook that runs, succeeds, and does

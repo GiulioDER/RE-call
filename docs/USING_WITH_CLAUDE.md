@@ -257,16 +257,17 @@ for the ~30-line pattern: search first; if a non-gap closed decision surfaces, b
 ## Session hooks: what makes the tools get used
 
 Registering the server makes the tools *available*. It does not make Claude reach for them, and it
-does not keep the corpus current. `recall setup` also offers three hooks, written into
+does not keep the corpus current. `recall setup` also offers four hooks, written into
 `~/.claude/settings.json`:
 
 | Event | What it does | Why there |
 |---|---|---|
 | `SessionStart` | Injects a one-line digest naming the indexed chunk count and the standing instruction | The only event that can add context before the first turn |
+| `PreToolUse` | Searches memory with the draft text before a write or shell command | The draft contains the hazard vocabulary while it is still actionable |
 | `PreCompact` | Indexes `memory/` | Compaction is where a long session loses the detail behind its conclusions |
 | `SessionEnd` | Indexes `memory/` and refreshes the cached count | Closes the write-to-searchable loop |
 
-Three properties are deliberate and worth knowing before you edit them:
+Four properties are deliberate and worth knowing before you edit them:
 
 - **`SessionStart` touches no database.** It reads a count cached by the other two hooks, so the
   digest still appears when your database is not running, and it adds about 66 ms to a session
@@ -274,6 +275,8 @@ Three properties are deliberate and worth knowing before you edit them:
 - **`PreCompact` never blocks.** Exit code 2 on that event *blocks compaction*, so every path
   returns 0 and the handler runs `async`. A memory tool must not be able to wedge a session whose
   context window is already full.
+- **`PreToolUse` is additive and project-scoped.** It never denies a tool call, uses the configured
+  project's `cwd` boundary, and falls back silently when the event belongs to another project.
 - **They run out of `recall_hooks`, not `recall`.** Importing the `recall` package costs about a
   second, and a session-start hook pays that on every launch.
 

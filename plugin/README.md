@@ -6,7 +6,7 @@ question the corpus cannot answer is refused rather than answered from the neare
 
 ## Install
 
-**Install the package first.** This plugin is a client, not an engine: its MCP server and its three
+**Install the package first.** This plugin is a client, not an engine: its MCP server and its four
 hooks are the console scripts `recall-mcp` and `recall-hooks`, invoked by bare name. A plugin
 manifest is written once and shipped to every machine, so it cannot name your interpreter, and
 without those scripts on `PATH` the server simply fails to spawn. Claude Code reports that as
@@ -70,11 +70,12 @@ can never be retrieved beside your real memory from the same database.
 **An MCP server** exposing `recall_search` and the rest of the tool surface, so Claude can query
 memory as a tool.
 
-**Three hooks**, which are no-ops until `recall setup` has run, and fail open in every case:
+**Four hooks**, which are no-ops until `recall setup` has run, and fail open in every case:
 
 | Event | What it does |
 |---|---|
 | `SessionStart` | Injects a short digest of project memory before the first turn |
+| `PreToolUse` | Searches memory with the draft text before a write or shell command |
 | `PreCompact` | Saves memory before a compaction discards the detail behind it |
 | `SessionEnd` | Indexes the session so the next one can find it |
 

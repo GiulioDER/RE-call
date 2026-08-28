@@ -74,7 +74,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import claude_config_home, load_config
+from . import WRITE_TIME_CONNECTION_MODES, claude_config_home, load_config
 
 #: Matches `recall_mcp.service.MAX_QUERY_CHARS`. The server refuses a longer query rather than
 #: truncating it, so truncating here is the difference between a hit and a refusal.
@@ -102,9 +102,11 @@ COOLDOWN_NAME = "recall-hook-write-time-cooldown"
 def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
     """The `write_time` block of the hook config, with defaults.
 
-    Absent means ENABLED, because the installer writes the block and an older config that predates
-    it should still get the feature it was upgraded for. `enabled: false` is the way to turn it
-    off, and it is honoured everywhere.
+    Absent means ENABLED for a project-bound configuration, because the installer writes the block
+    and an older config that predates it should still get the feature it was upgraded for.
+    `enabled: false` is the way to turn it off, and it is honoured everywhere. A legacy config
+    without ``project_root`` is rejected by the write-time boundary until it is reinstalled, since
+    there is no safe way to identify which project owns its DSN and tenant.
     """
 
     config = load_config() if config is None else config
@@ -115,7 +117,9 @@ def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
         # Older configs retain the measured process-per-call behavior. The installer writes
         # ``relay`` explicitly for new installs, making the rollout reversible by editing one
         # config value rather than changing the client hook again.
-        "connection_mode": block.get("connection_mode", "cold") if block.get("connection_mode") in {"cold", "relay"} else "cold",
+        "connection_mode": block.get("connection_mode", "cold")
+        if block.get("connection_mode") in WRITE_TIME_CONNECTION_MODES
+        else "cold",
         "k": int(block.get("k", TOP_K)),
         "min_chars": int(block.get("min_chars", MIN_QUERY_CHARS)),
         "connect_timeout": float(block.get("connect_timeout", 2.0)),
@@ -159,6 +163,23 @@ def _clear_cooldown() -> None:
         _cooldown_path().unlink()
     except OSError:
         pass
+
+
+def _event_is_in_configured_project(config: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """Keep a user-level hook from applying one project's corpus to another project's event."""
+
+    configured = config.get("project_root")
+    event_cwd = payload.get("cwd")
+    if not isinstance(configured, str) or not configured.strip():
+        return False
+    if not isinstance(event_cwd, str) or not event_cwd.strip():
+        return False
+    try:
+        root = Path(configured).expanduser().resolve()
+        cwd = Path(event_cwd).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return cwd == root or root in cwd.parents
 
 
 def payload_of(tool_name: str, tool_input: dict[str, Any]) -> str:
@@ -274,6 +295,8 @@ def pre_tool_use(payload: dict[str, Any]) -> int:
         # Unconfigured is silent BY DESIGN: a checkout that has not run the installer must behave
         # exactly as it would without this hook.
         return 0
+    if not _event_is_in_configured_project(config, payload):
+        return 0
     options = settings(config)
     if not options["enabled"]:
         return 0
@@ -290,7 +313,7 @@ def pre_tool_use(payload: dict[str, Any]) -> int:
             if session_id:
                 from .relay import search as relay_search
 
-                hits = relay_search(session_id, query, config, options)
+                hits = relay_search(session_id, query[:MAX_QUERY_CHARS], config, options)
             else:
                 hits = search(query, config, options)
         else:

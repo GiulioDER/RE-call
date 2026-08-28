@@ -43,6 +43,10 @@ from typing import Any
 #: inside it: `settings.json` is shared with every project and is a file people paste into issues.
 HOOK_CONFIG_NAME = "recall-hook.json"
 
+# Keep the installer contract and the hook's malformed-config fallback in one place.  This
+# package is already imported by both callers, so the shared tuple adds no import to the hot path.
+WRITE_TIME_CONNECTION_MODES = ("cold", "relay")
+
 
 def claude_config_home() -> Path:
     raw = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()

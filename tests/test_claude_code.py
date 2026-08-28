@@ -232,6 +232,17 @@ def test_install_enables_the_authenticated_relay_for_new_hook_configs(tmp_path: 
     claude_code.install_hooks(dsn="postgresql://u:p@h/db", path=settings, print_fn=lambda *a: None)
     config = json.loads((tmp_path / "recall-hook.json").read_text(encoding="utf-8"))
     assert config["write_time"] == {"enabled": True, "connection_mode": "relay"}
+    assert config["project_root"] == str(Path.cwd().resolve())
+
+
+def test_install_rejects_an_unknown_write_time_connection_mode(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="write_time_connection_mode"):
+        claude_code.install_hooks(
+            dsn="postgresql://u:p@h/db",
+            path=tmp_path / "settings.json",
+            write_time_connection_mode="unknown",
+            print_fn=lambda *a: None,
+        )
 
 
 def test_a_password_never_reaches_a_log_line() -> None:

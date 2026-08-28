@@ -29,7 +29,11 @@ def hook_env(tmp_path, monkeypatch):
 
 
 def write_config(root: Path, **overrides) -> None:
-    config = {"dsn": "postgresql://example/db", "tenant": "default"}
+    config = {
+        "dsn": "postgresql://example/db",
+        "tenant": "default",
+        "project_root": str(Path.cwd().resolve()),
+    }
     config.update(overrides)
     (root / "recall-hook.json").write_text(
         json.dumps(config) + "\n", encoding="utf-8", newline="\n"
@@ -40,7 +44,34 @@ HIT = [("python-write-text-crlf-churn.md", "pass newline='\\n' to write_text", 0
 
 
 def payload(tool: str = "Write", **tool_input) -> dict:
-    return {"tool_name": tool, "tool_input": tool_input or {"content": "x" * 200}}
+    return {
+        "tool_name": tool,
+        "tool_input": tool_input or {"content": "x" * 200},
+        "cwd": str(Path.cwd().resolve()),
+    }
+
+
+def test_write_time_is_scoped_to_the_installed_project(hook_env, monkeypatch, capsys):
+    write_config(hook_env)
+    calls: list[int] = []
+    monkeypatch.setattr(write_time, "search", lambda *a, **k: calls.append(1) or HIT)
+    event = {**payload(), "cwd": str(hook_env / "another-project")}
+    assert write_time.pre_tool_use(event) == 0
+    assert calls == []
+    assert capsys.readouterr().out == ""
+
+
+def test_legacy_unscoped_config_fails_closed(hook_env, monkeypatch, capsys):
+    write_config(hook_env)
+    config_path = hook_env / "recall-hook.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.pop("project_root")
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    calls: list[int] = []
+    monkeypatch.setattr(write_time, "search", lambda *a, **k: calls.append(1) or HIT)
+    assert write_time.pre_tool_use(payload()) == 0
+    assert calls == []
+    assert capsys.readouterr().out == ""
 
 
 def test_it_can_never_deny_a_tool_call(hook_env, monkeypatch, capsys):
@@ -163,6 +194,13 @@ def test_relay_mode_uses_the_session_id_and_preserves_the_hook_contract(hook_env
 
 def test_relay_mode_without_a_session_id_falls_back_to_cold_search(hook_env, monkeypatch, capsys):
     write_config(hook_env, write_time={"enabled": True, "connection_mode": "relay"})
+    monkeypatch.setattr(write_time, "search", lambda *a, **k: HIT)
+    assert write_time.pre_tool_use(payload()) == 0
+    assert "additionalContext" in capsys.readouterr().out
+
+
+def test_malformed_connection_mode_falls_back_without_raising(hook_env, monkeypatch, capsys):
+    write_config(hook_env, write_time={"enabled": True, "connection_mode": []})
     monkeypatch.setattr(write_time, "search", lambda *a, **k: HIT)
     assert write_time.pre_tool_use(payload()) == 0
     assert "additionalContext" in capsys.readouterr().out
