@@ -6,6 +6,7 @@ from recall.semantic_graph import build_semantic_graph
 from recall.trust_policy import TrustPolicy
 from recall.types import Chunk, Provenance, StalenessReport, TrustedHit, TrustedResult, Validity
 from recall_mcp import service
+from scripts.summarize_graph_first_batch import _hits
 
 
 NOW = datetime(2026, 8, 28, tzinfo=UTC)
@@ -136,3 +137,16 @@ def test_graph_first_fails_closed_on_generation_mismatch(monkeypatch):
     assert response["status"] == "refused"
     assert response["refusal_reason"] == "generation_mismatch"
     assert not called
+
+
+def test_graph_first_summary_scores_direct_baseline_retrieval():
+    payload = {
+        "hits": [
+            {
+                "source": "file:///memory/governing-memo.md",
+                "verdict": "ok",
+            }
+        ]
+    }
+
+    assert _hits(payload) == {"file:///memory/governing-memo.md"}

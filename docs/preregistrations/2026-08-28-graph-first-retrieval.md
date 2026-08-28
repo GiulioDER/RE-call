@@ -86,8 +86,8 @@ retrieval contract or adding pre-retrieval graph evidence.
 SHA256 digests, recorded immediately after scoring:
 
 * entity raw: `653da4cb5379bcf7ac0264ef85b97dca07630c4b59c24b5aed1e212ae0b9402c`;
-* entity summary: `ef20241306cd09e8837cd5c3f92de8450a43442d996db0e92a3e05b12617560`;
+* entity summary: `9d5325178d345c73c1f467f1fdb92fe8ec8d9fd08adb722ce7d632020d80628e`;
 * relation raw: `5f6c0ead4f729328964d45d9d0a91cc05b9e2e39f3cfb1e7bc661d13ceccec0`;
-* relation summary: `b06740a0e156758a6ba2c5ad56dc766c000ac436002ec9c3fd14892dd312567e`;
+* relation summary: `67b8a248511b18298900102c55b375024a3242a6041c9acba2b4fbbb7471bcb8`;
 * hybrid raw: `e7f71e1ba0ffc48e63570104780919a2248080fc0de521b02be5886bf71d448d`;
-* hybrid summary: `bd431e7afa0e0a2415fc75231d62651adbffcd4651e33f86ba84689ebc9315c4`.
+* hybrid summary: `4fe729b67fd9629c37ce48328a1a17a0febde9207067f5c8e9e26e3467b35ed3`.

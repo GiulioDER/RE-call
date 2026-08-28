@@ -15,6 +15,8 @@ def _hits(payload: object) -> set[str]:
     if not isinstance(payload, dict):
         return set()
     retrieval = payload.get("retrieval")
+    if not isinstance(retrieval, dict) and isinstance(payload.get("hits"), list):
+        retrieval = payload
     if not isinstance(retrieval, dict):
         return set()
     hits = retrieval.get("hits")
