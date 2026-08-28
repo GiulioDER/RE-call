@@ -905,7 +905,12 @@ def _make_lifespan(
             if store is not None:
                 store.check_schema()
                 if pinned_generation_id is not None:
-                    store.set_fixed_generation(pinned_generation_id)
+                    set_fixed_generation = getattr(store, "set_fixed_generation", None)
+                    if not callable(set_fixed_generation):
+                        raise RuntimeError(
+                            "RECALL_PINNED_GENERATION_ID requires a generation-mode store"
+                        )
+                    set_fixed_generation(pinned_generation_id)
                     _log.warning(
                         "benchmark generation pin enabled: tenant=%s generation=%s",
                         TENANT,
