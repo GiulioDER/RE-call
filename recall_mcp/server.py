@@ -1434,6 +1434,7 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         expected_generation_id: str | None = None,
         graph_expansion: str = "off",
         max_graph_nodes: int = 32,
+        challenge_marker: str | None = None,
     ) -> str:
         """Run one bounded query-construction phase over trusted retrieval.
 
@@ -1459,6 +1460,7 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                         expected_generation_id=expected_generation_id,
                         graph_expansion=graph_expansion.replace("-", "_"),
                         max_graph_nodes=max_graph_nodes,
+                        challenge_marker=challenge_marker,
                         policy=TRUST_POLICY,
                     ),
                     indent=2,

@@ -3685,6 +3685,7 @@ def query_construction_challenge(
     expected_generation_id: str | None = None,
     graph_expansion: str = "off",
     max_graph_nodes: int = 32,
+    challenge_marker: str | None = None,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
 ) -> dict[str, object]:
@@ -3743,6 +3744,7 @@ def query_construction_challenge(
         graph_anchors=_query_construction_anchors(baseline),
         gap_reason=baseline.reason or "retrieval_gap",
         round_index=round_index,
+        challenge_marker=challenge_marker,
     )
 
     if frame is None:
@@ -3821,6 +3823,7 @@ def query_construction_challenge(
             gap_reason=baseline.reason or "retrieval_gap",
             round_index=round_index,
             max_candidates=MAX_QUERY_CANDIDATES,
+            challenge_marker=challenge_marker,
         ),
         proposals,
     )
@@ -3931,6 +3934,7 @@ def query_construction_challenge(
             graph_anchors=_query_construction_anchors(graph_result),
             gap_reason=graph_result.reason or "retrieval_gap",
             round_index=round_index + 1,
+            challenge_marker=challenge_marker,
         )
         response["next_challenge_prompt"] = build_original_model_challenge(
             followup_request

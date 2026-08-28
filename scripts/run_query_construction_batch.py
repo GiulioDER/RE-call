@@ -305,6 +305,7 @@ async def _run_arm(
             "arm": arm,
             "round_index": 0,
             "graph_expansion": graph_expansion,
+            **({"challenge_marker": challenge_marker} if challenge_marker else {}),
             **({"expected_generation_id": expected_generation_id} if expected_generation_id else {}),
         },
     )
@@ -386,6 +387,7 @@ async def _run_arm(
                     else None
                 ),
                 "graph_expansion": graph_expansion,
+                **({"challenge_marker": challenge_marker} if challenge_marker else {}),
             },
         )
         payload = await _tool_payload(continuation)
