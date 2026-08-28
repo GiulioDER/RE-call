@@ -39,6 +39,17 @@ PlannerOperation = Literal[
 ]
 EvidenceDecisionKind = Literal["accepted", "rejected"]
 
+#: Diagnostic kinds that make a node too ambiguous to accept as evidence.
+_BLOCKING_DIAGNOSTIC_KINDS = frozenset(
+    {
+        "unresolved_reference",
+        "ambiguous_reference",
+        "cycle",
+        "duplicate_entity_candidate",
+        "malformed_metadata",
+    }
+)
+
 
 @dataclass(frozen=True)
 class ReasoningBudget:
@@ -108,8 +119,11 @@ class EvidenceDecision:
 class ExpansionStep:
     """One bounded graph operation.
 
-    `input_node_ids` and `accepted_node_ids` are accepted chunk evidence node ids. `output_node_ids`
-    may include bounded candidate ids considered for traceability without making them evidence.
+    `input_node_ids` and `accepted_node_ids` are accepted chunk evidence node ids.
+    `output_node_ids` is operation specific: authored edge ids for
+    `follow_authored_relationships`, the node ids still accepted after the check for
+    `check_temporal_consistency`, and otherwise bounded candidate node ids considered for
+    traceability without making them evidence.
     """
 
     step_index: int
@@ -225,6 +239,9 @@ class _PlannerIndexes:
     cycle_files_by_diagnostic_id: Mapping[str, frozenset[str]]
     proposals_by_file: Mapping[str, tuple[InferenceProposal, ...]]
     contradiction_proposals_by_evidence: Mapping[str, tuple[InferenceProposal, ...]]
+    blocking_diagnostic_node_ids: frozenset[str]
+    blocking_diagnostic_references: frozenset[str]
+    blocking_cycle_files: frozenset[str]
 
 
 def plan_multi_hop_evidence(
@@ -384,6 +401,20 @@ def _build_indexes(
                 files.add(cycle_edge.to_file)
         cycle_files_by_diagnostic_id[diagnostic.id] = frozenset(files)
 
+    blocking_node_ids: set[str] = set()
+    blocking_references: set[str] = set()
+    blocking_cycle_files: set[str] = set()
+    for diagnostic in graph.diagnostics:
+        if diagnostic.kind not in _BLOCKING_DIAGNOSTIC_KINDS:
+            continue
+        blocking_node_ids.update(diagnostic.node_ids)
+        if diagnostic.reference is not None:
+            blocking_references.add(diagnostic.reference)
+        if diagnostic.kind == "cycle":
+            blocking_cycle_files.update(
+                cycle_files_by_diagnostic_id.get(diagnostic.id, frozenset())
+            )
+
     proposals_by_file: dict[str, list[InferenceProposal]] = {}
     contradiction_by_evidence: dict[str, list[InferenceProposal]] = {}
     for proposal in proposals:
@@ -426,6 +457,9 @@ def _build_indexes(
             evidence_id: tuple(proposals_for_evidence)
             for evidence_id, proposals_for_evidence in contradiction_by_evidence.items()
         },
+        blocking_diagnostic_node_ids=frozenset(blocking_node_ids),
+        blocking_diagnostic_references=frozenset(blocking_references),
+        blocking_cycle_files=frozenset(blocking_cycle_files),
     )
 
 
@@ -449,7 +483,7 @@ def _seed_initial_evidence(
             _fail_closed(state, "ambiguous_evidence", "initial evidence resolves to multiple nodes")
             return
         node = matches[0]
-        if _diagnostic_blocks_node(state.graph, node, indexes):
+        if _diagnostic_blocks_node(node, indexes):
             _reject_node(state, node, "graph diagnostic makes initial evidence ambiguous")
             _fail_closed(state, "ambiguous_evidence", "graph diagnostic blocks initial evidence")
             return
@@ -602,7 +636,7 @@ def _search_missing_intermediate_evidence(
 def _check_temporal_consistency(state: _PlannerState) -> None:
     input_ids = tuple(sorted(state.frontier))
     rejected: list[str] = []
-    for node in state.accepted.values():
+    for node in list(state.accepted.values()):
         valid_from = node.validity.get("valid_from")
         valid_until = node.validity.get("valid_until")
         if (
@@ -612,6 +646,12 @@ def _check_temporal_consistency(state: _PlannerState) -> None:
         ):
             rejected.append(node.id)
             _reject_node(state, node, "valid_from is later than valid_until")
+            # A rejected node must not stay accepted: leaving it in `state.accepted` put the
+            # same chunk in both evidence_accepted and evidence_rejected and kept charging
+            # its node and token counts to budget_used.
+            del state.accepted[node.id]
+            state.frontier.discard(node.id)
+            state.evidence_tokens -= _node_tokens(node)
     if rejected:
         _fail_closed(state, "unsupported_evidence", "accepted evidence is temporally inconsistent")
     _record_step(
@@ -668,7 +708,7 @@ def _accept_candidates(
     for node in sorted(nodes, key=lambda item: item.id):
         if node.id in state.accepted:
             continue
-        if _diagnostic_blocks_node(state.graph, node, indexes):
+        if _diagnostic_blocks_node(node, indexes):
             _reject_node(state, node, "graph diagnostic makes this evidence ambiguous")
             rejected.append(node.id)
             _fail_closed(state, "ambiguous_evidence", "graph diagnostic blocks expansion")
@@ -686,16 +726,17 @@ def _accept_candidates(
 def _bounded_nodes(
     state: _PlannerState, candidates: Iterable[ReasoningGraphNode]
 ) -> _BoundedNodes:
+    # Materialized once so the overflow probes below read a stable list instead of relying on
+    # single pass generator semantics; bounded candidate sets are small by construction.
+    materialized = list(candidates)
     remaining_nodes = state.remaining_node_budget
     remaining_tokens = state.remaining_token_budget
     if remaining_nodes <= 0 or remaining_tokens <= 0:
-        for _node in candidates:
-            return _BoundedNodes((), True)
-        return _BoundedNodes((), False)
+        return _BoundedNodes((), bool(materialized))
     bounded: list[ReasoningGraphNode] = []
     seen: set[str] = set()
     overflowed = False
-    for node in candidates:
+    for node in materialized:
         if node.id in seen:
             continue
         tokens = _node_tokens(node)
@@ -707,7 +748,10 @@ def _bounded_nodes(
         remaining_nodes -= 1
         remaining_tokens -= tokens
         if remaining_nodes <= 0 or remaining_tokens <= 0:
-            overflowed = any(candidate.id not in seen for candidate in candidates)
+            # Every already visited candidate has its id in `seen` (duplicates are skipped
+            # precisely because their id is present), so scanning the whole list here reports
+            # exactly whether any candidate beyond the budget was left behind.
+            overflowed = any(candidate.id not in seen for candidate in materialized)
             break
     return _BoundedNodes(tuple(bounded), overflowed)
 
@@ -846,32 +890,18 @@ def _record_proposal(
     )
 
 
-def _diagnostic_blocks_node(
-    graph: ReasoningGraphProjection, node: ReasoningGraphNode, indexes: _PlannerIndexes
-) -> bool:
-    blocking = {
-        "unresolved_reference",
-        "ambiguous_reference",
-        "cycle",
-        "duplicate_entity_candidate",
-        "malformed_metadata",
-    }
-    for diagnostic in graph.diagnostics:
-        if diagnostic.kind not in blocking:
-            continue
-        if node.id in diagnostic.node_ids:
-            return True
-        if node.file is not None and diagnostic.reference == supersedes_key(node.file):
-            return True
-        if node.file is not None and diagnostic.reference == node.file:
-            return True
-        if (
-            diagnostic.kind == "cycle"
-            and node.file is not None
-            and node.file in indexes.cycle_files_by_diagnostic_id.get(diagnostic.id, frozenset())
-        ):
-            return True
-    return False
+def _diagnostic_blocks_node(node: ReasoningGraphNode, indexes: _PlannerIndexes) -> bool:
+    # Pure set lookups against unions precomputed in _build_indexes: scanning every diagnostic
+    # per candidate, and recomputing supersedes_key inside that scan, was the planner hot path.
+    if node.id in indexes.blocking_diagnostic_node_ids:
+        return True
+    if node.file is None:
+        return False
+    return (
+        node.file in indexes.blocking_diagnostic_references
+        or supersedes_key(node.file) in indexes.blocking_diagnostic_references
+        or node.file in indexes.blocking_cycle_files
+    )
 
 
 def _budget_allows(state: _PlannerState) -> bool:

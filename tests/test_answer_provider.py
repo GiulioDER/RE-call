@@ -14,11 +14,34 @@ from recall.answer_provider import resolve_answer_provider
 
 
 def _enabled(**extra: str) -> dict[str, str]:
-    return {"RECALL_REASONING_ANSWER_ENABLED": "1", **extra}
+    # The model is supplied here because enabling the provider REQUIRES an explicit model,
+    # matching the expansion resolver; there is no default model any more.
+    return {
+        "RECALL_REASONING_ANSWER_ENABLED": "1",
+        "RECALL_REASONING_ANSWER_MODEL": "qwen3:4b",
+        **extra,
+    }
 
 
 def test_answer_provider_is_off_by_default() -> None:
     assert resolve_answer_provider({}) is None
+
+
+def test_enabling_without_a_model_raises_naming_the_variable() -> None:
+    """No silent default: the expansion resolver requires its model explicitly, and an answer
+    model nobody chose is not a safer thing to fall back to."""
+    with pytest.raises(ValueError, match="RECALL_REASONING_ANSWER_MODEL"):
+        resolve_answer_provider({"RECALL_REASONING_ANSWER_ENABLED": "1"})
+
+
+def test_a_whitespace_only_model_is_not_a_model() -> None:
+    with pytest.raises(ValueError, match="RECALL_REASONING_ANSWER_MODEL"):
+        resolve_answer_provider(
+            {
+                "RECALL_REASONING_ANSWER_ENABLED": "1",
+                "RECALL_REASONING_ANSWER_MODEL": "   ",
+            }
+        )
 
 
 def test_a_typo_in_the_thinking_flag_raises_instead_of_reading_false() -> None:

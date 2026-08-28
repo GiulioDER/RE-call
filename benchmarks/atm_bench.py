@@ -375,7 +375,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             }
 
     manifest_paths = [args.qa_file, args.image_file, args.video_file, args.email_file]
-    reasoning_enabled = os.environ.get("RECALL_REASONING", "").strip().lower() in {
+    # Stamp the keys the serving runtime actually reads (resolve_expansion_provider in
+    # recall/reasoning_expansion.py); the bare RECALL_REASONING family was documented but
+    # read by nothing, and was retired from .env.example and the setup interview.
+    reasoning_enabled = os.environ.get("RECALL_REASONING_EXPANSION", "").strip().lower() in {
         "1", "true", "yes", "on"
     }
     return {
@@ -400,9 +403,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "judge": {"used": False, "model": None, "reasoning_effort": None},
         "reasoning": {
             "enabled": reasoning_enabled,
-            "model": os.environ.get("RECALL_REASONING_MODEL") if reasoning_enabled else None,
-            "base_url": os.environ.get("RECALL_REASONING_BASE_URL") if reasoning_enabled else None,
-            "requested_effort": os.environ.get("RECALL_REASONING_EFFORT") if reasoning_enabled else None,
+            "model": os.environ.get("RECALL_REASONING_EXPANSION_MODEL") if reasoning_enabled else None,
+            "base_url": (
+                os.environ.get("RECALL_REASONING_EXPANSION_BASE_URL")
+                or os.environ.get("RECALL_REASONING_BASE_URL")
+            )
+            if reasoning_enabled
+            else None,
+            "requested_effort": os.environ.get("RECALL_REASONING_EXPANSION_EFFORT")
+            if reasoning_enabled
+            else None,
             "effective_effort": None,
             "wired_into_runner": False,
         },

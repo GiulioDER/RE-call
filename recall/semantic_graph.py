@@ -13,12 +13,12 @@ from dataclasses import dataclass, field, replace
 import math
 import posixpath
 import re
-from types import MappingProxyType
 import unicodedata
 from typing import Any, Literal, Protocol
 
 from psycopg.types.json import Jsonb
 
+from recall._frozen import freeze_value as _freeze
 from recall.lineage import canonical_sha256
 from recall.types import Chunk
 
@@ -72,21 +72,6 @@ def normalize_entity_name(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).casefold()
     normalized = re.sub(r"[^\w]+", " ", normalized, flags=re.UNICODE)
     return " ".join(normalized.split())
-
-
-def _freeze(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {
-                key: _freeze(item)
-                for key, item in sorted(value.items(), key=lambda item: str(item[0]))
-            }
-        )
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return tuple(_freeze(item) for item in value)
-    if isinstance(value, (set, frozenset)):
-        return tuple(sorted((_freeze(item) for item in value), key=repr))
-    return value
 
 
 def _thaw(value: Any) -> Any:
@@ -243,6 +228,19 @@ class SemanticGraphStore(Protocol):
 
 def write_semantic_graph(conn: Any, graph: SemanticGraphProjection) -> None:
     """Replace one generation's graph rows inside the caller's transaction."""
+    # The delete below is scoped by the graph's own tenant and generation, so every member
+    # must carry that same identity: a foreign member would otherwise be written into a
+    # scope the delete never clears, and survive the next rebuild.
+    for member_kind, members in (
+        ("entity", graph.entities),
+        ("mention", graph.mentions),
+        ("relation", graph.relations),
+    ):
+        for member in members:
+            if member.tenant_id != graph.tenant_id:
+                raise ValueError(f"{member_kind} {member.id} tenant_id does not match graph")
+            if member.generation_id != graph.generation_id:
+                raise ValueError(f"{member_kind} {member.id} generation_id does not match graph")
     conn.execute(
         "DELETE FROM recall_graph_entities_v1 WHERE tenant_id = %s AND generation_id = %s",
         (graph.tenant_id, graph.generation_id),
@@ -254,8 +252,8 @@ def write_semantic_graph(conn: Any, graph: SemanticGraphProjection) -> None:
             "aliases, extraction_method, confidence, metadata) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             [
                 (
-                    entity.tenant_id,
-                    entity.generation_id,
+                    graph.tenant_id,
+                    graph.generation_id,
                     entity.id,
                     entity.canonical_name,
                     entity.normalized_name,
@@ -275,8 +273,8 @@ def write_semantic_graph(conn: Any, graph: SemanticGraphProjection) -> None:
             "extraction_method, confidence, metadata) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             [
                 (
-                    mention.tenant_id,
-                    mention.generation_id,
+                    graph.tenant_id,
+                    graph.generation_id,
                     mention.id,
                     mention.entity_id,
                     mention.chunk_id,
@@ -295,8 +293,8 @@ def write_semantic_graph(conn: Any, graph: SemanticGraphProjection) -> None:
             "corpus_fingerprint, metadata) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             [
                 (
-                    relation.tenant_id,
-                    relation.generation_id,
+                    graph.tenant_id,
+                    graph.generation_id,
                     relation.id,
                     relation.subject_id,
                     relation.object_id,
@@ -399,25 +397,56 @@ def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> Semant
         )
         for row in mention_rows
     )
-    relations = tuple(
-        SemanticRelation(
-            id=str(row[0]),
-            tenant_id=tenant_id,
-            generation_id=generation_id,
-            subject_id=str(row[1]),
-            object_id=str(row[2]),
-            relation=row[3],
-            evidence_chunk_ids=tuple(str(item) for item in (row[11] or ()) if item is not None),
-            extraction_method=row[4],
-            confidence=float(row[5]),
-            status=row[6],
-            uncertainty=tuple(row[7] or ()),
-            pipeline_fingerprint=str(row[8]) if row[8] else None,
-            corpus_fingerprint=str(row[9]) if row[9] else None,
-            metadata=row[10] or {},
+    loaded_relations: list[SemanticRelation] = []
+    load_diagnostics: list[SemanticGraphDiagnostic] = []
+    for row in relation_rows:
+        evidence_chunk_ids = tuple(str(item) for item in (row[11] or ()) if item is not None)
+        if not evidence_chunk_ids:
+            # A relation whose evidence rows are gone cannot satisfy the dataclass
+            # invariant (every relation points back to at least one chunk). Skipping it
+            # with a diagnostic keeps the rest of the generation loadable; raising here
+            # would abort every load of the generation over one orphaned row.
+            relation_id = str(row[0])
+            load_diagnostics.append(
+                SemanticGraphDiagnostic(
+                    id=_identity(
+                        "diagnostic",
+                        {
+                            "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                            "tenant_id": tenant_id,
+                            "generation_id": generation_id,
+                            "kind": "missing_evidence",
+                            "reference": relation_id,
+                        },
+                    ),
+                    tenant_id=tenant_id,
+                    generation_id=generation_id,
+                    kind="missing_evidence",
+                    reference=relation_id,
+                    message=f"relation {relation_id} has no surviving evidence rows",
+                    relation_ids=(relation_id,),
+                )
+            )
+            continue
+        loaded_relations.append(
+            SemanticRelation(
+                id=str(row[0]),
+                tenant_id=tenant_id,
+                generation_id=generation_id,
+                subject_id=str(row[1]),
+                object_id=str(row[2]),
+                relation=row[3],
+                evidence_chunk_ids=evidence_chunk_ids,
+                extraction_method=row[4],
+                confidence=float(row[5]),
+                status=row[6],
+                uncertainty=tuple(row[7] or ()),
+                pipeline_fingerprint=str(row[8]) if row[8] else None,
+                corpus_fingerprint=str(row[9]) if row[9] else None,
+                metadata=row[10] or {},
+            )
         )
-        for row in relation_rows
-    )
+    relations = tuple(loaded_relations)
     diagnostics = tuple(
         SemanticGraphDiagnostic(
             id=str(item["id"]),
@@ -471,7 +500,9 @@ def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> Semant
         entities=entities,
         mentions=mentions,
         relations=relations,
-        diagnostics=tuple(sorted(diagnostics, key=lambda diagnostic: diagnostic.id)),
+        diagnostics=tuple(
+            sorted((*diagnostics, *load_diagnostics), key=lambda diagnostic: diagnostic.id)
+        ),
     )
 
 
@@ -586,6 +617,11 @@ def build_semantic_graph(
     """Build a deterministic graph from explicit metadata and conservative headings."""
     ordered_chunks = tuple(sorted(chunks, key=lambda chunk: chunk.id))
     entity_by_key: dict[tuple[str, EntityKind], SemanticEntity] = {}
+    # Secondary indexes over entity_by_key, maintained at entity creation so both alias
+    # lookups below stay O(1). Keys are appended in creation order, which is exactly the
+    # insertion order a linear scan of entity_by_key would have observed.
+    entity_keys_by_name: dict[str, list[tuple[str, EntityKind]]] = defaultdict(list)
+    entity_key_by_id: dict[str, tuple[str, EntityKind]] = {}
     labels_by_key: dict[str, set[EntityKind]] = defaultdict(set)
     mentions: list[SemanticMention] = []
     diagnostics: list[SemanticGraphDiagnostic] = []
@@ -621,17 +657,22 @@ def build_semantic_graph(
                 extraction_method=method,
             )
             entity_by_key[key] = entity
+            entity_keys_by_name[normalized].append(key)
+            entity_key_by_id[entity.id] = key
         elif label not in entity.aliases:
             entity = replace(entity, aliases=(*entity.aliases, label))
             entity_by_key[key] = entity
         return entity
 
+    # Each chunk's entity specs are needed by two passes below; splitting text and matching
+    # headings per line is expensive enough that it should happen once per chunk, not twice.
+    specs_per_chunk = [_entity_specs(chunk) for chunk in ordered_chunks]
     entity_ids_by_chunk: dict[str, dict[str, SemanticEntity]] = {}
     file_entities_by_source: dict[str, set[str]] = defaultdict(set)
     mention_ids: set[str] = set()
-    for chunk in ordered_chunks:
+    for chunk, chunk_specs in zip(ordered_chunks, specs_per_chunk, strict=True):
         by_normalized: dict[str, SemanticEntity] = {}
-        for label, kind, method in _entity_specs(chunk):
+        for label, kind, method in chunk_specs:
             normalized = normalize_entity_name(label)
             if not normalized:
                 continue
@@ -649,9 +690,7 @@ def build_semantic_graph(
         for canonical, alias in _chunk_alias_specs(chunk):
             canonical_key = normalize_entity_name(canonical)
             candidates = [
-                entity
-                for (normalized, _kind), entity in entity_by_key.items()
-                if normalized == canonical_key
+                entity_by_key[key] for key in entity_keys_by_name.get(canonical_key, [])
             ]
             if not candidates:
                 candidates = [get_entity(canonical, "unknown", "metadata")]
@@ -710,15 +749,15 @@ def build_semantic_graph(
             )
         )
 
-    for chunk in ordered_chunks:
+    for chunk, chunk_specs in zip(ordered_chunks, specs_per_chunk, strict=True):
         by_normalized = entity_ids_by_chunk[chunk.id]
-        for label, kind, method in _entity_specs(chunk):
+        for label, kind, method in chunk_specs:
             normalized = normalize_entity_name(label)
             resolved_entity: SemanticEntity | None
             if normalized in alias_candidates and normalized not in ambiguous_names:
-                resolved_entity = next(
-                    entity for entity in entity_by_key.values() if entity.id == next(iter(alias_candidates[normalized]))
-                )
+                resolved_entity = entity_by_key[
+                    entity_key_by_id[next(iter(alias_candidates[normalized]))]
+                ]
                 by_normalized[normalized] = resolved_entity
             else:
                 resolved_entity = by_normalized.get(normalized)

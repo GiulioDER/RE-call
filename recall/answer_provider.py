@@ -114,7 +114,13 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> OllamaAnswe
         return None
     if enabled not in {"1", "true", "yes", "on"}:
         raise ValueError("RECALL_REASONING_ANSWER_ENABLED must be an explicit boolean")
-    model = source.get("RECALL_REASONING_ANSWER_MODEL", "qwen3:4b").strip()
+    # Required rather than defaulted, matching the expansion resolver: a silent model default
+    # means enabling the provider quietly selects a model nobody chose.
+    model = source.get("RECALL_REASONING_ANSWER_MODEL", "").strip()
+    if not model:
+        raise ValueError(
+            "RECALL_REASONING_ANSWER_MODEL is required when the answer provider is enabled"
+        )
     base_url = source.get(
         "RECALL_REASONING_ANSWER_BASE_URL", "http://127.0.0.1:11434/v1"
     ).strip()

@@ -8,6 +8,7 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, get_args
 
+from recall._frozen import freeze_value as _freeze_value
 from recall.reasoning_graph import ReasoningGraphNode, ReasoningGraphProjection
 
 #: Version 2 adds `declares_validity` and `declares_status` to `ProposedRelation`. Every
@@ -52,21 +53,6 @@ PROVIDER_FAILURE_KINDS: tuple[ProviderFailureKind, ...] = (
     "wrong_cardinality",
     "provider_error",
 )
-
-
-def _freeze_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {
-                key: _freeze_value(item)
-                for key, item in sorted(value.items(), key=lambda entry: str(entry[0]))
-            }
-        )
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return tuple(_freeze_value(item) for item in value)
-    if isinstance(value, (set, frozenset)):
-        return tuple(sorted((_freeze_value(item) for item in value), key=repr))
-    return value
 
 
 @dataclass(frozen=True)

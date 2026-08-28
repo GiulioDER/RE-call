@@ -204,7 +204,9 @@ def test_an_empty_timeout_falls_back_to_the_default() -> None:
 
 
 def test_a_malformed_timeout_names_the_variable() -> None:
-    with pytest.raises(ValueError, match="RECALL_REASONING_TIMEOUT"):
+    # The error names the PREFERRED spelling even when the value arrived through the legacy
+    # shared name, because that is the variable an operator should set going forward.
+    with pytest.raises(ValueError, match="RECALL_REASONING_EXPANSION_TIMEOUT"):
         resolve_expansion_provider(
             {
                 "RECALL_REASONING_EXPANSION": "1",
@@ -244,3 +246,60 @@ def test_expansion_provider_rejects_invalid_runtime_settings() -> None:
 def test_expansion_request_rejects_unbounded_query_budget() -> None:
     with pytest.raises(ValueError, match="must not exceed 3"):
         ExpansionRequest(**{**_request().__dict__, "max_queries": 4})
+
+
+def test_the_expansion_infixed_names_take_precedence_over_the_shared_legacy_names() -> None:
+    """The bare RECALL_REASONING_* names are shared with the setup interview's generic arm, so
+    the _EXPANSION_ infixed spellings must win whenever both are set."""
+    provider = resolve_expansion_provider(
+        {
+            "RECALL_REASONING_EXPANSION": "1",
+            "RECALL_REASONING_EXPANSION_MODEL": "cheap/test-model",
+            "RECALL_REASONING_EXPANSION_API_KEY": "expansion-key",
+            "RECALL_REASONING_API_KEY": "generic-key",
+            "RECALL_REASONING_EXPANSION_TIMEOUT": "7",
+            "RECALL_REASONING_TIMEOUT": "99",
+            "RECALL_REASONING_EXPANSION_BASE_URL": "https://expansion.example/v1",
+            "RECALL_REASONING_BASE_URL": "https://generic.example/v1",
+        }
+    )
+    assert provider is not None
+    assert provider.client.timeout == 7.0
+    assert provider.client.api_key == "expansion-key"
+    assert str(provider.client.base_url).startswith("https://expansion.example/v1")
+
+
+def test_the_legacy_shared_names_still_resolve_when_the_infixed_names_are_unset() -> None:
+    provider = resolve_expansion_provider(
+        {
+            "RECALL_REASONING_EXPANSION": "1",
+            "RECALL_REASONING_EXPANSION_MODEL": "cheap/test-model",
+            "RECALL_REASONING_API_KEY": "generic-key",
+            "RECALL_REASONING_TIMEOUT": "12",
+            "RECALL_REASONING_BASE_URL": "https://generic.example/v1",
+        }
+    )
+    assert provider is not None
+    assert provider.client.timeout == 12.0
+    assert provider.client.api_key == "generic-key"
+    assert str(provider.client.base_url).startswith("https://generic.example/v1")
+
+
+def test_a_malformed_legacy_timeout_names_both_spellings() -> None:
+    """Naming only the preferred spelling points an operator at a variable they never set.
+
+    The sibling API-key message already names both, so this one does too: the preferred name
+    so the migration is visible, and the legacy name so the operator can find what they typed.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        resolve_expansion_provider(
+            {
+                "RECALL_REASONING_EXPANSION": "1",
+                "RECALL_REASONING_EXPANSION_MODEL": "cheap/test-model",
+                "RECALL_REASONING_API_KEY": "key",
+                "RECALL_REASONING_TIMEOUT": "soon",
+            }
+        )
+    message = str(excinfo.value)
+    assert "RECALL_REASONING_EXPANSION_TIMEOUT" in message
+    assert "legacy RECALL_REASONING_TIMEOUT" in message

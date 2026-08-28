@@ -1021,3 +1021,179 @@ def test_deserialization_round_trip_still_works_after_enum_checks() -> None:
     round_tripped = reasoning_response_from_dict(payload)
 
     assert round_tripped.to_dict() == payload
+
+
+def test_budget_zero_model_calls_keeps_depth_merged_evidence() -> None:
+    """BUG-004: the depth round costs zero model calls, so a zero model call budget skips only
+    the model round and must not discard the depth-merged evidence."""
+    first = _chunk("first", "first.md", "The first document is incomplete.")
+    second = _chunk("second", "second.md", "The second document contains the owner: Ada.")
+
+    def expansion_provider(_request):
+        raise AssertionError("the model round must not run with max_model_calls=0")
+
+    response = reason(
+        _request(
+            _result(_hit(first), gap_warning=True),
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            budget=ReasoningBudget(max_model_calls=0),
+            expansion_provider=expansion_provider,
+            expansion_retriever=lambda *_args: _result(_hit(second), gap_warning=True),
+            answer=lambda _system, _user: {
+                "answer": "Ada owns the project.",
+                "citations": ["second"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    assert response.outcome == "answered"
+    assert [item.chunk_id for item in response.trusted_evidence.items] == ["first", "second"]
+    trace = response.diagnostics.retrieval_expansion
+    assert trace is not None
+    assert trace.fallback_reason == "budget_exhausted"
+    assert trace.accepted_chunk_ids == ("second",)
+    assert trace.rounds == 1
+
+
+def test_answer_provider_error_returns_abstained_response_not_exception() -> None:
+    """BUG-009: an answer provider crash is converted to an in-band ProviderFailure exactly
+    like every other provider port, instead of crashing reason()."""
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+
+    def answer(_system: str, _user: str):
+        raise RuntimeError("socket reset")
+
+    response = reason(_request(_result(_hit(chunk)), answer=answer))
+
+    assert response.outcome == "abstained"
+    assert response.refusal_reason == "provider_failure"
+    assert response.answer is None
+    assert response.provider_failures[-1].kind == "provider_error"
+    assert response.provider_failures[-1].message == "RuntimeError"
+    assert response.diagnostics.generator_invoked is True
+
+
+def test_answer_provider_timeout_is_reported_as_timeout_failure() -> None:
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+
+    def answer(_system: str, _user: str):
+        raise TimeoutError("provider deadline")
+
+    response = reason(_request(_result(_hit(chunk)), answer=answer))
+
+    assert response.outcome == "abstained"
+    assert response.provider_failures[-1].kind == "timeout"
+    assert response.provider_failures[-1].message == "TimeoutError"
+
+
+def test_missing_expansion_retriever_reports_its_own_reason_and_zero_rounds() -> None:
+    """DOC-006 and NUM-005: the retriever-is-None branch names the missing retriever rather
+    than the provider, and no retrieval round ran."""
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+
+    response = reason(
+        _request(
+            _result(_hit(chunk)),
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            answer=lambda _system, _user: {
+                "answer": "Ada owns rollout.",
+                "citations": ["c1"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    trace = response.diagnostics.retrieval_expansion
+    assert trace is not None
+    assert trace.attempted is False
+    assert trace.rounds == 0
+    assert trace.fallback_reason == "expansion_retriever_unavailable"
+    assert response.provider_failures[0].message == "expansion_retriever_unavailable"
+
+
+def test_missing_expansion_provider_still_reports_provider_reason() -> None:
+    """DOC-006: the provider-is-None branch keeps its original reason."""
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+
+    response = reason(
+        _request(
+            _result(_hit(chunk)),
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            expansion_retriever=lambda *_args: _result(_hit(chunk)),
+            answer=lambda _system, _user: {
+                "answer": "Ada owns rollout.",
+                "citations": ["c1"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    trace = response.diagnostics.retrieval_expansion
+    assert trace is not None
+    assert trace.rounds == 0
+    assert trace.fallback_reason == "expansion_provider_unavailable"
+
+
+def test_depth_retrieval_failure_reports_one_executed_round() -> None:
+    """NUM-005: the depth round was issued and failed, so exactly one round executed."""
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+
+    def failing_retriever(*_args):
+        raise RuntimeError("depth store unavailable")
+
+    response = reason(
+        _request(
+            _result(_hit(chunk), gap_warning=True),
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            expansion_retriever=failing_retriever,
+            answer=lambda _system, _user: {
+                "answer": "Ada owns rollout.",
+                "citations": ["c1"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    trace = response.diagnostics.retrieval_expansion
+    assert trace is not None
+    assert trace.attempted is True
+    assert trace.rounds == 1
+    assert trace.fallback_reason == "depth_retrieval_failure"
+
+
+def test_full_expansion_with_depth_and_model_round_reports_two_rounds() -> None:
+    """NUM-005: rounds reaches 2 only when the model proposed round issued retrievals."""
+    first = _chunk("first", "first.md", "The first document is incomplete.")
+    second = _chunk("second", "second.md", "The second document names a follow up.")
+    third = _chunk("third", "third.md", "The third document contains the owner: Ada.")
+
+    def expansion_provider(_request):
+        return ExpansionReport(
+            proposals=(ExpansionProposal("rewrite_1", "rewrite", "owner of the project"),)
+        )
+
+    def expansion_retriever(_request, proposal, _initial):
+        if proposal.mode == "depth":
+            return _result(_hit(second), gap_warning=True)
+        return _result(_hit(third))
+
+    response = reason(
+        _request(
+            _result(_hit(first), gap_warning=True),
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            budget=ReasoningBudget(max_model_calls=1),
+            expansion_provider=expansion_provider,
+            expansion_retriever=expansion_retriever,
+            answer=lambda _system, _user: {
+                "answer": "Ada owns the project.",
+                "citations": ["third"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    trace = response.diagnostics.retrieval_expansion
+    assert trace is not None
+    assert trace.rounds == 2
+    assert response.outcome == "answered"

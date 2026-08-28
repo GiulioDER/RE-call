@@ -625,3 +625,183 @@ def test_load_semantic_graph_runs_all_reads_inside_one_transaction():
     assert len(conn.reads_in_transaction) == 4
     assert all(conn.reads_in_transaction), "every read must run inside one transaction"
     assert conn.in_transaction is False
+
+
+def test_a_relation_with_no_surviving_evidence_rows_loads_as_a_diagnostic():
+    # BUG-007 / DAT-004 regression: a relation row whose evidence rows are gone used to
+    # raise ValueError from SemanticRelation.__post_init__, aborting every load of the
+    # generation. It must instead be skipped and surfaced as a missing_evidence
+    # diagnostic naming the relation.
+    from recall.semantic_graph import load_semantic_graph
+
+    orphan_relation_row = (
+        "sg_relation_orphaned00000000",
+        "sg_entity_subject0000000000",
+        "sg_entity_object00000000000",
+        "references",
+        "explicit_reference",
+        1.0,
+        "authored",
+        [],
+        None,
+        None,
+        {},
+        [None],
+    )
+
+    class Result:
+        def __init__(self, one=None, rows=()):
+            self._one = one
+            self._rows = list(rows)
+
+        def fetchone(self):
+            return self._one
+
+        def fetchall(self):
+            return self._rows
+
+    class Transaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class Connection:
+        def __init__(self):
+            self._results = [
+                Result(one=None),
+                Result(rows=[]),
+                Result(rows=[]),
+                Result(rows=[orphan_relation_row]),
+            ]
+
+        def transaction(self):
+            return Transaction()
+
+        def execute(self, sql, params=None):
+            del sql, params
+            return self._results.pop(0)
+
+    graph = load_semantic_graph(Connection(), "tenant-a", "generation-a")
+
+    assert graph is not None
+    assert graph.relations == ()
+    assert len(graph.diagnostics) == 1
+    diagnostic = graph.diagnostics[0]
+    assert diagnostic.kind == "missing_evidence"
+    assert diagnostic.reference == "sg_relation_orphaned00000000"
+    assert diagnostic.relation_ids == ("sg_relation_orphaned00000000",)
+    assert "sg_relation_orphaned00000000" in diagnostic.message
+
+
+def test_write_semantic_graph_refuses_a_foreign_member_before_any_sql():
+    # SEC-003: the delete is scoped by the graph's tenant and generation, so a member
+    # carrying a different identity must be refused before any statement executes,
+    # never written into a scope the delete does not clear.
+    from recall.semantic_graph import (
+        SemanticEntity,
+        SemanticGraphProjection,
+        write_semantic_graph,
+    )
+
+    foreign_entity = SemanticEntity(
+        id="sg_entity_foreign0000000000",
+        tenant_id="tenant-b",
+        generation_id="generation-a",
+        canonical_name="Foreign",
+        normalized_name="foreign",
+        kind="concept",
+    )
+    graph = SemanticGraphProjection(
+        schema_version=1,
+        graph_id="sg_graph_test000000000000",
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint=None,
+        corpus_fingerprint=None,
+        entities=(foreign_entity,),
+        mentions=(),
+        relations=(),
+        diagnostics=(),
+    )
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=None):
+            self.calls.append(("execute", sql))
+
+        def cursor(self):
+            self.calls.append(("cursor", None))
+            raise AssertionError("no cursor may be opened for a refused graph")
+
+    conn = Connection()
+    with pytest.raises(ValueError, match="sg_entity_foreign0000000000"):
+        write_semantic_graph(conn, graph)
+    assert conn.calls == []
+
+
+def test_semantic_graph_identities_survive_the_audit_refactors_unchanged():
+    # Golden identities captured before the CODE-002 shared freeze helper and the
+    # PERF-002 / PERF-003 lookup changes (commit 3498a06c plus nothing). The fixture
+    # exercises aliases, explicit relations, headings and wikilinks, so any drift in
+    # alias resolution order or spec computation would move these hashes.
+    fixture = [
+        Chunk(
+            "s1",
+            "notes/alpha.md",
+            "# Alpha Heading\nSee [[beta.md]] for more.",
+            {
+                "file": "alpha.md",
+                "entities": ["Postgres", "The Service"],
+                "entity_aliases": {"Postgres": ["pg"]},
+            },
+        ),
+        Chunk(
+            "s2",
+            "notes/beta.md",
+            "# Beta Heading\npg is mentioned here.",
+            {
+                "file": "beta.md",
+                "entities": ["pg", "Voyage"],
+                "relations": [
+                    {"relation": "depends_on", "subject": "Voyage", "object": "pg"},
+                ],
+            },
+        ),
+        Chunk(
+            "s3",
+            "notes/gamma.md",
+            "plain text",
+            {
+                "file": "gamma.md",
+                "project": "RE-call",
+                "entity_aliases": {"RE-call": ["recall"]},
+            },
+        ),
+    ]
+
+    graph = build_semantic_graph(
+        fixture, tenant_id="tenant-golden", generation_id="gen-golden"
+    )
+
+    assert graph.graph_id == "sg_graph_8557ed71d9982b94cffc31fb"
+    assert graph.fingerprint == (
+        "0233068d84a58ef7b7fa44c9cd9bb2bd1fde7f84e252894fa47e181102cff3ff"
+    )
+    assert len(graph.mentions) == 13
+    assert len(graph.relations) == 2
+    assert graph.diagnostics == ()
+    assert [(entity.id, entity.aliases) for entity in graph.entities] == [
+        ("sg_entity_18a299ca63223c6b0eefe76d", ("The Service",)),
+        ("sg_entity_428b8a126ba596a106dfe529", ("Voyage",)),
+        ("sg_entity_624b4e12f30fd6e9d4b76403", ("gamma.md",)),
+        ("sg_entity_6456fcdb71440b3cf6da8178", ("RE-call", "recall")),
+        ("sg_entity_6b9a7a8e4cb23bf7ee86573d", ("Beta Heading",)),
+        ("sg_entity_85d3e429f80094b692628c0e", ("Alpha Heading",)),
+        ("sg_entity_ca9710fb867a3c74b6b8aecf", ("alpha.md",)),
+        ("sg_entity_d07e2d6665b60dbf07f5c2ae", ("Postgres", "pg")),
+        ("sg_entity_e927128a5cf8d0ec7d085ad1", ("beta.md",)),
+    ]

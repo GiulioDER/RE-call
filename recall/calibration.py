@@ -81,8 +81,16 @@ def separability(answerable: list[float], unanswerable: list[float]) -> float | 
     """
     if not answerable or not unanswerable:
         return None
-    wins = sum(1 for a in answerable for u in unanswerable if a > u)
-    ties = sum(1 for a in answerable for u in unanswerable if a == u)
+    # One pass over the cross product: a win and a tie are disjoint outcomes of the same pairwise
+    # comparison, so the second sweep doubled the work for identical integer counts.
+    wins = 0
+    ties = 0
+    for a in answerable:
+        for u in unanswerable:
+            if a > u:
+                wins += 1
+            elif a == u:
+                ties += 1
     return (wins + 0.5 * ties) / (len(answerable) * len(unanswerable))
 
 

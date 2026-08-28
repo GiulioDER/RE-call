@@ -24,6 +24,10 @@ MAX_RETRIEVAL_ROUNDS = 2
 MAX_EXPANSION_QUERY_CHARS = 2_000
 MAX_EXPANSION_EVIDENCE_ITEMS = 5
 MAX_EXPANSION_EVIDENCE_CHARS = 12_000
+#: Completion budget for one expansion call. The provider returns at most three short proposals
+#: as JSON, so 512 tokens is generous; named so the bound sits beside the other limits rather
+#: than as a bare literal inside the request.
+EXPANSION_MAX_COMPLETION_TOKENS = 512
 
 
 @dataclass(frozen=True)
@@ -178,7 +182,7 @@ class OpenAIExpansionProvider:
                     {"role": "user", "content": f"<retrieval_data>{user}</retrieval_data>"},
                 ],
                 temperature=0,
-                max_tokens=512,
+                max_tokens=EXPANSION_MAX_COMPLETION_TOKENS,
                 response_format={"type": "json_object"},
                 reasoning_effort=self.reasoning_effort,
             )
@@ -261,25 +265,57 @@ def resolve_expansion_provider(
     if enabled not in {"1", "true", "yes", "on"}:
         raise ValueError("RECALL_REASONING_EXPANSION must be an explicit boolean")
     model = source.get("RECALL_REASONING_EXPANSION_MODEL", "").strip()
-    key = source.get("RECALL_REASONING_API_KEY", "").strip()
+    # The _EXPANSION_ infixed names are preferred: the bare RECALL_REASONING_* spellings are
+    # shared with the setup interview's generic reasoning arm, so a value written there leaks
+    # into this resolver. The bare names remain as a fallback for existing configurations and
+    # are read only when the infixed name is unset or empty.
+    key = (
+        source.get("RECALL_REASONING_EXPANSION_API_KEY", "").strip()
+        or source.get("RECALL_REASONING_API_KEY", "").strip()
+    )
     if not model:
         raise ValueError("RECALL_REASONING_EXPANSION_MODEL is required when expansion is enabled")
     if not key:
-        raise ValueError("RECALL_REASONING_API_KEY is required when expansion is enabled")
-    raw_timeout = source.get("RECALL_REASONING_TIMEOUT", "").strip()
+        raise ValueError(
+            "RECALL_REASONING_EXPANSION_API_KEY (or the legacy RECALL_REASONING_API_KEY) "
+            "is required when expansion is enabled"
+        )
+    raw_timeout = (
+        source.get("RECALL_REASONING_EXPANSION_TIMEOUT", "").strip()
+        or source.get("RECALL_REASONING_TIMEOUT", "").strip()
+    )
     if not raw_timeout:
         # Empty means unset: .env templates ship the key valueless, matching recall/profiles.py.
         raw_timeout = "30"
+    # Name BOTH spellings when the value arrived through the legacy one, matching the API key
+    # message above. Naming only the preferred spelling points an operator at a variable they
+    # never set; naming only the legacy one hides the spelling they should migrate to.
+    timeout_name = (
+        "RECALL_REASONING_EXPANSION_TIMEOUT"
+        if source.get("RECALL_REASONING_EXPANSION_TIMEOUT", "").strip()
+        else "RECALL_REASONING_EXPANSION_TIMEOUT (set here as the legacy "
+        "RECALL_REASONING_TIMEOUT)"
+    )
     try:
         timeout = float(raw_timeout)
     except ValueError as exc:
-        raise ValueError("RECALL_REASONING_TIMEOUT must be a number") from exc
+        raise ValueError(f"{timeout_name} must be a number") from exc
     if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("RECALL_REASONING_TIMEOUT must be finite and positive")
-    base_url = source.get("RECALL_REASONING_BASE_URL", "https://openrouter.ai/api/v1").strip()
+        raise ValueError(f"{timeout_name} must be finite and positive")
+    base_url = (
+        source.get("RECALL_REASONING_EXPANSION_BASE_URL", "").strip()
+        or source.get("RECALL_REASONING_BASE_URL", "").strip()
+        or "https://openrouter.ai/api/v1"
+    )
+    base_url_name = (
+        "RECALL_REASONING_EXPANSION_BASE_URL"
+        if source.get("RECALL_REASONING_EXPANSION_BASE_URL", "").strip()
+        else "RECALL_REASONING_EXPANSION_BASE_URL (set here as the legacy "
+        "RECALL_REASONING_BASE_URL)"
+    )
     parsed_url = urlparse(base_url)
     if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-        raise ValueError("RECALL_REASONING_BASE_URL must be an absolute http(s) URL")
+        raise ValueError(f"{base_url_name} must be an absolute http(s) URL")
     raw_cost = source.get("RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS")
     cost = float(raw_cost) if raw_cost else None
     if cost is not None and (not math.isfinite(cost) or cost < 0):
@@ -325,6 +361,10 @@ class RetrievalExpansionTrace:
     """Auditable record of the optional retrieval expansion phase."""
 
     attempted: bool
+    #: The number of retrieval rounds actually executed: 0 when no expansion retrieval ran,
+    #: 1 when only the deterministic depth round issued a retrieval, and 2 only when the
+    #: model proposed round issued retrievals as well. A round whose retrieval was issued and
+    #: failed still counts as executed; the provider's own model call never does.
     rounds: int
     proposals: tuple[ExpansionProposal, ...] = ()
     executed_queries: tuple[str, ...] = ()

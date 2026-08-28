@@ -57,9 +57,12 @@ OPENROUTER_API_KEY=
 # Use a low-cost expansion model only: the model plans extra retrieval queries, it never answers.
 # RECALL_REASONING_EXPANSION=0
 # RECALL_REASONING_EXPANSION_MODEL=openai/gpt-5-nano   # required when expansion is enabled
-# RECALL_REASONING_API_KEY=                            # required when expansion is enabled
-# RECALL_REASONING_BASE_URL=https://openrouter.ai/api/v1
-# RECALL_REASONING_TIMEOUT=30                          # seconds; empty means the default
+# RECALL_REASONING_EXPANSION_API_KEY=                  # required when expansion is enabled
+# RECALL_REASONING_EXPANSION_BASE_URL=https://openrouter.ai/api/v1
+# RECALL_REASONING_EXPANSION_TIMEOUT=30                 # seconds; empty means the default
+# The bare RECALL_REASONING_API_KEY, _BASE_URL and _TIMEOUT remain readable as legacy
+# fallbacks; the infixed spellings above win when both are set, and are the names the
+# resolver quotes when it refuses.
 # RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS=       # optional, for cost accounting metadata
 # RECALL_REASONING_EXPANSION_EFFORT=minimal            # none | minimal | low | medium | high
 # RECALL_REASONING_EXPANSION_REVISION=unpinned
@@ -67,7 +70,7 @@ OPENROUTER_API_KEY=
 # Optional local answer provider, using Ollama's native /api/chat endpoint. Disabled unless
 # RECALL_REASONING_ANSWER_ENABLED=1. Provider failures are sanitized and never promote evidence.
 # RECALL_REASONING_ANSWER_ENABLED=0
-# RECALL_REASONING_ANSWER_MODEL=qwen3:4b
+# RECALL_REASONING_ANSWER_MODEL=                       # REQUIRED when enabled; no default
 # RECALL_REASONING_ANSWER_BASE_URL=http://127.0.0.1:11434/v1
 # RECALL_REASONING_ANSWER_TIMEOUT=60                   # seconds; empty means the default
 # RECALL_REASONING_ANSWER_MAX_TOKENS=512
