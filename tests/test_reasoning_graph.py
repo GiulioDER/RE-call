@@ -284,3 +284,91 @@ def test_graph_projection_cannot_make_a_stale_hit_trusted() -> None:
 
     assert trusted.hits[0].verdict == "superseded"
     assert not trusted.calibrated
+
+
+def test_a_long_linear_supersession_chain_projects_without_recursion_error() -> None:
+    # BUG-006 regression: the cycle walk used to recurse once per file, so an authored
+    # chain a few hundred to a thousand files deep raised RecursionError inside
+    # build_reasoning_graph. The iterative walk must project it without error.
+    chunks = []
+    for index in range(1500):
+        supersedes = f"m{index - 1:04d}.md" if index else None
+        chunks.append(_chunk(f"c{index:04d}", f"m{index:04d}.md", supersedes=supersedes))
+
+    graph = build_reasoning_graph(chunks, tenant_id="acme", generation_id="gen_1")
+
+    assert len(graph.authored_edges) == 1499
+    assert not any(diag.kind == "cycle" for diag in graph.diagnostics)
+
+
+def test_cycle_diagnostics_and_graph_id_survive_the_iterative_walk_unchanged() -> None:
+    # Golden identities captured from the recursive walk before the BUG-006 rewrite
+    # (commit 3498a06c plus nothing). The fixture holds two cycles sharing a member and
+    # one orphan, so it exercises the canonical cycle dedup and diagnostic ordering.
+    def golden_chunk(cid: str, file: str, supersedes: str | None = None) -> Chunk:
+        metadata: dict[str, object] = {"file": file}
+        if supersedes is not None:
+            metadata["supersedes"] = supersedes
+        return Chunk(cid, file, "text", metadata)
+
+    chunks = [
+        golden_chunk("c1", "a.md", "b.md"),
+        golden_chunk("c2", "b.md", "c.md"),
+        golden_chunk("c3", "c.md", "a.md"),
+        golden_chunk("c4", "d.md", "e.md"),
+        golden_chunk("c5", "e.md", "d.md"),
+        golden_chunk("c6", "f.md", "a.md"),
+        golden_chunk("c7", "g.md"),
+    ]
+
+    graph = build_reasoning_graph(chunks, tenant_id="tenant-golden", generation_id="gen-golden")
+
+    assert graph.graph_id == "rg_graph_d9d614ef04ce6fa5b7b520ac"
+    assert [(diag.id, diag.kind, diag.reference, diag.message) for diag in graph.diagnostics] == [
+        (
+            "rg_diag_1db3115bcbd4485202e3b776",
+            "conflicting_authored_claim",
+            "a.md",
+            "a.md has 2 authored supersession claims",
+        ),
+        (
+            "rg_diag_684d7199973182aa48c5be29",
+            "orphaned_node",
+            "g.md",
+            "g.md has no authored graph edges",
+        ),
+        (
+            "rg_diag_9446b31e2aeec6a176946550",
+            "cycle",
+            "d.md",
+            "authored supersession cycle includes d.md, e.md",
+        ),
+        (
+            "rg_diag_c1d666e9748a7c5c11847f43",
+            "cycle",
+            "a.md",
+            "authored supersession cycle includes a.md, c.md, b.md",
+        ),
+    ]
+
+
+def test_supersession_rows_fallback_is_undated_by_design() -> None:
+    # DAT-009 / CODE-009: the fallback path collects only (file, supersedes) pairs.
+    # Chunk metadata carries no asserted_at, so the third element is always None, and
+    # the edge ids it produces deliberately differ from the dated store path's.
+    from recall.reasoning_graph import _supersession_rows
+
+    chunks = [
+        _chunk("b", "v2.md", supersedes="v1.md"),
+        _chunk("a", "v1.md"),
+        _chunk("c", "v2.md", supersedes="v1.md"),
+        Chunk("d", "/corpus/x", "no file metadata", {}),
+    ]
+
+    rows = _supersession_rows(chunks)
+
+    assert rows == [
+        (None, None, None),
+        ("v1.md", None, None),
+        ("v2.md", "v1.md", None),
+    ]

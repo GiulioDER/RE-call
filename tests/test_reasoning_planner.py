@@ -341,3 +341,36 @@ def test_planner_detects_deterministic_contradictions_that_cite_source_nodes() -
     assert plan.outcome == "failed_closed"
     assert plan.stop_reason == "ambiguous_evidence"
     assert any(gap.kind == "contradiction" for gap in plan.trace.unresolved_gaps)
+
+
+def test_a_temporally_inconsistent_node_is_rejected_without_staying_accepted() -> None:
+    """A node the temporal check rejects must leave `accepted`, in the trace and in the budget.
+
+    Before the fix `_check_temporal_consistency` called `_reject_node` while iterating
+    `state.accepted` and never removed the node, so the same chunk appeared in BOTH
+    `evidence_accepted` and `evidence_rejected` and kept charging its node and token counts
+    to `budget_used`. The run failed closed either way, so nothing surfaced the contradiction
+    except the audit trace itself, which is the artifact a reader trusts.
+    """
+    inverted = Chunk(
+        "inverted",
+        "/corpus/window.md",
+        "the validity window on this memo is inverted",
+        {
+            "file": "window.md",
+            "ord": 0,
+            "valid_from": "2026-05-01",
+            "valid_until": "2026-01-01",
+        },
+    )
+    graph = build_reasoning_graph([inverted], tenant_id="acme", generation_id="gen_1")
+
+    plan = plan_multi_hop_evidence(_result(_trusted_hit(inverted)), graph)
+
+    accepted = {decision.chunk_id for decision in plan.trace.evidence_accepted}
+    rejected = {decision.chunk_id for decision in plan.trace.evidence_rejected}
+    assert "inverted" in rejected
+    assert "inverted" not in accepted
+    assert not (accepted & rejected), "no chunk may be both accepted and rejected"
+    assert plan.budget_used.graph_nodes == 0
+    assert plan.budget_used.evidence_tokens == 0

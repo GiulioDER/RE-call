@@ -1690,8 +1690,8 @@ def test_declining_the_reasoning_arm_writes_only_the_off_flag(tmp_path, monkeypa
             "n",   # calibrate declined
         ],
     )
-    assert "RECALL_REASONING=0" in env
-    assert "RECALL_REASONING_MODEL" not in env
+    assert "RECALL_REASONING_EXPANSION=0" in env
+    assert "RECALL_REASONING_EXPANSION_MODEL" not in env
 
 
 def test_seeding_runs_before_the_hooks_are_installed(tmp_path, monkeypatch):
@@ -2003,10 +2003,10 @@ def test_choosing_openrouter_and_deepseek_writes_all_four_keys(tmp_path, monkeyp
             "n",              # calibrate declined
         ],
     )
-    assert "RECALL_REASONING=1" in env
-    assert "RECALL_REASONING_MODEL=deepseek/deepseek-chat" in env
-    assert "RECALL_REASONING_BASE_URL=https://openrouter.ai/api/v1" in env
-    assert "RECALL_REASONING_API_KEY=router-key" in env
+    assert "RECALL_REASONING_EXPANSION=1" in env
+    assert "RECALL_REASONING_EXPANSION_MODEL=deepseek/deepseek-chat" in env
+    assert "RECALL_REASONING_EXPANSION_BASE_URL=https://openrouter.ai/api/v1" in env
+    assert "RECALL_REASONING_EXPANSION_API_KEY=router-key" in env
 
 
 def test_a_key_captured_during_the_interview_is_also_written_under_its_provider_name(
@@ -2015,7 +2015,7 @@ def test_a_key_captured_during_the_interview_is_also_written_under_its_provider_
     """Step 1b is not the only place a cloud key can be given: the interview itself asks for one
     when it was left blank there, and `_reasoning_interview` folds that answer back into
     `cloud_keys` so it lands in `.env` under its provider name too, not only under
-    `RECALL_REASONING_API_KEY`. The other cloud test supplies the key at step 1b, so it never
+    `RECALL_REASONING_EXPANSION_API_KEY`. The other cloud test supplies the key at step 1b, so it never
     exercises this capture path."""
     monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
     env, _ = _run_wizard(
@@ -2038,7 +2038,7 @@ def test_a_key_captured_during_the_interview_is_also_written_under_its_provider_
         ],
     )
     assert "OPENROUTER_API_KEY=captured-key" in env
-    assert "RECALL_REASONING_API_KEY=captured-key" in env
+    assert "RECALL_REASONING_EXPANSION_API_KEY=captured-key" in env
 
 
 def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
@@ -2059,9 +2059,9 @@ def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
             "n",        # calibrate declined
         ],
     )
-    assert "RECALL_REASONING_BASE_URL=http://localhost:11434/v1" in env
-    assert "RECALL_REASONING_MODEL=qwen2.5" in env
-    assert f"RECALL_REASONING_API_KEY={LOCAL_API_KEY}" in env
+    assert "RECALL_REASONING_EXPANSION_BASE_URL=http://localhost:11434/v1" in env
+    assert "RECALL_REASONING_EXPANSION_MODEL=qwen2.5" in env
+    assert f"RECALL_REASONING_EXPANSION_API_KEY={LOCAL_API_KEY}" in env
 
 
 def test_a_malformed_base_url_does_not_end_the_interview(tmp_path, monkeypatch):
@@ -2091,8 +2091,8 @@ def test_a_malformed_base_url_does_not_end_the_interview(tmp_path, monkeypatch):
             "n",                      # calibrate declined
         ],
     )
-    assert "RECALL_REASONING_BASE_URL=http://[::1:11434/v1" in env
-    assert "RECALL_REASONING_MODEL=qwen2.5" in env
+    assert "RECALL_REASONING_EXPANSION_BASE_URL=http://[::1:11434/v1" in env
+    assert "RECALL_REASONING_EXPANSION_MODEL=qwen2.5" in env
     assert "retrieved evidence" in output  # it warned rather than staying silent
 
 
@@ -2118,8 +2118,8 @@ def test_a_failing_probe_still_writes_the_configuration(tmp_path, monkeypatch):
         ],
     )
     assert "model not found" in output
-    assert "RECALL_REASONING=1" in env
-    assert "RECALL_REASONING_MODEL=qwen2.5" in env
+    assert "RECALL_REASONING_EXPANSION=1" in env
+    assert "RECALL_REASONING_EXPANSION_MODEL=qwen2.5" in env
 
 
 def test_a_blank_model_id_twice_turns_the_arm_off(tmp_path, monkeypatch):
@@ -2140,13 +2140,13 @@ def test_a_blank_model_id_twice_turns_the_arm_off(tmp_path, monkeypatch):
             "n",   # calibrate declined
         ],
     )
-    assert "RECALL_REASONING=0" in env
-    assert "RECALL_REASONING_MODEL" not in env
+    assert "RECALL_REASONING_EXPANSION=0" in env
+    assert "RECALL_REASONING_EXPANSION_MODEL" not in env
     assert "no model id" in output
 
 
 def test_a_blank_cloud_api_key_twice_turns_the_arm_off(tmp_path, monkeypatch):
-    """A blank key must not be written as `RECALL_REASONING=1`: that would enable an arm that
+    """A blank key must not be written as `RECALL_REASONING_EXPANSION=1`: that would enable an arm that
     cannot authenticate. The model id path already applies this rule through `_prompt_twice`, and
     the key path must follow it too."""
     env, output = _run_wizard(
@@ -2168,17 +2168,17 @@ def test_a_blank_cloud_api_key_twice_turns_the_arm_off(tmp_path, monkeypatch):
             "n",   # calibrate declined
         ],
     )
-    assert "RECALL_REASONING=0" in env
-    assert "RECALL_REASONING_API_KEY" not in env
+    assert "RECALL_REASONING_EXPANSION=0" in env
+    assert "RECALL_REASONING_EXPANSION_API_KEY" not in env
     assert "no API key" in output
 
 
 REASONING_ENV_KEYS = frozenset(
     {
-        "RECALL_REASONING",
-        "RECALL_REASONING_MODEL",
-        "RECALL_REASONING_BASE_URL",
-        "RECALL_REASONING_API_KEY",
+        "RECALL_REASONING_EXPANSION",
+        "RECALL_REASONING_EXPANSION_MODEL",
+        "RECALL_REASONING_EXPANSION_BASE_URL",
+        "RECALL_REASONING_EXPANSION_API_KEY",
     }
 )
 
@@ -2206,6 +2206,39 @@ def test_the_wizard_writes_exactly_the_agreed_reasoning_variables(tmp_path, monk
         if line.startswith("RECALL_REASONING")
     }
     assert written == REASONING_ENV_KEYS
+
+
+def test_the_interview_enables_the_flag_the_runtime_actually_reads(tmp_path, monkeypatch):
+    """The runtime gate is `RECALL_REASONING_EXPANSION` plus `RECALL_REASONING_EXPANSION_MODEL`
+    (`recall.reasoning_expansion.resolve_expansion_provider`). The interview used to write a bare
+    `RECALL_REASONING` and `RECALL_REASONING_MODEL`, which nothing reads, so the wizard
+    half-configured expansion (base URL and API key land under their real names) and fully enabled
+    nothing."""
+    monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
+    env, _ = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",        # security required, so only the local provider is offered
+            "2",        # embedder: fastembed
+            "1",        # reranker: none
+            "1",        # sparse: fts
+            "y",        # reasoning arm enabled
+            "",         # base URL: take the default
+            "qwen2.5",  # model id
+            "n",        # scaffold declined
+            "n",        # calibrate declined
+        ],
+    )
+    written = {
+        line.split("=", 1)[0]
+        for line in env.splitlines()
+        if line.startswith("RECALL_REASONING")
+    }
+    assert "RECALL_REASONING_EXPANSION" in written
+    assert "RECALL_REASONING_EXPANSION_MODEL" in written
+    assert "RECALL_REASONING" not in written
+    assert "RECALL_REASONING_MODEL" not in written
 
 
 def test_unreachable_database_reports_a_message_instead_of_staying_silent(tmp_path, monkeypatch):

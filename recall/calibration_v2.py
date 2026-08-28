@@ -27,13 +27,27 @@ ARTIFACT_VERSION = 2
 
 
 class CalibrationStatus(StrEnum):
+    """How a generation's calibration resolves, per `CalibrationRepository.resolve_within`."""
+
+    #: A published, certified artifact whose lineage and query set still match the generation.
     CERTIFIED = "certified"
+    #: No published calibration exists anywhere in the tenant; this tenant has never certified.
     MISSING = "missing"
+    #: The tenant HAS a published calibration, but not one that binds to this generation: either
+    #: none was published for it, or the published one no longer matches the generation's
+    #: fingerprints or its stored query set. Distinct from MISSING because the remedy is a
+    #: recalibration or carry-forward of an existing practice, not a first calibration.
     STALE = "stale"
+    #: The newest calibration for this generation exists but failed certification (rejected).
     UNCERTIFIED = "uncertified"
+    #: A certified calibration exists for this generation but was never published.
     DRAFT = "draft"
+    #: The artifact failed certification; `calibrate` writes it in this state rather than raising.
     REJECTED = "rejected"
+    #: A formerly published artifact that a later `publish` replaced.
     SUPERSEDED = "superseded"
+    #: Imported from a pre-v2 file: a bare threshold with no tenant, generation, pipeline,
+    #: corpus, or query binding. Never resolvable and never publishable.
     LEGACY_UNBOUND = "legacy_unbound"
 
 
@@ -196,15 +210,185 @@ def _require_carry_forward(value: Mapping[str, Any], threshold: float, scale: fl
         raise CalibrationBindingError("carry-forward corpus_delta must be a finite number")
     if not 0.0 <= float(delta) <= 1.0:
         raise CalibrationBindingError("carry-forward corpus_delta must be a fraction in [0, 1]")
+    # `cumulative_corpus_delta` is a NEWER key than the step delta above, so artifacts written
+    # before it existed legitimately lack it (see `_cumulative_corpus_delta`, which reads such an
+    # artifact's step delta in its place). When present it must at least be a sane number; it is
+    # not capped at 1.0 because a sum of per-step fractions is not itself a fraction.
+    cumulative = value.get("cumulative_corpus_delta")
+    if cumulative is not None:
+        if (
+            not isinstance(cumulative, (int, float))
+            or isinstance(cumulative, bool)
+            or not math.isfinite(cumulative)
+            or float(cumulative) < 0.0
+        ):
+            raise CalibrationBindingError(
+                "carry-forward cumulative_corpus_delta must be a finite non-negative number"
+            )
     inherited_threshold = value.get("inherited_threshold")
     inherited_scale = value.get("inherited_scale")
-    if inherited_threshold is not None and float(inherited_threshold) != threshold:
+    # The coercions are wrapped because this validates data from the OUTSIDE (an imported bundle
+    # or a stored row), and a string or mapping here would otherwise escape as a bare TypeError
+    # or ValueError that the CLI's `except CalibrationError` cannot name.
+    try:
+        threshold_mismatch = (
+            inherited_threshold is not None and float(inherited_threshold) != threshold
+        )
+        scale_mismatch = inherited_scale is not None and float(inherited_scale) != scale
+    except (TypeError, ValueError) as exc:
+        raise CalibrationBindingError(
+            f"carry-forward inherited threshold or scale is not a number: {exc}"
+        ) from exc
+    if threshold_mismatch:
         raise CalibrationBindingError(
             "carry-forward provenance names an inherited threshold this artifact does not carry"
         )
-    if inherited_scale is not None and float(inherited_scale) != scale:
+    if scale_mismatch:
         raise CalibrationBindingError(
             "carry-forward provenance names an inherited scale this artifact does not carry"
+        )
+
+
+def _cumulative_corpus_delta(carry_forward: Mapping[str, Any] | None) -> float:
+    """Total drift a calibration lineage has accumulated across carry-forward steps.
+
+    0.0 for a fitted artifact: its threshold was measured on its own generation, so the chain
+    starts fresh there. For a carried artifact the recorded `cumulative_corpus_delta` is read;
+    an artifact written before that key existed reads as its own recorded STEP delta, which is
+    the conservative floor of what its chain actually drifted (any older steps are unknowable
+    once generation gc has pruned their manifests, and assuming 0.0 for them would let a long
+    pre-existing chain keep drifting unbounded).
+    """
+    if carry_forward is None:
+        return 0.0
+    value = carry_forward.get("cumulative_corpus_delta")
+    if value is None:
+        value = carry_forward.get("corpus_delta", 0.0)
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise CalibrationBindingError(
+            f"carry-forward cumulative corpus delta is not a number: {exc}"
+        ) from exc
+    if not math.isfinite(result) or result < 0.0:
+        raise CalibrationBindingError(
+            "carry-forward cumulative corpus delta must be a finite non-negative number"
+        )
+    return result
+
+
+def _require_scores_support_certification(artifact: CalibrationArtifactV2) -> None:
+    """Refuse an artifact whose recorded statistics its own scores do not reproduce.
+
+    `import_bundle`'s checksum only proves the bundle is INTERNALLY consistent: it is unkeyed,
+    so anyone can write certified=true beside arbitrary scores and recompute the digest over the
+    lie. `publish` then promotes any certified draft, which would let a forged file put an
+    unearned threshold into serving. The separability, its interval, the sample counts, and the
+    certification verdict are all pure functions of the scores the bundle itself carries, so
+    they are re-derived here with the same rules `calibrate` and `carry_forward` apply, and any
+    disagreement beyond float tolerance is refused naming the field that disagreed.
+
+    ⛔ **Re-deriving the verdict is NOT sufficient on its own, and this is the part worth
+    reading.** `Calibration.certified` is a function of separability, the interval and the
+    sample counts; it never reads the threshold. A forger supplies both the scores and the
+    threshold, so trivially separable scores certify while the threshold beside them is
+    whatever they chose, and the threshold is the only field that reaches serving. So for a
+    FITTED artifact the threshold and scale are re-derived too, from `from_samples` over the
+    bundle's own scores, which is exact for a legitimate round trip because `calibrate` sets
+    them from `from_samples` over those same scores.
+
+    ⚠️ **A CARRIED artifact is not authenticated by this check.** Its threshold is inherited
+    rather than fitted, so re-deriving it would refuse every legitimate carried bundle; the only
+    binding left is the recorded error-rate bound, computed over scores the bundle itself
+    supplies, which a forger also controls. Authenticating one needs something this function
+    cannot do: re-scoring the stored query set against the named generation, or a keyed
+    signature. Treat a carried bundle from an untrusted source as unverified.
+    """
+    try:
+        answerable = [float(v) for v in artifact.scores.get("answerable", ())]
+        unanswerable = [float(v) for v in artifact.scores.get("unanswerable", ())]
+    except (TypeError, ValueError) as exc:
+        raise CalibrationBindingError(
+            f"bundle scores are malformed: {exc}"
+        ) from exc
+    if len(answerable) != artifact.n_answerable or len(unanswerable) != artifact.n_unanswerable:
+        raise CalibrationBindingError(
+            f"bundle sample counts disagree with its own scores: recorded "
+            f"{artifact.n_answerable}/{artifact.n_unanswerable}, scores hold "
+            f"{len(answerable)}/{len(unanswerable)}"
+        )
+    recomputed = separability(answerable, unanswerable)
+    if recomputed is None:
+        raise CalibrationBindingError(
+            "bundle scores lack a labelled class, so its separability cannot be re-derived"
+        )
+    if not math.isclose(recomputed, artifact.separability, rel_tol=1e-9, abs_tol=1e-9):
+        raise CalibrationBindingError(
+            f"bundle separability {artifact.separability} disagrees with the value re-derived "
+            f"from its own scores ({recomputed})"
+        )
+    check = Calibration(
+        embedder=str(artifact.embedder_identity.get("model", "bound-v2")),
+        threshold=artifact.threshold,
+        scale=artifact.scale,
+        separability=recomputed,
+        n_answerable=len(answerable),
+        n_unanswerable=len(unanswerable),
+    )
+    interval = check.separability_ci
+    if interval is None:
+        raise CalibrationBindingError("bundle separability interval cannot be re-derived")
+    for name, stored, derived in (
+        ("ci_low", artifact.separability_ci[0], interval[0]),
+        ("ci_high", artifact.separability_ci[1], interval[1]),
+    ):
+        if not math.isclose(stored, derived, rel_tol=1e-9, abs_tol=1e-9):
+            raise CalibrationBindingError(
+                f"bundle separability {name} {stored} disagrees with the value re-derived "
+                f"from its own scores ({derived})"
+            )
+    if artifact.carry_forward is None:
+        # The threshold is the only field of a fitted artifact that reaches serving, and it is
+        # the one `certified` never looks at, so bind it to the scores directly. `calibrate`
+        # sets threshold and scale from `from_samples` over exactly these scores, and
+        # `from_samples` is deterministic, so a legitimate round trip reproduces both exactly.
+        expected = from_samples(
+            str(artifact.embedder_identity.get("model", "bound-v2")), answerable, unanswerable
+        )
+        for name, stored, derived in (
+            ("threshold", artifact.threshold, expected.threshold),
+            ("scale", artifact.scale, expected.scale),
+        ):
+            if not math.isclose(stored, derived, rel_tol=1e-9, abs_tol=1e-9):
+                raise CalibrationBindingError(
+                    f"bundle {name} {stored} disagrees with the value re-derived from its own "
+                    f"scores ({derived})"
+                )
+    verdict = check.certified is True
+    if artifact.carry_forward is not None:
+        # A carried artifact is certified under a SECOND condition too: the inherited threshold
+        # must still decide the fresh scores within the recorded error bound. Re-deriving the
+        # verdict without it would refuse every legitimately carried bundle.
+        try:
+            max_error = float(
+                artifact.carry_forward.get(
+                    "max_carry_forward_error", DEFAULT_MAX_CARRY_FORWARD_ERROR
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise CalibrationBindingError(
+                f"carry-forward max_carry_forward_error is not a number: {exc}"
+            ) from exc
+        errors = threshold_error_rates(answerable, unanswerable, artifact.threshold)
+        verdict = (
+            verdict
+            and errors["false_abstain_rate"] <= max_error
+            and errors["false_confirm_rate"] <= max_error
+        )
+    if artifact.certified != verdict:
+        raise CalibrationBindingError(
+            f"bundle claims certified={artifact.certified} but its own scores re-derive "
+            f"certified={verdict}: {check.certification_reason}"
         )
 
 
@@ -407,6 +591,16 @@ class CalibrationResolution:
 def canonical_query_set(
     entries: Sequence[Mapping[str, Any]],
 ) -> tuple[tuple[dict[str, Any], ...], str]:
+    """Normalise a labelled query set and return it with its content digest.
+
+    The canonical form keeps only `query`, `answerable`, and (when present) a sorted,
+    deduplicated `relevant_ids`, sorted by each entry's canonical JSON, so the same labels in
+    any order and with any extra keys canonicalise identically. A duplicate labelled query is
+    refused rather than deduplicated, because two copies of one label would silently weight it.
+    The returned digest is `canonical_sha256` of the canonical entries and is what is stored as
+    an artifact's `query_set_digest`, so `resolve` and `carry_forward` can detect a stored set
+    that no longer matches the evidence a threshold was fitted on.
+    """
     normalised: list[dict[str, Any]] = []
     for index, entry in enumerate(entries):
         query = entry.get("query")
@@ -446,17 +640,50 @@ def _id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
 
+#: Passed as `checksum` when an artifact is constructed purely to COMPUTE its checksum from
+#: `immutable_payload()`. The checksum field is not part of that payload, so the placeholder never
+#: reaches a digest; it exists because the dataclass requires a well-formed value at construction.
+#: The row is always read back through `_artifact`, which verifies the REAL checksum.
+_UNCOMPUTED_CHECKSUM = "0" * 64
+
+
 class CalibrationRepository:
-    def __init__(self, dsn: str, tenant_id: str, *, actor: str = "recall-cli") -> None:
+    """Tenant-scoped store of v2 calibration artifacts and their labelled query sets.
+
+    Lifecycle: `calibrate` and `carry_forward` write a `draft` when certification passes and a
+    `rejected` row when it does not, deliberately recording the failure rather than raising, so
+    an operator can read WHY a fit failed. `publish` promotes a certified draft under a
+    per-generation advisory lock, marking any previously published artifact for the same
+    generation `superseded`; `superseded` rows are history, never deleted. `legacy_unbound`
+    rows come from `import_bundle`'s legacy fallback (a pre-v2 JSON file holding only a
+    threshold and scale) and can never be published or resolved, because they bind to no
+    tenant, generation, pipeline, corpus, or query set.
+
+    Every artifact's immutable payload is checksummed at write and re-verified on every read,
+    and rows are guarded by database triggers that refuse payload updates, so evidence cannot
+    be edited between a fit and a later decision that relies on it.
+    """
+
+    def __init__(
+        self,
+        dsn: str,
+        tenant_id: str,
+        *,
+        actor: str = "recall-cli",
+        connect_timeout_s: int = 10,
+    ) -> None:
         if not tenant_id.strip():
             raise ValueError("tenant_id must be non-empty")
         self.dsn = dsn
         self.tenant_id = tenant_id
         self.actor = actor
+        self._connect_timeout_s = connect_timeout_s
 
     @contextmanager
     def _connect(self) -> Iterator[psycopg.Connection]:
-        with psycopg.connect(self.dsn, autocommit=True, connect_timeout=10) as conn:
+        with psycopg.connect(
+            self.dsn, autocommit=True, connect_timeout=self._connect_timeout_s
+        ) as conn:
             conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (self.tenant_id,))
             yield conn
 
@@ -500,42 +727,67 @@ class CalibrationRepository:
             raise CalibrationBindingError("stored pipeline identity is malformed")
         return str(row[0]), dict(row[1]), str(row[2]), str(row[3])
 
-    @staticmethod
-    def _artifact(row: tuple[Any, ...]) -> CalibrationArtifactV2:
-        identity = row[3] if isinstance(row[3], Mapping) else {}
-        scores = row[17] if isinstance(row[17], Mapping) else {}
+    #: The one source of truth for the SELECT column list AND for `_artifact`'s row decoding.
+    #: Keeping them a single tuple is what makes it impossible for the projection and the
+    #: positional decode to drift apart, which they previously could: the decode indexed
+    #: `row[0]..row[21]` against a comma-separated string thirty lines away.
+    _COLUMN_NAMES = (
+        "calibration_id",
+        "tenant_id",
+        "generation_id",
+        "embedder_identity",
+        "pipeline_fingerprint",
+        "corpus_fingerprint",
+        "query_set_digest",
+        "threshold",
+        "scale",
+        "separability",
+        "ci_low",
+        "ci_high",
+        "n_answerable",
+        "n_unanswerable",
+        "certified",
+        "certification_reason",
+        "lifecycle_state",
+        "scores",
+        "created_at",
+        "created_by",
+        "artifact_checksum",
+        "carry_forward",
+    )
+    _COLUMNS = ", ".join(_COLUMN_NAMES)
+
+    @classmethod
+    def _artifact(cls, row: tuple[Any, ...]) -> CalibrationArtifactV2:
+        record = dict(zip(cls._COLUMN_NAMES, row, strict=True))
+        identity = record["embedder_identity"]
+        scores = record["scores"]
+        carry = record["carry_forward"]
         artifact = CalibrationArtifactV2(
-            calibration_id=str(row[0]),
-            tenant_id=str(row[1]),
-            generation_id=str(row[2]),
-            embedder_identity=dict(identity),
-            pipeline_fingerprint=str(row[4]),
-            corpus_fingerprint=str(row[5]),
-            query_set_digest=str(row[6]),
-            threshold=float(row[7]),
-            scale=float(row[8]),
-            separability=float(row[9]),
-            separability_ci=(float(row[10]), float(row[11])),
-            n_answerable=int(row[12]),
-            n_unanswerable=int(row[13]),
-            certified=bool(row[14]),
-            certification_reason=str(row[15]),
-            lifecycle_state=str(row[16]),
-            scores=dict(scores),
-            created_at=_utc_isoformat(row[18]),
-            created_by=str(row[19]),
-            checksum=str(row[20]),
-            carry_forward=dict(row[21]) if isinstance(row[21], Mapping) else None,
+            calibration_id=str(record["calibration_id"]),
+            tenant_id=str(record["tenant_id"]),
+            generation_id=str(record["generation_id"]),
+            embedder_identity=dict(identity) if isinstance(identity, Mapping) else {},
+            pipeline_fingerprint=str(record["pipeline_fingerprint"]),
+            corpus_fingerprint=str(record["corpus_fingerprint"]),
+            query_set_digest=str(record["query_set_digest"]),
+            threshold=float(record["threshold"]),
+            scale=float(record["scale"]),
+            separability=float(record["separability"]),
+            separability_ci=(float(record["ci_low"]), float(record["ci_high"])),
+            n_answerable=int(record["n_answerable"]),
+            n_unanswerable=int(record["n_unanswerable"]),
+            certified=bool(record["certified"]),
+            certification_reason=str(record["certification_reason"]),
+            lifecycle_state=str(record["lifecycle_state"]),
+            scores=dict(scores) if isinstance(scores, Mapping) else {},
+            created_at=_utc_isoformat(record["created_at"]),
+            created_by=str(record["created_by"]),
+            checksum=str(record["artifact_checksum"]),
+            carry_forward=dict(carry) if isinstance(carry, Mapping) else None,
         )
         artifact.verify_checksum()
         return artifact
-
-    _COLUMNS = (
-        "calibration_id, tenant_id, generation_id, embedder_identity, pipeline_fingerprint, "
-        "corpus_fingerprint, query_set_digest, threshold, scale, separability, ci_low, ci_high, "
-        "n_answerable, n_unanswerable, certified, certification_reason, lifecycle_state, scores, "
-        "created_at, created_by, artifact_checksum, carry_forward"
-    )
 
     def score_query_set(
         self, generation_id: str, embedder: Embedder, labels: Sequence[Mapping[str, Any]]
@@ -633,29 +885,36 @@ class CalibrationRepository:
         calibration_id = _id("cal")
         created_at = datetime.now(UTC).isoformat()
         scores = {"answerable": answerable, "unanswerable": unanswerable}
-        immutable = {
-            "artifact_version": ARTIFACT_VERSION,
-            "calibration_id": calibration_id,
-            "tenant_id": self.tenant_id,
-            "generation_id": generation_id,
-            "embedder_identity": pipeline.embedder.to_dict(),
-            "pipeline_fingerprint": pipeline_fingerprint,
-            "corpus_fingerprint": corpus_fingerprint,
-            "query_set_digest": query_digest,
-            "threshold": runtime.threshold,
-            "scale": runtime.scale,
-            "separability": runtime.separability,
-            "separability_ci": list(runtime.separability_ci),
-            "n_answerable": len(answerable),
-            "n_unanswerable": len(unanswerable),
-            "certified": certified,
-            "certification_reason": runtime.certification_reason,
-            "created_at": created_at,
-            "created_by": self.actor,
-            "scores": scores,
-        }
-        checksum = canonical_sha256(immutable)
         lifecycle = "draft" if certified else "rejected"
+        # The artifact is constructed FIRST and the checksum computed over ITS payload, so the
+        # bytes hashed here and the bytes `verify_checksum` recomputes on every later read come
+        # from the same method. A hand-built dict here previously made three independent copies
+        # of the payload shape, and a key added to one but not the others would fail every
+        # subsequent read as corruption.
+        artifact = CalibrationArtifactV2(
+            calibration_id=calibration_id,
+            tenant_id=self.tenant_id,
+            generation_id=generation_id,
+            embedder_identity=pipeline.embedder.to_dict(),
+            pipeline_fingerprint=pipeline_fingerprint,
+            corpus_fingerprint=corpus_fingerprint,
+            query_set_digest=query_digest,
+            threshold=runtime.threshold,
+            scale=runtime.scale,
+            separability=runtime.separability,
+            separability_ci=runtime.separability_ci,
+            n_answerable=len(answerable),
+            n_unanswerable=len(unanswerable),
+            certified=certified,
+            certification_reason=runtime.certification_reason,
+            lifecycle_state=lifecycle,
+            created_at=created_at,
+            created_by=self.actor,
+            scores=scores,
+            checksum=_UNCOMPUTED_CHECKSUM,
+        )
+        payload = artifact.immutable_payload()
+        checksum = canonical_sha256(payload)
         with self._connect() as conn, conn.transaction():
             conn.execute(
                 "INSERT INTO recall_calibration_query_sets "
@@ -672,26 +931,29 @@ class CalibrationRepository:
                 "artifact_checksum) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
                 "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
+                    # Every value the checksum covers comes from `payload`, the same mapping the
+                    # digest above was computed over, so the row cannot hold a value the checksum
+                    # does not.
                     self.tenant_id,
-                    calibration_id,
-                    generation_id,
-                    Jsonb(pipeline.embedder.to_dict()),
-                    pipeline_fingerprint,
-                    corpus_fingerprint,
-                    query_digest,
-                    runtime.threshold,
-                    runtime.scale,
-                    runtime.separability,
-                    runtime.separability_ci[0],
-                    runtime.separability_ci[1],
-                    len(answerable),
-                    len(unanswerable),
-                    certified,
-                    runtime.certification_reason,
+                    payload["calibration_id"],
+                    payload["generation_id"],
+                    Jsonb(payload["embedder_identity"]),
+                    payload["pipeline_fingerprint"],
+                    payload["corpus_fingerprint"],
+                    payload["query_set_digest"],
+                    payload["threshold"],
+                    payload["scale"],
+                    payload["separability"],
+                    payload["separability_ci"][0],
+                    payload["separability_ci"][1],
+                    payload["n_answerable"],
+                    payload["n_unanswerable"],
+                    payload["certified"],
+                    payload["certification_reason"],
                     lifecycle,
-                    Jsonb(scores),
-                    created_at,
-                    self.actor,
+                    Jsonb(payload["scores"]),
+                    payload["created_at"],
+                    payload["created_by"],
                     checksum,
                 ),
             )
@@ -741,7 +1003,13 @@ class CalibrationRepository:
         2. **A delta above `max_corpus_delta` is refused before any embedding work**, because
            re-scoring a query set says nothing about the queries nobody labelled, and past some
            point the labelled set is describing a corpus that no longer exists.
-        3. **A query set that no longer canonicalises to its stored digest is refused**, the same
+        3. **A CHAIN whose cumulative delta exceeds the same bound is refused**, even when every
+           individual step passed it. Each step's delta is measured only against the immediate
+           parent, so without this a corpus could be replaced 20% at a time indefinitely while
+           the threshold still wears the digest of the original fit. The cumulative figure is
+           carried in each artifact's provenance rather than recomputed against the origin
+           generation, because generation gc can have pruned the origin's manifest.
+        4. **A query set that no longer canonicalises to its stored digest is refused**, the same
            check `resolve` makes, because otherwise the evidence could be edited between the fit
            and the re-verification.
 
@@ -815,6 +1083,15 @@ class CalibrationRepository:
                 f"{delta['sources_removed']} removed, {delta['sources_modified']} modified over "
                 f"{delta['sources_union']} sources); recalibrate against a labelled query set"
             )
+        cumulative = _cumulative_corpus_delta(parent.carry_forward) + float(delta["corpus_delta"])
+        if cumulative > max_corpus_delta:
+            raise CalibrationBindingError(
+                f"cumulative corpus delta {cumulative:.3f} across this calibration's "
+                f"carry-forward chain exceeds the bound {max_corpus_delta:.3f}, although this "
+                f"step alone ({delta['corpus_delta']:.3f}) is within it; the corpus has drifted "
+                f"too far from the one the threshold was fitted on, recalibrate against a "
+                f"labelled query set"
+            )
         if query_row is None or not isinstance(query_row[0], list):
             raise CalibrationBindingError(
                 f"the labelled query set {parent.query_set_digest} behind calibration "
@@ -877,34 +1154,42 @@ class CalibrationRepository:
             "max_carry_forward_error": max_error,
             **errors,
             **delta,
+            # The chain total, not this step's delta: what the NEXT carry-forward reads to keep
+            # cumulative drift bounded. New in this key only for NEW artifacts; older provenance
+            # without it is read by `_cumulative_corpus_delta` as its recorded step delta.
+            "cumulative_corpus_delta": cumulative,
         }
         calibration_id = _id("cal")
         created_at = datetime.now(UTC).isoformat()
         scores = {"answerable": answerable, "unanswerable": unanswerable}
-        immutable = {
-            "artifact_version": ARTIFACT_VERSION,
-            "calibration_id": calibration_id,
-            "tenant_id": self.tenant_id,
-            "generation_id": generation_id,
-            "embedder_identity": pipeline.embedder.to_dict(),
-            "pipeline_fingerprint": pipeline_fingerprint,
-            "corpus_fingerprint": corpus_fingerprint,
-            "query_set_digest": query_digest,
-            "threshold": runtime.threshold,
-            "scale": runtime.scale,
-            "separability": runtime.separability,
-            "separability_ci": list(runtime.separability_ci),
-            "n_answerable": len(answerable),
-            "n_unanswerable": len(unanswerable),
-            "certified": certified,
-            "certification_reason": reason,
-            "created_at": created_at,
-            "created_by": self.actor,
-            "scores": scores,
-            "carry_forward": provenance,
-        }
-        checksum = canonical_sha256(immutable)
         lifecycle = "draft" if certified else "rejected"
+        # Constructed FIRST, checksum computed over ITS payload: same single-source rule as
+        # `calibrate`, see the comment there.
+        artifact = CalibrationArtifactV2(
+            calibration_id=calibration_id,
+            tenant_id=self.tenant_id,
+            generation_id=generation_id,
+            embedder_identity=pipeline.embedder.to_dict(),
+            pipeline_fingerprint=pipeline_fingerprint,
+            corpus_fingerprint=corpus_fingerprint,
+            query_set_digest=query_digest,
+            threshold=runtime.threshold,
+            scale=runtime.scale,
+            separability=runtime.separability,
+            separability_ci=runtime.separability_ci,
+            n_answerable=len(answerable),
+            n_unanswerable=len(unanswerable),
+            certified=certified,
+            certification_reason=reason,
+            lifecycle_state=lifecycle,
+            created_at=created_at,
+            created_by=self.actor,
+            scores=scores,
+            checksum=_UNCOMPUTED_CHECKSUM,
+            carry_forward=provenance,
+        )
+        payload = artifact.immutable_payload()
+        checksum = canonical_sha256(payload)
         with self._connect() as conn, conn.transaction():
             conn.execute(
                 "INSERT INTO recall_calibrations "
@@ -915,31 +1200,31 @@ class CalibrationRepository:
                 "artifact_checksum, carry_forward) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, "
                 "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
+                    # Every checksummed value comes from `payload`, the mapping the digest was
+                    # computed over. That is also why `certification_reason` is right here by
+                    # construction: the payload can only hold the string that was hashed.
                     self.tenant_id,
-                    calibration_id,
-                    generation_id,
-                    Jsonb(pipeline.embedder.to_dict()),
-                    pipeline_fingerprint,
-                    corpus_fingerprint,
-                    query_digest,
-                    runtime.threshold,
-                    runtime.scale,
-                    runtime.separability,
-                    runtime.separability_ci[0],
-                    runtime.separability_ci[1],
-                    len(answerable),
-                    len(unanswerable),
-                    certified,
-                    # `reason`, not `runtime.certification_reason`: the column has to hold the
-                    # same string the checksum was taken over, or every later read of this row
-                    # fails verification and reports corruption instead of a rejection.
-                    reason,
+                    payload["calibration_id"],
+                    payload["generation_id"],
+                    Jsonb(payload["embedder_identity"]),
+                    payload["pipeline_fingerprint"],
+                    payload["corpus_fingerprint"],
+                    payload["query_set_digest"],
+                    payload["threshold"],
+                    payload["scale"],
+                    payload["separability"],
+                    payload["separability_ci"][0],
+                    payload["separability_ci"][1],
+                    payload["n_answerable"],
+                    payload["n_unanswerable"],
+                    payload["certified"],
+                    payload["certification_reason"],
                     lifecycle,
-                    Jsonb(scores),
-                    created_at,
-                    self.actor,
+                    Jsonb(payload["scores"]),
+                    payload["created_at"],
+                    payload["created_by"],
                     checksum,
-                    Jsonb(provenance),
+                    Jsonb(payload["carry_forward"]),
                 ),
             )
             self._audit(
@@ -1145,10 +1430,13 @@ class CalibrationRepository:
                 value[key] = _utc_isoformat(item)
         # `to_jsonb` renders a timestamptz as a STRING already formatted in the session
         # TimeZone, so the loop above never sees it and `show` would otherwise disagree with
-        # `list` about the same field. Re-render it as the checksummed form.
-        created_at = value.get("created_at")
-        if isinstance(created_at, str):
-            value["created_at"] = _utc_isoformat(datetime.fromisoformat(created_at))
+        # `list` about the same field. Re-render as the canonical UTC form: `created_at` is the
+        # checksummed string, and `published_at` / `superseded_at` are set by `clock_timestamp()`
+        # in `publish`, so all three arrive in whatever TimeZone the session happens to run in.
+        for key in ("created_at", "published_at", "superseded_at"):
+            item = value.get(key)
+            if isinstance(item, str):
+                value[key] = _utc_isoformat(datetime.fromisoformat(item))
         return value
 
     def export_bundle(self, calibration_id: str, path: str | Path) -> Path:
@@ -1199,11 +1487,30 @@ class CalibrationRepository:
         ):
             raise CalibrationBindingError("imported calibration does not match generation lineage")
         immutable_keys = CalibrationArtifactV2.__dataclass_fields__.keys()
+        # Validated by name BEFORE construction: a missing key would otherwise surface as a bare
+        # KeyError (from the separability_ci coercion) or TypeError (from the constructor), both
+        # of which escape the CLI's `except CalibrationError` as an unnamed crash.
+        optional_keys = {"artifact_version", "carry_forward", "lifecycle_state"}
+        for key in immutable_keys:
+            if key not in optional_keys and key not in artifact_raw:
+                raise CalibrationBindingError(f"bundle is malformed: missing {key!r}")
         values = {key: artifact_raw[key] for key in immutable_keys if key in artifact_raw}
-        values["separability_ci"] = tuple(values["separability_ci"])
+        try:
+            values["separability_ci"] = tuple(values["separability_ci"])
+        except TypeError:
+            raise CalibrationBindingError(
+                "bundle is malformed: separability_ci must be a pair of bounds"
+            ) from None
         values["lifecycle_state"] = "draft" if values.get("certified") else "rejected"
-        artifact = CalibrationArtifactV2(**values)
+        try:
+            artifact = CalibrationArtifactV2(**values)
+        except (TypeError, ValueError) as exc:
+            raise CalibrationBindingError(f"bundle is malformed: {exc}") from exc
         artifact.verify_checksum()
+        # The checksum above only proves internal consistency; it is unkeyed, so a forger can
+        # recompute it over any content. The recorded statistics and the certification verdict
+        # must also FOLLOW from the scores the bundle carries.
+        _require_scores_support_certification(artifact)
         generation_embedder = identity.get("embedder")
         if not isinstance(generation_embedder, Mapping) or canonical_sha256(
             artifact.embedder_identity
@@ -1216,45 +1523,54 @@ class CalibrationRepository:
                 "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
                 (self.tenant_id, digest, Jsonb(list(labels)), len(labels), self.actor),
             )
-            conn.execute(
-                "INSERT INTO recall_calibrations "
-                "(tenant_id, calibration_id, generation_id, embedder_identity, "
-                "pipeline_fingerprint, corpus_fingerprint, query_set_digest, threshold, scale, "
-                "separability, ci_low, ci_high, n_answerable, n_unanswerable, certified, "
-                # `carry_forward` is written here for the same reason it is checksummed: it is
-                # part of the immutable payload, so an import that dropped it would store a row
-                # whose checksum can never verify again, and the artifact would come back from
-                # `get` as a corruption rather than as an import.
-                "certification_reason, lifecycle_state, scores, created_at, created_by, "
-                "artifact_checksum, carry_forward) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (
-                    self.tenant_id,
-                    artifact.calibration_id,
-                    generation_id,
-                    Jsonb(dict(identity["embedder"])),
-                    artifact.pipeline_fingerprint,
-                    artifact.corpus_fingerprint,
-                    digest,
-                    artifact.threshold,
-                    artifact.scale,
-                    artifact.separability,
-                    artifact.separability_ci[0],
-                    artifact.separability_ci[1],
-                    artifact.n_answerable,
-                    artifact.n_unanswerable,
-                    artifact.certified,
-                    artifact.certification_reason,
-                    artifact.lifecycle_state,
-                    Jsonb(dict(artifact.scores)),
-                    artifact.created_at,
-                    artifact.created_by,
-                    artifact.checksum,
-                    Jsonb(dict(artifact.carry_forward))
-                    if artifact.carry_forward is not None
-                    else None,
-                ),
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO recall_calibrations "
+                    "(tenant_id, calibration_id, generation_id, embedder_identity, "
+                    "pipeline_fingerprint, corpus_fingerprint, query_set_digest, threshold, "
+                    "scale, "
+                    "separability, ci_low, ci_high, n_answerable, n_unanswerable, certified, "
+                    # `carry_forward` is written here for the same reason it is checksummed: it
+                    # is part of the immutable payload, so an import that dropped it would store
+                    # a row whose checksum can never verify again, and the artifact would come
+                    # back from `get` as a corruption rather than as an import.
+                    "certification_reason, lifecycle_state, scores, created_at, created_by, "
+                    "artifact_checksum, carry_forward) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        self.tenant_id,
+                        artifact.calibration_id,
+                        generation_id,
+                        Jsonb(dict(identity["embedder"])),
+                        artifact.pipeline_fingerprint,
+                        artifact.corpus_fingerprint,
+                        digest,
+                        artifact.threshold,
+                        artifact.scale,
+                        artifact.separability,
+                        artifact.separability_ci[0],
+                        artifact.separability_ci[1],
+                        artifact.n_answerable,
+                        artifact.n_unanswerable,
+                        artifact.certified,
+                        artifact.certification_reason,
+                        artifact.lifecycle_state,
+                        Jsonb(dict(artifact.scores)),
+                        artifact.created_at,
+                        artifact.created_by,
+                        artifact.checksum,
+                        Jsonb(dict(artifact.carry_forward))
+                        if artifact.carry_forward is not None
+                        else None,
+                    ),
+                )
+            except psycopg.errors.UniqueViolation as exc:
+                # A re-import of an id that is already stored. Named rather than allowed to
+                # escape as a raw UniqueViolation, which the CLI cannot catch and which reads
+                # as a crash instead of as the benign fact it is.
+                raise CalibrationBindingError(
+                    f"calibration already imported: {artifact.calibration_id}"
+                ) from exc
             self._audit(conn, "calibration_imported", artifact.calibration_id, generation_id)
         return artifact.calibration_id
 
@@ -1266,7 +1582,15 @@ class CalibrationRepository:
             scale = float(data["scale"])
         except (KeyError, TypeError, ValueError) as exc:
             raise CalibrationBindingError("legacy calibration is malformed") from exc
-        if not math.isfinite(threshold) or not math.isfinite(scale) or scale <= 0:
+        # The range check mirrors the table's CHECK (threshold BETWEEN -1.0 AND 1.0): without it
+        # a legacy file with a cosine outside that range reaches the INSERT and surfaces as a raw
+        # CheckViolation instead of a named refusal at the boundary.
+        if (
+            not math.isfinite(threshold)
+            or not math.isfinite(scale)
+            or scale <= 0
+            or not -1.0 <= threshold <= 1.0
+        ):
             raise CalibrationBindingError("legacy calibration contains invalid numeric values")
         calibration_id = _id("legacy_cal")
         with self._connect() as conn, conn.transaction():

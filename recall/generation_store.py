@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
 from dataclasses import replace
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 import psycopg
@@ -56,6 +57,13 @@ class ImmutableGenerationError(RuntimeError, RecallError):
 #: per object exactly so an erasure issued mid-build lands.
 LIVE_MANIFEST_STATES = ("building", "validating", "ready", "active", "retired")
 
+#: How long a resolved calibration verdict may be served without re-reading the database, in
+#: seconds. The cache key already retires an entry when the active generation changes, so this
+#: bound only covers the rarer event of the SAME generation being recalibrated in place by an
+#: administrative action. Thirty seconds keeps that window shorter than any human loop while
+#: removing the per query round trips from `trusted_search`.
+CALIBRATION_RESOLUTION_TTL_S = 30.0
+
 
 class GenerationStore(PgVectorStore):
     """The retrieval surface for v1, scoped to a request-consistent active generation."""
@@ -87,6 +95,9 @@ class GenerationStore(PgVectorStore):
             f"recall_generation_{uuid.uuid4().hex}", default=None
         )
         self._fixed_generation: str | None = None
+        self._calibration_resolution: (
+            tuple[tuple[str, str], "CalibrationResolution", float] | None
+        ) = None
 
     def _reset_tenant_state(self) -> None:
         """Also rebuild the pinned-generation ContextVar, which is tenant-derived.
@@ -102,6 +113,9 @@ class GenerationStore(PgVectorStore):
             f"recall_generation_{uuid.uuid4().hex}", default=None
         )
         self._fixed_generation = None
+        # The cached calibration resolution is tenant derived too; the key would catch a stale
+        # entry anyway, but a view should never start life holding another tenant's verdict.
+        self._calibration_resolution = None
 
     def check_schema(self) -> None:
         from recall.schema import check_schema
@@ -307,11 +321,47 @@ class GenerationStore(PgVectorStore):
         return self._with_retry(_op)
 
     def resolve_calibration(self) -> CalibrationResolution:
+        """Resolve the serving calibration on this store's own borrowed connection.
+
+        Two costs were paid per query before this: `CalibrationRepository.resolve` opened a
+        fresh psycopg connection every call, and re-canonicalised the stored query set every
+        call, both on the serve-time `trusted_search` path. The repository already exposes
+        `resolve_within` for a caller-held connection, so the store lends one of its own; and
+        the verdict is cached per `(tenant, generation)` with a short TTL, because a published
+        calibration for an immutable generation only changes through an administrative action.
+        The generation key retires the entry the moment a promotion moves the active pointer;
+        the TTL bounds how long an administrative recalibration of the SAME generation can go
+        unnoticed.
+        """
         from recall.calibration_v2 import CalibrationRepository
 
-        return CalibrationRepository(self._dsn, self._tenant, actor="generation-search").resolve(
-            self._generation_id()
-        )
+        generation_id = self._generation_id()
+        key = (self._tenant, generation_id)
+        cached = self._calibration_resolution
+        if cached is not None:
+            cached_key, resolution, cached_at = cached
+            if cached_key == key and monotonic() - cached_at < CALIBRATION_RESOLUTION_TTL_S:
+                return resolution
+        repository = CalibrationRepository(self._dsn, self._tenant, actor="generation-search")
+
+        def _op(conn: psycopg.Connection) -> CalibrationResolution:
+            # `resolve_within` issues several statements, so the snapshot is load bearing: the
+            # repository's own `resolve` wraps them in REPEATABLE READ READ ONLY, and losing
+            # that here would let a concurrent promotion be observed part way through a
+            # resolution. When this connection is idle the transaction is ours to open, so the
+            # isolation level is ours to set, and it must be the first statement inside it.
+            # When the connection is already in a transaction (shared-pool mode) this nests as
+            # a savepoint and inherits the outer snapshot, where setting the level is neither
+            # permitted nor wanted: that caller-owned isolation is what `resolve_within` is for.
+            idle = conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+            with conn.transaction():
+                if idle:
+                    conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                return repository.resolve_within(conn, generation_id)
+
+        resolution = self._with_retry(_op)
+        self._calibration_resolution = (key, resolution, monotonic())
+        return resolution
 
     @staticmethod
     def _generation_rows(rows: list[tuple[Any, ...]]) -> list[ScoredChunk]:

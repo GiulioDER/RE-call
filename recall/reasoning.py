@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from enum import Enum
 import math
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Literal, Protocol, cast, get_args
 
 from recall.evidence import (
     AnswerEnvelope,
@@ -23,10 +23,10 @@ from recall.evidence import (
 )
 from recall.reasoning_graph import ReasoningGraphProjection
 from recall.reasoning_expansion import (
+    ExpansionMode,
     ExpansionProposal,
     ExpansionReport,
     ExpansionRequest,
-    MAX_RETRIEVAL_ROUNDS,
     ReasoningExpansionProvider,
     ReasoningExpansionRetriever,
     RetrievalExpansionTrace,
@@ -47,7 +47,14 @@ from recall.reasoning_planner import (
 )
 from recall.observability import METRICS
 from recall.provider_metadata import ProviderMetadata
-from recall.reasoning_proposals import InferenceProposal, ProposalProtocolReport, ProviderFailure
+from recall.reasoning_proposals import (
+    InferenceProposal,
+    ProposalProtocolReport,
+    ProposalStatus,
+    ProposedRelation,
+    ProviderFailure,
+    ProviderFailureKind,
+)
 from recall.types import TrustedResult
 from recall.trust import is_trusted
 from recall.errors import RecallError
@@ -114,6 +121,10 @@ class SemanticGraphExpansionResult:
     candidates_rejected: int = 0
     diagnostics_encountered: int = 0
     latency_ms: float = 0.0
+    #: Pairs of (rejection reason, count) for candidates the expansion's admission policy
+    #: refused. The reason vocabulary belongs to the graph expansion provider's admission
+    #: policy (for example "hub_entity" or "cosine_admission"); the pairs are surfaced
+    #: verbatim as :attr:`ReasoningDiagnostics.graph_admission_rejections`.
     admission_rejections: tuple[tuple[str, int], ...] = ()
     gate_reason: str | None = None
     policy_fingerprint: str | None = None
@@ -274,7 +285,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
     graph_expansion: SemanticGraphExpansionResult | None = None
     if not request.query.strip():
         empty_bundle = _empty_bundle(request)
-        response = _response(
+        return _response(
             request=request,
             retrieval=None,
             bundle=empty_bundle,
@@ -289,15 +300,13 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             started=started,
             graph_expansion=graph_expansion,
         )
-        _record_reasoning_metrics(response)
-        return response
 
     retrieval = request.providers.retriever(request)
     _validate_retrieval_binding(request, retrieval)
     if request.policy.graph_expansion == "one_hop":
         provider = request.providers.graph_expansion_provider
         if provider is None:
-            response = _response(
+            return _response(
                 request=request,
                 retrieval=retrieval,
                 bundle=build_evidence_bundle(retrieval, request.evidence_policy),
@@ -313,8 +322,6 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                     retrieval=retrieval, readiness="GRAPH_NOT_READY"
                 ),
             )
-            _record_reasoning_metrics(response)
-            return response
         graph_failure: ProviderFailure | None = None
         try:
             graph_expansion = provider(request, retrieval)
@@ -342,8 +349,26 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 provider_revision="v1",
                 message=type(exc).__name__,
             )
+        if graph_expansion.readiness == "ready":
+            try:
+                _validate_retrieval_binding(request, graph_expansion.retrieval)
+            except ReasoningValidationError as exc:
+                # A provider returning evidence bound to another tenant, generation, or corpus is
+                # a misbehaving provider, not a caller error: fail closed exactly as a provider
+                # exception does, keeping the validated seed retrieval.
+                graph_expansion = SemanticGraphExpansionResult(
+                    retrieval=retrieval,
+                    readiness="GRAPH_PROVIDER_ERROR",
+                )
+                graph_failure = ProviderFailure(
+                    kind="provider_error",
+                    provider_id="semantic-graph",
+                    model_id="deterministic",
+                    provider_revision="v1",
+                    message=type(exc).__name__,
+                )
         if graph_expansion.readiness != "ready":
-            response = _response(
+            return _response(
                 request=request,
                 retrieval=retrieval,
                 bundle=build_evidence_bundle(retrieval, request.evidence_policy),
@@ -358,13 +383,11 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 provider_failures=(graph_failure,) if graph_failure is not None else (),
                 graph_expansion=graph_expansion,
             )
-            _record_reasoning_metrics(response)
-            return response
         retrieval = graph_expansion.retrieval
     bundle = build_evidence_bundle(retrieval, request.evidence_policy)
 
     if request.policy.require_certified_evidence and bundle.trust_state != "trusted":
-        response = _response(
+        return _response(
             request=request,
             retrieval=retrieval,
             bundle=bundle,
@@ -378,11 +401,9 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             started=started,
             graph_expansion=graph_expansion,
         )
-        _record_reasoning_metrics(response)
-        return response
 
     if request.policy.name == "retrieval_only":
-        response = _response(
+        return _response(
             request=request,
             retrieval=retrieval,
             bundle=bundle,
@@ -396,8 +417,6 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             started=started,
             graph_expansion=graph_expansion,
         )
-        _record_reasoning_metrics(response)
-        return response
 
     graph: ReasoningGraphProjection | None = None
     proposals: tuple[InferenceProposal, ...] = ()
@@ -419,7 +438,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
         provider_failures = (*provider_failures, *proposal_failures)
         _validate_proposals(graph, proposals)
         if proposal_failures:
-            response = _response(
+            return _response(
                 request=request,
                 retrieval=retrieval,
                 bundle=bundle,
@@ -435,8 +454,6 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 started=started,
                 graph_expansion=graph_expansion,
             )
-            _record_reasoning_metrics(response)
-            return response
         plan = plan_multi_hop_evidence(
             retrieval,
             graph,
@@ -448,7 +465,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             outcome: ReasoningOutcome = (
                 "needs_review" if plan.stop_reason == "ambiguous_evidence" else "abstained"
             )
-            response = _response(
+            return _response(
                 request=request,
                 retrieval=retrieval,
                 bundle=bundle,
@@ -464,10 +481,8 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 started=started,
                 graph_expansion=graph_expansion,
             )
-            _record_reasoning_metrics(response)
-            return response
         if request.policy.require_human_review_on_proposals and proposals:
-            response = _response(
+            return _response(
                 request=request,
                 retrieval=retrieval,
                 bundle=bundle,
@@ -483,11 +498,9 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 started=started,
                 graph_expansion=graph_expansion,
             )
-            _record_reasoning_metrics(response)
-            return response
 
     if bundle.decision == "abstain":
-        response = _response(
+        return _response(
             request=request,
             retrieval=retrieval,
             bundle=bundle,
@@ -503,10 +516,8 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             started=started,
             graph_expansion=graph_expansion,
         )
-        _record_reasoning_metrics(response)
-        return response
     if request.providers.answer_provider is None:
-        response = _response(
+        return _response(
             request=request,
             retrieval=retrieval,
             bundle=bundle,
@@ -522,18 +533,46 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             started=started,
             graph_expansion=graph_expansion,
         )
-        _record_reasoning_metrics(response)
-        return response
 
     system, user = render_evidence_prompt(bundle)
-    raw = parse_answer_envelope(request.providers.answer_provider(system, user))
+    try:
+        provider_output = request.providers.answer_provider(system, user)
+    except Exception as exc:
+        # Every other provider port converts its exceptions to an in-band ProviderFailure; a
+        # network timeout in the answer provider must not crash the run past the metrics record.
+        # Envelope validation below stays out of this block: malformed output raising
+        # EvidenceValidationError is the module's existing contract.
+        failure = ProviderFailure(
+            kind="timeout" if isinstance(exc, TimeoutError) else "provider_error",
+            provider_id="unknown",
+            model_id="unknown",
+            provider_revision="unknown",
+            message=type(exc).__name__,
+        )
+        return _response(
+            request=request,
+            retrieval=retrieval,
+            bundle=bundle,
+            outcome="abstained",
+            answer=None,
+            proposals=proposals,
+            provider_failures=(*provider_failures, failure),
+            plan=plan,
+            refusal_reason="provider_failure",
+            generator_invoked=True,
+            citations_normalized=False,
+            expansion_trace=expansion_trace,
+            started=started,
+            graph_expansion=graph_expansion,
+        )
+    raw = parse_answer_envelope(provider_output)
     envelope = normalize_citations(raw)
     validation = validate_answer(envelope, bundle)
     if not validation.valid:
         raise EvidenceValidationError("; ".join(validation.errors))
     citations_normalized = envelope.citations != raw.citations
     if envelope.insufficient_evidence:
-        response = _response(
+        return _response(
             request=request,
             retrieval=retrieval,
             bundle=bundle,
@@ -549,9 +588,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             started=started,
             graph_expansion=graph_expansion,
         )
-        _record_reasoning_metrics(response)
-        return response
-    response = _response(
+    return _response(
         request=request,
         retrieval=retrieval,
         bundle=bundle,
@@ -567,8 +604,6 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
         started=started,
         graph_expansion=graph_expansion,
     )
-    _record_reasoning_metrics(response)
-    return response
 
 
 def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResponse:
@@ -627,8 +662,10 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         retrieval_expansion=_optional_expansion_trace(
             diagnostics_payload.get("retrieval_expansion")
         ),
-        graph_expansion_mode=cast(
-            GraphExpansionMode, diagnostics_payload.get("graph_expansion_mode", "off")
+        graph_expansion_mode=_checked_literal(
+            diagnostics_payload.get("graph_expansion_mode", "off"),
+            get_args(GraphExpansionMode),
+            "graph_expansion_mode",
         ),
         graph_readiness=str(diagnostics_payload.get("graph_readiness", "not_requested")),
         graph_entities_inspected=_required_int(
@@ -662,7 +699,7 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
     )
     return ReasoningResponse(
         schema_version=_required_int(payload["schema_version"]),
-        outcome=cast(ReasoningOutcome, payload["outcome"]),
+        outcome=_checked_literal(payload["outcome"], get_args(ReasoningOutcome), "outcome"),
         answer=_optional_str(payload.get("answer")),
         clarification_request=_optional_str(payload.get("clarification_request")),
         trusted_evidence=bundle,
@@ -687,6 +724,38 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
     )
 
 
+def _expansion_failure(
+    message: str, kind: ProviderFailureKind = "provider_error"
+) -> ProviderFailure:
+    """The expansion phase's in-band failure record, shared by every exit path."""
+    return ProviderFailure(
+        kind=kind,
+        provider_id="recall.reasoning",
+        model_id="unknown",
+        provider_revision="unknown",
+        message=message,
+    )
+
+
+def _expansion_unavailable(
+    retrieval: TrustedResult, bundle: EvidenceBundle, reason: str
+) -> tuple[
+    TrustedResult,
+    EvidenceBundle,
+    RetrievalExpansionTrace,
+    tuple[ProviderFailure, ...],
+    int,
+]:
+    """Return the untouched baseline when an expansion port is missing. No round ran."""
+    return (
+        retrieval,
+        bundle,
+        RetrievalExpansionTrace(attempted=False, rounds=0, fallback_reason=reason),
+        (_expansion_failure(reason),),
+        0,
+    )
+
+
 def _expand_retrieval(
     request: ReasoningRequest,
     retrieval: TrustedResult,
@@ -703,31 +772,19 @@ def _expand_retrieval(
     provider = request.providers.expansion_provider
     retriever = request.providers.expansion_retriever
     if retriever is None:
-        return (
-            retrieval,
-            bundle,
-            RetrievalExpansionTrace(
-                attempted=False,
-                rounds=1,
-                fallback_reason="expansion_provider_unavailable",
-            ),
-            (
-                ProviderFailure(
-                    kind="provider_error",
-                    provider_id="recall.reasoning",
-                    model_id="unknown",
-                    provider_revision="unknown",
-                    message="expansion_provider_unavailable",
-                ),
-            ),
-            0,
-        )
+        return _expansion_unavailable(retrieval, bundle, "expansion_retriever_unavailable")
 
     initial_retrieval = retrieval
     initial_bundle = bundle
+    initial_ids = {hit.chunk.id for hit in initial_retrieval.hits}
     depth_result: TrustedResult | None = None
     depth_proposal: ExpansionProposal | None = None
+    depth_accepted: tuple[str, ...] = ()
     executed_queries: list[str] = []
+    # The trace reports the number of retrieval rounds actually executed. The depth round
+    # counts once its retrieval is issued, failed or not; the model proposed round counts once
+    # it issues retrievals. The provider's own model call is not a retrieval round.
+    rounds_executed = 0
     depth_needed = retrieval.gap_warning or retrieval.abstained
     if depth_needed:
         depth_proposal = ExpansionProposal(
@@ -735,29 +792,23 @@ def _expand_retrieval(
             mode="depth",
             query=request.query,
         )
+        rounds_executed = 1
         try:
             depth_result = retriever(request, depth_proposal, retrieval)
             _validate_retrieval_binding(request, depth_result)
             if request.policy.require_certified_evidence and depth_result.trust_state != "trusted":
                 raise ReasoningValidationError("depth expansion is not certified")
         except Exception as exc:
-            failure = ProviderFailure(
-                kind="provider_error",
-                provider_id="recall.reasoning",
-                model_id="unknown",
-                provider_revision="unknown",
-                message=type(exc).__name__,
-            )
             return (
                 initial_retrieval,
                 initial_bundle,
                 RetrievalExpansionTrace(
                     attempted=True,
-                    rounds=MAX_RETRIEVAL_ROUNDS,
+                    rounds=rounds_executed,
                     proposals=(depth_proposal,),
                     fallback_reason="depth_retrieval_failure",
                 ),
-                (failure,),
+                (_expansion_failure(type(exc).__name__),),
                 0,
             )
         executed_queries.append(request.query)
@@ -765,22 +816,22 @@ def _expand_retrieval(
             retrieval, (depth_result,), original_query=request.query
         )
         bundle = build_evidence_bundle(retrieval, request.evidence_policy)
+        depth_accepted = tuple(
+            hit.chunk.id
+            for hit in depth_result.hits
+            if hit.verdict == "ok" and hit.chunk.id not in initial_ids
+        )
 
     if depth_result is not None and not (depth_result.gap_warning or depth_result.abstained):
-        initial_ids = {hit.chunk.id for hit in initial_retrieval.hits}
         return (
             retrieval,
             bundle,
             RetrievalExpansionTrace(
                 attempted=True,
-                rounds=1,
+                rounds=rounds_executed,
                 proposals=(depth_proposal,) if depth_proposal is not None else (),
                 executed_queries=tuple(executed_queries),
-                accepted_chunk_ids=tuple(
-                    hit.chunk.id
-                    for hit in depth_result.hits
-                    if hit.verdict == "ok" and hit.chunk.id not in initial_ids
-                ),
+                accepted_chunk_ids=depth_accepted,
                 provider_skipped_reason="depth_resolved",
             ),
             (),
@@ -789,52 +840,47 @@ def _expand_retrieval(
 
     if provider is None:
         if depth_result is None:
-            return (
-                initial_retrieval,
-                initial_bundle,
-                RetrievalExpansionTrace(
-                    attempted=False,
-                    rounds=1,
-                    fallback_reason="expansion_provider_unavailable",
-                ),
-                (
-                    ProviderFailure(
-                        kind="provider_error",
-                        provider_id="recall.reasoning",
-                        model_id="unknown",
-                        provider_revision="unknown",
-                        message="expansion_provider_unavailable",
-                    ),
-                ),
-                0,
+            return _expansion_unavailable(
+                initial_retrieval, initial_bundle, "expansion_provider_unavailable"
             )
         return (
             retrieval,
             bundle,
             RetrievalExpansionTrace(
                 attempted=True,
-                rounds=MAX_RETRIEVAL_ROUNDS,
+                rounds=rounds_executed,
                 proposals=(depth_proposal,) if depth_proposal is not None else (),
                 executed_queries=tuple(executed_queries),
-                accepted_chunk_ids=tuple(
-                    hit.chunk.id
-                    for hit in depth_result.hits
-                    if hit.verdict == "ok"
-                    and hit.chunk.id not in {item.chunk.id for item in initial_retrieval.hits}
-                ),
+                accepted_chunk_ids=depth_accepted,
             ),
             (),
             0,
         )
 
     if request.budget.max_model_calls < 1:
+        if depth_result is not None:
+            # The depth round cost zero model calls, so its merged evidence is kept exactly as
+            # the provider is None branch above keeps it; only the model round is skipped.
+            return (
+                retrieval,
+                bundle,
+                RetrievalExpansionTrace(
+                    attempted=True,
+                    rounds=rounds_executed,
+                    proposals=(depth_proposal,) if depth_proposal is not None else (),
+                    executed_queries=tuple(executed_queries),
+                    accepted_chunk_ids=depth_accepted,
+                    fallback_reason="budget_exhausted",
+                ),
+                (),
+                0,
+            )
         return (
             initial_retrieval,
             initial_bundle,
             RetrievalExpansionTrace(
-                attempted=depth_result is not None,
-                rounds=MAX_RETRIEVAL_ROUNDS if depth_result is not None else 1,
-                executed_queries=tuple(executed_queries),
+                attempted=False,
+                rounds=0,
                 fallback_reason="budget_exhausted",
             ),
             (),
@@ -858,23 +904,16 @@ def _expand_retrieval(
         if not isinstance(report, ExpansionReport):
             raise TypeError("expansion provider returned a non ExpansionReport value")
     except Exception as exc:
-        failure = ProviderFailure(
-            kind="provider_error",
-            provider_id="recall.reasoning",
-            model_id="unknown",
-            provider_revision="unknown",
-            message=type(exc).__name__,
-        )
         return (
             initial_retrieval,
             initial_bundle,
             RetrievalExpansionTrace(
                 attempted=True,
-                rounds=MAX_RETRIEVAL_ROUNDS,
+                rounds=rounds_executed,
                 executed_queries=tuple(executed_queries),
                 fallback_reason="provider_failure",
             ),
-            (failure,),
+            (_expansion_failure(type(exc).__name__),),
             1,
         )
 
@@ -885,7 +924,7 @@ def _expand_retrieval(
             initial_bundle,
             RetrievalExpansionTrace(
                 attempted=True,
-                rounds=MAX_RETRIEVAL_ROUNDS,
+                rounds=rounds_executed,
                 proposals=report.proposals,
                 executed_queries=tuple(executed_queries),
                 fallback_reason="provider_failure",
@@ -894,22 +933,15 @@ def _expand_retrieval(
             1,
         )
     if len(report.proposals) > expansion_request.max_queries:
-        failure = ProviderFailure(
-            kind="wrong_cardinality",
-            provider_id="recall.reasoning",
-            model_id="unknown",
-            provider_revision="unknown",
-            message="too_many_expansion_queries",
-        )
         return (
             initial_retrieval,
             initial_bundle,
             RetrievalExpansionTrace(
                 attempted=True,
-                rounds=MAX_RETRIEVAL_ROUNDS,
+                rounds=rounds_executed,
                 fallback_reason="wrong_cardinality",
             ),
-            (failure,),
+            (_expansion_failure("too_many_expansion_queries", kind="wrong_cardinality"),),
             1,
         )
 
@@ -919,7 +951,8 @@ def _expand_retrieval(
         if not (depth_result is not None and proposal.mode == "depth")
     )
     expanded_results: list[TrustedResult] = []
-    initial_ids = {hit.chunk.id for hit in initial_retrieval.hits}
+    if proposals:
+        rounds_executed += 1
     for proposal in proposals:
         try:
             expanded = retriever(request, proposal, retrieval)
@@ -927,24 +960,17 @@ def _expand_retrieval(
             if request.policy.require_certified_evidence and expanded.trust_state != "trusted":
                 raise ReasoningValidationError("expanded retrieval is not certified")
         except Exception as exc:
-            failure = ProviderFailure(
-                kind="provider_error",
-                provider_id="recall.reasoning",
-                model_id="unknown",
-                provider_revision="unknown",
-                message=type(exc).__name__,
-            )
             return (
                 initial_retrieval,
                 initial_bundle,
                 RetrievalExpansionTrace(
                     attempted=True,
-                    rounds=MAX_RETRIEVAL_ROUNDS,
+                    rounds=rounds_executed,
                     proposals=report.proposals,
                     executed_queries=tuple(executed_queries),
                     fallback_reason="expanded_retrieval_failure",
                 ),
-                (failure,),
+                (_expansion_failure(type(exc).__name__),),
                 1,
             )
         expanded_results.append(expanded)
@@ -956,16 +982,12 @@ def _expand_retrieval(
             bundle,
             RetrievalExpansionTrace(
                 attempted=True,
-                rounds=MAX_RETRIEVAL_ROUNDS,
+                rounds=rounds_executed,
                 proposals=(depth_proposal,) + report.proposals
                 if depth_proposal is not None
                 else report.proposals,
                 executed_queries=tuple(executed_queries),
-                accepted_chunk_ids=tuple(
-                    hit.chunk.id
-                    for hit in depth_result.hits
-                    if hit.verdict == "ok" and hit.chunk.id not in initial_ids
-                ),
+                accepted_chunk_ids=depth_accepted,
                 fallback_reason="no_expansion_proposal",
             ),
             (),
@@ -977,7 +999,7 @@ def _expand_retrieval(
             initial_bundle,
             RetrievalExpansionTrace(
                 attempted=True,
-                rounds=MAX_RETRIEVAL_ROUNDS,
+                rounds=rounds_executed,
                 proposals=report.proposals,
                 executed_queries=tuple(executed_queries),
                 fallback_reason="no_expansion_proposal",
@@ -999,7 +1021,7 @@ def _expand_retrieval(
         merged_bundle,
         RetrievalExpansionTrace(
             attempted=True,
-            rounds=MAX_RETRIEVAL_ROUNDS,
+            rounds=rounds_executed,
             proposals=(depth_proposal,) + report.proposals
             if depth_proposal is not None
             else report.proposals,
@@ -1200,6 +1222,11 @@ def _response(
     graph_expansion: SemanticGraphExpansionResult | None = None,
     expansion_trace: RetrievalExpansionTrace | None = None,
 ) -> ReasoningResponse:
+    """Assemble the response and record its metrics.
+
+    Every exit of :func:`reason` goes through here, so metrics recording is structural rather
+    than a call each return site must remember.
+    """
     cited = _citations(bundle, citations)
     contradictions = tuple(
         Contradiction(
@@ -1212,7 +1239,7 @@ def _response(
         for proposal in proposals
         if proposal.proposed_relation == "contradicts"
     )
-    return ReasoningResponse(
+    response = ReasoningResponse(
         schema_version=REASONING_API_VERSION,
         outcome=outcome,
         answer=answer,
@@ -1260,6 +1287,8 @@ def _response(
             ),
         ),
     )
+    _record_reasoning_metrics(response)
+    return response
 
 
 def _provider_metadata(request: ReasoningRequest) -> tuple[ProviderMetadata, ...]:
@@ -1331,6 +1360,9 @@ def _empty_bundle(request: ReasoningRequest) -> EvidenceBundle:
         retrieval_profile="unknown",
         index_generation=generation.generation_id or "unknown",
         items=(),
+        # No retrieval ran and no trust evaluation happened, so the dataclass default of
+        # "trusted" would be a false claim: the gate refused this request before evaluating it.
+        trust_state="refused",
     )
 
 
@@ -1370,7 +1402,7 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
     )
     return EvidenceBundle(
         query=str(payload["query"]),
-        decision=cast(Literal["answer", "abstain"], payload["decision"]),
+        decision=_checked_literal(payload["decision"], ("answer", "abstain"), "decision"),
         reason_code=_optional_str(payload.get("reason_code")),
         calibrated=_required_bool(payload["calibrated"]),
         stale=_required_bool(payload["stale"]),
@@ -1387,7 +1419,9 @@ def _proposal_from_dict(payload: Mapping[str, object]) -> InferenceProposal:
     return InferenceProposal(
         id=str(payload["id"]),
         source_evidence_ids=tuple(str(item) for item in _sequence(payload["source_evidence_ids"])),
-        proposed_relation=cast(Any, payload["proposed_relation"]),
+        proposed_relation=_checked_literal(
+            payload["proposed_relation"], get_args(ProposedRelation), "proposed_relation"
+        ),
         subject_id=str(payload["subject_id"]),
         object_id=str(payload["object_id"]),
         explanation=str(payload["explanation"]),
@@ -1398,7 +1432,9 @@ def _proposal_from_dict(payload: Mapping[str, object]) -> InferenceProposal:
         confidence=_optional_float(payload.get("confidence")),
         uncertainty=tuple(str(item) for item in _sequence(payload["uncertainty"])),
         generation_id=str(payload["generation_id"]),
-        status=cast(Any, payload.get("status", "candidate")),
+        status=_checked_literal(
+            payload.get("status", "candidate"), get_args(ProposalStatus), "status"
+        ),
         rule_id=_optional_str(payload.get("rule_id")),
         metadata=_mapping(payload.get("metadata", {})),
     )
@@ -1428,7 +1464,7 @@ def _optional_expansion_trace(value: object) -> RetrievalExpansionTrace | None:
     proposals = tuple(
         ExpansionProposal(
             id=str(item["id"]),
-            mode=cast(Any, item["mode"]),
+            mode=_checked_literal(item["mode"], get_args(ExpansionMode), "mode"),
             query=str(item["query"]),
             rationale=str(item.get("rationale", "")),
             parent_chunk_ids=tuple(
@@ -1596,7 +1632,10 @@ def _required_int(value: object) -> int:
         raise EvidenceValidationError("expected integer")
     if not isinstance(value, (str, bytes, bytearray, int)):
         raise EvidenceValidationError("expected integer")
-    return int(value)
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise EvidenceValidationError("expected integer") from exc
 
 
 def _required_float(value: object) -> float:
@@ -1633,6 +1672,17 @@ def _optional_str(value: object) -> str | None:
     return value
 
 
+def _checked_literal(value: object, allowed: tuple[str, ...], field_name: str) -> Any:
+    """Reject a serialized value that is outside its Literal vocabulary.
+
+    A bare `cast` would let an unknown value flow into a typed field silently, so every
+    deserialized enum-like field goes through here and fails loudly instead.
+    """
+    if value not in allowed:
+        raise EvidenceValidationError(f"{field_name} must be one of: {', '.join(allowed)}")
+    return value
+
+
 def _trust_state(value: object) -> str:
     if value not in {"trusted", "degraded", "refused"}:
         raise EvidenceValidationError("trust_state must be trusted, degraded, or refused")
@@ -1643,19 +1693,24 @@ __all__ = [
     "Citation",
     "Contradiction",
     "GenerationSelection",
+    "GraphExpansionMode",
     "REASONING_API_VERSION",
     "ReasoningAnswerProvider",
     "ReasoningDiagnostics",
+    "ReasoningGraphExpansionProvider",
     "ReasoningGraphProvider",
     "ReasoningOutcome",
     "ReasoningPolicy",
     "ReasoningPolicyName",
+    "ReasoningProposalProvider",
     "ReasoningProviderPorts",
     "ReasoningRequest",
     "ReasoningResponse",
     "ReasoningRetriever",
     "ReasoningValidationError",
     "ProviderFailure",
+    "ProviderMetadataSource",
+    "SemanticGraphExpansionResult",
     "reason",
     "reasoning_response_from_dict",
 ]

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import hashlib
 import random
-from contextlib import suppress
+from contextlib import AbstractContextManager, nullcontext, suppress
 import mimetypes
 import threading
 import time
@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import psycopg
 from pydantic import BaseModel, Field
@@ -1554,13 +1554,115 @@ def _reasoning_generation(store: PgVectorStore) -> GenerationSelection:
     return GenerationSelection(generation_id=generation_id if generation_id != "legacy" else None)
 
 
+_GRAPH_PROJECTION_LOCK = threading.Lock()
+#: Projections by `(tenant, generation, include_text, graph_fingerprint)`. `project_store_graph`
+#: streams every chunk of the generation and rebuilds the whole reasoning graph, and five tool
+#: paths call it per request; the projection is deterministic in that key, so rebuilding it per
+#: call bought nothing. The projection dataclass is frozen, so one cached instance is safe to
+#: hand to every caller (the semantic-expansion path edits its copy with `dataclasses.replace`,
+#: which never touches the cached one).
+#:
+#: ⚠️ The generation id alone is NOT enough to key this. A generation's CHUNKS are immutable
+#: once active, but its semantic graph rows are not: `recall graph rebuild <generation>`
+#: (`GenerationsManager.rebuild_graph`) rewrites them in place, leaving the generation id
+#: unchanged, so a cache keyed only on the id would serve the pre-rebuild projection for the
+#: life of the server while `graph_readiness` reported the new one. The readiness fingerprint
+#: moves with those rows, so it is carried in the key and invalidation stays exact rather than
+#: time based.
+#:
+#: That fingerprint is NOT free: `GenerationStore.graph_readiness` reads the validation summary,
+#: loads the whole semantic graph and hashes every member id, and it runs on cache hits too.
+#: It is still strongly worth paying, because what the cache removes is the full chunk stream
+#: and the reasoning-graph build, and the semantic-graph load was already inside
+#: `project_store_graph`. `_store_graph_with_readiness` hands the value it read to
+#: `reasoning_projection` so that a request pays for it once rather than twice.
+_GRAPH_PROJECTIONS: "dict[tuple[str, str, bool, str | None], ReasoningGraphProjection]" = {}
+#: A graph for a real corpus is large, and only the active generation's is ever asked for
+#: again, so the bound is small: enough for both include_text variants of two tenants.
+_GRAPH_PROJECTION_CACHE_MAX = 4
+
+
+def _reset_graph_projection_cache() -> None:
+    """Drop the cached graph projections. For tests."""
+    with _GRAPH_PROJECTION_LOCK:
+        _GRAPH_PROJECTIONS.clear()
+
+
+def _store_graph_with_readiness(
+    store: PgVectorStore, *, include_text: bool
+) -> "tuple[ReasoningGraphProjection, Any]":
+    """`project_store_graph` behind the process-level cache above, with the readiness it read.
+
+    Only a store that can name its generation is cacheable; a legacy store's corpus is mutable
+    under the same key, so it projects fresh every time. Every key read runs BEFORE the cache is
+    consulted, which is what makes invalidation exact rather than timed: a stale entry can only
+    be reached through a key nothing produces any more. A promotion moves the generation id; an
+    in place `recall graph rebuild` moves the readiness fingerprint.
+
+    ⛔ The key generation is the one `snapshot()` resolves, NOT `active_generation_id()`. They
+    differ: `snapshot` yields the pinned generation, else the process fixed one, else the active
+    one, and `project_store_graph` builds against exactly that. A benchmark server started with
+    `RECALL_PINNED_GENERATION_ID` deliberately serves a retired generation while a different one
+    is active, so keying on the active pointer there would file a pinned projection under the
+    active generation's name. The whole read runs INSIDE one snapshot so the key and the
+    projection cannot disagree even if the active pointer moves between them.
+
+    The readiness is returned rather than discarded because reading it is expensive (see the
+    note on `_GRAPH_PROJECTIONS`) and `reasoning_projection` needs the same value.
+    """
+    snapshot = getattr(store, "snapshot", None)
+    lookup = getattr(store, "active_generation_id", None)
+    if not callable(snapshot) and not callable(lookup):
+        return project_store_graph(store, include_text=include_text), None
+    # Bound to a name first: `getattr` gives mypy an optional, and the callable() test inside
+    # the `with` expression does not narrow it there.
+    scope: AbstractContextManager[Any] = (
+        snapshot() if callable(snapshot) else nullcontext(None)
+    )
+    with scope as pinned:
+        if pinned is not None:
+            generation_id = str(pinned)
+        elif callable(lookup):
+            generation_id = str(lookup())
+        else:
+            # Unreachable: the guard above returned when neither accessor was callable. Spelled
+            # out rather than asserted, because an assert disappears under -O and this decides
+            # the cache key.
+            return project_store_graph(store, include_text=include_text), None
+        readiness_reader = getattr(store, "graph_readiness", None)
+        readiness = readiness_reader() if callable(readiness_reader) else None
+        graph_fingerprint = getattr(readiness, "graph_fingerprint", None) if readiness else None
+        key = (store.tenant, generation_id, include_text, graph_fingerprint)
+        with _GRAPH_PROJECTION_LOCK:
+            cached = _GRAPH_PROJECTIONS.get(key)
+        if cached is not None:
+            return cached, readiness
+        graph = project_store_graph(store, include_text=include_text)
+        if graph.generation_id != generation_id:
+            # Belt and braces: inside one snapshot these agree by construction, so this can
+            # only fire for a store whose projection does not follow its own snapshot. Serve
+            # it, never cache it under a key it does not answer for.
+            return graph, readiness
+        with _GRAPH_PROJECTION_LOCK:
+            if key not in _GRAPH_PROJECTIONS:
+                while len(_GRAPH_PROJECTIONS) >= _GRAPH_PROJECTION_CACHE_MAX:
+                    _GRAPH_PROJECTIONS.pop(next(iter(_GRAPH_PROJECTIONS)))
+            _GRAPH_PROJECTIONS[key] = graph
+        return graph, readiness
+
+
+def _store_graph(store: PgVectorStore, *, include_text: bool) -> ReasoningGraphProjection:
+    """The cached projection alone, for the callers that do not need the readiness."""
+    return _store_graph_with_readiness(store, include_text=include_text)[0]
+
+
 def reasoning_projection(
     store: PgVectorStore, *, include_text: bool = False
 ) -> ReasoningProjectionResult:
-    graph = project_store_graph(store, include_text=include_text)
+    # The cache key already had to read the readiness, so take that value rather than paying
+    # for a second full semantic-graph load per request.
+    graph, readiness = _store_graph_with_readiness(store, include_text=include_text)
     semantic = graph.semantic_graph
-    readiness_reader = getattr(store, "graph_readiness", None)
-    readiness = readiness_reader() if callable(readiness_reader) else None
     return ReasoningProjectionResult(
         schema_version=graph.schema_version,
         graph_id=graph.graph_id,
@@ -1715,7 +1817,7 @@ def rewrite_plan(store: PgVectorStore, *, proposal_id: str) -> RewritePlanResult
     """
     from recall.rewrite import claim_key, destination, route_relation
 
-    graph = project_store_graph(store, include_text=True)
+    graph = _store_graph(store, include_text=True)
     proposals = deterministic_inference_proposals(
         graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
     )
@@ -1770,7 +1872,7 @@ def reasoning_proposals(
 ) -> ReasoningProposalResult:
     if limit < 1:
         raise ValueError("proposal limit must be positive")
-    graph = project_store_graph(store, include_text=True)
+    graph = _store_graph(store, include_text=True)
     proposals = deterministic_inference_proposals(
         graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
     )
@@ -1934,7 +2036,7 @@ def _expand_semantic_graph(
 
     readiness_reader = getattr(store, "graph_readiness", None)
     readiness = readiness_reader() if callable(readiness_reader) else None
-    graph = project_store_graph(store, include_text=True)
+    graph = _store_graph(store, include_text=True)
     semantic = graph.semantic_graph
     if semantic is None or (readiness is not None and not readiness.ready):
         reject("graph_not_ready")
@@ -2347,7 +2449,7 @@ def reasoning_query(
             del request
             if source is not None:
                 return _retrieval_graph(retrieval, include_text=True)
-            return project_store_graph(store, include_text=True)
+            return _store_graph(store, include_text=True)
 
         def proposal_provider(
             request: ReasoningRequest,
