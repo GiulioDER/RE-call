@@ -59,6 +59,7 @@ from recall.evidence import (
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, CurrentStateProjection, project_current_state
 from recall.explanations import RetrievalExplanation
 from recall.graph_first import (
+    GraphFirstCandidate,
     GraphFirstMode,
     MAX_GRAPH_FIRST_CANDIDATES,
     build_graph_first_candidates,
@@ -3749,7 +3750,7 @@ def graph_first_retrieval(
         graph_reason = type(exc).__name__
         semantic = None
 
-    graph_candidates = ()
+    graph_candidates: tuple[GraphFirstCandidate, ...] = ()
     if semantic is not None and graph_reason is None:
         graph_candidates = build_graph_first_candidates(
             semantic,
