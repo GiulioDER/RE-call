@@ -74,3 +74,8 @@ one shifted response and then an early relay exit. Its artifact is retained and 
 relay child was corrected to process the configuration request as the first query before the valid
 run below. The cold arm was measured against the locally configured corpus, not the preregistered
 remote primary; it is therefore supplementary unless a remote DSN is supplied.
+
+The second attempted run on 2026-08-28 was also invalid. Child processes started with the
+benchmark directory as their import root and could not import `recall_hooks.write_time`; all 30
+cold rows and the relay row were process failures before any corpus query. The child environment
+now pins the repository root on `PYTHONPATH`. These artifacts remain retained and unscored.

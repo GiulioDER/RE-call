@@ -22,6 +22,11 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "results"
+CHILD_ENV = {
+    **os.environ,
+    "PYTHONUTF8": "1",
+    "PYTHONPATH": str(ROOT) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+}
 OPTIONS = {
     "k": 5,
     "min_chars": 12,
@@ -77,7 +82,7 @@ def _one_request(
         capture_output=True,
         text=True,
         cwd=str(ROOT),
-        env={**os.environ, "PYTHONUTF8": "1"},
+        env=CHILD_ENV,
         timeout=30,
     )
     elapsed = (time.perf_counter() - started) * 1000
@@ -100,7 +105,7 @@ def _relay_requests(dsn: str, tenant: str, queries: list[str]) -> list[dict[str,
         stderr=subprocess.PIPE,
         text=True,
         cwd=str(ROOT),
-        env={**os.environ, "PYTHONUTF8": "1"},
+        env=CHILD_ENV,
         bufsize=1,
     )
     assert process.stdin is not None and process.stdout is not None
