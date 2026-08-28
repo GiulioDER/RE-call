@@ -65,3 +65,29 @@ Run each mode separately with immutable raw and checkpoint JSON paths. Generate 
 `scripts/summarize_graph_first_batch.py`. Record SHA256 digests for every raw and summary artifact.
 If a process exits before writing its raw artifact, resume the same mode and checkpoint with
 identical settings. Do not combine modes in one checkpoint.
+
+## Observed results
+
+Measurement completed on 2026-08-28 against the pinned generation above. Each arm completed 46 of
+46 rows, with one unique generation per artifact and graph readiness reported as ready for all
+rows.
+
+| mode | miss rescues | control retention | candidate queries | new trusted items | retrieval calls |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| entity | 0/15 | 17/31 | 12 | 5 | 58 |
+| relation | 0/15 | 17/31 | 0 | 0 | 46 |
+| hybrid | 0/15 | 17/31 | 12 | 5 | 58 |
+
+The four-input smoke completed for all three modes before the full run. The decision rule was not
+met: no mode reached five miss rescues or thirty retained controls. The graph-first route is
+therefore closed for this miss population; this result does not justify changing the trusted
+retrieval contract or adding pre-retrieval graph evidence.
+
+SHA256 digests, recorded immediately after scoring:
+
+* entity raw: `653da4cb5379bcf7ac0264ef85b97dca07630c4b59c24b5aed1e212ae0b9402c`;
+* entity summary: `ef20241306cd09e8837cd5c3f92de8450a43442d996db0e92a3e05b12617560`;
+* relation raw: `5f6c0ead4f729328964d45d9d0a91cc05b9e2e39f3cfb1e7bc661d13ceccec0`;
+* relation summary: `b06740a0e156758a6ba2c5ad56dc766c000ac436002ec9c3fd14892dd312567e`;
+* hybrid raw: `e7f71e1ba0ffc48e63570104780919a2248080fc0de521b02be5886bf71d448d`;
+* hybrid summary: `bd431e7afa0e0a2415fc75231d62651adbffcd4651e33f86ba84689ebc9315c4`.
