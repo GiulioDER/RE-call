@@ -139,7 +139,10 @@ class GenerationStore(PgVectorStore):
         if existing is not None:
             yield existing
             return
-        generation_id = self.active_generation_id()
+        # A benchmark server may deliberately read a retired, immutable snapshot.  The fixed
+        # process pin must win here as well as in `_generation_id`; otherwise `trusted_search`
+        # enters this context manager and silently replaces the pin with the active generation.
+        generation_id = self._fixed_generation or self.active_generation_id()
         token = self._pinned_generation.set(generation_id)
         try:
             yield generation_id

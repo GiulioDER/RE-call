@@ -488,6 +488,10 @@ async def main_async(args: argparse.Namespace) -> None:
     if not items:
         raise SystemExit("population filter selected no input items")
     input_sha256 = hashlib.sha256(args.input.read_bytes()).hexdigest()
+    # Create the artifact directory before opening the crash safe checkpoint.  This matters for
+    # a fresh run with a custom output path, where the first live call must not fail locally before
+    # the server is even started.
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     checkpoint_path = args.checkpoint or args.output.with_name(args.output.name + ".checkpoint.jsonl")
     checkpoint_exists = checkpoint_path.exists()
     settings = _checkpoint_settings(args, input_sha256)
