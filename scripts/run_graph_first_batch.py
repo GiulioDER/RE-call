@@ -64,6 +64,7 @@ def _serving_server_command(
     )
     remote = args[-1]
     remote = remote.replace("cd ~/recall-repos &&", "cd ~/recall-repos/serving &&", 1)
+    remote = remote.replace(". ./.env", ". ~/recall-repos/.env", 1)
     remote = remote.replace(
         "exec .venv/bin/python -m recall_mcp.server",
         "exec ~/recall-repos/.venv/bin/python -m recall_mcp.server",
