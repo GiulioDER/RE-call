@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from itertools import chain
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -172,7 +173,10 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _child(mode: str) -> int:
-    request = json.loads(sys.stdin.readline())
+    first_line = sys.stdin.readline()
+    if not first_line:
+        return 0
+    request = json.loads(first_line)
     from recall_hooks.write_time import _search_connection, search
 
     config = {"dsn": request["dsn"], "tenant": request["tenant"]}
@@ -190,15 +194,14 @@ def _child(mode: str) -> int:
     try:
         connection = psycopg.connect(request["dsn"], connect_timeout=2.0, options="-c statement_timeout=5s")
     except Exception as exc:
+        print(json.dumps({"status": "unavailable", "error": f"{type(exc).__name__}: {exc}"}), flush=True)
         for line in sys.stdin:
             if line.strip():
                 print(json.dumps({"status": "unavailable", "error": f"{type(exc).__name__}: {exc}"}), flush=True)
         return 0
     with connection:
-        for line in sys.stdin:
-            if not line.strip():
-                continue
-            row = json.loads(line)
+        rows = chain((request,), (json.loads(line) for line in sys.stdin if line.strip()))
+        for row in rows:
             try:
                 hits = _search_connection(connection, row["query"], config, OPTIONS)
                 print(json.dumps({"status": "ok", "hits": hits}), flush=True)

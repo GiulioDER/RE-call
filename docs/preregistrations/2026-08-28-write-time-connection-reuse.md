@@ -65,3 +65,12 @@ The command must print the artifact path, arm configuration, result equality, la
 the unreachable-corpus safety result. It must not print the DSN password.
 
 <!-- frozen_above -->
+
+## Amendment appended after the first attempted run
+
+The first live invocation on 2026-08-28 was invalid. The relay protocol consumed the first request
+as connection configuration and did not return a response for that request, so the parent received
+one shifted response and then an early relay exit. Its artifact is retained and is not scored. The
+relay child was corrected to process the configuration request as the first query before the valid
+run below. The cold arm was measured against the locally configured corpus, not the preregistered
+remote primary; it is therefore supplementary unless a remote DSN is supplied.
