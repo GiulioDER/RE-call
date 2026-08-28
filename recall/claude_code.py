@@ -485,6 +485,7 @@ def install_hooks(
     tenant: str = "default",
     embedder: str = "fastembed",
     write_time: bool = True,
+    write_time_connection_mode: str = "relay",
     python_executable: str | None = None,
     path: Path | None = None,
     print_fn: Callable[..., None] = print,
@@ -499,7 +500,13 @@ def install_hooks(
     target = path or settings_path()
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    _write_hook_config(dsn=dsn, tenant=tenant, embedder=embedder, write_time=write_time)
+    _write_hook_config(
+        dsn=dsn,
+        tenant=tenant,
+        embedder=embedder,
+        write_time=write_time,
+        write_time_connection_mode=write_time_connection_mode,
+    )
 
     settings: dict[str, Any] = {}
     if target.exists():
@@ -549,6 +556,12 @@ def uninstall(
         _write_json(target, settings)
         print_fn(f"Removed recall hooks from {target}")
 
+    try:
+        from recall_hooks.relay import stop_all
+
+        stop_all()
+    except Exception:
+        pass
     hook_config_path().unlink(missing_ok=True)
 
     config_file = client_config_path()
@@ -587,6 +600,7 @@ def _write_hook_config(
     embedder: str,
     table: str = "chunks",
     write_time: bool = True,
+    write_time_connection_mode: str = "relay",
 ) -> None:
     path = hook_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -600,7 +614,10 @@ def _write_hook_config(
         # block also means enabled (an upgraded config predating the feature should get it), and
         # the difference between "absent" and "absent because someone chose it" is exactly what a
         # user reads this file to find out.
-        "write_time": {"enabled": bool(write_time)},
+        "write_time": {
+            "enabled": bool(write_time),
+            "connection_mode": write_time_connection_mode if write_time_connection_mode in {"cold", "relay"} else "cold",
+        },
     }
     _write_json(path, config)
     try:

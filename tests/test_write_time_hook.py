@@ -146,6 +146,28 @@ def test_disabled_is_honoured(hook_env, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_relay_mode_uses_the_session_id_and_preserves_the_hook_contract(hook_env, monkeypatch, capsys):
+    write_config(hook_env, write_time={"enabled": True, "connection_mode": "relay"})
+    seen: list[tuple[str, str]] = []
+
+    def relay(session_id, query, config, options):
+        seen.append((session_id, query))
+        return HIT
+
+    monkeypatch.setattr("recall_hooks.relay.search", relay)
+    event = {**payload(), "session_id": "session-42"}
+    assert write_time.pre_tool_use(event) == 0
+    assert seen == [("session-42", "x" * 200)]
+    assert "additionalContext" in capsys.readouterr().out
+
+
+def test_relay_mode_without_a_session_id_falls_back_to_cold_search(hook_env, monkeypatch, capsys):
+    write_config(hook_env, write_time={"enabled": True, "connection_mode": "relay"})
+    monkeypatch.setattr(write_time, "search", lambda *a, **k: HIT)
+    assert write_time.pre_tool_use(payload()) == 0
+    assert "additionalContext" in capsys.readouterr().out
+
+
 def test_an_absent_block_means_enabled(hook_env):
     """An upgraded config predating the feature should still get what it was upgraded for."""
 

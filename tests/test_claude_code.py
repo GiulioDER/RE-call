@@ -225,6 +225,15 @@ def test_install_backs_up_before_editing(tmp_path: Path, monkeypatch: Any) -> No
     assert backups[0].read_text(encoding="utf-8") == original
 
 
+def test_install_enables_the_authenticated_relay_for_new_hook_configs(tmp_path: Path, monkeypatch: Any) -> None:
+    settings = tmp_path / "settings.json"
+    monkeypatch.setattr(claude_code, "hook_config_path", lambda: tmp_path / "recall-hook.json")
+    monkeypatch.setattr(claude_code, "refresh_stats", lambda config: 0)
+    claude_code.install_hooks(dsn="postgresql://u:p@h/db", path=settings, print_fn=lambda *a: None)
+    config = json.loads((tmp_path / "recall-hook.json").read_text(encoding="utf-8"))
+    assert config["write_time"] == {"enabled": True, "connection_mode": "relay"}
+
+
 def test_a_password_never_reaches_a_log_line() -> None:
     assert _redacted("postgresql://recall:hunter2@127.0.0.1:5432/recall") == (
         "postgresql://recall:***@127.0.0.1:5432/recall"

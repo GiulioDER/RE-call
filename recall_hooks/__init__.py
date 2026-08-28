@@ -232,6 +232,12 @@ def session_end(payload: dict[str, Any]) -> int:
     honest configuration rather than a concession: `SessionEnd` cannot block termination, so a
     synchronous index would be a promise the client is not obliged to keep.
     """
+    try:
+        from .relay import stop
+
+        stop(str(payload.get("session_id") or ""))
+    except Exception:
+        pass
     return _index_and_refresh(payload)
 
 
@@ -281,6 +287,10 @@ def main(argv: list[str] | None = None) -> int:
         from .write_time import pre_tool_use
 
         return pre_tool_use(payload)
+    if args[0] == "write-time-relay":
+        from .relay import main as relay_main
+
+        return relay_main(args[1:])
     return 0
 
 

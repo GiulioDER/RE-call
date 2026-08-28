@@ -112,6 +112,10 @@ def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
     block = block if isinstance(block, dict) else {}
     return {
         "enabled": bool(block.get("enabled", True)),
+        # Older configs retain the measured process-per-call behavior. The installer writes
+        # ``relay`` explicitly for new installs, making the rollout reversible by editing one
+        # config value rather than changing the client hook again.
+        "connection_mode": block.get("connection_mode", "cold") if block.get("connection_mode") in {"cold", "relay"} else "cold",
         "k": int(block.get("k", TOP_K)),
         "min_chars": int(block.get("min_chars", MIN_QUERY_CHARS)),
         "connect_timeout": float(block.get("connect_timeout", 2.0)),
@@ -281,7 +285,16 @@ def pre_tool_use(payload: dict[str, Any]) -> int:
         return 0
 
     try:
-        hits = search(query, config, options)
+        if options["connection_mode"] == "relay":
+            session_id = str(payload.get("session_id") or "")
+            if session_id:
+                from .relay import search as relay_search
+
+                hits = relay_search(session_id, query, config, options)
+            else:
+                hits = search(query, config, options)
+        else:
+            hits = search(query, config, options)
     except Exception:  # noqa: BLE001 - a retrieval failure must never break the session
         # Any failure to reach the corpus starts the cooldown, not only a timeout: a wrong DSN, a
         # revoked role and a stopped container all cost the same wall clock on every tool call,
