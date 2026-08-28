@@ -884,11 +884,15 @@ def _reasoning_interview(
         print_fn(f"Could not reach {model}: {failure}")
         print_fn("Writing the settings anyway. Correct them in .env and try again.")
 
+    # The `_EXPANSION_` spellings, not the bare ones. Both resolve, because the resolver reads
+    # the bare names as a legacy fallback, but the bare pair is SHARED with the setup wizard's
+    # other reasoning arms: a user who configures a local answer arm and later enables expansion
+    # would otherwise have the expansion client silently inherit that arm's endpoint and key.
     return {
         "RECALL_REASONING_EXPANSION": "1",
         "RECALL_REASONING_EXPANSION_MODEL": model,
-        "RECALL_REASONING_BASE_URL": base_url,
-        "RECALL_REASONING_API_KEY": api_key,
+        "RECALL_REASONING_EXPANSION_BASE_URL": base_url,
+        "RECALL_REASONING_EXPANSION_API_KEY": api_key,
     }
 
 

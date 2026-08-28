@@ -2005,8 +2005,8 @@ def test_choosing_openrouter_and_deepseek_writes_all_four_keys(tmp_path, monkeyp
     )
     assert "RECALL_REASONING_EXPANSION=1" in env
     assert "RECALL_REASONING_EXPANSION_MODEL=deepseek/deepseek-chat" in env
-    assert "RECALL_REASONING_BASE_URL=https://openrouter.ai/api/v1" in env
-    assert "RECALL_REASONING_API_KEY=router-key" in env
+    assert "RECALL_REASONING_EXPANSION_BASE_URL=https://openrouter.ai/api/v1" in env
+    assert "RECALL_REASONING_EXPANSION_API_KEY=router-key" in env
 
 
 def test_a_key_captured_during_the_interview_is_also_written_under_its_provider_name(
@@ -2015,7 +2015,7 @@ def test_a_key_captured_during_the_interview_is_also_written_under_its_provider_
     """Step 1b is not the only place a cloud key can be given: the interview itself asks for one
     when it was left blank there, and `_reasoning_interview` folds that answer back into
     `cloud_keys` so it lands in `.env` under its provider name too, not only under
-    `RECALL_REASONING_API_KEY`. The other cloud test supplies the key at step 1b, so it never
+    `RECALL_REASONING_EXPANSION_API_KEY`. The other cloud test supplies the key at step 1b, so it never
     exercises this capture path."""
     monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
     env, _ = _run_wizard(
@@ -2038,7 +2038,7 @@ def test_a_key_captured_during_the_interview_is_also_written_under_its_provider_
         ],
     )
     assert "OPENROUTER_API_KEY=captured-key" in env
-    assert "RECALL_REASONING_API_KEY=captured-key" in env
+    assert "RECALL_REASONING_EXPANSION_API_KEY=captured-key" in env
 
 
 def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
@@ -2059,9 +2059,9 @@ def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
             "n",        # calibrate declined
         ],
     )
-    assert "RECALL_REASONING_BASE_URL=http://localhost:11434/v1" in env
+    assert "RECALL_REASONING_EXPANSION_BASE_URL=http://localhost:11434/v1" in env
     assert "RECALL_REASONING_EXPANSION_MODEL=qwen2.5" in env
-    assert f"RECALL_REASONING_API_KEY={LOCAL_API_KEY}" in env
+    assert f"RECALL_REASONING_EXPANSION_API_KEY={LOCAL_API_KEY}" in env
 
 
 def test_a_malformed_base_url_does_not_end_the_interview(tmp_path, monkeypatch):
@@ -2091,7 +2091,7 @@ def test_a_malformed_base_url_does_not_end_the_interview(tmp_path, monkeypatch):
             "n",                      # calibrate declined
         ],
     )
-    assert "RECALL_REASONING_BASE_URL=http://[::1:11434/v1" in env
+    assert "RECALL_REASONING_EXPANSION_BASE_URL=http://[::1:11434/v1" in env
     assert "RECALL_REASONING_EXPANSION_MODEL=qwen2.5" in env
     assert "retrieved evidence" in output  # it warned rather than staying silent
 
@@ -2169,7 +2169,7 @@ def test_a_blank_cloud_api_key_twice_turns_the_arm_off(tmp_path, monkeypatch):
         ],
     )
     assert "RECALL_REASONING_EXPANSION=0" in env
-    assert "RECALL_REASONING_API_KEY" not in env
+    assert "RECALL_REASONING_EXPANSION_API_KEY" not in env
     assert "no API key" in output
 
 
@@ -2177,8 +2177,8 @@ REASONING_ENV_KEYS = frozenset(
     {
         "RECALL_REASONING_EXPANSION",
         "RECALL_REASONING_EXPANSION_MODEL",
-        "RECALL_REASONING_BASE_URL",
-        "RECALL_REASONING_API_KEY",
+        "RECALL_REASONING_EXPANSION_BASE_URL",
+        "RECALL_REASONING_EXPANSION_API_KEY",
     }
 )
 

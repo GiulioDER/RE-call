@@ -104,3 +104,46 @@ def test_the_parity_check_fails_on_a_genuinely_undocumented_variable(tmp_path, m
 def test_the_authentication_surface_is_documented(required):
     """Named individually as well as swept: these are the ones whose absence stops a boot."""
     assert required in ENV_EXAMPLE.read_text(encoding="utf-8")
+
+
+#: A SECOND bounded surface, added rather than widening the auth gate above.
+#:
+#: The reasoning family drifted exactly the way the auth block did, and worse: `.env.example` and
+#: the setup wizard documented `RECALL_REASONING` and `RECALL_REASONING_MODEL` as the way to turn
+#: retrieval reasoning on, while the runtime read `RECALL_REASONING_EXPANSION` and the `_EXPANSION_`
+#: family and no code read the documented pair at all. Setting what the template told you to set
+#: enabled nothing, silently, and an audit found it by reading both sides. That is the same
+#: "caught by a person, which is not a mechanism" failure this file was written for.
+#:
+#: Scoped, and the scope is stated: this covers `RECALL_REASONING*` only. It deliberately does not
+#: become a repo-wide sweep, for the reason given above the auth gate.
+_REASONING_VAR = re.compile(r"\bRECALL_REASONING[A-Z0-9_]*\b")
+
+#: Reasoning names deliberately absent from the template, each with its reason.
+REASONING_UNDOCUMENTED_ON_PURPOSE = {
+    # The retired enable flag. It survives in `recall/setup.py` only inside a comment that exists
+    # to say it is NOT the flag the runtime reads, so documenting it in the template would
+    # reintroduce the very confusion that comment was written to end. No runtime reads it:
+    #     grep -rn 'RECALL_REASONING\b' recall/ recall_mcp/ --include=*.py
+    "RECALL_REASONING",
+}
+
+
+def _reasoning_referenced_in_code() -> set[str]:
+    found: set[str] = set()
+    for package in ("recall", "recall_mcp"):
+        for path in (ROOT / package).rglob("*.py"):
+            found.update(_REASONING_VAR.findall(path.read_text(encoding="utf-8")))
+    return {v for v in found if not v.endswith("_")}
+
+
+def test_env_example_documents_every_reasoning_variable_the_code_reads():
+    documented = set(_REASONING_VAR.findall(ENV_EXAMPLE.read_text(encoding="utf-8")))
+    missing = sorted(
+        _reasoning_referenced_in_code() - documented - REASONING_UNDOCUMENTED_ON_PURPOSE
+    )
+    assert not missing, (
+        f"{len(missing)} reasoning variable(s) are read by the code but absent from "
+        f".env.example: {missing}. Add them there, or to REASONING_UNDOCUMENTED_ON_PURPOSE in "
+        f"this test with the reason they are deliberately undocumented."
+    )
