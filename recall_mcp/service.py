@@ -124,6 +124,7 @@ from recall.rerank import (
 from recall_mcp import factories as _factories
 from recall_mcp.factories import make_embedder, make_profile_embedder  # noqa: F401
 from recall_mcp.models import RewritePlanResult
+from recall.scope import Scope
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import evaluate, is_trusted, trusted_search
@@ -969,6 +970,7 @@ def _retrieve_trusted(
     k: int,
     calibration: Calibration | None,
     policy: TrustPolicy | None,
+    scope: Scope | None = None,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by `search_memory` and `evidence_memory`.
 
@@ -1016,6 +1018,7 @@ def _retrieve_trusted(
                 query,
                 k=k,
                 source=source,
+                scope=scope,
                 calibration=calibration,
                 reranker=_build_reranker(profile),
                 candidate_k=profile.candidate_k,
@@ -1114,6 +1117,7 @@ def search_memory(
     k: int = 5,
     calibration: Calibration | None = None,
     policy: TrustPolicy | None = None,
+    scope: Scope | None = None,
     explain: bool = False,
     include_related: bool = False,
     related_relation: str = "source",
@@ -1131,7 +1135,7 @@ def search_memory(
     are demoted below valid ones, and when no valid hit remains the result abstains.
     `k` is clamped to [1, MAX_SEARCH_K] so an untrusted client cannot request an unbounded result set.
     """
-    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
+    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy, scope)
     result, timed = retrieval.result, retrieval.timed
     route = route_query(query)
     active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
@@ -1387,6 +1391,7 @@ def evidence_memory(
     max_items: int | None = None,
     calibration: Calibration | None = None,
     policy: TrustPolicy | None = None,
+    scope: Scope | None = None,
     explain: bool = False,
     include_related: bool = False,
     related_relation: str = "source",
@@ -1403,7 +1408,7 @@ def evidence_memory(
     shed-versus-failure accounting or the budget verdict. Explanation and related fields remain
     opt in and are additive to the existing response shape.
     """
-    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
+    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy, scope)
     result = retrieval.result
     route = route_query(query)
     active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"

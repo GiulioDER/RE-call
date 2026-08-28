@@ -29,6 +29,7 @@ from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
 from recall._env import env_is_production, truthy
+from recall.scope import Scope
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore, redacted_dsn
 from recall.trust_policy import TrustPolicy
 from recall_mcp.auth import (
@@ -698,6 +699,22 @@ def _transport_security_settings(resource_url: str) -> TransportSecuritySettings
     return TransportSecuritySettings(allowed_hosts=[parsed.netloc], allowed_origins=[origin])
 
 
+def _tool_scope(folder: str | None, facet: str | None) -> Scope | None:
+    """A tool's `folder` / `facet` arguments as a `Scope`, or None when neither was given.
+
+    Blank strings are normalized to None here rather than refused. An MCP client that renders an
+    unfilled optional argument as ``""`` is common, and `Scope` correctly refuses an empty string
+    (an empty filter read as "no filter" would silently widen the query) — but that refusal
+    belongs to a caller who typed something, not to one who typed nothing at all. Turning the
+    blank into None at the boundary keeps the strict rule where it earns its keep.
+    """
+    folder = folder.strip() if isinstance(folder, str) else folder
+    facet = facet.strip() if isinstance(facet, str) else facet
+    if not folder and not facet:
+        return None
+    return Scope(folder=folder or None, facet=facet or None)
+
+
 async def _to_thread(fn: Callable[[], _T]) -> _T:
     """Run a blocking tool body off the event loop.
 
@@ -1113,6 +1130,8 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         query: str,
         ctx: Context[dict, object],
         source: str | None = None,
+        folder: str | None = None,
+        facet: str | None = None,
         k: int = 5,
         locale: str | None = None,
         explain: bool = False,
@@ -1132,6 +1151,17 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         Args:
             query: what to recall (natural language).
             source: optional source filter (only search one file/source).
+            folder: optional folder filter — search only this folder of the corpus and
+                everything beneath it, named as it appears in a hit's `file` provenance
+                (`python`, `python/lib`); `/` means the corpus root only. ⚠️ HARD filter: a
+                memory outside it is ABSENT rather than ranked low, so an over-narrow folder is
+                indistinguishable from a corpus with no answer. Leave unset unless the question
+                genuinely belongs to one region.
+            facet: optional facet filter — search only documents declaring this `type:` in
+                their frontmatter (`feedback`, `project`, `reference`, `user`), case-insensitive.
+                Same hard-filter caveat as `folder`, plus one of its own: the facet is read at
+                INDEX time, so a corpus built before facets existed carries none and every facet
+                filter returns nothing until it is rebuilt.
             k: max hits to return (default 5). Under a fast or quality process profile this is
                 clamped DOWN to the profile's returned count and is never raised: the cost
                 profile is chosen per process, not per request.
@@ -1162,6 +1192,7 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                     state["embedder"],
                     query,
                     source=source,
+                    scope=_tool_scope(folder, facet),
                     k=k,
                     policy=TRUST_POLICY,
                     explain=explain,
@@ -1192,6 +1223,8 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         query: str,
         ctx: Context[dict, object],
         source: str | None = None,
+        folder: str | None = None,
+        facet: str | None = None,
         k: int = 5,
         max_items: int | None = None,
         locale: str | None = None,
@@ -1216,6 +1249,17 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         Args:
             query: what to recall (natural language).
             source: optional source filter (only search one file/source).
+            folder: optional folder filter — search only this folder of the corpus and
+                everything beneath it, named as it appears in a hit's `file` provenance
+                (`python`, `python/lib`); `/` means the corpus root only. ⚠️ HARD filter: a
+                memory outside it is ABSENT rather than ranked low, so an over-narrow folder is
+                indistinguishable from a corpus with no answer. Leave unset unless the question
+                genuinely belongs to one region.
+            facet: optional facet filter — search only documents declaring this `type:` in
+                their frontmatter (`feedback`, `project`, `reference`, `user`), case-insensitive.
+                Same hard-filter caveat as `folder`, plus one of its own: the facet is read at
+                INDEX time, so a corpus built before facets existed carries none and every facet
+                filter returns nothing until it is rebuilt.
             k: max hits to retrieve (default 5). Under a fast or quality process profile this
                 is clamped DOWN to the profile's returned count and is never raised: the cost
                 profile is chosen per process, not per request.
@@ -1249,6 +1293,7 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                     state["embedder"],
                     query,
                     source=source,
+                    scope=_tool_scope(folder, facet),
                     k=k,
                     max_items=max_items,
                     policy=TRUST_POLICY,

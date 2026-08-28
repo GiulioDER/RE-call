@@ -23,6 +23,7 @@ from recall.semantic_graph import (
     load_semantic_graph,
     write_semantic_graph,
 )
+from recall.scope import Scope, coerce_scope, group_expression
 from recall.store import DEFAULT_TABLE
 from recall.store import (
     EdgeCandidates,
@@ -384,7 +385,11 @@ class GenerationStore(PgVectorStore):
         return hits
 
     def _query_dense(
-        self, vector: list[float], k: int, source: str | None = None
+        self,
+        vector: list[float],
+        k: int,
+        source: str | None = None,
+        scope: Scope | None = None,
     ) -> list[ScoredChunk]:
         """Generation-scoped dense search. PRIVATE on purpose: the timed public `query_dense` on
         `PgVectorStore` delegates here, so this subclass inherits the instrumentation and the
@@ -395,13 +400,16 @@ class GenerationStore(PgVectorStore):
         recorded nothing in production, with an empty series and a free store reading the same.
         """
         generation_id = self._generation_id()
-        source_filter = (
-            "AND (metadata->>'file' = %(source)s OR source_uri = %(source)s)" if source else ""
+        # `source_uri`, not `source`: this table names the column differently from the legacy
+        # one, and the predicate is told which rather than guessing. Everything else about a
+        # scope reads `metadata`, which both tables carry alike.
+        source_filter, scope_params = coerce_scope(scope, source).predicate(
+            "c", source_column="source_uri"
         )
         sql = f"""
             SELECT chunk_id, source_uri, text, metadata, indexed_at,
                    1 - (embedding <=> %(vec)s) AS score
-            FROM recall_chunks_v1
+            FROM recall_chunks_v1 c
             WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s {source_filter}
             ORDER BY embedding <=> %(vec)s
             LIMIT %(k)s
@@ -412,8 +420,7 @@ class GenerationStore(PgVectorStore):
             "tenant": self._tenant,
             "generation": generation_id,
         }
-        if source:
-            params["source"] = source
+        params.update(scope_params)
         ef_search, iterative_scan = self._hnsw_filtered_tuning()
 
         def _op(conn: psycopg.Connection) -> list[tuple[Any, ...]]:
@@ -465,11 +472,12 @@ class GenerationStore(PgVectorStore):
         k: int,
         source: str | None = None,
         vec: list[float] | None = None,
+        scope: Scope | None = None,
     ) -> list[ScoredChunk]:
         """Generation-scoped sparse search. PRIVATE for the same reason as `_query_dense`."""
         generation_id = self._generation_id()
-        source_filter = (
-            "AND (c.metadata->>'file' = %(source)s OR c.source_uri = %(source)s)" if source else ""
+        source_filter, scope_params = coerce_scope(scope, source).predicate(
+            "c", source_column="source_uri"
         )
         score = "1 - (embedding <=> %(vec)s)" if vec is not None else "rank"
         sql = f"""
@@ -503,10 +511,84 @@ class GenerationStore(PgVectorStore):
         }
         if vec is not None:
             params["vec"] = Vector(vec)
-        if source:
-            params["source"] = source
+        params.update(scope_params)
         rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._generation_rows(rows)
+
+    def scope_inventory(self, dimension: str = "folder") -> list[tuple[str, int, int]]:
+        """Generation-scoped `PgVectorStore.scope_inventory`.
+
+        Overridden for the reason every read here is: a tenant holds every generation it has ever
+        built, so the inherited tenant-only version would list the folders of retired generations
+        beside the active one. An inventory is read as "what can I filter on", and a value that
+        exists only in a generation nobody serves answers that question wrongly in the direction
+        that costs an empty result.
+        """
+        generation_id = self._generation_id()
+        value_sql = group_expression(dimension, "c")
+        sql = f"""
+            SELECT {value_sql} AS scope_value,
+                   count(*) AS chunks,
+                   count(DISTINCT COALESCE(c.metadata->>'file', c.source_uri)) AS documents
+            FROM recall_chunks_v1 c
+            WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
+              AND {value_sql} IS NOT NULL
+            GROUP BY {value_sql}
+            ORDER BY chunks DESC, scope_value
+        """
+        params = {"tenant": self._tenant, "generation": generation_id}
+        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
+        return [(str(value), int(chunks), int(docs)) for value, chunks, docs in rows]
+
+    def scope_undeclared_count(self, dimension: str = "folder") -> int:
+        """Generation-scoped `PgVectorStore.scope_undeclared_count`."""
+        generation_id = self._generation_id()
+        value_sql = group_expression(dimension, "c")
+        sql = f"""
+            SELECT count(*) FROM recall_chunks_v1 c
+            WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
+              AND {value_sql} IS NULL
+        """
+        params = {"tenant": self._tenant, "generation": generation_id}
+        row = self._with_retry(lambda conn: conn.execute(sql, params).fetchone())
+        return 0 if row is None else int(row[0])
+
+    def scope_centroids(
+        self, dimension: str = "folder", min_chunks: int = 1
+    ) -> list[tuple[str, int, list[float]]]:
+        """Generation-scoped `PgVectorStore.scope_centroids`.
+
+        The generation binding matters more here than for the inventory: a centroid averaged over
+        two generations of the same folder is a vector describing neither, and it would be used to
+        rank against the active one. Wrong quietly, which is the worst way to be wrong.
+        """
+        if min_chunks < 1:
+            raise ValueError(f"min_chunks must be >= 1, got {min_chunks}")
+        generation_id = self._generation_id()
+        value_sql = group_expression(dimension, "c")
+        sql = f"""
+            SELECT {value_sql} AS scope_value, count(*) AS n, AVG(c.embedding) AS centroid
+            FROM recall_chunks_v1 c
+            WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
+              AND {value_sql} IS NOT NULL
+            GROUP BY {value_sql}
+            HAVING count(*) >= %(min_chunks)s
+            ORDER BY n DESC
+        """
+        params = {
+            "tenant": self._tenant,
+            "generation": generation_id,
+            "min_chunks": min_chunks,
+        }
+        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
+        return [
+            (
+                str(value),
+                int(n),
+                [float(x) for x in (c.to_list() if hasattr(c, "to_list") else c)],
+            )
+            for value, n, c in rows
+        ]
 
     def _newest_indexed_at(self) -> datetime | None:
         """Generation-scoped freshness. PRIVATE so the timed public wrapper is inherited —

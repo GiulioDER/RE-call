@@ -45,6 +45,7 @@ from recall.retriever import (
     expand_retrieval_by_structure,
     expand_retrieval_by_successor,
 )
+from recall.scope import Scope, coerce_scope
 from recall.store import EdgeCandidates, PgVectorStore
 from recall.trust_policy import (
     TrustFailureCode,
@@ -660,6 +661,7 @@ def _trusted_search(
     query: str,
     k: int = 5,
     source: str | None = None,
+    scope: Scope | None = None,
     calibration: Calibration | None = None,
     reranker: Reranker | None = None,
     now: datetime | None = None,
@@ -691,6 +693,7 @@ def _trusted_search(
                 query,
                 k=k,
                 source=source,
+                scope=scope,
                 calibration=calibration,
                 now=now,
                 known_as_of=known_as_of,
@@ -832,7 +835,19 @@ def _trusted_search(
         retrieval_profile=retrieval_profile,
         index_generation=index_generation,
     )
-    result = retriever.search(query, k=k, source=source)
+    # Legacy call shape unless the scope says something a `source=` could not, for the reason
+    # `HybridRetriever._retrieve_legs` gives about stores: a retriever here is DUCK-TYPED, several
+    # test doubles and downstream adapters implement `search(query, k, source)`, and sending a new
+    # keyword on every unscoped query would break them all for callers who asked for nothing.
+    effective = coerce_scope(scope, source)
+    if effective.folder is None and effective.facet is None:
+        result = retriever.search(query, k=k, source=effective.source)
+    else:
+        result = retriever.search(query, k=k, scope=effective)
+    # The expansions below hand `retriever.search` a SOURCE and no scope, which looks like a leak
+    # and is not: each one re-queries inside a document the scoped search already returned, so it
+    # is strictly narrower than the scope rather than outside it. Re-applying the folder there
+    # would be redundant, and passing both would hit the deliberate "not both" refusal.
     if document_expansion is not None:
         result = expand_retrieval_by_source(result, retriever.search, document_expansion)
     if structural_expansion is not None:
@@ -942,6 +957,7 @@ def trusted_search(
     query: str,
     k: int = 5,
     source: str | None = None,
+    scope: Scope | None = None,
     calibration: Calibration | None = None,
     reranker: Reranker | None = None,
     now: datetime | None = None,
@@ -983,6 +999,7 @@ def trusted_search(
     forwarded: dict[str, object] = dict(
         k=k,
         source=source,
+        scope=scope,
         calibration=calibration,
         reranker=reranker,
         now=now,
