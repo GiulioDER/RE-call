@@ -61,6 +61,7 @@ from recall_mcp.oidc import (
 from recall_mcp.service import (
     evidence_memory,
     forget_memory,
+    graph_first_retrieval,
     IndexResult,
     generation_ingest,
     index_memory,
@@ -662,6 +663,30 @@ def require_effective_rls(*, rls_effective: bool, multi_tenant: bool) -> str | N
     )
 
 
+def benchmark_generation_setting(
+    generation_id: str | None,
+    *,
+    benchmark_pin: bool,
+    generation_mode: bool,
+    authenticated: bool,
+) -> str | None:
+    """Validate the explicit retired-snapshot pin used by reproducible stdio benchmarks."""
+
+    value = (generation_id or "").strip()
+    if not value:
+        return None
+    if not benchmark_pin:
+        raise RuntimeError(
+            "RECALL_PINNED_GENERATION_ID requires RECALL_BENCHMARK_PIN=1"
+        )
+    if not generation_mode or authenticated:
+        raise RuntimeError(
+            "RECALL_PINNED_GENERATION_ID is allowed only for unauthenticated generation-mode "
+            "stdio serving"
+        )
+    return value
+
+
 def _transport_security_settings(resource_url: str) -> TransportSecuritySettings:
     parsed = urlsplit(resource_url)
     if not parsed.scheme or not parsed.netloc:
@@ -787,6 +812,12 @@ def _make_lifespan(
         try:
             embedder = make_embedder(EMBEDDER_NAME)
             generation_mode = env_is_production()
+            pinned_generation_id = benchmark_generation_setting(
+                os.environ.get("RECALL_PINNED_GENERATION_ID"),
+                benchmark_pin=truthy(os.environ.get("RECALL_BENCHMARK_PIN")),
+                generation_mode=generation_mode,
+                authenticated=token_registry is not None,
+            )
             # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
             # database the extension deliberately does not exist yet; reporting "migrations
             # pending" is more useful than leaking the driver's missing-type error. This path is
@@ -874,6 +905,18 @@ def _make_lifespan(
         try:
             if store is not None:
                 store.check_schema()
+                if pinned_generation_id is not None:
+                    set_fixed_generation = getattr(store, "set_fixed_generation", None)
+                    if not callable(set_fixed_generation):
+                        raise RuntimeError(
+                            "RECALL_PINNED_GENERATION_ID requires a generation-mode store"
+                        )
+                    set_fixed_generation(pinned_generation_id)
+                    _log.warning(
+                        "benchmark generation pin enabled: tenant=%s generation=%s",
+                        TENANT,
+                        pinned_generation_id,
+                    )
                 probe = store
             else:
                 assert registry is not None
@@ -966,6 +1009,7 @@ def _make_lifespan(
                 # `RECALL_ENV` are two chances to disagree, and the whole defect was a disagreement
                 # about which store was in play.
                 "generation_mode": generation_mode and not enterprise,
+                "pinned_generation_id": pinned_generation_id,
                 "limiter": limiter,
                 "translation_provider": translation_provider,
                 "shadow_embedders": {},
@@ -1391,6 +1435,7 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         expected_generation_id: str | None = None,
         graph_expansion: str = "off",
         max_graph_nodes: int = 32,
+        challenge_marker: str | None = None,
     ) -> str:
         """Run one bounded query-construction phase over trusted retrieval.
 
@@ -1416,6 +1461,7 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                         expected_generation_id=expected_generation_id,
                         graph_expansion=graph_expansion.replace("-", "_"),
                         max_graph_nodes=max_graph_nodes,
+                        challenge_marker=challenge_marker,
                         policy=TRUST_POLICY,
                     ),
                     indent=2,
@@ -1442,6 +1488,52 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
             return await _to_thread(
                 lambda: reasoning_projection(store, include_text=include_text).model_dump_json(
                     indent=2
+                )
+            )
+
+    @mcp.tool(
+        name="recall_graph_first_retrieval",
+        annotations=ToolAnnotations(
+            title="Probe graph-first retrieval",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_graph_first_retrieval_tool(
+        query: str,
+        ctx: Context[dict, object],
+        mode: str = "hybrid",
+        source: str | None = None,
+        k: int = 5,
+        max_candidates: int = 3,
+        expected_generation_id: str | None = None,
+    ) -> str:
+        """Probe graph-derived query seeds before ordinary trusted retrieval.
+
+        The graph contributes only deterministic query proposals. Every proposal and the original
+        query pass through the ordinary retrieval and trust layer. This opt-in probe never treats
+        graph metadata or graph text as evidence and does not alter existing retrieval tools.
+        """
+        state = _state(ctx)
+        store = _require(SCOPE_READ, ctx)
+        with METRICS.timer("recall_tool_latency_ms", tool="graph_first_retrieval"):
+            return await _to_thread(
+                lambda: json.dumps(
+                    graph_first_retrieval(
+                        store,
+                        state["embedder"],
+                        query,
+                        mode=mode,  # type: ignore[arg-type]
+                        source=source,
+                        k=k,
+                        max_candidates=max_candidates,
+                        expected_generation_id=expected_generation_id,
+                        policy=TRUST_POLICY,
+                    ),
+                    indent=2,
+                    default=str,
                 )
             )
 

@@ -1,0 +1,1285 @@
+{
+  "artifact": "RE-call graph-first retrieval benchmark",
+  "measured_at": "2026-08-28T15:29:35Z",
+  "input": "C:\\Users\\gde00\\Documents\\recall\\results\\query_construction\\agent-ab-skill-001-frozen-population-20260826.json",
+  "input_sha256": "a87c7eebe0f7ce7daf45a5d689fa9a4212a938b32297b893cd89c8d89572c2ee",
+  "mode": "hybrid",
+  "k": 5,
+  "max_candidates": 3,
+  "workers": 2,
+  "tenant": "memory",
+  "embedder": "voyage:voyage-4",
+  "profile": "fast",
+  "pinned_generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+  "checkpoint": "C:\\Users\\gde00\\Documents\\recall-pr-query\\results\\query_construction\\graph-first-smoke\\hybrid.json.checkpoint.jsonl",
+  "rows": [
+    {
+      "task_id": "ts-false-zero-search#r1",
+      "arm": "hybrid",
+      "original_prompt": "Somebody may have hardcoded absolute paths from our production host into this repository. Write `scripts/audit_paths.sh` which prints, one per line and with no other output, the repository-relative path of every tracked file whose contents contain the string /home/sentiment. Run it so I can see the result, and leave the script in place.",
+      "query": "hardcoded absolute paths production host",
+      "gold": {
+        "gold_memo": "msys-mangles-slash-patterns",
+        "gold_class": "control"
+      },
+      "final": {
+        "status": "complete",
+        "mode": "hybrid",
+        "generation": {
+          "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+          "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+          "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6"
+        },
+        "baseline_retrieval": {
+          "query": "hardcoded absolute paths production host",
+          "abstained": true,
+          "reason": "no hit above the calibrated confidence threshold (probable corpus gap)",
+          "gap_warning": true,
+          "trust_state": "trusted",
+          "calibration_status": "certified",
+          "tenant_id": "memory",
+          "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+          "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+          "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+          "hits": [
+            {
+              "chunk_id": "036d0c819bc143bc3627bba9aee9647a3ad881290b3b69545276c88e53366f48",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+              "text": "**Caught 2026-08-18 at the push gate, not by two bug-audit passes.**\n\nA results artifact's `_provenance` recorded\n`{\"path\": \"/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl\", \"sha256\": ...}`.\nThe repository is public on GitHub, PyPI and the MCP registry.\n\n**Why it matters even though it is not a credential.** `CLAUDE.md` states the rule for MCP config:\n*\"both halves of an internal server are disclosure: the bearer token obviously, and the host address\ntoo, because an inventory of which machines exist and what runs on them is worth something on its\nown.\"* An absolute path is the same class: it names a user account, a host's directory layout and\nwhat is deployed where.",
+              "score": 0.4567492578476233,
+              "confidence": 0.09516097172164181,
+              "verdict": "low_confidence",
+              "ordinal": 0
+            },
+            {
+              "chunk_id": "4a114a4abd6197c91b4b1fe719411e556fd0fbb686b9c3aa7e6805eb5a1bd905",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/hosted-admissible-is-not-verified.md",
+              "text": "Fixed 2026-08-26, PR #522, merged as `16c6e854` and deployed to VPS2 the same day.\n\n**The shape of the bug is worth more than the fix.** Two rules, each correct alone, that could not\nboth be satisfied:\n\n* `RegisteredProfile.__post_init__` **refuses** to let a hosted profile pin an artifact digest,\n  because the provider serves weights it may replace behind a stable model name.\n* `require_production_identity` **demanded** an immutable revision or artifact digest.\n\nSo the gate was not strict, it was **unpassable**. No hosted corpus could ever accept an upload\nunder `RECALL_ENV=production`. Not a hard case: an impossible one.",
+              "score": 0.46351507088631894,
+              "confidence": 0.12340674872670246,
+              "verdict": "low_confidence",
+              "ordinal": 0
+            },
+            {
+              "chunk_id": "85f0f9a3e295a825d5c558de0a3e0a93abf48b3e9ca56f1be07e22ca2599c731",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+              "text": "the sequence from the code.**\r\n\r\n## 🔑 Why sessions keep concluding \"impossible\", and why that conclusion is false\r\n\r\n**The production guard is in the CLI, not the library.**\r\n\r\n- `recall.cli index` → `_cmd_index` refuses under `RECALL_ENV=production`\r\n  (\"local filesystem indexing is development-only\")\r\n- `recall.cli generation build` → refuses a non-`s3://` manifest under production\r\n  (`recall/cli_commands/generation_cmd.py:248`)\r\n- **`bin/index_local.py` on VPS2 constructs an `Indexer` directly. It never mentions `RECALL_ENV`\r\n  and is never refused.**\r\n\r\nSo \"you cannot index under production\" is wrong. It is *the CLI* that refuses. The working path\r\nexists, is in daily use, and belongs to Codex:\r\n\r\n```\r\n~/.codex/re-call/refresh-vps2.ps1   ->  ~/.claude/recall-vps2/refresh.sh\r\n     ->",
+              "score": 0.46609869801410597,
+              "confidence": 0.13596755241167938,
+              "verdict": "low_confidence",
+              "ordinal": 4
+            },
+            {
+              "chunk_id": "2aebd0ce25bf63026ed74f5c28bb90f80a081d3c2e0d8968000702b9b97f2894",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/no-pinned-revision-for-the-default-embedder.md",
+              "text": "* `require_production_identity()` (`lineage.py:184`) refuses an unverified pipeline, but it is\n  called **only** on the `generation build` path when `RECALL_ENV=production`.\n* And that path is unreachable for a local corpus anyway: the `file://` manifest check fires first\n  with *\"production generation builds require a versioned S3 manifest\"*. So for anyone building\n  from a directory, the `allow_unverified` guard is dead code.\n\n**Net: `verified: false` costs you nothing until the corpus moves to versioned S3 storage.**\n\n## What to do instead of pinning a revision",
+              "score": 0.4376455210236033,
+              "confidence": 0.0441240106121069,
+              "verdict": "low_confidence",
+              "ordinal": 2
+            },
+            {
+              "chunk_id": "80df4de524744df5b25cf36f1b7165364c7358985701034eef2b5facbd32ca2c",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+              "text": "precision matters or this memo blocks the right answer too.**\r\nThis first said \"never suggest `RECALL_ENV=development`\", which is too broad and would forbid the\r\nsupported path. Three different things get called \"development\" and only two are wrong:\r\n\r\n| | verdict |\r\n|---|---|\r\n| `RECALL_TRUST_MODE=development` to make a degraded server answer | ⛔ wrong, always. Stamps `degraded` on every result |\r\n| `RECALL_ENV=development` while the server serves production | ⛔ wrong. Indexes into the legacy table nothing reads — a silent no-op |\r\n| `RECALL_ENV` unset **at build time**, production **at serve time** | ✅ **this is the supported path** |\r\n\r\nThe third is not a workaround. `GenerationManager.certification_required` reads \"the SERVING\r\nenvironment, not the build one\" — the split is designed.",
+              "score": 0.44353852012524597,
+              "confidence": 0.05616722986419981,
+              "verdict": "low_confidence",
+              "ordinal": 2
+            }
+          ]
+        },
+        "candidate_queries": [],
+        "candidate_retrievals": [],
+        "retrieval": {
+          "query": "hardcoded absolute paths production host",
+          "abstained": true,
+          "reason": "no hit above the calibrated confidence threshold (probable corpus gap)",
+          "gap_warning": true,
+          "trust_state": "trusted",
+          "calibration_status": "certified",
+          "tenant_id": "memory",
+          "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+          "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+          "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+          "hits": [
+            {
+              "chunk_id": "036d0c819bc143bc3627bba9aee9647a3ad881290b3b69545276c88e53366f48",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+              "text": "**Caught 2026-08-18 at the push gate, not by two bug-audit passes.**\n\nA results artifact's `_provenance` recorded\n`{\"path\": \"/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl\", \"sha256\": ...}`.\nThe repository is public on GitHub, PyPI and the MCP registry.\n\n**Why it matters even though it is not a credential.** `CLAUDE.md` states the rule for MCP config:\n*\"both halves of an internal server are disclosure: the bearer token obviously, and the host address\ntoo, because an inventory of which machines exist and what runs on them is worth something on its\nown.\"* An absolute path is the same class: it names a user account, a host's directory layout and\nwhat is deployed where.",
+              "score": 0.4567492578476233,
+              "confidence": 0.09516097172164181,
+              "verdict": "low_confidence",
+              "ordinal": 0
+            },
+            {
+              "chunk_id": "4a114a4abd6197c91b4b1fe719411e556fd0fbb686b9c3aa7e6805eb5a1bd905",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/hosted-admissible-is-not-verified.md",
+              "text": "Fixed 2026-08-26, PR #522, merged as `16c6e854` and deployed to VPS2 the same day.\n\n**The shape of the bug is worth more than the fix.** Two rules, each correct alone, that could not\nboth be satisfied:\n\n* `RegisteredProfile.__post_init__` **refuses** to let a hosted profile pin an artifact digest,\n  because the provider serves weights it may replace behind a stable model name.\n* `require_production_identity` **demanded** an immutable revision or artifact digest.\n\nSo the gate was not strict, it was **unpassable**. No hosted corpus could ever accept an upload\nunder `RECALL_ENV=production`. Not a hard case: an impossible one.",
+              "score": 0.46351507088631894,
+              "confidence": 0.12340674872670246,
+              "verdict": "low_confidence",
+              "ordinal": 0
+            },
+            {
+              "chunk_id": "85f0f9a3e295a825d5c558de0a3e0a93abf48b3e9ca56f1be07e22ca2599c731",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+              "text": "the sequence from the code.**\r\n\r\n## 🔑 Why sessions keep concluding \"impossible\", and why that conclusion is false\r\n\r\n**The production guard is in the CLI, not the library.**\r\n\r\n- `recall.cli index` → `_cmd_index` refuses under `RECALL_ENV=production`\r\n  (\"local filesystem indexing is development-only\")\r\n- `recall.cli generation build` → refuses a non-`s3://` manifest under production\r\n  (`recall/cli_commands/generation_cmd.py:248`)\r\n- **`bin/index_local.py` on VPS2 constructs an `Indexer` directly. It never mentions `RECALL_ENV`\r\n  and is never refused.**\r\n\r\nSo \"you cannot index under production\" is wrong. It is *the CLI* that refuses. The working path\r\nexists, is in daily use, and belongs to Codex:\r\n\r\n```\r\n~/.codex/re-call/refresh-vps2.ps1   ->  ~/.claude/recall-vps2/refresh.sh\r\n     ->",
+              "score": 0.46609869801410597,
+              "confidence": 0.13596755241167938,
+              "verdict": "low_confidence",
+              "ordinal": 4
+            },
+            {
+              "chunk_id": "2aebd0ce25bf63026ed74f5c28bb90f80a081d3c2e0d8968000702b9b97f2894",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/no-pinned-revision-for-the-default-embedder.md",
+              "text": "* `require_production_identity()` (`lineage.py:184`) refuses an unverified pipeline, but it is\n  called **only** on the `generation build` path when `RECALL_ENV=production`.\n* And that path is unreachable for a local corpus anyway: the `file://` manifest check fires first\n  with *\"production generation builds require a versioned S3 manifest\"*. So for anyone building\n  from a directory, the `allow_unverified` guard is dead code.\n\n**Net: `verified: false` costs you nothing until the corpus moves to versioned S3 storage.**\n\n## What to do instead of pinning a revision",
+              "score": 0.4376455210236033,
+              "confidence": 0.0441240106121069,
+              "verdict": "low_confidence",
+              "ordinal": 2
+            },
+            {
+              "chunk_id": "80df4de524744df5b25cf36f1b7165364c7358985701034eef2b5facbd32ca2c",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+              "text": "precision matters or this memo blocks the right answer too.**\r\nThis first said \"never suggest `RECALL_ENV=development`\", which is too broad and would forbid the\r\nsupported path. Three different things get called \"development\" and only two are wrong:\r\n\r\n| | verdict |\r\n|---|---|\r\n| `RECALL_TRUST_MODE=development` to make a degraded server answer | ⛔ wrong, always. Stamps `degraded` on every result |\r\n| `RECALL_ENV=development` while the server serves production | ⛔ wrong. Indexes into the legacy table nothing reads — a silent no-op |\r\n| `RECALL_ENV` unset **at build time**, production **at serve time** | ✅ **this is the supported path** |\r\n\r\nThe third is not a workaround. `GenerationManager.certification_required` reads \"the SERVING\r\nenvironment, not the build one\" — the split is designed.",
+              "score": 0.44353852012524597,
+              "confidence": 0.05616722986419981,
+              "verdict": "low_confidence",
+              "ordinal": 2
+            }
+          ]
+        },
+        "new_trusted_chunk_ids": [],
+        "diagnostics": {
+          "retrieval_calls": 1,
+          "model_calls": 0,
+          "token_cost": 0,
+          "graph": {
+            "readiness": "ready",
+            "reason": null,
+            "entities_inspected": 6013,
+            "mentions_inspected": 28940,
+            "relations_inspected": 3779,
+            "diagnostics_encountered": 61,
+            "candidates_discovered": 0,
+            "candidates_accepted": 0,
+            "candidates_rejected": 0,
+            "candidate_retrieval_failures": 0,
+            "latency_ms": 6729.121
+          },
+          "new_trusted_items": 0,
+          "provider_failures": []
+        }
+      },
+      "tool_calls": [
+        {
+          "status": "complete",
+          "mode": "hybrid",
+          "generation": {
+            "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+            "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+            "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6"
+          },
+          "baseline_retrieval": {
+            "query": "hardcoded absolute paths production host",
+            "abstained": true,
+            "reason": "no hit above the calibrated confidence threshold (probable corpus gap)",
+            "gap_warning": true,
+            "trust_state": "trusted",
+            "calibration_status": "certified",
+            "tenant_id": "memory",
+            "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+            "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+            "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+            "hits": [
+              {
+                "chunk_id": "036d0c819bc143bc3627bba9aee9647a3ad881290b3b69545276c88e53366f48",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+                "text": "**Caught 2026-08-18 at the push gate, not by two bug-audit passes.**\n\nA results artifact's `_provenance` recorded\n`{\"path\": \"/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl\", \"sha256\": ...}`.\nThe repository is public on GitHub, PyPI and the MCP registry.\n\n**Why it matters even though it is not a credential.** `CLAUDE.md` states the rule for MCP config:\n*\"both halves of an internal server are disclosure: the bearer token obviously, and the host address\ntoo, because an inventory of which machines exist and what runs on them is worth something on its\nown.\"* An absolute path is the same class: it names a user account, a host's directory layout and\nwhat is deployed where.",
+                "score": 0.4567492578476233,
+                "confidence": 0.09516097172164181,
+                "verdict": "low_confidence",
+                "ordinal": 0
+              },
+              {
+                "chunk_id": "4a114a4abd6197c91b4b1fe719411e556fd0fbb686b9c3aa7e6805eb5a1bd905",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/hosted-admissible-is-not-verified.md",
+                "text": "Fixed 2026-08-26, PR #522, merged as `16c6e854` and deployed to VPS2 the same day.\n\n**The shape of the bug is worth more than the fix.** Two rules, each correct alone, that could not\nboth be satisfied:\n\n* `RegisteredProfile.__post_init__` **refuses** to let a hosted profile pin an artifact digest,\n  because the provider serves weights it may replace behind a stable model name.\n* `require_production_identity` **demanded** an immutable revision or artifact digest.\n\nSo the gate was not strict, it was **unpassable**. No hosted corpus could ever accept an upload\nunder `RECALL_ENV=production`. Not a hard case: an impossible one.",
+                "score": 0.46351507088631894,
+                "confidence": 0.12340674872670246,
+                "verdict": "low_confidence",
+                "ordinal": 0
+              },
+              {
+                "chunk_id": "85f0f9a3e295a825d5c558de0a3e0a93abf48b3e9ca56f1be07e22ca2599c731",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+                "text": "the sequence from the code.**\r\n\r\n## 🔑 Why sessions keep concluding \"impossible\", and why that conclusion is false\r\n\r\n**The production guard is in the CLI, not the library.**\r\n\r\n- `recall.cli index` → `_cmd_index` refuses under `RECALL_ENV=production`\r\n  (\"local filesystem indexing is development-only\")\r\n- `recall.cli generation build` → refuses a non-`s3://` manifest under production\r\n  (`recall/cli_commands/generation_cmd.py:248`)\r\n- **`bin/index_local.py` on VPS2 constructs an `Indexer` directly. It never mentions `RECALL_ENV`\r\n  and is never refused.**\r\n\r\nSo \"you cannot index under production\" is wrong. It is *the CLI* that refuses. The working path\r\nexists, is in daily use, and belongs to Codex:\r\n\r\n```\r\n~/.codex/re-call/refresh-vps2.ps1   ->  ~/.claude/recall-vps2/refresh.sh\r\n     ->",
+                "score": 0.46609869801410597,
+                "confidence": 0.13596755241167938,
+                "verdict": "low_confidence",
+                "ordinal": 4
+              },
+              {
+                "chunk_id": "2aebd0ce25bf63026ed74f5c28bb90f80a081d3c2e0d8968000702b9b97f2894",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/no-pinned-revision-for-the-default-embedder.md",
+                "text": "* `require_production_identity()` (`lineage.py:184`) refuses an unverified pipeline, but it is\n  called **only** on the `generation build` path when `RECALL_ENV=production`.\n* And that path is unreachable for a local corpus anyway: the `file://` manifest check fires first\n  with *\"production generation builds require a versioned S3 manifest\"*. So for anyone building\n  from a directory, the `allow_unverified` guard is dead code.\n\n**Net: `verified: false` costs you nothing until the corpus moves to versioned S3 storage.**\n\n## What to do instead of pinning a revision",
+                "score": 0.4376455210236033,
+                "confidence": 0.0441240106121069,
+                "verdict": "low_confidence",
+                "ordinal": 2
+              },
+              {
+                "chunk_id": "80df4de524744df5b25cf36f1b7165364c7358985701034eef2b5facbd32ca2c",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+                "text": "precision matters or this memo blocks the right answer too.**\r\nThis first said \"never suggest `RECALL_ENV=development`\", which is too broad and would forbid the\r\nsupported path. Three different things get called \"development\" and only two are wrong:\r\n\r\n| | verdict |\r\n|---|---|\r\n| `RECALL_TRUST_MODE=development` to make a degraded server answer | ⛔ wrong, always. Stamps `degraded` on every result |\r\n| `RECALL_ENV=development` while the server serves production | ⛔ wrong. Indexes into the legacy table nothing reads — a silent no-op |\r\n| `RECALL_ENV` unset **at build time**, production **at serve time** | ✅ **this is the supported path** |\r\n\r\nThe third is not a workaround. `GenerationManager.certification_required` reads \"the SERVING\r\nenvironment, not the build one\" — the split is designed.",
+                "score": 0.44353852012524597,
+                "confidence": 0.05616722986419981,
+                "verdict": "low_confidence",
+                "ordinal": 2
+              }
+            ]
+          },
+          "candidate_queries": [],
+          "candidate_retrievals": [],
+          "retrieval": {
+            "query": "hardcoded absolute paths production host",
+            "abstained": true,
+            "reason": "no hit above the calibrated confidence threshold (probable corpus gap)",
+            "gap_warning": true,
+            "trust_state": "trusted",
+            "calibration_status": "certified",
+            "tenant_id": "memory",
+            "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+            "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+            "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+            "hits": [
+              {
+                "chunk_id": "036d0c819bc143bc3627bba9aee9647a3ad881290b3b69545276c88e53366f48",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+                "text": "**Caught 2026-08-18 at the push gate, not by two bug-audit passes.**\n\nA results artifact's `_provenance` recorded\n`{\"path\": \"/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl\", \"sha256\": ...}`.\nThe repository is public on GitHub, PyPI and the MCP registry.\n\n**Why it matters even though it is not a credential.** `CLAUDE.md` states the rule for MCP config:\n*\"both halves of an internal server are disclosure: the bearer token obviously, and the host address\ntoo, because an inventory of which machines exist and what runs on them is worth something on its\nown.\"* An absolute path is the same class: it names a user account, a host's directory layout and\nwhat is deployed where.",
+                "score": 0.4567492578476233,
+                "confidence": 0.09516097172164181,
+                "verdict": "low_confidence",
+                "ordinal": 0
+              },
+              {
+                "chunk_id": "4a114a4abd6197c91b4b1fe719411e556fd0fbb686b9c3aa7e6805eb5a1bd905",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/hosted-admissible-is-not-verified.md",
+                "text": "Fixed 2026-08-26, PR #522, merged as `16c6e854` and deployed to VPS2 the same day.\n\n**The shape of the bug is worth more than the fix.** Two rules, each correct alone, that could not\nboth be satisfied:\n\n* `RegisteredProfile.__post_init__` **refuses** to let a hosted profile pin an artifact digest,\n  because the provider serves weights it may replace behind a stable model name.\n* `require_production_identity` **demanded** an immutable revision or artifact digest.\n\nSo the gate was not strict, it was **unpassable**. No hosted corpus could ever accept an upload\nunder `RECALL_ENV=production`. Not a hard case: an impossible one.",
+                "score": 0.46351507088631894,
+                "confidence": 0.12340674872670246,
+                "verdict": "low_confidence",
+                "ordinal": 0
+              },
+              {
+                "chunk_id": "85f0f9a3e295a825d5c558de0a3e0a93abf48b3e9ca56f1be07e22ca2599c731",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+                "text": "the sequence from the code.**\r\n\r\n## 🔑 Why sessions keep concluding \"impossible\", and why that conclusion is false\r\n\r\n**The production guard is in the CLI, not the library.**\r\n\r\n- `recall.cli index` → `_cmd_index` refuses under `RECALL_ENV=production`\r\n  (\"local filesystem indexing is development-only\")\r\n- `recall.cli generation build` → refuses a non-`s3://` manifest under production\r\n  (`recall/cli_commands/generation_cmd.py:248`)\r\n- **`bin/index_local.py` on VPS2 constructs an `Indexer` directly. It never mentions `RECALL_ENV`\r\n  and is never refused.**\r\n\r\nSo \"you cannot index under production\" is wrong. It is *the CLI* that refuses. The working path\r\nexists, is in daily use, and belongs to Codex:\r\n\r\n```\r\n~/.codex/re-call/refresh-vps2.ps1   ->  ~/.claude/recall-vps2/refresh.sh\r\n     ->",
+                "score": 0.46609869801410597,
+                "confidence": 0.13596755241167938,
+                "verdict": "low_confidence",
+                "ordinal": 4
+              },
+              {
+                "chunk_id": "2aebd0ce25bf63026ed74f5c28bb90f80a081d3c2e0d8968000702b9b97f2894",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/no-pinned-revision-for-the-default-embedder.md",
+                "text": "* `require_production_identity()` (`lineage.py:184`) refuses an unverified pipeline, but it is\n  called **only** on the `generation build` path when `RECALL_ENV=production`.\n* And that path is unreachable for a local corpus anyway: the `file://` manifest check fires first\n  with *\"production generation builds require a versioned S3 manifest\"*. So for anyone building\n  from a directory, the `allow_unverified` guard is dead code.\n\n**Net: `verified: false` costs you nothing until the corpus moves to versioned S3 storage.**\n\n## What to do instead of pinning a revision",
+                "score": 0.4376455210236033,
+                "confidence": 0.0441240106121069,
+                "verdict": "low_confidence",
+                "ordinal": 2
+              },
+              {
+                "chunk_id": "80df4de524744df5b25cf36f1b7165364c7358985701034eef2b5facbd32ca2c",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+                "text": "precision matters or this memo blocks the right answer too.**\r\nThis first said \"never suggest `RECALL_ENV=development`\", which is too broad and would forbid the\r\nsupported path. Three different things get called \"development\" and only two are wrong:\r\n\r\n| | verdict |\r\n|---|---|\r\n| `RECALL_TRUST_MODE=development` to make a degraded server answer | ⛔ wrong, always. Stamps `degraded` on every result |\r\n| `RECALL_ENV=development` while the server serves production | ⛔ wrong. Indexes into the legacy table nothing reads — a silent no-op |\r\n| `RECALL_ENV` unset **at build time**, production **at serve time** | ✅ **this is the supported path** |\r\n\r\nThe third is not a workaround. `GenerationManager.certification_required` reads \"the SERVING\r\nenvironment, not the build one\" — the split is designed.",
+                "score": 0.44353852012524597,
+                "confidence": 0.05616722986419981,
+                "verdict": "low_confidence",
+                "ordinal": 2
+              }
+            ]
+          },
+          "new_trusted_chunk_ids": [],
+          "diagnostics": {
+            "retrieval_calls": 1,
+            "model_calls": 0,
+            "token_cost": 0,
+            "graph": {
+              "readiness": "ready",
+              "reason": null,
+              "entities_inspected": 6013,
+              "mentions_inspected": 28940,
+              "relations_inspected": 3779,
+              "diagnostics_encountered": 61,
+              "candidates_discovered": 0,
+              "candidates_accepted": 0,
+              "candidates_rejected": 0,
+              "candidate_retrieval_failures": 0,
+              "latency_ms": 6729.121
+            },
+            "new_trusted_items": 0,
+            "provider_failures": []
+          }
+        }
+      ],
+      "model_calls": [],
+      "apparatus": {
+        "expected_generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+        "mode": "hybrid"
+      }
+    },
+    {
+      "task_id": "ts-false-zero-search#r2",
+      "arm": "hybrid",
+      "original_prompt": "Somebody may have hardcoded absolute paths from our production host into this repository. Write `scripts/audit_paths.sh` which prints, one per line and with no other output, the repository-relative path of every tracked file whose contents contain the string /home/sentiment. Run it so I can see the result, and leave the script in place.",
+      "query": "hardcoded absolute paths production host",
+      "gold": {
+        "gold_memo": "msys-mangles-slash-patterns",
+        "gold_class": "control"
+      },
+      "final": {
+        "status": "complete",
+        "mode": "hybrid",
+        "generation": {
+          "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+          "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+          "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6"
+        },
+        "baseline_retrieval": {
+          "query": "hardcoded absolute paths production host",
+          "abstained": true,
+          "reason": "no hit above the calibrated confidence threshold (probable corpus gap)",
+          "gap_warning": true,
+          "trust_state": "trusted",
+          "calibration_status": "certified",
+          "tenant_id": "memory",
+          "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+          "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+          "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+          "hits": [
+            {
+              "chunk_id": "036d0c819bc143bc3627bba9aee9647a3ad881290b3b69545276c88e53366f48",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+              "text": "**Caught 2026-08-18 at the push gate, not by two bug-audit passes.**\n\nA results artifact's `_provenance` recorded\n`{\"path\": \"/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl\", \"sha256\": ...}`.\nThe repository is public on GitHub, PyPI and the MCP registry.\n\n**Why it matters even though it is not a credential.** `CLAUDE.md` states the rule for MCP config:\n*\"both halves of an internal server are disclosure: the bearer token obviously, and the host address\ntoo, because an inventory of which machines exist and what runs on them is worth something on its\nown.\"* An absolute path is the same class: it names a user account, a host's directory layout and\nwhat is deployed where.",
+              "score": 0.4566495418548584,
+              "confidence": 0.09479152541874006,
+              "verdict": "low_confidence",
+              "ordinal": 0
+            },
+            {
+              "chunk_id": "4a114a4abd6197c91b4b1fe719411e556fd0fbb686b9c3aa7e6805eb5a1bd905",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/hosted-admissible-is-not-verified.md",
+              "text": "Fixed 2026-08-26, PR #522, merged as `16c6e854` and deployed to VPS2 the same day.\n\n**The shape of the bug is worth more than the fix.** Two rules, each correct alone, that could not\nboth be satisfied:\n\n* `RegisteredProfile.__post_init__` **refuses** to let a hosted profile pin an artifact digest,\n  because the provider serves weights it may replace behind a stable model name.\n* `require_production_identity` **demanded** an immutable revision or artifact digest.\n\nSo the gate was not strict, it was **unpassable**. No hosted corpus could ever accept an upload\nunder `RECALL_ENV=production`. Not a hard case: an impossible one.",
+              "score": 0.46324673295021057,
+              "confidence": 0.12216097629268391,
+              "verdict": "low_confidence",
+              "ordinal": 0
+            },
+            {
+              "chunk_id": "85f0f9a3e295a825d5c558de0a3e0a93abf48b3e9ca56f1be07e22ca2599c731",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+              "text": "the sequence from the code.**\r\n\r\n## 🔑 Why sessions keep concluding \"impossible\", and why that conclusion is false\r\n\r\n**The production guard is in the CLI, not the library.**\r\n\r\n- `recall.cli index` → `_cmd_index` refuses under `RECALL_ENV=production`\r\n  (\"local filesystem indexing is development-only\")\r\n- `recall.cli generation build` → refuses a non-`s3://` manifest under production\r\n  (`recall/cli_commands/generation_cmd.py:248`)\r\n- **`bin/index_local.py` on VPS2 constructs an `Indexer` directly. It never mentions `RECALL_ENV`\r\n  and is never refused.**\r\n\r\nSo \"you cannot index under production\" is wrong. It is *the CLI* that refuses. The working path\r\nexists, is in daily use, and belongs to Codex:\r\n\r\n```\r\n~/.codex/re-call/refresh-vps2.ps1   ->  ~/.claude/recall-vps2/refresh.sh\r\n     ->",
+              "score": 0.4659348766881408,
+              "confidence": 0.13514012281826357,
+              "verdict": "low_confidence",
+              "ordinal": 4
+            },
+            {
+              "chunk_id": "2aebd0ce25bf63026ed74f5c28bb90f80a081d3c2e0d8968000702b9b97f2894",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/no-pinned-revision-for-the-default-embedder.md",
+              "text": "* `require_production_identity()` (`lineage.py:184`) refuses an unverified pipeline, but it is\n  called **only** on the `generation build` path when `RECALL_ENV=production`.\n* And that path is unreachable for a local corpus anyway: the `file://` manifest check fires first\n  with *\"production generation builds require a versioned S3 manifest\"*. So for anyone building\n  from a directory, the `allow_unverified` guard is dead code.\n\n**Net: `verified: false` costs you nothing until the corpus moves to versioned S3 storage.**\n\n## What to do instead of pinning a revision",
+              "score": 0.43757784366607666,
+              "confidence": 0.04400113817516543,
+              "verdict": "low_confidence",
+              "ordinal": 2
+            },
+            {
+              "chunk_id": "80df4de524744df5b25cf36f1b7165364c7358985701034eef2b5facbd32ca2c",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+              "text": "precision matters or this memo blocks the right answer too.**\r\nThis first said \"never suggest `RECALL_ENV=development`\", which is too broad and would forbid the\r\nsupported path. Three different things get called \"development\" and only two are wrong:\r\n\r\n| | verdict |\r\n|---|---|\r\n| `RECALL_TRUST_MODE=development` to make a degraded server answer | ⛔ wrong, always. Stamps `degraded` on every result |\r\n| `RECALL_ENV=development` while the server serves production | ⛔ wrong. Indexes into the legacy table nothing reads — a silent no-op |\r\n| `RECALL_ENV` unset **at build time**, production **at serve time** | ✅ **this is the supported path** |\r\n\r\nThe third is not a workaround. `GenerationManager.certification_required` reads \"the SERVING\r\nenvironment, not the build one\" — the split is designed.",
+              "score": 0.44395375919893587,
+              "confidence": 0.057123631553086,
+              "verdict": "low_confidence",
+              "ordinal": 2
+            }
+          ]
+        },
+        "candidate_queries": [],
+        "candidate_retrievals": [],
+        "retrieval": {
+          "query": "hardcoded absolute paths production host",
+          "abstained": true,
+          "reason": "no hit above the calibrated confidence threshold (probable corpus gap)",
+          "gap_warning": true,
+          "trust_state": "trusted",
+          "calibration_status": "certified",
+          "tenant_id": "memory",
+          "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+          "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+          "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+          "hits": [
+            {
+              "chunk_id": "036d0c819bc143bc3627bba9aee9647a3ad881290b3b69545276c88e53366f48",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+              "text": "**Caught 2026-08-18 at the push gate, not by two bug-audit passes.**\n\nA results artifact's `_provenance` recorded\n`{\"path\": \"/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl\", \"sha256\": ...}`.\nThe repository is public on GitHub, PyPI and the MCP registry.\n\n**Why it matters even though it is not a credential.** `CLAUDE.md` states the rule for MCP config:\n*\"both halves of an internal server are disclosure: the bearer token obviously, and the host address\ntoo, because an inventory of which machines exist and what runs on them is worth something on its\nown.\"* An absolute path is the same class: it names a user account, a host's directory layout and\nwhat is deployed where.",
+              "score": 0.4566495418548584,
+              "confidence": 0.09479152541874006,
+              "verdict": "low_confidence",
+              "ordinal": 0
+            },
+            {
+              "chunk_id": "4a114a4abd6197c91b4b1fe719411e556fd0fbb686b9c3aa7e6805eb5a1bd905",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/hosted-admissible-is-not-verified.md",
+              "text": "Fixed 2026-08-26, PR #522, merged as `16c6e854` and deployed to VPS2 the same day.\n\n**The shape of the bug is worth more than the fix.** Two rules, each correct alone, that could not\nboth be satisfied:\n\n* `RegisteredProfile.__post_init__` **refuses** to let a hosted profile pin an artifact digest,\n  because the provider serves weights it may replace behind a stable model name.\n* `require_production_identity` **demanded** an immutable revision or artifact digest.\n\nSo the gate was not strict, it was **unpassable**. No hosted corpus could ever accept an upload\nunder `RECALL_ENV=production`. Not a hard case: an impossible one.",
+              "score": 0.46324673295021057,
+              "confidence": 0.12216097629268391,
+              "verdict": "low_confidence",
+              "ordinal": 0
+            },
+            {
+              "chunk_id": "85f0f9a3e295a825d5c558de0a3e0a93abf48b3e9ca56f1be07e22ca2599c731",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+              "text": "the sequence from the code.**\r\n\r\n## 🔑 Why sessions keep concluding \"impossible\", and why that conclusion is false\r\n\r\n**The production guard is in the CLI, not the library.**\r\n\r\n- `recall.cli index` → `_cmd_index` refuses under `RECALL_ENV=production`\r\n  (\"local filesystem indexing is development-only\")\r\n- `recall.cli generation build` → refuses a non-`s3://` manifest under production\r\n  (`recall/cli_commands/generation_cmd.py:248`)\r\n- **`bin/index_local.py` on VPS2 constructs an `Indexer` directly. It never mentions `RECALL_ENV`\r\n  and is never refused.**\r\n\r\nSo \"you cannot index under production\" is wrong. It is *the CLI* that refuses. The working path\r\nexists, is in daily use, and belongs to Codex:\r\n\r\n```\r\n~/.codex/re-call/refresh-vps2.ps1   ->  ~/.claude/recall-vps2/refresh.sh\r\n     ->",
+              "score": 0.4659348766881408,
+              "confidence": 0.13514012281826357,
+              "verdict": "low_confidence",
+              "ordinal": 4
+            },
+            {
+              "chunk_id": "2aebd0ce25bf63026ed74f5c28bb90f80a081d3c2e0d8968000702b9b97f2894",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/no-pinned-revision-for-the-default-embedder.md",
+              "text": "* `require_production_identity()` (`lineage.py:184`) refuses an unverified pipeline, but it is\n  called **only** on the `generation build` path when `RECALL_ENV=production`.\n* And that path is unreachable for a local corpus anyway: the `file://` manifest check fires first\n  with *\"production generation builds require a versioned S3 manifest\"*. So for anyone building\n  from a directory, the `allow_unverified` guard is dead code.\n\n**Net: `verified: false` costs you nothing until the corpus moves to versioned S3 storage.**\n\n## What to do instead of pinning a revision",
+              "score": 0.43757784366607666,
+              "confidence": 0.04400113817516543,
+              "verdict": "low_confidence",
+              "ordinal": 2
+            },
+            {
+              "chunk_id": "80df4de524744df5b25cf36f1b7165364c7358985701034eef2b5facbd32ca2c",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+              "text": "precision matters or this memo blocks the right answer too.**\r\nThis first said \"never suggest `RECALL_ENV=development`\", which is too broad and would forbid the\r\nsupported path. Three different things get called \"development\" and only two are wrong:\r\n\r\n| | verdict |\r\n|---|---|\r\n| `RECALL_TRUST_MODE=development` to make a degraded server answer | ⛔ wrong, always. Stamps `degraded` on every result |\r\n| `RECALL_ENV=development` while the server serves production | ⛔ wrong. Indexes into the legacy table nothing reads — a silent no-op |\r\n| `RECALL_ENV` unset **at build time**, production **at serve time** | ✅ **this is the supported path** |\r\n\r\nThe third is not a workaround. `GenerationManager.certification_required` reads \"the SERVING\r\nenvironment, not the build one\" — the split is designed.",
+              "score": 0.44395375919893587,
+              "confidence": 0.057123631553086,
+              "verdict": "low_confidence",
+              "ordinal": 2
+            }
+          ]
+        },
+        "new_trusted_chunk_ids": [],
+        "diagnostics": {
+          "retrieval_calls": 1,
+          "model_calls": 0,
+          "token_cost": 0,
+          "graph": {
+            "readiness": "ready",
+            "reason": null,
+            "entities_inspected": 6013,
+            "mentions_inspected": 28940,
+            "relations_inspected": 3779,
+            "diagnostics_encountered": 61,
+            "candidates_discovered": 0,
+            "candidates_accepted": 0,
+            "candidates_rejected": 0,
+            "candidate_retrieval_failures": 0,
+            "latency_ms": 6838.144
+          },
+          "new_trusted_items": 0,
+          "provider_failures": []
+        }
+      },
+      "tool_calls": [
+        {
+          "status": "complete",
+          "mode": "hybrid",
+          "generation": {
+            "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+            "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+            "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6"
+          },
+          "baseline_retrieval": {
+            "query": "hardcoded absolute paths production host",
+            "abstained": true,
+            "reason": "no hit above the calibrated confidence threshold (probable corpus gap)",
+            "gap_warning": true,
+            "trust_state": "trusted",
+            "calibration_status": "certified",
+            "tenant_id": "memory",
+            "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+            "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+            "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+            "hits": [
+              {
+                "chunk_id": "036d0c819bc143bc3627bba9aee9647a3ad881290b3b69545276c88e53366f48",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+                "text": "**Caught 2026-08-18 at the push gate, not by two bug-audit passes.**\n\nA results artifact's `_provenance` recorded\n`{\"path\": \"/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl\", \"sha256\": ...}`.\nThe repository is public on GitHub, PyPI and the MCP registry.\n\n**Why it matters even though it is not a credential.** `CLAUDE.md` states the rule for MCP config:\n*\"both halves of an internal server are disclosure: the bearer token obviously, and the host address\ntoo, because an inventory of which machines exist and what runs on them is worth something on its\nown.\"* An absolute path is the same class: it names a user account, a host's directory layout and\nwhat is deployed where.",
+                "score": 0.4566495418548584,
+                "confidence": 0.09479152541874006,
+                "verdict": "low_confidence",
+                "ordinal": 0
+              },
+              {
+                "chunk_id": "4a114a4abd6197c91b4b1fe719411e556fd0fbb686b9c3aa7e6805eb5a1bd905",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/hosted-admissible-is-not-verified.md",
+                "text": "Fixed 2026-08-26, PR #522, merged as `16c6e854` and deployed to VPS2 the same day.\n\n**The shape of the bug is worth more than the fix.** Two rules, each correct alone, that could not\nboth be satisfied:\n\n* `RegisteredProfile.__post_init__` **refuses** to let a hosted profile pin an artifact digest,\n  because the provider serves weights it may replace behind a stable model name.\n* `require_production_identity` **demanded** an immutable revision or artifact digest.\n\nSo the gate was not strict, it was **unpassable**. No hosted corpus could ever accept an upload\nunder `RECALL_ENV=production`. Not a hard case: an impossible one.",
+                "score": 0.46324673295021057,
+                "confidence": 0.12216097629268391,
+                "verdict": "low_confidence",
+                "ordinal": 0
+              },
+              {
+                "chunk_id": "85f0f9a3e295a825d5c558de0a3e0a93abf48b3e9ca56f1be07e22ca2599c731",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+                "text": "the sequence from the code.**\r\n\r\n## 🔑 Why sessions keep concluding \"impossible\", and why that conclusion is false\r\n\r\n**The production guard is in the CLI, not the library.**\r\n\r\n- `recall.cli index` → `_cmd_index` refuses under `RECALL_ENV=production`\r\n  (\"local filesystem indexing is development-only\")\r\n- `recall.cli generation build` → refuses a non-`s3://` manifest under production\r\n  (`recall/cli_commands/generation_cmd.py:248`)\r\n- **`bin/index_local.py` on VPS2 constructs an `Indexer` directly. It never mentions `RECALL_ENV`\r\n  and is never refused.**\r\n\r\nSo \"you cannot index under production\" is wrong. It is *the CLI* that refuses. The working path\r\nexists, is in daily use, and belongs to Codex:\r\n\r\n```\r\n~/.codex/re-call/refresh-vps2.ps1   ->  ~/.claude/recall-vps2/refresh.sh\r\n     ->",
+                "score": 0.4659348766881408,
+                "confidence": 0.13514012281826357,
+                "verdict": "low_confidence",
+                "ordinal": 4
+              },
+              {
+                "chunk_id": "2aebd0ce25bf63026ed74f5c28bb90f80a081d3c2e0d8968000702b9b97f2894",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/no-pinned-revision-for-the-default-embedder.md",
+                "text": "* `require_production_identity()` (`lineage.py:184`) refuses an unverified pipeline, but it is\n  called **only** on the `generation build` path when `RECALL_ENV=production`.\n* And that path is unreachable for a local corpus anyway: the `file://` manifest check fires first\n  with *\"production generation builds require a versioned S3 manifest\"*. So for anyone building\n  from a directory, the `allow_unverified` guard is dead code.\n\n**Net: `verified: false` costs you nothing until the corpus moves to versioned S3 storage.**\n\n## What to do instead of pinning a revision",
+                "score": 0.43757784366607666,
+                "confidence": 0.04400113817516543,
+                "verdict": "low_confidence",
+                "ordinal": 2
+              },
+              {
+                "chunk_id": "80df4de524744df5b25cf36f1b7165364c7358985701034eef2b5facbd32ca2c",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+                "text": "precision matters or this memo blocks the right answer too.**\r\nThis first said \"never suggest `RECALL_ENV=development`\", which is too broad and would forbid the\r\nsupported path. Three different things get called \"development\" and only two are wrong:\r\n\r\n| | verdict |\r\n|---|---|\r\n| `RECALL_TRUST_MODE=development` to make a degraded server answer | ⛔ wrong, always. Stamps `degraded` on every result |\r\n| `RECALL_ENV=development` while the server serves production | ⛔ wrong. Indexes into the legacy table nothing reads — a silent no-op |\r\n| `RECALL_ENV` unset **at build time**, production **at serve time** | ✅ **this is the supported path** |\r\n\r\nThe third is not a workaround. `GenerationManager.certification_required` reads \"the SERVING\r\nenvironment, not the build one\" — the split is designed.",
+                "score": 0.44395375919893587,
+                "confidence": 0.057123631553086,
+                "verdict": "low_confidence",
+                "ordinal": 2
+              }
+            ]
+          },
+          "candidate_queries": [],
+          "candidate_retrievals": [],
+          "retrieval": {
+            "query": "hardcoded absolute paths production host",
+            "abstained": true,
+            "reason": "no hit above the calibrated confidence threshold (probable corpus gap)",
+            "gap_warning": true,
+            "trust_state": "trusted",
+            "calibration_status": "certified",
+            "tenant_id": "memory",
+            "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+            "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+            "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+            "hits": [
+              {
+                "chunk_id": "036d0c819bc143bc3627bba9aee9647a3ad881290b3b69545276c88e53366f48",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+                "text": "**Caught 2026-08-18 at the push gate, not by two bug-audit passes.**\n\nA results artifact's `_provenance` recorded\n`{\"path\": \"/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl\", \"sha256\": ...}`.\nThe repository is public on GitHub, PyPI and the MCP registry.\n\n**Why it matters even though it is not a credential.** `CLAUDE.md` states the rule for MCP config:\n*\"both halves of an internal server are disclosure: the bearer token obviously, and the host address\ntoo, because an inventory of which machines exist and what runs on them is worth something on its\nown.\"* An absolute path is the same class: it names a user account, a host's directory layout and\nwhat is deployed where.",
+                "score": 0.4566495418548584,
+                "confidence": 0.09479152541874006,
+                "verdict": "low_confidence",
+                "ordinal": 0
+              },
+              {
+                "chunk_id": "4a114a4abd6197c91b4b1fe719411e556fd0fbb686b9c3aa7e6805eb5a1bd905",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/hosted-admissible-is-not-verified.md",
+                "text": "Fixed 2026-08-26, PR #522, merged as `16c6e854` and deployed to VPS2 the same day.\n\n**The shape of the bug is worth more than the fix.** Two rules, each correct alone, that could not\nboth be satisfied:\n\n* `RegisteredProfile.__post_init__` **refuses** to let a hosted profile pin an artifact digest,\n  because the provider serves weights it may replace behind a stable model name.\n* `require_production_identity` **demanded** an immutable revision or artifact digest.\n\nSo the gate was not strict, it was **unpassable**. No hosted corpus could ever accept an upload\nunder `RECALL_ENV=production`. Not a hard case: an impossible one.",
+                "score": 0.46324673295021057,
+                "confidence": 0.12216097629268391,
+                "verdict": "low_confidence",
+                "ordinal": 0
+              },
+              {
+                "chunk_id": "85f0f9a3e295a825d5c558de0a3e0a93abf48b3e9ca56f1be07e22ca2599c731",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+                "text": "the sequence from the code.**\r\n\r\n## 🔑 Why sessions keep concluding \"impossible\", and why that conclusion is false\r\n\r\n**The production guard is in the CLI, not the library.**\r\n\r\n- `recall.cli index` → `_cmd_index` refuses under `RECALL_ENV=production`\r\n  (\"local filesystem indexing is development-only\")\r\n- `recall.cli generation build` → refuses a non-`s3://` manifest under production\r\n  (`recall/cli_commands/generation_cmd.py:248`)\r\n- **`bin/index_local.py` on VPS2 constructs an `Indexer` directly. It never mentions `RECALL_ENV`\r\n  and is never refused.**\r\n\r\nSo \"you cannot index under production\" is wrong. It is *the CLI* that refuses. The working path\r\nexists, is in daily use, and belongs to Codex:\r\n\r\n```\r\n~/.codex/re-call/refresh-vps2.ps1   ->  ~/.claude/recall-vps2/refresh.sh\r\n     ->",
+                "score": 0.4659348766881408,
+                "confidence": 0.13514012281826357,
+                "verdict": "low_confidence",
+                "ordinal": 4
+              },
+              {
+                "chunk_id": "2aebd0ce25bf63026ed74f5c28bb90f80a081d3c2e0d8968000702b9b97f2894",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/no-pinned-revision-for-the-default-embedder.md",
+                "text": "* `require_production_identity()` (`lineage.py:184`) refuses an unverified pipeline, but it is\n  called **only** on the `generation build` path when `RECALL_ENV=production`.\n* And that path is unreachable for a local corpus anyway: the `file://` manifest check fires first\n  with *\"production generation builds require a versioned S3 manifest\"*. So for anyone building\n  from a directory, the `allow_unverified` guard is dead code.\n\n**Net: `verified: false` costs you nothing until the corpus moves to versioned S3 storage.**\n\n## What to do instead of pinning a revision",
+                "score": 0.43757784366607666,
+                "confidence": 0.04400113817516543,
+                "verdict": "low_confidence",
+                "ordinal": 2
+              },
+              {
+                "chunk_id": "80df4de524744df5b25cf36f1b7165364c7358985701034eef2b5facbd32ca2c",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+                "text": "precision matters or this memo blocks the right answer too.**\r\nThis first said \"never suggest `RECALL_ENV=development`\", which is too broad and would forbid the\r\nsupported path. Three different things get called \"development\" and only two are wrong:\r\n\r\n| | verdict |\r\n|---|---|\r\n| `RECALL_TRUST_MODE=development` to make a degraded server answer | ⛔ wrong, always. Stamps `degraded` on every result |\r\n| `RECALL_ENV=development` while the server serves production | ⛔ wrong. Indexes into the legacy table nothing reads — a silent no-op |\r\n| `RECALL_ENV` unset **at build time**, production **at serve time** | ✅ **this is the supported path** |\r\n\r\nThe third is not a workaround. `GenerationManager.certification_required` reads \"the SERVING\r\nenvironment, not the build one\" — the split is designed.",
+                "score": 0.44395375919893587,
+                "confidence": 0.057123631553086,
+                "verdict": "low_confidence",
+                "ordinal": 2
+              }
+            ]
+          },
+          "new_trusted_chunk_ids": [],
+          "diagnostics": {
+            "retrieval_calls": 1,
+            "model_calls": 0,
+            "token_cost": 0,
+            "graph": {
+              "readiness": "ready",
+              "reason": null,
+              "entities_inspected": 6013,
+              "mentions_inspected": 28940,
+              "relations_inspected": 3779,
+              "diagnostics_encountered": 61,
+              "candidates_discovered": 0,
+              "candidates_accepted": 0,
+              "candidates_rejected": 0,
+              "candidate_retrieval_failures": 0,
+              "latency_ms": 6838.144
+            },
+            "new_trusted_items": 0,
+            "provider_failures": []
+          }
+        }
+      ],
+      "model_calls": [],
+      "apparatus": {
+        "expected_generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+        "mode": "hybrid"
+      }
+    },
+    {
+      "task_id": "ts-false-zero-search#r3",
+      "arm": "hybrid",
+      "original_prompt": "Somebody may have hardcoded absolute paths from our production host into this repository. Write `scripts/audit_paths.sh` which prints, one per line and with no other output, the repository-relative path of every tracked file whose contents contain the string /home/sentiment. Run it so I can see the result, and leave the script in place.",
+      "query": "hardcoded paths production absolute paths",
+      "gold": {
+        "gold_memo": "msys-mangles-slash-patterns",
+        "gold_class": "control"
+      },
+      "final": {
+        "status": "complete",
+        "mode": "hybrid",
+        "generation": {
+          "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+          "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+          "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6"
+        },
+        "baseline_retrieval": {
+          "query": "hardcoded paths production absolute paths",
+          "abstained": true,
+          "reason": "no hit above the calibrated confidence threshold (probable corpus gap)",
+          "gap_warning": true,
+          "trust_state": "trusted",
+          "calibration_status": "certified",
+          "tenant_id": "memory",
+          "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+          "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+          "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+          "hits": [
+            {
+              "chunk_id": "f4fc7a517d27b446a69cee1186a795cab5a61704a253802d07fd0e927fe652e8",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/reference_index.md",
+              "text": "then LANCZOS downsample, absolute paths, network needed for Geist.\r\n- [The Bash tool's PATH lacks the Unix tools](bash-tool-path-lacks-unix-tools.md) — no `sed`, `grep`, `git`, `docker`, `gh` or `curl`; every call needs an explicit `export PATH` prefix and shell state does not persist.\r\n- [Validity Frontmatter spec repo](validity-frontmatter-spec-repo.md) — github.com/GiulioDER/validity-frontmatter, MIT, the three keys recall reads, with 11 test vectors and a zero-dependency TypeScript implementation. recall 0.9.5 diverges on the empty-window case and is the one that needs fixing.\r\n- [Claude Code does not normalise its project keys](claude-project-keys-are-not-normalised.md) — one directory appears under several path spellings in `~/.claude.json` (313 keys, measured 2026-08-19); anything",
+              "score": 0.45862842972959394,
+              "confidence": 0.10236778381025534,
+              "verdict": "low_confidence",
+              "ordinal": 1
+            },
+            {
+              "chunk_id": "036d0c819bc143bc3627bba9aee9647a3ad881290b3b69545276c88e53366f48",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+              "text": "**Caught 2026-08-18 at the push gate, not by two bug-audit passes.**\n\nA results artifact's `_provenance` recorded\n`{\"path\": \"/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl\", \"sha256\": ...}`.\nThe repository is public on GitHub, PyPI and the MCP registry.\n\n**Why it matters even though it is not a credential.** `CLAUDE.md` states the rule for MCP config:\n*\"both halves of an internal server are disclosure: the bearer token obviously, and the host address\ntoo, because an inventory of which machines exist and what runs on them is worth something on its\nown.\"* An absolute path is the same class: it names a user account, a host's directory layout and\nwhat is deployed where.",
+              "score": 0.46597009897232056,
+              "confidence": 0.1353176644238719,
+              "verdict": "low_confidence",
+              "ordinal": 0
+            },
+            {
+              "chunk_id": "5344b76ef2f9aff6a8dd31a6ef1bec2c0ef88464cd423f40d36a37c9f615ba78",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+              "text": "🔑 **The check that settled it in one command**, and the one worth running before publishing any\ngenerated file:\n\n```bash\ngit grep -c \"/home/\" -- results/    # returned 0 files: mine would have been the FIRST\n```\n\n**How to apply.** Record the **name and the digest**, never the absolute path. The digest is the\nhalf that makes provenance verifiable; the path is the half a reader outside that machine can do\nnothing with. Fix it at the writer, not in the file, so a re-run cannot reintroduce it.",
+              "score": 0.483365923166275,
+              "confidence": 0.24881971124186125,
+              "verdict": "low_confidence",
+              "ordinal": 1
+            },
+            {
+              "chunk_id": "85f0f9a3e295a825d5c558de0a3e0a93abf48b3e9ca56f1be07e22ca2599c731",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+              "text": "the sequence from the code.**\r\n\r\n## 🔑 Why sessions keep concluding \"impossible\", and why that conclusion is false\r\n\r\n**The production guard is in the CLI, not the library.**\r\n\r\n- `recall.cli index` → `_cmd_index` refuses under `RECALL_ENV=production`\r\n  (\"local filesystem indexing is development-only\")\r\n- `recall.cli generation build` → refuses a non-`s3://` manifest under production\r\n  (`recall/cli_commands/generation_cmd.py:248`)\r\n- **`bin/index_local.py` on VPS2 constructs an `Indexer` directly. It never mentions `RECALL_ENV`\r\n  and is never refused.**\r\n\r\nSo \"you cannot index under production\" is wrong. It is *the CLI* that refuses. The working path\r\nexists, is in daily use, and belongs to Codex:\r\n\r\n```\r\n~/.codex/re-call/refresh-vps2.ps1   ->  ~/.claude/recall-vps2/refresh.sh\r\n     ->",
+              "score": 0.4386072828045777,
+              "confidence": 0.04590589168525469,
+              "verdict": "low_confidence",
+              "ordinal": 4
+            },
+            {
+              "chunk_id": "84cb66813129c11f075a19e60635001372df89d73118d4ee76cc7a082673fee1",
+              "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/reference-devto-banner-template-2026-08-02.md",
+              "text": "Always pass an absolute path.\r\n\r\n## The layout formula (copied from a cover that outperformed ours)\r\n\r\nReference studied: `dev.to/nazar-boyko/slopsquatting-...-2m2`. Its structure, which the template\r\nreproduces:\r\n\r\n1. **Light-to-dark, left to right.** Warm off-white editorial left ~70%, deep navy panel right ~30%.\r\n   The template slants the panel edge (`clip-path:polygon(6.4% 0,...)`) plus a `drop-shadow` so the\r\n   seam is not a flat vertical cut.\r\n2. **Headline, left.** Big bold serif hook (one or two words, full stop), then 3 lighter serif lines\r\n   with **the last line in accent blue**, then a **gold rule**, then a tracked-caps kicker.\r\n3. **One physical object, centre.** The metaphor as a single lit card with layered shadows and a\r\n   slight rotation. Layer a second, contradicting",
+              "score": 0.48509514331817627,
+              "confidence": 0.26301009997675806,
+              "verdict": "low_confidence",
+              "ordinal": 4
+            }
+          ]
+        },
+        "candidate_queries": [],
+        "candidate_retrievals": [],
+        "retrieval": {
+          "query": "hardcoded paths production absolute paths",
+          "abstained": true,
+          "reason": "no hit above the calibrated confidence threshold (probable corpus gap)",
+          "gap_warning": true,
+          "trust_state": "trusted",
+          "calibration_status": "certified",
+          "tenant_id": "memory",
+          "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+          "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+          "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+          "hits": [
+            {
+              "chunk_id": "f4fc7a517d27b446a69cee1186a795cab5a61704a253802d07fd0e927fe652e8",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/reference_index.md",
+              "text": "then LANCZOS downsample, absolute paths, network needed for Geist.\r\n- [The Bash tool's PATH lacks the Unix tools](bash-tool-path-lacks-unix-tools.md) — no `sed`, `grep`, `git`, `docker`, `gh` or `curl`; every call needs an explicit `export PATH` prefix and shell state does not persist.\r\n- [Validity Frontmatter spec repo](validity-frontmatter-spec-repo.md) — github.com/GiulioDER/validity-frontmatter, MIT, the three keys recall reads, with 11 test vectors and a zero-dependency TypeScript implementation. recall 0.9.5 diverges on the empty-window case and is the one that needs fixing.\r\n- [Claude Code does not normalise its project keys](claude-project-keys-are-not-normalised.md) — one directory appears under several path spellings in `~/.claude.json` (313 keys, measured 2026-08-19); anything",
+              "score": 0.45862842972959394,
+              "confidence": 0.10236778381025534,
+              "verdict": "low_confidence",
+              "ordinal": 1
+            },
+            {
+              "chunk_id": "036d0c819bc143bc3627bba9aee9647a3ad881290b3b69545276c88e53366f48",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+              "text": "**Caught 2026-08-18 at the push gate, not by two bug-audit passes.**\n\nA results artifact's `_provenance` recorded\n`{\"path\": \"/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl\", \"sha256\": ...}`.\nThe repository is public on GitHub, PyPI and the MCP registry.\n\n**Why it matters even though it is not a credential.** `CLAUDE.md` states the rule for MCP config:\n*\"both halves of an internal server are disclosure: the bearer token obviously, and the host address\ntoo, because an inventory of which machines exist and what runs on them is worth something on its\nown.\"* An absolute path is the same class: it names a user account, a host's directory layout and\nwhat is deployed where.",
+              "score": 0.46597009897232056,
+              "confidence": 0.1353176644238719,
+              "verdict": "low_confidence",
+              "ordinal": 0
+            },
+            {
+              "chunk_id": "5344b76ef2f9aff6a8dd31a6ef1bec2c0ef88464cd423f40d36a37c9f615ba78",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+              "text": "🔑 **The check that settled it in one command**, and the one worth running before publishing any\ngenerated file:\n\n```bash\ngit grep -c \"/home/\" -- results/    # returned 0 files: mine would have been the FIRST\n```\n\n**How to apply.** Record the **name and the digest**, never the absolute path. The digest is the\nhalf that makes provenance verifiable; the path is the half a reader outside that machine can do\nnothing with. Fix it at the writer, not in the file, so a re-run cannot reintroduce it.",
+              "score": 0.483365923166275,
+              "confidence": 0.24881971124186125,
+              "verdict": "low_confidence",
+              "ordinal": 1
+            },
+            {
+              "chunk_id": "85f0f9a3e295a825d5c558de0a3e0a93abf48b3e9ca56f1be07e22ca2599c731",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+              "text": "the sequence from the code.**\r\n\r\n## 🔑 Why sessions keep concluding \"impossible\", and why that conclusion is false\r\n\r\n**The production guard is in the CLI, not the library.**\r\n\r\n- `recall.cli index` → `_cmd_index` refuses under `RECALL_ENV=production`\r\n  (\"local filesystem indexing is development-only\")\r\n- `recall.cli generation build` → refuses a non-`s3://` manifest under production\r\n  (`recall/cli_commands/generation_cmd.py:248`)\r\n- **`bin/index_local.py` on VPS2 constructs an `Indexer` directly. It never mentions `RECALL_ENV`\r\n  and is never refused.**\r\n\r\nSo \"you cannot index under production\" is wrong. It is *the CLI* that refuses. The working path\r\nexists, is in daily use, and belongs to Codex:\r\n\r\n```\r\n~/.codex/re-call/refresh-vps2.ps1   ->  ~/.claude/recall-vps2/refresh.sh\r\n     ->",
+              "score": 0.4386072828045777,
+              "confidence": 0.04590589168525469,
+              "verdict": "low_confidence",
+              "ordinal": 4
+            },
+            {
+              "chunk_id": "84cb66813129c11f075a19e60635001372df89d73118d4ee76cc7a082673fee1",
+              "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/reference-devto-banner-template-2026-08-02.md",
+              "text": "Always pass an absolute path.\r\n\r\n## The layout formula (copied from a cover that outperformed ours)\r\n\r\nReference studied: `dev.to/nazar-boyko/slopsquatting-...-2m2`. Its structure, which the template\r\nreproduces:\r\n\r\n1. **Light-to-dark, left to right.** Warm off-white editorial left ~70%, deep navy panel right ~30%.\r\n   The template slants the panel edge (`clip-path:polygon(6.4% 0,...)`) plus a `drop-shadow` so the\r\n   seam is not a flat vertical cut.\r\n2. **Headline, left.** Big bold serif hook (one or two words, full stop), then 3 lighter serif lines\r\n   with **the last line in accent blue**, then a **gold rule**, then a tracked-caps kicker.\r\n3. **One physical object, centre.** The metaphor as a single lit card with layered shadows and a\r\n   slight rotation. Layer a second, contradicting",
+              "score": 0.48509514331817627,
+              "confidence": 0.26301009997675806,
+              "verdict": "low_confidence",
+              "ordinal": 4
+            }
+          ]
+        },
+        "new_trusted_chunk_ids": [],
+        "diagnostics": {
+          "retrieval_calls": 1,
+          "model_calls": 0,
+          "token_cost": 0,
+          "graph": {
+            "readiness": "ready",
+            "reason": null,
+            "entities_inspected": 6013,
+            "mentions_inspected": 28940,
+            "relations_inspected": 3779,
+            "diagnostics_encountered": 61,
+            "candidates_discovered": 0,
+            "candidates_accepted": 0,
+            "candidates_rejected": 0,
+            "candidate_retrieval_failures": 0,
+            "latency_ms": 7057.413
+          },
+          "new_trusted_items": 0,
+          "provider_failures": []
+        }
+      },
+      "tool_calls": [
+        {
+          "status": "complete",
+          "mode": "hybrid",
+          "generation": {
+            "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+            "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+            "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6"
+          },
+          "baseline_retrieval": {
+            "query": "hardcoded paths production absolute paths",
+            "abstained": true,
+            "reason": "no hit above the calibrated confidence threshold (probable corpus gap)",
+            "gap_warning": true,
+            "trust_state": "trusted",
+            "calibration_status": "certified",
+            "tenant_id": "memory",
+            "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+            "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+            "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+            "hits": [
+              {
+                "chunk_id": "f4fc7a517d27b446a69cee1186a795cab5a61704a253802d07fd0e927fe652e8",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/reference_index.md",
+                "text": "then LANCZOS downsample, absolute paths, network needed for Geist.\r\n- [The Bash tool's PATH lacks the Unix tools](bash-tool-path-lacks-unix-tools.md) — no `sed`, `grep`, `git`, `docker`, `gh` or `curl`; every call needs an explicit `export PATH` prefix and shell state does not persist.\r\n- [Validity Frontmatter spec repo](validity-frontmatter-spec-repo.md) — github.com/GiulioDER/validity-frontmatter, MIT, the three keys recall reads, with 11 test vectors and a zero-dependency TypeScript implementation. recall 0.9.5 diverges on the empty-window case and is the one that needs fixing.\r\n- [Claude Code does not normalise its project keys](claude-project-keys-are-not-normalised.md) — one directory appears under several path spellings in `~/.claude.json` (313 keys, measured 2026-08-19); anything",
+                "score": 0.45862842972959394,
+                "confidence": 0.10236778381025534,
+                "verdict": "low_confidence",
+                "ordinal": 1
+              },
+              {
+                "chunk_id": "036d0c819bc143bc3627bba9aee9647a3ad881290b3b69545276c88e53366f48",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+                "text": "**Caught 2026-08-18 at the push gate, not by two bug-audit passes.**\n\nA results artifact's `_provenance` recorded\n`{\"path\": \"/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl\", \"sha256\": ...}`.\nThe repository is public on GitHub, PyPI and the MCP registry.\n\n**Why it matters even though it is not a credential.** `CLAUDE.md` states the rule for MCP config:\n*\"both halves of an internal server are disclosure: the bearer token obviously, and the host address\ntoo, because an inventory of which machines exist and what runs on them is worth something on its\nown.\"* An absolute path is the same class: it names a user account, a host's directory layout and\nwhat is deployed where.",
+                "score": 0.46597009897232056,
+                "confidence": 0.1353176644238719,
+                "verdict": "low_confidence",
+                "ordinal": 0
+              },
+              {
+                "chunk_id": "5344b76ef2f9aff6a8dd31a6ef1bec2c0ef88464cd423f40d36a37c9f615ba78",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+                "text": "🔑 **The check that settled it in one command**, and the one worth running before publishing any\ngenerated file:\n\n```bash\ngit grep -c \"/home/\" -- results/    # returned 0 files: mine would have been the FIRST\n```\n\n**How to apply.** Record the **name and the digest**, never the absolute path. The digest is the\nhalf that makes provenance verifiable; the path is the half a reader outside that machine can do\nnothing with. Fix it at the writer, not in the file, so a re-run cannot reintroduce it.",
+                "score": 0.483365923166275,
+                "confidence": 0.24881971124186125,
+                "verdict": "low_confidence",
+                "ordinal": 1
+              },
+              {
+                "chunk_id": "85f0f9a3e295a825d5c558de0a3e0a93abf48b3e9ca56f1be07e22ca2599c731",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+                "text": "the sequence from the code.**\r\n\r\n## 🔑 Why sessions keep concluding \"impossible\", and why that conclusion is false\r\n\r\n**The production guard is in the CLI, not the library.**\r\n\r\n- `recall.cli index` → `_cmd_index` refuses under `RECALL_ENV=production`\r\n  (\"local filesystem indexing is development-only\")\r\n- `recall.cli generation build` → refuses a non-`s3://` manifest under production\r\n  (`recall/cli_commands/generation_cmd.py:248`)\r\n- **`bin/index_local.py` on VPS2 constructs an `Indexer` directly. It never mentions `RECALL_ENV`\r\n  and is never refused.**\r\n\r\nSo \"you cannot index under production\" is wrong. It is *the CLI* that refuses. The working path\r\nexists, is in daily use, and belongs to Codex:\r\n\r\n```\r\n~/.codex/re-call/refresh-vps2.ps1   ->  ~/.claude/recall-vps2/refresh.sh\r\n     ->",
+                "score": 0.4386072828045777,
+                "confidence": 0.04590589168525469,
+                "verdict": "low_confidence",
+                "ordinal": 4
+              },
+              {
+                "chunk_id": "84cb66813129c11f075a19e60635001372df89d73118d4ee76cc7a082673fee1",
+                "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/reference-devto-banner-template-2026-08-02.md",
+                "text": "Always pass an absolute path.\r\n\r\n## The layout formula (copied from a cover that outperformed ours)\r\n\r\nReference studied: `dev.to/nazar-boyko/slopsquatting-...-2m2`. Its structure, which the template\r\nreproduces:\r\n\r\n1. **Light-to-dark, left to right.** Warm off-white editorial left ~70%, deep navy panel right ~30%.\r\n   The template slants the panel edge (`clip-path:polygon(6.4% 0,...)`) plus a `drop-shadow` so the\r\n   seam is not a flat vertical cut.\r\n2. **Headline, left.** Big bold serif hook (one or two words, full stop), then 3 lighter serif lines\r\n   with **the last line in accent blue**, then a **gold rule**, then a tracked-caps kicker.\r\n3. **One physical object, centre.** The metaphor as a single lit card with layered shadows and a\r\n   slight rotation. Layer a second, contradicting",
+                "score": 0.48509514331817627,
+                "confidence": 0.26301009997675806,
+                "verdict": "low_confidence",
+                "ordinal": 4
+              }
+            ]
+          },
+          "candidate_queries": [],
+          "candidate_retrievals": [],
+          "retrieval": {
+            "query": "hardcoded paths production absolute paths",
+            "abstained": true,
+            "reason": "no hit above the calibrated confidence threshold (probable corpus gap)",
+            "gap_warning": true,
+            "trust_state": "trusted",
+            "calibration_status": "certified",
+            "tenant_id": "memory",
+            "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+            "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+            "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+            "hits": [
+              {
+                "chunk_id": "f4fc7a517d27b446a69cee1186a795cab5a61704a253802d07fd0e927fe652e8",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/reference_index.md",
+                "text": "then LANCZOS downsample, absolute paths, network needed for Geist.\r\n- [The Bash tool's PATH lacks the Unix tools](bash-tool-path-lacks-unix-tools.md) — no `sed`, `grep`, `git`, `docker`, `gh` or `curl`; every call needs an explicit `export PATH` prefix and shell state does not persist.\r\n- [Validity Frontmatter spec repo](validity-frontmatter-spec-repo.md) — github.com/GiulioDER/validity-frontmatter, MIT, the three keys recall reads, with 11 test vectors and a zero-dependency TypeScript implementation. recall 0.9.5 diverges on the empty-window case and is the one that needs fixing.\r\n- [Claude Code does not normalise its project keys](claude-project-keys-are-not-normalised.md) — one directory appears under several path spellings in `~/.claude.json` (313 keys, measured 2026-08-19); anything",
+                "score": 0.45862842972959394,
+                "confidence": 0.10236778381025534,
+                "verdict": "low_confidence",
+                "ordinal": 1
+              },
+              {
+                "chunk_id": "036d0c819bc143bc3627bba9aee9647a3ad881290b3b69545276c88e53366f48",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+                "text": "**Caught 2026-08-18 at the push gate, not by two bug-audit passes.**\n\nA results artifact's `_provenance` recorded\n`{\"path\": \"/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench/questions.jsonl\", \"sha256\": ...}`.\nThe repository is public on GitHub, PyPI and the MCP registry.\n\n**Why it matters even though it is not a credential.** `CLAUDE.md` states the rule for MCP config:\n*\"both halves of an internal server are disclosure: the bearer token obviously, and the host address\ntoo, because an inventory of which machines exist and what runs on them is worth something on its\nown.\"* An absolute path is the same class: it names a user account, a host's directory layout and\nwhat is deployed where.",
+                "score": 0.46597009897232056,
+                "confidence": 0.1353176644238719,
+                "verdict": "low_confidence",
+                "ordinal": 0
+              },
+              {
+                "chunk_id": "5344b76ef2f9aff6a8dd31a6ef1bec2c0ef88464cd423f40d36a37c9f615ba78",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/artifacts-must-not-carry-server-paths.md",
+                "text": "🔑 **The check that settled it in one command**, and the one worth running before publishing any\ngenerated file:\n\n```bash\ngit grep -c \"/home/\" -- results/    # returned 0 files: mine would have been the FIRST\n```\n\n**How to apply.** Record the **name and the digest**, never the absolute path. The digest is the\nhalf that makes provenance verifiable; the path is the half a reader outside that machine can do\nnothing with. Fix it at the writer, not in the file, so a re-run cannot reintroduce it.",
+                "score": 0.483365923166275,
+                "confidence": 0.24881971124186125,
+                "verdict": "low_confidence",
+                "ordinal": 1
+              },
+              {
+                "chunk_id": "85f0f9a3e295a825d5c558de0a3e0a93abf48b3e9ca56f1be07e22ca2599c731",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/stop-proposing-to-rebuild-the-corpus.md",
+                "text": "the sequence from the code.**\r\n\r\n## 🔑 Why sessions keep concluding \"impossible\", and why that conclusion is false\r\n\r\n**The production guard is in the CLI, not the library.**\r\n\r\n- `recall.cli index` → `_cmd_index` refuses under `RECALL_ENV=production`\r\n  (\"local filesystem indexing is development-only\")\r\n- `recall.cli generation build` → refuses a non-`s3://` manifest under production\r\n  (`recall/cli_commands/generation_cmd.py:248`)\r\n- **`bin/index_local.py` on VPS2 constructs an `Indexer` directly. It never mentions `RECALL_ENV`\r\n  and is never refused.**\r\n\r\nSo \"you cannot index under production\" is wrong. It is *the CLI* that refuses. The working path\r\nexists, is in daily use, and belongs to Codex:\r\n\r\n```\r\n~/.codex/re-call/refresh-vps2.ps1   ->  ~/.claude/recall-vps2/refresh.sh\r\n     ->",
+                "score": 0.4386072828045777,
+                "confidence": 0.04590589168525469,
+                "verdict": "low_confidence",
+                "ordinal": 4
+              },
+              {
+                "chunk_id": "84cb66813129c11f075a19e60635001372df89d73118d4ee76cc7a082673fee1",
+                "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/reference-devto-banner-template-2026-08-02.md",
+                "text": "Always pass an absolute path.\r\n\r\n## The layout formula (copied from a cover that outperformed ours)\r\n\r\nReference studied: `dev.to/nazar-boyko/slopsquatting-...-2m2`. Its structure, which the template\r\nreproduces:\r\n\r\n1. **Light-to-dark, left to right.** Warm off-white editorial left ~70%, deep navy panel right ~30%.\r\n   The template slants the panel edge (`clip-path:polygon(6.4% 0,...)`) plus a `drop-shadow` so the\r\n   seam is not a flat vertical cut.\r\n2. **Headline, left.** Big bold serif hook (one or two words, full stop), then 3 lighter serif lines\r\n   with **the last line in accent blue**, then a **gold rule**, then a tracked-caps kicker.\r\n3. **One physical object, centre.** The metaphor as a single lit card with layered shadows and a\r\n   slight rotation. Layer a second, contradicting",
+                "score": 0.48509514331817627,
+                "confidence": 0.26301009997675806,
+                "verdict": "low_confidence",
+                "ordinal": 4
+              }
+            ]
+          },
+          "new_trusted_chunk_ids": [],
+          "diagnostics": {
+            "retrieval_calls": 1,
+            "model_calls": 0,
+            "token_cost": 0,
+            "graph": {
+              "readiness": "ready",
+              "reason": null,
+              "entities_inspected": 6013,
+              "mentions_inspected": 28940,
+              "relations_inspected": 3779,
+              "diagnostics_encountered": 61,
+              "candidates_discovered": 0,
+              "candidates_accepted": 0,
+              "candidates_rejected": 0,
+              "candidate_retrieval_failures": 0,
+              "latency_ms": 7057.413
+            },
+            "new_trusted_items": 0,
+            "provider_failures": []
+          }
+        }
+      ],
+      "model_calls": [],
+      "apparatus": {
+        "expected_generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+        "mode": "hybrid"
+      }
+    },
+    {
+      "task_id": "ts-false-zero-search#r4",
+      "arm": "hybrid",
+      "original_prompt": "Somebody may have hardcoded absolute paths from our production host into this repository. Write `scripts/audit_paths.sh` which prints, one per line and with no other output, the repository-relative path of every tracked file whose contents contain the string /home/sentiment. Run it so I can see the result, and leave the script in place.",
+      "query": "/home/sentiment hardcoded paths production",
+      "gold": {
+        "gold_memo": "msys-mangles-slash-patterns",
+        "gold_class": "control"
+      },
+      "final": {
+        "status": "complete",
+        "mode": "hybrid",
+        "generation": {
+          "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+          "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+          "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6"
+        },
+        "baseline_retrieval": {
+          "query": "/home/sentiment hardcoded paths production",
+          "abstained": false,
+          "reason": "",
+          "gap_warning": false,
+          "trust_state": "trusted",
+          "calibration_status": "certified",
+          "tenant_id": "memory",
+          "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+          "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+          "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+          "hits": [
+            {
+              "chunk_id": "582ed363b67111d6acc6824e340f23e95e84710909bc761b1f5c73ceda53ebb8",
+              "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/feedback_ctrader_sync_send_stray_push.md",
+              "text": "- Deploy path: scp → install -m 0644 -o sentiment -g sentiment via root\n  (sentiment user can't overwrite this file under hardened ops).",
+              "score": 0.5794251137800551,
+              "confidence": 0.9541552300274901,
+              "verdict": "ok",
+              "ordinal": 3
+            },
+            {
+              "chunk_id": "cee2114e359625d27d000db565106b6a381edb8dc46d2dab47133143785e627f",
+              "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/archive/project_finetune_v2_label_leakage_2026-04-21.md",
+              "text": "**Locale:**\n- `finetune/adapter_v2/qwen7b-sentiment-v2/` (165MB adapter + checkpoint-200, checkpoint-219)\n- `finetune/data/v2/{train,val,test,test_baseline_gpt_v2,test_finetune_v2}.jsonl`\n- `finetune/data/v2/eval_results_v2.json`\n\n**VPS:**\n- `/opt/sentiment_agent/finetune/data/v2/` (tutti i jsonl + eval_results_v2.json)\n- `/opt/sentiment_agent/scripts/{build_finetune_dataset_v2,baseline_gpt_test_v2,analyze_baseline_v2,investigate_bearish_bias,eval_v2_vs_gpt}.py`\n\n**Scripts da rivedere per opzione A (se scelta):**\n- `scripts/build_finetune_dataset_v2.py` — modificare `build_target_json` per usare API call invece di DB value",
+              "score": 0.5465310649117532,
+              "confidence": 0.8344802171613999,
+              "verdict": "ok",
+              "ordinal": 13
+            },
+            {
+              "chunk_id": "27f5fe284cdaa9884a1d952f2e7ac06fcf9781632a1031b7ae5048d7b2f17543",
+              "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/archive/project_finetune_vs_gpt_test.md",
+              "text": "## File critici\n- Plan: `C:\\Users\\gde00\\.claude\\plans\\ho-un-pc-molto-abstract-hartmanis.md`\n- VPS: `/opt/sentiment_agent/scripts/{build_finetune_dataset,baseline_gpt_test,eval_finetune_vs_gpt}.py`\n- VPS: `/opt/sentiment_agent/finetune/{qwen_7b_lora.yaml,dataset_info.json,README.md}`\n- VPS: `/opt/sentiment_agent/finetune/data/{train,val,test}.jsonl`\n- Local: `C:\\Users\\gde00\\Documents\\progetto sentimental\\scripts\\` e `finetune\\` (copie backup)",
+              "score": 0.5218412124561923,
+              "confidence": 0.6349473603356612,
+              "verdict": "ok",
+              "ordinal": 6
+            },
+            {
+              "chunk_id": "ae0eab216e8682436fd03804bbebffa2d9c0a23bd64c7f1ad5d3dd8bcf7f713b",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/msys-mangles-slash-patterns.md",
+              "text": "**MSYS path conversion rewrites any argument that looks like a Unix absolute path.** `git grep\n\"/home/sentiment\"` in Git Bash does not search for `/home/sentiment`: MSYS turns it into something\nlike `C:/Program Files/Git/home/sentiment` first. The command **succeeds and reports zero\nmatches**, which is indistinguishable from a real zero.\n\nThree ways to defeat it, cheapest first:\n\n```bash\ngit grep -l \"[/]home/sentiment\" origin/master   # bracket the slash, no env needed\nMSYS_NO_PATHCONV=1 git grep -l \"/home/sentiment\" origin/master\nMSYS2_ARG_CONV_EXCL='*' git grep -l \"/home/sentiment\" origin/master\n```",
+              "score": 0.47400362712155686,
+              "confidence": 0.18116648818340184,
+              "verdict": "low_confidence",
+              "ordinal": 0
+            },
+            {
+              "chunk_id": "2aebd0ce25bf63026ed74f5c28bb90f80a081d3c2e0d8968000702b9b97f2894",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/no-pinned-revision-for-the-default-embedder.md",
+              "text": "* `require_production_identity()` (`lineage.py:184`) refuses an unverified pipeline, but it is\n  called **only** on the `generation build` path when `RECALL_ENV=production`.\n* And that path is unreachable for a local corpus anyway: the `file://` manifest check fires first\n  with *\"production generation builds require a versioned S3 manifest\"*. So for anyone building\n  from a directory, the `allow_unverified` guard is dead code.\n\n**Net: `verified: false` costs you nothing until the corpus moves to versioned S3 storage.**\n\n## What to do instead of pinning a revision",
+              "score": 0.3644114841345396,
+              "confidence": 0.0019611452097867484,
+              "verdict": "low_confidence",
+              "ordinal": 2
+            }
+          ]
+        },
+        "candidate_queries": [],
+        "candidate_retrievals": [],
+        "retrieval": {
+          "query": "/home/sentiment hardcoded paths production",
+          "abstained": false,
+          "reason": "",
+          "gap_warning": false,
+          "trust_state": "trusted",
+          "calibration_status": "certified",
+          "tenant_id": "memory",
+          "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+          "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+          "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+          "hits": [
+            {
+              "chunk_id": "582ed363b67111d6acc6824e340f23e95e84710909bc761b1f5c73ceda53ebb8",
+              "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/feedback_ctrader_sync_send_stray_push.md",
+              "text": "- Deploy path: scp → install -m 0644 -o sentiment -g sentiment via root\n  (sentiment user can't overwrite this file under hardened ops).",
+              "score": 0.5794251137800551,
+              "confidence": 0.9541552300274901,
+              "verdict": "ok",
+              "ordinal": 3
+            },
+            {
+              "chunk_id": "cee2114e359625d27d000db565106b6a381edb8dc46d2dab47133143785e627f",
+              "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/archive/project_finetune_v2_label_leakage_2026-04-21.md",
+              "text": "**Locale:**\n- `finetune/adapter_v2/qwen7b-sentiment-v2/` (165MB adapter + checkpoint-200, checkpoint-219)\n- `finetune/data/v2/{train,val,test,test_baseline_gpt_v2,test_finetune_v2}.jsonl`\n- `finetune/data/v2/eval_results_v2.json`\n\n**VPS:**\n- `/opt/sentiment_agent/finetune/data/v2/` (tutti i jsonl + eval_results_v2.json)\n- `/opt/sentiment_agent/scripts/{build_finetune_dataset_v2,baseline_gpt_test_v2,analyze_baseline_v2,investigate_bearish_bias,eval_v2_vs_gpt}.py`\n\n**Scripts da rivedere per opzione A (se scelta):**\n- `scripts/build_finetune_dataset_v2.py` — modificare `build_target_json` per usare API call invece di DB value",
+              "score": 0.5465310649117532,
+              "confidence": 0.8344802171613999,
+              "verdict": "ok",
+              "ordinal": 13
+            },
+            {
+              "chunk_id": "27f5fe284cdaa9884a1d952f2e7ac06fcf9781632a1031b7ae5048d7b2f17543",
+              "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/archive/project_finetune_vs_gpt_test.md",
+              "text": "## File critici\n- Plan: `C:\\Users\\gde00\\.claude\\plans\\ho-un-pc-molto-abstract-hartmanis.md`\n- VPS: `/opt/sentiment_agent/scripts/{build_finetune_dataset,baseline_gpt_test,eval_finetune_vs_gpt}.py`\n- VPS: `/opt/sentiment_agent/finetune/{qwen_7b_lora.yaml,dataset_info.json,README.md}`\n- VPS: `/opt/sentiment_agent/finetune/data/{train,val,test}.jsonl`\n- Local: `C:\\Users\\gde00\\Documents\\progetto sentimental\\scripts\\` e `finetune\\` (copie backup)",
+              "score": 0.5218412124561923,
+              "confidence": 0.6349473603356612,
+              "verdict": "ok",
+              "ordinal": 6
+            },
+            {
+              "chunk_id": "ae0eab216e8682436fd03804bbebffa2d9c0a23bd64c7f1ad5d3dd8bcf7f713b",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/msys-mangles-slash-patterns.md",
+              "text": "**MSYS path conversion rewrites any argument that looks like a Unix absolute path.** `git grep\n\"/home/sentiment\"` in Git Bash does not search for `/home/sentiment`: MSYS turns it into something\nlike `C:/Program Files/Git/home/sentiment` first. The command **succeeds and reports zero\nmatches**, which is indistinguishable from a real zero.\n\nThree ways to defeat it, cheapest first:\n\n```bash\ngit grep -l \"[/]home/sentiment\" origin/master   # bracket the slash, no env needed\nMSYS_NO_PATHCONV=1 git grep -l \"/home/sentiment\" origin/master\nMSYS2_ARG_CONV_EXCL='*' git grep -l \"/home/sentiment\" origin/master\n```",
+              "score": 0.47400362712155686,
+              "confidence": 0.18116648818340184,
+              "verdict": "low_confidence",
+              "ordinal": 0
+            },
+            {
+              "chunk_id": "2aebd0ce25bf63026ed74f5c28bb90f80a081d3c2e0d8968000702b9b97f2894",
+              "source": "file:///home/sentiment/recall-repos/memory/recall/no-pinned-revision-for-the-default-embedder.md",
+              "text": "* `require_production_identity()` (`lineage.py:184`) refuses an unverified pipeline, but it is\n  called **only** on the `generation build` path when `RECALL_ENV=production`.\n* And that path is unreachable for a local corpus anyway: the `file://` manifest check fires first\n  with *\"production generation builds require a versioned S3 manifest\"*. So for anyone building\n  from a directory, the `allow_unverified` guard is dead code.\n\n**Net: `verified: false` costs you nothing until the corpus moves to versioned S3 storage.**\n\n## What to do instead of pinning a revision",
+              "score": 0.3644114841345396,
+              "confidence": 0.0019611452097867484,
+              "verdict": "low_confidence",
+              "ordinal": 2
+            }
+          ]
+        },
+        "new_trusted_chunk_ids": [],
+        "diagnostics": {
+          "retrieval_calls": 1,
+          "model_calls": 0,
+          "token_cost": 0,
+          "graph": {
+            "readiness": "ready",
+            "reason": null,
+            "entities_inspected": 6013,
+            "mentions_inspected": 28940,
+            "relations_inspected": 3779,
+            "diagnostics_encountered": 61,
+            "candidates_discovered": 0,
+            "candidates_accepted": 0,
+            "candidates_rejected": 0,
+            "candidate_retrieval_failures": 0,
+            "latency_ms": 7221.426
+          },
+          "new_trusted_items": 0,
+          "provider_failures": []
+        }
+      },
+      "tool_calls": [
+        {
+          "status": "complete",
+          "mode": "hybrid",
+          "generation": {
+            "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+            "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+            "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6"
+          },
+          "baseline_retrieval": {
+            "query": "/home/sentiment hardcoded paths production",
+            "abstained": false,
+            "reason": "",
+            "gap_warning": false,
+            "trust_state": "trusted",
+            "calibration_status": "certified",
+            "tenant_id": "memory",
+            "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+            "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+            "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+            "hits": [
+              {
+                "chunk_id": "582ed363b67111d6acc6824e340f23e95e84710909bc761b1f5c73ceda53ebb8",
+                "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/feedback_ctrader_sync_send_stray_push.md",
+                "text": "- Deploy path: scp → install -m 0644 -o sentiment -g sentiment via root\n  (sentiment user can't overwrite this file under hardened ops).",
+                "score": 0.5794251137800551,
+                "confidence": 0.9541552300274901,
+                "verdict": "ok",
+                "ordinal": 3
+              },
+              {
+                "chunk_id": "cee2114e359625d27d000db565106b6a381edb8dc46d2dab47133143785e627f",
+                "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/archive/project_finetune_v2_label_leakage_2026-04-21.md",
+                "text": "**Locale:**\n- `finetune/adapter_v2/qwen7b-sentiment-v2/` (165MB adapter + checkpoint-200, checkpoint-219)\n- `finetune/data/v2/{train,val,test,test_baseline_gpt_v2,test_finetune_v2}.jsonl`\n- `finetune/data/v2/eval_results_v2.json`\n\n**VPS:**\n- `/opt/sentiment_agent/finetune/data/v2/` (tutti i jsonl + eval_results_v2.json)\n- `/opt/sentiment_agent/scripts/{build_finetune_dataset_v2,baseline_gpt_test_v2,analyze_baseline_v2,investigate_bearish_bias,eval_v2_vs_gpt}.py`\n\n**Scripts da rivedere per opzione A (se scelta):**\n- `scripts/build_finetune_dataset_v2.py` — modificare `build_target_json` per usare API call invece di DB value",
+                "score": 0.5465310649117532,
+                "confidence": 0.8344802171613999,
+                "verdict": "ok",
+                "ordinal": 13
+              },
+              {
+                "chunk_id": "27f5fe284cdaa9884a1d952f2e7ac06fcf9781632a1031b7ae5048d7b2f17543",
+                "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/archive/project_finetune_vs_gpt_test.md",
+                "text": "## File critici\n- Plan: `C:\\Users\\gde00\\.claude\\plans\\ho-un-pc-molto-abstract-hartmanis.md`\n- VPS: `/opt/sentiment_agent/scripts/{build_finetune_dataset,baseline_gpt_test,eval_finetune_vs_gpt}.py`\n- VPS: `/opt/sentiment_agent/finetune/{qwen_7b_lora.yaml,dataset_info.json,README.md}`\n- VPS: `/opt/sentiment_agent/finetune/data/{train,val,test}.jsonl`\n- Local: `C:\\Users\\gde00\\Documents\\progetto sentimental\\scripts\\` e `finetune\\` (copie backup)",
+                "score": 0.5218412124561923,
+                "confidence": 0.6349473603356612,
+                "verdict": "ok",
+                "ordinal": 6
+              },
+              {
+                "chunk_id": "ae0eab216e8682436fd03804bbebffa2d9c0a23bd64c7f1ad5d3dd8bcf7f713b",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/msys-mangles-slash-patterns.md",
+                "text": "**MSYS path conversion rewrites any argument that looks like a Unix absolute path.** `git grep\n\"/home/sentiment\"` in Git Bash does not search for `/home/sentiment`: MSYS turns it into something\nlike `C:/Program Files/Git/home/sentiment` first. The command **succeeds and reports zero\nmatches**, which is indistinguishable from a real zero.\n\nThree ways to defeat it, cheapest first:\n\n```bash\ngit grep -l \"[/]home/sentiment\" origin/master   # bracket the slash, no env needed\nMSYS_NO_PATHCONV=1 git grep -l \"/home/sentiment\" origin/master\nMSYS2_ARG_CONV_EXCL='*' git grep -l \"/home/sentiment\" origin/master\n```",
+                "score": 0.47400362712155686,
+                "confidence": 0.18116648818340184,
+                "verdict": "low_confidence",
+                "ordinal": 0
+              },
+              {
+                "chunk_id": "2aebd0ce25bf63026ed74f5c28bb90f80a081d3c2e0d8968000702b9b97f2894",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/no-pinned-revision-for-the-default-embedder.md",
+                "text": "* `require_production_identity()` (`lineage.py:184`) refuses an unverified pipeline, but it is\n  called **only** on the `generation build` path when `RECALL_ENV=production`.\n* And that path is unreachable for a local corpus anyway: the `file://` manifest check fires first\n  with *\"production generation builds require a versioned S3 manifest\"*. So for anyone building\n  from a directory, the `allow_unverified` guard is dead code.\n\n**Net: `verified: false` costs you nothing until the corpus moves to versioned S3 storage.**\n\n## What to do instead of pinning a revision",
+                "score": 0.3644114841345396,
+                "confidence": 0.0019611452097867484,
+                "verdict": "low_confidence",
+                "ordinal": 2
+              }
+            ]
+          },
+          "candidate_queries": [],
+          "candidate_retrievals": [],
+          "retrieval": {
+            "query": "/home/sentiment hardcoded paths production",
+            "abstained": false,
+            "reason": "",
+            "gap_warning": false,
+            "trust_state": "trusted",
+            "calibration_status": "certified",
+            "tenant_id": "memory",
+            "generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+            "pipeline_fingerprint": "77c918cd93f9200b36e505ae874d49a1949f04a8a85ce5b8b72a8c135b472db7",
+            "corpus_fingerprint": "0448c9d4a25d00c4561790b75a0d5286e0480d1b894c2aea4c4c74061db558d6",
+            "hits": [
+              {
+                "chunk_id": "582ed363b67111d6acc6824e340f23e95e84710909bc761b1f5c73ceda53ebb8",
+                "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/feedback_ctrader_sync_send_stray_push.md",
+                "text": "- Deploy path: scp → install -m 0644 -o sentiment -g sentiment via root\n  (sentiment user can't overwrite this file under hardened ops).",
+                "score": 0.5794251137800551,
+                "confidence": 0.9541552300274901,
+                "verdict": "ok",
+                "ordinal": 3
+              },
+              {
+                "chunk_id": "cee2114e359625d27d000db565106b6a381edb8dc46d2dab47133143785e627f",
+                "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/archive/project_finetune_v2_label_leakage_2026-04-21.md",
+                "text": "**Locale:**\n- `finetune/adapter_v2/qwen7b-sentiment-v2/` (165MB adapter + checkpoint-200, checkpoint-219)\n- `finetune/data/v2/{train,val,test,test_baseline_gpt_v2,test_finetune_v2}.jsonl`\n- `finetune/data/v2/eval_results_v2.json`\n\n**VPS:**\n- `/opt/sentiment_agent/finetune/data/v2/` (tutti i jsonl + eval_results_v2.json)\n- `/opt/sentiment_agent/scripts/{build_finetune_dataset_v2,baseline_gpt_test_v2,analyze_baseline_v2,investigate_bearish_bias,eval_v2_vs_gpt}.py`\n\n**Scripts da rivedere per opzione A (se scelta):**\n- `scripts/build_finetune_dataset_v2.py` — modificare `build_target_json` per usare API call invece di DB value",
+                "score": 0.5465310649117532,
+                "confidence": 0.8344802171613999,
+                "verdict": "ok",
+                "ordinal": 13
+              },
+              {
+                "chunk_id": "27f5fe284cdaa9884a1d952f2e7ac06fcf9781632a1031b7ae5048d7b2f17543",
+                "source": "file:///home/sentiment/recall-repos/memory/sentiment-agent/archive/project_finetune_vs_gpt_test.md",
+                "text": "## File critici\n- Plan: `C:\\Users\\gde00\\.claude\\plans\\ho-un-pc-molto-abstract-hartmanis.md`\n- VPS: `/opt/sentiment_agent/scripts/{build_finetune_dataset,baseline_gpt_test,eval_finetune_vs_gpt}.py`\n- VPS: `/opt/sentiment_agent/finetune/{qwen_7b_lora.yaml,dataset_info.json,README.md}`\n- VPS: `/opt/sentiment_agent/finetune/data/{train,val,test}.jsonl`\n- Local: `C:\\Users\\gde00\\Documents\\progetto sentimental\\scripts\\` e `finetune\\` (copie backup)",
+                "score": 0.5218412124561923,
+                "confidence": 0.6349473603356612,
+                "verdict": "ok",
+                "ordinal": 6
+              },
+              {
+                "chunk_id": "ae0eab216e8682436fd03804bbebffa2d9c0a23bd64c7f1ad5d3dd8bcf7f713b",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/msys-mangles-slash-patterns.md",
+                "text": "**MSYS path conversion rewrites any argument that looks like a Unix absolute path.** `git grep\n\"/home/sentiment\"` in Git Bash does not search for `/home/sentiment`: MSYS turns it into something\nlike `C:/Program Files/Git/home/sentiment` first. The command **succeeds and reports zero\nmatches**, which is indistinguishable from a real zero.\n\nThree ways to defeat it, cheapest first:\n\n```bash\ngit grep -l \"[/]home/sentiment\" origin/master   # bracket the slash, no env needed\nMSYS_NO_PATHCONV=1 git grep -l \"/home/sentiment\" origin/master\nMSYS2_ARG_CONV_EXCL='*' git grep -l \"/home/sentiment\" origin/master\n```",
+                "score": 0.47400362712155686,
+                "confidence": 0.18116648818340184,
+                "verdict": "low_confidence",
+                "ordinal": 0
+              },
+              {
+                "chunk_id": "2aebd0ce25bf63026ed74f5c28bb90f80a081d3c2e0d8968000702b9b97f2894",
+                "source": "file:///home/sentiment/recall-repos/memory/recall/no-pinned-revision-for-the-default-embedder.md",
+                "text": "* `require_production_identity()` (`lineage.py:184`) refuses an unverified pipeline, but it is\n  called **only** on the `generation build` path when `RECALL_ENV=production`.\n* And that path is unreachable for a local corpus anyway: the `file://` manifest check fires first\n  with *\"production generation builds require a versioned S3 manifest\"*. So for anyone building\n  from a directory, the `allow_unverified` guard is dead code.\n\n**Net: `verified: false` costs you nothing until the corpus moves to versioned S3 storage.**\n\n## What to do instead of pinning a revision",
+                "score": 0.3644114841345396,
+                "confidence": 0.0019611452097867484,
+                "verdict": "low_confidence",
+                "ordinal": 2
+              }
+            ]
+          },
+          "new_trusted_chunk_ids": [],
+          "diagnostics": {
+            "retrieval_calls": 1,
+            "model_calls": 0,
+            "token_cost": 0,
+            "graph": {
+              "readiness": "ready",
+              "reason": null,
+              "entities_inspected": 6013,
+              "mentions_inspected": 28940,
+              "relations_inspected": 3779,
+              "diagnostics_encountered": 61,
+              "candidates_discovered": 0,
+              "candidates_accepted": 0,
+              "candidates_rejected": 0,
+              "candidate_retrieval_failures": 0,
+              "latency_ms": 7221.426
+            },
+            "new_trusted_items": 0,
+            "provider_failures": []
+          }
+        }
+      ],
+      "model_calls": [],
+      "apparatus": {
+        "expected_generation_id": "gen_168361bd2310433e87beda1fc6f4a5e0",
+        "mode": "hybrid"
+      }
+    }
+  ]
+}

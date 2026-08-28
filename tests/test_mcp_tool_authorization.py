@@ -80,6 +80,7 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
         "read",
         {"original_prompt": "task", "query": "q"},
     ),
+    "recall_graph_first_retrieval": (SCOPE_READ, "read", {"query": "q"}),
     "recall_reasoning_projection": (SCOPE_READ, "read", {}),
     "recall_reasoning_proposals": (SCOPE_READ, "read", {}),
     "recall_reasoning_audit": (SCOPE_READ, "read", {}),

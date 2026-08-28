@@ -86,6 +86,7 @@ class GenerationStore(PgVectorStore):
         self._pinned_generation: ContextVar[str | None] = ContextVar(
             f"recall_generation_{uuid.uuid4().hex}", default=None
         )
+        self._fixed_generation: str | None = None
 
     def _reset_tenant_state(self) -> None:
         """Also rebuild the pinned-generation ContextVar, which is tenant-derived.
@@ -100,6 +101,7 @@ class GenerationStore(PgVectorStore):
         self._pinned_generation = ContextVar(
             f"recall_generation_{uuid.uuid4().hex}", default=None
         )
+        self._fixed_generation = None
 
     def check_schema(self) -> None:
         from recall.schema import check_schema
@@ -137,7 +139,10 @@ class GenerationStore(PgVectorStore):
         if existing is not None:
             yield existing
             return
-        generation_id = self.active_generation_id()
+        # A benchmark server may deliberately read a retired, immutable snapshot.  The fixed
+        # process pin must win here as well as in `_generation_id`; otherwise `trusted_search`
+        # enters this context manager and silently replaces the pin with the active generation.
+        generation_id = self._fixed_generation or self.active_generation_id()
         token = self._pinned_generation.set(generation_id)
         try:
             yield generation_id
@@ -145,7 +150,32 @@ class GenerationStore(PgVectorStore):
             self._pinned_generation.reset(token)
 
     def _generation_id(self) -> str:
-        return self._pinned_generation.get() or self.active_generation_id()
+        return self._pinned_generation.get() or self._fixed_generation or self.active_generation_id()
+
+    def set_fixed_generation(self, generation_id: str) -> None:
+        """Pin this read-only store to one immutable generation for its whole process.
+
+        This is intentionally separate from ``pin_generation``: that context manager is for a
+        short administrative operation, while a benchmark server needs every request task to
+        see the same retired snapshot. Callers must opt into this explicitly and the generation
+        is validated before it becomes process state.
+        """
+
+        generation_id = generation_id.strip()
+        if not generation_id:
+            raise ValueError("generation_id must be non-empty")
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT 1 FROM recall_generations WHERE tenant_id = %s "
+                "AND generation_id = %s AND state IN ('ready', 'active', 'retired')",
+                (self._tenant, generation_id),
+            ).fetchone()
+        )
+        if row is None:
+            raise NoActiveGeneration(
+                f"tenant {self._tenant!r} has no fixed readable generation {generation_id!r}"
+            )
+        self._fixed_generation = generation_id
 
     @contextmanager
     def pin_generation(self, generation_id: str) -> Iterator[str]:

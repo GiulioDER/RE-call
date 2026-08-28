@@ -70,6 +70,7 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `graph_expansion` to `one_hop` to enable Evidence Graph V1. Precision admission diagnostics and a policy fingerprint are additive response fields. Legacy `expand_retrieval` remains available when configured. |
 | `recall_query_construction_challenge` | Start or continue bounded query construction with an original-model challenge, deterministic candidate controls, and generation-bound trusted retrieval. |
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
+| `recall_graph_first_retrieval` | Probe deterministic graph-derived query seeds before ordinary trusted retrieval; graph output remains proposal data. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
 | `recall_rewrite_plan` | Report which key a proposal would declare, in which file. Writes nothing. |
 | `recall_reasoning_audit` | Report reasoning integration state and diagnostics. |

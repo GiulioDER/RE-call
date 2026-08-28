@@ -69,6 +69,43 @@ def test_transport_security_settings_follow_resource_url():
     assert settings.allowed_origins == ["https://recall.example.com:8443"]
 
 
+def test_benchmark_generation_pin_requires_explicit_unauthenticated_stdio_mode():
+    assert server.benchmark_generation_setting(
+        "gen_old",
+        benchmark_pin=True,
+        generation_mode=True,
+        authenticated=False,
+    ) == "gen_old"
+
+    with pytest.raises(RuntimeError, match="RECALL_BENCHMARK_PIN=1"):
+        server.benchmark_generation_setting(
+            "gen_old",
+            benchmark_pin=False,
+            generation_mode=True,
+            authenticated=False,
+        )
+    with pytest.raises(RuntimeError, match="unauthenticated"):
+        server.benchmark_generation_setting(
+            "gen_old",
+            benchmark_pin=True,
+            generation_mode=True,
+            authenticated=True,
+        )
+    with pytest.raises(RuntimeError, match="stdio"):
+        server.benchmark_generation_setting(
+            "gen_old",
+            benchmark_pin=True,
+            generation_mode=False,
+            authenticated=False,
+        )
+
+
+def test_empty_benchmark_generation_pin_is_ignored():
+    assert server.benchmark_generation_setting(
+        "  ", benchmark_pin=False, generation_mode=False, authenticated=True
+    ) is None
+
+
 def test_streamable_http_run_passes_transport_security(monkeypatch):
     calls = {}
 

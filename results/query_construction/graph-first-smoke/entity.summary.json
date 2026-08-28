@@ -1,0 +1,80 @@
+{
+  "artifact": "RE-call graph-first retrieval benchmark",
+  "mode": "entity",
+  "rows": 4,
+  "rows_detail": [
+    {
+      "task_id": "ts-false-zero-search#r1",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-false-zero-search#r2",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-false-zero-search#r3",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-false-zero-search#r4",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    }
+  ],
+  "by_class": {
+    "miss": {
+      "rows": 0,
+      "baseline_recovered": 0,
+      "recovered": 0,
+      "candidate_activation": 0,
+      "new_trusted_items": 0
+    },
+    "control": {
+      "rows": 4,
+      "baseline_recovered": 0,
+      "recovered": 0,
+      "candidate_activation": 0,
+      "new_trusted_items": 0
+    }
+  },
+  "miss_rescues": 0,
+  "control_retention": 0,
+  "diagnostics": {
+    "status": {
+      "complete": 4
+    },
+    "graph_readiness": {
+      "ready": 4
+    },
+    "candidate_queries": 0,
+    "new_trusted_items": 0,
+    "retrieval_calls": 4
+  }
+}

@@ -573,6 +573,23 @@ def test_search_snapshot_sees_one_generation_during_concurrent_promotion(manager
 
 
 @requires_db
+def test_fixed_generation_snapshot_overrides_active_generation(manager) -> None:
+    data = b"fixed benchmark snapshot"
+    manifest = _manifest(manager.tenant_id, data)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, _reader(manifest, data), _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    second = _ready(manager, manifest, pipeline, _reader(manifest, data), _Embedder(1))
+    manager.promote(second, unsafe_development=True)
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        store.set_fixed_generation(first)
+        with store.snapshot() as generation_id:
+            assert generation_id == first
+        assert store.generation_binding()["generation_id"] == first
+
+
+@requires_db
 def test_generation_store_refuses_mutation_and_legacy_is_never_an_active_fallback(manager) -> None:
     with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
         with pytest.raises(NoActiveGeneration, match="no active generation"):
