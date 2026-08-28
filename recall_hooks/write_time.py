@@ -177,6 +177,37 @@ def payload_of(tool_name: str, tool_input: dict[str, Any]) -> str:
     return ""
 
 
+def _search_connection(
+    connection: Any,
+    query: str,
+    config: dict[str, Any],
+    options: dict[str, Any],
+) -> list[tuple[str, str, float]]:
+    """Run the lexical query on an already-open connection.
+
+    This is kept separate from :func:`search` so a benchmark relay can amortize connection setup
+    without creating a second SQL implementation. The caller owns the connection lifecycle.
+    """
+
+    terms = " | ".join(sorted({t.lower() for t in TOKEN_RE.findall(query[:MAX_QUERY_CHARS])})[:200])
+    if not terms:
+        return []
+    tenant = str(config.get("tenant", "default"))
+    rows = connection.execute(
+        "SELECT source_uri, text, ts_rank(tsv, to_tsquery('english', %s)) AS rank "
+        "FROM recall_chunks_v1 "
+        "WHERE tenant_id = %s "
+        "  AND generation_id = ("
+        "        SELECT generation_id FROM recall_generations "
+        "        WHERE tenant_id = %s AND state = 'active' "
+        "        ORDER BY created_at DESC LIMIT 1) "
+        "  AND tsv @@ to_tsquery('english', %s) "
+        "ORDER BY rank DESC LIMIT %s",
+        (terms, tenant, tenant, terms, int(options["k"])),
+    ).fetchall()
+    return [(Path(str(uri)).name, str(text), float(rank)) for uri, text, rank in rows]
+
+
 def search(query: str, config: dict[str, Any], options: dict[str, Any]) -> list[tuple[str, str, float]]:
     """`(source name, chunk text, ts_rank)` for the lexical leg, by SQL. No model is loaded.
 
@@ -188,10 +219,6 @@ def search(query: str, config: dict[str, Any], options: dict[str, Any]) -> list[
 
     import psycopg
 
-    terms = " | ".join(sorted({t.lower() for t in TOKEN_RE.findall(query[:MAX_QUERY_CHARS])})[:200])
-    if not terms:
-        return []
-    tenant = str(config.get("tenant", "default"))
     # ⚠️ ONE round trip, deliberately. Measured against a corpus on another host: three round
     # trips cost a median of 2.54s per tool call, against ~1.0s for a corpus on the same machine,
     # and the difference is almost entirely latency rather than work. The statement timeout rides
@@ -208,19 +235,7 @@ def search(query: str, config: dict[str, Any], options: dict[str, Any]) -> list[
         connect_timeout=options["connect_timeout"],
         options="-c statement_timeout=5s",
     ) as conn:
-        rows = conn.execute(
-            "SELECT source_uri, text, ts_rank(tsv, to_tsquery('english', %s)) AS rank "
-            "FROM recall_chunks_v1 "
-            "WHERE tenant_id = %s "
-            "  AND generation_id = ("
-            "        SELECT generation_id FROM recall_generations "
-            "        WHERE tenant_id = %s AND state = 'active' "
-            "        ORDER BY created_at DESC LIMIT 1) "
-            "  AND tsv @@ to_tsquery('english', %s) "
-            "ORDER BY rank DESC LIMIT %s",
-            (terms, tenant, tenant, terms, int(options["k"])),
-        ).fetchall()
-    return [(Path(str(uri)).name, str(text), float(rank)) for uri, text, rank in rows]
+        return _search_connection(conn, query, config, options)
 
 
 def render(hits: list[tuple[str, str, float]]) -> str:
@@ -294,4 +309,3 @@ __all__ = [
     "search",
     "settings",
 ]
-
