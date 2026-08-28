@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import os
 import re
 import time
-from typing import Literal
+from typing import Any, Literal
 
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.guards import DEFAULT_GAP_THRESHOLD, gap_warning, staleness
@@ -512,7 +512,12 @@ class HybridRetriever:
         # on queries that do not use scoping at all, which is a cost paid by callers who asked for
         # nothing. A store that has not been taught the new keyword now fails only when a folder
         # or facet is actually requested, which is exactly where a failure is informative.
-        legs_scope: dict[str, object] = (
+        # `Any`, not `object`: this dict holds ONE of two differently-typed arguments chosen by
+        # key, which is precisely what a splat cannot express to a type checker. With `object`,
+        # mypy rejects the call against both `source: str | None` and `scope: Scope | None`, and
+        # the honest alternative — writing each of the three legs twice under an if/else — trades
+        # a real readability cost for a guarantee the branch above already provides.
+        legs_scope: dict[str, Any] = (
             {"source": effective.source}
             if effective.folder is None and effective.facet is None
             else {"scope": effective}
