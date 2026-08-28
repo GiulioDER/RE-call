@@ -40,11 +40,11 @@ The command must source the existing VPS2 secret file without printing it:
 set -a
 . /opt/sentiment_agent/.env
 set +a
-export RECALL_REASONING_EXPANSION=1
-export RECALL_REASONING_EXPANSION_BASE_URL=https://openrouter.ai/api/v1
-export RECALL_REASONING_EXPANSION_API_KEY="$OPENROUTER_API_KEY"
-export RECALL_REASONING_EXPANSION_MODEL=deepseek/deepseek-v4-pro
-export RECALL_REASONING_EXPANSION_EFFORT=medium
+export RECALL_REASONING=1
+export RECALL_REASONING_BASE_URL=https://openrouter.ai/api/v1
+export RECALL_REASONING_API_KEY="$OPENROUTER_API_KEY"
+export RECALL_REASONING_MODEL=deepseek/deepseek-v4-pro
+export RECALL_REASONING_EFFORT=medium
 ```
 
 The benchmark process receives `VOYAGE_API_KEY` from the existing secret file.

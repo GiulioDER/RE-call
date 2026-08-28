@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import hashlib
 import random
-from contextlib import nullcontext, suppress
+from contextlib import AbstractContextManager, nullcontext, suppress
 import mimetypes
 import threading
 import time
@@ -1614,8 +1614,21 @@ def _store_graph_with_readiness(
     lookup = getattr(store, "active_generation_id", None)
     if not callable(snapshot) and not callable(lookup):
         return project_store_graph(store, include_text=include_text), None
-    with snapshot() if callable(snapshot) else nullcontext(None) as pinned:
-        generation_id = str(pinned) if pinned is not None else str(lookup())
+    # Bound to a name first: `getattr` gives mypy an optional, and the callable() test inside
+    # the `with` expression does not narrow it there.
+    scope: AbstractContextManager[Any] = (
+        snapshot() if callable(snapshot) else nullcontext(None)
+    )
+    with scope as pinned:
+        if pinned is not None:
+            generation_id = str(pinned)
+        elif callable(lookup):
+            generation_id = str(lookup())
+        else:
+            # Unreachable: the guard above returned when neither accessor was callable. Spelled
+            # out rather than asserted, because an assert disappears under -O and this decides
+            # the cache key.
+            return project_store_graph(store, include_text=include_text), None
         readiness_reader = getattr(store, "graph_readiness", None)
         readiness = readiness_reader() if callable(readiness_reader) else None
         graph_fingerprint = getattr(readiness, "graph_fingerprint", None) if readiness else None

@@ -191,6 +191,9 @@ def test_expansion_flag_tolerates_surrounding_whitespace() -> None:
 
 def test_an_empty_timeout_falls_back_to_the_default() -> None:
     """Empty means unset, because .env templates ship keys valueless (recall/profiles.py)."""
+    # Resolving a provider constructs the OpenAI client, so this needs the optional
+    # extra; CI installs without it.
+    pytest.importorskip("openai")
     provider = resolve_expansion_provider(
         {
             "RECALL_REASONING_EXPANSION": "1",
@@ -251,6 +254,9 @@ def test_expansion_request_rejects_unbounded_query_budget() -> None:
 def test_the_expansion_infixed_names_take_precedence_over_the_shared_legacy_names() -> None:
     """The bare RECALL_REASONING_* names are shared with the setup interview's generic arm, so
     the _EXPANSION_ infixed spellings must win whenever both are set."""
+    # Resolving a provider constructs the OpenAI client, so this needs the optional
+    # extra; CI installs without it.
+    pytest.importorskip("openai")
     provider = resolve_expansion_provider(
         {
             "RECALL_REASONING_EXPANSION": "1",
@@ -270,6 +276,9 @@ def test_the_expansion_infixed_names_take_precedence_over_the_shared_legacy_name
 
 
 def test_the_legacy_shared_names_still_resolve_when_the_infixed_names_are_unset() -> None:
+    # Resolving a provider constructs the OpenAI client, so this needs the optional
+    # extra; CI installs without it.
+    pytest.importorskip("openai")
     provider = resolve_expansion_provider(
         {
             "RECALL_REASONING_EXPANSION": "1",
