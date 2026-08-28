@@ -110,3 +110,37 @@ The earlier adoption rule remains unchanged for algorithm selection: prefer `pyr
 rescues at least 5 of 15 misses, retains at least 30 of 31 controls, and stays within two retrieval
 rounds; prefer `original_loop` only if it reaches that rescue bar and pyramid does not. This
 prompt-factor test can explain a change in recovery, but does not by itself authorize promotion.
+
+## Results appended after measurement
+
+Measured on 2026-08-28 against the frozen 46-input population and pinned generation above. Both
+prompt phases completed all 138 rows, with no duplicate task-arm pairs. The raw and summary
+artifacts remain in the external benchmark results directory.
+
+| Phase | Arm | Recovery | Misses rescued | Controls retained |
+| --- | --- | ---: | ---: | ---: |
+| Legacy | baseline | 17/46 | 0/15 | 17/31 |
+| Legacy | original_loop | 20/46 | 0/15 | 20/31 |
+| Legacy | pyramid | 27/46 | 3/15 | 24/31 |
+| Invariant | baseline | 17/46 | 0/15 | 17/31 |
+| Invariant | original_loop | 18/46 | 0/15 | 18/31 |
+| Invariant | pyramid | 25/46 | 1/15 | 24/31 |
+
+The original loop did not rescue a known miss in either phase. Pyramid rescued three legacy misses
+and one invariant miss, below the registered threshold of five, and retained 24 of 31 controls,
+below the registered threshold of 30. The adoption rule therefore rejects both construction arms.
+The result supports retaining the current retrieval path and investigating index aliasing or a
+separate memory representation.
+
+The invariant apparatus passed: all 138 rows carried generation
+`gen_168361bd2310433e87beda1fc6f4a5e0`, and all challenge records carried the marker. The original
+loop produced 69 model calls, 40 complete rows, and 6 invalid-frame fallbacks. Pyramid produced
+67 model calls, 44 complete rows, and 2 invalid-frame fallbacks. These fallbacks are reported
+separately from retrieval misses.
+
+| Artifact | SHA256 |
+| --- | --- |
+| `agent-ab-skill-001-prompt-factor-legacy-2048.json` | `2A99107D1D8B1E1ABCB8B3A1D8913FE84AF0391B8590BECF2C5CB394E07D2D93` |
+| `agent-ab-skill-001-prompt-factor-legacy-2048.summary.json` | `93798CC03D83D214FF828097A4AA2B3F6A4A96D940F06A1BE8E5F9BDECB45281` |
+| `agent-ab-skill-001-prompt-factor-invariant-2048.json` | `4DAB90A5F6AD22D3108FCEE90563E84024AD993B34F207A4A4B7E3FEC27E10CC` |
+| `agent-ab-skill-001-prompt-factor-invariant-2048.summary.json` | `7DB440D78B45EF758A1D08CC455A97C7ED1F81AB3500DAD2FD17BAAAB98B3E81` |
