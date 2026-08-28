@@ -526,3 +526,102 @@ def test_selective_gate_allows_expansion_for_single_seed_with_gap():
     result = _run_precision_graph(chunks, gap_warning=True)
     assert result.gate_reason is None
     assert result.candidates_discovered == 1
+
+
+@pytest.mark.parametrize(
+    "bad_confidence",
+    [None, "high", 1.5, -0.5, float("nan"), True],
+    ids=["none", "string", "above-range", "below-range", "nan", "bool"],
+)
+def test_invalid_authored_relation_confidence_is_a_diagnostic_not_an_error(bad_confidence):
+    graph = _graph(
+        Chunk(
+            "c1",
+            "memo.md",
+            "",
+            {
+                "project": "RE-call",
+                "service": "API",
+                "relations": [
+                    {
+                        "relation": "supports",
+                        "subject": "RE-call",
+                        "object": "API",
+                        "confidence": bad_confidence,
+                    }
+                ],
+            },
+        )
+    )
+    assert not graph.relations
+    assert any(
+        diagnostic.kind == "invalid_relation" and diagnostic.reference == "c1"
+        for diagnostic in graph.diagnostics
+    )
+
+
+def test_valid_authored_relation_confidence_is_preserved():
+    graph = _graph(
+        Chunk(
+            "c1",
+            "memo.md",
+            "",
+            {
+                "project": "RE-call",
+                "service": "API",
+                "relations": [
+                    {
+                        "relation": "supports",
+                        "subject": "RE-call",
+                        "object": "API",
+                        "confidence": 0.25,
+                    }
+                ],
+            },
+        )
+    )
+    assert len(graph.relations) == 1
+    assert graph.relations[0].confidence == 0.25
+    assert not any(diagnostic.kind == "invalid_relation" for diagnostic in graph.diagnostics)
+
+
+def test_load_semantic_graph_runs_all_reads_inside_one_transaction():
+    from recall.semantic_graph import load_semantic_graph
+
+    class Result:
+        def fetchone(self):
+            return None
+
+        def fetchall(self):
+            return []
+
+    class Transaction:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __enter__(self):
+            self._conn.in_transaction = True
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self._conn.in_transaction = False
+            return False
+
+    class Connection:
+        def __init__(self):
+            self.in_transaction = False
+            self.reads_in_transaction = []
+
+        def transaction(self):
+            return Transaction(self)
+
+        def execute(self, sql, params=None):
+            del sql, params
+            self.reads_in_transaction.append(self.in_transaction)
+            return Result()
+
+    conn = Connection()
+    assert load_semantic_graph(conn, "tenant-a", "generation-a") is None
+    assert len(conn.reads_in_transaction) == 4
+    assert all(conn.reads_in_transaction), "every read must run inside one transaction"
+    assert conn.in_transaction is False

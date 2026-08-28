@@ -45,9 +45,11 @@ class ReasoningBudget:
     """Hard limits for one planner run.
 
     `max_steps` counts graph operations, `max_graph_nodes` counts accepted chunk evidence nodes,
-    `max_model_calls` is the caller supplied already spent model call count, `max_evidence_tokens`
-    is a whitespace token approximation over accepted evidence text, and `max_wall_time_ms` is
-    measured with the planner clock.
+    `max_model_calls` is the ceiling on model calls charged to this run (compared against the
+    caller supplied `model_calls_used`), `max_evidence_tokens` is a whitespace token approximation
+    over accepted evidence text, `max_wall_time_ms` is measured with the planner clock, and
+    `max_graph_hops` (0 or 1) bounds semantic graph expansion and must agree with
+    `ReasoningPolicy.graph_expansion` on the request.
     """
 
     max_steps: int = 12

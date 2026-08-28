@@ -167,7 +167,7 @@ class OpenAIExpansionProvider:
             },
             ensure_ascii=True,
             separators=(",", ":"),
-        )
+        ).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
         started = time.perf_counter()
         response: object | None = None
         try:
@@ -255,7 +255,7 @@ def resolve_expansion_provider(
     """Resolve the explicitly enabled cheap expansion model, otherwise return ``None``."""
 
     source = env if env is not None else os.environ
-    enabled = source.get("RECALL_REASONING_EXPANSION", "0").lower()
+    enabled = source.get("RECALL_REASONING_EXPANSION", "0").strip().lower()
     if enabled in {"", "0", "false", "no", "off"}:
         return None
     if enabled not in {"1", "true", "yes", "on"}:
@@ -266,8 +266,14 @@ def resolve_expansion_provider(
         raise ValueError("RECALL_REASONING_EXPANSION_MODEL is required when expansion is enabled")
     if not key:
         raise ValueError("RECALL_REASONING_API_KEY is required when expansion is enabled")
-    raw_timeout = source.get("RECALL_REASONING_TIMEOUT", "30").strip()
-    timeout = float(raw_timeout)
+    raw_timeout = source.get("RECALL_REASONING_TIMEOUT", "").strip()
+    if not raw_timeout:
+        # Empty means unset: .env templates ship the key valueless, matching recall/profiles.py.
+        raw_timeout = "30"
+    try:
+        timeout = float(raw_timeout)
+    except ValueError as exc:
+        raise ValueError("RECALL_REASONING_TIMEOUT must be a number") from exc
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("RECALL_REASONING_TIMEOUT must be finite and positive")
     base_url = source.get("RECALL_REASONING_BASE_URL", "https://openrouter.ai/api/v1").strip()
@@ -388,7 +394,9 @@ def evidence_payload(result: TrustedResult) -> tuple[Mapping[str, object], ...]:
             break
         text = hit.chunk.text[:remaining]
         if not text:
-            break
+            # `remaining` is at least 1 here, so an empty slice means the chunk itself carries no
+            # text. Skip it: later hits may still fit the item and character budgets.
+            continue
         items.append(
             {
                 "chunk_id": hit.chunk.id,

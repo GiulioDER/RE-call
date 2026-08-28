@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from enum import Enum
 import math
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Literal, Protocol, cast, get_args
 
 from recall.evidence import (
     AnswerEnvelope,
@@ -23,6 +23,7 @@ from recall.evidence import (
 )
 from recall.reasoning_graph import ReasoningGraphProjection
 from recall.reasoning_expansion import (
+    ExpansionMode,
     ExpansionProposal,
     ExpansionReport,
     ExpansionRequest,
@@ -47,7 +48,13 @@ from recall.reasoning_planner import (
 )
 from recall.observability import METRICS
 from recall.provider_metadata import ProviderMetadata
-from recall.reasoning_proposals import InferenceProposal, ProposalProtocolReport, ProviderFailure
+from recall.reasoning_proposals import (
+    InferenceProposal,
+    ProposalProtocolReport,
+    ProposalStatus,
+    ProposedRelation,
+    ProviderFailure,
+)
 from recall.types import TrustedResult
 from recall.trust import is_trusted
 from recall.errors import RecallError
@@ -342,6 +349,24 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 provider_revision="v1",
                 message=type(exc).__name__,
             )
+        if graph_expansion.readiness == "ready":
+            try:
+                _validate_retrieval_binding(request, graph_expansion.retrieval)
+            except ReasoningValidationError as exc:
+                # A provider returning evidence bound to another tenant, generation, or corpus is
+                # a misbehaving provider, not a caller error: fail closed exactly as a provider
+                # exception does, keeping the validated seed retrieval.
+                graph_expansion = SemanticGraphExpansionResult(
+                    retrieval=retrieval,
+                    readiness="GRAPH_PROVIDER_ERROR",
+                )
+                graph_failure = ProviderFailure(
+                    kind="provider_error",
+                    provider_id="semantic-graph",
+                    model_id="deterministic",
+                    provider_revision="v1",
+                    message=type(exc).__name__,
+                )
         if graph_expansion.readiness != "ready":
             response = _response(
                 request=request,
@@ -627,8 +652,10 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         retrieval_expansion=_optional_expansion_trace(
             diagnostics_payload.get("retrieval_expansion")
         ),
-        graph_expansion_mode=cast(
-            GraphExpansionMode, diagnostics_payload.get("graph_expansion_mode", "off")
+        graph_expansion_mode=_checked_literal(
+            diagnostics_payload.get("graph_expansion_mode", "off"),
+            get_args(GraphExpansionMode),
+            "graph_expansion_mode",
         ),
         graph_readiness=str(diagnostics_payload.get("graph_readiness", "not_requested")),
         graph_entities_inspected=_required_int(
@@ -662,7 +689,7 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
     )
     return ReasoningResponse(
         schema_version=_required_int(payload["schema_version"]),
-        outcome=cast(ReasoningOutcome, payload["outcome"]),
+        outcome=_checked_literal(payload["outcome"], get_args(ReasoningOutcome), "outcome"),
         answer=_optional_str(payload.get("answer")),
         clarification_request=_optional_str(payload.get("clarification_request")),
         trusted_evidence=bundle,
@@ -1331,6 +1358,9 @@ def _empty_bundle(request: ReasoningRequest) -> EvidenceBundle:
         retrieval_profile="unknown",
         index_generation=generation.generation_id or "unknown",
         items=(),
+        # No retrieval ran and no trust evaluation happened, so the dataclass default of
+        # "trusted" would be a false claim: the gate refused this request before evaluating it.
+        trust_state="refused",
     )
 
 
@@ -1370,7 +1400,7 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
     )
     return EvidenceBundle(
         query=str(payload["query"]),
-        decision=cast(Literal["answer", "abstain"], payload["decision"]),
+        decision=_checked_literal(payload["decision"], ("answer", "abstain"), "decision"),
         reason_code=_optional_str(payload.get("reason_code")),
         calibrated=_required_bool(payload["calibrated"]),
         stale=_required_bool(payload["stale"]),
@@ -1387,7 +1417,9 @@ def _proposal_from_dict(payload: Mapping[str, object]) -> InferenceProposal:
     return InferenceProposal(
         id=str(payload["id"]),
         source_evidence_ids=tuple(str(item) for item in _sequence(payload["source_evidence_ids"])),
-        proposed_relation=cast(Any, payload["proposed_relation"]),
+        proposed_relation=_checked_literal(
+            payload["proposed_relation"], get_args(ProposedRelation), "proposed_relation"
+        ),
         subject_id=str(payload["subject_id"]),
         object_id=str(payload["object_id"]),
         explanation=str(payload["explanation"]),
@@ -1398,7 +1430,9 @@ def _proposal_from_dict(payload: Mapping[str, object]) -> InferenceProposal:
         confidence=_optional_float(payload.get("confidence")),
         uncertainty=tuple(str(item) for item in _sequence(payload["uncertainty"])),
         generation_id=str(payload["generation_id"]),
-        status=cast(Any, payload.get("status", "candidate")),
+        status=_checked_literal(
+            payload.get("status", "candidate"), get_args(ProposalStatus), "status"
+        ),
         rule_id=_optional_str(payload.get("rule_id")),
         metadata=_mapping(payload.get("metadata", {})),
     )
@@ -1428,7 +1462,7 @@ def _optional_expansion_trace(value: object) -> RetrievalExpansionTrace | None:
     proposals = tuple(
         ExpansionProposal(
             id=str(item["id"]),
-            mode=cast(Any, item["mode"]),
+            mode=_checked_literal(item["mode"], get_args(ExpansionMode), "mode"),
             query=str(item["query"]),
             rationale=str(item.get("rationale", "")),
             parent_chunk_ids=tuple(
@@ -1596,7 +1630,10 @@ def _required_int(value: object) -> int:
         raise EvidenceValidationError("expected integer")
     if not isinstance(value, (str, bytes, bytearray, int)):
         raise EvidenceValidationError("expected integer")
-    return int(value)
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise EvidenceValidationError("expected integer") from exc
 
 
 def _required_float(value: object) -> float:
@@ -1630,6 +1667,17 @@ def _optional_str(value: object) -> str | None:
         return None
     if not isinstance(value, str):
         raise EvidenceValidationError("expected string or null")
+    return value
+
+
+def _checked_literal(value: object, allowed: tuple[str, ...], field_name: str) -> Any:
+    """Reject a serialized value that is outside its Literal vocabulary.
+
+    A bare `cast` would let an unknown value flow into a typed field silently, so every
+    deserialized enum-like field goes through here and fails loudly instead.
+    """
+    if value not in allowed:
+        raise EvidenceValidationError(f"{field_name} must be one of: {', '.join(allowed)}")
     return value
 
 

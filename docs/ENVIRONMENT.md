@@ -51,6 +51,29 @@ OPENROUTER_API_KEY=
 # rather than refusing searches. See docs/DECISION_LEDGER.md.
 # RECALL_DECISION_LEDGER=0
 
+# --- Retrieval reasoning (see docs/REASONING_API.md) ---
+# Bounded retrieval expansion through a cheap OpenAI-compatible model. Off unless the flag below
+# is an explicit boolean; a value outside the boolean vocabulary refuses rather than guessing.
+# Use a low-cost expansion model only: the model plans extra retrieval queries, it never answers.
+# RECALL_REASONING_EXPANSION=0
+# RECALL_REASONING_EXPANSION_MODEL=openai/gpt-5-nano   # required when expansion is enabled
+# RECALL_REASONING_API_KEY=                            # required when expansion is enabled
+# RECALL_REASONING_BASE_URL=https://openrouter.ai/api/v1
+# RECALL_REASONING_TIMEOUT=30                          # seconds; empty means the default
+# RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS=       # optional, for cost accounting metadata
+# RECALL_REASONING_EXPANSION_EFFORT=minimal            # none | minimal | low | medium | high
+# RECALL_REASONING_EXPANSION_REVISION=unpinned
+#
+# Optional local answer provider, using Ollama's native /api/chat endpoint. Disabled unless
+# RECALL_REASONING_ANSWER_ENABLED=1. Provider failures are sanitized and never promote evidence.
+# RECALL_REASONING_ANSWER_ENABLED=0
+# RECALL_REASONING_ANSWER_MODEL=qwen3:4b
+# RECALL_REASONING_ANSWER_BASE_URL=http://127.0.0.1:11434/v1
+# RECALL_REASONING_ANSWER_TIMEOUT=60                   # seconds; empty means the default
+# RECALL_REASONING_ANSWER_MAX_TOKENS=512
+# RECALL_REASONING_ANSWER_REVISION=unpinned
+# RECALL_REASONING_ANSWER_THINKING=0                   # explicit boolean; the model's think switch
+
 # --- Which tools the MCP server serves ---
 # Unset serves all 18, which is the historical behaviour. Every tool definition is re-sent on
 # every turn whether or not it is ever called: measured 2026-08-27 on claude-haiku-4.5, about

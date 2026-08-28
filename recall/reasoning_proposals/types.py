@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, get_args
 
 from recall.reasoning_graph import ReasoningGraphNode, ReasoningGraphProjection
 
@@ -20,6 +20,10 @@ DETERMINISTIC_MODEL_ID = "rules"
 DETERMINISTIC_PROVIDER_REVISION = "session3-v1"
 
 ProposalStatus = Literal["candidate", "rejected", "requires_review"]
+#: Single source of truth for the status vocabulary. `_providers._checked_status` and
+#: `_metrics._VALID_STATUSES` validate against this rather than their own literal sets, so
+#: they cannot drift apart from the type.
+PROPOSAL_STATUSES: tuple[ProposalStatus, ...] = get_args(ProposalStatus)
 #: `declares_validity` and `declares_status` are NOT relations between two documents: they
 #: are a document asserting something about itself. Forcing them into `references` would put
 #: a false relation into an audit record, which is worse than having no record of them.

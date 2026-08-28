@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+import math
 import posixpath
 import re
 from types import MappingProxyType
@@ -333,36 +334,39 @@ def delete_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> int:
 
 def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> SemanticGraphProjection | None:
     """Load a generation graph, returning ``None`` when no graph has been built."""
-    generation_row = conn.execute(
-        "SELECT pipeline_fingerprint, corpus_fingerprint, validation_summary "
-        "FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
-        (tenant_id, generation_id),
-    ).fetchone()
-    entity_rows = conn.execute(
-        "SELECT entity_id, canonical_name, normalized_name, entity_kind, aliases, "
-        "extraction_method, confidence, metadata FROM recall_graph_entities_v1 "
-        "WHERE tenant_id = %s AND generation_id = %s ORDER BY entity_id",
-        (tenant_id, generation_id),
-    ).fetchall()
-    mention_rows = conn.execute(
-        "SELECT mention_id, entity_id, chunk_id, mention_text, extraction_method, "
-        "confidence, metadata FROM recall_graph_mentions_v1 "
-        "WHERE tenant_id = %s AND generation_id = %s ORDER BY mention_id",
-        (tenant_id, generation_id),
-    ).fetchall()
-    relation_rows = conn.execute(
-        "SELECT r.relation_id, r.subject_id, r.object_id, r.relation, r.extraction_method, "
-        "r.confidence, r.status, r.uncertainty, r.pipeline_fingerprint, r.corpus_fingerprint, "
-        "r.metadata, array_agg(e.chunk_id ORDER BY e.chunk_id) "
-        "FROM recall_graph_relations_v1 r LEFT JOIN recall_graph_relation_evidence_v1 e "
-        "ON e.tenant_id = r.tenant_id AND e.generation_id = r.generation_id "
-        "AND e.relation_id = r.relation_id WHERE r.tenant_id = %s AND r.generation_id = %s "
-        "GROUP BY r.relation_id, r.subject_id, r.object_id, r.relation, "
-        "r.extraction_method, r.confidence, r.status, r.uncertainty, "
-        "r.pipeline_fingerprint, r.corpus_fingerprint, r.metadata "
-        "ORDER BY r.relation_id",
-        (tenant_id, generation_id),
-    ).fetchall()
+    # One transaction, so the four reads observe one snapshot: a concurrent forget() commits
+    # between its statements, and four autocommit SELECTs would each see a different state.
+    with conn.transaction():
+        generation_row = conn.execute(
+            "SELECT pipeline_fingerprint, corpus_fingerprint, validation_summary "
+            "FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
+            (tenant_id, generation_id),
+        ).fetchone()
+        entity_rows = conn.execute(
+            "SELECT entity_id, canonical_name, normalized_name, entity_kind, aliases, "
+            "extraction_method, confidence, metadata FROM recall_graph_entities_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s ORDER BY entity_id",
+            (tenant_id, generation_id),
+        ).fetchall()
+        mention_rows = conn.execute(
+            "SELECT mention_id, entity_id, chunk_id, mention_text, extraction_method, "
+            "confidence, metadata FROM recall_graph_mentions_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s ORDER BY mention_id",
+            (tenant_id, generation_id),
+        ).fetchall()
+        relation_rows = conn.execute(
+            "SELECT r.relation_id, r.subject_id, r.object_id, r.relation, r.extraction_method, "
+            "r.confidence, r.status, r.uncertainty, r.pipeline_fingerprint, r.corpus_fingerprint, "
+            "r.metadata, array_agg(e.chunk_id ORDER BY e.chunk_id) "
+            "FROM recall_graph_relations_v1 r LEFT JOIN recall_graph_relation_evidence_v1 e "
+            "ON e.tenant_id = r.tenant_id AND e.generation_id = r.generation_id "
+            "AND e.relation_id = r.relation_id WHERE r.tenant_id = %s AND r.generation_id = %s "
+            "GROUP BY r.relation_id, r.subject_id, r.object_id, r.relation, "
+            "r.extraction_method, r.confidence, r.status, r.uncertainty, "
+            "r.pipeline_fingerprint, r.corpus_fingerprint, r.metadata "
+            "ORDER BY r.relation_id",
+            (tenant_id, generation_id),
+        ).fetchall()
     marker = generation_row[2].get("semantic_graph") if generation_row and isinstance(generation_row[2], dict) else None
     if not entity_rows and not mention_rows and not relation_rows and not isinstance(marker, dict):
         return None
@@ -636,18 +640,6 @@ def build_semantic_graph(
             entity = get_entity(label, kind, method)
             if kind == "file":
                 file_entities_by_source[chunk.source].add(entity.id)
-            by_normalized.setdefault(normalized, entity)
-            mention_id = _identity(
-                "mention",
-                {
-                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                    "tenant_id": tenant_id,
-                    "generation_id": generation_id,
-                    "entity_id": entity.id,
-                    "chunk_id": chunk.id,
-                    "mention_text": label,
-                },
-            )
             by_normalized.setdefault(normalized, entity)
         entity_ids_by_chunk[chunk.id] = by_normalized
 
@@ -933,6 +925,35 @@ def build_semantic_graph(
                     )
                 )
                 continue
+            confidence_value = raw.get("confidence", 1.0)
+            if (
+                isinstance(confidence_value, bool)
+                or not isinstance(confidence_value, (int, float))
+                or not math.isfinite(confidence_value)
+                or not 0.0 <= confidence_value <= 1.0
+            ):
+                diagnostics.append(
+                    SemanticGraphDiagnostic(
+                        id=_identity(
+                            "diagnostic",
+                            {
+                                "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                                "tenant_id": tenant_id,
+                                "generation_id": generation_id,
+                                "kind": "invalid_relation",
+                                "reference": chunk.id,
+                                "field": "confidence",
+                                "value": repr(confidence_value),
+                            },
+                        ),
+                        tenant_id=tenant_id,
+                        generation_id=generation_id,
+                        kind="invalid_relation",
+                        reference=chunk.id,
+                        message="relation confidence must be a finite number between 0.0 and 1.0",
+                    )
+                )
+                continue
             subject_key = normalize_entity_name(subject)
             object_key = normalize_entity_name(object_value)
             subject_entity = local.get(subject_key)
@@ -984,7 +1005,7 @@ def build_semantic_graph(
                 relation=relation,
                 evidence_chunk_ids=(chunk.id,),
                 extraction_method="explicit_relation",
-                confidence=float(raw.get("confidence", 1.0)),
+                confidence=float(confidence_value),
                 status="authored",
                 uncertainty=tuple(item for item in raw.get("uncertainty", ()) if isinstance(item, str)),
                 pipeline_fingerprint=pipeline_fingerprint,
