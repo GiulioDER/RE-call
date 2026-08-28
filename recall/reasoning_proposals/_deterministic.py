@@ -145,6 +145,24 @@ _DIRECT_REF_RE = re.compile(
     r"\b(?:replaces|supersedes|deprecates|updates|revises)\s+`?(?P<target>[\w./\-[\]]+)`?",
     re.IGNORECASE,
 )
+_POSITIVE_VALIDITY_RE = re.compile(r"\b(enabled|active|valid|approved|ship|on)\b", re.IGNORECASE)
+_NEGATIVE_VALIDITY_RE = re.compile(
+    r"\b(disabled|inactive|invalid|rejected|blocked|off)\b", re.IGNORECASE
+)
+
+#: Per rule confidence priors, keyed by rule_id. These are UNMEASURED priors: they encode the
+#: relative strength of each structural signal as judged when the rules were written, not any
+#: measured precision. Proposal ids do not hash confidence, so changing a value here never
+#: changes an id. Every proposal a rule emits carries that rule's value verbatim.
+RULE_CONFIDENCE: Mapping[str, float] = MappingProxyType(
+    {
+        "deterministic.explicit_version_naming": 0.86,
+        "deterministic.direct_textual_reference": 0.9,
+        "deterministic.repeated_decision_subject": 0.72,
+        "deterministic.contradictory_validity_windows": 0.78,
+        "deterministic.temporal_ordering": 0.64,
+    }
+)
 
 
 def _version_key(file: str) -> tuple[str, int] | None:
@@ -278,7 +296,7 @@ def _explicit_version_proposals(
                         "The source names form an explicit increasing version sequence for "
                         f"{base}: {old_file} before {new_file}."
                     ),
-                    confidence=0.86,
+                    confidence=RULE_CONFIDENCE["deterministic.explicit_version_naming"],
                     uncertainty=("version naming is structural, not authored metadata",),
                     rule_id="deterministic.explicit_version_naming",
                 )
@@ -312,7 +330,7 @@ def _direct_reference_proposals(
                         f"{file} contains a direct textual reference that appears to replace "
                         f"{target}."
                     ),
-                    confidence=0.9,
+                    confidence=RULE_CONFIDENCE["deterministic.direct_textual_reference"],
                     uncertainty=("the reference remains corpus text, not an instruction",),
                     rule_id="deterministic.direct_textual_reference",
                     metadata={"matched_text": match.group(0).rstrip(".,;:)")},
@@ -360,7 +378,7 @@ def _repeated_decision_subject_proposals(
                         f"{older_file} and {newer_file} repeat decision subject {subject}, "
                         "with the latter having the later validity start."
                     ),
-                    confidence=0.72,
+                    confidence=RULE_CONFIDENCE["deterministic.repeated_decision_subject"],
                     uncertainty=("same subject is inferred from text and file names",),
                     status="requires_review",
                     rule_id="deterministic.repeated_decision_subject",
@@ -397,7 +415,7 @@ def _contradictory_validity_window_proposals(
                             f"{left_file} and {right_file} discuss {subject} in overlapping "
                             "validity windows with opposing status language."
                         ),
-                        confidence=0.78,
+                        confidence=RULE_CONFIDENCE["deterministic.contradictory_validity_windows"],
                         uncertainty=("textual polarity is heuristic",),
                         status="requires_review",
                         rule_id="deterministic.contradictory_validity_windows",
@@ -447,7 +465,7 @@ def _temporal_ordering_proposals(
                         f"{newer_file} has a later validity start than {older_file} for the "
                         f"same normalized entity {entity_id}."
                     ),
-                    confidence=0.64,
+                    confidence=RULE_CONFIDENCE["deterministic.temporal_ordering"],
                     uncertainty=("temporal ordering alone is insufficient for promotion",),
                     status="requires_review",
                     rule_id="deterministic.temporal_ordering",
@@ -465,9 +483,9 @@ def _windows_overlap(left: EvidenceClaim, right: EvidenceClaim) -> bool:
 
 
 def _opposing_validity_text(left: str, right: str) -> bool:
-    positive = re.compile(r"\b(enabled|active|valid|approved|ship|on)\b", re.IGNORECASE)
-    negative = re.compile(r"\b(disabled|inactive|invalid|rejected|blocked|off)\b", re.IGNORECASE)
+    # Compiled once at module level beside the other patterns: this runs inside the pairwise
+    # claims loop, where a per call re.compile paid the compile cost on every pair.
     return bool(
-        (positive.search(left) and negative.search(right))
-        or (negative.search(left) and positive.search(right))
+        (_POSITIVE_VALIDITY_RE.search(left) and _NEGATIVE_VALIDITY_RE.search(right))
+        or (_NEGATIVE_VALIDITY_RE.search(left) and _POSITIVE_VALIDITY_RE.search(right))
     )

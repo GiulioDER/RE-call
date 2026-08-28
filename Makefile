@@ -1,4 +1,4 @@
-.PHONY: db-up db-down db-status open close demo test test-serial lint eval
+.PHONY: db-up db-down db-status open close demo test test-serial lint typecheck eval
 
 # `db-up` starts this checkout's container, but make CANNOT export into your shell, so it only
 # prints the line. Run the eval form yourself to actually get a DSN:
@@ -74,5 +74,8 @@ test-serial:
 # the pinned one, and the two disagree about what passes.
 lint:
 	python -m ruff check .
+
+typecheck:
+	python -m mypy
 eval:
 	python -m recall.eval

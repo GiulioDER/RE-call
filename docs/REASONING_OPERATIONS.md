@@ -92,9 +92,14 @@ Provider outages:
 Retrieval expansion configuration:
 
 * `RECALL_REASONING_EXPANSION=1` is required to enable the provider. It is off by default.
-* `RECALL_REASONING_EXPANSION_MODEL` and `RECALL_REASONING_API_KEY` are required when enabled.
-* `RECALL_REASONING_BASE_URL` defaults to OpenRouter and must be an absolute HTTP or HTTPS URL.
-* `RECALL_REASONING_TIMEOUT` defaults to 30 seconds and must be finite and positive.
+* `RECALL_REASONING_EXPANSION_MODEL` and `RECALL_REASONING_EXPANSION_API_KEY` are required when
+  enabled.
+* `RECALL_REASONING_EXPANSION_BASE_URL` defaults to OpenRouter and must be an absolute HTTP or
+  HTTPS URL.
+* `RECALL_REASONING_EXPANSION_TIMEOUT` defaults to 30 seconds and must be finite and positive.
+* The bare `RECALL_REASONING_API_KEY`, `RECALL_REASONING_BASE_URL` and `RECALL_REASONING_TIMEOUT`
+  are read as legacy fallbacks when the infixed spellings are unset. They are shared with other
+  reasoning arms, which is why the infixed names exist and win.
 * `RECALL_REASONING_EXPANSION_EFFORT` defaults to `minimal`.
 * `RECALL_REASONING_EXPANSION_REVISION` defaults to `unpinned` and should be pinned in run records.
 * `RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS` is optional nonnegative cost metadata.

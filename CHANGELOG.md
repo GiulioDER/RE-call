@@ -85,6 +85,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* ⚠️ **Importing a calibration bundle now re-derives its threshold, so a bundle fitted under the
+  RETIRED `best_threshold` rule is refused rather than imported.** The refusal names both numbers
+  and the remedy is to recalibrate; it is the safe direction, but the first person to meet it will
+  read it as corruption, so it is recorded here. The rule changed when the q95 ceiling stopped
+  landing on the sample maximum at the certification minimum, which is the same fix that makes a
+  20-sample calibration outlier-robust. Only `import_bundle` is affected: stored artifacts are
+  read through `verify_checksum` and are untouched.
+
+* **A forged calibration bundle could install any serving threshold.** `import_bundle` re-derived
+  the certification verdict from the bundle's own scores, but `Calibration.certified` never reads
+  the threshold, so trivially separable scores certified honestly while the threshold beside them
+  was whatever the author wrote, and `publish` promotes any certified draft. A fitted artifact's
+  threshold and scale are now re-derived from its scores too. A CARRIED artifact is still not
+  authenticated by this check, because its threshold is inherited and its error bound is computed
+  over scores the bundle supplies: that gap is stated in the function's docstring along with what
+  would close it, rather than left to be assumed absent.
+
 * **`--manifest-sha256` and `--manifest-size` were accepted and ignored on a local manifest.** They
   were read only to build the reference that fetches an `s3://` manifest; a `file://` build parsed
   the manifest and verified nothing. `bin/build_generation_voyage.sh` passes both on every run, so

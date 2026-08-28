@@ -43,7 +43,7 @@ a **tenant**.
 
 **F1. Promotion is not required, for either calibration or serving.**
 `CalibrationRepository._generation` accepts states `{"ready", "active", "retired"}`
-(`recall/calibration_v2.py:495`). `GenerationStore.pin_generation` accepts the same three
+(`recall/calibration_v2.py:722`). `GenerationStore.pin_generation` accepts the same three
 (`recall/generation_store.py:180`). And `SERVABLE_ACTIVE_STATES = frozenset({"ready", "active"})`
 (`recall/control_plane.py:35`), so the enterprise control plane **already treats `ready` as
 servable**. What `promote()` adds over calibration and serving is that it sets
@@ -123,7 +123,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 
 `RECALL_ENV` is one string carrying at least six unrelated policies:
 
-1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:2529`, `recall/cli_commands/index_search.py:253` <!-- cite-anchor: env_is_production -->).
+1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:2614`, `recall/cli_commands/index_search.py:253` <!-- cite-anchor: env_is_production -->).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:376`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
     `recall_mcp/server.py:864` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:338` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
@@ -393,7 +393,7 @@ disagreement is itself reportable.
 
 **Why.** `resolve()` re-derives the lineage comparison on every query, which is what catches a
 `forget()` that rewrote `corpus_fingerprint` (`recall/generations.py:1506`) or a `publish()` that
-superseded the artifact (`recall/calibration_v2.py:978`). A cached mode cannot catch either.
+superseded the artifact (`recall/calibration_v2.py:1263`). A cached mode cannot catch either.
 Making it authoritative would require every current and future invalidator to update it, which is
 exactly the growing-enumeration failure this design criticises in F2. **A cache that must be
 invalidated by an open-ended set of writers is a bug with a schedule.**
@@ -404,7 +404,7 @@ environment variables was really asking for.
 
 ### 4. Add `provisional` to the reasoning whitelist, and bump the API version
 
-**Decision: `recall/reasoning.py:1637` accepts `{trusted, degraded, refused, provisional}`, and
+**Decision: `recall/reasoning.py:1686` accepts `{trusted, degraded, refused, provisional}`, and
 `REASONING_API_VERSION` goes 1 → 2.** The several `!= "trusted"` comparisons keep their current
 behaviour and become an explicit named set, `_CERTIFIED_STATES = frozenset({"trusted"})`.
 
@@ -690,7 +690,7 @@ half the corpus, aborts** and reports that the candidate set does not describe t
    invalidate a calibration without touching tenant state, so a tenant can read `certified` while
    the live resolver says stale.
 4. **Adding `provisional` to `TrustState` hits an exhaustive whitelist that raises**, not a defaulted
-   mapping: `recall/reasoning.py:1637` rejects anything outside `{trusted, degraded, refused}`, on a
+   mapping: `recall/reasoning.py:1686` rejects anything outside `{trusted, degraded, refused}`, on a
    versioned API whose version is unbumped, plus several `!= "trusted"` comparisons that would
    silently downgrade.
 5. **The strict gate is binary on `CERTIFIED`.** `code_for_status` returns a failure code for

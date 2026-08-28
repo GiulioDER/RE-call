@@ -7,12 +7,12 @@ generation state, trust verdicts, or retrieval ranking.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast
 
+from recall._frozen import freeze_value as _freeze_projection_value
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
 from recall.semantic_graph import SemanticGraphProjection
@@ -35,22 +35,23 @@ GraphDiagnosticKind = Literal[
 ]
 
 
-def _freeze_projection_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {
-                key: _freeze_projection_value(item)
-                for key, item in sorted(value.items(), key=lambda entry: str(entry[0]))
-            }
-        )
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return tuple(_freeze_projection_value(item) for item in value)
-    if isinstance(value, (set, frozenset)):
-        return tuple(sorted((_freeze_projection_value(item) for item in value), key=repr))
-    return value
-
-
 class ChunkIterable(Protocol):
+    """Chunk source contract for graph projection.
+
+    Beyond the required members, ``project_store_graph`` probes three optional extension
+    points with ``getattr`` and uses each only when it is present and callable:
+
+    - ``snapshot()``: a context manager yielding a pinned generation id; when present the
+      whole projection runs against that one snapshot.
+    - ``generation_binding()``: a mapping that may carry ``pipeline_fingerprint`` and
+      ``corpus_fingerprint`` strings for the bound generation.
+    - ``load_semantic_graph(generation_id)``: returns the persisted
+      ``SemanticGraphProjection`` for that generation, or ``None`` when none was built.
+
+    Implementers that lack these members are still valid; the projection simply proceeds
+    without a snapshot, without binding fingerprints, or without a semantic graph.
+    """
+
     @property
     def tenant(self) -> str: ...
 
@@ -335,7 +336,12 @@ def _chunk_nodes(
 
 
 def _supersession_rows(chunks: list[Chunk]) -> list[tuple[str | None, str | None, datetime | None]]:
-    rows: dict[tuple[str | None, str | None], datetime | None] = {}
+    # This fallback path is undated by design: chunk metadata carries no asserted_at, so
+    # every row it yields is (file, supersedes, None). The store path supplies real
+    # asserted_at values, and because asserted_at participates in _edge_id, the two paths
+    # hash different edge identities for the same authored data. Populating dates here
+    # would silently change every fallback edge id, so the third element must stay None.
+    pairs: dict[tuple[str | None, str | None], None] = {}
     for chunk in chunks:
         file = chunk.metadata.get("file")
         supersedes = chunk.metadata.get("supersedes")
@@ -343,10 +349,9 @@ def _supersession_rows(chunks: list[Chunk]) -> list[tuple[str | None, str | None
             file = None
         if not isinstance(supersedes, str):
             supersedes = None
-        key = (file, supersedes)
-        rows.setdefault(key, None)
-    ordered = sorted(rows.items(), key=lambda item: (item[0][0] or "", item[0][1] or ""))
-    return [(file, supersedes, when) for (file, supersedes), when in ordered]
+        pairs.setdefault((file, supersedes), None)
+    ordered = sorted(pairs, key=lambda pair: (pair[0] or "", pair[1] or ""))
+    return [(file, supersedes, None) for file, supersedes in ordered]
 
 
 def _authored_edges(
@@ -492,46 +497,61 @@ def _graph_diagnostics(
     emitted_cycles: set[tuple[str, ...]] = set()
 
     def walk_cycle(start: str, path: list[str], path_index: dict[str, int]) -> None:
+        # Iterative depth first search over an explicit stack. An authored supersession
+        # chain can be thousands of files long, and the recursive form of this walk hit
+        # the interpreter recursion limit; the visit order, canonical cycle dedup and
+        # diagnostic output are byte for byte those of the recursive version.
         state[start] = "visiting"
         path_index[start] = len(path)
         path.append(start)
-        for nxt in outgoing.get(start, []):
-            if state.get(nxt) == "visiting":
-                cycle = tuple(path[path_index[nxt] :])
-                canonical_cycle = min(
-                    (cycle[index:] + cycle[:index] for index in range(len(cycle))),
-                    default=cycle,
-                )
-                if canonical_cycle not in emitted_cycles:
-                    emitted_cycles.add(canonical_cycle)
-                    pairs = zip(cycle, (*cycle[1:], cycle[0]), strict=True)
-                    edge_ids = tuple(
-                        edge_id
-                        for pair in pairs
-                        for edge_id in edge_ids_by_pair.get(pair, [])
+        stack: list[tuple[str, Iterator[str]]] = [(start, iter(outgoing.get(start, [])))]
+        while stack:
+            node, neighbors = stack[-1]
+            descended = False
+            for nxt in neighbors:
+                if state.get(nxt) == "visiting":
+                    cycle = tuple(path[path_index[nxt] :])
+                    canonical_cycle = min(
+                        (cycle[index:] + cycle[:index] for index in range(len(cycle))),
+                        default=cycle,
                     )
-                    diagnostics.append(
-                        ReasoningGraphDiagnostic(
-                            id=_diagnostic_id(
+                    if canonical_cycle not in emitted_cycles:
+                        emitted_cycles.add(canonical_cycle)
+                        pairs = zip(cycle, (*cycle[1:], cycle[0]), strict=True)
+                        edge_ids = tuple(
+                            edge_id
+                            for pair in pairs
+                            for edge_id in edge_ids_by_pair.get(pair, [])
+                        )
+                        diagnostics.append(
+                            ReasoningGraphDiagnostic(
+                                id=_diagnostic_id(
+                                    tenant_id=tenant_id,
+                                    generation_id=generation_id,
+                                    kind="cycle",
+                                    edge_ids=edge_ids,
+                                    reference=nxt,
+                                ),
+                                kind="cycle",
                                 tenant_id=tenant_id,
                                 generation_id=generation_id,
-                                kind="cycle",
                                 edge_ids=edge_ids,
-                                reference=nxt,
-                            ),
-                            kind="cycle",
-                            tenant_id=tenant_id,
-                            generation_id=generation_id,
-                            edge_ids=edge_ids,
-                            reference=canonical_cycle[0] if canonical_cycle else nxt,
-                            message=f"authored supersession cycle includes {', '.join(cycle)}",
+                                reference=canonical_cycle[0] if canonical_cycle else nxt,
+                                message=f"authored supersession cycle includes {', '.join(cycle)}",
+                            )
                         )
-                    )
-            elif state.get(nxt) is None:
-                walk_cycle(nxt, path, path_index)
-        path.pop()
-        path_index.pop(start)
-        state[start] = "visited"
+                elif state.get(nxt) is None:
+                    state[nxt] = "visiting"
+                    path_index[nxt] = len(path)
+                    path.append(nxt)
+                    stack.append((nxt, iter(outgoing.get(nxt, []))))
+                    descended = True
+                    break
+            if not descended:
+                stack.pop()
+                path.pop()
+                path_index.pop(node)
+                state[node] = "visited"
 
     for start in sorted(outgoing):
         if state.get(start) is None:

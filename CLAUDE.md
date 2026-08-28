@@ -574,6 +574,18 @@ scripts/session-db.sh down
 - Lint is `python -m ruff check .`. Bare `ruff` on this machine is an old 0.6.9; `python -m ruff`
   is the pinned 0.16.x. **Never run `ruff format`**: 348 of 406 files fail it and CI only ever runs
   `ruff check`.
+- ⚠️ **Types are a CI gate too, and ruff does not check them.** `python -m mypy` (or `make
+  typecheck`) over the whole tree, which is what the `typecheck` job runs. Measured 2026-08-29:
+  349 source files, about 60 seconds cold. This is written down because a session ran nine
+  auditors, three verification agents, an adversarial panel, two differential reviews and two
+  architect gates over a 54-fix change, and still shipped three type errors to CI, for the
+  single reason that nothing in this file told it mypy existed. Ruff being green says nothing
+  about mypy: the errors were a widened `tuple[float, ...]` and two `getattr` optionals that
+  narrow at runtime and not for the checker.
+
+  ```bash
+  python -m mypy
+  ```
 
 ## Guards that will interrupt you, and why
 

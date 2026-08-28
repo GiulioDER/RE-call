@@ -114,25 +114,50 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> OllamaAnswe
         return None
     if enabled not in {"1", "true", "yes", "on"}:
         raise ValueError("RECALL_REASONING_ANSWER_ENABLED must be an explicit boolean")
-    model = source.get("RECALL_REASONING_ANSWER_MODEL", "qwen3:4b").strip()
+    # Required rather than defaulted, matching the expansion resolver: a silent model default
+    # means enabling the provider quietly selects a model nobody chose.
+    model = source.get("RECALL_REASONING_ANSWER_MODEL", "").strip()
+    if not model:
+        raise ValueError(
+            "RECALL_REASONING_ANSWER_MODEL is required when the answer provider is enabled"
+        )
     base_url = source.get(
         "RECALL_REASONING_ANSWER_BASE_URL", "http://127.0.0.1:11434/v1"
     ).strip()
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("RECALL_REASONING_ANSWER_BASE_URL must be an absolute http(s) URL")
-    timeout = float(source.get("RECALL_REASONING_ANSWER_TIMEOUT", "60"))
+    raw_timeout = source.get("RECALL_REASONING_ANSWER_TIMEOUT", "").strip()
+    if not raw_timeout:
+        # Empty means unset: .env templates ship the key valueless, matching recall/profiles.py.
+        raw_timeout = "60"
+    try:
+        timeout = float(raw_timeout)
+    except ValueError as exc:
+        raise ValueError("RECALL_REASONING_ANSWER_TIMEOUT must be a number") from exc
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("RECALL_REASONING_ANSWER_TIMEOUT must be finite and positive")
-    max_tokens = int(source.get("RECALL_REASONING_ANSWER_MAX_TOKENS", "512"))
+    raw_max_tokens = source.get("RECALL_REASONING_ANSWER_MAX_TOKENS", "").strip()
+    if not raw_max_tokens:
+        raw_max_tokens = "512"
+    try:
+        max_tokens = int(raw_max_tokens)
+    except ValueError as exc:
+        raise ValueError("RECALL_REASONING_ANSWER_MAX_TOKENS must be an integer") from exc
+    thinking_raw = source.get("RECALL_REASONING_ANSWER_THINKING", "0").strip().lower()
+    if thinking_raw in {"", "0", "false", "no", "off"}:
+        thinking = False
+    elif thinking_raw in {"1", "true", "yes", "on"}:
+        thinking = True
+    else:
+        raise ValueError("RECALL_REASONING_ANSWER_THINKING must be an explicit boolean")
     client = _NativeOllamaClient(base_url, timeout=timeout)
     return OllamaAnswerProvider(
         client,
         model_id=model,
         revision=source.get("RECALL_REASONING_ANSWER_REVISION", "unpinned"),
         max_tokens=max_tokens,
-        thinking=source.get("RECALL_REASONING_ANSWER_THINKING", "0").lower()
-        in {"1", "true", "yes", "on"},
+        thinking=thinking,
     )
 
 
