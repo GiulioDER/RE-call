@@ -79,3 +79,30 @@ The second attempted run on 2026-08-28 was also invalid. Child processes started
 benchmark directory as their import root and could not import `recall_hooks.write_time`; all 30
 cold rows and the relay row were process failures before any corpus query. The child environment
 now pins the repository root on `PYTHONPATH`. These artifacts remain retained and unscored.
+
+## Results appended after measurement
+
+Measured on 2026-08-28 against the configured `recall_repos` corpus through a temporary local SSH
+forward to VPS2. The endpoint was remote even though the client DSN named `127.0.0.1`. All 30 cold
+requests and all 30 relay requests returned `ok`.
+
+| endpoint | observed | prediction | verdict |
+|---|---:|---:|---|
+| cold median | 3,706 ms | 1,800 to 2,700 ms | falsified, slower than predicted |
+| relay median, all requests | 568 ms | at most 800 ms | confirmed |
+| relay median after first request | 491 ms | not above 800 ms | confirmed |
+| ordered hit equality | 30/30 | 30/30 | confirmed |
+| relay warm-up drop | 3,005 ms first request, then 491 ms median | present | confirmed |
+| unreachable follow-up calls | 5/5 at or below 500 ms | 5/5 | confirmed |
+
+The relay reduced the all-request median by 84.7 percent and the steady-state median by 86.7
+percent. The result is valid for latency engineering: the connection and process setup cost is
+the dominant remote cost, and the relay preserved retrieval results and fail-open behavior.
+
+This licenses a production integration review, not production integration itself. The next record
+must cover relay ownership and shutdown, stale connections, credential handling, tenant isolation,
+crash recovery, and whether a long-lived helper is acceptable for the supported client platforms.
+
+Artifact: `results/write_time_connection_reuse_20260828T151400Z.json`. Re-measure with the command
+under **Re-measure** after opening the documented VPS2 tunnel. The two invalid artifacts remain
+retained and are not included in any rate.
