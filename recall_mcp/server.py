@@ -61,6 +61,7 @@ from recall_mcp.oidc import (
 from recall_mcp.service import (
     evidence_memory,
     forget_memory,
+    graph_first_retrieval,
     IndexResult,
     generation_ingest,
     index_memory,
@@ -1487,6 +1488,52 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
             return await _to_thread(
                 lambda: reasoning_projection(store, include_text=include_text).model_dump_json(
                     indent=2
+                )
+            )
+
+    @mcp.tool(
+        name="recall_graph_first_retrieval",
+        annotations=ToolAnnotations(
+            title="Probe graph-first retrieval",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_graph_first_retrieval_tool(
+        query: str,
+        ctx: Context[dict, object],
+        mode: str = "hybrid",
+        source: str | None = None,
+        k: int = 5,
+        max_candidates: int = 3,
+        expected_generation_id: str | None = None,
+    ) -> str:
+        """Probe graph-derived query seeds before ordinary trusted retrieval.
+
+        The graph contributes only deterministic query proposals. Every proposal and the original
+        query pass through the ordinary retrieval and trust layer. This opt-in probe never treats
+        graph metadata or graph text as evidence and does not alter existing retrieval tools.
+        """
+        state = _state(ctx)
+        store = _require(SCOPE_READ, ctx)
+        with METRICS.timer("recall_tool_latency_ms", tool="graph_first_retrieval"):
+            return await _to_thread(
+                lambda: json.dumps(
+                    graph_first_retrieval(
+                        store,
+                        state["embedder"],
+                        query,
+                        mode=mode,  # type: ignore[arg-type]
+                        source=source,
+                        k=k,
+                        max_candidates=max_candidates,
+                        expected_generation_id=expected_generation_id,
+                        policy=TRUST_POLICY,
+                    ),
+                    indent=2,
+                    default=str,
                 )
             )
 
