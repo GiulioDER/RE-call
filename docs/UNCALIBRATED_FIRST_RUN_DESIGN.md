@@ -104,8 +104,8 @@ carried a 384 dimensional profile's id.
 use it.** Every corpus indexed *before* #370 carries the old literal, which is exactly the
 population an adoption path exists to read. A fix to the writer does not retroactively repair rows
 already written. Only `content_hash` is load bearing here, and the accessor that returns it is
-`PgVectorStore.source_raw_hashes` (`recall/store.py:2582`), **not** `source_content_hashes`
-(`recall/store.py:2564`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
+`PgVectorStore.source_raw_hashes` (`recall/store.py:2703`), **not** `source_content_hashes`
+(`recall/store.py:2685`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
 
 ⚠️ **`content_hash` is media type dependent since `bd582316`.** A markdown source is hashed as
 decoded, newline normalised, `_strip_nul` text re encoded as UTF-8 (`recall/index.py:822`
@@ -126,7 +126,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:2529`, `recall/cli_commands/index_search.py:253` <!-- cite-anchor: env_is_production -->).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:376`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
-    `recall_mcp/server.py:864` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:303` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
+    `recall_mcp/server.py:864` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:338` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`recall_mcp/stores.py:154`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:423`). <!-- cite-anchor: wants_learned -->

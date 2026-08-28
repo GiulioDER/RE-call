@@ -20,6 +20,27 @@ from datetime import datetime, time, timezone
 VALIDITY_KEYS = ("valid_from", "valid_until", "supersedes")
 GRAPH_KEY = "recall_graph"
 
+#: Keys carrying a document's FACET: the authored answer to "what kind of thing is this", which
+#: `recall.scope` turns into a retrieval dimension. Recognized keys land in chunk metadata via
+#: `Indexer.apply_provenance`, so naming one here is the whole of what puts it in the index.
+#:
+#: ``type`` is the key the agent memory format already writes (``type: feedback|project|reference|
+#: user``), and it was being discarded: this parser keeps only what it recognizes, so a facet that
+#: every memo in the corpus declared was invisible to every query. Recognizing it costs nothing at
+#: write time and needs no new authoring convention, which is the argument for reusing the key
+#: rather than inventing ``recall_facet``.
+#:
+#: ⚠️ **A recognized key lands only on the next index of that file.** Recognition happens at index
+#: time, so the facet is absent from every row written before this existed, and a facet filter
+#: against an un-rebuilt corpus matches nothing. That is a silent empty result, not an error,
+#: which is why `recall.scope` documents the same caveat on the query side.
+FACET_KEYS = ("type",)
+
+#: The longest facet value this parser will accept. A facet is a small closed vocabulary, so a
+#: long value means a line was misread as a mapping rather than that somebody has a long category.
+#: Truncating would invent a category; ignoring keeps the document facet-less, which is honest.
+FACET_MAX_LENGTH = 64
+
 #: A mapping key: a quoted key, or a bare one, then a colon. A bare key may contain spaces
 #: (``date created:`` is ordinary Obsidian frontmatter) and may lead with a digit or a non-ASCII
 #: letter. What it may NOT lead with is any character markdown uses to open a line: ``#`` ``-``
@@ -187,6 +208,18 @@ def legacy_pairing_differs(text: str) -> bool:
     )
 
 
+def _unquote(value: str) -> str:
+    """Strip one layer of matching quotes.
+
+    A YAML habit like ``supersedes: "v1.md"`` must match the unquoted file name rather than
+    silently never applying. Shared by the validity keys and the facet keys so the two cannot
+    drift into disagreeing about what a quoted value is.
+    """
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1].strip()
+    return value
+
+
 def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
     """Split a document into (recognized frontmatter keys, body without the block).
 
@@ -204,12 +237,18 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
             key, _, value = line.partition(":")
             key = key.strip()
             if key in VALIDITY_KEYS:
-                value = value.strip()
-                # strip one layer of matching quotes: YAML-habit `supersedes: "v1.md"` must
-                # match the unquoted file name, not silently never apply
-                if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-                    value = value[1:-1].strip()
-                meta[key] = value
+                meta[key] = _unquote(value.strip())
+            elif key in FACET_KEYS:
+                value = _unquote(value.strip())
+                # An empty or over-long value leaves the document facet-less rather than
+                # inventing a category for it. The nested `metadata:` block the agent memory
+                # format writes puts this key at an indent; `key.strip()` above already made
+                # indentation irrelevant, so both a top-level and a nested `type:` are read.
+                # When a document carries both, the LAST wins, which is what a flat reader can
+                # honestly promise: this is not a YAML parser and does not know which block a
+                # line belongs to.
+                if value and len(value) <= FACET_MAX_LENGTH:
+                    meta[key] = value
             elif key == GRAPH_KEY:
                 value = value.strip()
                 try:
