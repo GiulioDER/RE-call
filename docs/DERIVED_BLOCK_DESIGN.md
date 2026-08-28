@@ -363,5 +363,5 @@ before the writer lands, not a cost to defer past it.
   (`reviewed_promotion_is_trusted_metadata`, `recall/promotion.py:186`).
 - The planner never calls a model; `max_model_calls` defaults to 0. Extraction runs on the ingest
   path, never the query path.
-- Proposal ids are content hashes and `recall/reasoning_proposals/_providers.py:86` recomputes them,
+- Proposal ids are content hashes and `recall/reasoning_proposals/_providers.py:87` recomputes them,
   raising on mismatch. The model supplies semantics only; the library computes ids.
