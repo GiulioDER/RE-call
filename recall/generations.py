@@ -166,7 +166,55 @@ _BODY_RULE_VERSION = "frontmatter-pairing-2026-08-11"
 #: `_reuse_source` requires it unconditionally, so chunks written before it existed carry no
 #: value, never match, and are rebuilt on the next generation.
 _METADATA_RULE_VERSION_KEY = "metadata_rule_version"
-_METADATA_RULE_VERSION = "facet-keys-2026-08-29"
+_METADATA_RULE_VERSION = "relative-file-paths-2026-08-29"
+
+
+def manifest_relative_paths(manifest: "IndexManifestV1") -> dict[str, str]:
+    """``{uri: path relative to the manifest's common directory}``, for chunk `file` metadata.
+
+    A manifest carries no root, so the root is DERIVED: the longest directory prefix shared by
+    every object in it. That is well defined for `file://` and `s3://` alike and needs no new
+    configuration, and for a single-object manifest it degenerates to the object's own directory,
+    leaving `file` as the bare name it has always been.
+
+    ⛔ Why this exists at all. `file` used to be `PurePosixPath(uri).name`, the BASENAME, while the
+    `Indexer` path stores `path.relative_to(root).as_posix()`. Two build paths, two meanings for
+    one caller-facing field, and the production path was the lossy one. It made
+    `recall.scope`'s folder dimension silently empty in production: every chunk looked as though
+    it sat at the corpus root, so `folder=recall` matched nothing and returned zero hits, which a
+    caller cannot distinguish from a corpus with no answer. Measured 2026-08-29 on the memory
+    tenant: 0 of 31 controls retained under an oracle folder scope that should have retained all
+    of them.
+
+    Objects that do not share a scheme and netloc have no meaningful common root, so they fall
+    back to the basename rather than to an invented one.
+    """
+    parts = [urlsplit(entry.uri) for entry in manifest.objects]
+    if not parts:
+        return {}
+    origins = {(part.scheme, part.netloc) for part in parts}
+    names = {entry.uri: PurePosixPath(urlsplit(entry.uri).path).name for entry in manifest.objects}
+    if len(origins) != 1:
+        return names
+
+    directories = [PurePosixPath(part.path).parent.parts for part in parts]
+    shared: list[str] = []
+    for segments in zip(*directories):
+        if len(set(segments)) != 1:
+            break
+        shared.append(segments[0])
+    prefix = PurePosixPath(*shared) if shared else None
+    if prefix is None:
+        return names
+
+    relative: dict[str, str] = {}
+    for entry, part in zip(manifest.objects, parts):
+        path = PurePosixPath(part.path)
+        try:
+            relative[entry.uri] = path.relative_to(prefix).as_posix()
+        except ValueError:  # pragma: no cover - guarded by the shared-prefix computation above
+            relative[entry.uri] = path.name
+    return relative
 
 
 def _body_rule_changed(media_type: str, text: str) -> bool:
@@ -757,6 +805,7 @@ class GenerationManager:
             if not isinstance(fts_language, str):
                 raise GenerationError("pipeline FTS language is malformed")
 
+            relative_paths = manifest_relative_paths(manifest)
             for entry in manifest.objects:
                 verified = reader.fetch(entry)
                 try:
@@ -876,7 +925,7 @@ class GenerationManager:
                                     if body_rule_changed
                                     else {}
                                 ),
-                                "file": PurePosixPath(entry.uri).name,
+                                "file": relative_paths[entry.uri],
                                 "ord": ordinal,
                                 "content_hash": entry.sha256,
                                 "object_version_id": entry.version_id,

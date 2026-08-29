@@ -14,6 +14,7 @@ import pytest
 
 from recall.derived_block import DerivedEntry, render_derived_block
 from recall.generations import (
+    manifest_relative_paths,
     GenerationError,
     GenerationManager,
     NoActiveGeneration,
@@ -1914,3 +1915,102 @@ def test_the_authored_facet_reaches_chunk_metadata_on_the_production_build_path(
     assert rows, "the build produced no chunks"
     assert all(facet == "Feedback" for facet, _v in rows), rows
     assert all(version for _f, version in rows), "every chunk carries the derivation version"
+
+
+def test_manifest_relative_paths_derives_a_root_from_the_common_prefix() -> None:
+    """The folder dimension needs a path, and a manifest carries no root; this derives one."""
+    manifest = IndexManifestV1(
+        "t",
+        "corpus-v1",
+        (
+            ManifestObjectV1("s3://b/corpora/t/recall/a.md", "v1", "text/markdown", 1, "33112ee14ee469c3eb52fe90322ec81dd404a0093d565a6d71ce77cbc8124e3b"),
+            ManifestObjectV1("s3://b/corpora/t/recall/lib/b.md", "v1", "text/markdown", 1, "f998fe06afa0cfbe73e0449dc2b1698309e1b5714960f027b2858312b152c275"),
+            ManifestObjectV1("s3://b/corpora/t/infra/c.md", "v1", "text/markdown", 1, "97fb5f8538b89f6c1accfd19836b65a73b61fbc2e0cbf84bb858a0fffa3f1592"),
+        ),
+    )
+    assert manifest_relative_paths(manifest) == {
+        "s3://b/corpora/t/recall/a.md": "recall/a.md",
+        "s3://b/corpora/t/recall/lib/b.md": "recall/lib/b.md",
+        "s3://b/corpora/t/infra/c.md": "infra/c.md",
+    }
+
+
+def test_a_single_object_manifest_still_yields_the_bare_name() -> None:
+    """The degenerate case must not change: one object's own directory IS the common prefix."""
+    manifest = _manifest("t", b"x")
+    assert list(manifest_relative_paths(manifest).values()) == ["memo.md"]
+
+
+def test_objects_from_different_origins_fall_back_to_the_basename() -> None:
+    """Two schemes share no root, and an invented one would be worse than none."""
+    manifest = IndexManifestV1(
+        "t",
+        "corpus-v1",
+        (
+            ManifestObjectV1("s3://b/x/a.md", "v1", "text/markdown", 1, "33112ee14ee469c3eb52fe90322ec81dd404a0093d565a6d71ce77cbc8124e3b"),
+            # A file:// object's version_id MUST equal its digest: a local file has no
+            # version other than its contents.
+            ManifestObjectV1("file:///srv/y/b.md", "f998fe06afa0cfbe73e0449dc2b1698309e1b5714960f027b2858312b152c275", "text/markdown", 1, "f998fe06afa0cfbe73e0449dc2b1698309e1b5714960f027b2858312b152c275"),
+        ),
+    )
+    assert manifest_relative_paths(manifest) == {
+        "s3://b/x/a.md": "a.md",
+        "file:///srv/y/b.md": "b.md",
+    }
+
+
+@requires_db
+def test_the_folder_dimension_is_populated_on_the_production_build_path(manager) -> None:
+    """The test I owed the folder dimension, and did not write when I wrote the facet's.
+
+    `recall index` is refused under RECALL_ENV=production, so the generation build is the only
+    path that runs there. It stored `file` as a BASENAME while the index path stored a
+    root-relative path, which made `recall.scope`'s folder dimension silently empty in
+    production: `folder=recall` matched nothing and returned zero hits, indistinguishable from a
+    corpus with no answer. Measured 2026-08-29: 0 of 31 controls retained under an oracle folder
+    scope that should have retained every one.
+    """
+    data = b"# Title\n\nBody.\n"
+    manifest = IndexManifestV1(
+        manager.tenant_id,
+        "corpus-v1",
+        (
+            ManifestObjectV1(
+                f"s3://approved/corpora/{manager.tenant_id}/recall/memo.md",
+                "object-v1",
+                "text/markdown",
+                len(data),
+                hashlib.sha256(data).hexdigest(),
+            ),
+            ManifestObjectV1(
+                f"s3://approved/corpora/{manager.tenant_id}/infra/other.md",
+                "object-v1",
+                "text/markdown",
+                len(data),
+                hashlib.sha256(data).hexdigest(),
+            ),
+        ),
+    )
+    reader = S3ObjectReader(
+        _S3(
+            {
+                ("approved", f"corpora/{manager.tenant_id}/recall/memo.md", "object-v1"): data,
+                ("approved", f"corpora/{manager.tenant_id}/infra/other.md", "object-v1"): data,
+            }
+        ),
+        S3Allowlist.parse("approved/corpora/"),
+    )
+    generation = _ready(manager, manifest, _pipeline("model-a"), reader, _Embedder(1))
+
+    with manager._connect() as conn:
+        files = {
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT metadata ->> 'file' FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (manager.tenant_id, generation),
+            ).fetchall()
+        }
+
+    assert files == {"recall/memo.md", "infra/other.md"}, files
+    assert all("/" in f for f in files), "a basename here means the folder dimension is empty"

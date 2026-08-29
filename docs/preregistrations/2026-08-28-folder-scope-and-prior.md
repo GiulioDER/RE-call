@@ -110,4 +110,48 @@ I expect lambda = 0.20 to lose at least one control, and I expect the best lambd
 
 ## Observed results
 
-Not yet measured.
+**Status: measured 2026-08-29, and the FOLDER arm is VOID because it measured a bug.**
+
+Snapshot: tenant `memory`, generation `gen_ec1e01b1c1324959a8a140ad65a17ed6`, embedder
+`voyage:voyage-4`, k=5, all 138 responses `trust_state=trusted`. Population digest verified equal
+to the registered `a87c7eeb...`. Runner: `scripts/run_scope_arms_batch.py`; artifact
+`results/scope_arms/scope-arms-20260829.json`.
+
+| arm | rescued of 15 misses | retained of 31 controls |
+|---|---:|---:|
+| baseline (no scope) | 0 | 19 |
+| filter (oracle folder) | 0 | **0** |
+| facet (oracle facet) | 0 | 23 |
+
+**1. The folder arm is void, and the finding is a defect rather than a result.** 0 of 31 controls
+retained cannot be corpus drift. `metadata->>'file'` on the PRODUCTION build path holds only the
+basename (`msys-mangles-slash-patterns.md`), while the `Indexer` path stores the root-relative
+path. The folder dimension is therefore empty in production: `folder=recall` matches nothing and
+returns zero hits, which the tool cannot distinguish from a corpus with no answer. This measured
+the bug, not the idea, and the folder ceiling remains unknown.
+
+**2. The apparatus is degraded and no rescue verdict should be read from it.** The baseline
+reproduces only 19 of 31 controls, against a population whose controls were all hits when frozen
+on 2026-08-26. The corpus has moved through several generations since (r43 to r51, a full
+re-derivation, and new memos), so the frozen labels no longer describe it. The registration named
+this confound for the facet arm; it turns out to bind the whole run.
+
+**3. What the facet arm does suggest, held loosely.** 0 of 15 rescues, which matches the
+prediction of 2 no better than the neighbouring authored-surface probe's 0 of 14, and is the third
+independent null for "make the right memo easier to find by labelling it". Retention rose from 19
+to 23, which is the one positive signal here: narrowing the pool let four gold memos surface that
+were crowded out of the top five unscoped. That is the prior's intended mechanism achieved by hard
+filtering, and it is worth a properly-powered look once the apparatus is repaired.
+
+**4. Gap against prediction.** I predicted 4 / 2 / 1 rescues for filter / facet / prior. Measured
+0 for the two arms that ran. Consistent with `[[i-over-predict-effect-magnitudes]]`, which now has
+a thirteenth instance.
+
+**5. The prior arm was not run.** `ScopePrior` is a retriever constructor argument with no MCP
+surface, so it cannot be exercised over this transport. Recorded in the artifact rather than
+quietly omitted.
+
+**What would make a rerun meaningful:** repair the production `file` value (or key the folder
+predicate off `source_uri`), then re-freeze a population against a current generation. Reusing a
+population frozen against a corpus three generations old is what produced the 19-of-31 baseline.
+
