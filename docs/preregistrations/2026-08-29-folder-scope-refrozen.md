@@ -91,4 +91,53 @@ being outranked from inside its own folder and scoping cannot help by constructi
 
 ## Observed results
 
-Not yet measured.
+**Status: measured 2026-08-29.** Generation `gen_407f0e957c574939be4b61224294d895`, k=5, all 138
+responses `trust_state=trusted`, population digest verified against the registered value.
+Artifacts: `results/scope_arms/scope-arms-refrozen-20260829.json` and
+`results/scope_arms/mechanism-refrozen-20260829.json`.
+
+Re-frozen partition: **27 misses, 19 controls** of 46.
+
+| arm | misses rescued | controls retained |
+|---|---:|---:|
+| baseline | 0 of 27 — **by construction, not a result** | 19 of 19 |
+| `filter` (oracle folder) | **0 of 27 (0%)** | 19 of 19 (100%) |
+| `facet` (oracle facet) | **4 of 27 (15%)** | 19 of 19 (100%) |
+
+**The prediction is falsified in DIRECTION, not merely in magnitude.** I predicted 25% for the
+folder and 12% for the facet, and argued the folder would win because `sentiment-agent` is 80.4% of
+the corpus and therefore most of what a `recall/` memo is outranked by. Measured: folder 0%, facet
+15%. The arm I argued for hardest returned nothing, and the one I ranked second was the only one
+that worked.
+
+**The mechanism metric says exactly why, and it is the number that was wrong.** Predicted: at least
+70% of the baseline top-5 on misses would come from OUTSIDE the oracle folder. Measured: **39%
+outside, 61% inside** (53 and 82 of 135 hits over 27 queries, none empty).
+
+So a `recall/` memo is outranked mostly by *other `recall/` memos*. The folder scope deletes 82% of
+the corpus and removes only 39% of the actual competition, leaving the memo beaten by the same
+folder-mates it was already losing to — which is precisely the registered condition under which
+"scoping cannot help by construction". The facet scope cuts ACROSS folders and thins `recall/`
+itself, so it removes the within-folder competition that the folder scope cannot touch. That is why
+the weaker-looking scope is the one that rescued anything.
+
+🔑 **The reusable finding: semantic competition is topically LOCAL.** A document's nearest rivals
+live where it lives. A structural scope that removes distant material removes competitors that were
+never competing, which is why "shrink the corpus by 82%" bought exactly zero. Any future scoping
+work should be judged on how much of the *near* competition it removes, not on how much of the
+corpus it deletes.
+
+Neither arm cost a single control (19 of 19 both), so hard filtering did no damage here. Both
+increased abstentions (baseline 4, filter 9, facet 11), which is the trust layer behaving correctly
+on a thinner pool rather than a fault.
+
+**Apparatus gap, recorded rather than hidden:** the runner logged `found` but not hit sources, so
+the registered mechanism metric was not computable from the primary artifact and needed a second
+27-query pass. A metric named in a registration should be instrumented by the runner that the
+registration names.
+
+**What this does NOT say.** Both arms are oracles handed the answer's location, so 15% is a
+ceiling, not a feature. All eight gold memos sit in `recall/`, so `filter` is one scope tested 46
+times rather than a folder dimension tested broadly. And 27 of 46 queries now miss unscoped, against
+15 of 46 when the population was first frozen: the corpus got harder, and no arm here addresses that.
+

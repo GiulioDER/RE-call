@@ -1,0 +1,142 @@
+{
+  "generation": "gen_407f0e957c574939be4b61224294d895",
+  "inside": 82,
+  "outside": 53,
+  "rows": [
+    {
+      "inside": 4,
+      "outside": 1,
+      "task_id": "ts-false-zero-search#r1"
+    },
+    {
+      "inside": 4,
+      "outside": 1,
+      "task_id": "ts-false-zero-search#r2"
+    },
+    {
+      "inside": 3,
+      "outside": 2,
+      "task_id": "ts-false-zero-search#r3"
+    },
+    {
+      "inside": 4,
+      "outside": 1,
+      "task_id": "ts-false-zero-search#r5"
+    },
+    {
+      "inside": 2,
+      "outside": 3,
+      "task_id": "ts-lf-rewrite#r1"
+    },
+    {
+      "inside": 1,
+      "outside": 4,
+      "task_id": "ts-lf-rewrite#r2"
+    },
+    {
+      "inside": 1,
+      "outside": 4,
+      "task_id": "ts-lf-rewrite#r3"
+    },
+    {
+      "inside": 2,
+      "outside": 3,
+      "task_id": "ts-lf-rewrite#r4"
+    },
+    {
+      "inside": 2,
+      "outside": 3,
+      "task_id": "ts-lf-rewrite#r5"
+    },
+    {
+      "inside": 1,
+      "outside": 4,
+      "task_id": "ts-lf-rewrite#r6"
+    },
+    {
+      "inside": 4,
+      "outside": 1,
+      "task_id": "ts-worktree-import#r1"
+    },
+    {
+      "inside": 4,
+      "outside": 1,
+      "task_id": "ts-worktree-import#r2"
+    },
+    {
+      "inside": 4,
+      "outside": 1,
+      "task_id": "ts-worktree-import#r3"
+    },
+    {
+      "inside": 3,
+      "outside": 2,
+      "task_id": "ts-worktree-import#r4"
+    },
+    {
+      "inside": 5,
+      "outside": 0,
+      "task_id": "ts-worktree-import#r5"
+    },
+    {
+      "inside": 4,
+      "outside": 1,
+      "task_id": "ts-worktree-import#r6"
+    },
+    {
+      "inside": 4,
+      "outside": 1,
+      "task_id": "ts-raise-on-missing#r1"
+    },
+    {
+      "inside": 3,
+      "outside": 2,
+      "task_id": "ts-raise-on-missing#r2"
+    },
+    {
+      "inside": 4,
+      "outside": 1,
+      "task_id": "ts-raise-on-missing#r3"
+    },
+    {
+      "inside": 4,
+      "outside": 1,
+      "task_id": "ts-raise-on-missing#r4"
+    },
+    {
+      "inside": 4,
+      "outside": 1,
+      "task_id": "ts-raise-on-missing#r5"
+    },
+    {
+      "inside": 4,
+      "outside": 1,
+      "task_id": "ts-raise-on-missing#r6"
+    },
+    {
+      "inside": 2,
+      "outside": 3,
+      "task_id": "ts-sample-covers-tail#r2"
+    },
+    {
+      "inside": 2,
+      "outside": 3,
+      "task_id": "ts-sample-covers-tail#r3"
+    },
+    {
+      "inside": 2,
+      "outside": 3,
+      "task_id": "ts-sample-covers-tail#r4"
+    },
+    {
+      "inside": 2,
+      "outside": 3,
+      "task_id": "ts-sample-covers-tail#r5"
+    },
+    {
+      "inside": 3,
+      "outside": 2,
+      "task_id": "ts-sample-covers-tail#r6"
+    }
+  ]
+}
