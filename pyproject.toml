@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 # Distribution name is `recall-rag`; import name is `recall`. See docs/DEPENDENCIES.md.
 name = "recall-rag"
-version = "0.10.0"
+version = "0.11.0"
 description = "Trustworthy retrieval for an AI agent's own memory — verdict, confidence and provenance per hit, or an explicit abstention"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -187,6 +187,7 @@ recall-uninstall = "recall.desktop.main:uninstall_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["recall", "recall_hooks", "recall_mcp", "recall_agent"]
+
 artifacts = ["recall/py.typed", "recall_mcp/py.typed", "recall_agent/py.typed"]
 # recall/eval ships only its load-bearing slice: calibrate/metrics (the wizard's calibration),
 # labelled and its deps (a documented CLI), synthetic/vocab (query generation), and the sample
@@ -218,6 +219,16 @@ exclude = [
   "recall/eval/peps_trust_queries.json",
   "recall/wizard/llm.py",
 ]
+
+# The skills ship in the WHEEL too, not only in the Claude plugin.
+#
+# `plugin/skills/` is where Claude Code's plugin loader looks and cannot move, and `plugin/` is not
+# a package, so before this a pip install carried no skills at all: `recall setup` could only print
+# the plugin install lines and hope. Force-including a copy under the package makes the pip path
+# self-sufficient, and `recall.claude_code._SKILL_ROOTS` reads whichever layout is present, with a
+# checkout's copy winning so an editable install tests what it is editing.
+[tool.hatch.build.targets.wheel.force-include]
+"plugin/skills" = "recall/_skills"
 
 [tool.pytest.ini_options]
 # `pytest-timeout` was a declared dependency with nothing configuring it, which made it inert:

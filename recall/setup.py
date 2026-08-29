@@ -16,11 +16,10 @@ from typing import Callable, Literal, Sequence
 from recall.calibration import Calibration, from_samples, save
 from recall.claude_code import (
     PLUGIN_INSTALL_LINES,
-    SKILL_NAME,
     claude_code_detected,
     install_hooks,
-    install_user_skill,
-    plugin_skill_source,
+    install_user_skills,
+    plugin_skill_sources,
     register_mcp_server,
     user_skill_dir,
 )
@@ -1436,13 +1435,16 @@ def run_setup_wizard(
     # snapshot for people who want the skill without the plugin. The offer only exists where the
     # source file does: an installed wheel does not carry `plugin/`, and there the guidance says
     # the plugin is how the skill arrives.
-    skill_source = plugin_skill_source() if claude_detected else None
+    skill_sources = plugin_skill_sources() if claude_detected else {}
     skill_copy_requested = False
-    if skill_source is not None:
+    if skill_sources:
+        # Named in the prompt rather than counted: "copy 2 skills" tells the user nothing
+        # about what is about to appear in their config directory.
+        listed = ", ".join(sorted(skill_sources))
         skill_copy_requested = _ask_yes_no(
             input_fn,
             print_fn,
-            f"Copy the {SKILL_NAME} skill into {user_skill_dir()} for a user-level install?",
+            f"Copy the {listed} skill(s) into {user_skill_dir()} for a user-level install?",
             default=False,
         )
 
@@ -1521,23 +1523,23 @@ def run_setup_wizard(
             return
         print_fn(
             "The RE-call plugin for Claude Code bundles the MCP server, the session hooks and "
-            f"the {SKILL_NAME} skill. Install it from inside Claude Code with:"
+            "the skills. Install it from inside Claude Code with:"
         )
         for line in PLUGIN_INSTALL_LINES:
             print_fn(f"  {line}")
-        if skill_source is None:
+        if not skill_sources:
             print_fn(
-                f"The {SKILL_NAME} skill ships inside that plugin; installing it is how a pip "
-                "install of recall gets the skill."
+                "The skills ship inside that plugin; installing it is how this install gets them."
             )
         elif skill_copy_requested:
-            try:
-                install_user_skill(skill_source, print_fn=print_fn)
-            except Exception as exc:
+            # Reports per skill and never raises, so one failure cannot cost the others. What it
+            # RETURNS is what gets reported, because a silent zero must not read as success.
+            installed = install_user_skills(skill_sources, print_fn=print_fn)
+            missing = sorted(set(skill_sources) - set(installed))
+            if missing:
                 print_fn(
-                    f"Could not copy the skill: {exc}\n"
-                    f"Copy {skill_source} into {user_skill_dir() / SKILL_NAME} by hand, or "
-                    "install the plugin with the lines above."
+                    f"Not installed: {', '.join(missing)}. Copy them into {user_skill_dir()} "
+                    "by hand, or install the plugin with the lines above."
                 )
 
     def _run_post_setup() -> None:

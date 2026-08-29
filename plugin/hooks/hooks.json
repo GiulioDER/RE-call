@@ -7,9 +7,27 @@
           {
             "type": "command",
             "command": "recall-hooks",
-            "args": ["session-start"],
+            "args": [
+              "session-start"
+            ],
             "timeout": 15,
             "statusMessage": "Recalling project memory"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "recall-hooks",
+            "args": [
+              "pre-tool-use"
+            ],
+            "timeout": 5,
+            "statusMessage": "Checking memory before writing"
           }
         ]
       }
@@ -21,7 +39,9 @@
           {
             "type": "command",
             "command": "recall-hooks",
-            "args": ["pre-compact"],
+            "args": [
+              "pre-compact"
+            ],
             "async": true,
             "statusMessage": "Saving memory before compaction"
           }
@@ -35,7 +55,9 @@
           {
             "type": "command",
             "command": "recall-hooks",
-            "args": ["session-end"],
+            "args": [
+              "session-end"
+            ],
             "async": true,
             "statusMessage": "Indexing session into recall"
           }

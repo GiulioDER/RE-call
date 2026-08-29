@@ -8,7 +8,112 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.11.0] (2026-08-29)
+
 ### Added
+
+* **A deterministic semantic graph over the corpus, and a reasoning graph above it.** Entities,
+  mentions and relations are projected from chunk metadata and explicit authored declarations, with
+  every relation pointing back at the chunks that evidence it (migration `0016`). The projection is
+  deliberately conservative: it never changes a retrieval verdict, never promotes graph text to
+  evidence, and separates `authored` relations from `candidate` ones so an inference cannot be
+  mistaken for a claim somebody made. Deterministic precision was tuned against a labelled set
+  rather than asserted.
+
+  ⚠️ **The one thing the graph is measured NOT to do is rescue a retrieval miss.** The
+  pre-registered graph-first probe replayed 46 frozen sessions through entity, relation and hybrid
+  seeding and rescued **0 of 15** misses in every mode, against a bar of 5. That route is closed
+  and recorded as closed in `docs/preregistrations/2026-08-28-graph-first-retrieval.md`; the graph
+  ships for what it does describe, not as a retrieval improvement.
+
+* **Authored authority tiers and exact dependency invalidation** (migration `0017`).
+  `recall_graph.authority` declares how a memory was established (`policy`,
+  `user_confirmed_decision`, `tool_observation`, `model_inference`), and `recall_graph.depends_on`
+  names the sources a memory rests on. When a prerequisite expires or is superseded, dependents are
+  projected as `dependency_invalidated` with the invalidation chain that reached them.
+
+  `dependency_invalidated` relabels only a `current` record. Every other state already carries a
+  more specific reason not to trust the document, and `ambiguous` and `invalid` in particular are
+  fail-closed verdicts; overwriting them would replace an admission of ignorance with a confident
+  explanation the reader would act on. The diagnostic and the chain are recorded either way.
+
+* **`recall calibration auto`: re-establish a certified calibration on a rebuilt corpus without a
+  person choosing when.** A corpus that grows daily invalidates a carry-forward binding routinely,
+  and the previous answer was for somebody to notice. `auto` re-verifies the published threshold
+  against the new generation and, when carry-forward refuses, refits on the stored certified query
+  set with certification still gating the result. The query sets live in
+  `recall_calibration_query_sets` rather than in a file beside the script, so a refit is
+  reproducible from the database alone. Observed on the memory tenant: carry-forward refused at
+  10.7% false confirm against a 10.0% bound, the refit ran, and certification passed.
+
+* **A metadata-derivation version, so a parser change can actually reach an existing corpus.**
+  Chunk reuse is keyed on tenant, URI, `sha256` and pipeline fingerprint, none of which moves when
+  the code that DERIVES metadata from a document changes. Every chunk now carries
+  `metadata_rule_version` and reuse requires it, so bumping that constant re-derives every source
+  exactly once and later generations reuse the repaired result.
+
+  This is a general form of a hazard `_BODY_RULE_VERSION` had already documented for one case. The
+  cost of not generalising it was measured: recognising the `type:` facet reached **27 of 10,155
+  chunks (0.3%)** after a `--force` rebuild, while 1,319 of 1,342 files declared one. `--force`
+  builds a new *generation*; reuse is decided per *source*.
+
+* **What a memo can now declare in frontmatter, in one place.** The parser is still deliberately
+  not a YAML parser, and still keeps only what it recognises, but what it recognises has grown:
+
+  | key | means | read by |
+  |---|---|---|
+  | `valid_from`, `valid_until`, `supersedes` | when this is true, and what replaced it | the trust layer |
+  | `type` | the retrieval FACET: what kind of document this is | `recall.scope` |
+  | `recall_graph.authority` | how the claim was established | dependency invalidation |
+  | `recall_graph.depends_on` | the sources it rests on | dependency invalidation |
+
+  ⚠️ Only the first row makes a truth claim. A facet says what a document IS and never whether it
+  should be believed; nothing in the trust layer reads it. That separation is what keeps "three
+  keys carry validity" true as the parser grows, and two design docs that had drifted from it were
+  corrected.
+
+* **The skills and the write-time hook now reach users down every install path.** Three of the
+  four were wrong, each silently:
+
+  | path | before | now |
+  |---|---|---|
+  | PyPI | no skills at all — `plugin/` is not a package | the wheel force-includes them |
+  | `recall setup` | installed exactly one, named by a constant | installs every skill it discovers |
+  | Claude plugin | no `PreToolUse` hook, unlike `recall setup` | all four hook events |
+  | MCP registry | 3 environment variables declared | the two whose absence fails silently, plus `RECALL_MCP_TOOLS` |
+
+  The installer's `SKILL_NAME` constant is the interesting one: adding a second skill installed
+  neither it nor any future one, and nothing reported that. Discovery replaces enumeration, and
+  the destination name comes from the skill's own directory rather than a constant, which is what
+  stopped every skill from overwriting the first.
+
+  `RECALL_EMBEDDER` is the omission that mattered most in the registry manifest. Several models
+  emit 1024 dimensions, so pointing the server at the wrong one does not raise — it returns a
+  confidently ranked list that means nothing.
+
+* **A second published skill, `keep-memory-current`.** `check-memory-before-acting` covers the
+  read side; this covers the write side, which is the half that decays first. It states the two
+  moments that decide whether a memory store is worth anything — what you load when you start and
+  what you write back before you stop — and the rules that make a memo findable later: one fact
+  per memo with the cost that bought it, an index line is a pointer rather than the memo, delete
+  what turns out to be wrong because a stale memory suppresses the retry that would correct it,
+  re-index or the memo is invisible, and **verify with a search, never with a row count**.
+
+  It ships the three failure modes rather than only the advice: a rename can fork a path-keyed
+  store silently, a flat index stops working past roughly fifty entries, and any stated memo count
+  will drift under concurrent sessions, so assert coverage instead of the number.
+
+* **Section heading contextualization: a chunk is embedded with the headings it sits under.**
+  A passage that says "it refuses when the lock is held" is unretrievable on its own, because the
+  subject is three headings up. `recall.context` builds a deterministic contextual representation
+  used **for embedding only** — the stored text and everything a caller reads are unchanged — with
+  bounded title, section, neighbour and source segments so context cannot crowd out the passage. A
+  1024-dimension profile ships alongside it, and the context mode and version are stamped on every
+  chunk so a corpus can say which policy built it.
+
+* **Preregistered evidence routing and state features**, with the LOCOMO routing population frozen
+  so the arms are comparable across runs. Routing stays shadow or opt-in until promotion gates
+  pass; nothing about the served path changes by default.
 
 * **Folder and facet scoping: a second retrieval dimension over the vectors already stored.**
   `recall search --folder python --facet reference`, the same two arguments on the `recall_search`
@@ -17,10 +122,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   reported separately, because a scope that does not exist and a corpus with no answer both return
   nothing and only the listing tells them apart.
 
-  **The folder dimension needs no re-index.** The indexer already recorded a root-relative path per
-  chunk, so a folder is a prefix of a value that was always in the row. The FACET dimension does:
-  `type:` is read from frontmatter at index time, so it lands on the next generation build and a
-  facet filter matches nothing until then. Recognising that key also un-discards something every
+  🔁 **Corrected before release: BOTH dimensions need a rebuild, and the first claim here was
+  wrong.** This entry originally said the folder dimension needed no re-index, on the grounds that
+  the indexer already recorded a root-relative path. That is true of the `Indexer` path and was
+  false of the generation build, which stored a bare basename, so the folder dimension was empty
+  wherever it mattered until the fix listed under Fixed below. The facet is read from frontmatter
+  at index time and lands on the next build for the same reason. Recognising that key also un-discards something every
   memo already declared: measured on the agent memory corpus, **1,312 of 1,335 files (98.3%) carry
   one**, across eight authored values.
 
@@ -84,6 +191,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   See `docs/USING_WITH_AGENT_SDK.md`.
 
 ### Fixed
+
+* **The HNSW index served two queries that were supposed to be exact.** Both were planner cost
+  decisions that track table statistics rather than code, which is why they surfaced as CI flaking
+  four tests on an identical commit and identical resolved wheels. Postgres rewrites
+  `min(embedding <=> v)` into an ordered scan behind an InitPlan when that costs less, and pgvector
+  answers it approximately, so `top_cosine` could report a best cosine that was merely a good one.
+  An approximate answer to an exact question is the failure that does not announce itself: the
+  number looks reasonable and calibration is fitted on it.
+
+* **A tool call made three database round trips where one would do.** The statement timeout now
+  rides on the connection's own options and the active-generation lookup folds into the search as a
+  scalar subquery. ⛔ The generation binding is NOT relaxed by folding it in: `recall_chunks_v1`
+  holds every generation ever built, retired ones included, and a subquery matching no row yields
+  NULL, which matches nothing — exactly what the explicit early return did.
+
+* **The Claude Code plugin could not be pointed at the table its corpus actually lives in.**
+  `recall quickstart` indexes into `quickstart_chunks` so a sample corpus can never be retrieved
+  beside real memory, while `recall setup` uses `chunks`, and the plugin hard-coded neither: it
+  asked for a DSN and a tenant and then read whichever table the default named. Wrong table returns
+  no hits and no error. `table` is now a plugin setting, asked rather than assumed.
+
+* **The folder dimension was empty on the only build path that runs in production.**
+  `metadata->>'file'` was the bare basename on the generation build path while the `Indexer` path
+  stored a root-relative one, so every chunk looked as though it sat at the corpus root:
+  `folder=recall` matched nothing and returned zero hits, which a caller cannot distinguish from a
+  corpus with no answer. A manifest carries no root, so one is derived from the longest directory
+  prefix its objects share. Found by running the pre-registered probe, whose oracle folder arm
+  retained 0 of 31 controls; zero is not corpus drift.
+
+  ⚠️ A hit's `source` is now `recall/memo.md` rather than `memo.md` on generation-backed tenants,
+  and a `source=` filter must be given the relative path. That is the value `recall_search` has
+  always documented as root-relative, so the field now matches its contract.
+
+* **54 verified defects across graph, reasoning and calibration**, from a deep audit that ran nine
+  auditors, adversarial verification and two differential reviews over the projection and
+  calibration paths.
+
+* **Security: four audit findings and three hardening changes.** A loopback-only database default,
+  a narrowed CI token scope, a refusal when row-level security cannot be enforced, a non-root
+  container image, a JWKS response ceiling, a bounded decompression limit, and live bandit rules in
+  CI. The prompt-injection surface is now named in the docs so that searching for it lands
+  somewhere.
 
 * ⚠️ **Importing a calibration bundle now re-derives its threshold, so a bundle fitted under the
   RETIRED `best_threshold` rule is refused rather than imported.** The refusal names both numbers
@@ -171,7 +320,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   migration applied unprompted, `schema_status` compatible with nothing pending. The manual
   command is kept for the case it is actually for, a serving role that cannot create tables.
 
-### Added
 
 * **`recall doctor`.** Six independent failures in this product present as one of two symptoms
   ("no tools" or "no hits") and only one of the six names its own cause. This checks the
@@ -192,6 +340,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   held under a ratchet in `tests/test_cli_discoverability.py`.
 * The README uses one invocation style throughout (`recall <cmd>`) instead of switching to
   `python -m recall.cli` halfway down, which is pinned by a test over its fenced code blocks.
+
 
 ## [0.10.0] (2026-08-23)
 

@@ -96,8 +96,21 @@ PLUGIN_INSTALL_LINES = (
     "/plugin install recall@re-call",
 )
 
-#: The one skill the plugin ships. The name is the directory name Claude Code loads it by, both
-#: in `plugin/skills/` here and under the user's `~/.claude/skills/`.
+#: Where skills live in each of the two layouts this package is used from. A checkout has
+#: `plugin/skills/` beside the package; a wheel carries a copy at `recall/_skills/`, force-included
+#: by `[tool.hatch.build.targets.wheel.force-include]`.
+#:
+#: ⛔ Both, not one. `plugin/skills/` is where Claude Code's plugin loader looks and cannot move,
+#: and a wheel does not ship `plugin/`, so a pip install used to reach NO skills at all and the
+#: wizard could only print install lines. Discovering rather than naming is the other half: this
+#: was a single hard-coded `SKILL_NAME` and adding a second skill silently installed neither it
+#: nor any future one.
+_SKILL_ROOTS = (
+    Path(__file__).resolve().parent.parent / "plugin" / "skills",
+    Path(__file__).resolve().parent / "_skills",
+)
+
+#: Kept as the name of the first skill for callers and messages that predate there being two.
 SKILL_NAME = "check-memory-before-acting"
 
 
@@ -275,17 +288,36 @@ def register_mcp_server(
 # --------------------------------------------------------------------------------------------
 
 
-def plugin_skill_source() -> Path | None:
-    """The repository's copy of the skill, or None under an installed wheel.
+def plugin_skill_sources() -> dict[str, Path]:
+    """``{skill name: its SKILL.md}``, from whichever layout this install has.
 
-    The wheel ships `recall`, `recall_hooks` and `recall_mcp` only (pyproject's
-    `[tool.hatch.build.targets.wheel]`), so `plugin/` exists on disk for a checkout or an
-    editable install and for nothing else. None rather than an exception, because a pip install
-    is not a broken state: it is the case where the plugin itself is how the skill arrives, and
-    the wizard still has the install lines to print.
+    Discovered, never enumerated. A hard-coded name installs exactly the skills somebody
+    remembered to add to a list, and the failure is silent: the new skill simply never arrives and
+    nothing reports it.
+
+    The first root that yields anything wins, so a checkout's `plugin/skills/` shadows the packaged
+    copy and an editable install tests what it is editing. An empty mapping is a legitimate state,
+    not an error: it means neither layout is present, and the caller falls back to printing the
+    plugin install lines.
     """
-    source = Path(__file__).resolve().parent.parent / "plugin" / "skills" / SKILL_NAME / "SKILL.md"
-    return source if source.is_file() else None
+    for root in _SKILL_ROOTS:
+        found = {
+            path.parent.name: path
+            for path in sorted(root.glob("*/SKILL.md"))
+            if path.is_file()
+        }
+        if found:
+            return found
+    return {}
+
+
+def plugin_skill_source() -> Path | None:
+    """The first skill's `SKILL.md`, or None when no layout carries one.
+
+    Retained for callers written when there was exactly one skill. New code should use
+    `plugin_skill_sources`, which cannot silently install a subset.
+    """
+    return plugin_skill_sources().get(SKILL_NAME)
 
 
 def user_skill_dir() -> Path:
@@ -296,28 +328,57 @@ def user_skill_dir() -> Path:
 def install_user_skill(
     source: Path,
     *,
+    name: str | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
-    """Copy the skill into the user's skills directory, saying what actually happened.
+    """Copy one skill into the user's skills directory, saying what actually happened.
 
-    A single file, because the skill IS a single `SKILL.md` today; if it ever grows supporting
-    files, `plugin_skill_source` and this copy both have to learn about them, and the test that
-    resolves the real repository copy is what will notice.
+    A single file, because a skill IS a single `SKILL.md` today; if one ever grows supporting
+    files, `plugin_skill_sources` and this copy both have to learn about them, and the test that
+    resolves the real repository copies is what will notice.
+
+    `name` defaults to the source's own directory name rather than to a constant. Defaulting it to
+    `SKILL_NAME` was safe while there was one skill and would silently write every skill over the
+    first one now that there are two.
 
     User level rather than project level on purpose: the caller offered this as the alternative
     to installing the plugin, and a user-level skill is the only form that follows the user into
     projects where `recall setup` was never run.
     """
+    skill_name = name or source.parent.name
     content = source.read_text(encoding="utf-8")
-    dest = user_skill_dir() / SKILL_NAME / "SKILL.md"
+    dest = user_skill_dir() / skill_name / "SKILL.md"
     if dest.exists() and dest.read_text(encoding="utf-8") == content:
-        print_fn(f"The {SKILL_NAME} skill at {dest} is already current, left unchanged.")
+        print_fn(f"The {skill_name} skill at {dest} is already current, left unchanged.")
         return
     replaced = dest.exists()
     dest.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(dest, content.encode("utf-8"))
     verb = "Replaced" if replaced else "Installed"
-    print_fn(f"{verb} the {SKILL_NAME} skill at {dest}. It loads in every project's sessions.")
+    print_fn(f"{verb} the {skill_name} skill at {dest}. It loads in every project's sessions.")
+
+
+def install_user_skills(
+    sources: dict[str, Path] | None = None,
+    *,
+    print_fn: Callable[..., None] = print,
+) -> list[str]:
+    """Install every discovered skill, and return the names that landed.
+
+    One failing skill does not stop the others: each is independent, and a partial install where
+    the caller is TOLD which part failed is better than none where the first error decides. The
+    return value is what the caller reports, so a silent zero cannot read as success.
+    """
+    resolved = plugin_skill_sources() if sources is None else sources
+    installed: list[str] = []
+    for skill_name, source in sorted(resolved.items()):
+        try:
+            install_user_skill(source, name=skill_name, print_fn=print_fn)
+        except Exception as exc:  # noqa: BLE001 - reported per skill, never fatal to the rest
+            print_fn(f"Could not install the {skill_name} skill from {source}: {exc}")
+            continue
+        installed.append(skill_name)
+    return installed
 
 
 # --------------------------------------------------------------------------------------------

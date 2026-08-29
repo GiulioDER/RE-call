@@ -38,13 +38,13 @@ def no_machine_dependent_prompts(monkeypatch):
 
     Tests that exercise either prompt turn it back on explicitly.
 
-    `plugin_skill_source` is pinned to None for the same reason: the skill-copy prompt appears
+    `plugin_skill_sources` is pinned empty for the same reason: the skill-copy prompt appears
     only when Claude Code is detected AND the repository's `plugin/` directory is on disk, and
     this suite always runs from a checkout where it is. Left unpinned, every test that turns
     detection back on would grow an extra prompt here and never under an installed wheel.
     """
     monkeypatch.setattr("recall.setup.claude_code_detected", lambda: False)
-    monkeypatch.setattr("recall.setup.plugin_skill_source", lambda: None)
+    monkeypatch.setattr("recall.setup.plugin_skill_sources", lambda: {})
     monkeypatch.setattr(
         "recall.setup.plan_seed",
         lambda root, **kw: SeedPlan(root=Path(root), files=(), total_bytes=0),
@@ -1862,11 +1862,11 @@ def test_the_plugin_install_lines_are_the_wizards_last_words(tmp_path, monkeypat
 
     assert "/plugin marketplace add GiulioDER/RE-call" in output
     assert "/plugin install recall@re-call" in output
-    # The fixture pins the skill source to None, which is the installed-wheel case: no copy
-    # prompt appeared (the script above has no answer for one), and the guidance says the
-    # plugin is how the skill arrives instead of offering a copy that would fail.
-    assert "ships inside that plugin" in output
-    assert output.rstrip().endswith("gets the skill.")
+    # The fixture pins discovery empty, which is the installed-wheel case for a build that
+    # does not carry the skills: no copy prompt appeared (the script above has no answer
+    # for one), and the guidance says the plugin is how they arrive.
+    assert "ship inside that plugin" in output
+    assert output.rstrip().endswith("gets them.")
 
 
 def test_no_plugin_guidance_when_claude_code_is_absent(tmp_path, monkeypatch):
@@ -1881,7 +1881,10 @@ def test_accepting_the_skill_copy_installs_it_under_the_config_home(tmp_path, mo
     config_home = tmp_path / "claude-home"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_home))
     monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
-    monkeypatch.setattr("recall.setup.plugin_skill_source", lambda: source)
+    monkeypatch.setattr(
+        "recall.setup.plugin_skill_sources",
+        lambda: {"check-memory-before-acting": source},
+    )
 
     _, output = _run_wizard(
         tmp_path,
@@ -1901,7 +1904,10 @@ def test_declining_the_skill_copy_writes_nothing(tmp_path, monkeypatch):
     config_home = tmp_path / "claude-home"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_home))
     monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
-    monkeypatch.setattr("recall.setup.plugin_skill_source", lambda: source)
+    monkeypatch.setattr(
+        "recall.setup.plugin_skill_sources",
+        lambda: {"check-memory-before-acting": source},
+    )
 
     _, output = _run_wizard(
         tmp_path,
@@ -1920,7 +1926,10 @@ def test_a_failed_skill_copy_does_not_lose_the_completed_interview(tmp_path, mon
     source = tmp_path / "vanished" / "SKILL.md"  # never written, so the copy raises
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
     monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
-    monkeypatch.setattr("recall.setup.plugin_skill_source", lambda: source)
+    monkeypatch.setattr(
+        "recall.setup.plugin_skill_sources",
+        lambda: {"check-memory-before-acting": source},
+    )
 
     env, output = _run_wizard(
         tmp_path,
@@ -1929,22 +1938,26 @@ def test_a_failed_skill_copy_does_not_lose_the_completed_interview(tmp_path, mon
     )
 
     assert "RECALL_EMBEDDER=fastembed" in env
-    assert "Could not copy the skill" in output
+    assert "Could not install the check-memory-before-acting skill" in output
+    assert "Not installed: check-memory-before-acting" in output
     assert "by hand" in output
 
 
-def test_the_repo_copy_of_the_skill_is_where_the_wizard_looks_for_it():
-    """Ties `plugin_skill_source` to the real tree: if `plugin/skills/` moves, this is the test
-    that says the wizard's copy offer silently became the installed-wheel path everywhere."""
-    from recall.claude_code import plugin_skill_source
+def test_every_shipped_skill_is_where_the_wizard_looks_for_it():
+    """Ties discovery to the real tree: if `plugin/skills/` moves, this is the test that says the
+    wizard's copy offer silently became the installed-wheel path everywhere.
 
-    source = plugin_skill_source()
-    assert source is not None
-    assert source.name == "SKILL.md"
-    # The skill's name is its directory, which is what Claude Code loads it by; the file's own
-    # frontmatter carries only a description, so the path is the thing to pin.
-    assert source.parent.name == "check-memory-before-acting"
-    assert "memory" in source.read_text(encoding="utf-8")
+    Asserts the SET, not a count. A count passes while a newly added skill is never installed,
+    which is exactly the failure that made this plural: the resolver named one skill by hand.
+    """
+    from recall.claude_code import plugin_skill_sources
+
+    sources = plugin_skill_sources()
+    assert set(sources) == {"check-memory-before-acting", "keep-memory-current"}
+    for name, source in sources.items():
+        assert source.name == "SKILL.md"
+        assert source.parent.name == name, "a skill is loaded by its DIRECTORY name"
+        assert source.is_file()
 
 
 def test_install_user_skill_leaves_an_identical_copy_unchanged(tmp_path, monkeypatch):
@@ -1955,11 +1968,23 @@ def test_install_user_skill_leaves_an_identical_copy_unchanged(tmp_path, monkeyp
     source.write_text("same content\n", encoding="utf-8")
     lines: list[str] = []
 
-    install_user_skill(source, print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))))
+    install_user_skill(
+        source,
+        # Explicit: the destination name now defaults to the source's DIRECTORY, and this
+        # source sits in tmp_path rather than in a folder named after the skill.
+        name="check-memory-before-acting",
+        print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))),
+    )
     dest = tmp_path / "home" / "skills" / "check-memory-before-acting" / "SKILL.md"
     before = dest.stat().st_mtime_ns
 
-    install_user_skill(source, print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))))
+    install_user_skill(
+        source,
+        # Explicit: the destination name now defaults to the source's DIRECTORY, and this
+        # source sits in tmp_path rather than in a folder named after the skill.
+        name="check-memory-before-acting",
+        print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))),
+    )
 
     assert dest.stat().st_mtime_ns == before
     assert any("Installed" in line for line in lines)
@@ -1977,7 +2002,13 @@ def test_install_user_skill_replaces_a_stale_copy_and_says_so(tmp_path, monkeypa
     source.write_text("new content\n", encoding="utf-8")
     lines: list[str] = []
 
-    install_user_skill(source, print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))))
+    install_user_skill(
+        source,
+        # Explicit: the destination name now defaults to the source's DIRECTORY, and this
+        # source sits in tmp_path rather than in a folder named after the skill.
+        name="check-memory-before-acting",
+        print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))),
+    )
 
     assert dest.read_text(encoding="utf-8") == "new content\n"
     assert any("Replaced" in line for line in lines)
