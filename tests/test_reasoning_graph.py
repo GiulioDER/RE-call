@@ -306,14 +306,27 @@ def test_cycle_diagnostics_and_graph_id_survive_the_iterative_walk_unchanged() -
     # (commit 3498a06c plus nothing). The fixture holds two cycles sharing a member and
     # one orphan, so it exercises the canonical cycle dedup and diagnostic ordering.
     #
-    # ⚠️ RE-CAPTURED when dependency invalidation merged, and the distinction is the whole
-    # point of this guard. Every `rg_` id here changed, and the diagnostics reordered, because
-    # `authored_dependency_edges` joined the identity dict that these ids hash over — the key is
-    # present even when the list is empty, so every id in every corpus moved. What did NOT change
-    # is the behaviour the golden exists to protect: the same four diagnostics, with identical
-    # kind, reference and message, verified as a SET before these literals were rewritten. A
-    # future edit that changes any of those three is a regression; a hash churn accompanied by an
-    # identical set is a vocabulary change.
+    # ⚠️ RE-CAPTURED when dependency invalidation merged, for TWO independent reasons, and the
+    # distinction is the whole point of this guard.
+    #
+    # First, `schema_version` is a member of every identity payload — `_node_id`, `_edge_id`,
+    # `_diagnostic_id` and the graph payload alike — and this branch bumps GRAPH_SCHEMA_VERSION
+    # from 1 to 2. That alone moves every `rg_` id in every corpus, including corpora that use no
+    # dependency metadata at all. Second, and separately, `authored_dependency_edges` joined the
+    # GRAPH payload, where the key counts even when the list is empty.
+    #
+    # Both were verified rather than assumed: forcing the constant back to 1 reproduces NEITHER
+    # master's golden NOR this one, which is what shows the two causes are real and independent.
+    # Attributing the churn to the new key alone (as an earlier draft of this comment did) is
+    # wrong, and it matters, because the version bump is the part that is DELIBERATE — it is the
+    # marker separating ids minted under a vocabulary without dependency edges from ids minted
+    # under one with them.
+    #
+    # What did NOT change is the behaviour this golden exists to protect: the same four
+    # diagnostics, with identical kind, reference and message, compared as a SET before these
+    # literals were rewritten. A future edit that changes any of those three is a regression; a
+    # hash churn accompanied by an identical set is a vocabulary change and belongs with a
+    # version bump.
     def golden_chunk(cid: str, file: str, supersedes: str | None = None) -> Chunk:
         metadata: dict[str, object] = {"file": file}
         if supersedes is not None:
