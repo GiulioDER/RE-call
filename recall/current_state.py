@@ -291,9 +291,27 @@ def _project(
         state: CurrentState = record.state
         invalidation_chain: tuple[str, ...] = ()
         if reason is not None:
-            state = "dependency_invalidated"
             invalidation_chain = reason.bounded_path(MAX_INVALIDATION_CHAIN)
             diagnostics = tuple(sorted(set(diagnostics + ("dependency_invalidated",))))
+            # Only a CURRENT document is relabelled. Every other state already carries a reason
+            # not to trust the document, and each of those reasons is more specific than this
+            # one: `superseded` tells the reader to go and read the successor, while
+            # `ambiguous` and `invalid` are FAIL-CLOSED verdicts meaning "this projection cannot
+            # be trusted about this source at all".
+            #
+            # Overwriting them was the original behaviour and it is the dangerous direction:
+            # replacing "we cannot parse this document's supersession metadata" with "a
+            # dependency of it was invalidated" swaps an admission of ignorance for a confident,
+            # specific and WRONG explanation, and the reader acts on the explanation. It also
+            # silently defeated the two guarantees named in
+            # `test_current_state_fails_closed_on_multiple_live_successors` and
+            # `test_current_state_fails_closed_on_malformed_supersession_metadata`.
+            #
+            # Nothing is lost by narrowing it: the diagnostic and the invalidation chain are
+            # recorded above unconditionally, so a superseded document whose dependency also
+            # failed still reports both facts, with the more actionable one as its state.
+            if state == "current":
+                state = "dependency_invalidated"
         authority = dependency_projection.authorities.get(record.source, "unknown")
         dependencies = dependency_projection.dependencies.get(record.source, ())
         state_id = "state_" + canonical_sha256(
