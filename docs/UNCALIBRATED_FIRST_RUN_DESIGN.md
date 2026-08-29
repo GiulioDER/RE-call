@@ -32,8 +32,8 @@ a **tenant**.
 
 | Claim | Site | Verdict |
 |---|---|---|
-| Server builds `GenerationStore` only in production <!-- cite-anchor: if generation_mode: --> | `recall_mcp/server.py:863` | confirmed. 🔁 **Line corrected twice: 2026-08-25 and again 2026-08-26.** It originally pointed 100-odd lines above the branch, at a `retrieval_profile` logging argument (the stale number is deliberately not written here in `path:line` form, because the anchor checker reads any such string as a live citation and a correction note would then fail the gate it exists to explain); the anchor is added so the next edit above it moves the pointer rather than silently invalidating it. The earlier correction landed one line short of the branch and disagreed with the citation of the SAME anchor at line 129 of this document. Both citation gates stayed green throughout, because the anchor window absorbs an off-by-one: a green gate is not evidence a pointer is right |
-| Missing `generation_id` degrades to `"legacy"` | `recall_mcp/service.py:997` | confirmed. A second site uses the same default but maps it to `None` immediately after, so the two do not behave identically |
+| Server builds `GenerationStore` only in production <!-- cite-anchor: if generation_mode: --> | `recall_mcp/server.py:864` | confirmed. 🔁 **Line corrected twice: 2026-08-25 and again 2026-08-26.** It originally pointed 100-odd lines above the branch, at a `retrieval_profile` logging argument (the stale number is deliberately not written here in `path:line` form, because the anchor checker reads any such string as a live citation and a correction note would then fail the gate it exists to explain); the anchor is added so the next edit above it moves the pointer rather than silently invalidating it. The earlier correction landed one line short of the branch and disagreed with the citation of the SAME anchor at line 129 of this document. Both citation gates stayed green throughout, because the anchor window absorbs an off-by-one: a green gate is not evidence a pointer is right |
+| Missing `generation_id` degrades to `"legacy"` | `recall_mcp/service.py:1002` | confirmed. A second site uses the same default but maps it to `None` immediately after, so the two do not behave identically |
 | `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:1248` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
 | `calibration = None` is deliberate, and names an open design question | `recall/cli_commands/index_search.py:406-418` | confirmed |
@@ -43,8 +43,8 @@ a **tenant**.
 
 **F1. Promotion is not required, for either calibration or serving.**
 `CalibrationRepository._generation` accepts states `{"ready", "active", "retired"}`
-(`recall/calibration_v2.py:495`). `GenerationStore.pin_generation` accepts the same three
-(`recall/generation_store.py:177`). And `SERVABLE_ACTIVE_STATES = frozenset({"ready", "active"})`
+(`recall/calibration_v2.py:722`). `GenerationStore.pin_generation` accepts the same three
+(`recall/generation_store.py:180`). And `SERVABLE_ACTIVE_STATES = frozenset({"ready", "active"})`
 (`recall/control_plane.py:35`), so the enterprise control plane **already treats `ready` as
 servable**. What `promote()` adds over calibration and serving is that it sets
 `recall_tenant_state.active_generation_id`, the *default selection* rather than the permission, and
@@ -104,8 +104,8 @@ carried a 384 dimensional profile's id.
 use it.** Every corpus indexed *before* #370 carries the old literal, which is exactly the
 population an adoption path exists to read. A fix to the writer does not retroactively repair rows
 already written. Only `content_hash` is load bearing here, and the accessor that returns it is
-`PgVectorStore.source_raw_hashes` (`recall/store.py:2582`), **not** `source_content_hashes`
-(`recall/store.py:2564`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
+`PgVectorStore.source_raw_hashes` (`recall/store.py:2703`), **not** `source_content_hashes`
+(`recall/store.py:2685`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
 
 ⚠️ **`content_hash` is media type dependent since `bd582316`.** A markdown source is hashed as
 decoded, newline normalised, `_strip_nul` text re encoded as UTF-8 (`recall/index.py:822`
@@ -123,10 +123,10 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 
 `RECALL_ENV` is one string carrying at least six unrelated policies:
 
-1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:2524`, `recall/cli_commands/index_search.py:253` <!-- cite-anchor: env_is_production -->).
+1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:2614`, `recall/cli_commands/index_search.py:253` <!-- cite-anchor: env_is_production -->).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:376`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
-   `recall_mcp/server.py:863` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:303` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
+    `recall_mcp/server.py:864` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:338` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`recall_mcp/stores.py:154`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:423`). <!-- cite-anchor: wants_learned -->
@@ -393,7 +393,7 @@ disagreement is itself reportable.
 
 **Why.** `resolve()` re-derives the lineage comparison on every query, which is what catches a
 `forget()` that rewrote `corpus_fingerprint` (`recall/generations.py:1506`) or a `publish()` that
-superseded the artifact (`recall/calibration_v2.py:978`). A cached mode cannot catch either.
+superseded the artifact (`recall/calibration_v2.py:1263`). A cached mode cannot catch either.
 Making it authoritative would require every current and future invalidator to update it, which is
 exactly the growing-enumeration failure this design criticises in F2. **A cache that must be
 invalidated by an open-ended set of writers is a bug with a schedule.**
@@ -404,7 +404,7 @@ environment variables was really asking for.
 
 ### 4. Add `provisional` to the reasoning whitelist, and bump the API version
 
-**Decision: `recall/reasoning.py:1637` accepts `{trusted, degraded, refused, provisional}`, and
+**Decision: `recall/reasoning.py:1686` accepts `{trusted, degraded, refused, provisional}`, and
 `REASONING_API_VERSION` goes 1 → 2.** The several `!= "trusted"` comparisons keep their current
 behaviour and become an explicit named set, `_CERTIFIED_STATES = frozenset({"trusted"})`.
 
@@ -690,7 +690,7 @@ half the corpus, aborts** and reports that the candidate set does not describe t
    invalidate a calibration without touching tenant state, so a tenant can read `certified` while
    the live resolver says stale.
 4. **Adding `provisional` to `TrustState` hits an exhaustive whitelist that raises**, not a defaulted
-   mapping: `recall/reasoning.py:1637` rejects anything outside `{trusted, degraded, refused}`, on a
+   mapping: `recall/reasoning.py:1686` rejects anything outside `{trusted, degraded, refused}`, on a
    versioned API whose version is unbumped, plus several `!= "trusted"` comparisons that would
    silently downgrade.
 5. **The strict gate is binary on `CERTIFIED`.** `code_for_status` returns a failure code for

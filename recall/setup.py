@@ -811,11 +811,13 @@ def _reasoning_interview(
 ) -> dict[str, str]:
     """Ask yes or no, then provider, then model. Returns the keys to write.
 
-    Always returns `RECALL_REASONING`, so that switched off and never configured stay
-    distinguishable in the file. `cloud_keys` may gain a provider key the user supplies here,
-    which is why it is taken as a mutable dict rather than a mapping.
+    Always returns `RECALL_REASONING_EXPANSION`, so that switched off and never configured stay
+    distinguishable in the file. That flag, not a bare `RECALL_REASONING`, is the one the runtime
+    reads (`recall.reasoning_expansion.resolve_expansion_provider`). `cloud_keys` may gain a
+    provider key the user supplies here, which is why it is taken as a mutable dict rather than a
+    mapping.
     """
-    off = {"RECALL_REASONING": "0"}
+    off = {"RECALL_REASONING_EXPANSION": "0"}
     if not _ask_yes_no(
         input_fn, print_fn, "Enable the optional reasoning arm?", default=False
     ):
@@ -882,11 +884,15 @@ def _reasoning_interview(
         print_fn(f"Could not reach {model}: {failure}")
         print_fn("Writing the settings anyway. Correct them in .env and try again.")
 
+    # The `_EXPANSION_` spellings, not the bare ones. Both resolve, because the resolver reads
+    # the bare names as a legacy fallback, but the bare pair is SHARED with the setup wizard's
+    # other reasoning arms: a user who configures a local answer arm and later enables expansion
+    # would otherwise have the expansion client silently inherit that arm's endpoint and key.
     return {
-        "RECALL_REASONING": "1",
-        "RECALL_REASONING_MODEL": model,
-        "RECALL_REASONING_BASE_URL": base_url,
-        "RECALL_REASONING_API_KEY": api_key,
+        "RECALL_REASONING_EXPANSION": "1",
+        "RECALL_REASONING_EXPANSION_MODEL": model,
+        "RECALL_REASONING_EXPANSION_BASE_URL": base_url,
+        "RECALL_REASONING_EXPANSION_API_KEY": api_key,
     }
 
 

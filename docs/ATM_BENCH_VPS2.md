@@ -51,6 +51,21 @@ The benchmark process receives `VOYAGE_API_KEY` from the existing secret file.
 The reasoning key is used only by the isolated process and is never written to
 the transfer bundle.
 
+⚠️ **Those five `RECALL_REASONING*` names are deliberately the retired spellings, and this
+block must not be modernised.** The serving runtime enables retrieval reasoning through
+`RECALL_REASONING_EXPANSION` and the `_EXPANSION_` infixed family
+(`recall/reasoning_expansion.py`); the bare names here were retired from `.env.example` and the
+setup wizard on 2026-08-28. This block keeps them because `benchmarks/atm_bench.py` is
+**byte-frozen** by `tests/test_atm_runner_published.py` as the reproduction pointer for the
+leaderboard submission, so it still reads the names it read on the day it ran, and rewriting
+them here would make it stamp an empty reasoning record for a run that had them set.
+
+The stamp is provenance only: the harness records these values under `reasoning` with
+`wired_into_runner: false` and never drives retrieval with them, which is why the mismatch is
+worth a paragraph rather than a second copy of a 420 line harness. If a future ATM run needs the
+current spellings, the freeze test states the remedy: publish a new harness under a new name and
+leave this one alone, rather than updating the hash.
+
 ## VPS2 commands
 
 Run the MiniLM control first:

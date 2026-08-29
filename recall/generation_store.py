@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
 from dataclasses import replace
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 import psycopg
@@ -22,6 +23,7 @@ from recall.semantic_graph import (
     load_semantic_graph,
     write_semantic_graph,
 )
+from recall.scope import Scope, coerce_scope, group_expression
 from recall.store import DEFAULT_TABLE
 from recall.store import (
     EdgeCandidates,
@@ -56,6 +58,13 @@ class ImmutableGenerationError(RuntimeError, RecallError):
 #: per object exactly so an erasure issued mid-build lands.
 LIVE_MANIFEST_STATES = ("building", "validating", "ready", "active", "retired")
 
+#: How long a resolved calibration verdict may be served without re-reading the database, in
+#: seconds. The cache key already retires an entry when the active generation changes, so this
+#: bound only covers the rarer event of the SAME generation being recalibrated in place by an
+#: administrative action. Thirty seconds keeps that window shorter than any human loop while
+#: removing the per query round trips from `trusted_search`.
+CALIBRATION_RESOLUTION_TTL_S = 30.0
+
 
 class GenerationStore(PgVectorStore):
     """The retrieval surface for v1, scoped to a request-consistent active generation."""
@@ -88,6 +97,10 @@ class GenerationStore(PgVectorStore):
         self._pinned_generation: ContextVar[str | None] = ContextVar(
             f"recall_generation_{uuid.uuid4().hex}", default=None
         )
+        self._fixed_generation: str | None = None
+        self._calibration_resolution: (
+            tuple[tuple[str, str], "CalibrationResolution", float] | None
+        ) = None
 
     def _reset_tenant_state(self) -> None:
         """Also rebuild the pinned-generation ContextVar, which is tenant-derived.
@@ -102,6 +115,10 @@ class GenerationStore(PgVectorStore):
         self._pinned_generation = ContextVar(
             f"recall_generation_{uuid.uuid4().hex}", default=None
         )
+        self._fixed_generation = None
+        # The cached calibration resolution is tenant derived too; the key would catch a stale
+        # entry anyway, but a view should never start life holding another tenant's verdict.
+        self._calibration_resolution = None
 
     def check_schema(self) -> None:
         from recall.schema import check_schema
@@ -139,7 +156,10 @@ class GenerationStore(PgVectorStore):
         if existing is not None:
             yield existing
             return
-        generation_id = self.active_generation_id()
+        # A benchmark server may deliberately read a retired, immutable snapshot.  The fixed
+        # process pin must win here as well as in `_generation_id`; otherwise `trusted_search`
+        # enters this context manager and silently replaces the pin with the active generation.
+        generation_id = self._fixed_generation or self.active_generation_id()
         token = self._pinned_generation.set(generation_id)
         try:
             yield generation_id
@@ -147,7 +167,32 @@ class GenerationStore(PgVectorStore):
             self._pinned_generation.reset(token)
 
     def _generation_id(self) -> str:
-        return self._pinned_generation.get() or self.active_generation_id()
+        return self._pinned_generation.get() or self._fixed_generation or self.active_generation_id()
+
+    def set_fixed_generation(self, generation_id: str) -> None:
+        """Pin this read-only store to one immutable generation for its whole process.
+
+        This is intentionally separate from ``pin_generation``: that context manager is for a
+        short administrative operation, while a benchmark server needs every request task to
+        see the same retired snapshot. Callers must opt into this explicitly and the generation
+        is validated before it becomes process state.
+        """
+
+        generation_id = generation_id.strip()
+        if not generation_id:
+            raise ValueError("generation_id must be non-empty")
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT 1 FROM recall_generations WHERE tenant_id = %s "
+                "AND generation_id = %s AND state IN ('ready', 'active', 'retired')",
+                (self._tenant, generation_id),
+            ).fetchone()
+        )
+        if row is None:
+            raise NoActiveGeneration(
+                f"tenant {self._tenant!r} has no fixed readable generation {generation_id!r}"
+            )
+        self._fixed_generation = generation_id
 
     @contextmanager
     def pin_generation(self, generation_id: str) -> Iterator[str]:
@@ -279,11 +324,47 @@ class GenerationStore(PgVectorStore):
         return self._with_retry(_op)
 
     def resolve_calibration(self) -> CalibrationResolution:
+        """Resolve the serving calibration on this store's own borrowed connection.
+
+        Two costs were paid per query before this: `CalibrationRepository.resolve` opened a
+        fresh psycopg connection every call, and re-canonicalised the stored query set every
+        call, both on the serve-time `trusted_search` path. The repository already exposes
+        `resolve_within` for a caller-held connection, so the store lends one of its own; and
+        the verdict is cached per `(tenant, generation)` with a short TTL, because a published
+        calibration for an immutable generation only changes through an administrative action.
+        The generation key retires the entry the moment a promotion moves the active pointer;
+        the TTL bounds how long an administrative recalibration of the SAME generation can go
+        unnoticed.
+        """
         from recall.calibration_v2 import CalibrationRepository
 
-        return CalibrationRepository(self._dsn, self._tenant, actor="generation-search").resolve(
-            self._generation_id()
-        )
+        generation_id = self._generation_id()
+        key = (self._tenant, generation_id)
+        cached = self._calibration_resolution
+        if cached is not None:
+            cached_key, resolution, cached_at = cached
+            if cached_key == key and monotonic() - cached_at < CALIBRATION_RESOLUTION_TTL_S:
+                return resolution
+        repository = CalibrationRepository(self._dsn, self._tenant, actor="generation-search")
+
+        def _op(conn: psycopg.Connection) -> CalibrationResolution:
+            # `resolve_within` issues several statements, so the snapshot is load bearing: the
+            # repository's own `resolve` wraps them in REPEATABLE READ READ ONLY, and losing
+            # that here would let a concurrent promotion be observed part way through a
+            # resolution. When this connection is idle the transaction is ours to open, so the
+            # isolation level is ours to set, and it must be the first statement inside it.
+            # When the connection is already in a transaction (shared-pool mode) this nests as
+            # a savepoint and inherits the outer snapshot, where setting the level is neither
+            # permitted nor wanted: that caller-owned isolation is what `resolve_within` is for.
+            idle = conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+            with conn.transaction():
+                if idle:
+                    conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                return repository.resolve_within(conn, generation_id)
+
+        resolution = self._with_retry(_op)
+        self._calibration_resolution = (key, resolution, monotonic())
+        return resolution
 
     @staticmethod
     def _generation_rows(rows: list[tuple[Any, ...]]) -> list[ScoredChunk]:
@@ -306,7 +387,11 @@ class GenerationStore(PgVectorStore):
         return hits
 
     def _query_dense(
-        self, vector: list[float], k: int, source: str | None = None
+        self,
+        vector: list[float],
+        k: int,
+        source: str | None = None,
+        scope: Scope | None = None,
     ) -> list[ScoredChunk]:
         """Generation-scoped dense search. PRIVATE on purpose: the timed public `query_dense` on
         `PgVectorStore` delegates here, so this subclass inherits the instrumentation and the
@@ -317,13 +402,16 @@ class GenerationStore(PgVectorStore):
         recorded nothing in production, with an empty series and a free store reading the same.
         """
         generation_id = self._generation_id()
-        source_filter = (
-            "AND (metadata->>'file' = %(source)s OR source_uri = %(source)s)" if source else ""
+        # `source_uri`, not `source`: this table names the column differently from the legacy
+        # one, and the predicate is told which rather than guessing. Everything else about a
+        # scope reads `metadata`, which both tables carry alike.
+        source_filter, scope_params = coerce_scope(scope, source).predicate(
+            "c", source_column="source_uri"
         )
         sql = f"""
             SELECT chunk_id, source_uri, text, metadata, indexed_at,
                    1 - (embedding <=> %(vec)s) AS score
-            FROM recall_chunks_v1
+            FROM recall_chunks_v1 c
             WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s {source_filter}
             ORDER BY embedding <=> %(vec)s
             LIMIT %(k)s
@@ -334,8 +422,7 @@ class GenerationStore(PgVectorStore):
             "tenant": self._tenant,
             "generation": generation_id,
         }
-        if source:
-            params["source"] = source
+        params.update(scope_params)
         ef_search, iterative_scan = self._hnsw_filtered_tuning()
 
         def _op(conn: psycopg.Connection) -> list[tuple[Any, ...]]:
@@ -387,11 +474,12 @@ class GenerationStore(PgVectorStore):
         k: int,
         source: str | None = None,
         vec: list[float] | None = None,
+        scope: Scope | None = None,
     ) -> list[ScoredChunk]:
         """Generation-scoped sparse search. PRIVATE for the same reason as `_query_dense`."""
         generation_id = self._generation_id()
-        source_filter = (
-            "AND (c.metadata->>'file' = %(source)s OR c.source_uri = %(source)s)" if source else ""
+        source_filter, scope_params = coerce_scope(scope, source).predicate(
+            "c", source_column="source_uri"
         )
         score = "1 - (embedding <=> %(vec)s)" if vec is not None else "rank"
         sql = f"""
@@ -425,10 +513,84 @@ class GenerationStore(PgVectorStore):
         }
         if vec is not None:
             params["vec"] = Vector(vec)
-        if source:
-            params["source"] = source
+        params.update(scope_params)
         rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._generation_rows(rows)
+
+    def scope_inventory(self, dimension: str = "folder") -> list[tuple[str, int, int]]:
+        """Generation-scoped `PgVectorStore.scope_inventory`.
+
+        Overridden for the reason every read here is: a tenant holds every generation it has ever
+        built, so the inherited tenant-only version would list the folders of retired generations
+        beside the active one. An inventory is read as "what can I filter on", and a value that
+        exists only in a generation nobody serves answers that question wrongly in the direction
+        that costs an empty result.
+        """
+        generation_id = self._generation_id()
+        value_sql = group_expression(dimension, "c")
+        sql = f"""
+            SELECT {value_sql} AS scope_value,
+                   count(*) AS chunks,
+                   count(DISTINCT COALESCE(c.metadata->>'file', c.source_uri)) AS documents
+            FROM recall_chunks_v1 c
+            WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
+              AND {value_sql} IS NOT NULL
+            GROUP BY {value_sql}
+            ORDER BY chunks DESC, scope_value
+        """
+        params = {"tenant": self._tenant, "generation": generation_id}
+        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
+        return [(str(value), int(chunks), int(docs)) for value, chunks, docs in rows]
+
+    def scope_undeclared_count(self, dimension: str = "folder") -> int:
+        """Generation-scoped `PgVectorStore.scope_undeclared_count`."""
+        generation_id = self._generation_id()
+        value_sql = group_expression(dimension, "c")
+        sql = f"""
+            SELECT count(*) FROM recall_chunks_v1 c
+            WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
+              AND {value_sql} IS NULL
+        """
+        params = {"tenant": self._tenant, "generation": generation_id}
+        row = self._with_retry(lambda conn: conn.execute(sql, params).fetchone())
+        return 0 if row is None else int(row[0])
+
+    def scope_centroids(
+        self, dimension: str = "folder", min_chunks: int = 1
+    ) -> list[tuple[str, int, list[float]]]:
+        """Generation-scoped `PgVectorStore.scope_centroids`.
+
+        The generation binding matters more here than for the inventory: a centroid averaged over
+        two generations of the same folder is a vector describing neither, and it would be used to
+        rank against the active one. Wrong quietly, which is the worst way to be wrong.
+        """
+        if min_chunks < 1:
+            raise ValueError(f"min_chunks must be >= 1, got {min_chunks}")
+        generation_id = self._generation_id()
+        value_sql = group_expression(dimension, "c")
+        sql = f"""
+            SELECT {value_sql} AS scope_value, count(*) AS n, AVG(c.embedding) AS centroid
+            FROM recall_chunks_v1 c
+            WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
+              AND {value_sql} IS NOT NULL
+            GROUP BY {value_sql}
+            HAVING count(*) >= %(min_chunks)s
+            ORDER BY n DESC
+        """
+        params = {
+            "tenant": self._tenant,
+            "generation": generation_id,
+            "min_chunks": min_chunks,
+        }
+        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
+        return [
+            (
+                str(value),
+                int(n),
+                [float(x) for x in (c.to_list() if hasattr(c, "to_list") else c)],
+            )
+            for value, n, c in rows
+        ]
 
     def _newest_indexed_at(self) -> datetime | None:
         """Generation-scoped freshness. PRIVATE so the timed public wrapper is inherited —

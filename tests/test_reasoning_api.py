@@ -14,6 +14,7 @@ from recall.reasoning import (
     ReasoningProviderPorts,
     ReasoningRequest,
     ReasoningValidationError,
+    SemanticGraphExpansionResult,
     reason,
     reasoning_response_from_dict,
 )
@@ -680,6 +681,10 @@ def test_empty_query_requests_clarification_without_retrieval() -> None:
 
     assert response.outcome == "needs_clarification"
     assert response.refusal_reason == "empty_query"
+    # No retrieval ran and no trust evaluation happened, so the bundle must not carry the
+    # dataclass default of "trusted": the gate refused this request before evaluating it.
+    assert response.trust_state == "refused"
+    assert response.trusted_evidence.trust_state == "refused"
 
 
 def test_reasoning_response_serializes_to_strict_json_and_round_trips() -> None:
@@ -835,3 +840,360 @@ def test_deserialization_rejects_nonfinite_float_strings() -> None:
 
     with pytest.raises(EvidenceValidationError, match="finite"):
         reasoning_response_from_dict(payload)
+
+
+def _graph_expansion_request(
+    seed: TrustedResult,
+    provider,
+    *,
+    answer=None,
+) -> ReasoningRequest:
+    return ReasoningRequest(
+        query=seed.query,
+        tenant_id="acme",
+        generation=GenerationSelection(
+            generation_id="gen_1",
+            pipeline_fingerprint="pipe-a",
+            corpus_fingerprint="corpus-a",
+        ),
+        providers=ReasoningProviderPorts(
+            retriever=lambda _request: seed,
+            graph_expansion_provider=provider,
+            answer_provider=answer,
+        ),
+        policy=ReasoningPolicy(graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_hops=1),
+    )
+
+
+def test_graph_expansion_with_foreign_binding_fails_closed() -> None:
+    seed = _result(_hit(_chunk("c1", "rollout.md", "Ada owns rollout.")))
+    foreign = replace(
+        _result(
+            _hit(_chunk("f1", "foreign.md", "Evidence from another tenant.")),
+            tenant="OTHER-TENANT",
+            generation="gen_other",
+        ),
+        pipeline_fingerprint="pipe-other",
+        corpus_fingerprint="corpus-other",
+    )
+
+    def provider(_request: ReasoningRequest, _retrieval: TrustedResult):
+        return SemanticGraphExpansionResult(retrieval=foreign, readiness="ready")
+
+    response = reason(_graph_expansion_request(seed, provider))
+
+    assert response.outcome == "abstained"
+    assert response.refusal_reason == "GRAPH_PROVIDER_ERROR"
+    assert response.tenant_id == "acme"
+    assert response.generation_id == "gen_1"
+    assert all(item.chunk_id != "f1" for item in response.trusted_evidence.items)
+    assert all(citation.chunk_id != "f1" for citation in response.citations)
+    assert response.provider_failures
+    assert response.provider_failures[0].message == "ReasoningValidationError"
+
+
+def test_graph_expansion_with_correct_binding_is_adopted() -> None:
+    seed_hit = _hit(_chunk("c1", "rollout.md", "Ada owns rollout."))
+    neighbour_hit = _hit(_chunk("c2", "graph.md", "The rollout supersedes the pilot."))
+    seed = _result(seed_hit)
+    expanded = _result(seed_hit, neighbour_hit)
+
+    def provider(_request: ReasoningRequest, retrieval: TrustedResult):
+        assert retrieval is seed
+        return SemanticGraphExpansionResult(retrieval=expanded, readiness="ready")
+
+    response = reason(
+        _graph_expansion_request(
+            seed,
+            provider,
+            answer=lambda _system, _user: {
+                "answer": "Ada owns rollout.",
+                "citations": ["c1"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    assert response.outcome == "answered"
+    assert not response.provider_failures
+    assert {item.chunk_id for item in response.trusted_evidence.items} == {"c1", "c2"}
+
+
+def _answered_payload() -> dict:
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+    response = reason(
+        _request(
+            _result(_hit(chunk)),
+            answer=lambda _system, _user: {
+                "answer": "Ada owns rollout.",
+                "citations": ["c1"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+    return response.to_dict()
+
+
+def test_deserialization_rejects_unknown_outcome() -> None:
+    payload = _answered_payload()
+    payload["outcome"] = "answred"
+
+    with pytest.raises(EvidenceValidationError, match="outcome"):
+        reasoning_response_from_dict(payload)
+
+
+def test_deserialization_rejects_unknown_bundle_decision() -> None:
+    payload = _answered_payload()
+    trusted_evidence = payload["trusted_evidence"]
+    assert isinstance(trusted_evidence, dict)
+    trusted_evidence["decision"] = "maybe"
+
+    with pytest.raises(EvidenceValidationError, match="decision"):
+        reasoning_response_from_dict(payload)
+
+
+def test_deserialization_rejects_unknown_graph_expansion_mode() -> None:
+    payload = _answered_payload()
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, dict)
+    diagnostics["graph_expansion_mode"] = "two_hop"
+
+    with pytest.raises(EvidenceValidationError, match="graph_expansion_mode"):
+        reasoning_response_from_dict(payload)
+
+
+def test_deserialization_rejects_unknown_proposal_relation_and_status() -> None:
+    proposal_payload = {
+        "id": "p1",
+        "source_evidence_ids": ["c1"],
+        "proposed_relation": "supersedes",
+        "subject_id": "s",
+        "object_id": "o",
+        "explanation": "x",
+        "model_id": "m",
+        "pipeline_id": "pipe",
+        "provider_id": "prov",
+        "provider_revision": "rev",
+        "confidence": 0.5,
+        "uncertainty": [],
+        "generation_id": "gen_1",
+        "status": "candidate",
+    }
+
+    payload = _answered_payload()
+    payload["inference_proposals"] = [dict(proposal_payload, proposed_relation="friend_of")]
+    with pytest.raises(EvidenceValidationError, match="proposed_relation"):
+        reasoning_response_from_dict(payload)
+
+    payload["inference_proposals"] = [dict(proposal_payload, status="approved")]
+    with pytest.raises(EvidenceValidationError, match="status"):
+        reasoning_response_from_dict(payload)
+
+
+def test_deserialization_rejects_unknown_expansion_proposal_mode() -> None:
+    payload = _answered_payload()
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, dict)
+    diagnostics["retrieval_expansion"] = {
+        "attempted": True,
+        "rounds": 1,
+        "proposals": [{"id": "p1", "mode": "sideways", "query": "who owns rollout?"}],
+    }
+
+    with pytest.raises(EvidenceValidationError, match="mode"):
+        reasoning_response_from_dict(payload)
+
+
+def test_deserialization_rejects_non_numeric_int_string() -> None:
+    payload = _answered_payload()
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, dict)
+    diagnostics["latency_ms"] = "abc"
+
+    with pytest.raises(EvidenceValidationError, match="integer"):
+        reasoning_response_from_dict(payload)
+
+
+def test_deserialization_round_trip_still_works_after_enum_checks() -> None:
+    payload = _answered_payload()
+
+    round_tripped = reasoning_response_from_dict(payload)
+
+    assert round_tripped.to_dict() == payload
+
+
+def test_budget_zero_model_calls_keeps_depth_merged_evidence() -> None:
+    """BUG-004: the depth round costs zero model calls, so a zero model call budget skips only
+    the model round and must not discard the depth-merged evidence."""
+    first = _chunk("first", "first.md", "The first document is incomplete.")
+    second = _chunk("second", "second.md", "The second document contains the owner: Ada.")
+
+    def expansion_provider(_request):
+        raise AssertionError("the model round must not run with max_model_calls=0")
+
+    response = reason(
+        _request(
+            _result(_hit(first), gap_warning=True),
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            budget=ReasoningBudget(max_model_calls=0),
+            expansion_provider=expansion_provider,
+            expansion_retriever=lambda *_args: _result(_hit(second), gap_warning=True),
+            answer=lambda _system, _user: {
+                "answer": "Ada owns the project.",
+                "citations": ["second"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    assert response.outcome == "answered"
+    assert [item.chunk_id for item in response.trusted_evidence.items] == ["first", "second"]
+    trace = response.diagnostics.retrieval_expansion
+    assert trace is not None
+    assert trace.fallback_reason == "budget_exhausted"
+    assert trace.accepted_chunk_ids == ("second",)
+    assert trace.rounds == 1
+
+
+def test_answer_provider_error_returns_abstained_response_not_exception() -> None:
+    """BUG-009: an answer provider crash is converted to an in-band ProviderFailure exactly
+    like every other provider port, instead of crashing reason()."""
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+
+    def answer(_system: str, _user: str):
+        raise RuntimeError("socket reset")
+
+    response = reason(_request(_result(_hit(chunk)), answer=answer))
+
+    assert response.outcome == "abstained"
+    assert response.refusal_reason == "provider_failure"
+    assert response.answer is None
+    assert response.provider_failures[-1].kind == "provider_error"
+    assert response.provider_failures[-1].message == "RuntimeError"
+    assert response.diagnostics.generator_invoked is True
+
+
+def test_answer_provider_timeout_is_reported_as_timeout_failure() -> None:
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+
+    def answer(_system: str, _user: str):
+        raise TimeoutError("provider deadline")
+
+    response = reason(_request(_result(_hit(chunk)), answer=answer))
+
+    assert response.outcome == "abstained"
+    assert response.provider_failures[-1].kind == "timeout"
+    assert response.provider_failures[-1].message == "TimeoutError"
+
+
+def test_missing_expansion_retriever_reports_its_own_reason_and_zero_rounds() -> None:
+    """DOC-006 and NUM-005: the retriever-is-None branch names the missing retriever rather
+    than the provider, and no retrieval round ran."""
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+
+    response = reason(
+        _request(
+            _result(_hit(chunk)),
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            answer=lambda _system, _user: {
+                "answer": "Ada owns rollout.",
+                "citations": ["c1"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    trace = response.diagnostics.retrieval_expansion
+    assert trace is not None
+    assert trace.attempted is False
+    assert trace.rounds == 0
+    assert trace.fallback_reason == "expansion_retriever_unavailable"
+    assert response.provider_failures[0].message == "expansion_retriever_unavailable"
+
+
+def test_missing_expansion_provider_still_reports_provider_reason() -> None:
+    """DOC-006: the provider-is-None branch keeps its original reason."""
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+
+    response = reason(
+        _request(
+            _result(_hit(chunk)),
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            expansion_retriever=lambda *_args: _result(_hit(chunk)),
+            answer=lambda _system, _user: {
+                "answer": "Ada owns rollout.",
+                "citations": ["c1"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    trace = response.diagnostics.retrieval_expansion
+    assert trace is not None
+    assert trace.rounds == 0
+    assert trace.fallback_reason == "expansion_provider_unavailable"
+
+
+def test_depth_retrieval_failure_reports_one_executed_round() -> None:
+    """NUM-005: the depth round was issued and failed, so exactly one round executed."""
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+
+    def failing_retriever(*_args):
+        raise RuntimeError("depth store unavailable")
+
+    response = reason(
+        _request(
+            _result(_hit(chunk), gap_warning=True),
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            expansion_retriever=failing_retriever,
+            answer=lambda _system, _user: {
+                "answer": "Ada owns rollout.",
+                "citations": ["c1"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    trace = response.diagnostics.retrieval_expansion
+    assert trace is not None
+    assert trace.attempted is True
+    assert trace.rounds == 1
+    assert trace.fallback_reason == "depth_retrieval_failure"
+
+
+def test_full_expansion_with_depth_and_model_round_reports_two_rounds() -> None:
+    """NUM-005: rounds reaches 2 only when the model proposed round issued retrievals."""
+    first = _chunk("first", "first.md", "The first document is incomplete.")
+    second = _chunk("second", "second.md", "The second document names a follow up.")
+    third = _chunk("third", "third.md", "The third document contains the owner: Ada.")
+
+    def expansion_provider(_request):
+        return ExpansionReport(
+            proposals=(ExpansionProposal("rewrite_1", "rewrite", "owner of the project"),)
+        )
+
+    def expansion_retriever(_request, proposal, _initial):
+        if proposal.mode == "depth":
+            return _result(_hit(second), gap_warning=True)
+        return _result(_hit(third))
+
+    response = reason(
+        _request(
+            _result(_hit(first), gap_warning=True),
+            policy=ReasoningPolicy(allow_retrieval_expansion=True),
+            budget=ReasoningBudget(max_model_calls=1),
+            expansion_provider=expansion_provider,
+            expansion_retriever=expansion_retriever,
+            answer=lambda _system, _user: {
+                "answer": "Ada owns the project.",
+                "citations": ["third"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    trace = response.diagnostics.retrieval_expansion
+    assert trace is not None
+    assert trace.rounds == 2
+    assert response.outcome == "answered"

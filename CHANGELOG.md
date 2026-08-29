@@ -10,6 +10,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* **Folder and facet scoping: a second retrieval dimension over the vectors already stored.**
+  `recall search --folder python --facet reference`, the same two arguments on the `recall_search`
+  and `recall_evidence` MCP tools, and `Scope(folder=..., facet=...)` in the library. `recall
+  scopes` lists what a corpus can be filtered by, with the count of documents declaring no value
+  reported separately, because a scope that does not exist and a corpus with no answer both return
+  nothing and only the listing tells them apart.
+
+  **The folder dimension needs no re-index.** The indexer already recorded a root-relative path per
+  chunk, so a folder is a prefix of a value that was always in the row. The FACET dimension does:
+  `type:` is read from frontmatter at index time, so it lands on the next generation build and a
+  facet filter matches nothing until then. Recognising that key also un-discards something every
+  memo already declared: measured on the agent memory corpus, **1,312 of 1,335 files (98.3%) carry
+  one**, across eight authored values.
+
+  ⚠️ **A scope is a HARD filter and fails in the direction that hides things.** A chunk outside it
+  is absent rather than ranked low, so an over-narrow scope is indistinguishable from a corpus with
+  no answer. That is why the accompanying folder-affinity PRIOR reorders and prunes nothing, and
+  why it ships **off** (`ScopePrior(weight=0.0)`): routing loses answers unrecoverably, and pruning
+  the candidate pool would move the score distribution underneath a certified threshold fitted on
+  an unfiltered one. The prior never writes `ScoredChunk.score` for the same reason. Whether it
+  helps at all is unmeasured and pre-registered in
+  `docs/preregistrations/2026-08-28-folder-scope-and-prior.md`.
+
 * **A `PreToolUse` hook that searches project memory with the text the agent is about to write,
   and injects what matches.** Installed by default by `recall setup`, which asks before enabling
   it. It exists because an agent that has to decide to search mostly does not: an explicit
@@ -61,6 +84,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   See `docs/USING_WITH_AGENT_SDK.md`.
 
 ### Fixed
+
+* ⚠️ **Importing a calibration bundle now re-derives its threshold, so a bundle fitted under the
+  RETIRED `best_threshold` rule is refused rather than imported.** The refusal names both numbers
+  and the remedy is to recalibrate; it is the safe direction, but the first person to meet it will
+  read it as corruption, so it is recorded here. The rule changed when the q95 ceiling stopped
+  landing on the sample maximum at the certification minimum, which is the same fix that makes a
+  20-sample calibration outlier-robust. Only `import_bundle` is affected: stored artifacts are
+  read through `verify_checksum` and are untouched.
+
+* **A forged calibration bundle could install any serving threshold.** `import_bundle` re-derived
+  the certification verdict from the bundle's own scores, but `Calibration.certified` never reads
+  the threshold, so trivially separable scores certified honestly while the threshold beside them
+  was whatever the author wrote, and `publish` promotes any certified draft. A fitted artifact's
+  threshold and scale are now re-derived from its scores too. A CARRIED artifact is still not
+  authenticated by this check, because its threshold is inherited and its error bound is computed
+  over scores the bundle supplies: that gap is stated in the function's docstring along with what
+  would close it, rather than left to be assumed absent.
 
 * **`--manifest-sha256` and `--manifest-size` were accepted and ignored on a local manifest.** They
   were read only to build the reference that fetches an `s3://` manifest; a `file://` build parsed

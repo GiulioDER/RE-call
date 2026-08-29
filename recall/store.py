@@ -21,6 +21,7 @@ from psycopg.types.json import Jsonb
 from recall.frontmatter import supersedes_key
 from recall.lineage import canonical_sha256
 from recall.observability import METRICS, get_logger
+from recall.scope import Scope, coerce_scope, group_expression
 from recall.types import Chunk, ScoredChunk
 
 if TYPE_CHECKING:  # the pool extra is optional; the annotation must not require it at runtime
@@ -1559,7 +1560,11 @@ class PgVectorStore:
         return ef_search, iterative_scan
 
     def query_dense(
-        self, vector: list[float], k: int, source: str | None = None
+        self,
+        vector: list[float],
+        k: int,
+        source: str | None = None,
+        scope: Scope | None = None,
     ) -> list[ScoredChunk]:
         """Timed wrapper; the search itself is `_query_dense`.
 
@@ -1571,30 +1576,37 @@ class PgVectorStore:
         if k <= 0:
             raise ValueError("k must be a positive int")
         with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_DENSE):
-            return self._query_dense(vector, k, source)
+            return self._query_dense(vector, k, source, scope)
 
     def _query_dense(
-        self, vector: list[float], k: int, source: str | None = None
+        self,
+        vector: list[float],
+        k: int,
+        source: str | None = None,
+        scope: Scope | None = None,
     ) -> list[ScoredChunk]:
         t = self._table
-        # Match the caller-facing identifier: recall_search surfaces the root-relative
-        # `metadata->>'file'` (never the absolute `source` column), so a `source=` filter passed
-        # back from a hit must resolve against `file` — falling back to `source` keeps legacy rows
-        # (no `file` metadata) and any absolute-path caller working. Same rule as recall_forget.
-        where = "AND (metadata->>'file' = %(source)s OR source = %(source)s)" if source else ""
+        # `recall.scope` owns what a scope predicate is, for all three legs, and every VALUE in it
+        # travels as a bound parameter — only the fixed predicate shape is spliced.
+        #
+        # The `source` arm matches the caller-facing identifier: recall_search surfaces the
+        # root-relative `metadata->>'file'` (never the absolute `source` column), so a `source=`
+        # filter passed back from a hit must resolve against `file`, falling back to `source` for
+        # legacy rows (no `file` metadata) and absolute-path callers. Same rule as recall_forget.
+        effective = coerce_scope(scope, source)
+        where, scope_params = effective.predicate("c")
         sql = f"""
-            SELECT id, source, text, metadata, indexed_at, first_indexed_at,
-                   1 - (embedding <=> %(vec)s) AS score
-            FROM {t}
-            WHERE tenant_id = %(tenant)s {where}
-            ORDER BY embedding <=> %(vec)s
+            SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.first_indexed_at,
+                   1 - (c.embedding <=> %(vec)s) AS score
+            FROM {t} c
+            WHERE c.tenant_id = %(tenant)s {where}
+            ORDER BY c.embedding <=> %(vec)s
             LIMIT %(k)s
         """
         params: dict = {"vec": Vector(vector), "k": k, "tenant": self._tenant}
-        if source:
-            params["source"] = source
+        params.update(scope_params)
 
-        if self._tenant or source:
+        if self._tenant or not effective.is_empty:
             # Every PgVectorStore query is tenant-filtered, even when `source` is absent. The
             # tenant predicate is a post-filter on the shared HNSW index just like the source
             # predicate, so the filtered tuning is required for the normal tenant-scoped path too.
@@ -1796,8 +1808,113 @@ class PgVectorStore:
         row = self._with_retry(_op)
         return 0.0 if row is None or row[0] is None else float(row[0])
 
+    def scope_inventory(self, dimension: str = "folder") -> list[tuple[str, int, int]]:
+        """``[(value, chunk_count, document_count)]`` for one dimension, largest first.
+
+        The cheap counterpart to `scope_centroids`: no vectors are read, so this is what a
+        "what can I filter on" listing should call.
+
+        It exists because the alternative to knowing is guessing, and guessing at a scope fails
+        SILENTLY. A folder that does not exist and a facet that has not been indexed both return
+        an empty result set, which is the same thing a corpus with no answer returns. An operator
+        who can list the values gets a wrong guess back as "that is not in this list" instead of
+        as "your memory does not contain this", and those are very different conclusions.
+
+        A row with a NULL value is excluded for the same reason it is in `scope_centroids`: no
+        facet is not a facet. The count of documents carrying none is therefore not in this
+        listing, and `recall scopes` reports it separately so it cannot be mistaken for a value.
+        """
+        t = self._table
+        value_sql = group_expression(dimension, "c")
+        sql = f"""
+            SELECT {value_sql} AS scope_value,
+                   count(*) AS chunks,
+                   count(DISTINCT COALESCE(c.metadata->>'file', c.source)) AS documents
+            FROM {t} c
+            WHERE c.tenant_id = %(tenant)s AND {value_sql} IS NOT NULL
+            GROUP BY {value_sql}
+            ORDER BY chunks DESC, scope_value
+        """
+        rows = self._with_retry(
+            lambda conn: conn.execute(sql, {"tenant": self._tenant}).fetchall()
+        )
+        return [(str(value), int(chunks), int(documents)) for value, chunks, documents in rows]
+
+    def scope_undeclared_count(self, dimension: str = "folder") -> int:
+        """How many chunks have NO value on `dimension`.
+
+        Reported beside the inventory rather than folded into it. On the facet dimension this is
+        the number that answers the question an empty facet listing actually raises: is this
+        corpus un-faceted because nobody declares one, or because it was indexed before facets
+        were read? A large count here with an empty inventory means the second, and the fix is a
+        rebuild rather than an authoring convention.
+        """
+        t = self._table
+        value_sql = group_expression(dimension, "c")
+        sql = f"""
+            SELECT count(*) FROM {t} c
+            WHERE c.tenant_id = %(tenant)s AND {value_sql} IS NULL
+        """
+        row = self._with_retry(
+            lambda conn: conn.execute(sql, {"tenant": self._tenant}).fetchone()
+        )
+        return 0 if row is None else int(row[0])
+
+    def scope_centroids(
+        self, dimension: str = "folder", min_chunks: int = 1
+    ) -> list[tuple[str, int, list[float]]]:
+        """``[(value, chunk_count, centroid)]`` for one scope dimension, over this tenant.
+
+        The centroid is the MEAN of the chunk embeddings already stored, so building it costs one
+        aggregate scan and **no embedding calls**. That is the whole reason the folder prior is
+        cheap enough to consider: the folder vectors are not a new representation of the corpus,
+        they are a summary of the one it already has.
+
+        ⚠️ **Centroid quality tracks folder size and the caller must weigh that.** A folder of
+        three chunks has a centroid that is nearly one chunk; a folder holding most of the corpus
+        has one that is nearly the corpus mean, and a cosine against the corpus mean discriminates
+        nothing. `chunk_count` is returned beside the vector rather than hidden so a caller can
+        refuse the degenerate ends, and `min_chunks` refuses the small one here.
+
+        Rows whose dimension value is NULL (a facet nobody declared) are excluded: "no facet" is
+        not a facet, and letting it aggregate would build a centroid of the corpus's leftovers and
+        then rank against it as though it meant something.
+        """
+        if min_chunks < 1:
+            raise ValueError(f"min_chunks must be >= 1, got {min_chunks}")
+        t = self._table
+        # `group_expression` looks the dimension up in a fixed table and raises on anything else,
+        # so no caller string reaches the statement. The tenant travels as a bound parameter.
+        value_sql = group_expression(dimension, "c")
+        sql = f"""
+            SELECT {value_sql} AS scope_value, count(*) AS n, AVG(c.embedding) AS centroid
+            FROM {t} c
+            WHERE c.tenant_id = %(tenant)s AND {value_sql} IS NOT NULL
+            GROUP BY {value_sql}
+            HAVING count(*) >= %(min_chunks)s
+            ORDER BY n DESC
+        """
+        params = {"tenant": self._tenant, "min_chunks": min_chunks}
+        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
+        # `AVG(vector)` comes back as a pgvector `Vector` here and as a numpy array where
+        # `register_vector` has been applied to the connection. Neither is a plain list and only
+        # one of them is iterable, so the conversion asks for `to_list` before falling back.
+        return [
+            (
+                str(value),
+                int(n),
+                [float(x) for x in (centroid.to_list() if hasattr(centroid, "to_list") else centroid)],
+            )
+            for value, n, centroid in rows
+        ]
+
     def query_sparse(
-        self, text: str, k: int, source: str | None = None, vec: list[float] | None = None
+        self,
+        text: str,
+        k: int,
+        source: str | None = None,
+        vec: list[float] | None = None,
+        scope: Scope | None = None,
     ) -> list[ScoredChunk]:
         """Full-text search. Lexical ranking is ts_rank plus a bounded numeric match boost when
         the query contains numeric terms. When `vec` is given, each hit's `score` is its true dense
@@ -1830,10 +1947,15 @@ class PgVectorStore:
         if k <= 0:
             raise ValueError("k must be a positive int")
         with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_SPARSE):
-            return self._query_sparse(text, k, source, vec)
+            return self._query_sparse(text, k, source, vec, scope)
 
     def _query_sparse(
-        self, text: str, k: int, source: str | None = None, vec: list[float] | None = None
+        self,
+        text: str,
+        k: int,
+        source: str | None = None,
+        vec: list[float] | None = None,
+        scope: Scope | None = None,
     ) -> list[ScoredChunk]:
         t = self._table
         numeric_terms = _numeric_query_terms(text)
@@ -1843,11 +1965,10 @@ class PgVectorStore:
             if numeric_terms
             else "0"
         )
-        # See `_query_dense`: the caller-facing identifier is the relative `file`, so match it (with
-        # a `source` fall-back for legacy rows). Aliased `c.` here.
-        where = (
-            "AND (c.metadata->>'file' = %(source)s OR c.source = %(source)s)" if source else ""
-        )
+        # See `_query_dense`: one predicate, from `recall.scope`, every value bound. This leg
+        # already aliases the chunk table `c`, which is the alias the predicate is rendered for.
+        effective = coerce_scope(scope, source)
+        where, scope_params = effective.predicate("c")
         # One CTE so the tsquery is built once and both the filter and the ranking see the
         # identical value; repeating the expression risked them drifting apart under edits.
         tsquery_cte = """
@@ -1898,8 +2019,7 @@ class PgVectorStore:
         }
         if vec is not None:
             params["vec"] = Vector(vec)
-        if source:
-            params["source"] = source
+        params.update(scope_params)
         rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._rows_to_hits(rows)
 
@@ -2055,6 +2175,7 @@ class PgVectorStore:
         profile_id: str,
         source: str | None = None,
         vec: list[float] | None = None,
+        scope: Scope | None = None,
     ) -> list[ScoredChunk]:
         """Learned sparse search, ranked by INNER PRODUCT against the query's term weights.
 
@@ -2079,7 +2200,7 @@ class PgVectorStore:
                 "should know that the QUERY is degenerate, not the corpus"
             )
         with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_LEARNED_SPARSE):
-            return self._query_learned_sparse(weights, k, profile_id, source, vec)
+            return self._query_learned_sparse(weights, k, profile_id, source, vec, scope)
 
     def _query_learned_sparse(
         self,
@@ -2088,6 +2209,7 @@ class PgVectorStore:
         profile_id: str,
         source: str | None = None,
         vec: list[float] | None = None,
+        scope: Scope | None = None,
     ) -> list[ScoredChunk]:
         if self.sparse_row_count(profile_id) == 0:
             raise LookupError(
@@ -2097,9 +2219,9 @@ class PgVectorStore:
                 f"that simply had no match."
             )
         t = self._table
-        where = (
-            "AND (c.metadata->>'file' = %(source)s OR c.source = %(source)s)" if source else ""
-        )
+        # See `_query_dense`: one predicate, from `recall.scope`, every value bound.
+        effective = coerce_scope(scope, source)
+        where, scope_params = effective.predicate("c")
         score_expr = (
             "1 - (c.embedding <=> %(dense)s)" if vec is not None else "-(s.vec <#> %(qvec)s)"
         )
@@ -2131,8 +2253,7 @@ class PgVectorStore:
         }
         if vec is not None:
             params["dense"] = Vector(vec)
-        if source:
-            params["source"] = source
+        params.update(scope_params)
 
         # Widen the HNSW walk, exactly as `_query_dense` does and for the same reason. See
         # SPARSE_EF_SEARCH_MULTIPLIER: at pgvector's default this leg returned 6 of 100.

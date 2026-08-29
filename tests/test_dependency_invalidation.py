@@ -41,3 +41,10 @@ def test_model_inference_is_not_invalidated_by_temporal_state() -> None:
         generation_id="generation",
         base_states={"inference.md": "expired"},
     )
+
+    # The authority assertion is not decoration. `reason_for` returns None both when a source was
+    # judged and not invalidated AND when it never entered the projection at all, so on its own it
+    # would pass just as happily against a build that silently dropped the chunk.
+    assert projection.authorities["inference.md"] == "model_inference"
+    assert projection.reason_for("inference.md") is None
+    assert dict(projection.invalidations) == {}

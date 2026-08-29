@@ -515,3 +515,25 @@ def test_graph_text_projection_is_opt_in_and_reserved() -> None:
     assert EVIDENCE_TEXT_METADATA_KEY not in default_chunk.metadata
     assert text_chunk.metadata["text"] == "shadow"
     assert text_chunk.metadata[EVIDENCE_TEXT_METADATA_KEY] == "body"
+
+
+def test_proposal_status_vocabulary_has_a_single_source_of_truth() -> None:
+    from typing import get_args
+
+    import recall.reasoning_proposals.types as proposal_types
+    from recall.reasoning_proposals._metrics import _VALID_STATUSES
+    from recall.reasoning_proposals._providers import _checked_status
+
+    assert hasattr(proposal_types, "PROPOSAL_STATUSES"), (
+        "types.py must export the status vocabulary beside PROPOSED_RELATIONS"
+    )
+    statuses = proposal_types.PROPOSAL_STATUSES
+    assert set(statuses) == set(get_args(ProposalStatus))
+    assert _VALID_STATUSES == frozenset(statuses)
+    for status in statuses:
+        assert _checked_status(status) == status
+    with pytest.raises(ValueError):
+        _checked_status("accepted")
+    # The validator must read the shared vocabulary, not a literal set of its own that can
+    # drift when the ProposalStatus type grows a member.
+    assert "PROPOSAL_STATUSES" in _checked_status.__code__.co_names
