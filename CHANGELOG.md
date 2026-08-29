@@ -72,6 +72,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   keys carry validity" true as the parser grows, and two design docs that had drifted from it were
   corrected.
 
+* **The skills and the write-time hook now reach users down every install path.** Three of the
+  four were wrong, each silently:
+
+  | path | before | now |
+  |---|---|---|
+  | PyPI | no skills at all — `plugin/` is not a package | the wheel force-includes them |
+  | `recall setup` | installed exactly one, named by a constant | installs every skill it discovers |
+  | Claude plugin | no `PreToolUse` hook, unlike `recall setup` | all four hook events |
+  | MCP registry | 3 environment variables declared | the two whose absence fails silently, plus `RECALL_MCP_TOOLS` |
+
+  The installer's `SKILL_NAME` constant is the interesting one: adding a second skill installed
+  neither it nor any future one, and nothing reported that. Discovery replaces enumeration, and
+  the destination name comes from the skill's own directory rather than a constant, which is what
+  stopped every skill from overwriting the first.
+
+  `RECALL_EMBEDDER` is the omission that mattered most in the registry manifest. Several models
+  emit 1024 dimensions, so pointing the server at the wrong one does not raise — it returns a
+  confidently ranked list that means nothing.
+
 * **A second published skill, `keep-memory-current`.** `check-memory-before-acting` covers the
   read side; this covers the write side, which is the half that decays first. It states the two
   moments that decide whether a memory store is worth anything — what you load when you start and
