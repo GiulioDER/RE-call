@@ -148,6 +148,26 @@ _MARKDOWN_MEDIA_TYPES = frozenset({"text/markdown", "text/x-markdown"})
 _BODY_RULE_VERSION_KEY = "body_rule_version"
 _BODY_RULE_VERSION = "frontmatter-pairing-2026-08-11"
 
+#: Version of what this build DERIVES from a document, as opposed to what the document says.
+#:
+#: `_BODY_RULE_VERSION` above solved one instance of a general problem and its docstring states
+#: the general form exactly: reuse is keyed on tenant, URI, sha256 and pipeline fingerprint, and
+#: none of those moves when the code that reads a document changes, so a parser change is
+#: "stale forever" for every source whose bytes are unchanged. That guard was scoped to the
+#: frontmatter PAIRING rule alone.
+#:
+#: Recognising `type:` as a retrieval facet was the second instance, and it landed on 0.3% of a
+#: 10,155-chunk corpus: only the 40 chunks whose files happened to change were re-derived, and a
+#: `--force` rebuild could never fix the rest, because force builds a new GENERATION and reuse is
+#: per SOURCE. Measured 2026-08-29 on the memory tenant.
+#:
+#: So this is the general term the precedent lacked: bump it whenever a change alters the
+#: metadata derived from an UNCHANGED document, and every source is re-derived exactly once.
+#: `_reuse_source` requires it unconditionally, so chunks written before it existed carry no
+#: value, never match, and are rebuilt on the next generation.
+_METADATA_RULE_VERSION_KEY = "metadata_rule_version"
+_METADATA_RULE_VERSION = "facet-keys-2026-08-29"
+
 
 def _body_rule_changed(media_type: str, text: str) -> bool:
     """True when this object's body moved because the frontmatter pairing rule changed.
@@ -616,6 +636,9 @@ class GenerationManager:
             "ON g.tenant_id = c.tenant_id AND g.generation_id = c.generation_id "
             "WHERE c.tenant_id = %s AND c.source_uri = %s AND c.source_sha256 = %s "
             "AND (%s OR c.metadata ->> %s = %s) "
+            # Unconditional, unlike the body rule term above: a chunk written before this stamp
+            # existed carries no value, so it never matches and is re-derived once.
+            "AND c.metadata ->> %s = %s "
             "AND g.pipeline_fingerprint = %s AND g.state IN ('active', 'ready', 'retired') "
             "ORDER BY g.activated_at DESC NULLS LAST, g.created_at DESC LIMIT 1",
             (
@@ -625,6 +648,8 @@ class GenerationManager:
                 require_body_rule_version is None,
                 _BODY_RULE_VERSION_KEY,
                 require_body_rule_version,
+                _METADATA_RULE_VERSION_KEY,
+                _METADATA_RULE_VERSION,
                 pipeline_fingerprint,
             ),
         ).fetchone()
@@ -780,6 +805,9 @@ class GenerationManager:
                 # Stamped here, after frontmatter has been read and before any chunk is built,
                 # so every chunk of every document carries it and no document can override it.
                 metadata = with_provenance(metadata, provenance or {})
+                # After `with_provenance` for the same reason it exists: a document must not be
+                # able to declare its own derivation version and thereby win reuse it should lose.
+                metadata[_METADATA_RULE_VERSION_KEY] = _METADATA_RULE_VERSION
                 piece_metadata: list[dict[str, Any]] = []
                 has_structured_tables = (
                     entry.media_type not in _MARKDOWN_MEDIA_TYPES

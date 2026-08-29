@@ -1822,3 +1822,95 @@ def test_gc_scrubs_the_sidecar_rows_of_collected_generations(manager) -> None:
             (manager.tenant_id, chunk_ids),
         ).fetchone()[0]
     assert orphaned == 0, "gc left sidecar rows for chunks it cascade-deleted"
+
+
+@requires_db
+def test_a_chunk_without_the_metadata_rule_version_is_never_reused(manager) -> None:
+    """The general form of the body-rule guard, and the assertion that dies if it is removed.
+
+    Reuse is keyed on tenant, URI, sha256 and pipeline fingerprint. None of those moves when the
+    code that DERIVES metadata from a document changes, so without this term a parser change is
+    stale forever for every source whose bytes are unchanged. Measured on the memory tenant on
+    2026-08-29: recognising a `type:` facet reached 0.3% of a 10,155-chunk corpus, and no
+    `--force` rebuild could reach the rest, because force builds a new generation while reuse is
+    decided per source.
+    """
+    data = b"---\ntype: reference\n---\n\n# Title\n\nBody.\n"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    with manager._connect() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE recall_chunks_v1 SET metadata = metadata - %s "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            ("metadata_rule_version", manager.tenant_id, first),
+        )
+
+    must_run = _Embedder(9)
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(second.generation_id, reader, must_run, lambda text: [text])
+
+    assert stats.reused_objects == 0, "a chunk predating the stamp must not be reused"
+    assert must_run.calls == 1, "it must be re-derived, not copied"
+
+    manager.validate(second.generation_id)
+    manager.promote(second.generation_id, unsafe_development=True)
+
+    reused_after_repair = _Embedder(11)
+    third = manager.create(manifest, pipeline)
+    third_stats = manager.build(
+        third.generation_id, reader, reused_after_repair, lambda text: [text]
+    )
+
+    assert third_stats.reused_objects == 1, "one re-derivation, not one per generation forever"
+    assert reused_after_repair.calls == 0
+
+
+@requires_db
+def test_a_stale_metadata_rule_version_is_never_reused(manager) -> None:
+    """Bumping the constant is what makes a future metadata change land."""
+    data = b"---\ntype: project\n---\n\n# Title\n\nBody.\n"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    with manager._connect() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE recall_chunks_v1 SET metadata = jsonb_set(metadata, %s, %s) "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            ("{metadata_rule_version}", '"an-older-rule"', manager.tenant_id, first),
+        )
+
+    must_run = _Embedder(9)
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(second.generation_id, reader, must_run, lambda text: [text])
+
+    assert stats.reused_objects == 0
+    assert must_run.calls == 1
+
+
+@requires_db
+def test_the_authored_facet_reaches_chunk_metadata_on_the_production_build_path(manager) -> None:
+    """`recall index` is refused under RECALL_ENV=production, so this is the path that matters.
+
+    Without this the facet dimension can be complete on the index path and absent from every
+    corpus anyone actually serves, which is exactly what happened.
+    """
+    data = b"---\nname: memo\ntype: Feedback\n---\n\n# Title\n\nBody.\n"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    generation = _ready(manager, manifest, _pipeline("model-a"), reader, _Embedder(1))
+
+    with manager._connect() as conn:
+        rows = conn.execute(
+            "SELECT metadata ->> 'type', metadata ->> 'metadata_rule_version' "
+            "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
+            (manager.tenant_id, generation),
+        ).fetchall()
+
+    assert rows, "the build produced no chunks"
+    assert all(facet == "Feedback" for facet, _v in rows), rows
+    assert all(version for _f, version in rows), "every chunk carries the derivation version"
