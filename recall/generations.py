@@ -23,6 +23,7 @@ from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextu
 from recall.embeddings import Embedder, embed_passages, embedding_profile, embedding_profile_id
 from recall.extraction import ExtractedDocument, chunk_extracted_document
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
+from recall.dependency_invalidation import build_dependency_projection, write_dependency_projection
 from recall.lineage import (
     GenerationState,
     IndexManifestV1,
@@ -632,10 +633,12 @@ class GenerationManager:
         copied = conn.execute(
             "INSERT INTO recall_chunks_v1 "
             "(tenant_id, generation_id, chunk_id, source_uri, object_version_id, "
-            "source_sha256, chunk_ordinal, text, metadata, embedding, indexed_at, tsv) "
+            "source_sha256, chunk_ordinal, text, metadata, embedding, indexed_at, "
+            "first_indexed_at, tsv) "
             "SELECT tenant_id, %s, chunk_id, source_uri, %s, source_sha256, chunk_ordinal, "
             "text, metadata || jsonb_build_object('reused_from_generation', generation_id), "
-            "embedding, clock_timestamp(), tsv FROM recall_chunks_v1 "
+            "embedding, clock_timestamp(), COALESCE(first_indexed_at, indexed_at), tsv "
+            "FROM recall_chunks_v1 "
             "WHERE tenant_id = %s AND generation_id = %s AND source_uri = %s",
             (
                 generation_id,
@@ -910,6 +913,15 @@ class GenerationManager:
                     )
                     for row in rows
                 ]
+                asserted_at_rows = conn.execute(
+                    "SELECT source_uri, min(COALESCE(first_indexed_at, indexed_at)) "
+                    "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+                    "GROUP BY source_uri",
+                    (self.tenant_id, generation_id),
+                ).fetchall()
+                asserted_at_by_source = {
+                    str(row[0]): row[1] for row in asserted_at_rows
+                }
                 try:
                     semantic_graph = build_semantic_graph(
                         graph_chunks,
@@ -919,6 +931,14 @@ class GenerationManager:
                         corpus_fingerprint=current.corpus_fingerprint,
                     )
                     write_semantic_graph(conn, semantic_graph)
+                    dependency_projection = build_dependency_projection(
+                        graph_chunks,
+                        tenant_id=self.tenant_id,
+                        generation_id=generation_id,
+                        asserted_at_by_source=asserted_at_by_source,
+                        corpus_fingerprint=current.corpus_fingerprint,
+                    )
+                    write_dependency_projection(conn, dependency_projection)
                 except BaseException:
                     METRICS.increment("recall_graph_build_failure_total")
                     METRICS.observe(
@@ -939,6 +959,12 @@ class GenerationManager:
                 "empty_objects": empty,
                 "indexed_sources": sorted(indexed_sources),
                 "semantic_graph": _semantic_graph_marker(semantic_graph),
+                "dependency_projection": {
+                    "projection_id": dependency_projection.projection_id,
+                    "edge_count": len(dependency_projection.edges),
+                    "diagnostic_count": len(dependency_projection.diagnostics),
+                    "ready": True,
+                },
             }
             with self._connect() as conn, conn.transaction():
                 current = self._require_generation(conn, generation_id, lock=True)
@@ -1091,6 +1117,13 @@ class GenerationManager:
                 "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
                 (self.tenant_id, generation_id),
             ).fetchall()
+            asserted_at_rows = conn.execute(
+                "SELECT source_uri, min(COALESCE(first_indexed_at, indexed_at)) "
+                "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+                "GROUP BY source_uri",
+                (self.tenant_id, generation_id),
+            ).fetchall()
+            asserted_at_by_source = {str(item[0]): item[1] for item in asserted_at_rows}
             graph = build_semantic_graph(
                 [
                     Chunk(
@@ -1111,7 +1144,29 @@ class GenerationManager:
                 or graph_marker.get("graph_fingerprint") != graph.fingerprint
             ):
                 raise GenerationError("generation semantic graph fingerprint mismatch")
+            dependency_projection = build_dependency_projection(
+                [
+                    Chunk(
+                        str(item[0]),
+                        str(item[1]),
+                        str(item[2]),
+                        item[3] if isinstance(item[3], dict) else {},
+                    )
+                    for item in graph_rows
+                ],
+                tenant_id=self.tenant_id,
+                generation_id=generation_id,
+                asserted_at_by_source=asserted_at_by_source,
+                corpus_fingerprint=current.corpus_fingerprint,
+            )
+            write_dependency_projection(conn, dependency_projection)
             summary.update({"validated_sources": len(actual), "validated_chunks": chunks})
+            summary["dependency_projection"] = {
+                "projection_id": dependency_projection.projection_id,
+                "edge_count": len(dependency_projection.edges),
+                "diagnostic_count": len(dependency_projection.diagnostics),
+                "ready": True,
+            }
             conn.execute(
                 "UPDATE recall_generations SET state = 'ready', ready_at = clock_timestamp(), "
                 "validation_summary = %s WHERE tenant_id = %s AND generation_id = %s",
@@ -1196,6 +1251,13 @@ class GenerationManager:
                 "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
                 (self.tenant_id, generation_id),
             ).fetchall()
+            asserted_at_rows = conn.execute(
+                "SELECT source_uri, min(COALESCE(first_indexed_at, indexed_at)) "
+                "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+                "GROUP BY source_uri",
+                (self.tenant_id, generation_id),
+            ).fetchall()
+            asserted_at_by_source = {str(item[0]): item[1] for item in asserted_at_rows}
             graph_started = time.perf_counter()
             try:
                 graph = build_semantic_graph(
@@ -1214,6 +1276,22 @@ class GenerationManager:
                     corpus_fingerprint=current.corpus_fingerprint,
                 )
                 write_semantic_graph(conn, graph)
+                dependency_projection = build_dependency_projection(
+                    [
+                        Chunk(
+                            str(row[0]),
+                            str(row[1]),
+                            str(row[2]),
+                            row[3] if isinstance(row[3], dict) else {},
+                        )
+                        for row in rows
+                    ],
+                    tenant_id=self.tenant_id,
+                    generation_id=generation_id,
+                    asserted_at_by_source=asserted_at_by_source,
+                    corpus_fingerprint=current.corpus_fingerprint,
+                )
+                write_dependency_projection(conn, dependency_projection)
             except BaseException:
                 METRICS.increment("recall_graph_build_failure_total")
                 METRICS.observe(
@@ -1232,6 +1310,12 @@ class GenerationManager:
             ).fetchone()
             summary = dict(summary_row[0]) if summary_row and isinstance(summary_row[0], Mapping) else {}
             summary["semantic_graph"] = _semantic_graph_marker(graph)
+            summary["dependency_projection"] = {
+                "projection_id": dependency_projection.projection_id,
+                "edge_count": len(dependency_projection.edges),
+                "diagnostic_count": len(dependency_projection.diagnostics),
+                "ready": True,
+            }
             conn.execute(
                 "UPDATE recall_generations SET validation_summary = %s "
                 "WHERE tenant_id = %s AND generation_id = %s",

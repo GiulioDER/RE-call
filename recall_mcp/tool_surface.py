@@ -43,7 +43,6 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         # authorization message. It is deliberately NOT in the `read` preset: that preset
         # is a curated minimum, and `all` is the default, which is what serves it today.
         "recall_query_construction_challenge",
-        "recall_graph_first_retrieval",
         "recall_reasoning_projection",
         "recall_reasoning_proposals",
         "recall_rewrite_plan",

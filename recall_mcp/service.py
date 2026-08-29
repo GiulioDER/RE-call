@@ -57,12 +57,7 @@ from recall.evidence import (
     render_evidence_prompt,
 )
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, CurrentStateProjection, project_current_state
-from recall.explanations import RetrievalExplanation
-from recall.graph_first import (
-    GraphFirstMode,
-    MAX_GRAPH_FIRST_CANDIDATES,
-    build_graph_first_candidates,
-)
+from recall.explanations import RetrievalExplanation, memory_audit
 from recall.query_class import route_query, routing_mode
 from recall.query_construction import (
     MAX_QUERY_CHARS as MAX_QUERY_CONSTRUCTION_QUERY_CHARS,
@@ -105,7 +100,7 @@ from recall.reasoning_graph import (
     build_reasoning_graph,
     project_store_graph,
 )
-from recall.semantic_graph import SemanticGraphProjection, normalize_entity_name
+from recall.semantic_graph import normalize_entity_name
 from recall.reasoning_planner import ReasoningBudget
 from recall.reasoning_proposals import (
     InferenceProposal,
@@ -228,7 +223,8 @@ class SearchHit(BaseModel):
     verdict: str = Field(
         description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
         "| ambiguous_supersession "
-        "| invalid_metadata. Only 'ok' hits should be relied on. (The library also defines "
+        "| invalid_metadata | dependency_invalidated. Only 'ok' hits should be relied on. "
+        "(The library also defines "
         "not_entailed for the opt-in entailment stage, which this server does not enable.)"
     )
     superseded_by: str | None = Field(
@@ -245,6 +241,16 @@ class SearchHit(BaseModel):
         default=None, description="ISO timestamp of when this memory entered the index."
     )
     text: str = Field(description="The retrieved memory chunk.")
+    authority: str = Field(
+        default="unknown",
+        description="Authored authority tier: policy, user_confirmed_decision, tool_observation, model_inference, or unknown.",
+    )
+    dependencies: list[str] = Field(
+        default_factory=list, description="Canonical authored source dependencies."
+    )
+    invalidation: dict[str, object] | None = Field(
+        default=None, description="Structured dependency invalidation reason, when present."
+    )
 
 
 class SearchResult(BaseModel):
@@ -267,7 +273,7 @@ class SearchResult(BaseModel):
         default=None,
         description="Stable machine-readable reason the gate could not certify this answer: "
         "INDEX_NOT_READY | LINEAGE_MISMATCH | CALIBRATION_MISSING | CALIBRATION_UNCERTIFIED | "
-        "CALIBRATION_STALE | DEPENDENCY_UNAVAILABLE. Null when trusted.",
+        "CALIBRATION_STALE | DEPENDENCY_UNAVAILABLE | DEPENDENCY_GRAPH_NOT_READY. Null when trusted.",
     )
     tenant_id: str | None = None
     generation_id: str | None = None
@@ -351,6 +357,7 @@ class EvidenceItemModel(BaseModel):
         description="Calibrated confidence in [0, 1], or null for structural relatedness."
     )
     verdict: str = Field(description="Always 'ok'. Nothing else is admitted to a bundle.")
+    authority: str = Field(default="unknown", description="Authored authority tier.")
 
 
 class EvidenceResult(BaseModel):
@@ -435,6 +442,9 @@ class ReasoningProjectionResult(BaseModel):
     )
     node_count: int = Field(description="Number of graph nodes in the projection.")
     authored_edge_count: int = Field(description="Number of authored supersession edges.")
+    authored_dependency_edge_count: int = Field(
+        default=0, description="Number of authored canonical source dependency edges."
+    )
     inferred_candidate_edge_count: int = Field(
         description="Number of inferred candidate edges included in the projection."
     )
@@ -458,7 +468,7 @@ class CurrentStateRecordModel(BaseModel):
     state_id: str = Field(description="Stable identity of this state record.")
     source: str = Field(description="Canonical authored source identity.")
     state: str = Field(
-        description="current | superseded | expired | not_yet_valid | ambiguous | invalid."
+        description="current | superseded | expired | not_yet_valid | not_yet_known | ambiguous | invalid | dependency_invalidated."
     )
     chunk_ids: list[str] = Field(description="Evidence chunks contributing to this source state.")
     successor_chain: list[str] = Field(
@@ -468,6 +478,12 @@ class CurrentStateRecordModel(BaseModel):
     valid_until: str | None = Field(default=None, description="Latest authored validity end.")
     diagnostics: list[str] = Field(
         default_factory=list, description="Stable fail closed diagnostic codes."
+    )
+    base_state: str | None = Field(default=None, description="State before dependency invalidation.")
+    authority: str = Field(default="unknown", description="Authored authority tier.")
+    dependencies: list[str] = Field(default_factory=list, description="Canonical dependencies.")
+    invalidation_chain: list[str] = Field(
+        default_factory=list, description="Bounded dependent to invalidating source path."
     )
 
 
@@ -481,6 +497,9 @@ class CurrentStateResult(BaseModel):
     pipeline_fingerprint: str | None = Field(default=None, description="Pipeline identity.")
     corpus_fingerprint: str | None = Field(default=None, description="Corpus identity.")
     as_of: str = Field(description="Exact UTC instant used for the projection.")
+    known_as_of: str | None = Field(
+        default=None, description="Transaction-time replay instant, when supplied."
+    )
     records: list[CurrentStateRecordModel] = Field(description="Projected source states.")
 
 
@@ -495,6 +514,21 @@ class RelatedResult(BaseModel):
     explanation: dict[str, object] | None = Field(
         default=None, description="Optional structured explanation when explain=true."
     )
+
+
+def _invalidation_payload(hit: TrustedHit) -> dict[str, object] | None:
+    reason = hit.invalidation
+    if reason is None:
+        return None
+    return {
+        "dependency": reason.dependency,
+        "cause": reason.cause,
+        "authority": reason.authority,
+        "path": list(reason.bounded_path()),
+        "generation": reason.generation,
+        "as_of": reason.as_of.isoformat() if reason.as_of else None,
+        "known_as_of": reason.known_as_of.isoformat() if reason.known_as_of else None,
+    }
 
 
 class ReasoningProposalItem(BaseModel):
@@ -968,6 +1002,7 @@ def _retrieve_trusted(
     k: int,
     calibration: Calibration | None,
     policy: TrustPolicy | None,
+    dependency_mode: str | None = None,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by `search_memory` and `evidence_memory`.
 
@@ -1026,6 +1061,7 @@ def _retrieve_trusted(
                 # process state and the store is not; construction is allocation-only, and a
                 # malformed value warns once and stays off rather than refusing the search.
                 ledger=DecisionLedger.from_env(store, actor="mcp-service"),
+                dependency_mode=dependency_mode,
             )
     # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
     # counted as a rejection and NOTHING else. Shedding is the design working: the request did no
@@ -1117,6 +1153,7 @@ def search_memory(
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
+    dependency_mode: str | None = None,
 ) -> SearchResult:
     """Run a trust-evaluated hybrid search and format it into actionable self-recall guidance.
 
@@ -1130,7 +1167,9 @@ def search_memory(
     are demoted below valid ones, and when no valid hit remains the result abstains.
     `k` is clamped to [1, MAX_SEARCH_K] so an untrusted client cannot request an unbounded result set.
     """
-    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
+    retrieval = _retrieve_trusted(
+        store, embedder, query, source, k, calibration, policy, dependency_mode
+    )
     result, timed = retrieval.result, retrieval.timed
     route = route_query(query)
     active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
@@ -1152,6 +1191,9 @@ def search_memory(
             ordinal=h.provenance.ord,
             indexed_at=h.provenance.indexed_at.isoformat() if h.provenance.indexed_at else None,
             text=h.chunk.text,
+            authority=h.authority,
+            dependencies=list(h.dependencies),
+            invalidation=_invalidation_payload(h),
         )
         for h in result.hits
     ]
@@ -1186,6 +1228,9 @@ def search_memory(
                     if item.provenance.indexed_at
                     else None,
                     text=item.chunk.text,
+                    authority=item.authority,
+                    dependencies=list(item.dependencies),
+                    invalidation=_invalidation_payload(item),
                 )
                 for item in related_result.items
             ]
@@ -1222,7 +1267,7 @@ def search_memory(
             "Memory probably has no answer to this (corpus gap)."
             if result.gap_warning
             else "A candidate was found but is not trustworthy (superseded, expired, or below "
-            "the confidence threshold)."
+            "the confidence threshold, or dependency-invalidated)."
         )
         advice = (
             f"No trustworthy memory for this query — say you don't know and do NOT answer from "
@@ -1262,6 +1307,7 @@ def search_memory(
             trust_reason=None if not result.abstained else result.reason,
             abstention_reason=result.reason if result.abstained else None,
             generation_id=result.generation_id or "legacy",
+            details={"memory_audit": memory_audit(result.hits)},
         ).as_dict()
     return SearchResult(
         query=query,
@@ -1390,6 +1436,7 @@ def evidence_memory(
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
+    dependency_mode: str | None = None,
 ) -> EvidenceResult:
     """Retrieve, evaluate trust, and return the evidence boundary — WITHOUT calling a generator.
 
@@ -1402,7 +1449,9 @@ def evidence_memory(
     shed-versus-failure accounting or the budget verdict. Explanation and related fields remain
     opt in and are additive to the existing response shape.
     """
-    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
+    retrieval = _retrieve_trusted(
+        store, embedder, query, source, k, calibration, policy, dependency_mode
+    )
     result = retrieval.result
     route = route_query(query)
     active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
@@ -1454,6 +1503,7 @@ def evidence_memory(
             cosine=None if item.chunk_id in related_ids else round(item.cosine, 4),
             confidence=None if item.chunk_id in related_ids else round(item.confidence, 4),
             verdict=item.verdict,
+            authority=item.authority,
         )
         for item in bundle.items
     ]
@@ -1476,6 +1526,11 @@ def evidence_memory(
             related_seed_chunk_id=(related_result.seed_chunk_id if related_result else None),
             related_relation=(related_result.relation if related_result else None),
             generation_id=bundle.index_generation,
+            details={
+                "memory_audit": memory_audit(
+                    result.hits, context_chunk_ids=[item.chunk_id for item in bundle.items]
+                )
+            },
         ).as_dict()
     related_items = []
     if related_result is not None:
@@ -1497,6 +1552,7 @@ def evidence_memory(
                 cosine=round(item.cosine, 4),
                 confidence=round(item.confidence, 4),
                 verdict=item.verdict,
+                authority=item.authority,
             )
             for item in related_result.items
         ]
@@ -1569,6 +1625,7 @@ def reasoning_projection(
         corpus_fingerprint=graph.corpus_fingerprint,
         node_count=len(graph.nodes),
         authored_edge_count=len(graph.authored_edges),
+        authored_dependency_edge_count=len(graph.authored_dependency_edges),
         inferred_candidate_edge_count=len(graph.inferred_candidate_edges),
         diagnostic_count=len(graph.diagnostics),
         trust_state="trusted" if graph.generation_id != "legacy" else "degraded",
@@ -1585,6 +1642,7 @@ def current_state_memory(
     store: PgVectorStore,
     *,
     as_of: datetime | None = None,
+    known_as_of: datetime | None = None,
     source: str | None = None,
     max_records: int = MAX_CURRENT_STATE_RECORDS,
 ) -> CurrentStateResult:
@@ -1597,6 +1655,7 @@ def current_state_memory(
     Args:
         store: tenant bound read store.
         as_of: optional point in time for authored validity and supersession.
+        known_as_of: optional transaction-time replay instant.
         source: optional canonical source filter.
         max_records: positive serving bound on projected source records.
 
@@ -1604,7 +1663,11 @@ def current_state_memory(
         ValueError: if the bound is invalid or the projection exceeds it.
     """
     projection: CurrentStateProjection = project_current_state(
-        store, as_of=as_of, source=source, max_records=max_records
+        store,
+        as_of=as_of,
+        known_as_of=known_as_of,
+        source=source,
+        max_records=max_records,
     )
     return CurrentStateResult(
         schema_version=projection.schema_version,
@@ -1614,6 +1677,9 @@ def current_state_memory(
         pipeline_fingerprint=projection.pipeline_fingerprint,
         corpus_fingerprint=projection.corpus_fingerprint,
         as_of=projection.as_of.isoformat(),
+        known_as_of=projection.known_as_of.isoformat()
+        if projection.known_as_of
+        else None,
         records=[
             CurrentStateRecordModel(
                 state_id=record.state_id,
@@ -1624,6 +1690,10 @@ def current_state_memory(
                 valid_from=record.valid_from.isoformat() if record.valid_from else None,
                 valid_until=record.valid_until.isoformat() if record.valid_until else None,
                 diagnostics=list(record.diagnostics),
+                base_state=record.base_state,
+                authority=record.authority,
+                dependencies=list(record.dependencies),
+                invalidation_chain=list(record.invalidation_chain),
             )
             for record in projection.records
         ],
@@ -3676,155 +3746,6 @@ def _query_construction_graph(
     }
 
 
-def graph_first_retrieval(
-    store: PgVectorStore,
-    embedder: Embedder,
-    query: str,
-    *,
-    mode: GraphFirstMode = "hybrid",
-    source: str | None = None,
-    k: int = 5,
-    max_candidates: int = MAX_GRAPH_FIRST_CANDIDATES,
-    expected_generation_id: str | None = None,
-    policy: TrustPolicy | None = None,
-    calibration: Calibration | None = None,
-) -> dict[str, object]:
-    """Probe graph-derived query seeds before ordinary trusted retrieval.
-
-    The graph contributes only bounded query proposals. Every proposal and the original query
-    pass through `_retrieve_trusted`, and only trusted results are merged. This is deliberately a
-    separate opt-in surface so the existing graph expansion contract still requires trusted seeds.
-    """
-
-    if mode not in {"entity", "relation", "hybrid"}:
-        raise ValueError("mode must be 'entity', 'relation', or 'hybrid'")
-    if not 1 <= max_candidates <= MAX_GRAPH_FIRST_CANDIDATES:
-        raise ValueError(
-            f"max_candidates must be between 1 and {MAX_GRAPH_FIRST_CANDIDATES}"
-        )
-    if not query.strip():
-        raise ValueError("query must be non-empty")
-
-    generation = _reasoning_generation(store)
-    if expected_generation_id is not None and expected_generation_id != generation.generation_id:
-        return {
-            "status": "refused",
-            "mode": mode,
-            "refusal_reason": "generation_mismatch",
-            "generation": _query_construction_generation(generation),
-            "diagnostics": {"retrieval_calls": 0, "graph": {"readiness": "not_checked"}},
-        }
-
-    graph_started = time.perf_counter()
-    semantic = None
-    graph_reason: str | None = None
-    readiness = None
-    readiness_reader = getattr(store, "graph_readiness", None)
-    loader = getattr(store, "load_semantic_graph", None)
-    try:
-        readiness = readiness_reader() if callable(readiness_reader) else None
-        if callable(loader) and generation.generation_id is not None:
-            semantic = cast(SemanticGraphProjection | None, loader(generation.generation_id))
-        else:
-            semantic = project_store_graph(store, include_text=False).semantic_graph
-        if readiness is not None and not readiness.ready:
-            graph_reason = "graph_not_ready"
-        elif semantic is None:
-            graph_reason = "graph_not_ready"
-        elif semantic.tenant_id != store.tenant:
-            graph_reason = "tenant_mismatch"
-        elif generation.generation_id and semantic.generation_id != generation.generation_id:
-            graph_reason = "generation_mismatch"
-        elif (
-            generation.pipeline_fingerprint
-            and semantic.pipeline_fingerprint != generation.pipeline_fingerprint
-        ):
-            graph_reason = "pipeline_mismatch"
-        elif (
-            generation.corpus_fingerprint
-            and semantic.corpus_fingerprint != generation.corpus_fingerprint
-        ):
-            graph_reason = "corpus_mismatch"
-    except Exception as exc:
-        graph_reason = type(exc).__name__
-        semantic = None
-
-    graph_candidates = ()
-    if semantic is not None and graph_reason is None:
-        graph_candidates = build_graph_first_candidates(
-            semantic,
-            query,
-            mode=mode,
-            max_candidates=max_candidates,
-        )
-
-    baseline = _retrieve_trusted(store, embedder, query, source, k, calibration, policy).result
-    baseline = replace(
-        baseline,
-        tenant_id=baseline.tenant_id or store.tenant,
-        generation_id=baseline.generation_id or generation.generation_id,
-    )
-    _same_generation(generation, baseline)
-
-    candidate_results: list[TrustedResult] = []
-    failures: list[str] = []
-    for candidate in graph_candidates:
-        try:
-            result = _retrieve_trusted(
-                store, embedder, candidate.query, source, k, calibration, policy
-            ).result
-            result = replace(
-                result,
-                tenant_id=result.tenant_id or store.tenant,
-                generation_id=result.generation_id or generation.generation_id,
-            )
-            _same_generation(generation, result)
-            candidate_results.append(result)
-        except Exception as exc:
-            failures.append(type(exc).__name__)
-
-    merged = merge_trusted_results(baseline, candidate_results, original_query=query)
-    merged = replace(
-        merged,
-        tenant_id=merged.tenant_id or store.tenant,
-        generation_id=merged.generation_id or generation.generation_id,
-    )
-    baseline_ids = {hit.chunk.id for hit in baseline.hits if is_trusted(hit)}
-    merged_ids = {hit.chunk.id for hit in merged.hits if is_trusted(hit)}
-    return {
-        "status": "complete",
-        "mode": mode,
-        "generation": _query_construction_generation(generation),
-        "baseline_retrieval": _query_construction_retrieval(baseline),
-        "candidate_queries": [candidate.to_dict() for candidate in graph_candidates],
-        "candidate_retrievals": [
-            _query_construction_retrieval(result) for result in candidate_results
-        ],
-        "retrieval": _query_construction_retrieval(merged),
-        "new_trusted_chunk_ids": sorted(merged_ids - baseline_ids),
-        "diagnostics": {
-            "retrieval_calls": 1 + len(candidate_results),
-            "model_calls": 0,
-            "token_cost": 0,
-            "graph": {
-                "readiness": "ready" if semantic is not None and graph_reason is None else "not_ready",
-                "reason": graph_reason,
-                "entities_inspected": len(semantic.entities) if semantic is not None else 0,
-                "mentions_inspected": len(semantic.mentions) if semantic is not None else 0,
-                "relations_inspected": len(semantic.relations) if semantic is not None else 0,
-                "diagnostics_encountered": len(semantic.diagnostics) if semantic is not None else 0,
-                "candidates_discovered": len(graph_candidates),
-                "candidates_accepted": len(graph_candidates),
-                "candidates_rejected": 0,
-                "candidate_retrieval_failures": len(failures),
-                "latency_ms": round((time.perf_counter() - graph_started) * 1000.0, 3),
-            },
-            "new_trusted_items": len(merged_ids - baseline_ids),
-            "provider_failures": failures,
-        },
-    }
-
-
 def query_construction_challenge(
     store: PgVectorStore,
     embedder: Embedder,
@@ -3839,7 +3760,6 @@ def query_construction_challenge(
     expected_generation_id: str | None = None,
     graph_expansion: str = "off",
     max_graph_nodes: int = 32,
-    challenge_marker: str | None = None,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
 ) -> dict[str, object]:
@@ -3898,7 +3818,6 @@ def query_construction_challenge(
         graph_anchors=_query_construction_anchors(baseline),
         gap_reason=baseline.reason or "retrieval_gap",
         round_index=round_index,
-        challenge_marker=challenge_marker,
     )
 
     if frame is None:
@@ -3977,7 +3896,6 @@ def query_construction_challenge(
             gap_reason=baseline.reason or "retrieval_gap",
             round_index=round_index,
             max_candidates=MAX_QUERY_CANDIDATES,
-            challenge_marker=challenge_marker,
         ),
         proposals,
     )
@@ -4088,7 +4006,6 @@ def query_construction_challenge(
             graph_anchors=_query_construction_anchors(graph_result),
             gap_reason=graph_result.reason or "retrieval_gap",
             round_index=round_index + 1,
-            challenge_marker=challenge_marker,
         )
         response["next_challenge_prompt"] = build_original_model_challenge(
             followup_request

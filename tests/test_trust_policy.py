@@ -22,15 +22,16 @@ from recall.trust_policy import (
 
 
 class TestFailureCodes:
-    """The six codes are a stable machine-readable contract. Their spelling is the API."""
+    """The seven codes are a stable machine-readable contract. Their spelling is the API."""
 
-    def test_all_six_codes_exist_with_exact_spelling(self) -> None:
+    def test_all_seven_codes_exist_with_exact_spelling(self) -> None:
         assert TrustFailureCode.INDEX_NOT_READY.value == "INDEX_NOT_READY"
         assert TrustFailureCode.LINEAGE_MISMATCH.value == "LINEAGE_MISMATCH"
         assert TrustFailureCode.CALIBRATION_MISSING.value == "CALIBRATION_MISSING"
         assert TrustFailureCode.CALIBRATION_UNCERTIFIED.value == "CALIBRATION_UNCERTIFIED"
         assert TrustFailureCode.CALIBRATION_STALE.value == "CALIBRATION_STALE"
         assert TrustFailureCode.DEPENDENCY_UNAVAILABLE.value == "DEPENDENCY_UNAVAILABLE"
+        assert TrustFailureCode.DEPENDENCY_GRAPH_NOT_READY.value == "DEPENDENCY_GRAPH_NOT_READY"
 
     def test_no_unexpected_codes(self) -> None:
         assert {code.value for code in TrustFailureCode} == {
@@ -40,6 +41,7 @@ class TestFailureCodes:
             "CALIBRATION_UNCERTIFIED",
             "CALIBRATION_STALE",
             "DEPENDENCY_UNAVAILABLE",
+            "DEPENDENCY_GRAPH_NOT_READY",
         }
 
 

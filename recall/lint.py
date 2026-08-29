@@ -39,6 +39,10 @@ from pathlib import Path
 from typing import Literal
 
 from recall.derived_block import diagnose_derived_block
+from recall.dependency_invalidation import (
+    authority_from_metadata,
+    dependencies_from_metadata,
+)
 from recall.document import parse_document
 from recall.frontmatter import supersedes_key, validity_bounds
 
@@ -172,6 +176,7 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
     # superseded basename -> ALL files claiming to supersede it (a single-valued map would
     # drop edges on fan-in and could hide a declared cycle behind a third superseder)
     superseders: dict[str, list[str]] = {}
+    dependency_graph: dict[str, list[str]] = {}
     issues: list[LintIssue] = []
 
     metas: dict[str, dict[str, object]] = {}
@@ -196,6 +201,46 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
             validity_bounds(meta)
         except ValueError as exc:
             issues.append(LintIssue(rel[f], "error", "invalid-date", str(exc)))
+        try:
+            authority_from_metadata(meta)
+        except ValueError as exc:
+            issues.append(LintIssue(rel[f], "error", "invalid-authority", str(exc)))
+        try:
+            graph_dependencies = dependencies_from_metadata(meta)
+        except ValueError as exc:
+            graph_dependencies = ()
+            issues.append(LintIssue(rel[f], "error", "malformed-dependency", str(exc)))
+        raw_graph = meta.get("recall_graph")
+        if isinstance(raw_graph, dict) and isinstance(raw_graph.get("depends_on"), list):
+            raw_dependencies = [
+                item.strip()
+                for item in raw_graph["depends_on"]
+                if isinstance(item, str) and item.strip()
+            ]
+            if len(raw_dependencies) != len(set(raw_dependencies)):
+                issues.append(
+                    LintIssue(
+                        rel[f],
+                        "error",
+                        "duplicate-dependency",
+                        "recall_graph.depends_on contains duplicate source references",
+                    )
+                )
+        dependency_graph[rel[f]] = list(graph_dependencies)
+        for dependency in graph_dependencies:
+            if dependency == rel[f]:
+                issues.append(
+                    LintIssue(rel[f], "error", "self-dependency", "a source cannot depend on itself")
+                )
+            elif dependency not in rel.values():
+                issues.append(
+                    LintIssue(
+                        rel[f],
+                        "error",
+                        "dangling-dependency",
+                        f"dependency {dependency!r} does not match an exact canonical source",
+                    )
+                )
         target = meta.get("supersedes")
         if not isinstance(target, str) or not target:
             continue
@@ -229,6 +274,16 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
         issues.append(
             LintIssue(min(members), "error", "supersession-cycle",
                       "supersession chain forms a cycle: " + " -> ".join(sorted(members)))
+        )
+
+    for members in _find_cycles(dependency_graph):
+        issues.append(
+            LintIssue(
+                min(members),
+                "error",
+                "dependency-cycle",
+                "dependency graph forms a cycle: " + " -> ".join(sorted(members)),
+            )
         )
 
     superseded_targets = set(superseders)  # basenames some file claims to supersede
