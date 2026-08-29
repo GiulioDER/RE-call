@@ -75,6 +75,7 @@ class EvidenceItem:
     cosine: float
     confidence: float
     verdict: Literal["ok"] = "ok"
+    authority: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -279,6 +280,7 @@ def build_evidence_bundle(
             valid_until=hit.validity.valid_until,
             cosine=hit.cosine,
             confidence=hit.confidence,
+            authority=hit.authority,
         )
         if policy.max_tokens is not None:
             # Allocated INSIDE the branch that reads it. Both shipped callers leave `max_tokens`

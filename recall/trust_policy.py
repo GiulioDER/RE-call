@@ -64,6 +64,8 @@ class TrustFailureCode(StrEnum):
     CALIBRATION_STALE = "CALIBRATION_STALE"
     #: A dependency the trust gate needs (database, control plane) could not be reached.
     DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
+    #: The opt-in dependency invalidation projection is absent for the active generation.
+    DEPENDENCY_GRAPH_NOT_READY = "DEPENDENCY_GRAPH_NOT_READY"
 
 
 class TrustState(StrEnum):
@@ -141,6 +143,10 @@ _ADVICE: dict[TrustFailureCode, str] = {
         "No trustworthy decision was possible: a dependency the trust gate needs could not be "
         "reached, so the gate never ran. This is an outage, not an empty result. Retry once the "
         "dependency is healthy."
+    ),
+    TrustFailureCode.DEPENDENCY_GRAPH_NOT_READY: (
+        "No trustworthy decision was possible: dependency invalidation is enabled but the active "
+        "generation has no ready dependency projection. Rebuild the generation graph and retry."
     ),
 }
 

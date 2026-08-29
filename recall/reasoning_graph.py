@@ -13,17 +13,26 @@ from datetime import datetime
 from typing import Any, Literal, Protocol, cast
 
 from recall._frozen import freeze_value as _freeze_projection_value
+from recall.dependency_invalidation import (
+    authority_from_metadata,
+    build_dependency_projection,
+    dependencies_from_metadata,
+)
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
 from recall.semantic_graph import SemanticGraphProjection
 from recall.store import EdgeCandidates, resolve_supersession_candidates
 from recall.types import Chunk
 
-GRAPH_SCHEMA_VERSION = 1
+GRAPH_SCHEMA_VERSION = 2
 EVIDENCE_TEXT_METADATA_KEY = "_recall_evidence_text"
 
 GraphNodeKind = Literal["chunk", "source"]
-GraphEdgeKind = Literal["authored_supersedes", "inferred_candidate_supersedes"]
+GraphEdgeKind = Literal[
+    "authored_supersedes",
+    "authored_depends_on",
+    "inferred_candidate_supersedes",
+]
 GraphDiagnosticKind = Literal[
     "unresolved_reference",
     "ambiguous_reference",
@@ -32,6 +41,9 @@ GraphDiagnosticKind = Literal[
     "orphaned_node",
     "duplicate_entity_candidate",
     "malformed_metadata",
+    "dependency_unresolved",
+    "dependency_cycle",
+    "dependency_malformed",
 ]
 
 
@@ -79,12 +91,15 @@ class ReasoningGraphNode:
     validity: Mapping[str, datetime | None] = field(default_factory=dict)
     calibration: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    authority: str = "unknown"
+    dependencies: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provenance", _freeze_projection_value(self.provenance))
         object.__setattr__(self, "validity", _freeze_projection_value(self.validity))
         object.__setattr__(self, "calibration", _freeze_projection_value(self.calibration))
         object.__setattr__(self, "metadata", _freeze_projection_value(self.metadata))
+        object.__setattr__(self, "dependencies", tuple(sorted(set(self.dependencies))))
 
 
 @dataclass(frozen=True)
@@ -131,6 +146,7 @@ class ReasoningGraphProjection:
     authored_edges: tuple[ReasoningGraphEdge, ...]
     inferred_candidate_edges: tuple[ReasoningGraphEdge, ...]
     diagnostics: tuple[ReasoningGraphDiagnostic, ...]
+    authored_dependency_edges: tuple[ReasoningGraphEdge, ...] = ()
     semantic_graph: SemanticGraphProjection | None = None
 
     def authored_supersession_map(self) -> dict[str, str]:
@@ -239,6 +255,12 @@ def _source_nodes(
     for source in sorted(by_source):
         first = sorted(by_source[source], key=lambda item: item.id)[0]
         file = _source_file(first)
+        try:
+            authority = authority_from_metadata(first.metadata)
+            dependencies = dependencies_from_metadata(first.metadata)
+        except ValueError:
+            authority = "unknown"
+            dependencies = ()
         node_id = _node_id(
             tenant_id=tenant_id,
             generation_id=generation_id,
@@ -256,6 +278,8 @@ def _source_nodes(
                 source=source,
                 file=file,
                 provenance={"source": source, "file": file},
+                authority=authority,
+                dependencies=dependencies,
             )
         )
     return nodes, source_node_by_source
@@ -274,6 +298,8 @@ def _chunk_nodes(
         file = _source_file(chunk)
         valid_from: datetime | None = None
         valid_until: datetime | None = None
+        authority = "unknown"
+        dependencies: tuple[str, ...] = ()
         try:
             valid_from, valid_until = validity_bounds(chunk.metadata)
         except ValueError as exc:
@@ -298,6 +324,34 @@ def _chunk_nodes(
                     generation_id=generation_id,
                     node_ids=(node_id,),
                     reference=file,
+                    message=str(exc),
+                )
+            )
+        try:
+            authority = authority_from_metadata(chunk.metadata)
+            dependencies = dependencies_from_metadata(chunk.metadata)
+        except ValueError as exc:
+            node_id = _node_id(
+                tenant_id=tenant_id,
+                generation_id=generation_id,
+                kind="chunk",
+                source=chunk.source,
+                chunk_id=chunk.id,
+            )
+            diagnostics.append(
+                ReasoningGraphDiagnostic(
+                    id=_diagnostic_id(
+                        tenant_id=tenant_id,
+                        generation_id=generation_id,
+                        kind="malformed_metadata",
+                        node_ids=(node_id,),
+                        reference=f"{file}:recall_graph",
+                    ),
+                    kind="malformed_metadata",
+                    tenant_id=tenant_id,
+                    generation_id=generation_id,
+                    node_ids=(node_id,),
+                    reference=f"{file}:recall_graph",
                     message=str(exc),
                 )
             )
@@ -330,6 +384,8 @@ def _chunk_nodes(
                 if isinstance(chunk.metadata.get("calibration"), dict)
                 else {},
                 metadata=metadata,
+                authority=authority,
+                dependencies=dependencies,
             )
         )
     return nodes, diagnostics
@@ -429,6 +485,62 @@ def _authored_edges(
                     message=f"{target} has {count} authored supersession claims",
                 )
             )
+    return edges, diagnostics
+
+
+def _dependency_edges(
+    *,
+    tenant_id: str,
+    generation_id: str,
+    chunks: list[Chunk],
+    source_node_by_file: dict[str, str],
+    corpus_fingerprint: str | None,
+) -> tuple[list[ReasoningGraphEdge], list[ReasoningGraphDiagnostic]]:
+    projection = build_dependency_projection(
+        chunks,
+        tenant_id=tenant_id,
+        generation_id=generation_id,
+        corpus_fingerprint=corpus_fingerprint,
+    )
+    edges = [
+        ReasoningGraphEdge(
+            id=edge.id,
+            kind="authored_depends_on",
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+            from_node_id=source_node_by_file.get(edge.dependent, ""),
+            to_node_id=source_node_by_file.get(edge.prerequisite),
+            from_file=edge.dependent,
+            to_file=edge.prerequisite,
+            authored_reference=edge.prerequisite,
+            provenance={"chunk_id": edge.asserting_chunk_id},
+            metadata={"authority": edge.authority},
+        )
+        for edge in projection.edges
+    ]
+    diagnostics: list[ReasoningGraphDiagnostic] = []
+    for diagnostic in projection.diagnostics:
+        if diagnostic.kind == "dependency_cycle":
+            kind: GraphDiagnosticKind = "dependency_cycle"
+        elif diagnostic.kind in {"malformed_metadata", "inconsistent_authority"}:
+            kind = "dependency_malformed"
+        else:
+            kind = "dependency_unresolved"
+        diagnostics.append(
+            ReasoningGraphDiagnostic(
+                id=_diagnostic_id(
+                    tenant_id=tenant_id,
+                    generation_id=generation_id,
+                    kind=kind,
+                    reference=diagnostic.dependency or diagnostic.source,
+                ),
+                kind=kind,
+                tenant_id=tenant_id,
+                generation_id=generation_id,
+                reference=diagnostic.dependency or diagnostic.source,
+                message=diagnostic.message,
+            )
+        )
     return edges, diagnostics
 
 
@@ -649,6 +761,13 @@ def build_reasoning_graph(
         candidates=candidates,
         source_node_by_file=source_node_by_file,
     )
+    dependency_edges, dependency_diagnostics = _dependency_edges(
+        tenant_id=tenant_id,
+        generation_id=generation_id,
+        chunks=ordered_chunks,
+        source_node_by_file=source_node_by_file,
+        corpus_fingerprint=corpus_fingerprint,
+    )
     authored_edges = tuple(sorted(edges, key=lambda edge: edge.id))
     source_nodes_tuple = tuple(sorted(source_nodes, key=lambda node: node.id))
     diagnostics = tuple(
@@ -656,6 +775,7 @@ def build_reasoning_graph(
             [
                 *metadata_diagnostics,
                 *edge_diagnostics,
+                *dependency_diagnostics,
                 *_graph_diagnostics(
                     tenant_id=tenant_id,
                     generation_id=generation_id,
@@ -679,6 +799,7 @@ def build_reasoning_graph(
             "corpus_fingerprint": corpus_fingerprint,
             "nodes": [node.id for node in nodes],
             "authored_edges": [edge.id for edge in authored_edges],
+            "authored_dependency_edges": [edge.id for edge in dependency_edges],
             "inferred_candidate_edges": [edge.id for edge in inferred],
             "diagnostics": [diag.id for diag in diagnostics],
             "semantic_graph_id": semantic_graph.graph_id if semantic_graph is not None else None,
@@ -695,6 +816,7 @@ def build_reasoning_graph(
         authored_edges=authored_edges,
         inferred_candidate_edges=inferred,
         diagnostics=diagnostics,
+        authored_dependency_edges=tuple(sorted(dependency_edges, key=lambda edge: edge.id)),
         semantic_graph=semantic_graph,
     )
 

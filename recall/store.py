@@ -4,7 +4,7 @@ import json
 import os
 import re
 import warnings
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
@@ -19,6 +19,7 @@ from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from recall.frontmatter import supersedes_key
+from recall.lineage import canonical_sha256
 from recall.observability import METRICS, get_logger
 from recall.scope import Scope, coerce_scope, group_expression
 from recall.types import Chunk, ScoredChunk
@@ -804,6 +805,7 @@ class PgVectorStore:
         statement_timeout_ms: int | None = None,
         connect_timeout_s: int | None = 10,
         generation_id: str = "legacy",
+        dependency_mode: str | None = None,
         shared_pool: "SharedPool | None" = None,
         owns_pool: bool = False,
     ) -> None:
@@ -842,11 +844,14 @@ class PgVectorStore:
             raise ValueError("tenant must be a non-empty str")
         if not isinstance(generation_id, str) or not generation_id:
             raise ValueError("generation_id must be a non-empty str")
+        if dependency_mode is not None and dependency_mode not in {"off", "enforce"}:
+            raise ValueError("dependency_mode must be 'off', 'enforce', or None")
         self._dsn = dsn
         self._dim = dim
         self._table = table
         self._tenant = tenant
         self._index_generation_id = generation_id
+        self._dependency_mode = dependency_mode
         self._statement_timeout_ms = statement_timeout_ms
         self._connect_timeout_s = connect_timeout_s
         #: (fingerprint, edges, unresolved, candidates) — see `supersession_all()`. The fingerprint is what
@@ -855,6 +860,10 @@ class PgVectorStore:
         #: Count of full supersession scans actually performed (cache misses). Surfaced so a
         #: test can prove the cache still works, and so a rescan storm is visible as a metric.
         self._supersession_scans = 0
+        #: `(generation, marker, as_of, known_as_of, edge_ids, diagnostic_ids, projection)`.
+        #: The marker and persisted row identities are part of the cache key. A generation is
+        #: immutable, but the time-sensitive closure is not, so replay instants remain separate.
+        self._dependency_projection_cache: tuple | None = None
         self._closed = False
         #: Third connection mode, and the one a multi-tenant server should use. When set, this
         #: store owns no connections at all: every operation borrows from a process-wide pool and
@@ -1101,6 +1110,7 @@ class PgVectorStore:
         """
         self._supersession_cache = None
         self._supersession_scans = 0
+        self._dependency_projection_cache = None
 
     @property
     def table(self) -> str:
@@ -1119,6 +1129,15 @@ class PgVectorStore:
     @property
     def generation_id(self) -> str:
         return self._index_generation_id
+
+    def dependency_invalidation_mode(self) -> str | None:
+        """Return the optional mode bound to this store or generation view.
+
+        ``None`` deliberately means that the trust layer may use its process configuration. An
+        explicit constructor value binds the mode to this tenant and generation store, which is
+        the safe deployment shape for serving more than one tenant in one process.
+        """
+        return self._dependency_mode
 
     def close(self) -> None:
         """Close the connection (or pool) for good.
@@ -2624,6 +2643,94 @@ class PgVectorStore:
     # the two-validation race `supersession_all()` was written to close. An API whose
     # documentation is a warning against using it is better deleted; it had no callers.
 
+    def dependency_projection(
+        self,
+        as_of: datetime | None = None,
+        known_as_of: datetime | None = None,
+    ) -> Any:
+        """Return the ready generation's dependency invalidation projection.
+
+        The persisted marker is checked before rebuilding the time-sensitive closure. This keeps
+        enforce mode generation bound: a legacy generation or a generation whose transactional
+        projection failed validation cannot silently become enforceable merely because its chunks
+        happen to contain dependency metadata.
+        """
+        from recall.current_state import project_current_state
+
+        generation_reader = getattr(self, "_generation_id", None)
+        generation_id = str(generation_reader()) if callable(generation_reader) else self.generation_id
+        instant = as_of.isoformat() if as_of is not None else None
+        known_instant = known_as_of.isoformat() if known_as_of is not None else None
+        cached = getattr(self, "_dependency_projection_cache", None)
+        if cached is not None:
+            cached_key = cached[0]
+            if (
+                cached_key[0] == generation_id
+                and cached_key[2] == instant
+                and cached_key[3] == known_instant
+            ):
+                return cached[-1]
+
+        def _load_persisted(conn: "psycopg.Connection") -> tuple[Any, tuple[str, ...], tuple[str, ...]]:
+            row = conn.execute(
+                "SELECT validation_summary FROM recall_generations "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (self._tenant, generation_id),
+            ).fetchone()
+            summary = row[0] if row and isinstance(row[0], Mapping) else {}
+            edge_rows = conn.execute(
+                "SELECT edge_id FROM recall_dependency_edges_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s ORDER BY edge_id",
+                (self._tenant, generation_id),
+            ).fetchall()
+            diagnostic_rows = conn.execute(
+                "SELECT diagnostic_id FROM recall_dependency_diagnostics_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s ORDER BY diagnostic_id",
+                (self._tenant, generation_id),
+            ).fetchall()
+            return (
+                summary,
+                tuple(str(item[0]) for item in edge_rows),
+                tuple(str(item[0]) for item in diagnostic_rows),
+            )
+
+        summary, persisted_edge_ids, persisted_diagnostic_ids = self._with_retry(_load_persisted)
+        marker = summary.get("dependency_projection")
+        if not isinstance(marker, Mapping) or marker.get("ready") is not True:
+            return None
+        cache_key = (
+            generation_id,
+            str(marker.get("projection_id", "")),
+            instant,
+            known_instant,
+            persisted_edge_ids,
+            persisted_diagnostic_ids,
+        )
+        projection = project_current_state(
+            self, as_of=as_of, known_as_of=known_as_of
+        ).dependency_projection
+        if projection is None:
+            return None
+        computed_edge_ids = tuple(edge.id for edge in projection.edges)
+        computed_diagnostic_ids = tuple(sorted(
+            "depdiag_" + canonical_sha256(
+                {
+                    "kind": diagnostic.kind,
+                    "source": diagnostic.source,
+                    "dependency": diagnostic.dependency,
+                }
+            )[:24]
+            for diagnostic in projection.diagnostics
+        ))
+        if computed_edge_ids != persisted_edge_ids or computed_diagnostic_ids != persisted_diagnostic_ids:
+            _log.error(
+                "dependency projection rows do not match generation marker for %s",
+                generation_id,
+            )
+            return None
+        self._dependency_projection_cache = (cache_key, projection)
+        return projection
+
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """Resolve caller-facing identifiers to the DB `source` value(s) to delete, this tenant only.
 
@@ -2837,6 +2944,33 @@ class PgVectorStore:
                     )
                     for cid, source, text, metadata in cur:
                         yield Chunk(id=cid, source=source, text=text, metadata=metadata or {})
+
+    def iter_chunks_with_times(
+        self, batch_size: int = 1000
+    ) -> "Iterator[tuple[Chunk, datetime | None]]":
+        """Yield chunks with their first transaction-time visibility instant.
+
+        Dependency replay needs the same first-write timestamp used by supersession and trust.
+        The timestamp is returned beside the chunk rather than injected into corpus metadata, so
+        the authored document remains the only source of metadata values.
+        """
+        if not isinstance(batch_size, int) or batch_size < 1:
+            raise ValueError("batch_size must be a positive int")
+        with self._borrowed() as conn:
+            with conn.transaction():
+                with conn.cursor(name=f"recall_iter_times_{uuid4().hex[:12]}") as cur:
+                    cur.itersize = batch_size
+                    cur.execute(
+                        f"SELECT id, source, text, metadata, "
+                        f"COALESCE(first_indexed_at, indexed_at) FROM {self._table} "
+                        "WHERE tenant_id = %s ORDER BY id",
+                        (self._tenant,),
+                    )
+                    for cid, source, text, metadata, first_indexed_at in cur:
+                        yield (
+                            Chunk(id=cid, source=source, text=text, metadata=metadata or {}),
+                            first_indexed_at,
+                        )
 
     def related_chunks(
         self, seed_chunk_id: str, relation: str, max_items: int

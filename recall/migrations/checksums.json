@@ -14,5 +14,6 @@
   "0013_learned_sparse_index.sql": "097916a7fd3f8e3e647c46f9dd0a5fc5d0f13f444cc255ed98438caafe656800",
   "0014_calibration_carry_forward.sql": "02e6381d1ea22d55ead0cd1b011551d0358a9c263132b76b432bcebeed140f31",
   "0015_learned_sparse_chunk_index.sql": "fbb5cef478a89a118e33a1b3dbc13d5b1a7a2f9c3dfa94784a97c8be590aec06",
-  "0016_semantic_graph_foundation.sql": "68537d7cce2f4d6305c3aaa5e48c834d4a740d034ca0cab6578d9bb138922277"
+  "0016_semantic_graph_foundation.sql": "68537d7cce2f4d6305c3aaa5e48c834d4a740d034ca0cab6578d9bb138922277",
+  "0017_dependency_invalidation.sql": "7e8c2587c292b0467714b1ad738a1f9fb95219a80b1a19c755c9203c746a4951"
 }

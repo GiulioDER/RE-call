@@ -57,7 +57,7 @@ from recall.evidence import (
     render_evidence_prompt,
 )
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, CurrentStateProjection, project_current_state
-from recall.explanations import RetrievalExplanation
+from recall.explanations import RetrievalExplanation, memory_audit
 from recall.graph_first import (
     GraphFirstCandidate,
     GraphFirstMode,
@@ -230,7 +230,8 @@ class SearchHit(BaseModel):
     verdict: str = Field(
         description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
         "| ambiguous_supersession "
-        "| invalid_metadata. Only 'ok' hits should be relied on. (The library also defines "
+        "| invalid_metadata | dependency_invalidated. Only 'ok' hits should be relied on. "
+        "(The library also defines "
         "not_entailed for the opt-in entailment stage, which this server does not enable.)"
     )
     superseded_by: str | None = Field(
@@ -247,6 +248,16 @@ class SearchHit(BaseModel):
         default=None, description="ISO timestamp of when this memory entered the index."
     )
     text: str = Field(description="The retrieved memory chunk.")
+    authority: str = Field(
+        default="unknown",
+        description="Authored authority tier: policy, user_confirmed_decision, tool_observation, model_inference, or unknown.",
+    )
+    dependencies: list[str] = Field(
+        default_factory=list, description="Canonical authored source dependencies."
+    )
+    invalidation: dict[str, object] | None = Field(
+        default=None, description="Structured dependency invalidation reason, when present."
+    )
 
 
 class SearchResult(BaseModel):
@@ -269,7 +280,7 @@ class SearchResult(BaseModel):
         default=None,
         description="Stable machine-readable reason the gate could not certify this answer: "
         "INDEX_NOT_READY | LINEAGE_MISMATCH | CALIBRATION_MISSING | CALIBRATION_UNCERTIFIED | "
-        "CALIBRATION_STALE | DEPENDENCY_UNAVAILABLE. Null when trusted.",
+        "CALIBRATION_STALE | DEPENDENCY_UNAVAILABLE | DEPENDENCY_GRAPH_NOT_READY. Null when trusted.",
     )
     tenant_id: str | None = None
     generation_id: str | None = None
@@ -353,6 +364,7 @@ class EvidenceItemModel(BaseModel):
         description="Calibrated confidence in [0, 1], or null for structural relatedness."
     )
     verdict: str = Field(description="Always 'ok'. Nothing else is admitted to a bundle.")
+    authority: str = Field(default="unknown", description="Authored authority tier.")
 
 
 class EvidenceResult(BaseModel):
@@ -437,6 +449,9 @@ class ReasoningProjectionResult(BaseModel):
     )
     node_count: int = Field(description="Number of graph nodes in the projection.")
     authored_edge_count: int = Field(description="Number of authored supersession edges.")
+    authored_dependency_edge_count: int = Field(
+        default=0, description="Number of authored canonical source dependency edges."
+    )
     inferred_candidate_edge_count: int = Field(
         description="Number of inferred candidate edges included in the projection."
     )
@@ -460,7 +475,7 @@ class CurrentStateRecordModel(BaseModel):
     state_id: str = Field(description="Stable identity of this state record.")
     source: str = Field(description="Canonical authored source identity.")
     state: str = Field(
-        description="current | superseded | expired | not_yet_valid | ambiguous | invalid."
+        description="current | superseded | expired | not_yet_valid | not_yet_known | ambiguous | invalid | dependency_invalidated."
     )
     chunk_ids: list[str] = Field(description="Evidence chunks contributing to this source state.")
     successor_chain: list[str] = Field(
@@ -470,6 +485,12 @@ class CurrentStateRecordModel(BaseModel):
     valid_until: str | None = Field(default=None, description="Latest authored validity end.")
     diagnostics: list[str] = Field(
         default_factory=list, description="Stable fail closed diagnostic codes."
+    )
+    base_state: str | None = Field(default=None, description="State before dependency invalidation.")
+    authority: str = Field(default="unknown", description="Authored authority tier.")
+    dependencies: list[str] = Field(default_factory=list, description="Canonical dependencies.")
+    invalidation_chain: list[str] = Field(
+        default_factory=list, description="Bounded dependent to invalidating source path."
     )
 
 
@@ -483,6 +504,9 @@ class CurrentStateResult(BaseModel):
     pipeline_fingerprint: str | None = Field(default=None, description="Pipeline identity.")
     corpus_fingerprint: str | None = Field(default=None, description="Corpus identity.")
     as_of: str = Field(description="Exact UTC instant used for the projection.")
+    known_as_of: str | None = Field(
+        default=None, description="Transaction-time replay instant, when supplied."
+    )
     records: list[CurrentStateRecordModel] = Field(description="Projected source states.")
 
 
@@ -497,6 +521,21 @@ class RelatedResult(BaseModel):
     explanation: dict[str, object] | None = Field(
         default=None, description="Optional structured explanation when explain=true."
     )
+
+
+def _invalidation_payload(hit: TrustedHit) -> dict[str, object] | None:
+    reason = hit.invalidation
+    if reason is None:
+        return None
+    return {
+        "dependency": reason.dependency,
+        "cause": reason.cause,
+        "authority": reason.authority,
+        "path": list(reason.bounded_path()),
+        "generation": reason.generation,
+        "as_of": reason.as_of.isoformat() if reason.as_of else None,
+        "known_as_of": reason.known_as_of.isoformat() if reason.known_as_of else None,
+    }
 
 
 class ReasoningProposalItem(BaseModel):
@@ -971,6 +1010,7 @@ def _retrieve_trusted(
     calibration: Calibration | None,
     policy: TrustPolicy | None,
     scope: Scope | None = None,
+    dependency_mode: str | None = None,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by `search_memory` and `evidence_memory`.
 
@@ -1030,6 +1070,7 @@ def _retrieve_trusted(
                 # process state and the store is not; construction is allocation-only, and a
                 # malformed value warns once and stays off rather than refusing the search.
                 ledger=DecisionLedger.from_env(store, actor="mcp-service"),
+                dependency_mode=dependency_mode,
             )
     # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
     # counted as a rejection and NOTHING else. Shedding is the design working: the request did no
@@ -1122,6 +1163,7 @@ def search_memory(
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
+    dependency_mode: str | None = None,
 ) -> SearchResult:
     """Run a trust-evaluated hybrid search and format it into actionable self-recall guidance.
 
@@ -1135,7 +1177,17 @@ def search_memory(
     are demoted below valid ones, and when no valid hit remains the result abstains.
     `k` is clamped to [1, MAX_SEARCH_K] so an untrusted client cannot request an unbounded result set.
     """
-    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy, scope)
+    retrieval = _retrieve_trusted(
+        store,
+        embedder,
+        query,
+        source,
+        k,
+        calibration,
+        policy,
+        scope=scope,
+        dependency_mode=dependency_mode,
+    )
     result, timed = retrieval.result, retrieval.timed
     route = route_query(query)
     active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
@@ -1157,6 +1209,9 @@ def search_memory(
             ordinal=h.provenance.ord,
             indexed_at=h.provenance.indexed_at.isoformat() if h.provenance.indexed_at else None,
             text=h.chunk.text,
+            authority=h.authority,
+            dependencies=list(h.dependencies),
+            invalidation=_invalidation_payload(h),
         )
         for h in result.hits
     ]
@@ -1191,6 +1246,9 @@ def search_memory(
                     if item.provenance.indexed_at
                     else None,
                     text=item.chunk.text,
+                    authority=item.authority,
+                    dependencies=list(item.dependencies),
+                    invalidation=_invalidation_payload(item),
                 )
                 for item in related_result.items
             ]
@@ -1227,7 +1285,7 @@ def search_memory(
             "Memory probably has no answer to this (corpus gap)."
             if result.gap_warning
             else "A candidate was found but is not trustworthy (superseded, expired, or below "
-            "the confidence threshold)."
+            "the confidence threshold, or dependency-invalidated)."
         )
         advice = (
             f"No trustworthy memory for this query — say you don't know and do NOT answer from "
@@ -1267,6 +1325,7 @@ def search_memory(
             trust_reason=None if not result.abstained else result.reason,
             abstention_reason=result.reason if result.abstained else None,
             generation_id=result.generation_id or "legacy",
+            details={"memory_audit": memory_audit(result.hits)},
         ).as_dict()
     return SearchResult(
         query=query,
@@ -1396,6 +1455,7 @@ def evidence_memory(
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
+    dependency_mode: str | None = None,
 ) -> EvidenceResult:
     """Retrieve, evaluate trust, and return the evidence boundary — WITHOUT calling a generator.
 
@@ -1408,7 +1468,17 @@ def evidence_memory(
     shed-versus-failure accounting or the budget verdict. Explanation and related fields remain
     opt in and are additive to the existing response shape.
     """
-    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy, scope)
+    retrieval = _retrieve_trusted(
+        store,
+        embedder,
+        query,
+        source,
+        k,
+        calibration,
+        policy,
+        scope=scope,
+        dependency_mode=dependency_mode,
+    )
     result = retrieval.result
     route = route_query(query)
     active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
@@ -1460,6 +1530,7 @@ def evidence_memory(
             cosine=None if item.chunk_id in related_ids else round(item.cosine, 4),
             confidence=None if item.chunk_id in related_ids else round(item.confidence, 4),
             verdict=item.verdict,
+            authority=item.authority,
         )
         for item in bundle.items
     ]
@@ -1482,6 +1553,11 @@ def evidence_memory(
             related_seed_chunk_id=(related_result.seed_chunk_id if related_result else None),
             related_relation=(related_result.relation if related_result else None),
             generation_id=bundle.index_generation,
+            details={
+                "memory_audit": memory_audit(
+                    result.hits, context_chunk_ids=[item.chunk_id for item in bundle.items]
+                )
+            },
         ).as_dict()
     related_items = []
     if related_result is not None:
@@ -1503,6 +1579,7 @@ def evidence_memory(
                 cosine=round(item.cosine, 4),
                 confidence=round(item.confidence, 4),
                 verdict=item.verdict,
+                authority=item.authority,
             )
             for item in related_result.items
         ]
@@ -1677,6 +1754,7 @@ def reasoning_projection(
         corpus_fingerprint=graph.corpus_fingerprint,
         node_count=len(graph.nodes),
         authored_edge_count=len(graph.authored_edges),
+        authored_dependency_edge_count=len(graph.authored_dependency_edges),
         inferred_candidate_edge_count=len(graph.inferred_candidate_edges),
         diagnostic_count=len(graph.diagnostics),
         trust_state="trusted" if graph.generation_id != "legacy" else "degraded",
@@ -1693,6 +1771,7 @@ def current_state_memory(
     store: PgVectorStore,
     *,
     as_of: datetime | None = None,
+    known_as_of: datetime | None = None,
     source: str | None = None,
     max_records: int = MAX_CURRENT_STATE_RECORDS,
 ) -> CurrentStateResult:
@@ -1705,6 +1784,7 @@ def current_state_memory(
     Args:
         store: tenant bound read store.
         as_of: optional point in time for authored validity and supersession.
+        known_as_of: optional transaction-time replay instant.
         source: optional canonical source filter.
         max_records: positive serving bound on projected source records.
 
@@ -1712,7 +1792,11 @@ def current_state_memory(
         ValueError: if the bound is invalid or the projection exceeds it.
     """
     projection: CurrentStateProjection = project_current_state(
-        store, as_of=as_of, source=source, max_records=max_records
+        store,
+        as_of=as_of,
+        known_as_of=known_as_of,
+        source=source,
+        max_records=max_records,
     )
     return CurrentStateResult(
         schema_version=projection.schema_version,
@@ -1722,6 +1806,9 @@ def current_state_memory(
         pipeline_fingerprint=projection.pipeline_fingerprint,
         corpus_fingerprint=projection.corpus_fingerprint,
         as_of=projection.as_of.isoformat(),
+        known_as_of=projection.known_as_of.isoformat()
+        if projection.known_as_of
+        else None,
         records=[
             CurrentStateRecordModel(
                 state_id=record.state_id,
@@ -1732,6 +1819,10 @@ def current_state_memory(
                 valid_from=record.valid_from.isoformat() if record.valid_from else None,
                 valid_until=record.valid_until.isoformat() if record.valid_until else None,
                 diagnostics=list(record.diagnostics),
+                base_state=record.base_state,
+                authority=record.authority,
+                dependencies=list(record.dependencies),
+                invalidation_chain=list(record.invalidation_chain),
             )
             for record in projection.records
         ],

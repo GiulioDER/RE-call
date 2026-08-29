@@ -7,9 +7,15 @@ survives, and that decision is recorded here so the next session does not build 
 
 ## The problem
 
-RE-call's model of truth is authored frontmatter, and exactly three keys are recognised
-(`recall/frontmatter.py:21`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
+RE-call's model of truth is authored frontmatter. Three keys carry VALIDITY
+(`recall/frontmatter.py:23`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
 those and nothing else. Prose is retrieved, never interpreted.
+
+Two further keys are recognised by the parser and are deliberately NOT truth claims, so the
+sentence above stays true as the parser grows. `recall_graph` carries authored graph metadata, and
+`type` (`recall/frontmatter.py:94`) carries the retrieval FACET that `recall.scope` filters on. A
+facet says what kind of document this is; it never says whether the document should be believed,
+and nothing in the trust layer reads it.
 
 On a real 792 memo corpus, **60 memos stated a supersession in prose against 2 declared
 frontmatter edges** (`recall/fix.py:4`). Each undeclared relation is a stale memo served with

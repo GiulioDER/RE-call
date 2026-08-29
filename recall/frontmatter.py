@@ -2,7 +2,8 @@
 
 A document may begin with a ``---`` line, followed by ``key: value`` lines, closed by ``---``.
 Only VALIDITY_KEYS and the namespaced ``recall_graph`` JSON object are meaningful to recall;
-unknown keys are ignored and the returned body always excludes the block. Dates are ISO
+the graph object may additionally carry an authored ``authority`` tier and exact source
+``depends_on`` references. Unknown keys are ignored and the returned body always excludes the block. Dates are ISO
 ``YYYY-MM-DD``, interpreted in UTC: ``valid_from`` starts at 00:00:00 (inclusive),
 ``valid_until`` ends at 23:59:59.999999 (inclusive end of day). ``recall_graph`` must be a
 single line of JSON so this deliberately small parser does not pretend to be a YAML parser.
@@ -16,9 +17,65 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, time, timezone
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal
 
 VALIDITY_KEYS = ("valid_from", "valid_until", "supersedes")
 GRAPH_KEY = "recall_graph"
+Authority = Literal[
+    "policy",
+    "user_confirmed_decision",
+    "tool_observation",
+    "model_inference",
+    "unknown",
+]
+AUTHORITY_VALUES: tuple[Authority, ...] = (
+    "policy",
+    "user_confirmed_decision",
+    "tool_observation",
+    "model_inference",
+    "unknown",
+)
+
+
+def _recall_graph_metadata(metadata: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    value = metadata.get(GRAPH_KEY)
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("recall_graph must be a JSON object")
+    if "__parse_error__" in value:
+        raise ValueError(str(value["__parse_error__"]))
+    return value
+
+
+def authority_from_metadata(metadata: Mapping[str, Any]) -> Authority:
+    """Return the closed authored authority tier, or ``unknown`` when it is absent."""
+    graph = _recall_graph_metadata(metadata)
+    if graph is None or "authority" not in graph:
+        return "unknown"
+    value = graph["authority"]
+    if not isinstance(value, str) or value not in AUTHORITY_VALUES[:-1]:
+        raise ValueError(
+            "recall_graph.authority must be one of: " + ", ".join(AUTHORITY_VALUES[:-1])
+        )
+    return value
+
+
+def dependencies_from_metadata(metadata: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return sorted exact source dependencies from authored graph metadata."""
+    graph = _recall_graph_metadata(metadata)
+    if graph is None or "depends_on" not in graph:
+        return ()
+    value = graph["depends_on"]
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise ValueError("recall_graph.depends_on must be a JSON array of source strings")
+    values: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("recall_graph.depends_on entries must be non-empty strings")
+        values.append(item.strip())
+    return tuple(sorted(set(values)))
 
 #: Keys carrying a document's FACET: the authored answer to "what kind of thing is this", which
 #: `recall.scope` turns into a retrieval dimension. Recognized keys land in chunk metadata via

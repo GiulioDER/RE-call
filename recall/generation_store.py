@@ -78,6 +78,7 @@ class GenerationStore(PgVectorStore):
         migration_target: str = DEFAULT_TABLE,
         pool_size: int | None = None,
         statement_timeout_ms: int | None = None,
+        dependency_mode: str | None = None,
         shared_pool: "SharedPool | None" = None,
     ) -> None:
         super().__init__(
@@ -87,6 +88,7 @@ class GenerationStore(PgVectorStore):
             tenant=tenant,
             pool_size=pool_size,
             statement_timeout_ms=statement_timeout_ms,
+            dependency_mode=dependency_mode,
             shared_pool=shared_pool,
         )
         if not migration_target.isidentifier():
@@ -842,6 +844,33 @@ class GenerationStore(PgVectorStore):
                     for chunk_id, source, text, metadata in rows:
                         value = metadata if isinstance(metadata, dict) else json.loads(metadata)
                         yield Chunk(str(chunk_id), str(source), str(text), value)
+
+    def iter_chunks_with_times(
+        self, batch_size: int = 1000
+    ) -> Iterator[tuple[Chunk, datetime | None]]:
+        """Yield generation chunks with their first transaction time for replayable state."""
+        if not isinstance(batch_size, int) or batch_size < 1:
+            raise ValueError("batch_size must be a positive int")
+        generation_id = self._generation_id()
+        with (
+            self._borrowed() as conn,
+            conn.transaction(),
+            conn.cursor(name=f"recall_gen_times_{uuid.uuid4().hex[:12]}") as cur,
+        ):
+            cur.itersize = batch_size
+            cur.execute(
+                "SELECT chunk_id, source_uri, text, metadata, "
+                "COALESCE(first_indexed_at, indexed_at) "
+                "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+                "ORDER BY chunk_id",
+                (self._tenant, generation_id),
+            )
+            for chunk_id, source, text, metadata, first_indexed_at in cur:
+                value = metadata if isinstance(metadata, dict) else json.loads(metadata)
+                yield (
+                    Chunk(str(chunk_id), str(source), str(text), value),
+                    first_indexed_at,
+                )
 
     def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> int:
         raise ImmutableGenerationError("active generations are read only")

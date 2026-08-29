@@ -5,9 +5,11 @@ Status: approved, not yet implemented
 
 ## Problem
 
-RE-call's model of truth is authored frontmatter, and exactly three keys are recognised
-(`recall/frontmatter.py:21`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
-those and nothing else.
+RE-call's model of truth is authored frontmatter, and three keys carry VALIDITY
+(`recall/frontmatter.py:23`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
+those and nothing else. The parser also recognises `recall_graph` and the `type` facet, and
+neither is a truth claim: see `docs/TRUTH_EXTRACTION_DESIGN.md` for why that distinction is the
+thing keeping this paragraph true as the parser grows.
 
 The extraction work being built upstream produces `contradicts` and `same_entity` relations. Those
 have nowhere to land. Frontmatter recognises three keys, and adding two more would put a machine's
@@ -93,7 +95,7 @@ copy in the body is a second source of truth that can disagree with the first.
 
 **`status` vocabulary is closed:** `open | adopted | closed | superseded | rejected | abandoned`.
 It deliberately excludes `deprecated` and `obsolete`, which are in `CLOSURE_MARKERS`
-(`recall/lint.py:47`) and would make the machine block trip the linter built to find prose closure.
+(`recall/lint.py:51`) and would make the machine block trip the linter built to find prose closure.
 Both normalise to `superseded` on the render path.
 
 **Entries are sorted by `(head, value)`**, so a re-render is byte identical and a re-run never
@@ -198,8 +200,8 @@ isolation.
 | Site | Note |
 |---|---|
 | `recall/index.py:926` | `contextual_passages(raw, body, ...)` keeps taking the unstripped `raw` for `document_title`, which reads frontmatter and the first H1 — both above the block. The `body` argument becomes `human_body`. |
-| `recall/generations.py:814` | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused under `RECALL_ENV=production` via `env_is_production` (`recall/cli_commands/index_search.py:288`) <!-- cite-anchor: env_is_production -->, so hooking only the index path leaves the one build path that runs in production uncovered. |
-| `recall/lint.py:193` | The only reader of `derived_text`. |
+| `recall/generations.py:817` | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused under `RECALL_ENV=production` via `env_is_production` (`recall/cli_commands/index_search.py:288`) <!-- cite-anchor: env_is_production -->, so hooking only the index path leaves the one build path that runs in production uncovered. |
+| `recall/lint.py:198` | The only reader of `derived_text`. |
 | `recall/check.py:53` | `_ANY_REF` over the body would otherwise hand the author the machine's own values back as `supersedes:` candidates. |
 | `recall/semantic_lint.py:126` | Fixes the `is_closed_decision` collision: `_DECISION_STATUS` matches `status:\s*superseded`, which is exactly the shape of the block's own `status:` entry. This module reaches the corpus twice — here, and via `Indexer.index_path` at `:138`, which the `index.py` site covers. |
 

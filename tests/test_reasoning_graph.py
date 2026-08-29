@@ -305,6 +305,28 @@ def test_cycle_diagnostics_and_graph_id_survive_the_iterative_walk_unchanged() -
     # Golden identities captured from the recursive walk before the BUG-006 rewrite
     # (commit 3498a06c plus nothing). The fixture holds two cycles sharing a member and
     # one orphan, so it exercises the canonical cycle dedup and diagnostic ordering.
+    #
+    # ⚠️ RE-CAPTURED when dependency invalidation merged, for TWO independent reasons, and the
+    # distinction is the whole point of this guard.
+    #
+    # First, `schema_version` is a member of every identity payload — `_node_id`, `_edge_id`,
+    # `_diagnostic_id` and the graph payload alike — and this branch bumps GRAPH_SCHEMA_VERSION
+    # from 1 to 2. That alone moves every `rg_` id in every corpus, including corpora that use no
+    # dependency metadata at all. Second, and separately, `authored_dependency_edges` joined the
+    # GRAPH payload, where the key counts even when the list is empty.
+    #
+    # Both were verified rather than assumed: forcing the constant back to 1 reproduces NEITHER
+    # master's golden NOR this one, which is what shows the two causes are real and independent.
+    # Attributing the churn to the new key alone (as an earlier draft of this comment did) is
+    # wrong, and it matters, because the version bump is the part that is DELIBERATE — it is the
+    # marker separating ids minted under a vocabulary without dependency edges from ids minted
+    # under one with them.
+    #
+    # What did NOT change is the behaviour this golden exists to protect: the same four
+    # diagnostics, with identical kind, reference and message, compared as a SET before these
+    # literals were rewritten. A future edit that changes any of those three is a regression; a
+    # hash churn accompanied by an identical set is a vocabulary change and belongs with a
+    # version bump.
     def golden_chunk(cid: str, file: str, supersedes: str | None = None) -> Chunk:
         metadata: dict[str, object] = {"file": file}
         if supersedes is not None:
@@ -323,31 +345,31 @@ def test_cycle_diagnostics_and_graph_id_survive_the_iterative_walk_unchanged() -
 
     graph = build_reasoning_graph(chunks, tenant_id="tenant-golden", generation_id="gen-golden")
 
-    assert graph.graph_id == "rg_graph_d9d614ef04ce6fa5b7b520ac"
+    assert graph.graph_id == "rg_graph_f64c050c5e128c81ffcde044"
     assert [(diag.id, diag.kind, diag.reference, diag.message) for diag in graph.diagnostics] == [
         (
-            "rg_diag_1db3115bcbd4485202e3b776",
+            "rg_diag_0cb15283ec7bdf009dfcbce5",
+            "cycle",
+            "a.md",
+            "authored supersession cycle includes a.md, c.md, b.md",
+        ),
+        (
+            "rg_diag_47fccf171848725dc8e025a0",
             "conflicting_authored_claim",
             "a.md",
             "a.md has 2 authored supersession claims",
         ),
         (
-            "rg_diag_684d7199973182aa48c5be29",
-            "orphaned_node",
-            "g.md",
-            "g.md has no authored graph edges",
-        ),
-        (
-            "rg_diag_9446b31e2aeec6a176946550",
+            "rg_diag_ad3e26c16efe9ded5a317b4e",
             "cycle",
             "d.md",
             "authored supersession cycle includes d.md, e.md",
         ),
         (
-            "rg_diag_c1d666e9748a7c5c11847f43",
-            "cycle",
-            "a.md",
-            "authored supersession cycle includes a.md, c.md, b.md",
+            "rg_diag_fcf06d4d86bdbbd0f41d4692",
+            "orphaned_node",
+            "g.md",
+            "g.md has no authored graph edges",
         ),
     ]
 

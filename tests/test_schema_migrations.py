@@ -60,7 +60,7 @@ def _target(prefix: str = "mig_"):
 
 def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     migrations = load_migrations()
-    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 17)]
+    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 18)]
     assert migrations[0].transactional
     assert migrations[7].transactional
     assert all(m.concurrent_index for m in (*migrations[1:7], *migrations[8:10]))
@@ -68,6 +68,7 @@ def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     assert migrations[13].transactional  # 0014_calibration_carry_forward
     assert migrations[14].concurrent_index  # 0015_learned_sparse_chunk_index
     assert migrations[15].transactional  # 0016_semantic_graph_foundation
+    assert migrations[16].transactional  # 0017_dependency_invalidation
     assert len({m.checksum for m in migrations}) == len(migrations)
 
 

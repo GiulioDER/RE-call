@@ -83,3 +83,50 @@ def test_current_state_serving_bound_fails_closed_before_assembling_more_records
 def test_current_state_rejects_an_unbounded_serving_limit() -> None:
     with pytest.raises(ValueError, match="<= 1000"):
         project_current_state(Store([]), as_of=NOW, max_records=1001)
+
+
+def test_dependency_invalidation_never_masks_a_fail_closed_state() -> None:
+    """A fail-closed verdict outranks `dependency_invalidated`, and the diagnostic still fires.
+
+    `ambiguous` and `invalid` mean "this projection cannot be trusted about this source at all".
+    Replacing either with `dependency_invalidated` swaps an admission of ignorance for a
+    confident, specific explanation the reader will act on, and it silently defeats the two
+    guarantees the neighbouring `fails_closed` tests exist to hold.
+
+    The store below declares NO dependencies. The invalidation reason arrives anyway, naming the
+    source as its own dependency because its base state is bad, which is precisely the case where
+    relabelling is least informative.
+    """
+    store = Store(
+        [Chunk("a", "a.md", "old", {"file": "a.md"})],
+        {"a.md": [("b.md", NOW), ("c.md", NOW)]},
+    )
+    record = project_current_state(store, as_of=NOW).records[0]
+
+    assert record.state == "ambiguous"
+    # Narrowing the relabel must not lose the finding: it is still reported as a diagnostic, so
+    # both facts survive and the more actionable one is the state.
+    assert "dependency_invalidated" in record.diagnostics
+
+
+def test_a_current_document_is_still_relabelled_when_a_dependency_fails() -> None:
+    """The narrowing must not disable the feature: `current` is the state it exists to change.
+
+    Without this, narrowing the relabel to `current` could be satisfied by never relabelling
+    anything, and the suite would stay green while the feature did nothing.
+    """
+    store = Store(
+        [
+            Chunk("p", "prereq.md", "old", {"file": "prereq.md", "valid_until": "2026-08-01"}),
+            Chunk(
+                "d",
+                "dependent.md",
+                "text",
+                {"file": "dependent.md", "recall_graph": {"depends_on": ["prereq.md"]}},
+            ),
+        ],
+    )
+    states = {r.source: r.state for r in project_current_state(store, as_of=NOW).records}
+
+    assert states["prereq.md"] == "expired"
+    assert states["dependent.md"] == "dependency_invalidated"
