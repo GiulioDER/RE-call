@@ -72,6 +72,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   keys carry validity" true as the parser grows, and two design docs that had drifted from it were
   corrected.
 
+* **A second published skill, `keep-memory-current`.** `check-memory-before-acting` covers the
+  read side; this covers the write side, which is the half that decays first. It states the two
+  moments that decide whether a memory store is worth anything — what you load when you start and
+  what you write back before you stop — and the rules that make a memo findable later: one fact
+  per memo with the cost that bought it, an index line is a pointer rather than the memo, delete
+  what turns out to be wrong because a stale memory suppresses the retry that would correct it,
+  re-index or the memo is invisible, and **verify with a search, never with a row count**.
+
+  It ships the three failure modes rather than only the advice: a rename can fork a path-keyed
+  store silently, a flat index stops working past roughly fifty entries, and any stated memo count
+  will drift under concurrent sessions, so assert coverage instead of the number.
+
+* **Section heading contextualization: a chunk is embedded with the headings it sits under.**
+  A passage that says "it refuses when the lock is held" is unretrievable on its own, because the
+  subject is three headings up. `recall.context` builds a deterministic contextual representation
+  used **for embedding only** — the stored text and everything a caller reads are unchanged — with
+  bounded title, section, neighbour and source segments so context cannot crowd out the passage. A
+  1024-dimension profile ships alongside it, and the context mode and version are stamped on every
+  chunk so a corpus can say which policy built it.
+
+* **Preregistered evidence routing and state features**, with the LOCOMO routing population frozen
+  so the arms are comparable across runs. Routing stays shadow or opt-in until promotion gates
+  pass; nothing about the served path changes by default.
+
 * **Folder and facet scoping: a second retrieval dimension over the vectors already stored.**
   `recall search --folder python --facet reference`, the same two arguments on the `recall_search`
   and `recall_evidence` MCP tools, and `Scope(folder=..., facet=...)` in the library. `recall
@@ -148,6 +172,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   See `docs/USING_WITH_AGENT_SDK.md`.
 
 ### Fixed
+
+* **The HNSW index served two queries that were supposed to be exact.** Both were planner cost
+  decisions that track table statistics rather than code, which is why they surfaced as CI flaking
+  four tests on an identical commit and identical resolved wheels. Postgres rewrites
+  `min(embedding <=> v)` into an ordered scan behind an InitPlan when that costs less, and pgvector
+  answers it approximately, so `top_cosine` could report a best cosine that was merely a good one.
+  An approximate answer to an exact question is the failure that does not announce itself: the
+  number looks reasonable and calibration is fitted on it.
+
+* **A tool call made three database round trips where one would do.** The statement timeout now
+  rides on the connection's own options and the active-generation lookup folds into the search as a
+  scalar subquery. ⛔ The generation binding is NOT relaxed by folding it in: `recall_chunks_v1`
+  holds every generation ever built, retired ones included, and a subquery matching no row yields
+  NULL, which matches nothing — exactly what the explicit early return did.
 
 * **The Claude Code plugin could not be pointed at the table its corpus actually lives in.**
   `recall quickstart` indexes into `quickstart_chunks` so a sample corpus can never be retrieved
