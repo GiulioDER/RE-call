@@ -46,6 +46,19 @@ OPENROUTER_API_KEY=
 # RECALL_INDEX_ROOT=/srv/recall/corpus  # corpus-only root for the MCP recall_index tool
 # Legacy RECALL_CALIBRATION files are import-only evidence; v1 search resolves calibration from Postgres.
 
+# Content-addressed embedding cache, ON by default, under the platform cache directory
+# (%LOCALAPPDATA%\recall\ or $XDG_CACHE_HOME/recall/, else ~/.cache/recall/). Every indexing entry
+# point consults it before embedding: `recall index`, `generation build`, the MCP write path, the
+# setup wizard and seeding. An entry is keyed on the sha256 of the chunk text together with the
+# COMPLETE embedder identity (profile fingerprint, dimension) and the encoder purpose, so it is
+# correct across tenants, generations, corpora and machines by construction, and a re-index pays
+# only for text that actually changed. Deleting the file costs one re-embed and nothing else.
+# Set to a path to move it, or to 0/off/no/false/none (or empty) to switch it off.
+# RECALL_EMBED_CACHE=0
+# Ceiling on the cache's vector bytes; least recently used entries are evicted past it. 0 is
+# unbounded. A vector costs 4 bytes per dimension, so 1024 dimensions is 4 KB per chunk.
+# RECALL_EMBED_CACHE_MAX_MB=512
+
 # Appends one record per search decision (answered, abstained, or refused) to the tenant's
 # audit table, best-effort. Off unless enabled; a malformed value warns once and stays off
 # rather than refusing searches. See docs/DECISION_LEDGER.md.

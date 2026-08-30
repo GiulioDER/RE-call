@@ -32,6 +32,7 @@ from recall.guards import staleness
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
 from recall.desktop.uploads import delete_staged_sources
+from recall.cache import default_cache
 from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_text
 from recall.lineage import IndexManifestV1, ManifestObjectV1
 from recall.manifest import ExtractingLocalObjectReader
@@ -2778,13 +2779,15 @@ def index_memory(
                 control_plane=control_plane,
                 context_policy=context_policy_for_profile(embedding_profile_id(shadow_embedder)),
             )
-        stats = Indexer(
-            store,
-            embedder,
-            chunker=chunker,
-            context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-            shadow=shadow_target,
-        ).index_path(target, files=files)
+        with default_cache() as cache:
+            stats = Indexer(
+                store,
+                embedder,
+                chunker=chunker,
+                cache=cache,
+                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                shadow=shadow_target,
+            ).index_path(target, files=files)
     except (RuntimeError, OSError, ValueError) as exc:
         # The library's own message is preserved verbatim for the OPERATOR and redacted for the
         # CLIENT. Only the server-side paths are removed — the scale of a refused prune, and the

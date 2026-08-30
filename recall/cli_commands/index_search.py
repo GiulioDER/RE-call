@@ -7,6 +7,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+from recall.cache import default_cache
 from recall.context import context_policy_for_profile
 from recall.embeddings import embedding_profile_id
 from recall.index import (
@@ -299,25 +300,30 @@ def _cmd_index(args: argparse.Namespace) -> None:
         # cannot have one added afterwards, and the run that skips it is always the run nobody
         # was watching.
         commit = None if args.no_commit_stamp else head_commit(args.path)
-        indexer = Indexer(
-            store,
-            embedder,
-            chunker=chunker,
-            context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-            allow_prune=args.allow_prune,
-            project=args.project,
-            indexed_commit=commit,
-            batch_chunks=args.batch_chunks,
-        )
-        try:
-            stats = indexer.index_path(args.path, glob=args.glob)
-        except PruneGuardTripped as exc:
-            # The message carries the recovery instructions; a traceback would bury them.
-            raise SystemExit(str(exc)) from exc
-        except ConcurrentIndex as exc:
-            # Same reasoning: this is an expected outcome of two sessions closing at once,
-            # not a defect, and its message names the holder and what to do about it.
-            raise SystemExit(str(exc)) from exc
+        # Cached by default: re-indexing a corpus is the common case, most of a corpus is
+        # unchanged between runs, and an unchanged chunk has one right vector. `RECALL_EMBED_CACHE`
+        # names another path or switches it off; see `recall.cache.default_cache_path`.
+        with default_cache() as cache:
+            indexer = Indexer(
+                store,
+                embedder,
+                chunker=chunker,
+                cache=cache,
+                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                allow_prune=args.allow_prune,
+                project=args.project,
+                indexed_commit=commit,
+                batch_chunks=args.batch_chunks,
+            )
+            try:
+                stats = indexer.index_path(args.path, glob=args.glob)
+            except PruneGuardTripped as exc:
+                # The message carries the recovery instructions; a traceback would bury them.
+                raise SystemExit(str(exc)) from exc
+            except ConcurrentIndex as exc:
+                # Same reasoning: this is an expected outcome of two sessions closing at once,
+                # not a defect, and its message names the holder and what to do about it.
+                raise SystemExit(str(exc)) from exc
         # `files` counts what was RE-indexed, not what is in the index, so an unchanged
         # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown
         # beside it. `deleted` matters more: pruning is the destructive half of `index`, and

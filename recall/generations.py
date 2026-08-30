@@ -20,7 +20,8 @@ from psycopg.types.json import Jsonb
 
 from recall.document import parse_document
 from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextual_passages
-from recall.embeddings import Embedder, embed_passages, embedding_profile, embedding_profile_id
+from recall.cache import embed_with_cache, open_default_cache
+from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
 from recall.extraction import ExtractedDocument, chunk_extracted_document
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
 from recall.dependency_invalidation import build_dependency_projection, write_dependency_projection
@@ -770,6 +771,10 @@ class GenerationManager:
     ) -> BuildStats:
         chunks_written = reused_objects = reused_chunks = tombstoned = empty = 0
         indexed_sources: list[str] = []
+        # Opened before the work and closed in `finally`, so a failed build still releases the
+        # file and still keeps whatever it managed to embed: a build that dies half way through
+        # is exactly the one whose retry should not pay for the first half twice.
+        cache = open_default_cache()
         try:
             with self._connect() as conn:
                 record = self._require_generation(conn, generation_id)
@@ -955,7 +960,19 @@ class GenerationManager:
                 # text, and a generation built with the wrong one is the right width, scores in
                 # range, and silently retrieves worse. Falls back to `embed` for an embedder
                 # that only implements the symmetric interface.
-                embeddings = embed_passages(embedder, embedding_texts)
+                #
+                # Through the content-addressed cache, which is what makes this path affordable
+                # to re-run. `_reuse_source` above already carries chunks forward when nothing
+                # about a source changed, but it is keyed on the PIPELINE FINGERPRINT: bump a
+                # derivation rule, a chunker version or a context mode and every source loses
+                # reuse and is re-embedded, including the ones whose chunk text came out
+                # byte-identical. The cache is keyed on the text and the embedder identity, so
+                # it covers exactly that case, plus a first build after `generation gc` has
+                # pruned the generations reuse would have read, and a `--force` rebuild of an
+                # unchanged corpus. With the cache disabled this is `embed_passages`, verbatim.
+                embeddings = embed_with_cache(
+                    embedder, embedding_texts, cache, purpose="passage"
+                )
                 with self._connect() as conn, conn.transaction():
                     self._source_lock(conn, self.tenant_id, entry.uri)
                     if self._is_tombstoned(conn, entry.uri):
@@ -1073,6 +1090,11 @@ class GenerationManager:
             except InvalidGenerationTransition:
                 pass
             raise
+        finally:
+            if cache is not None:
+                METRICS.increment("recall_embedding_cache_hits_total", cache.hits)
+                METRICS.increment("recall_embedding_cache_misses_total", cache.misses)
+                cache.close()
 
     def fail(self, generation_id: str, reason: str) -> None:
         with self._connect() as conn, conn.transaction():

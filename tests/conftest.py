@@ -622,6 +622,28 @@ def _confine_index_root(_suite_index_root, monkeypatch) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _disable_shared_embedding_cache(monkeypatch) -> Iterator[None]:
+    """Switch the shared embedding cache OFF for EVERY test, for two independent reasons.
+
+    The first is isolation of the machine: unset, `recall.cache.default_cache_path` resolves to the
+    operator's own platform cache directory, so a suite that indexes anything would write into the
+    file a real corpus is served from and evict its entries.
+
+    The second is isolation of the tests from each other. The cache is content-addressed and
+    process-independent BY DESIGN, which is exactly what makes it a hidden channel between tests: a
+    test that counts what an embedder was asked to embed would see a different count depending on
+    which tests ran before it, in which order, in which worker. That is the class of failure that
+    only ever reproduces on someone else's machine.
+
+    Autouse and off, rather than autouse and redirected to a tmp path, because off is the state
+    every existing test was written against. A test that wants the cache sets `RECALL_EMBED_CACHE`
+    to a `tmp_path` of its own and wins, since `monkeypatch.setenv` in a test body runs after this.
+    """
+    monkeypatch.setenv("RECALL_EMBED_CACHE", "0")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_recall_logger() -> Iterator[None]:
     """Restore the `recall` logger around every test.
 

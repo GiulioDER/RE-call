@@ -184,6 +184,57 @@ def test_exact_pipeline_and_source_hash_reuses_chunks_without_embedding(manager)
 
 
 @requires_db
+def test_a_fingerprint_change_that_leaves_the_text_identical_re_embeds_nothing(
+    manager, monkeypatch, tmp_path
+) -> None:
+    """The case `_reuse_source` cannot cover, and the reason the build path is cached.
+
+    Reuse is keyed on the PIPELINE FINGERPRINT, so bumping a derivation rule, a chunker version or
+    a context mode invalidates every source at once — including the ones whose chunk text comes out
+    byte-identical, which on this corpus is nearly all of them. Before the content-addressed cache
+    was wired into `build`, that was a full pass through a metered API for vectors already paid
+    for. Here the chunker IDENTITY changes while the chunker itself still yields the same one
+    chunk, so reuse is refused (asserted, not assumed) and the embedder is still never called.
+    """
+    monkeypatch.setenv("RECALL_EMBED_CACHE", str(tmp_path / "emb.sqlite"))
+    data = b"unchanged source"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    first = _ready(manager, manifest, _pipeline("model-a"), reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+
+    must_not_run = _Embedder(1)
+    second = manager.create(manifest, _pipeline("model-a", overlap=40))
+    stats = manager.build(second.generation_id, reader, must_not_run, lambda text: [text])
+
+    assert stats.reused_objects == 0  # reuse did not save this build
+    assert must_not_run.calls == 0  # the cache did
+
+
+@requires_db
+def test_a_disabled_cache_leaves_the_build_paying_for_every_vector(
+    manager, monkeypatch, tmp_path
+) -> None:
+    """The other half of the pair: with `RECALL_EMBED_CACHE` off, the build embeds as it always did.
+
+    Without this, the test above would still pass if the cache were somehow serving from a stale
+    file rather than from what the first build wrote, and the off switch would be untested.
+    """
+    monkeypatch.setenv("RECALL_EMBED_CACHE", "0")
+    data = b"unchanged source"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    first = _ready(manager, manifest, _pipeline("model-a"), reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+
+    embedder = _Embedder(1)
+    second = manager.create(manifest, _pipeline("model-a", overlap=40))
+    manager.build(second.generation_id, reader, embedder, lambda text: [text])
+
+    assert embedder.calls == 1
+
+
+@requires_db
 def test_failed_build_never_changes_the_active_generation(manager) -> None:
     data = b"known good"
     manifest = _manifest(manager.tenant_id, data)
