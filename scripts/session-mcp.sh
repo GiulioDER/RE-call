@@ -51,9 +51,14 @@ if ! git -C "$ROOT" check-ignore -q .mcp.json 2>/dev/null; then
     exit 1
 fi
 
+# A missing secrets file is a WARNING, not a refusal, and the difference matters because this
+# repository is public. Anyone who clones it has no secrets file by construction, and a hard exit
+# here propagates into `session-open.sh`, which stops the session on it: a contributor would find
+# that recall's own setup script refuses to open a session in recall. Write what can be written,
+# say clearly what is missing, and let the memory preflight be the thing that reports the absence.
 if [ ! -f "$SECRETS" ]; then
     cat >&2 <<EOF
-session-mcp: no secrets file at $SECRETS
+session-mcp: no secrets file at $SECRETS, so NO memory servers will be configured.
 
 Create it, OUTSIDE this repository. The "recall_corpus" object is REQUIRED -- it is what tells this
 script where recall's own corpora are served, and without it a session gets no memory at all:
@@ -82,7 +87,6 @@ returns a confidently ranked list that means nothing. Read them from the corpus 
 
 A server under "servers" with no "token" is configured without an Authorization header.
 EOF
-    exit 1
 fi
 
 # Only two forms are accepted, and anything else is refused rather than ignored. Falling through
@@ -104,7 +108,10 @@ if [ "${1:-}" = "--check" ]; then
     echo "  .mcp.json is gitignored: yes"
     SECRETS="$SECRETS" python <<'PY'
 import json, os
-d = json.load(open(os.environ["SECRETS"], encoding="utf-8"))
+try:
+    d = json.load(open(os.environ["SECRETS"], encoding="utf-8"))
+except OSError:
+    d = {}
 corpus = d.get("recall_corpus") or {}
 tenants = corpus.get("tenants") or {}
 remote = d.get("servers", {})
@@ -114,7 +121,7 @@ if tenants:
     for name, cfg in sorted(tenants.items()):
         print(f"    - {name} -> tenant {cfg.get('tenant')} via {cfg.get('embedder')}")
 else:
-    print("  recall servers: NONE — 'recall_corpus.tenants' is missing or empty.")
+    print("  recall servers: NONE. 'recall_corpus.tenants' is missing or empty.")
     print("  a session written from this will have no memory. See the secrets template above.")
 print(f"  remote servers available: {len(remote)}, included: {'YES' if included else 'no'}")
 for name, cfg in sorted(remote.items()):
@@ -129,21 +136,29 @@ fi
 SECRETS="$SECRETS" OUT="$OUT" python <<'PY'
 import json, os
 
-secrets = json.load(open(os.environ["SECRETS"], encoding="utf-8"))
+try:
+    secrets = json.load(open(os.environ["SECRETS"], encoding="utf-8"))
+except OSError:
+    secrets = {}
 want_remote = bool(os.environ.get("RECALL_MCP_INCLUDE_REMOTE"))
 
 corpus = secrets.get("recall_corpus") or {}
 tenants = corpus.get("tenants") or {}
 if not tenants:
-    raise SystemExit(
-        "session-mcp: the secrets file has no 'recall_corpus.tenants'.\n"
-        "session-mcp: REFUSING to write a config with no memory servers in it. A session that\n"
-        "session-mcp: starts without them cannot tell 'recall is down' from 'recall found\n"
-        "session-mcp: nothing', and will quietly work from whatever it happens to remember."
-    )
-missing = [k for k in ("ssh_host", "python", "env_file", "workdir") if not corpus.get(k)]
-if missing:
-    raise SystemExit(f"session-mcp: recall_corpus is missing {', '.join(missing)}")
+    # Deliberately NOT a refusal. Refusing leaves the PREVIOUS .mcp.json on disk, and a stale
+    # config full of dead servers is the exact state this whole change exists to get out of: it is
+    # what let a session report "2 servers" truthfully, for days, with nothing behind either one.
+    # An honest empty config is worse to look at and far better to run, because
+    # scripts/session_memory_check.py then says "NO memory layer" in as many words.
+    print("session-mcp: WARNING: no 'recall_corpus.tenants' in the secrets file.")
+    print("session-mcp: writing a config with NO memory servers. This session will have no memory;")
+    print("session-mcp: do not read an empty recall result as evidence that nothing was recorded.")
+else:
+    # A PRESENT but incomplete block is a different thing from an absent one: somebody meant to
+    # configure this and got it wrong, and silently serving nothing would hide their typo.
+    missing = [k for k in ("ssh_host", "python", "env_file", "workdir") if not corpus.get(k)]
+    if missing:
+        raise SystemExit(f"session-mcp: recall_corpus is missing {', '.join(missing)}")
 
 
 def corpus_server(tenant, embedder):
