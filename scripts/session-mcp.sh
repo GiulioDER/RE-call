@@ -2,9 +2,9 @@
 # Generate this checkout's .mcp.json.
 #
 # Why generated rather than committed: this repository is public (PyPI, GitHub, the MCP registry),
-# and the internal servers are described by both a bearer token and a host address. **Both are
-# disclosure.** A host inventory with no credentials still tells a reader which machines exist and
-# what runs on them, so neither the URLs nor the tokens live in the tree. They come from
+# and a server is described by both a bearer token and a host address. **Both are disclosure.** A
+# host inventory with no credentials still tells a reader which machines exist and what runs on
+# them, so no URL, host, account name or absolute path lives in the tree. They come from
 # `~/.claude/recall-mcp-secrets.json`, and `.mcp.json` is gitignored.
 #
 # Each git worktree is its own project root as far as the MCP client is concerned, so every
@@ -20,27 +20,30 @@ SECRETS="${RECALL_MCP_SECRETS:-$HOME/.claude/recall-mcp-secrets.json}"
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 OUT="$ROOT/.mcp.json"
 
-# The corpus the dogfood servers serve. Deliberately NOT a session container and NOT the shared
-# `recall-db-1`: it is a long-lived, read-mostly index of this project's own docs and memory, and
-# the test suite must never point at it. Rebuild:
-#   docker run -d --name recall-dogfood -e POSTGRES_USER=recall -e POSTGRES_PASSWORD=recall \
-#     -e POSTGRES_DB=recall -p 127.0.0.1:5433:5432 -v recall_dogfood_pgdata:/var/lib/postgresql \
-#     pgvector/pgvector:pg18
-#   RECALL_MIGRATION_DSN=$DSN RECALL_DSN=$DSN python -m recall.cli schema apply
-#   RECALL_DSN=$DSN RECALL_EMBEDDER=fastembed python -m recall.cli index docs
-# Index each tenant SEPARATELY. Re-indexing prunes sources that have vanished from disk, so
-# pointing both corpora at one tenant deletes the other.
+# WHERE THE CORPORA ARE, AND WHY THE SERVER RUNS THERE RATHER THAN HERE
 #
-# ⚠️ This is the ONE corpus that is still embedded on this machine, and it is the named exception
-# to "embedding runs on VPS2" (CLAUDE.md). Its database is here, so embedding it there would ship
-# the vectors straight back. It is small; nothing else local should follow its example. The
-# single-writer lock still applies, so a second `recall index` against this corpus refuses rather
-# than interleaving.
-DOGFOOD_DSN="${RECALL_DOGFOOD_DSN:-postgresql://recall:recall@127.0.0.1:5433/recall}"
+# 🔁 Rewritten 2026-08-30. This script used to point every recall server at a local
+# `recall-dogfood` container on 127.0.0.1:5433 with RECALL_TRUST_MODE=development. All three parts
+# were wrong by then, and each one had been documented as wrong in CLAUDE.md before this file was
+# read again:
+#
+#   1. The container was removed on 2026-08-25 ("Nothing should be pointed at 5433"). Every server
+#      this script wrote died on ConnectionRefused.
+#   2. An MCP `env` block REPLACES the environment rather than extending it, so a local server
+#      launched with only RECALL_* keys never had PATH or APPDATA and died on
+#      `ModuleNotFoundError: anyio` before it could reach the database anyway.
+#   3. RECALL_TRUST_MODE=development is "actively wrong" for a certified corpus: it marks a trusted
+#      answer `degraded` and forces `calibrated` false, and because a relaxed gate never errors,
+#      nothing reports it.
+#
+# The corpora now live on one host and are certified there, so the server runs where they are, over
+# ssh stdio, with strict trust expressed by the ABSENCE of RECALL_TRUST_MODE. Strict-by-omission is
+# deliberate: setting that variable to any string at all is how a corpus ends up served relaxed
+# while the config claims otherwise.
 
-# The .mcp.json this writes carries secrets. Refuse to create it at all unless the ignore rule is
-# already in place: checking afterwards would mean warning about a file that already exists on disk
-# with real credentials in it.
+# The .mcp.json this writes carries host addresses. Refuse to create it at all unless the ignore
+# rule is already in place: checking afterwards would mean warning about a file that already exists
+# on disk with real credentials in it.
 if ! git -C "$ROOT" check-ignore -q .mcp.json 2>/dev/null; then
     echo "session-mcp: REFUSING to write .mcp.json — it is not gitignored in this checkout." >&2
     echo "session-mcp: the generated file carries bearer tokens and internal host addresses," >&2
@@ -48,23 +51,36 @@ if ! git -C "$ROOT" check-ignore -q .mcp.json 2>/dev/null; then
     exit 1
 fi
 
-if [ ! -f "$SECRETS" ] && [ -n "${RECALL_MCP_INCLUDE_REMOTE:-}" ]; then
+if [ ! -f "$SECRETS" ]; then
     cat >&2 <<EOF
 session-mcp: no secrets file at $SECRETS
 
-Create it, OUTSIDE this repository:
+Create it, OUTSIDE this repository. The "recall_corpus" object is REQUIRED -- it is what tells this
+script where recall's own corpora are served, and without it a session gets no memory at all:
 
   {
+    "recall_corpus": {
+      "ssh_host": "HOST",
+      "python":   "/path/to/venv/bin/python",
+      "env_file": "/path/to/.env",
+      "workdir":  "/path/to/checkout",
+      "tenants": {
+        "recall-memory": { "tenant": "memory",  "embedder": "voyage:voyage-4" }
+      }
+    },
     "servers": {
-      "code-rag":   { "url": "http://HOST:PORT/mcp", "token": "..." },
-      "qwen-mcp":   { "url": "http://HOST:PORT/mcp", "token": "..." },
-      "qwen-vps3":  { "url": "http://HOST:PORT/mcp", "token": "..." },
       "vps3-lite":  { "url": "http://HOST:PORT/mcp" },
       "mcp-pg-ops": { "url": "http://HOST:PORT/mcp", "token": "..." }
     }
   }
 
-A server with no "token" is configured without an Authorization header.
+Each tenant needs the embedder its ACTIVE generation was built with. A wrong choice among models of
+the same dimension does NOT error: pgvector computes a cosine over whatever produced the vectors and
+returns a confidently ranked list that means nothing. Read them from the corpus rather than guessing:
+
+  select tenant_id, pipeline_identity->>'embedder' from recall_generations where state='active';
+
+A server under "servers" with no "token" is configured without an Authorization header.
 EOF
     exit 1
 fi
@@ -85,18 +101,23 @@ esac
 if [ "${1:-}" = "--check" ]; then
     echo "session-mcp: would write $OUT"
     echo "  secrets:      $SECRETS"
-    echo "  dogfood DSN:  $DOGFOOD_DSN"
     echo "  .mcp.json is gitignored: yes"
     SECRETS="$SECRETS" python <<'PY'
 import json, os
-try:
-    d = json.load(open(os.environ["SECRETS"], encoding="utf-8")).get("servers", {})
-except OSError:
-    d = {}
+d = json.load(open(os.environ["SECRETS"], encoding="utf-8"))
+corpus = d.get("recall_corpus") or {}
+tenants = corpus.get("tenants") or {}
+remote = d.get("servers", {})
 included = bool(os.environ.get("RECALL_MCP_INCLUDE_REMOTE"))
-print("  would write: recall, recall-memory (this project's own corpus)")
-print(f"  remote servers available: {len(d)}, included: {'YES' if included else 'no'}")
-for name, cfg in sorted(d.items()):
+if tenants:
+    print(f"  recall servers ({len(tenants)}, this project's own corpora, strict trust):")
+    for name, cfg in sorted(tenants.items()):
+        print(f"    - {name} -> tenant {cfg.get('tenant')} via {cfg.get('embedder')}")
+else:
+    print("  recall servers: NONE — 'recall_corpus.tenants' is missing or empty.")
+    print("  a session written from this will have no memory. See the secrets template above.")
+print(f"  remote servers available: {len(remote)}, included: {'YES' if included else 'no'}")
+for name, cfg in sorted(remote.items()):
     print(f"    - {name} (auth: {'yes' if cfg.get('token') else 'none'})")
 if not included:
     print("  their corpus is /opt/sentiment_agent, not this repository.")
@@ -105,58 +126,60 @@ PY
     exit 0
 fi
 
-SECRETS="$SECRETS" OUT="$OUT" ROOT="$ROOT" DOGFOOD_DSN="$DOGFOOD_DSN" python <<'PY'
+SECRETS="$SECRETS" OUT="$OUT" python <<'PY'
 import json, os
 
-# Only the remote half needs the secrets file, so a checkout without one still
-# gets the two local dogfood servers instead of nothing. Requiring it
-# unconditionally survived the change that made the remote servers opt-in, and
-# turned "no secrets file" into "no MCP at all".
+secrets = json.load(open(os.environ["SECRETS"], encoding="utf-8"))
 want_remote = bool(os.environ.get("RECALL_MCP_INCLUDE_REMOTE"))
-remote = {}
-if want_remote:
-    try:
-        remote = json.load(open(os.environ["SECRETS"], encoding="utf-8")).get("servers") or {}
-    except OSError:
-        raise SystemExit(f"session-mcp: no secrets file at {os.environ['SECRETS']}") from None
-    if not remote:
-        raise SystemExit("session-mcp: the secrets file has no 'servers' object")
 
-root, dsn = os.environ["ROOT"], os.environ["DOGFOOD_DSN"]
+corpus = secrets.get("recall_corpus") or {}
+tenants = corpus.get("tenants") or {}
+if not tenants:
+    raise SystemExit(
+        "session-mcp: the secrets file has no 'recall_corpus.tenants'.\n"
+        "session-mcp: REFUSING to write a config with no memory servers in it. A session that\n"
+        "session-mcp: starts without them cannot tell 'recall is down' from 'recall found\n"
+        "session-mcp: nothing', and will quietly work from whatever it happens to remember."
+    )
+missing = [k for k in ("ssh_host", "python", "env_file", "workdir") if not corpus.get(k)]
+if missing:
+    raise SystemExit(f"session-mcp: recall_corpus is missing {', '.join(missing)}")
 
 
-def dogfood(tenant=None):
-    """One stdio server against the dogfood corpus, optionally scoped to a tenant.
+def corpus_server(tenant, embedder):
+    """One recall MCP server, run where the corpus lives, over ssh stdio.
 
-    RECALL_TRUST_MODE is set HERE and not left to the operator's shell. An MCP stdio server
-    launched with an explicit `env` block does not inherit exported variables, so a corpus that
-    searches fine from the terminal still answered INDEX_NOT_READY through the client. These two
-    servers are local, uncalibrated, developer-only corpora, which is exactly the case the relaxed
-    mode exists for; nothing else should be configured this way.
+    Two things here are load-bearing and neither is obvious from the shape:
+
+    `set -a; . env_file; set +a` sources the credentials the embedder needs (the Voyage key), which
+    a non-interactive ssh command does NOT get from a login profile.
+
+    `unset RECALL_TRUST_MODE` makes strict the DEFAULT rather than a hope. These corpora are
+    certified and bound to an active generation, so strict is correct for all of them; leaving the
+    variable to whatever the remote environment holds is how a certified corpus ends up answering
+    `degraded` with nothing raising.
     """
-    env = {
-        "RECALL_DSN": dsn,
-        "RECALL_EMBEDDER": "fastembed",
-        "RECALL_TRUST_MODE": "development",
-    }
-    if tenant:
-        env["RECALL_TENANT"] = tenant
+    remote_cmd = (
+        f"cd {corpus['workdir']} && "
+        f"set -a && . {corpus['env_file']} && set +a && "
+        f"unset RECALL_TRUST_MODE && "
+        f"RECALL_ENV=production RECALL_TENANT={tenant} RECALL_EMBEDDER={embedder} "
+        f"{corpus['python']} -m recall_mcp.server"
+    )
     return {
         "type": "stdio",
-        "command": "python",
-        "args": ["-m", "recall_mcp.server"],
-        "cwd": root,
-        "env": env,
+        "command": "ssh",
+        # BatchMode: fail immediately rather than blocking a session start on a password prompt
+        # nobody is there to answer.
+        "args": ["-o", "BatchMode=yes", corpus["ssh_host"], remote_cmd],
     }
 
 
+# This project's own corpora: its memory store, its generated code index, its docs. The only
+# servers whose corpus is this repository.
 servers = {
-    # This project's own docs, and its own memory store. The only servers whose corpus is this
-    # repository. They run with RECALL_TRUST_MODE=development, set in the env block above, because
-    # these corpora are uncalibrated and bound to no generation; a strict server refuses them with
-    # INDEX_NOT_READY, which is correct for anything but a local dogfood index.
-    "recall": dogfood(),
-    "recall-memory": dogfood("memory"),
+    name: corpus_server(cfg["tenant"], cfg["embedder"])
+    for name, cfg in sorted(tenants.items())
 }
 
 # The internal servers are OFF by default here, and that is a deliberate reversal.
@@ -172,6 +195,9 @@ servers = {
 #
 #   RECALL_MCP_INCLUDE_REMOTE=1 scripts/session-mcp.sh
 if want_remote:
+    remote = secrets.get("servers") or {}
+    if not remote:
+        raise SystemExit("session-mcp: the secrets file has no 'servers' object")
     for name, cfg in remote.items():
         url = cfg.get("url")
         if not url:
@@ -187,13 +213,15 @@ with open(out, "w", encoding="utf-8", newline="\n") as fh:
     json.dump({"mcpServers": servers}, fh, indent=2)
     fh.write("\n")
 print(f"session-mcp: wrote {out} ({len(servers)} servers)")
+for name in sorted(tenants):
+    print(f"  {name}: tenant {tenants[name]['tenant']}, strict trust")
 PY
 
 # Writing the file is only half of it. A project-scoped server sits at "pending approval" until
-# the CLIENT has recorded the approval for this directory, and a non-interactive session can
-# never answer that prompt. Measured 2026-08-17: 306 tracked projects on this machine, zero with
-# an approved .mcp.json server, while `claude mcp list` reported both recall servers as
-# "⏸ Pending approval" with the file sitting on disk in front of it.
+# the CLIENT has recorded the approval for this directory, and an interactive session that never
+# answers the prompt leaves it there forever. Measured 2026-08-17: 306 tracked projects on this
+# machine, zero with an approved .mcp.json server, while `claude mcp list` reported both recall
+# servers as "⏸ Pending approval" with the file sitting on disk in front of it.
 #
 # So the correct fix for "the servers never load" is not to write the file EARLIER, it is to
 # approve it. Only the names cross into the client config; the definitions and the secrets stay

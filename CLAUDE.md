@@ -185,29 +185,50 @@ write-ordering race for a day (`docs/preregistrations/2026-08-16-sessionstart-ho
 `scripts/session_mcp_approve.py` does the approval, carries only server names into the client
 config (never a URL or a token), and will not reverse a server you have explicitly disabled.
 
-- **`recall`** serves recall's own `docs/` and **`recall-memory`** serves this project's memory
-  store, both out of the `recall-dogfood` corpus on port 5433 (tenants `default` and `memory`,
-  1688 and 308 chunks). These are the only servers whose corpus is this project.
+- **`recall-memory`, `recall-code` and `recall-docs`** serve this project's own corpora: its memory
+  store, its generated-code index and its `docs/`. They are the only servers whose corpus is this
+  repository.
 
-  They run with `RECALL_TRUST_MODE=development`, set inside the `env` block that
-  `scripts/session-mcp.sh` writes rather than left to your shell: a stdio server launched with an
-  explicit `env` does not inherit exported variables, so a corpus that searches fine from the
-  terminal answered `INDEX_NOT_READY` through the client. Both corpora are uncalibrated and bound
-  to no generation, which a strict server correctly refuses. **That setting is right for a local
-  dogfood index and wrong for anything else**; lifting the refusal properly needs a calibration
-  bound to an immutable generation (`recall calibration calibrate --generation G --queries FILE
-  --publish`).
+  🔁 **Rewritten 2026-08-30, and every part of what stood here was wrong.** It said both servers ran
+  out of a local `recall-dogfood` corpus on port 5433 with `RECALL_TRUST_MODE=development`, and
+  explained at length why that relaxed setting was correct. Measured that day, three faults, each
+  already documented as a fault elsewhere in this file or in the global notes, and none of them
+  checked by anything:
 
-  The same thing from the CLI:
+  | Fault | Symptom | Where it was already written down |
+  |---|---|---|
+  | the 5433 container was removed on 2026-08-25 | `ConnectionRefused` | "Nothing should be pointed at 5433" |
+  | an MCP `env` block REPLACES the environment | `ModuleNotFoundError: anyio`, before the DB is even reached | nowhere; this one was new |
+  | `RECALL_TRUST_MODE=development` on a certified corpus | a trusted answer reported `degraded`, `calibrated` forced false | "actively wrong ... because a relaxed gate never errors, nothing reports it" |
+
+  **The cost was a full working session with no memory layer at all**, during which the same
+  decisions were re-derived and the same context re-explained, because a session cannot tell a dead
+  server from a corpus with nothing to say. Both are silence.
+
+  The servers now run **where the corpora are, over ssh stdio, under strict trust**. Strict is
+  expressed by the ABSENCE of `RECALL_TRUST_MODE`: setting it to any string is precisely how a
+  certified corpus ends up served relaxed while the config claims otherwise. Host, interpreter and
+  paths come from `recall_corpus` in `~/.claude/recall-mcp-secrets.json`, never from the tree.
+
+  ⚠️ **Each tenant must be served with the embedder its ACTIVE generation was built with.** The
+  three here use three DIFFERENT 1024-dimension models, and a mismatch does not error: pgvector
+  computes a cosine over whatever produced the vectors and returns a confidently ranked list that
+  means nothing. Read them from the corpus rather than from this table, which will rot:
 
   ```bash
-  RECALL_DSN=postgresql://recall:recall@127.0.0.1:5433/recall RECALL_EMBEDDER=fastembed \
-    RECALL_TRUST_MODE=development python -m recall.cli --tenant memory search "your question"
+  psql "$RECALL_DSN" -c "select tenant_id, pipeline_identity->>'embedder' from recall_generations where state='active'"
   ```
 
-  Drop `--tenant memory` to search `docs/` instead. Rebuild either corpus with the recipe in
-  `scripts/session-mcp.sh`. **Index each tenant separately:** re-indexing prunes sources that have
-  vanished from disk, so pointing both corpora at one tenant deletes the other.
+  ⛔ **`.mcp.json present (N servers)` is not a health check**, and it reads exactly like one: it
+  printed a truthful, reassuring count at every session start for days while every server in the
+  file was dead. `scripts/session_memory_check.py` actually talks to the server and separates DEAD
+  (nothing answered) from DEGRADED (answering un-gated) from QUIET (trusted, and genuinely had
+  nothing). `scripts/session-open.sh` runs it; `RECALL_SKIP_MEMORY_CHECK=1` skips it when offline.
+  Verify by hand in about ten seconds:
+
+  ```bash
+  python scripts/session_memory_check.py --all --quiet
+  ```
 - **The remaining `http` servers are internal infrastructure for a different project.** They are
   reachable and useful for that system, but be clear-eyed here: their code and docs search does
   **not** search recall, and their read-only SQL tool does **not** reach recall's tables. Do not use

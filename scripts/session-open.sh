@@ -78,6 +78,27 @@ else
     fi
 fi
 
+# ⚠️ The line above counts ENTRIES IN A FILE. It is not a health check, and it reads exactly like
+# one: it printed a truthful, reassuring server count at the start of every session for days while
+# every server in that file was dead. So actually talk to the memory server before the session
+# starts trusting it.
+#
+# This is the one preflight worth the seconds it costs, because its failure mode is silent. A dead
+# memory server and a memory server with nothing to say produce the same thing from inside a
+# session -- an empty result -- and only one of them means "there is nothing recorded about this".
+# Without this check a session quietly re-derives decisions that were already made and re-asks
+# questions that were already answered.
+#
+# Skip with RECALL_SKIP_MEMORY_CHECK=1 when offline; expect to be misremembering things if you do.
+say "Memory"
+if [ -n "${RECALL_SKIP_MEMORY_CHECK:-}" ]; then
+    printf '  skipped (RECALL_SKIP_MEMORY_CHECK set); treat every empty recall result as unknown\n'
+elif ! python "$ROOT/scripts/session_memory_check.py" --quiet 2>&1; then
+    # Not fatal: a session with no memory is degraded, not stopped, and refusing to open would
+    # strand anyone whose network is down. The banner the check prints is the point.
+    printf '  continuing WITHOUT a usable memory layer\n'
+fi
+
 say "Database"
 bash "$ROOT/scripts/session-db.sh" status 2>&1 | sed 's/^/  /'
 printf '  start one only if you will run the DB suite:\n'
