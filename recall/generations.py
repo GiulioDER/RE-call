@@ -771,11 +771,14 @@ class GenerationManager:
     ) -> BuildStats:
         chunks_written = reused_objects = reused_chunks = tombstoned = empty = 0
         indexed_sources: list[str] = []
-        # Opened before the work and closed in `finally`, so a failed build still releases the
-        # file and still keeps whatever it managed to embed: a build that dies half way through
-        # is exactly the one whose retry should not pay for the first half twice.
-        cache = open_default_cache()
+        # Opened INSIDE the try and closed in `finally`, so a failed build still releases the file
+        # and still keeps whatever it managed to embed: a build that dies half way through is
+        # exactly the one whose retry should not pay for the first half twice. Inside rather than
+        # above because everything above the try is outside the handler that marks the generation
+        # failed, and a generation left in `building` forever is a worse failure than a lost cache.
+        cache = None
         try:
+            cache = open_default_cache()
             with self._connect() as conn:
                 record = self._require_generation(conn, generation_id)
                 if record.state != GenerationState.BUILDING:
