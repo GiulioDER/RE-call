@@ -569,6 +569,7 @@ def test_index_memory_directory_skips_in_production(monkeypatch, tmp_path):
 
 
 def test_index_memory_directory_indexes_via_indexer(monkeypatch, tmp_path):
+    from recall.cache import EmbeddingCache
     from recall.index import IndexStats
     from recall.setup import index_memory_directory
 
@@ -590,9 +591,10 @@ def test_index_memory_directory_indexes_via_indexer(monkeypatch, tmp_path):
             calls["checked"] = True
 
     class FakeIndexer:
-        def __init__(self, store, embedder, chunker=None, context_policy=None):
+        def __init__(self, store, embedder, chunker=None, cache=None, context_policy=None):
             calls["store"] = store
             calls["embedder"] = embedder
+            calls["cache"] = cache
             calls["context_policy"] = context_policy
 
         def index_path(self, path, glob=None):
@@ -602,6 +604,7 @@ def test_index_memory_directory_indexes_via_indexer(monkeypatch, tmp_path):
 
     monkeypatch.setattr("recall.store.PgVectorStore", lambda *a, **k: FakeStore())
     monkeypatch.setattr("recall.index.Indexer", FakeIndexer)
+    monkeypatch.setenv("RECALL_EMBED_CACHE", str(tmp_path / "emb.sqlite"))
     output = io.StringIO()
 
     index_memory_directory(
@@ -614,6 +617,11 @@ def test_index_memory_directory_indexes_via_indexer(monkeypatch, tmp_path):
     assert calls["path"] == memory_dir
     assert calls["glob"] == "**/*.md"
     assert calls["context_policy"].mode == "none"
+    # The shared embedding cache reaches the indexer that runs on every session close. Asserted
+    # here because `index_memory_directory` is best-effort by design: it catches `Exception` and
+    # reports, so a signature it fails to satisfy is a printed line rather than a failing test.
+    # This assertion is the only thing between that and the memory corpus re-embedding in full.
+    assert isinstance(calls["cache"], EmbeddingCache)
     assert "Indexed 3 chunks from 1 files" in output.getvalue()
 
 

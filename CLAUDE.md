@@ -315,6 +315,32 @@ the host, and that is not hypothetical there: VPS2's main Postgres cluster has b
 2026-08-19, `Result: oom-kill`. A dimension match is not a model match, and free memory today is not
 a memory bound.
 
+### 6. The embedding cache is ON by default, and it is the reason a rebuild is cheap
+
+Every indexing entry point (`recall index`, `generation build`, the MCP write path, the setup
+wizard, seeding) consults a content-addressed SQLite cache before embedding. It lives under the
+platform cache directory (`$XDG_CACHE_HOME/recall/embeddings.sqlite`, else `~/.cache/recall/`), and
+`RECALL_EMBED_CACHE` moves it or switches it off; `RECALL_EMBED_CACHE_MAX_MB` bounds it, default
+512 MB, LRU past that.
+
+🔑 **It covers the case `_reuse_source` cannot.** Generation build already carries a source's chunks
+forward when nothing changed, but that reuse is keyed on the PIPELINE FINGERPRINT: bump a
+derivation rule, a chunker version or a context mode and every source loses reuse and is
+re-embedded, including the ones whose chunk text came out byte-identical. The cache is keyed on the
+text and the complete embedder identity, so it also covers a first build after `generation gc` has
+pruned the generations reuse would have read, and a `--force` rebuild of an unchanged corpus, which
+this file describes as spending "a full Voyage pass".
+
+Deleting the file costs one re-embed and nothing else. A corrupt or unwritable cache degrades to no
+cache with a warning rather than failing the run, so it cannot be the reason a build dies.
+
+⚠️ **`Indexer(cache=...)` still defaults to None on purpose, and eval harnesses and benchmarks
+construct `Indexer` directly.** A cache appearing under a run that is MEASURING embedding cost
+would corrupt the measurement silently, so the opt-in lives at the entry points a person invokes,
+not in the library. The test suite disables the cache session-wide
+(`tests/conftest.py::_disable_shared_embedding_cache`) for the same reason plus one more: it is
+process-independent by design, which makes it a hidden channel between tests.
+
 ## MCP servers
 
 `scripts/session-mcp.sh` generates `.mcp.json` **and records the client's approval for it**. Run it

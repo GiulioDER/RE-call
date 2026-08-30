@@ -1156,6 +1156,7 @@ def index_memory_directory(
     try:
         from recall.context import context_policy_for_profile
         from recall.embeddings import embedding_profile_id
+        from recall.cache import default_cache
         from recall.index import Indexer, chunk_text
         from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
 
@@ -1167,13 +1168,15 @@ def index_memory_directory(
             tenant=tenant or DEFAULT_TENANT,
         ) as store:
             store.check_schema()
-            indexer = Indexer(
-                store,
-                embedder,
-                chunker=chunk_text,
-                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-            )
-            stats = indexer.index_path(memory_dir, glob="**/*.md")
+            with default_cache() as cache:
+                indexer = Indexer(
+                    store,
+                    embedder,
+                    chunker=chunk_text,
+                    cache=cache,
+                    context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                )
+                stats = indexer.index_path(memory_dir, glob="**/*.md")
     except Exception as exc:  # best effort: scaffolded files must survive even if this fails
         print_fn(
             f"Could not auto-index {memory_dir}: {_safe_error(exc, dsn)} — run "
