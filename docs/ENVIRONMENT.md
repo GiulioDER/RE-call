@@ -80,15 +80,31 @@ OPENROUTER_API_KEY=
 # RECALL_REASONING_EXPANSION_EFFORT=minimal            # none | minimal | low | medium | high
 # RECALL_REASONING_EXPANSION_REVISION=unpinned
 #
-# Optional local answer provider, using Ollama's native /api/chat endpoint. Disabled unless
-# RECALL_REASONING_ANSWER_ENABLED=1. Provider failures are sanitized and never promote evidence.
+# Optional answer provider for `recall_reasoning_query`. Disabled unless
+# RECALL_REASONING_ANSWER_ENABLED=1; with it unset the tool abstains with
+# refusal_reason="no_answer_provider", which is the shipped default. Provider failures are
+# sanitized and never promote evidence, and `recall_reasoning_audit` never uses a provider.
 # RECALL_REASONING_ANSWER_ENABLED=0
+# RECALL_REASONING_ANSWER_PROVIDER=ollama              # ollama | openai; ollama is the default
 # RECALL_REASONING_ANSWER_MODEL=                       # REQUIRED when enabled; no default
-# RECALL_REASONING_ANSWER_BASE_URL=http://127.0.0.1:11434/v1
+# RECALL_REASONING_ANSWER_BASE_URL=                    # empty picks the backend's own default
 # RECALL_REASONING_ANSWER_TIMEOUT=60                   # seconds; empty means the default
 # RECALL_REASONING_ANSWER_MAX_TOKENS=512
 # RECALL_REASONING_ANSWER_REVISION=unpinned
-# RECALL_REASONING_ANSWER_THINKING=0                   # explicit boolean; the model's think switch
+#
+# ollama: Ollama's native /api/chat endpoint, default base URL http://127.0.0.1:11434/v1.
+# RECALL_REASONING_ANSWER_THINKING=0                   # explicit boolean; the model's think
+#                                                      # switch. Ollama only: refused with openai.
+#
+# openai: any OpenAI-compatible /chat/completions endpoint, default base URL
+# https://openrouter.ai/api/v1. Needs the `openai` extra. Note that the ollama backend cannot
+# reach a hosted endpoint by base URL alone: it rewrites the path and sends no Authorization
+# header, so a hosted model needs PROVIDER=openai, not just a different URL.
+# RECALL_REASONING_ANSWER_API_KEY=                     # REQUIRED for openai; the bare
+#                                                      # RECALL_REASONING_API_KEY that `recall
+#                                                      # setup` writes is accepted as a fallback
+# RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS=          # optional; unset records a NULL cost
+#                                                      # rather than claiming the call was free
 
 # --- Which tools the MCP server serves ---
 # Unset serves all 18, which is the historical behaviour. Every tool definition is re-sent on

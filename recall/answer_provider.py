@@ -105,8 +105,137 @@ class OllamaAnswerProvider:
         return self._last_metadata
 
 
-def resolve_answer_provider(env: Mapping[str, str] | None = None) -> OllamaAnswerProvider | None:
-    """Resolve the explicitly enabled local answer provider, otherwise return ``None``."""
+class OpenAICompatibleAnswerProvider:
+    """Call an OpenAI compatible `/chat/completions` endpoint and return raw answer JSON.
+
+    Exists because :class:`OllamaAnswerProvider` cannot reach a hosted endpoint whatever its
+    base URL is set to: `_NativeOllamaClient` rewrites the path to ``<base>/api/chat``, sends
+    Ollama's ``think``/``options`` payload, and attaches no ``Authorization`` header. Pointing
+    it at OpenRouter produces an unauthenticated POST to a path that does not exist.
+
+    The client is injected in tests and imported lazily by :func:`resolve_answer_provider`, so
+    the core package stays usable without the optional OpenAI dependency. This mirrors
+    :class:`recall.reasoning_expansion.OpenAIExpansionProvider`, which is the tested precedent
+    for an OpenRouter-backed port in this package.
+    """
+
+    provider_id = "recall.reasoning.answer.openai"
+
+    def __init__(
+        self,
+        client: object,
+        *,
+        model_id: str,
+        revision: str = "unpinned",
+        max_tokens: int = 512,
+        cost_per_1k_tokens: float | None = None,
+    ) -> None:
+        if not model_id.strip():
+            raise ValueError("answer model id must be non-empty")
+        if max_tokens < 1 or max_tokens > 4096:
+            raise ValueError("answer max tokens must be between 1 and 4096")
+        if cost_per_1k_tokens is not None and (
+            not math.isfinite(cost_per_1k_tokens) or cost_per_1k_tokens < 0
+        ):
+            raise ValueError("cost_per_1k_tokens must be finite and non-negative")
+        self.client = client
+        self.model_id = model_id
+        self.revision = revision
+        self.max_tokens = max_tokens
+        self.cost_per_1k_tokens = cost_per_1k_tokens
+        self._last_metadata = ProviderMetadata(
+            provider_id=self.provider_id,
+            model_id=model_id,
+            model_revision=revision,
+            prompt_digest=ANSWER_PROMPT_DIGEST,
+        )
+
+    def __call__(self, system: str, user: str) -> str:
+        started = time.perf_counter()
+        response: object | None = None
+        try:
+            # No `reasoning_effort`: it is an OpenAI-specific parameter and a non-OpenAI model
+            # behind an OpenAI-compatible gateway can reject an unknown field outright. The
+            # expansion provider sends it because its own resolver validates the value against
+            # a fixed set; an answer wants determinism, which `temperature=0` already gives.
+            #
+            # `json_object` rather than a strict `json_schema`: schema mode is not universal
+            # across the models an OpenAI-compatible gateway fronts, and the envelope is
+            # validated downstream by `recall.reasoning` either way. The Ollama adapter can
+            # afford a strict schema because it talks to exactly one implementation.
+            create = self.client.chat.completions.create  # type: ignore[attr-defined]
+            response = create(
+                model=self.model_id,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=0,
+                max_tokens=self.max_tokens,
+                response_format={"type": "json_object"},
+            )
+            choices = getattr(response, "choices", None) or []
+            if not choices:
+                raise ValueError("answer provider returned no choices")
+            content = getattr(getattr(choices[0], "message", None), "content", None)
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("answer provider returned empty content")
+            return content
+        finally:
+            self._record_metadata(response, started)
+
+    def _record_metadata(self, response: object | None, started: float) -> None:
+        usage = getattr(response, "usage", None) if response is not None else None
+        prompt = _usage_int(usage, "prompt_tokens")
+        completion = _usage_int(usage, "completion_tokens")
+        total = _usage_int(usage, "total_tokens")
+        if total is None and prompt is not None and completion is not None:
+            total = prompt + completion
+        # Null, never 0.0, when no price was configured. `OllamaAnswerProvider` records 0.0
+        # because local inference genuinely costs nothing; a hosted call does cost something,
+        # and a 0.0 here would be a false monetary CLAIM rather than a missing measurement.
+        # `docs/REASONING_OPERATIONS.md` rejects benchmark cost claims on missing cost, which
+        # only works if missing is recorded as missing.
+        cost = (
+            total * self.cost_per_1k_tokens / 1000
+            if total is not None and self.cost_per_1k_tokens is not None
+            else None
+        )
+        self._last_metadata = ProviderMetadata(
+            provider_id=self.provider_id,
+            model_id=self.model_id,
+            model_revision=self.revision,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=total,
+            latency_ms=max(0, int((time.perf_counter() - started) * 1000)),
+            monetary_cost_usd=cost,
+            prompt_digest=ANSWER_PROMPT_DIGEST,
+        )
+
+    def provider_metadata(self) -> ProviderMetadata:
+        return self._last_metadata
+
+
+AnswerProvider = OllamaAnswerProvider | OpenAICompatibleAnswerProvider
+
+#: Default endpoint per backend. Ollama's is a loopback address and OpenRouter's is a hosted
+#: one, so a single shared default would silently point one backend at the other's endpoint.
+_DEFAULT_BASE_URLS = {
+    "ollama": "http://127.0.0.1:11434/v1",
+    "openai": "https://openrouter.ai/api/v1",
+}
+
+
+def resolve_answer_provider(env: Mapping[str, str] | None = None) -> AnswerProvider | None:
+    """Resolve the explicitly enabled answer provider, otherwise return ``None``.
+
+    Every value is validated BEFORE the optional ``openai`` import, so an installation without
+    that extra still gets the configuration error it actually has rather than an import error
+    standing in for it. That ordering is not cosmetic: it is the exact defect that turned the
+    `floor` CI job red on PR #366, where the resolver imported first and a bad timeout surfaced
+    as a missing dependency.
+    """
 
     source = env if env is not None else os.environ
     enabled = source.get("RECALL_REASONING_ANSWER_ENABLED", "0").strip().lower()
@@ -114,6 +243,14 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> OllamaAnswe
         return None
     if enabled not in {"1", "true", "yes", "on"}:
         raise ValueError("RECALL_REASONING_ANSWER_ENABLED must be an explicit boolean")
+    # Defaults to ollama, which is the only backend that existed before 2026-08-31, so an
+    # operator who already enabled the provider keeps the behaviour they configured.
+    backend = source.get("RECALL_REASONING_ANSWER_PROVIDER", "").strip().lower() or "ollama"
+    if backend not in _DEFAULT_BASE_URLS:
+        raise ValueError(
+            "RECALL_REASONING_ANSWER_PROVIDER must be 'ollama' or 'openai', not "
+            f"{backend!r}"
+        )
     # Required rather than defaulted, matching the expansion resolver: a silent model default
     # means enabling the provider quietly selects a model nobody chose.
     model = source.get("RECALL_REASONING_ANSWER_MODEL", "").strip()
@@ -121,9 +258,10 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> OllamaAnswe
         raise ValueError(
             "RECALL_REASONING_ANSWER_MODEL is required when the answer provider is enabled"
         )
-    base_url = source.get(
-        "RECALL_REASONING_ANSWER_BASE_URL", "http://127.0.0.1:11434/v1"
-    ).strip()
+    base_url = (
+        source.get("RECALL_REASONING_ANSWER_BASE_URL", "").strip()
+        or _DEFAULT_BASE_URLS[backend]
+    )
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("RECALL_REASONING_ANSWER_BASE_URL must be an absolute http(s) URL")
@@ -151,13 +289,56 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> OllamaAnswe
         thinking = True
     else:
         raise ValueError("RECALL_REASONING_ANSWER_THINKING must be an explicit boolean")
-    client = _NativeOllamaClient(base_url, timeout=timeout)
-    return OllamaAnswerProvider(
-        client,
+    revision = source.get("RECALL_REASONING_ANSWER_REVISION", "unpinned")
+
+    if backend == "ollama":
+        return OllamaAnswerProvider(
+            _NativeOllamaClient(base_url, timeout=timeout),
+            model_id=model,
+            revision=revision,
+            max_tokens=max_tokens,
+            thinking=thinking,
+        )
+
+    if thinking:
+        # Refused rather than ignored. `think` is an Ollama request field with no OpenAI
+        # equivalent, so accepting it here would leave an operator believing they enabled
+        # something, which is the failure mode this whole change exists to remove.
+        raise ValueError(
+            "RECALL_REASONING_ANSWER_THINKING is an Ollama-only setting and cannot be used "
+            "with RECALL_REASONING_ANSWER_PROVIDER=openai"
+        )
+    # The bare RECALL_REASONING_API_KEY is the spelling `recall setup` writes, and it was
+    # written for four releases with nothing reading it. Accepting it as a fallback is what
+    # makes an existing wizard-configured installation work, and matches how
+    # `resolve_expansion_provider` treats the same legacy name.
+    key = (
+        source.get("RECALL_REASONING_ANSWER_API_KEY", "").strip()
+        or source.get("RECALL_REASONING_API_KEY", "").strip()
+    )
+    if not key:
+        raise ValueError(
+            "RECALL_REASONING_ANSWER_API_KEY (or the legacy RECALL_REASONING_API_KEY) is "
+            "required when RECALL_REASONING_ANSWER_PROVIDER=openai"
+        )
+    raw_cost = source.get("RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS", "").strip()
+    cost = float(raw_cost) if raw_cost else None
+    if cost is not None and (not math.isfinite(cost) or cost < 0):
+        raise ValueError(
+            "RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS must be finite and non-negative"
+        )
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise ValueError(
+            "the openai extra is required for RECALL_REASONING_ANSWER_PROVIDER=openai"
+        ) from exc
+    return OpenAICompatibleAnswerProvider(
+        OpenAI(api_key=key, base_url=base_url, max_retries=0, timeout=timeout),
         model_id=model,
-        revision=source.get("RECALL_REASONING_ANSWER_REVISION", "unpinned"),
+        revision=revision,
         max_tokens=max_tokens,
-        thinking=thinking,
+        cost_per_1k_tokens=cost,
     )
 
 
@@ -218,4 +399,9 @@ class _NativeOllamaClient:
         return SimpleNamespace(choices=[choice], usage=usage)
 
 
-__all__ = ["OllamaAnswerProvider", "resolve_answer_provider"]
+__all__ = [
+    "AnswerProvider",
+    "OllamaAnswerProvider",
+    "OpenAICompatibleAnswerProvider",
+    "resolve_answer_provider",
+]

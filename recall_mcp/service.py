@@ -84,6 +84,7 @@ from recall.related import RelatedEvidenceResult, trusted_related
 from recall.reasoning import (
     GenerationSelection,
     REASONING_API_VERSION,
+    ReasoningAnswerProvider,
     ReasoningDiagnostics,
     ReasoningGraphProvider,
     ReasoningPolicy,
@@ -2502,9 +2503,18 @@ def reasoning_query(
     max_evidence_tokens: int = 2048,
     expand_retrieval: bool = False,
     graph_expansion: str = "off",
+    answer_provider: ReasoningAnswerProvider | None = None,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
 ) -> ReasoningResponse:
+    """Run one bounded reasoning query.
+
+    `answer_provider` is passed in rather than resolved here, and defaults to None so every
+    existing caller keeps abstaining with `refusal_reason="no_answer_provider"`. Resolving it
+    inside this function would put a model on `reasoning_audit`'s path too, which exists to
+    report what the deterministic layer refuses and must not spend a model call to do it.
+    """
+
     budget = ReasoningBudget(
         max_steps=max_steps,
         max_graph_nodes=max_graph_nodes,
@@ -2604,6 +2614,7 @@ def reasoning_query(
                 expansion_provider=expansion_provider,
                 expansion_retriever=expansion_retriever_port,
                 graph_expansion_provider=graph_expansion_provider,
+                answer_provider=answer_provider,
             ),
             policy=reasoning_policy,
             budget=budget,

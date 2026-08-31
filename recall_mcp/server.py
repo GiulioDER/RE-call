@@ -21,6 +21,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 
+from recall.answer_provider import resolve_answer_provider
 from recall.calibration import load_for as calibration_load_for
 from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
@@ -1427,8 +1428,13 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
 
         Existing retrieval clients should keep using `recall_search` or `recall_evidence`.
         This tool is additive and returns a full reasoning response: trust state, generation
-        identity, proposals, trace, refusal reason, and diagnostics. It does not call a generator,
-        so an answer is returned only if a future server explicitly wires an answer provider.
+        identity, proposals, trace, refusal reason, and diagnostics.
+
+        A generator is called only when the operator has enabled one:
+        `resolve_answer_provider` returns None unless `RECALL_REASONING_ANSWER_ENABLED` is
+        explicitly truthy, and without it this tool still abstains with
+        `refusal_reason="no_answer_provider"` exactly as before. Any answer stays citation
+        constrained to trusted evidence chunk ids.
 
         Args:
             graph_expansion: `off` by default, or `one_hop` to enable deterministic semantic
@@ -1436,6 +1442,10 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
+        # Resolved per call rather than at server start, matching `resolve_expansion_provider`:
+        # the environment is the configuration surface, and a misconfiguration should name
+        # itself on the tool that reads it rather than refusing to start the whole server.
+        answer_provider = resolve_answer_provider()
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_query"):
             return await _to_thread(
                 lambda: json.dumps(
@@ -1451,6 +1461,7 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                         max_evidence_tokens=max_evidence_tokens,
                         expand_retrieval=expand_retrieval,
                         graph_expansion=graph_expansion.replace("-", "_"),
+                        answer_provider=answer_provider,
                         policy=TRUST_POLICY,
                     ).to_dict(),
                     indent=2,

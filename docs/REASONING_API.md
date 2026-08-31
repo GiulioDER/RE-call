@@ -31,7 +31,10 @@ Provider ports:
 2. `graph_provider`: optional, returns `ReasoningGraphProjection`.
 3. `proposal_provider`: optional, returns proposals or a `ProposalProtocolReport`.
 4. `answer_provider`: optional, consumes the existing evidence prompt pair and returns `AnswerEnvelope` JSON.
-   The MCP server can provide a local Ollama adapter when `RECALL_REASONING_ANSWER_ENABLED=1`.
+   `recall_reasoning_query` supplies the local Ollama adapter when `RECALL_REASONING_ANSWER_ENABLED=1`,
+   and passes nothing otherwise, so the tool abstains with `refusal_reason="no_answer_provider"`
+   exactly as before. `recall_reasoning_audit` never supplies one: it reports what the
+   deterministic layer refuses and must not spend a model call to do it.
 5. `expansion_provider`: optional, returns bounded untrusted retrieval proposals.
 6. `expansion_retriever`: optional, executes proposals and must preserve tenant, generation, trust,
    and calibration binding.
@@ -63,9 +66,24 @@ The built in local adapter uses Ollama's native `/api/chat` endpoint, including 
 schema and `think` switch. Configure it with `RECALL_REASONING_ANSWER_BASE_URL`,
 `RECALL_REASONING_ANSWER_MODEL`, `RECALL_REASONING_ANSWER_TIMEOUT`,
 `RECALL_REASONING_ANSWER_MAX_TOKENS`, `RECALL_REASONING_ANSWER_REVISION`, and
-`RECALL_REASONING_ANSWER_THINKING`. The provider is selected with
-`RECALL_REASONING_ANSWER_PROVIDER=ollama` and is disabled unless
-`RECALL_REASONING_ANSWER_ENABLED=1`. Provider failures are sanitized and never promote evidence.
+`RECALL_REASONING_ANSWER_THINKING`. It is disabled unless `RECALL_REASONING_ANSWER_ENABLED=1`.
+
+A second adapter, `OpenAICompatibleAnswerProvider`, calls any OpenAI-compatible
+`/chat/completions` endpoint and defaults to `https://openrouter.ai/api/v1`. Select it with
+`RECALL_REASONING_ANSWER_PROVIDER=openai` and give it `RECALL_REASONING_ANSWER_API_KEY` (the
+bare `RECALL_REASONING_API_KEY` written by `recall setup` is accepted as a fallback). It sends
+`temperature=0` and `response_format={"type": "json_object"}`, and sends no `reasoning_effort`,
+which is an OpenAI-specific field a non-OpenAI model behind a gateway can reject.
+
+⚠️ The two adapters are not interchangeable by base URL. `_NativeOllamaClient` rewrites the
+path to `<base>/api/chat` and attaches no `Authorization` header, so pointing the ollama
+backend at OpenRouter produces an unauthenticated POST to a path that does not exist.
+`RECALL_REASONING_ANSWER_PROVIDER` is what chooses between them. Until 2026-08-31 this
+paragraph named that variable while nothing read it; wiring the port is what surfaced that.
+
+Cost is recorded as null unless `RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS` is set. The Ollama
+adapter records `0.0`, which is true of local inference and would be a false money claim for a
+hosted call. Provider failures are sanitized and never promote evidence.
 A local Qwen3 4B model is a suitable starting point for an 8 GB GPU; measure latency and answer
 quality on the target machine before enabling it for regular use.
 3. `proposal_assisted`: requires a graph provider, records proposals, and runs bounded planning.

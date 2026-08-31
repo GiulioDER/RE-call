@@ -216,3 +216,73 @@ def test_reasoning_query_keeps_expansion_opt_in_and_wires_provider(monkeypatch) 
     assert request.policy.allow_retrieval_expansion is True
     assert request.providers.expansion_provider is provider
     assert request.providers.expansion_retriever is not None
+
+
+def test_reasoning_query_wires_the_answer_provider_it_is_given(monkeypatch) -> None:
+    captured: list[object] = []
+    provider = object()
+
+    monkeypatch.setattr(service, "reason", lambda request: captured.append(request) or "ok")
+
+    # Default None keeps every existing caller abstaining with `no_answer_provider`, which is
+    # what makes this port additive rather than a behaviour change on the query path.
+    assert inspect.signature(service.reasoning_query).parameters["answer_provider"].default is None
+
+    result = service.reasoning_query(
+        _Store(),
+        object(),
+        "original query",
+        answer_provider=provider,
+        policy=TrustPolicy.development(),
+    )
+
+    assert result == "ok"
+    assert captured[0].providers.answer_provider is provider
+
+
+def test_reasoning_query_leaves_the_answer_port_empty_by_default(monkeypatch) -> None:
+    captured: list[object] = []
+    monkeypatch.setattr(service, "reason", lambda request: captured.append(request) or "ok")
+
+    service.reasoning_query(
+        _Store(),
+        object(),
+        "original query",
+        policy=TrustPolicy.development(),
+    )
+
+    assert captured[0].providers.answer_provider is None
+
+
+def test_reasoning_audit_never_puts_a_model_on_the_audit_path(monkeypatch) -> None:
+    """`reasoning_audit` reports what the deterministic layer refuses; it must not pay a model.
+
+    This is why `reasoning_query` takes the provider as a parameter instead of resolving it
+    from the environment itself: an env lookup inside the function would reach this caller too.
+    """
+
+    captured: list[object] = []
+    monkeypatch.setattr(service, "reasoning_projection", lambda *a, **k: object())
+    monkeypatch.setattr(service, "reasoning_proposals", lambda *a, **k: object())
+    monkeypatch.setattr(
+        service,
+        "resolve_answer_provider",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("audit resolved an answer provider")),
+        raising=False,
+    )
+
+    def fake_reasoning_query(*_args, **kwargs):
+        captured.append(kwargs.get("answer_provider", "absent"))
+        raise _StopAudit()
+
+    monkeypatch.setattr(service, "reasoning_query", fake_reasoning_query)
+    try:
+        service.reasoning_audit(_Store(), object(), policy=TrustPolicy.development())
+    except _StopAudit:
+        pass
+
+    assert captured == ["absent"]
+
+
+class _StopAudit(Exception):
+    """Ends `reasoning_audit` once the argument under test has been captured."""
