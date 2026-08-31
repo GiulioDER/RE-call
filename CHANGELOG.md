@@ -8,6 +8,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Added
+
+* **A `UserPromptSubmit` hook that searches project memory with the user's own words, before the
+  turn starts.** The existing write-time hook fires on `Write`, `Edit` and `Bash`, which is after
+  the plan has been drafted, so it cannot reach the failure this one targets: re-opening a decision
+  the project already settled, or re-running a measurement that already has a committed result.
+  `UserPromptSubmit` is the only event that carries a query and still precedes every proposal in
+  the turn.
+
+  It reads the project's memo **files** directly, with BM25 over their titles, `description`
+  frontmatter and bodies. No database, no network and no embedder, so it works where the corpus is
+  a remote host the workstation cannot reach. It names at most three memos with their one-line
+  summaries and paths rather than pasting them, and injects nothing when nothing matches at least
+  two of the prompt's content words.
+
+  Registered by `recall setup` and by the Claude plugin in the same change, and controlled by
+  `prompt_time.enabled` in `~/.claude/recall-hook.json`; like `write_time`, the entry is installed
+  whichever way the flag is set, so switching it off survives `recall hooks upgrade`.
+
+  ⚠️ **Its benefit is unmeasured.** There is no pre-registration and no A/B behind it, and the
+  write-time hook's numbers are not evidence for it: different event, different query shape,
+  different mechanism. What is measured is its cost, against a 329-memo store: 754 ms to read and
+  rank everything and 320 ms for a prompt too short to rank, against a 305 ms bare-interpreter
+  floor, so roughly 430 ms of marginal cost once per turn. It is also **not** a substitute for the
+  write-time hook on hazards: a goal-shaped query reaches a governing hazard memo far less often
+  than the draft text does.
+
+### Fixed
+
+* **A hook no longer fails when `python -m recall_hooks` resolves out of an unrelated checkout.**
+  `-m` prepends the current directory to `sys.path`, so a session whose working directory is a
+  checkout of this repository runs that checkout's copy of the package, on whatever branch it
+  happens to be. A branch predating one of the per-event modules raised `ImportError` out of the
+  hook on every prompt or every tool call. The per-event imports are now guarded and degrade to
+  the behaviour the package had before the feature existed, which is silence. Invoking with `-P`
+  and an explicit `PYTHONPATH` is the deterministic fix where which copy runs actually matters.
+
 ## [0.11.0] (2026-08-29)
 
 ### Added

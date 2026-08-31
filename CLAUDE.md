@@ -613,6 +613,27 @@ scripts/session-db.sh down
   python -m mypy
   ```
 
+  ⚠️ **When that command dies with `An Application Control policy has blocked this file`, the gate
+  is not unrunnable and you must not report it as unrun.** Measured 2026-08-31: mypy 2.3.0 is a
+  mypyc-compiled build shipping ~200 unsigned `.pyd` files, and Smart App Control refused them for
+  a whole working day. **A force-reinstall did not clear it and neither did a fresh copy in an
+  isolated venv**, so the "rewrite the file" advice that worked for pyarrow does not generalise.
+
+  🔑 mypy also publishes a **non-compiled `py3-none-any` wheel** with zero `.pyd` files, which the
+  policy has nothing to adjudicate. `--system-site-packages` keeps the project's dependencies
+  visible, and `--no-deps` stops the compiled build coming back through a dependency resolution:
+
+  ```bash
+  python -m venv --system-site-packages .mypy-venv
+  URL=$(python -c "import json,urllib.request;d=json.load(urllib.request.urlopen('https://pypi.org/pypi/mypy/2.3.0/json'));print(next(f['url'] for f in d['urls'] if f['filename'].endswith('py3-none-any.whl')))")
+  .mypy-venv/Scripts/python.exe -m pip install --no-deps --force-reinstall "$URL"
+  .mypy-venv/Scripts/python.exe -m mypy
+  ```
+
+  ⛔ Do not disable Smart App Control to get past this. It cannot be re-enabled without
+  reinstalling Windows, and it has no allowlist to add an exclusion to instead. That is the user's
+  decision and never a session's.
+
 ## Guards that will interrupt you, and why
 
 Sources live in `scripts/`, deployed copies in `~/.claude/hooks/`. Each has a `*_tests.py` beside

@@ -274,13 +274,32 @@ def main(argv: list[str] | None = None) -> int:
         return session_end(payload)
     if args[0] == "pre-compact":
         return pre_compact(payload)
+    # ⛔ The per-event imports are GUARDED, and not for tidiness. `python -m recall_hooks` puts
+    # the current directory ahead of everything on `sys.path`, so a session whose cwd is a
+    # checkout of this repository runs THAT checkout's copy of this package, whichever branch it
+    # happens to be on. A branch predating one of these modules then raises `ImportError` out of
+    # the hook on every prompt or every tool call. An older install must degrade to the behaviour
+    # it had before the feature existed, which is silence.
+    #
+    # The deterministic fix belongs at the call site rather than here: invoke with `-P`, which
+    # stops the cwd being prepended, and point `PYTHONPATH` at the copy you mean to run.
     if args[0] == "pre-tool-use":
         # Imported HERE, not at module scope. This dispatch is shared with SessionStart, whose
         # whole design is that it imports nothing it does not need, and `write_time` is only
         # reached on its own event.
-        from .write_time import pre_tool_use
-
+        try:
+            from .write_time import pre_tool_use
+        except ImportError:
+            return 0
         return pre_tool_use(payload)
+    if args[0] == "user-prompt-submit":
+        # Same reason as above. `prompt_time` imports `math` and `re` and touches the filesystem;
+        # SessionStart pays for neither.
+        try:
+            from .prompt_time import user_prompt_submit
+        except ImportError:
+            return 0
+        return user_prompt_submit(payload)
     return 0
 
 
