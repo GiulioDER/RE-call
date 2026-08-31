@@ -1409,6 +1409,7 @@ def run_setup_wizard(
     claude_detected = claude_code_detected()
     claude_wiring_requested = False
     write_time_requested = True
+    prompt_time_requested = True
     if claude_detected:
         claude_wiring_requested = _ask_yes_no(
             input_fn,
@@ -1428,6 +1429,22 @@ def run_setup_wizard(
             "Search memory on every write and inject what matches?\n"
             "  Adds about 1 second to each Write, Edit and Bash call, and roughly 1% to tokens.\n"
             "  Measured benefit: 6 task rescues against 1 regression, p = 0.125, not significant.",
+            default=True,
+        )
+        # Asked for the same reason as the one above, and the reason binds HARDER here: this hook
+        # runs before every turn and there is no A/B behind it at all. Declining the write-time
+        # hook is not an answer to this one, and vice versa: that hook queries the corpus over the
+        # network with the DRAFT text, which is what reaches a hazard memo, while this reads local
+        # memo files with the user's own words, which is what reaches a decision already made.
+        # Stating the cost and the absence of evidence before accepting a default is the standard
+        # the question above set.
+        prompt_time_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            "Search project memory with each prompt, before Claude answers?\n"
+            "  Adds about 0.4 seconds per turn and names up to three prior records; it reads\n"
+            "  local memo files, so it needs no database and no network.\n"
+            "  Benefit UNMEASURED: no A/B, unlike the hook above.",
             default=True,
         )
 
@@ -1495,7 +1512,8 @@ def run_setup_wizard(
                 print_fn=print_fn,
             )
             install_hooks(dsn=dsn, embedder=embedder.value,
-                          write_time=write_time_requested, print_fn=print_fn)
+                          write_time=write_time_requested,
+                          prompt_time=prompt_time_requested, print_fn=print_fn)
             print_fn(
                 "Claude Code is wired up. The tools appear in the NEXT session, not this one: "
                 "the client reads its server list at startup."

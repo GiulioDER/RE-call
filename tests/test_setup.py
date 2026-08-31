@@ -1732,11 +1732,82 @@ def test_seeding_runs_before_the_hooks_are_installed(tmp_path, monkeypatch):
             "y",   # seed
             "y",   # wire up Claude Code
             "y",   # search memory on every write (the write-time hook)
+            "y",   # search memory on every prompt (the prompt-time hook)
             "n",   # calibrate declined
         ],
     )
 
     assert order == ["scaffold", "seed", "register", "hooks"]
+
+
+@pytest.mark.parametrize(
+    ("write_answer", "prompt_answer"),
+    [("y", "y"), ("n", "y"), ("y", "n"), ("n", "n")],
+)
+def test_each_injection_answer_reaches_the_installer(
+    tmp_path, monkeypatch, write_answer, prompt_answer
+):
+    """⚠️ Neither answer was asserted to reach anything before this test existed, so both prompts
+    were free to be decorative. All four combinations, because the failure this catches is one
+    answer being wired to the other's parameter, which two cases cannot distinguish.
+
+    The two hooks are independent on purpose: one queries the corpus over the network with the
+    draft text, the other reads local memo files with the user's words, so declining one is not an
+    answer about the other.
+    """
+
+    captured: dict = {}
+    # The autouse fixture pins the wiring prompt OFF, so a test that exercises it turns it back on.
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr("recall.setup.register_mcp_server", lambda **kw: None)
+    monkeypatch.setattr("recall.setup.install_hooks", lambda **kw: captured.update(kw))
+
+    _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",             # security required
+            "2",             # embedder: fastembed
+            "1",             # reranker: none
+            "1",             # sparse: fts
+            "n",             # reasoning arm declined
+            "n",             # scaffold declined
+            "y",             # wire up Claude Code
+            write_answer,    # the write-time hook
+            prompt_answer,   # the prompt-time hook
+            "n",             # calibrate declined
+        ],
+    )
+
+    assert captured["write_time"] is (write_answer == "y")
+    assert captured["prompt_time"] is (prompt_answer == "y")
+
+
+def test_the_prompt_time_question_states_its_cost_and_that_it_is_unmeasured(tmp_path, monkeypatch):
+    """The wizard asks about the write-time hook rather than defaulting silently, because its
+    evidence is weaker than a default usually carries. This hook has NO A/B at all, so the same
+    obligation binds harder, and a reader who is not told cannot exercise it."""
+
+    prompts = []
+    real_prompt = recall_setup._prompt
+
+    def spy(input_fn, print_fn, text, *a, **k):
+        prompts.append(text)
+        return real_prompt(input_fn, print_fn, text, *a, **k)
+
+    monkeypatch.setattr("recall.setup._prompt", spy)
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr("recall.setup.register_mcp_server", lambda **kw: None)
+    monkeypatch.setattr("recall.setup.install_hooks", lambda **kw: None)
+
+    _run_wizard(
+        tmp_path, monkeypatch,
+        ["y", "2", "1", "1", "n", "n", "y", "y", "y", "n"],
+    )
+
+    question = next(p for p in prompts if "every prompt" in p or "each prompt" in p)
+    assert "UNMEASURED" in question
+    assert "0.4 seconds" in question
 
 
 def test_the_seed_prompt_names_what_it_would_ingest(tmp_path, monkeypatch):
@@ -1801,6 +1872,7 @@ def test_accepting_the_wiring_prompt_registers_the_server_and_installs_the_hooks
             "n",   # scaffold declined
             "y",   # wire up Claude Code
             "y",   # search memory on every write (the write-time hook)
+            "y",   # search memory on every prompt (the prompt-time hook)
             "n",   # calibrate declined
         ],
     )
@@ -1848,8 +1920,8 @@ def test_a_failed_wiring_step_does_not_lose_the_completed_interview(tmp_path, mo
         tmp_path,
         monkeypatch,
         # security y, embedder 2, reranker 1, sparse 1, reasoning n, scaffold n,
-        # wiring y, write-time hook y, calibrate n
-        ["y", "2", "1", "1", "n", "n", "y", "y", "n"],
+        # wiring y, write-time hook y, prompt-time hook y, calibrate n
+        ["y", "2", "1", "1", "n", "n", "y", "y", "y", "n"],
     )
 
     assert "RECALL_EMBEDDER=fastembed" in env

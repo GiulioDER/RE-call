@@ -88,6 +88,13 @@ PRE_TOOL_USE_TIMEOUT_SECONDS = 5
 #: make a broken database look like a hung client.
 SESSION_START_TIMEOUT_SECONDS = 15
 
+#: A UserPromptSubmit hook runs before every turn, between the user pressing enter and anything
+#: happening. Measured 2026-08-31 against a 329-memo store: 320ms for a prompt too short to rank
+#: and 754ms to read and rank the whole store, against a 305ms bare-interpreter floor. Ten seconds
+#: is roughly thirteen times the measured cost, which leaves room for a much larger store while
+#: still failing fast; the handler reads only local files, so there is no network to hang on.
+USER_PROMPT_SUBMIT_TIMEOUT_SECONDS = 10
+
 #: The commands that install the Claude Code plugin, exactly as `plugin/README.md` states them.
 #: They are typed into Claude Code itself, not a shell, which is why the wizard prints them
 #: rather than running them: there is nothing on this machine they could be executed against.
@@ -478,6 +485,33 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
                 ],
             }
         ],
+        # Retrieval at the moment the user asks, which is the only event that carries a query AND
+        # still precedes every proposal in the turn. The write-time hook above fires on Write,
+        # Edit and Bash, by which point the plan is already drafted, so it cannot reach the failure
+        # this one targets: re-opening a decision the project already settled.
+        #
+        # ⚠️ Its benefit is UNMEASURED. No pre-registration and no A/B, and the write-time hook's
+        # numbers are not evidence for it: different event, different query shape, different
+        # mechanism. It ships on the argument that it reads local files for ~430ms of marginal
+        # cost once per turn, not on a result. See `recall_hooks/prompt_time.py`.
+        #
+        # ⛔ No matcher. UserPromptSubmit has no matchable dimension, and giving it one would move
+        # the whole entry onto a path the client evaluates differently.
+        "UserPromptSubmit": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": python_executable,
+                        "args": ["-m", HOOK_MODULE, "user-prompt-submit"],
+                        # Synchronous, like PreToolUse and for the same reason: additionalContext
+                        # that arrives after the turn has started is context the model never saw.
+                        "timeout": USER_PROMPT_SUBMIT_TIMEOUT_SECONDS,
+                        "statusMessage": "Searching project memory",
+                    }
+                ],
+            }
+        ],
         "SessionEnd": [
             {
                 "matcher": "clear|resume|logout|prompt_input_exit|other",
@@ -546,21 +580,29 @@ def install_hooks(
     tenant: str = "default",
     embedder: str = "fastembed",
     write_time: bool = True,
+    prompt_time: bool = True,
     python_executable: str | None = None,
     path: Path | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
     """Write the hook config, then merge the hook entries into the client's settings.
 
-    `write_time` controls the `PreToolUse` memo injection. It defaults to on, and the ENTRY is
-    installed either way: the handler reads `write_time.enabled` from its own config, so turning
-    it off is a config edit rather than a settings-file surgery the user has to repeat. That also
-    means a user who disables it keeps a working `recall hooks upgrade`.
+    `write_time` controls the `PreToolUse` memo injection and `prompt_time` the `UserPromptSubmit`
+    one. Both default to on, and both ENTRIES are installed either way: each handler reads its own
+    `enabled` flag from the hook config, so turning one off is a config edit rather than a
+    settings-file surgery the user has to repeat. That also means a user who disables one keeps a
+    working `recall hooks upgrade`.
     """
     target = path or settings_path()
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    _write_hook_config(dsn=dsn, tenant=tenant, embedder=embedder, write_time=write_time)
+    _write_hook_config(
+        dsn=dsn,
+        tenant=tenant,
+        embedder=embedder,
+        write_time=write_time,
+        prompt_time=prompt_time,
+    )
 
     settings: dict[str, Any] = {}
     if target.exists():
@@ -568,8 +610,12 @@ def install_hooks(
         settings = json.loads(raw) if raw.strip() else {}
         _backup(target)
 
-    _write_json(target, merge_hooks(settings, hook_entries(python_executable)))
-    print_fn(f"Installed SessionStart and SessionEnd hooks in {target}")
+    entries = hook_entries(python_executable)
+    _write_json(target, merge_hooks(settings, entries))
+    # Named from the entries rather than spelled out. The old wording said "SessionStart and
+    # SessionEnd" and had been wrong through two additions, which is what a hand-written list of
+    # what the code just did always becomes.
+    print_fn(f"Installed {', '.join(entries)} hooks in {target}")
 
 
 def uninstall(
@@ -648,6 +694,7 @@ def _write_hook_config(
     embedder: str,
     table: str = "chunks",
     write_time: bool = True,
+    prompt_time: bool = True,
 ) -> None:
     path = hook_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -662,6 +709,11 @@ def _write_hook_config(
         # the difference between "absent" and "absent because someone chose it" is exactly what a
         # user reads this file to find out.
         "write_time": {"enabled": bool(write_time)},
+        # Same contract as `write_time`, and it is worth stating why both blocks exist rather than
+        # one switch: they answer different questions from different text, so a user who finds one
+        # useful and the other noisy needs to be able to say so. `write_time` queries the corpus
+        # over the network with the draft; `prompt_time` reads local memo files with the prompt.
+        "prompt_time": {"enabled": bool(prompt_time)},
     }
     _write_json(path, config)
     try:

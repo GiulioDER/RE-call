@@ -257,14 +257,28 @@ for the ~30-line pattern: search first; if a non-gap closed decision surfaces, b
 ## Session hooks: what makes the tools get used
 
 Registering the server makes the tools *available*. It does not make Claude reach for them, and it
-does not keep the corpus current. `recall setup` also offers three hooks, written into
+does not keep the corpus current. `recall setup` also offers five hooks, written into
 `~/.claude/settings.json`:
 
 | Event | What it does | Why there |
 |---|---|---|
 | `SessionStart` | Injects a one-line digest naming the indexed chunk count and the standing instruction | The only event that can add context before the first turn |
+| `UserPromptSubmit` | Searches the project's memo files with the prompt and names up to three prior records | The only event that carries a query and still precedes every proposal in the turn |
+| `PreToolUse` | Searches the corpus with the text about to be written and injects what comes back | An agent that has to decide to search mostly does not |
 | `PreCompact` | Indexes `memory/` | Compaction is where a long session loses the detail behind its conclusions |
 | `SessionEnd` | Indexes `memory/` and refreshes the cached count | Closes the write-to-searchable loop |
+
+⚠️ The last two rows are the two retrieval hooks and they are **not** interchangeable.
+`PreToolUse` queries the corpus over the network with the DRAFT text, which is what reaches a
+hazard memo; `UserPromptSubmit` reads local memo files with the GOAL text, which is what reaches a
+prior decision. Each has its own switch in `~/.claude/recall-hook.json`, `write_time.enabled` and
+`prompt_time.enabled`, and the entry is installed whichever way the flag is set, so switching one
+off survives a later `recall hooks upgrade`.
+
+⚠️ **Only one of the two has a measured benefit, and it did not reach the bar its own
+pre-registration set**: the write-time hook rescued 6 tasks and regressed 1 at p = 0.125 on a
+partial sample. The prompt-time hook has no A/B behind it at all. Both are defaults by decision,
+not by evidence, and both are one config edit away from off.
 
 Three properties are deliberate and worth knowing before you edit them:
 

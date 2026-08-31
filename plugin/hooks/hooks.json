@@ -32,6 +32,21 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "recall-hooks",
+            "args": [
+              "user-prompt-submit"
+            ],
+            "timeout": 10,
+            "statusMessage": "Searching project memory"
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "matcher": "manual|auto",
