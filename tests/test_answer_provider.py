@@ -239,6 +239,10 @@ def test_metadata_is_recorded_even_when_the_call_fails() -> None:
 
 
 def test_the_resolver_selects_the_openai_backend_and_defaults_to_openrouter() -> None:
+    # Resolving the openai backend constructs the OpenAI client, so this needs the
+    # optional extra; the `test` and `floor` CI jobs both install without it. Same
+    # idiom as tests/test_reasoning_expansion.py for the sibling resolver.
+    pytest.importorskip("openai")
     provider = resolve_answer_provider(_openai_enabled())
     assert isinstance(provider, OpenAICompatibleAnswerProvider)
     assert str(provider.client.base_url).rstrip("/") == "https://openrouter.ai/api/v1"
@@ -246,6 +250,10 @@ def test_the_resolver_selects_the_openai_backend_and_defaults_to_openrouter() ->
 
 def test_the_ollama_default_endpoint_is_not_reused_for_the_hosted_backend() -> None:
     """One shared default would silently point a hosted backend at loopback."""
+    # Resolving the openai backend constructs the OpenAI client, so this needs the
+    # optional extra; the `test` and `floor` CI jobs both install without it. Same
+    # idiom as tests/test_reasoning_expansion.py for the sibling resolver.
+    pytest.importorskip("openai")
     ollama = resolve_answer_provider(_enabled())
     hosted = resolve_answer_provider(_openai_enabled())
     assert ollama is not None and hosted is not None
@@ -266,6 +274,10 @@ def test_the_hosted_backend_requires_a_key() -> None:
 
 def test_the_wizards_legacy_key_spelling_is_accepted() -> None:
     """`recall setup` writes RECALL_REASONING_API_KEY, which nothing read for four releases."""
+    # Resolving the openai backend constructs the OpenAI client, so this needs the
+    # optional extra; the `test` and `floor` CI jobs both install without it. Same
+    # idiom as tests/test_reasoning_expansion.py for the sibling resolver.
+    pytest.importorskip("openai")
     provider = resolve_answer_provider(
         _enabled(
             RECALL_REASONING_ANSWER_PROVIDER="openai",
@@ -314,3 +326,43 @@ def test_a_malformed_price_names_the_variable(value: str) -> None:
         resolve_answer_provider(
             _openai_enabled(RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS=value)
         )
+
+
+def test_without_the_extra_the_resolver_names_the_extra(monkeypatch) -> None:
+    """The floor install must get "install the extra", not an ImportError from the SDK.
+
+    Written after CI caught the inverse of this: three tests above resolve a real client, and
+    the machine they were written on has `openai` installed, so they were green locally and red
+    on both the `test` and `floor` jobs, which install without it. This one runs either way,
+    because it forces the ImportError rather than depending on the environment for it, and it
+    is the only test that covers the branch a floor install actually takes.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def without_openai(name, *args, **kwargs):
+        if name == "openai":
+            raise ImportError("No module named 'openai'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_openai)
+    with pytest.raises(ValueError, match="openai extra is required"):
+        resolve_answer_provider(_openai_enabled())
+
+
+def test_the_ollama_backend_needs_no_extra(monkeypatch) -> None:
+    """The default backend must stay usable on a floor install, which is the whole point of it."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def without_openai(name, *args, **kwargs):
+        if name == "openai":
+            raise ImportError("No module named 'openai'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_openai)
+    provider = resolve_answer_provider(_enabled())
+    assert provider is not None
+    assert "127.0.0.1" in provider.client.endpoint
