@@ -437,6 +437,12 @@ jobs:
       - name: session-serving.sh
         run: bash scripts/session_serving_tests.sh
 
+      # `session-corpus.sh` is the report a session OPENS with, and it had no test until
+      # 2026-08-31. ssh is stubbed, so this needs no host, no database and no network. It runs
+      # here rather than beside the Windows session hooks only because its sibling above does.
+      - name: session-corpus.sh
+        run: bash scripts/session_corpus_tests.sh
+
       # The process table is a fixture and the killer is a log, so this one needs no Claude, no
       # ssh and no VPS2. What it pins is which pids a close selects, on a machine where the same
       # MCP command line belongs to more than one agent.

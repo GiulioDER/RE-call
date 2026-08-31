@@ -21,6 +21,19 @@
 # search: that costs an embedder load and roughly 17 seconds per server, which is not a price a
 # session opener may charge.
 #
+# What it therefore does NOT prove, named here and in the output rather than left implicit
+# ------------------------------------------------------------------------------------------
+# That the server STARTS. Every answer below is about rows in a database; none of it is about the
+# process a client launches. The two come apart in exactly one direction and it is not rare: the
+# serving checkout on VPS2 carries code whose migration level the database has not reached, the
+# server raises `SchemaTooOld` on stderr at startup, and the client renders that as a server with
+# NO tools, while every tenant here still reports CERTIFIED, because the corpus is fine.
+#
+# That is the same substitution this file was written to remove, one layer up: a cheap check
+# standing in for an expensive one. So the summary prints the boundary and the command that
+# crosses it instead of leaving a reader to infer that a certified corpus means a working
+# session.
+#
 # It never exits non-zero for an unreachable corpus. A session editing code does not need it, and
 # a setup script that refuses to open on a condition most sessions do not care about is a setup
 # script people stop running.
@@ -45,6 +58,23 @@ esac
 # The query mirrors `resolve`: an active generation, joined to a calibration that is published,
 # certified, and bound to the SAME corpus fingerprint. A certified artifact whose fingerprint has
 # moved is stale, and stale is a refusal, so the fingerprint comparison is not decoration.
+# The boundary this report cannot cross, printed before EVERY exit.
+#
+# Defined HERE, above every call site, because the first version of this fix defined it at the
+# bottom of the file next to the summary and both early exits then died with
+# `not_proved: command not found`. A bash function must be defined before it is called, and the
+# fix for "printed always" was therefore printing nothing at all on the two paths it was
+# written for. Found by scripts/session_corpus_tests.sh on its first run.
+#
+# It is a function rather than two lines at the end because the first draft put them at the end,
+# commented them "printed always", and they were not: the two early exits returned first, and
+# those are precisely the states a session most needs the pointer from. A comment asserting an
+# invariant the code does not have is the same defect this file exists to remove, one level down.
+not_proved() {
+    printf 'NOT PROVED: that the server starts. This asked the corpus, not the process.\n'
+    printf '  scripts/session-serving.sh verify   # ~30s, read-only, a real JSON-RPC handshake\n'
+}
+
 read -r -d '' SQL <<'EOSQL' || true
 SELECT g.tenant_id
      || ' | gen ' || left(g.generation_id, 16)
@@ -88,12 +118,14 @@ if [ $rc -ne 0 ]; then
     # sentence under stack noise in a report meant to be read at a glance.
     printf 'first line: %s\n' "$(printf '%s' "$out" | head -1)"
     printf 'this is not fatal. It only matters if you meant to query the corpus.\n'
+    not_proved
     exit 0
 fi
 
 if [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
     printf 'reachable, but NO ACTIVE GENERATION on any tenant.\n'
     printf 'strict trust refuses every query with INDEX_NOT_READY until one is promoted.\n'
+    not_proved
     exit 0
 fi
 
@@ -112,8 +144,13 @@ printf '%s\n' "$out"
 total="$(printf '%s\n' "$out" | grep -c '[^[:space:]]')"
 certified="$(printf '%s\n' "$out" | grep -cF '| CERTIFIED ')"
 if [ "$certified" -eq "$total" ]; then
-    printf 'all %s active tenants certified -- a strict server serves these as trusted.\n' "$total"
+    printf 'all %s active tenants certified: a strict server WOULD serve these as trusted.\n' "$total"
 else
     printf '%s of %s active tenants certified. Strict refuses the rest, and the line above names why.\n' \
         "$certified" "$total"
 fi
+
+# The subjunctive above is doing real work: every line of this report is about rows in a database,
+# and a session's actual question is whether its recall tools will answer. A serving checkout at
+# the wrong migration level is a client with no tools at all, with all of the above still green.
+not_proved

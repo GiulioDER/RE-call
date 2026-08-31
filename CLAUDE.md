@@ -56,6 +56,21 @@ as a statement about a CORPUS. It stayed green while both servers pointed at a d
 been down for days. A cheap check standing in for an expensive one is not a weaker check, it is a
 misleading one, because nobody re-checks a green line.
 
+⚠️ **Step 3 asks the CORPUS, and a certified corpus is not a working server.** Added 2026-08-31,
+because the same substitution had reappeared one layer up: `session-corpus.sh` reports rows in a
+database, and its summary line was read as a statement about the process a client launches. Those
+come apart in one direction and it is not rare. A serving checkout whose code knows a migration the
+database has not reached raises `SchemaTooOld` at startup, the client renders that as a server with
+**no tools**, and every tenant still reports `CERTIFIED` because the corpus really is fine.
+
+The report now says so and names the command that crosses the boundary. It is not part of
+`session-open.sh`: it costs a real handshake, which is the price step 3 exists to avoid charging
+every session.
+
+```bash
+scripts/session-serving.sh verify
+```
+
 ## Close a session
 
 ```bash
@@ -74,6 +89,7 @@ each of those is for: the serving sync, and the MCP close.
 
 ```bash
 scripts/session-serving.sh              # where the VPS2 serving checkout is, and what it lacks
+scripts/session-serving.sh verify       # read-only: does that checkout still START and serve?
 scripts/session-serving.sh sync         # fast-forward it to origin/master, verify, undo on failure
 ```
 
@@ -107,6 +123,46 @@ tool list. Measured 2026-08-26 against the live host, with nothing to move: **18
 the whole `sync`**, of which the handshake is 21.0s. Any failure resets the checkout to where it
 was and says so, because the one state nobody may leave behind is a serving checkout that no
 longer serves.
+
+🔑 **That handshake is also reachable on its own, as `verify`, since 2026-08-31.** Until then it
+existed only as the tail of a `sync`, so the one question a session actually has (will my recall
+tools answer?) could not be asked without running a command that moves a live deployment. `verify`
+fetches nothing, takes no locks, resolves no target and refuses nothing, because it moves nothing:
+a dirty or detached serving tree is exactly the state somebody most wants to ask about, and it is
+reported rather than refused. It ignores `--no-verify` on purpose, since a verify that skips the
+handshake is a green line for a check that did not run. It answers 0 or 4, and returns 2 for an
+environment it cannot even look at (a serving path that is not a checkout, which the preconditions
+reject before any mode is dispatched). It can never return 3 or 5, because it moves nothing to
+roll back.
+
+It also names what it did NOT prove, in its own output: the other tenants (each server in
+`.mcp.json` carries its own tenant and embedder, and only one is handshaken), and whether the
+checkout is CURRENT, since it fetches nothing. The distance it prints is read from the
+already-on-disk `origin/master` ref, so that costs no fetch.
+
+Measured 2026-08-31 against the live host: **29.7s, 20 tools, migration 0017**, on
+`serving -> serving-master/master-live` at `8f6b5d1`. Note both numbers against the 2026-08-26 row
+above, which is left as it was written: the tool count has moved 18 to 20 and the schema 0016 to
+0017, so neither is a constant to assert against. Re-measure, read-only, one ssh:
+
+```bash
+time bash scripts/session-serving.sh verify
+```
+
+🔁 **Appended 2026-08-31, hours later: 29.7s was ONE sample and it was quoted as though it were
+the cost.** Three further samples the same day, same host, same command: **29.2s, 34.2s and
+72.3s**. The last was taken while ten agents were driving VPS2 concurrently, and it is recorded
+rather than discarded because it is the honest top of the range: this is a network-bound handshake
+against a shared host, so its cost depends on what else is running there. **Budget thirty seconds
+and do not be surprised by a minute.** The 29.7s above is left exactly as written.
+
+The generalisation is the reusable part, and it is the same error this repository has made with
+suite runtimes twice: **a single sample is not a cost, and reporting one as a cost invites a
+timeout to be sized against it.** Take at least two, and quote the range.
+
+⚠️ It is deliberately NOT part of `session-open.sh`. Thirty seconds is precisely the price
+`session-corpus.sh` exists to avoid charging every session, and a setup step people start skipping
+is worse than one they run. The corpus report names the command instead.
 
 Re-measure, read-only, one ssh:
 
@@ -429,6 +485,18 @@ config (never a URL or a token), and will not reverse a server you have explicit
   at at `origin/master` is `scripts/session-serving.sh sync`, which runs every session close. As
   of 2026-08-26 it points at `serving-master`, a clone of this repository tracking master, so the
   ordinary case is a fast-forward and no symlink work at all.
+
+  🔁 **Corrected 2026-08-31: it is a WORKTREE now, and the branch is not master.** Measured on the
+  host: `serving -> serving-master/master-live`, which is a git worktree of the `serving-master`
+  clone whose checked-out branch is **`serving-live`**, and `import recall` resolves through the
+  symlink to `serving-master/master-live/recall/__init__.py`. The symlink was last moved
+  2026-08-29. The 2026-08-25 and 2026-08-26 statements above are left as written, dated; what they
+  teach is that this arrangement moves under the notes describing it, which is why the scripts ask
+  the host rather than hardcoding a path. Re-measure:
+
+  ```bash
+  ssh vps2 'ls -ld ~/recall-repos/serving; git -C ~/recall-repos/serving branch --show-current'
+  ```
 
   ⚠️ Use `ln -sfn`, not `ln -sf`. Without `-n`, if `serving` is an existing symlink to a directory
   the link is created *inside* the target rather than replacing it, and the result resolves to
