@@ -271,7 +271,7 @@ def rank(
         frequencies.append(counts)
         for token in counts:
             document_frequency[token] = document_frequency.get(token, 0) + 1
-    average_length = sum(len(m[2]) for m in memos) / total
+    average_length = max(sum(len(m[2]) for m in memos) / total, 1.0)
 
     # ⚠️ The length gate is on the PROMPT's content words, not on the ones the corpus happens to
     # know. Filtering first and counting after conflates "the user said almost nothing" with "this
@@ -289,7 +289,7 @@ def rank(
         inverse[token] = math.log(1 + (total - frequency + 0.5) / (frequency + 0.5))
 
     scored: list[tuple[str, str, float]] = []
-    for position, (stem, summary, tokens) in enumerate(memos):
+    for position, (name, summary, tokens) in enumerate(memos):
         length = len(tokens)
         score = 0.0
         matched = 0
@@ -303,7 +303,7 @@ def rank(
             )
             score += weight * saturation
         if matched >= MIN_MATCHED_TOKENS:
-            scored.append((stem, summary, score))
+            scored.append((name, summary, score))
     if not scored:
         return []
     scored.sort(key=lambda row: row[2], reverse=True)
@@ -340,15 +340,21 @@ def render(hits: list[tuple[str, str, float]], store: Path) -> str:
 def user_prompt_submit(payload: dict[str, Any]) -> int:
     """Entry point. Returns 0 always: this hook may decline to speak, never to pass the prompt on."""
 
-    prompt = str(payload.get("prompt") or "").strip()
-    options = settings()
-    if not options["enabled"] or len(prompt) < options["min_chars"]:
-        return 0
-    # ⚠️ The rendering and the serialisation are INSIDE the guard, not only the retrieval. The
-    # first version of this function caught the search and then formatted outside it, and the
-    # test that breaks `render` went red immediately: a formatting bug is exactly as fatal to the
-    # user's message as a retrieval one, and "the risky part is the I/O" was the wrong instinct.
+    # ⚠️ EVERYTHING is inside the guard, including reading the settings. Two versions of this
+    # function had a step outside it and both were wrong the same way:
+    #
+    # - `render` sat outside, on the instinct that the risky part is the I/O. The test that breaks
+    #   `render` went red at once: a formatting bug is exactly as fatal here as a retrieval one.
+    # - `settings()` sat outside, where `int(block["k"])` on a hand-edited config raises
+    #   `ValueError` straight out of the hook.
+    #
+    # On this event the consequence is not a worse answer, it is the user's message being
+    # discarded, so the guard has to cover the boring lines too.
     try:
+        prompt = str(payload.get("prompt") or "").strip()
+        options = settings()
+        if not options["enabled"] or len(prompt) < options["min_chars"]:
+            return 0
         store = find_store(str(payload.get("cwd") or ""), options["store"])
         if store is None:
             # Unconfigured is silent BY DESIGN: a project with no memory store must behave

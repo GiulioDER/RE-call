@@ -78,7 +78,7 @@ def test_it_can_never_block_the_prompt(hook_env, capsys):
 
 @pytest.mark.parametrize(
     "breakage",
-    ["load_memos", "rank", "render", "find_store"],
+    ["load_memos", "rank", "render", "find_store", "settings"],
 )
 def test_any_internal_failure_is_silence_not_an_exception(hook_env, monkeypatch, capsys, breakage):
     """A hook that raises is charged to the client, and this one raises into the user's message."""
@@ -90,6 +90,19 @@ def test_any_internal_failure_is_silence_not_an_exception(hook_env, monkeypatch,
         raise RuntimeError("corpus on fire")
 
     monkeypatch.setattr(prompt_time, breakage, explode)
+
+    assert prompt_time.user_prompt_submit({"prompt": "should we run embedding on this workstation"}) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_a_hand_broken_config_does_not_discard_the_prompt(hook_env, capsys):
+    """The regression this exists for: `settings()` sat OUTSIDE the guard, so `int("abc")` on a
+    hand-edited `k` raised straight out of the hook and took the user's message with it."""
+
+    make_store(hook_env, CORPUS)
+    (hook_env / "recall-hook.json").write_text(
+        json.dumps({"prompt_time": {"k": "three"}}) + "\n", encoding="utf-8", newline="\n"
+    )
 
     assert prompt_time.user_prompt_submit({"prompt": "should we run embedding on this workstation"}) == 0
     assert capsys.readouterr().out == ""
