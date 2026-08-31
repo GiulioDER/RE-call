@@ -24,6 +24,47 @@
 #   the wrapper's content comparison -> `false`           21 red   (the squash false alarm returns)
 #   the wrapper's 127 case removed                        23 red
 #
+# Mutation-tested again 2026-08-31, FIFTEEN ways against this file, all fifteen killed, on an
+# isolated fixture (see the BASE note below). Measured, never predicted:
+#
+#   `_verify_all 0` -> `_verify_all "$NO_VERIFY"`         28 red
+#   the verify failure path exits 0 instead of 4          27, 33 red
+#   the DIRTY report dropped from verify                  26 red
+#   the verify block moved BELOW the fetch                25 red
+#   the wrapper drops `verify` from its mode list         29, 34, 35 red
+#   the wrapper prints LOCAL on a verify                  29 red
+#   the verify short-circuit DELETED (falls into sync)    24, 25, 26, 28, 32 red
+#   the remote stops refusing a second mode word          30, 31 red
+#   the wrapper stops refusing a second mode word         35 red
+#   the wrapper stops skipping the value after `--to`     36 red
+#   the missing-env-file guard removed                    33 red
+#   RESULT stops naming the tenant and the gaps           24, 32 red
+#   the stub ssh stops logging argv                       34, 36 red
+#   the `--help` sentinel markers removed                 37 red
+#   `_remote_arg` always %q-quotes (kills tilde support)  38 red
+#
+# ⚠️ THE SCORE ABOVE REPLACES A SEVEN-MUTATION SCORE THAT WAS NOT TRUSTWORTHY, and the reason is
+# the fixture rather than the mutations. `BASE` used to be a fixed shared path that this file
+# `rm -rf`s at start, so two runs at once delete each other's stubs. Reproduced the same day: one
+# run alone is 27/0; two launched concurrently from one shell, same commit, both report 9/18.
+# Five reviewers running this suite while each other ran it got 27/0, 21/6, 20/7, 16/11 and 12/15
+# on identical code. A mutation score collected on a fixture another process can delete is not a
+# score, so the whole set was re-run after `BASE` became per-pid.
+#
+# ⚠️ An EARLIER harness reported 0 of 7 killed, which was an artefact rather than a result: on
+# Windows `subprocess.run(["bash", ...])` resolves to the WSL relay, not Git Bash, so the suite
+# never ran, stdout was empty, and "no FAIL lines" scored as "the guard held". A mutation harness
+# that cannot tell a surviving guard from a suite that did not start is the same defect this
+# file's subject is about, one level up. Assert the run produced verdicts before scoring it.
+#
+# 🔑 Two mutations exist only because earlier rounds left a test green that should have died.
+# The short-circuit deletion was added when the first six all left test 24 alive, and 24 is the
+# only test asserting `verify` did not MOVE a checkout that was behind. The argv-logging mutation
+# was added when a reviewer proved that NO wrapper test could see a wrapper that recognises
+# `verify` and then forwards nothing: the stub ssh discarded its arguments, the remote half
+# defaults to `status`, and every assertion still passed. That is a guard that cannot fail, which
+# is the failure mode this whole file exists to prevent. Test 34 closes it.
+#
 # ⚠️ Tests 19 and 20 need `flock` and therefore SKIP on Windows, which is where this file is most
 # often run by hand. They were watched on VPS2 instead (`scp` the two scripts, run the suite under
 # a scratch TMPDIR): 20 passed there, and the flock mutation above turned 19 red and left 20 green.
@@ -36,7 +77,12 @@
 set -uo pipefail
 
 REMOTE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/session_serving_remote.sh"
-BASE="${TMPDIR:-/tmp}/recall-servtests"
+# `-$$` is what stops two concurrent runs from deleting each other's fixtures. It stays SHORT
+# for the Windows 260-character reason above: a pid is a few digits, a mktemp -d name is not.
+BASE="${TMPDIR:-/tmp}/recall-servtests-$$"
+# Removed only on a GREEN run. A red run leaves its fixture for inspection, which is the whole
+# point of having one; the isolation this trap provides is about concurrent runs, not about tidiness.
+trap '[ "$fail" -eq 0 ] && rm -rf "$BASE"' EXIT
 pass=0; fail=0
 ok() { pass=$((pass+1)); printf 'PASS  %s\n' "$1"; }
 no() { fail=$((fail+1)); printf 'FAIL  %s\n     %s\n' "$1" "${2:-}"; }
@@ -392,8 +438,14 @@ fi
 # ssh is stubbed, so nothing here reaches a host.
 WRAPPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/session-serving.sh"
 
+# The argv is LOGGED, and that is not incidental. Before it was, the stub discarded "$@", so no
+# wrapper test could tell a wrapper that forwards `verify` from one that recognises the word and
+# then sends nothing: the remote half defaults to `status`, the run exits 0, and every assertion
+# still passes. That is a guard that cannot fail, which is the failure mode this whole file is
+# about. Test 34 is the assertion that closes it.
 cat > "$BASE/bin/ssh" <<'STUB'
 #!/usr/bin/env bash
+[ -n "${FAKE_SSH_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_SSH_LOG"
 cat >/dev/null           # swallow the piped remote script, as the real ssh does
 printf 'SERVING     /home/x/serving\nSTATUS      current\n'
 exit "${FAKE_SSH_RC:-0}"
@@ -402,7 +454,9 @@ chmod +x "$BASE/bin/ssh"
 
 wrapper() {
     local repo="$1"; shift
+    : > "$BASE/ssh.log"
     OUT="$(cd "$repo" && env PATH="$BASE/bin:$PATH" FAKE_SSH_RC="${FAKE_SSH_RC:-0}" \
+        FAKE_SSH_LOG="$BASE/ssh.log" \
         RECALL_VPS2_HOST=stub-host bash "$WRAPPER" "$@" 2>&1)"
     RC=$?
 }
@@ -452,6 +506,207 @@ else
     no "23 exit 127 says the remote never started and nothing moved" "rc=$RC $OUT"
 fi
 unset FAKE_SSH_RC
+
+# --- `verify`: the handshake on its own ---------------------------------------------------------
+#
+# Numbered after the wrapper tests rather than beside the other remote-half tests on purpose. The
+# mutation results in this file's header are recorded against test NUMBERS, and renumbering would
+# quietly invalidate a measurement to tidy an ordering. Of these, 24 to 28 exercise the remote
+# half and 29 the wrapper.
+#
+# What `verify` has to be, for it to close the gap it was added for: it must run the handshake, it
+# must move nothing, and it must stay answerable in the states `sync` correctly refuses. Every one
+# of those is a way this could be written to look right and be useless.
+
+# --- 24. verify drives the handshake and moves nothing, even when behind ------------------------
+# The RESULT wording this pins was changed deliberately by the fix for the audit finding that
+# `verify` drives ONE server while reporting an unqualified green; test 32 owns the new wording and
+# its NOT PROVED lines. This test keeps the invariant it was written for: the handshake ran, and a
+# checkout that was BEHIND did not move.
+fresh; land plain; before="$(head_of "$SERVING")"; reset_log
+run verify
+if [ "$RC" -eq 0 ] && [ "$(head_of "$SERVING")" = "$before" ] \
+   && pylog | grep -q handshake && printf '%s' "$OUT" | grep -q '^RESULT      this checkout starts'; then
+    ok "24 verify drives the handshake and leaves a behind checkout where it was"
+else
+    no "24 verify drives the handshake and leaves a behind checkout where it was" "rc=$RC $OUT $(pylog | tr '\n' ',')"
+fi
+
+# --- 25. verify never fetches (the control pair that proves it) ---------------------------------
+# A verify that fetches is a verify the network can fail, and the question it answers (does the
+# process on this host still start?) has nothing to do with a remote. Proved by breaking the
+# remote and watching `status` exit 2 on the same checkout that `verify` reports on.
+fresh; _git "$SERVING" remote set-url origin "$BASE/no-such-origin"; reset_log
+run status
+status_rc="$RC"
+reset_log
+run verify
+if [ "$status_rc" -eq 2 ] && [ "$RC" -eq 0 ] && pylog | grep -q handshake; then
+    ok "25 verify answers with the remote unreachable, where status cannot"
+else
+    no "25 verify answers with the remote unreachable, where status cannot" "status=$status_rc verify=$RC $OUT"
+fi
+
+# --- 26. a dirty tree is verified and named, not refused (the counterpart of test 5) ------------
+# `sync` refuses a hot-patched tree because it would reset it. `verify` writes nothing, and a
+# hot-patched server is the one people most need to ask this question about, but the report must
+# say so, or a green line would describe a deployment nobody can reproduce from master.
+fresh; printf 'hot patch\n' >> "$SERVING/recall/__init__.py"; reset_log
+run verify
+if [ "$RC" -eq 0 ] && pylog | grep -q handshake \
+   && printf '%s' "$OUT" | grep -q 'DIRTY       verifying a hot-patched tree'; then
+    ok "26 verify reports a dirty tree and still verifies it"
+else
+    no "26 verify reports a dirty tree and still verifies it" "rc=$RC $OUT"
+fi
+
+# --- 27. a server that will not answer is exit 4, with nothing rolled back ----------------------
+fresh; before="$(head_of "$SERVING")"; reset_log
+run_env "FAKE_HANDSHAKE_RC=1" verify
+if [ "$RC" -eq 4 ] && [ "$(head_of "$SERVING")" = "$before" ] \
+   && printf '%s' "$OUT" | grep -q 'verification FAILED' \
+   && ! printf '%s' "$OUT" | grep -q 'ROLLED-BACK'; then
+    ok "27 a failing verify exits 4 and rolls nothing back"
+else
+    no "27 a failing verify exits 4 and rolls nothing back" "rc=$RC $OUT"
+fi
+
+# --- 28. verify ignores --no-verify -------------------------------------------------------------
+# The flag exists so a sync can skip the 21s handshake and keep the cheap checks. Honouring it here
+# would produce `VERIFY ok: ... handshake skipped` from a command whose entire purpose is the
+# handshake: a green line for a check that did not run, which is the failure these scripts exist
+# to remove rather than reproduce.
+fresh; reset_log
+run verify --no-verify
+if [ "$RC" -eq 0 ] && pylog | grep -q handshake \
+   && ! printf '%s' "$OUT" | grep -q 'handshake skipped'; then
+    ok "28 verify runs the handshake even when told --no-verify"
+else
+    no "28 verify runs the handshake even when told --no-verify" "rc=$RC $OUT $(pylog | tr '\n' ',')"
+fi
+
+# --- 29. the wrapper accepts verify and does not ask about unmerged work ------------------------
+# The LOCAL line answers "is my work on master", which is a question about a move. On a verify it
+# is noise, and noise above a one-line answer is how a report stops being read.
+wrapper "$WORK" verify
+if [ "$RC" -eq 0 ] && ! printf '%s' "$OUT" | grep -q 'LOCAL'; then
+    ok "29 the wrapper passes verify through without the LOCAL commit report"
+else
+    no "29 the wrapper passes verify through without the LOCAL commit report" "rc=$RC $OUT"
+fi
+
+# --- audit fixes: one mode word, and a report that names its own boundary -----------------------
+#
+# 30 and 31 are the red->green pair for the P1. Before the fix, measured on this harness:
+#   argv [verify sync] -> rc=0 and the serving HEAD MOVED, behind a read-only verb;
+#   argv [sync verify] -> rc=0, nothing shipped, printing the verify's green RESULT.
+# Both are the same root cause: a mode word was recognised in any position and the last one won.
+
+# --- 30. `verify sync` is refused, and moves nothing --------------------------------------------
+fresh; land plain; before="$(head_of "$SERVING")"; reset_log
+run verify sync
+if [ "$RC" -eq 2 ] && [ "$(head_of "$SERVING")" = "$before" ] \
+   && printf '%s' "$OUT" | grep -q 'say ONE of status, verify or sync' \
+   && ! pylog | grep -q handshake; then
+    ok "30 a second mode word is refused, and the checkout does not move"
+else
+    no "30 a second mode word is refused, and the checkout does not move" "rc=$RC $OUT"
+fi
+
+# --- 31. ... and so is the reverse order, which used to be a silent no-op ----------------------
+# The mirror matters on its own: `sync verify` exiting 0 having shipped nothing is a session that
+# asked to update the live server, was told everything was fine, and left it stale.
+fresh; land plain; before="$(head_of "$SERVING")"; reset_log
+run sync verify
+if [ "$RC" -eq 2 ] && [ "$(head_of "$SERVING")" = "$before" ]; then
+    ok "31 'sync verify' is refused rather than silently verifying"
+else
+    no "31 'sync verify' is refused rather than silently verifying" "rc=$RC $OUT"
+fi
+
+# --- 32. verify names the tenant it drove and what it did not prove ----------------------------
+fresh; land plain; reset_log
+run verify
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "driving tenant 'memory'" \
+   && printf '%s' "$OUT" | grep -q 'NOT PROVED  any other tenant' \
+   && printf '%s' "$OUT" | grep -q 'NOT PROVED  that this checkout is CURRENT'; then
+    ok "32 verify names the tenant it drove and the two things it did not prove"
+else
+    no "32 verify names the tenant it drove and the two things it did not prove" "rc=$RC $OUT"
+fi
+
+# --- 33. a missing env file is named, not swallowed --------------------------------------------
+# Before the fix this failed with the complete diagnosis `verification FAILED: schema: `, an
+# empty string after the colon, on the command a session runs precisely when it suspects the
+# server is broken.
+fresh; reset_log
+run_env "RECALL_SERVING_ENV=$BASE/no-such.env" verify
+if [ "$RC" -eq 4 ] && printf '%s' "$OUT" | grep -q 'env file .* is missing or unreadable'; then
+    ok "33 a missing env file is named instead of producing an empty diagnosis"
+else
+    no "33 a missing env file is named instead of producing an empty diagnosis" "rc=$RC $OUT"
+fi
+
+# --- 34. the wrapper actually FORWARDS the mode, not merely recognises it -----------------------
+# The gap this closes: every wrapper assertion above passes against a wrapper that matches `verify`
+# and then sends no mode at all, because the remote half defaults to status and exits 0. Nothing
+# read the argv until the stub started logging it.
+fresh
+wrapper "$WORK" verify
+if [ "$RC" -eq 0 ] && grep -q ' verify' "$BASE/ssh.log"; then
+    ok "34 the wrapper forwards the mode word to ssh, not just recognises it"
+else
+    no "34 the wrapper forwards the mode word to ssh, not just recognises it" "rc=$RC log=$(cat "$BASE/ssh.log" 2>/dev/null)"
+fi
+
+# --- 35. the wrapper refuses two mode words before it ever reaches ssh -------------------------
+fresh
+wrapper "$WORK" verify sync
+if [ "$RC" -eq 2 ] && ! grep -q . "$BASE/ssh.log" 2>/dev/null; then
+    ok "35 the wrapper refuses two mode words without contacting the host"
+else
+    no "35 the wrapper refuses two mode words without contacting the host" "rc=$RC $OUT"
+fi
+
+# --- 36. `--to`'s value is not read as a mode --------------------------------------------------
+# `sync --to verify` used to leave the WRAPPER thinking MODE=verify while the remote ran a real
+# sync, so a rollback would have been reported to the operator as "nothing was moved".
+fresh
+wrapper "$WORK" sync --to verify
+if [ "$RC" -eq 0 ] && grep -q -- '--to verify' "$BASE/ssh.log"; then
+    ok "36 the value after --to is forwarded, not mistaken for a mode"
+else
+    no "36 the value after --to is forwarded, not mistaken for a mode" "rc=$RC log=$(cat "$BASE/ssh.log" 2>/dev/null)"
+fi
+
+# --- 37. --help renders the usage block and stops there ----------------------------------------
+# The range used to be a hand-counted `sed -n '2,20p'`, which had ALREADY drifted: on HEAD it
+# printed three lines past the usage block and cut a sentence mid-word. Retuning the number would
+# have fixed today and left the next header edit to break it silently, so the block is delimited
+# now and this test is what notices if the markers go.
+OUT="$(bash "$WRAPPER" --help 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'session-serving.sh verify' \
+   && ! printf '%s' "$OUT" | grep -q 'This file is the wrapper'; then
+    ok "37 --help shows every mode and stops at the end of the usage block"
+else
+    no "37 --help shows every mode and stops at the end of the usage block" "rc=$RC $OUT"
+fi
+
+# --- 38. a `~/` override is expanded by the REMOTE shell, not quoted into a literal ------------
+# `printf '%q'` escapes a tilde, and `~/recall-repos/.env` is the documented form for these paths.
+# Quoting it would hand the remote half a path that cannot exist, and the readability guard added
+# for the missing-env-file finding would then report it as missing with total confidence. That is a
+# fix manufacturing the exact failure the other fix was written to make honest.
+fresh
+RECALL_VPS2_ENV='~/recall-repos/.env' wrapper "$WORK" verify
+if [ "$RC" -eq 0 ] && grep -q 'RECALL_SERVING_ENV=\$HOME/recall-repos/.env' "$BASE/ssh.log" \
+   && ! grep -q 'RECALL_SERVING_ENV=.\?~' "$BASE/ssh.log"; then
+    ok "38 a ~/ override is passed for the remote shell to expand, not quoted literally"
+else
+    no "38 a ~/ override is passed for the remote shell to expand, not quoted literally" \
+       "rc=$RC log=$(cat "$BASE/ssh.log" 2>/dev/null)"
+fi
+unset RECALL_VPS2_ENV
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
