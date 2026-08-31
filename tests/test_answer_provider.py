@@ -301,8 +301,16 @@ def test_configuration_is_validated_before_the_optional_import(monkeypatch) -> N
         resolve_answer_provider(_openai_enabled(RECALL_REASONING_ANSWER_TIMEOUT="soon"))
 
 
-def test_a_malformed_price_names_the_variable() -> None:
+@pytest.mark.parametrize("value", ["-1", "free", "nan", "1.0.0"])
+def test_a_malformed_price_names_the_variable(value: str) -> None:
+    """Both rejection paths name the variable, not just the range check.
+
+    The first draft covered only "-1", which parses and reaches the finite/non-negative
+    check. A non-numeric value took a bare `float()` and raised "could not convert string to
+    float: 'free'" instead, naming nothing an operator could act on. The test asserted the
+    property in its name and did not execute the path that breaks it.
+    """
     with pytest.raises(ValueError, match="COST_PER_1K_TOKENS"):
         resolve_answer_provider(
-            _openai_enabled(RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS="-1")
+            _openai_enabled(RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS=value)
         )

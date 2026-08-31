@@ -322,11 +322,22 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> AnswerProvi
             "required when RECALL_REASONING_ANSWER_PROVIDER=openai"
         )
     raw_cost = source.get("RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS", "").strip()
-    cost = float(raw_cost) if raw_cost else None
-    if cost is not None and (not math.isfinite(cost) or cost < 0):
-        raise ValueError(
-            "RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS must be finite and non-negative"
-        )
+    cost: float | None = None
+    if raw_cost:
+        # Wrapped rather than a bare `float()`. `resolve_expansion_provider` leaves its
+        # equivalent unwrapped, so a typo there surfaces as "could not convert string to
+        # float" with no variable named, which is the one thing every other numeric in this
+        # resolver is careful to do.
+        try:
+            cost = float(raw_cost)
+        except ValueError as exc:
+            raise ValueError(
+                "RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS must be a number"
+            ) from exc
+        if not math.isfinite(cost) or cost < 0:
+            raise ValueError(
+                "RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS must be finite and non-negative"
+            )
     try:
         from openai import OpenAI
     except ImportError as exc:
