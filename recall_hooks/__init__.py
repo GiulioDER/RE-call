@@ -281,6 +281,12 @@ def main(argv: list[str] | None = None) -> int:
         from .write_time import pre_tool_use
 
         return pre_tool_use(payload)
+    if args[0] == "user-prompt-submit":
+        # Same reason as above. `prompt_time` imports `math` and `re` and touches the filesystem;
+        # SessionStart pays for neither.
+        from .prompt_time import user_prompt_submit
+
+        return user_prompt_submit(payload)
     return 0
 
 
