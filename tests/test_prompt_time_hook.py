@@ -239,6 +239,26 @@ def test_the_rendered_block_carries_a_readable_path(hook_env):
     assert "Do not re-derive" in text
 
 
+DEPLOYED = Path.home() / ".claude" / "hooks" / "recall_hooks"
+
+
+@pytest.mark.skipif(not DEPLOYED.is_dir(), reason="no deployed copy on this machine")
+@pytest.mark.parametrize("module", ["__init__.py", "prompt_time.py", "write_time.py", "__main__.py"])
+def test_the_deployed_copy_matches_the_source(module):
+    """⚠️ CLAUDE.md records `session_start_hook.py` and its deployed twin drifting by 57 lines
+    with nothing reporting it. This hook runs from a deployed copy on purpose, because `-m`
+    otherwise resolves the package out of whatever branch the cwd happens to be, so a forgotten
+    redeploy is the way this feature silently reverts. A failure here means: copy it again.
+
+    Skipped where there is no deployed copy, which is every machine but the author's and CI.
+    """
+
+    source = Path(__file__).resolve().parent.parent / "recall_hooks" / module
+    assert (DEPLOYED / module).read_bytes() == source.read_bytes(), (
+        f"{module} in ~/.claude/hooks/recall_hooks differs from the source; redeploy it"
+    )
+
+
 @pytest.mark.parametrize(
     ("singular", "plural"),
     [
