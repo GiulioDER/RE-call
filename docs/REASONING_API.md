@@ -25,6 +25,36 @@ Fields:
 7. `evidence_policy`: `EvidencePolicy`, shared with evidence assembly.
 8. `providers`: `ReasoningProviderPorts`.
 
+## Routing from retrieval, added 2026-09-01
+
+`recall_search` appends a library-authored `NEXT:` sentence to `SearchResult.advice` naming
+`recall_reasoning_query`, on two signals and no others: an abstention that is NOT a corpus gap (a
+candidate exists but no version of it is trustworthy), and a result carrying superseded matches.
+
+🔑 **This routes the AGENT, not the request.** No model runs on the retrieval path, no search
+escalates itself, and the commitment that no retrieval command enters reasoning mode by omission
+is unchanged: nothing enters reasoning mode, the caller is told when it is worth choosing.
+
+Three conditions, each guarded in `tests/test_reasoning_routing.py`:
+
+* a **corpus gap does not route** — reasoning over evidence that does not exist reaches the same
+  abstention having spent a model call, and a note on every result is one an agent learns to skip;
+* an ordinary uncontested hit does not route, for the same reason;
+* the note appears only where the deployment actually SERVES `recall_reasoning_query`. The
+  `search` and `read` presets in `recall_mcp/tool_surface.py` exclude it, and naming an absent
+  tool costs the agent a turn to discover. `search_memory(reasoning_available=...)` defaults to
+  False, so every library, CLI and benchmark caller is unchanged.
+
+Why it was needed: measured 2026-08-27 across 112 agent sessions with memory available
+(`docs/preregistrations/2026-08-27-tool-definition-context-cost.md`), agents called exactly one
+tool, `recall_search`, 139 times, and never invoked the other seventeen. A capability reachable
+only by choosing an unfamiliar tool was, empirically, not reachable.
+
+The note text is a constant and carries no corpus bytes, for the reason
+`tests/test_advice_injection.py` documents: `advice` is the field the agent is told to obey, so
+corpus-controlled text must never reach it. The superseding file name stays in `superseded_by`,
+as data.
+
 Provider ports:
 
 1. `retriever`: required, returns `TrustedResult`.

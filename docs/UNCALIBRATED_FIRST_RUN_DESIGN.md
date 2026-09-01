@@ -123,7 +123,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 
 `RECALL_ENV` is one string carrying at least six unrelated policies:
 
-1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:2717`, `recall/cli_commands/index_search.py:254` <!-- cite-anchor: env_is_production -->).
+1. **Ingestion source.** Production refuses local filesystem indexing (`recall_mcp/service.py:2748`, `recall/cli_commands/index_search.py:254` <!-- cite-anchor: env_is_production -->).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:376`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
     `recall_mcp/server.py:865` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:344` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded

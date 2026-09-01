@@ -1114,6 +1114,11 @@ class _ToolDeps:
 
 
 def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
+    # Resolved ONCE at registration, because the tool surface is fixed at server start; asking
+    # per call would re-read it on every search for an answer that cannot change. An unfiltered
+    # registrar has no `serves`, and that means every tool is registered, hence the True default.
+    _serves = getattr(mcp, "serves", None)
+    reasoning_served = _serves("recall_reasoning_query") if callable(_serves) else True
     _require = deps.require
     _state = deps.state
 
@@ -1200,6 +1205,7 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                     include_related=include_related,
                     related_relation=related_relation,
                     related_max_items=related_max_items,
+                    reasoning_available=reasoning_served,
                 )
             )
             if locale is None:

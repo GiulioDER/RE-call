@@ -157,6 +157,17 @@ class FilteredToolRegistrar:
         self.registered: list[str] = []
         self.skipped: list[str] = []
 
+    def serves(self, name: str) -> bool:
+        """Whether `name` reaches the server, asked at registration time.
+
+        Exists so a tool can tailor its OUTPUT to the surface, not just its registration: search
+        advice points at `recall_reasoning_query`, and naming a tool the deployment does not
+        serve is worse than saying nothing, because the agent spends a turn discovering it is
+        absent. A plain unfiltered server has no `serves`, and callers read that as "everything",
+        which is correct: without this wrapper every tool is registered.
+        """
+        return name in self._served
+
     def tool(self, *args: Any, **kwargs: Any) -> Callable[[Any], Any]:
         name = kwargs.get("name")
         if isinstance(name, str) and name not in self._served:
