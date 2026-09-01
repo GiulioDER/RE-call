@@ -158,14 +158,14 @@ def _manifest(config: dict, payload: dict) -> None:
 
 
 def test_a_healthy_install_says_nothing_extra() -> None:
-    _manifest(HOSTED, {"files": {}, "pending": {}})
+    _manifest(HOSTED, {"pending": {}})
     assert recall_hooks._unsynced_notice(HOSTED) == ""
 
 
 def test_pending_memos_with_an_error_are_surfaced_with_a_remedy() -> None:
     """🔑 The hooks return 0 always and may not speak, so a failed sync has nowhere to report
     except the one event already permitted to inject text."""
-    _manifest(HOSTED, {"files": {}, "pending": {"a.md": "", "b.md": ""},
+    _manifest(HOSTED, {"pending": {"a.md": "", "b.md": ""},
                        "last_error": {"kind": "auth", "message": "401"}})
     notice = recall_hooks._unsynced_notice(HOSTED)
     assert "2 memo(s)" in notice
@@ -174,7 +174,7 @@ def test_pending_memos_with_an_error_are_surfaced_with_a_remedy() -> None:
 
 def test_pending_without_a_recorded_error_stays_quiet() -> None:
     """Mid-sync is not a failure, and a healthy install must see nothing."""
-    _manifest(HOSTED, {"files": {}, "pending": {"a.md": ""}})
+    _manifest(HOSTED, {"pending": {"a.md": ""}})
     assert recall_hooks._unsynced_notice(HOSTED) == ""
 
 
@@ -186,7 +186,7 @@ def test_the_notice_reaches_session_start_output(capsys: pytest.CaptureFixture[s
                                                  monkeypatch: pytest.MonkeyPatch) -> None:
     """It is worth nothing unless it actually lands in additionalContext."""
     config = {**HOSTED, "chunks": 12}
-    _manifest(config, {"files": {}, "pending": {"a.md": ""},
+    _manifest(config, {"pending": {"a.md": ""},
                        "last_error": {"kind": "quota", "message": "budget"}})
     monkeypatch.setattr(recall_hooks, "load_config", lambda: config)
     recall_hooks.session_start({"cwd": "/tmp/proj"})
@@ -194,3 +194,83 @@ def test_the_notice_reaches_session_start_output(capsys: pytest.CaptureFixture[s
     context = out["hookSpecificOutput"]["additionalContext"]
     assert context.startswith("WARNING:")
     assert "quota" in context or "exhausted" in context
+
+
+def test_a_zero_count_emits_the_warning_alone(capsys: pytest.CaptureFixture[str],
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    """⚠️ Nothing refreshes `chunks` in hosted mode, so the digest's count is 0 on the very path
+    the warning exists for. Telling the model to search a corpus the same sentence says is empty
+    is worse than saying nothing."""
+    config = {**HOSTED, "chunks": 0}
+    _manifest(config, {"pending": {"a.md": ""}, "last_error": {"kind": "auth", "message": "401"}})
+    monkeypatch.setattr(recall_hooks, "load_config", lambda: config)
+    recall_hooks.session_start({"cwd": "/tmp/proj"})
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert context.startswith("WARNING:")
+    assert "indexed chunks" not in context
+    assert "recall_search" not in context
+
+
+def test_a_stop_request_is_not_swallowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dispatch catches BaseException so a cancelled anyio scope cannot kill a session. That
+    must not extend to Ctrl-C, which is the user asking for this process to end."""
+    cwd = tmp_path / "work"
+    (cwd / "memory").mkdir(parents=True)
+    monkeypatch.setattr(recall_hooks, "load_config", lambda: HOSTED)
+
+    from recall_hooks import hosted
+
+    def interrupted(*_a, **_k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(hosted, "sync_memory_roots", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        recall_hooks._index_and_refresh({"cwd": str(cwd)})
+
+
+def test_a_cancelled_scope_does_not_kill_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`asyncio.CancelledError` is a BaseException, and it is what a timed-out transport raises.
+    Catching only `Exception` would let the one failure most likely in production through."""
+    import asyncio
+
+    cwd = tmp_path / "work"
+    (cwd / "memory").mkdir(parents=True)
+    monkeypatch.setattr(recall_hooks, "load_config", lambda: HOSTED)
+
+    from recall_hooks import hosted
+
+    def cancelled(*_a, **_k):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(hosted, "sync_memory_roots", cancelled)
+    assert recall_hooks._index_and_refresh({"cwd": str(cwd)}) == 0
+
+
+def test_no_local_cursor_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """⛔ Pins rule 1 of hosted.py. If a confirmed-hash map reappears in the manifest, a later
+    reader will take it for the cursor and skip asking the server, which is how a file the server
+    never received gets skipped forever."""
+    from recall_hooks import hosted
+
+    root = tmp_path / "memory"
+    root.mkdir()
+    (root / "a.md").write_text("# A\n\nBody enough to chunk.\n", encoding="utf-8")
+
+    monkeypatch.setattr(hosted, "remote_inventory", lambda *_a, **_k: {})
+    monkeypatch.setattr(hosted, "call_tool", lambda *_a, **_k: {"ok": True})
+    monkeypatch.setattr(
+        hosted, "credentials", __import__("types").SimpleNamespace(headers=lambda _c: {}),
+        raising=False,
+    )
+    import recall_hooks.credentials as _cred
+
+    monkeypatch.setattr(_cred, "headers", lambda _c: {"Authorization": "Bearer x"})
+
+    outcome = hosted.sync_memory_roots([("worktree", root)], HOSTED)
+    assert outcome.kind == "ok" and outcome.uploaded == 1
+    manifest = hosted.read_manifest(HOSTED)
+    assert "files" not in manifest, "a local record of what is synced must not come back"
+    assert manifest["pending"] == {}
+

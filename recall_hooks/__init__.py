@@ -212,18 +212,24 @@ def session_start(payload: dict[str, Any]) -> int:
         return 0
     cwd = str(payload.get("cwd", ""))
     project = Path(cwd).name if cwd else "this project"
+    # ⚠️ The digest is dropped when the count is zero, and that is the common hosted case rather
+    # than an edge one: nothing refreshes `chunks` in hosted mode, so it stays 0. Emitting
+    # "memory is available: 0 indexed chunks. Call `recall_search`" NEXT TO a warning that memos
+    # never arrived tells the model to search a corpus this hook just said is missing content.
+    digest = (
+        f"RE-call memory is available for {project}: {count} indexed chunks. "
+        "Call `recall_search` before proposing an idea, forming a hypothesis, or "
+        "repeating past work, and treat an `abstained: true` result as 'no supported "
+        "answer' rather than as an empty one. This corpus is uncalibrated, so trust "
+        "thresholds are defaults rather than fitted to it."
+        if count
+        else ""
+    )
     json.dump(
         {
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
-                "additionalContext": (
-                    stuck
-                    + f"RE-call memory is available for {project}: {count} indexed chunks. "
-                    "Call `recall_search` before proposing an idea, forming a hypothesis, or "
-                    "repeating past work, and treat an `abstained: true` result as 'no supported "
-                    "answer' rather than as an empty one. This corpus is uncalibrated, so trust "
-                    "thresholds are defaults rather than fitted to it."
-                ),
+                "additionalContext": stuck + digest,
             }
         },
         sys.stdout,
@@ -298,11 +304,19 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
         if roots:
             try:
                 sync_memory_roots(roots, config)
+            except (KeyboardInterrupt, SystemExit):
+                # The user or the runtime asked this process to stop. Honour it.
+                raise
             except BaseException:
                 # ⛔ `sync_memory_roots` documents that it never raises, and this catches it
                 # anyway. "Documented not to" and "cannot" are different claims, and the cost of
                 # being wrong here is a session that will not start. A test pins this by making
                 # the sync raise on purpose.
+                #
+                # BaseException rather than Exception because the transport runs an anyio event
+                # loop, and a cancelled scope raises `asyncio.CancelledError`, which is NOT an
+                # Exception. Catching only Exception would let precisely the timeout case
+                # through.
                 pass
         return 0
     dsn = config.get("dsn")

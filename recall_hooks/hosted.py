@@ -362,6 +362,13 @@ def remote_inventory(
 #
 # 1. Nothing is recorded as synced unless the server confirmed it. A cursor that runs ahead of
 #    the server is how memory disappears: the next run skips a file the server never received.
+#    ⛔ So this keeps NO local record of what is synced, and that absence is deliberate. What to
+#    upload is decided by comparing the local scan against `remote_inventory`, which is the
+#    server's own answer about what it holds. An earlier version of this file also wrote a
+#    `files` map of confirmed hashes into the manifest; nothing ever read it, and the danger was
+#    that a future reader would take it for the cursor and skip the round trip, which is exactly
+#    the failure this rule forbids. A hash the client believes and the server has never seen is
+#    worse than no hash at all.
 # 2. The memo files ARE the queue. This never deletes, moves or rewrites anything under a memory
 #    root, so a failed sync loses nothing and the next run simply tries again. A sync client that
 #    "tidies up" destroys both the corpus and its own retry.
@@ -400,10 +407,9 @@ def read_manifest(config: dict) -> dict:
     try:
         data = _json.loads(manifest_path(config).read_text(encoding="utf-8"))
     except (OSError, _json.JSONDecodeError):
-        return {"files": {}, "pending": {}}
+        return {"pending": {}}
     if not isinstance(data, dict):
-        return {"files": {}, "pending": {}}
-    data.setdefault("files", {})
+        return {"pending": {}}
     data.setdefault("pending", {})
     return data
 
@@ -514,9 +520,8 @@ def sync_memory_roots(
                 kind=exc.kind, uploaded=uploaded, unchanged=decided.unchanged,
                 pending=len(pending), message=exc.message,
             )
-        # Confirmed. Only now does the cursor move.
+        # Confirmed.
         for change in batch:
-            manifest["files"][change.name] = {"sha256": change.sha256, "size": change.size}
             pending.pop(change.name, None)
             uploaded += 1
 
