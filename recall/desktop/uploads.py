@@ -185,6 +185,25 @@ def _safe_job_key(raw: str) -> str:
     return key
 
 
+def promote_uploads(tenant: str, work: Path, job_key: str) -> Path:
+    """Move a finished job's files onto the tenant's stable tree, and return that tree.
+
+    Split out of `stage_uploads` so a caller can put a gate BETWEEN decoding and committing.
+    `recall_ingest` needs exactly that: it debits the tenant's byte quota after staging, and a
+    refusal there must leave the tenant's existing corpus untouched. Staging into a disposable
+    working directory and promoting only once the gate has passed is what makes the refusal path
+    able to `discard_staging` without ever being able to reach a live tree.
+
+    The working directory is removed either way; see `_promote_staged`.
+    """
+    stable = _tenant_uploads_root(tenant) / _safe_job_key(job_key)
+    try:
+        _promote_staged(work, stable)
+    finally:
+        discard_staging(work)
+    return stable
+
+
 def _promote_staged(work: Path, stable: Path) -> None:
     """Move a completed job's files onto the stable tree, replacing what they supersede.
 
@@ -232,12 +251,12 @@ def stage_uploads(
     """
     if not files or len(files) > 500:
         raise UploadError("files must contain between 1 and 500 entries")
-    # `is not None`, NOT truthiness: an empty job key is a caller asking for a stable
-    # destination and getting the name wrong, and falling back to the accumulating path
-    # would answer that with the exact defect this argument exists to remove, silently.
-    stable = (
-        _tenant_uploads_root(tenant) / _safe_job_key(job_key) if job_key is not None else None
-    )
+    # Validated HERE, before a working directory exists, so a bad key cannot leave one orphaned.
+    # `is not None`, NOT truthiness: an empty job key is a caller asking for a stable destination
+    # and getting the name wrong, and falling back to the accumulating path would answer that with
+    # the exact defect this argument exists to remove, silently.
+    if job_key is not None:
+        _safe_job_key(job_key)
     job_id = uuid.uuid4().hex
     # Always a fresh working directory, even when a stable destination was asked for: it is what
     # makes `discard_staging` on refusal safe, since it can never delete a live tree.
@@ -281,12 +300,6 @@ def stage_uploads(
     except BaseException:
         discard_staging(root)
         raise
-    if stable is None:
+    if job_key is None:
         return job_id, root, total
-    try:
-        _promote_staged(root, stable)
-    finally:
-        # The working directory is spent either way. Leaving it would make the next build's
-        # manifest name both copies of every file it did manage to move.
-        discard_staging(root)
-    return job_id, stable, total
+    return job_id, promote_uploads(tenant, root, job_key), total

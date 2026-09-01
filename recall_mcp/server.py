@@ -100,7 +100,7 @@ from recall_mcp.translation import (
     render_evidence_response,
     render_search_response,
 )
-from recall.desktop.uploads import discard_staging, stage_uploads
+from recall.desktop.uploads import discard_staging, promote_uploads, stage_uploads
 
 
 # Promoted to the service layer so `recall_agent` renders identically without importing `mcp`.
@@ -1868,6 +1868,19 @@ def _register_ingest_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
             except BaseException:
                 discard_staging(root)
                 raise
+        if state.get("generation_mode"):
+            # ⛔ **A stable destination, and only under generation mode.** The manifest keys each
+            # object on its staged file's URI, so a fresh `uuid4` directory per call made the same
+            # document a NEW object every time: measured 2026-09-01, the identical corpus uploaded
+            # twice took a tenant from 584 chunks to 1752, and a changed memo never superseded its
+            # predecessor because `_carry_forward` never saw one URI twice.
+            #
+            # Promoted HERE rather than inside `stage_uploads` because the quota debit above must
+            # be able to refuse without touching the tenant's existing corpus, and because the two
+            # `discard_staging(root)` calls around it must never receive a live tree. Above, `root`
+            # is still the disposable working directory. Below, the only remaining discard is
+            # guarded by `not generation_mode`, so it too can only ever see a working directory.
+            root = promote_uploads(store.tenant, root, f"sync-{category}")
         try:
             with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
                 result = await _to_thread(
