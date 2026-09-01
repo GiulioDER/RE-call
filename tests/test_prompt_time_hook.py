@@ -240,10 +240,28 @@ def test_the_rendered_block_carries_a_readable_path(hook_env):
 
 
 DEPLOYED = Path.home() / ".claude" / "hooks" / "recall_hooks"
+SOURCE = Path(__file__).resolve().parent.parent / "recall_hooks"
+
+
+def _source_modules() -> list[str]:
+    """Every module in the package, asked for at collection time rather than listed here.
+
+    ⛔ **The list used to be four literal names, and that is a guard that cannot fail for anything
+    it does not already know about.** Two modules were added to this package and deployed to no
+    machine, and the guard stayed green the whole time, because it only ever compared the four it
+    named. The parametrisation now comes from the source directory, so a module that exists cannot
+    be outside the comparison.
+
+    The failure it was blind to is worse than drift. `__init__.py` imports the new modules lazily
+    and returns 0 on `ImportError`, which is the correct degrade for a hook, so an undeployed
+    module does not raise: the feature is simply absent while every test passes and every session
+    starts cleanly.
+    """
+    return sorted(path.name for path in SOURCE.glob("*.py"))
 
 
 @pytest.mark.skipif(not DEPLOYED.is_dir(), reason="no deployed copy on this machine")
-@pytest.mark.parametrize("module", ["__init__.py", "prompt_time.py", "write_time.py", "__main__.py"])
+@pytest.mark.parametrize("module", _source_modules())
 def test_the_deployed_copy_matches_the_source(module):
     """⚠️ CLAUDE.md records `session_start_hook.py` and its deployed twin drifting by 57 lines
     with nothing reporting it. This hook runs from a deployed copy on purpose, because `-m`
@@ -253,9 +271,30 @@ def test_the_deployed_copy_matches_the_source(module):
     Skipped where there is no deployed copy, which is every machine but the author's and CI.
     """
 
-    source = Path(__file__).resolve().parent.parent / "recall_hooks" / module
-    assert (DEPLOYED / module).read_bytes() == source.read_bytes(), (
+    deployed = DEPLOYED / module
+    assert deployed.exists(), (
+        f"{module} exists in the source and not in ~/.claude/hooks/recall_hooks; deploy it. "
+        "An absent module does not raise: the lazy imports degrade to exit 0, so the feature is "
+        "missing while everything looks healthy."
+    )
+    assert deployed.read_bytes() == (SOURCE / module).read_bytes(), (
         f"{module} in ~/.claude/hooks/recall_hooks differs from the source; redeploy it"
+    )
+
+
+@pytest.mark.skipif(not DEPLOYED.is_dir(), reason="no deployed copy on this machine")
+def test_the_deployed_copy_holds_nothing_the_source_lost():
+    """The mirror of the above: a module deleted or renamed in the source stays deployed forever.
+
+    That one is importable and therefore live, so a rename leaves the OLD module answering on a
+    machine where the new one is also present, and which wins depends on the import. Copying files
+    over never removes anything, so nothing else would catch it.
+    """
+
+    extra = sorted(p.name for p in DEPLOYED.glob("*.py"))
+    assert set(extra) <= set(_source_modules()), (
+        f"~/.claude/hooks/recall_hooks holds {sorted(set(extra) - set(_source_modules()))}, "
+        "which the source no longer has; remove it rather than leaving it importable"
     )
 
 
