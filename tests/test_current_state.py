@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 import pytest
 
 from recall.current_state import project_current_state
+from recall.store import resolve_supersession_candidates
 from recall.types import Chunk
 
 
@@ -13,16 +14,20 @@ class Store:
     tenant = "tenant-a"
     generation_id = "gen-1"
 
-    def __init__(self, chunks, candidates=()):
+    def __init__(self, chunks, candidates=(), unresolved=frozenset()):
         self._chunks = chunks
         self._candidates = dict(candidates)
+        # Parameterised because every fake store in this suite used to hardcode an empty set,
+        # which made `unresolved_supersession_reference` unreachable by construction. See the
+        # two tests at the end of this file.
+        self._unresolved = frozenset(unresolved)
 
     def iter_chunks(self, batch_size=1000):
         del batch_size
         return iter(self._chunks)
 
     def supersession_all(self):
-        return {}, frozenset(), self._candidates
+        return {}, self._unresolved, self._candidates
 
 
 def test_current_state_is_deterministic_and_generation_bound() -> None:
@@ -130,3 +135,62 @@ def test_a_current_document_is_still_relabelled_when_a_dependency_fails() -> Non
 
     assert states["prereq.md"] == "expired"
     assert states["dependent.md"] == "dependency_invalidated"
+
+
+def test_current_state_flags_a_source_named_in_the_unresolved_set() -> None:
+    """Arm one of the `unresolved_supersession_reference` guard, driven by the REAL producer.
+
+    `resolve_supersession_candidates` is thoroughly tested and `_record`'s consumption of its
+    `unresolved` output was not, which left the seam between them unwatched: every fake store in
+    this suite returned `frozenset()`, so the branch was unreachable by construction rather than
+    by oversight.
+
+    The rows below are the shape that actually produces a non-empty set: two indexed files share
+    the stem `a`, so a `supersedes: a.md` claim cannot be resolved to one of them without
+    guessing, and both candidates are named. Neither candidate carries `supersedes` metadata of
+    its own, so only `source in unresolved` can be responsible for the diagnostic.
+
+    Fail direction, and why this is worth a test: with the guard gone these fall through to
+    `current`, so a document something claims to supersede is served as current with nothing
+    attached saying the lineage link is broken.
+    """
+    rows = [("dir1/a.md", None, NOW), ("dir2/a.md", None, NOW), ("c.md", "a.md", NOW)]
+    _edges, unresolved, candidates = resolve_supersession_candidates(rows)
+    assert unresolved == frozenset({"dir1/a.md", "dir2/a.md"})
+
+    store = Store(
+        [
+            Chunk("1", "dir1/a.md", "one", {"file": "dir1/a.md"}),
+            Chunk("2", "dir2/a.md", "two", {"file": "dir2/a.md"}),
+            Chunk("3", "c.md", "claimant", {"file": "c.md", "supersedes": "a.md"}),
+        ],
+        candidates,
+        unresolved,
+    )
+    records = {record.source: record for record in project_current_state(store, as_of=NOW).records}
+
+    for source in ("dir1/a.md", "dir2/a.md"):
+        assert records[source].state == "ambiguous"
+        assert "unresolved_supersession_reference" in records[source].diagnostics
+
+
+def test_current_state_flags_a_chunk_whose_supersedes_target_is_unresolved() -> None:
+    """Arm two: the chunk's own `supersedes:` value is the thing that could not be resolved.
+
+    The source is deliberately absent from `unresolved`, so arm one cannot fire and the
+    diagnostic can only come from the `any(...)` over this source's chunks. Injected directly
+    rather than produced, because the two arms compare different domains: `unresolved` holds
+    root-relative file identifiers while the arm-two key is a STEM (`supersedes_key` strips the
+    directory and the `.md`). They coincide only for a corpus holding an extensionless file whose
+    name equals another file's stem, which is what `"a"` below stands for.
+    """
+    store = Store(
+        [Chunk("c", "c.md", "claimant", {"file": "c.md", "supersedes": "a"})],
+        (),
+        frozenset({"a"}),
+    )
+    record = project_current_state(store, as_of=NOW).records[0]
+
+    assert record.source == "c.md"
+    assert record.state == "ambiguous"
+    assert "unresolved_supersession_reference" in record.diagnostics
