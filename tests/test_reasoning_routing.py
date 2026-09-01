@@ -194,3 +194,86 @@ def test_a_corpus_gap_that_also_has_superseded_hits_still_does_not_route() -> No
     assert "NEXT:" not in result.advice, (
         "a corpus gap must not route even when the gap's hits happen to be superseded"
     )
+
+
+# --- routing must require an answer BACKEND, not merely an exposed tool --------------------
+
+
+def test_the_advice_does_not_name_the_tool_when_no_backend_is_configured() -> None:
+    """Found by a peer session reading the diff, and it is a REGRESSION rather than a no-op.
+
+    The gate was `serves("recall_reasoning_query")`, which answers "does this server publish the
+    tool" and is independent of whether an answer backend exists. With the tool published and
+    RECALL_REASONING_ANSWER_* unset — the DEFAULT upgrade path — the note fired, the agent
+    followed it, and the tool returned `abstained / no_answer_provider`.
+
+    Why that is worse than useless: the note fires on exactly the two signals where the agent is
+    CLOSEST to the right answer. On a superseded corpus that is the moment it should re-read the
+    hits; instead it spends its next turn on a dead end. It would also have silently corrupted
+    the `superseded` condition of agent-memory-bench, which lists every tool in `allowed_tools`
+    and so would have had the note live regardless of provider configuration.
+    """
+    import recall_mcp.server as server
+
+    assert server._answer_backend_configured() is False, (
+        "with RECALL_REASONING_ANSWER_ENABLED unset there is no backend, so nothing to route to"
+    )
+
+
+def test_a_misconfigured_backend_counts_as_no_backend_for_routing(monkeypatch) -> None:
+    """A backend that raises cannot answer either, and advice must not promise that it can.
+
+    The resolver's ValueError is deliberately swallowed HERE and nowhere else: the tool still
+    raises when called, naming the offending variable, so the misconfiguration is not hidden.
+    Letting it escape would move a configuration error to server STARTUP and take down retrieval
+    for a setting retrieval does not use.
+    """
+    import recall_mcp.server as server
+
+    monkeypatch.setenv("RECALL_REASONING_ANSWER_ENABLED", "1")
+    monkeypatch.delenv("RECALL_REASONING_ANSWER_MODEL", raising=False)
+
+    assert server._answer_backend_configured() is False
+
+
+def test_the_search_tool_gates_routing_on_both_halves() -> None:
+    """Asserted against the source, because reaching the body needs auth and a live database.
+
+    Pinned as a CONJUNCTION: `serves` alone was the defect, and a provider check alone would
+    name a tool the deployment does not publish. Either half on its own is a bug, so the guard
+    checks that the value passed to `search_memory` is bound from both.
+    """
+    import ast
+    import pathlib
+
+    import recall_mcp.server as server
+
+    tree = ast.parse(pathlib.Path(server.__file__).read_text(encoding="utf-8"))
+
+    bound: dict[str, ast.expr] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                bound[target.id] = node.value
+
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "search_memory"
+    ]
+    assert len(calls) == 1, "expected exactly one search_memory call site"
+    keyword = next((k for k in calls[0].keywords if k.arg == "reasoning_available"), None)
+    assert keyword is not None, "search_memory must be told whether reasoning can answer"
+    assert isinstance(keyword.value, ast.Name), "pass the bound name, not a literal"
+
+    expr = bound.get(keyword.value.id)
+    assert expr is not None, f"{keyword.value.id} is not bound in recall_mcp/server.py"
+    source = ast.dump(expr)
+    assert "_answer_backend_configured" in source, (
+        "routing must require a configured answer backend, or it advertises a tool that "
+        "can only abstain"
+    )
+    assert "reasoning_served" in source, (
+        "routing must also require the tool to be served, or it names a tool that is absent"
+    )

@@ -260,6 +260,13 @@ class OpenAICompatibleAnswerProvider:
 
 AnswerProvider = OllamaAnswerProvider | OpenAICompatibleAnswerProvider
 
+#: Upper bound on a configured price, in USD per 1000 tokens. Not a market fact but a UNIT
+#: check: the most expensive models bill in cents per thousand tokens, so a dollar-plus value is
+#: a per-million figure pasted into a per-thousand variable. Generous by one to two orders of
+#: magnitude on purpose, because refusing a legitimate price would be worse than the error it
+#: prevents.
+MAX_PLAUSIBLE_COST_PER_1K_TOKENS = 1.0
+
 #: Default endpoint per backend. Ollama's is a loopback address and OpenRouter's is a hosted
 #: one, so a single shared default would silently point one backend at the other's endpoint.
 _DEFAULT_BASE_URLS = {
@@ -440,6 +447,18 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> AnswerProvi
         # then serializes into the artifact as `-0.0`: a negative-signed money value. Normalise
         # rather than reject, since an operator writing -0.0 plainly means free.
         cost += 0.0
+        if cost > MAX_PLAUSIBLE_COST_PER_1K_TOKENS:
+            # The 1000x trap. This variable is per THOUSAND tokens; OpenRouter, the default
+            # endpoint, publishes per MILLION. Pasting a published figure understates the
+            # recorded cost by 1000x, the result still looks plausible, and nothing raises --
+            # so the first wrong money figure gets published before anyone notices. No model
+            # costs a dollar per thousand tokens, so a value above that is a unit error rather
+            # than an expensive model.
+            raise ValueError(
+                "RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS is per THOUSAND tokens and "
+                f"{cost} is implausibly high (limit {MAX_PLAUSIBLE_COST_PER_1K_TOKENS}). "
+                "A price published per MILLION tokens must be divided by 1000."
+            )
     try:
         from openai import OpenAI
     except ImportError as exc:

@@ -766,3 +766,33 @@ def test_a_shared_api_key_does_not_block_the_ollama_backend() -> None:
         _enabled(RECALL_REASONING_API_KEY="sk-for-the-expansion-arm")
     )
     assert provider is not None
+
+
+def test_a_per_million_price_pasted_into_the_per_thousand_variable_is_refused() -> None:
+    """The 1000x unit trap, raised by a peer session as the one most likely to bite a benchmark.
+
+    OpenRouter, the default endpoint, publishes prices per MILLION tokens; this variable is per
+    THOUSAND. Pasting a published figure understates the recorded cost by 1000x, and — this is
+    why it matters — the result still looks like a plausible number, so nothing raises and the
+    first wrong money figure gets published before anyone notices. The convention was encoded
+    only in the variable name.
+    """
+    with pytest.raises(ValueError, match="per THOUSAND"):
+        resolve_answer_provider(
+            _openai_enabled(RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS="3.0")
+        )
+
+
+@pytest.mark.parametrize("price", ["0.0", "0.00014", "0.03", "1.0"], ids=["free", "cheap", "gpt4-ish", "at-the-limit"])
+def test_a_plausible_per_thousand_price_is_accepted(price: str) -> None:
+    """The control: the bound must not refuse a legitimate price.
+
+    Includes the boundary itself, since `>` and `>=` are the obvious way to get this wrong, and
+    a check that rejects real configurations is worse than the error it prevents.
+    """
+    pytest.importorskip("openai")
+    provider = resolve_answer_provider(
+        _openai_enabled(RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS=price)
+    )
+    assert provider is not None
+    assert provider.cost_per_1k_tokens == float(price)
