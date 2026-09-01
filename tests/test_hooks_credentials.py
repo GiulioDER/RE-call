@@ -155,8 +155,8 @@ def test_a_corrupt_fallback_file_does_not_take_the_hook_down(
 
 
 def test_a_fresh_cached_token_is_reused() -> None:
-    cred.store_access_token(cred.Credential(access_token="<cached>", expires_at=1000.0))
-    got = cred.cached_access_token(now=0.0)
+    cred.store_access_token(CONFIG, cred.Credential(access_token="<cached>", expires_at=1000.0))
+    got = cred.cached_access_token(CONFIG, now=0.0)
     assert got is not None and got.access_token == "<cached>"
 
 
@@ -168,18 +168,18 @@ def test_a_token_about_to_expire_is_not_reused() -> None:
     and a surviving mutant found it. A test parameterised by the value it exists to pin cannot
     detect that value changing.
     """
-    cred.store_access_token(cred.Credential(access_token="<stale>", expires_at=1000.0))
-    assert cred.cached_access_token(now=970.0) is None, (
+    cred.store_access_token(CONFIG, cred.Credential(access_token="<stale>", expires_at=1000.0))
+    assert cred.cached_access_token(CONFIG, now=970.0) is None, (
         "a token with 30s of life left was reused; the refresh margin is too small or gone"
     )
-    assert cred.cached_access_token(now=0.0) is not None, "a token with ample life was discarded"
+    assert cred.cached_access_token(CONFIG, now=0.0) is not None, "a token with ample life was discarded"
 
 
 def test_a_missing_or_corrupt_cache_is_a_miss_not_a_crash() -> None:
-    assert cred.cached_access_token() is None
-    cred.token_cache_path().parent.mkdir(parents=True, exist_ok=True)
-    cred.token_cache_path().write_text("{{{", encoding="utf-8")
-    assert cred.cached_access_token() is None
+    assert cred.cached_access_token(CONFIG) is None
+    cred.token_cache_path(CONFIG).parent.mkdir(parents=True, exist_ok=True)
+    cred.token_cache_path(CONFIG).write_text("{{{", encoding="utf-8")
+    assert cred.cached_access_token(CONFIG) is None
 
 
 def test_no_stored_credential_says_what_to_run(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -233,7 +233,7 @@ def test_auth_headers_exits_zero_even_on_an_unexpected_failure(
 def test_auth_headers_prints_the_bearer_when_there_is_one(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    cred.store_access_token(cred.Credential(access_token="<live>", expires_at=1e12))
+    cred.store_access_token(CONFIG, cred.Credential(access_token="<live>", expires_at=1e12))
     assert cred.print_auth_headers(CONFIG) == 0
     assert json.loads(capsys.readouterr().out) == {"Authorization": "Bearer <live>"}
 
@@ -307,7 +307,7 @@ def test_login_stores_and_verifies(monkeypatch: pytest.MonkeyPatch) -> None:
     out, err = _Out(), _Out()
     assert cred.login(CONFIG, [], stdin=_Stdin("rt-1\n"), out=out, err=err) == 0
     assert cred.read_refresh_token(CONFIG) == "rt-1"
-    assert cred.cached_access_token() is not None, "the access token is cached, not re-fetched"
+    assert cred.cached_access_token(CONFIG) is not None, "the access token is cached, not re-fetched"
     assert "signed in" in out.text
 
 
@@ -379,14 +379,14 @@ def test_logout_clears_both_stores_and_the_cache(monkeypatch: pytest.MonkeyPatch
     cred.write_refresh_token(CONFIG, "rt-file")     # lands in the plaintext fallback
     _with_keyring(monkeypatch, ring)
     cred.write_refresh_token(CONFIG, "rt-ring")     # and in the keychain
-    cred.store_access_token(_credential())
-    assert cred.token_cache_path().exists()
+    cred.store_access_token(CONFIG, _credential())
+    assert cred.token_cache_path(CONFIG).exists()
 
     out = _Out()
     assert cred.logout(CONFIG, out=out) == 0
     assert cred.read_refresh_token(CONFIG) is None
     assert ring.store == {}
-    assert not cred.token_cache_path().exists()
+    assert not cred.token_cache_path(CONFIG).exists()
 
 
 def test_logout_with_nothing_stored_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -394,4 +394,63 @@ def test_logout_with_nothing_stored_says_so(monkeypatch: pytest.MonkeyPatch) -> 
     out = _Out()
     assert cred.logout(CONFIG, out=out) == 0
     assert "no stored credential" in out.text
+
+
+# --------------------------------------------------------------- the cache is bound to an account
+
+
+OTHER = {
+    "account": "somebody-else@example.test",
+    "auth": {"token_url": "https://id.example.test/token", "client_id": "recall-mcp"},
+}
+
+
+def test_one_accounts_token_is_never_served_to_another() -> None:
+    """⛔ THE LEAK THIS BINDING PREVENTS, asserted rather than reasoned about.
+
+    The refresh token was keyed by account from the start; this cache was not. A hook in a project
+    configured for account A cached A's token, and a hook in a project configured for account B
+    within that token's lifetime got it back, uploaded B's memos under A's bearer, and the server
+    resolved the tenant from the token. B's memories landed in A's corpus, with no error on either
+    side.
+    """
+    cred.store_access_token(CONFIG, cred.Credential(access_token="alice", expires_at=1e12))
+    assert cred.cached_access_token(CONFIG).access_token == "alice"
+    assert cred.cached_access_token(OTHER) is None, "another account must not see this token"
+
+
+def test_two_accounts_keep_separate_caches() -> None:
+    """Separate paths rather than one file that is overwritten, so alternating between two
+    projects does not cost a token round trip on every switch."""
+    cred.store_access_token(CONFIG, cred.Credential(access_token="alice", expires_at=1e12))
+    cred.store_access_token(OTHER, cred.Credential(access_token="bob", expires_at=1e12))
+    assert cred.cached_access_token(CONFIG).access_token == "alice"
+    assert cred.cached_access_token(OTHER).access_token == "bob"
+    assert cred.token_cache_path(CONFIG) != cred.token_cache_path(OTHER)
+
+
+def test_the_filename_does_not_carry_an_email_address() -> None:
+    assert "example.test" not in cred.token_cache_path(CONFIG).name
+    assert "someone" not in cred.token_cache_path(CONFIG).name
+
+
+def test_a_payload_naming_the_wrong_account_is_refused() -> None:
+    """Belt to the path's braces. Reaching this means a hand-edited file or an older payload, and
+    every reason to be here is a reason to fetch a fresh token instead."""
+    path = cred.token_cache_path(CONFIG)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"account": "someone-else", "access_token": "x", "expires_at": 1e12}),
+        encoding="utf-8",
+    )
+    assert cred.cached_access_token(CONFIG) is None
+
+
+def test_logout_removes_only_this_accounts_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_keyring(monkeypatch, FakeKeyring())
+    cred.store_access_token(CONFIG, cred.Credential(access_token="alice", expires_at=1e12))
+    cred.store_access_token(OTHER, cred.Credential(access_token="bob", expires_at=1e12))
+    cred.logout(CONFIG, out=_Out())
+    assert cred.cached_access_token(CONFIG) is None
+    assert cred.cached_access_token(OTHER) is not None, "signing one account out is not signing all"
 

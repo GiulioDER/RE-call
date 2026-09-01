@@ -16,6 +16,7 @@ package ships a generic device-code client and a hosting layer supplies only val
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -30,9 +31,9 @@ from typing import Any
 #: token that expires mid-request costs a 401 and a retry; a minute of slack costs nothing.
 REFRESH_MARGIN_S = 60
 
-#: Where the short-lived access token is cached. Beside the hook config rather than inside it: the
-#: config is read by every session start, and a token has a different lifetime and a different
-#: sensitivity from the settings around it.
+#: Filename PREFIX for the cached access token, completed by a digest of the account. Beside the
+#: hook config rather than inside it: the config is read by every session start, and a token has a
+#: different lifetime and a different sensitivity from the settings around it.
 TOKEN_CACHE_NAME = "recall-hook-token"  # noqa: S105 - a filename, not a secret
 
 #: Fallback store for the refresh token when no OS keychain is reachable. Plaintext, 0600, and
@@ -67,9 +68,24 @@ def _config_home() -> Path:
     return Path(override) if override else Path.home() / ".claude"
 
 
-def token_cache_path() -> Path:
-    return _config_home() / TOKEN_CACHE_NAME
+def token_cache_path(config: dict[str, Any]) -> Path:
+    """Where this ACCOUNT's short-lived access token is cached.
 
+    ⛔ **Per account, and that is a correctness requirement rather than tidiness.** The refresh
+    token has always been keyed by account, so that two accounts on one machine do not overwrite
+    each other. This cache was not, and the two disagreeing is a silent cross-account leak:
+
+    A hook runs in a project configured for account A and caches A's access token. Within that
+    token's lifetime a hook runs in a project configured for account B. `access_token` returns the
+    cached credential before it ever looks at which account asked, so B's session uploads B's
+    memos under A's bearer, and the server resolves the tenant from the token. B's memories land
+    in A's corpus. Nothing errors, and both sides look successful.
+
+    The account is hashed rather than written in, so the filename does not put somebody's email
+    address in a directory listing.
+    """
+    digest = hashlib.sha256(_account(config).encode("utf-8")).hexdigest()[:16]
+    return _config_home() / f"{TOKEN_CACHE_NAME}-{digest}.json"
 
 def fallback_path() -> Path:
     return _config_home() / FALLBACK_NAME
@@ -174,26 +190,42 @@ def write_refresh_token(config: dict[str, Any], token: str) -> str:
     return "file"
 
 
-def cached_access_token(*, now: float | None = None) -> Credential | None:
-    """The cached token if it has real life left, else None.
+def cached_access_token(config: dict[str, Any], *, now: float | None = None) -> Credential | None:
+    """The cached token for THIS config's account if it has real life left, else None.
 
-    Without this cache every MCP client start and every hook run pays a token round trip.
+    Without this cache every MCP client start and every hook run pays a token round trip. The
+    config is required rather than optional because a default would put every account that omits
+    one back into a single shared bucket, which is the bug this signature exists to prevent.
     """
     try:
-        raw = json.loads(token_cache_path().read_text(encoding="utf-8"))
+        raw = json.loads(token_cache_path(config).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    token = raw.get("access_token") if isinstance(raw, dict) else None
-    expires = raw.get("expires_at") if isinstance(raw, dict) else None
+    if not isinstance(raw, dict):
+        return None
+    if str(raw.get("account", "")) != _account(config):
+        # The digest in the filename should already have prevented this, so reaching here means a
+        # hash collision, a hand-edited file, or a payload written by an older version. Every one
+        # of those is a reason to fetch a fresh token rather than to use this one.
+        return None
+    token = raw.get("access_token")
+    expires = raw.get("expires_at")
     if not token or not isinstance(expires, (int, float)):
         return None
     cred = Credential(access_token=str(token), expires_at=float(expires))
     return cred if cred.fresh(now=now) else None
 
 
-def store_access_token(cred: Credential) -> None:
+def store_access_token(config: dict[str, Any], cred: Credential) -> None:
+    """Cache it under this config's account. The account is written INTO the file as well as into
+    its name, so a cache read can prove what it is holding rather than trusting the path."""
     _write_private_json(
-        token_cache_path(), {"access_token": cred.access_token, "expires_at": cred.expires_at}
+        token_cache_path(config),
+        {
+            "account": _account(config),
+            "access_token": cred.access_token,
+            "expires_at": cred.expires_at,
+        },
     )
 
 
@@ -245,14 +277,14 @@ def refresh(config: dict[str, Any], refresh_token: str, *, now: float | None = N
 
 def access_token(config: dict[str, Any], *, now: float | None = None) -> Credential:
     """A usable access token: cached if fresh, refreshed if not, `AuthError` if neither."""
-    cached = cached_access_token(now=now)
+    cached = cached_access_token(config, now=now)
     if cached is not None:
         return cached
     stored = read_refresh_token(config)
     if not stored:
         raise AuthError("no stored credential; run `recall-hooks login`")
     cred = refresh(config, stored, now=now)
-    store_access_token(cred)
+    store_access_token(config, cred)
     return cred
 
 
@@ -371,7 +403,7 @@ def login(
             file=err,
         )
         return 3
-    store_access_token(cred)
+    store_access_token(config, cred)
     print(f"recall: signed in as {_account(config)}.", file=out)
     return 0
 
@@ -403,7 +435,7 @@ def logout(config: dict[str, Any], *, out: Any = None) -> int:
     except (OSError, json.JSONDecodeError):
         pass
     try:
-        token_cache_path().unlink(missing_ok=True)
+        token_cache_path(config).unlink(missing_ok=True)
     except OSError:
         pass
     print(
