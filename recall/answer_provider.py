@@ -1,4 +1,8 @@
-"""Optional local answer provider for the reasoning evidence boundary."""
+"""Optional answer providers for the reasoning evidence boundary.
+
+Two backends: a local Ollama adapter, and any OpenAI-compatible `/chat/completions`
+endpoint, defaulting to OpenRouter. Both are off unless explicitly enabled.
+"""
 
 from __future__ import annotations
 
@@ -138,6 +142,13 @@ class OpenAICompatibleAnswerProvider:
             not math.isfinite(cost_per_1k_tokens) or cost_per_1k_tokens < 0
         ):
             raise ValueError("cost_per_1k_tokens must be finite and non-negative")
+        if cost_per_1k_tokens is not None:
+            # Same normalisation as the resolver: `-0.0 < 0` is False, so a signed zero passes
+            # the guard above and reaches `monetary_cost_usd` as a negative-signed money value.
+            # Applied HERE as well because this constructor is the library-level invariant for a
+            # caller who bypasses `resolve_answer_provider` -- the same argument the max-tokens
+            # bound makes, and leaving it one-sided was the asymmetry the architect gate named.
+            cost_per_1k_tokens += 0.0
         self.client = client
         self.model_id = model_id
         self.revision = revision
@@ -191,6 +202,23 @@ class OpenAICompatibleAnswerProvider:
         total = _usage_int(usage, "total_tokens")
         if total is None and prompt is not None and completion is not None:
             total = prompt + completion
+        elif (
+            total is not None
+            and prompt is not None
+            and completion is not None
+            and total != prompt + completion
+        ):
+            # A THIRD-PARTY usage object can disagree with itself honestly: a gateway may count
+            # reasoning or cached-prefill tokens in the total and not in the parts, and
+            # `_usage_int` floors each of the three independently. `ProviderMetadata` REFUSES
+            # that triple, and this runs in a `finally`, so the raise replaced an answer that
+            # had already been returned AND paid for. Keep the total, which is what billing
+            # follows, and drop the parts rather than inventing a reconciliation nobody
+            # measured. This provider is the first here to accept a usage object it did not
+            # compute; `_NativeOllamaClient` derives its own total, which is why the Ollama
+            # adapter never had to face this.
+            prompt = completion = None
+        latency_ms = max(0, int((time.perf_counter() - started) * 1000))
         # Null, never 0.0, when no price was configured. `OllamaAnswerProvider` records 0.0
         # because local inference genuinely costs nothing; a hosted call does cost something,
         # and a 0.0 here would be a false monetary CLAIM rather than a missing measurement.
@@ -201,17 +229,30 @@ class OpenAICompatibleAnswerProvider:
             if total is not None and self.cost_per_1k_tokens is not None
             else None
         )
-        self._last_metadata = ProviderMetadata(
-            provider_id=self.provider_id,
-            model_id=self.model_id,
-            model_revision=self.revision,
-            prompt_tokens=prompt,
-            completion_tokens=completion,
-            total_tokens=total,
-            latency_ms=max(0, int((time.perf_counter() - started) * 1000)),
-            monetary_cost_usd=cost,
-            prompt_digest=ANSWER_PROMPT_DIGEST,
-        )
+        try:
+            self._last_metadata = ProviderMetadata(
+                provider_id=self.provider_id,
+                model_id=self.model_id,
+                model_revision=self.revision,
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                total_tokens=total,
+                latency_ms=latency_ms,
+                monetary_cost_usd=cost,
+                prompt_digest=ANSWER_PROMPT_DIGEST,
+            )
+        except ValueError:
+            # Metadata RECORDS a call; it must never gate one. The fallback also CLEARS the
+            # previous call's numbers, which is the half that would otherwise bite silently:
+            # leaving `_last_metadata` untouched re-reports the earlier call's tokens and cost
+            # against this response, double-counting real money.
+            self._last_metadata = ProviderMetadata(
+                provider_id=self.provider_id,
+                model_id=self.model_id,
+                model_revision=self.revision,
+                latency_ms=latency_ms,
+                prompt_digest=ANSWER_PROMPT_DIGEST,
+            )
 
     def provider_metadata(self) -> ProviderMetadata:
         return self._last_metadata
@@ -282,6 +323,14 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> AnswerProvi
         max_tokens = int(raw_max_tokens)
     except ValueError as exc:
         raise ValueError("RECALL_REASONING_ANSWER_MAX_TOKENS must be an integer") from exc
+    # Range-checked HERE, not only in the constructors, for the two reasons the rest of this
+    # resolver already observes: the constructors run AFTER the optional `openai` import, so a
+    # floor install reported an out-of-range value as a missing dependency (the exact PR #366
+    # ordering defect this function's docstring claims to have eliminated); and their message
+    # names no variable, which every other numeric check here is careful to do. The constructor
+    # bounds stay as the library-level invariant for a caller who bypasses this resolver.
+    if max_tokens < 1 or max_tokens > 4096:
+        raise ValueError("RECALL_REASONING_ANSWER_MAX_TOKENS must be between 1 and 4096")
     thinking_raw = source.get("RECALL_REASONING_ANSWER_THINKING", "0").strip().lower()
     if thinking_raw in {"", "0", "false", "no", "off"}:
         thinking = False
@@ -289,7 +338,11 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> AnswerProvi
         thinking = True
     else:
         raise ValueError("RECALL_REASONING_ANSWER_THINKING must be an explicit boolean")
-    revision = source.get("RECALL_REASONING_ANSWER_REVISION", "unpinned")
+    # `.strip() or` for the same "empty means unset" reason as the timeout and max-tokens
+    # above: .env templates ship keys valueless. Without it a valueless line recorded an
+    # EMPTY model_revision, which `validate_cost_claim` then refuses as an unsupported cost
+    # claim -- on the one backend that actually has a cost.
+    revision = source.get("RECALL_REASONING_ANSWER_REVISION", "").strip() or "unpinned"
 
     if backend == "ollama":
         return OllamaAnswerProvider(
@@ -308,10 +361,16 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> AnswerProvi
             "RECALL_REASONING_ANSWER_THINKING is an Ollama-only setting and cannot be used "
             "with RECALL_REASONING_ANSWER_PROVIDER=openai"
         )
-    # The bare RECALL_REASONING_API_KEY is the spelling `recall setup` writes, and it was
-    # written for four releases with nothing reading it. Accepting it as a fallback is what
-    # makes an existing wizard-configured installation work, and matches how
-    # `resolve_expansion_provider` treats the same legacy name.
+    # The bare RECALL_REASONING_API_KEY is a LEGACY spelling, accepted so a hand-written or
+    # pre-0.11 .env keeps working, and matching how `resolve_expansion_provider` treats the
+    # same name.
+    #
+    # It is NOT what `recall setup` writes. An earlier version of this comment said it was,
+    # and that was wrong: `recall/setup.py` returns only the `RECALL_REASONING_EXPANSION_*`
+    # spellings, and says why in its own comment -- the bare pair is SHARED between reasoning
+    # arms, so writing it would leak one arm's key into another. A wizard-configured install
+    # therefore has NO key this resolver can find, and must set
+    # RECALL_REASONING_ANSWER_API_KEY explicitly.
     key = (
         source.get("RECALL_REASONING_ANSWER_API_KEY", "").strip()
         or source.get("RECALL_REASONING_API_KEY", "").strip()
@@ -338,6 +397,10 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> AnswerProvi
             raise ValueError(
                 "RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS must be finite and non-negative"
             )
+        # `-0.0 < 0` is False, so a signed zero passes every guard here AND in ProviderMetadata,
+        # then serializes into the artifact as `-0.0`: a negative-signed money value. Normalise
+        # rather than reject, since an operator writing -0.0 plainly means free.
+        cost += 0.0
     try:
         from openai import OpenAI
     except ImportError as exc:

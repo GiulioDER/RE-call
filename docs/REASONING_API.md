@@ -61,7 +61,9 @@ Provider ports:
 2. `graph_provider`: optional, returns `ReasoningGraphProjection`.
 3. `proposal_provider`: optional, returns proposals or a `ProposalProtocolReport`.
 4. `answer_provider`: optional, consumes the existing evidence prompt pair and returns `AnswerEnvelope` JSON.
-   `recall_reasoning_query` supplies the local Ollama adapter when `RECALL_REASONING_ANSWER_ENABLED=1`,
+   `recall_reasoning_query` and `recall reasoning query` / `trace` supply whichever adapter
+   `RECALL_REASONING_ANSWER_PROVIDER` selects (ollama by default, openai for a hosted
+   endpoint) when `RECALL_REASONING_ANSWER_ENABLED=1`,
    and passes nothing otherwise, so the tool abstains with `refusal_reason="no_answer_provider"`
    exactly as before. `recall_reasoning_audit` never supplies one: it reports what the
    deterministic layer refuses and must not spend a model call to do it.
@@ -100,10 +102,17 @@ schema and `think` switch. Configure it with `RECALL_REASONING_ANSWER_BASE_URL`,
 
 A second adapter, `OpenAICompatibleAnswerProvider`, calls any OpenAI-compatible
 `/chat/completions` endpoint and defaults to `https://openrouter.ai/api/v1`. Select it with
-`RECALL_REASONING_ANSWER_PROVIDER=openai` and give it `RECALL_REASONING_ANSWER_API_KEY` (the
-bare `RECALL_REASONING_API_KEY` written by `recall setup` is accepted as a fallback). It sends
-`temperature=0` and `response_format={"type": "json_object"}`, and sends no `reasoning_effort`,
-which is an OpenAI-specific field a non-OpenAI model behind a gateway can reject.
+`RECALL_REASONING_ANSWER_PROVIDER=openai` and give it `RECALL_REASONING_ANSWER_API_KEY`. It
+sends `temperature=0` and `response_format={"type": "json_object"}`, and sends no
+`reasoning_effort`, which is an OpenAI-specific field a non-OpenAI model behind a gateway can
+reject.
+
+⚠️ The bare `RECALL_REASONING_API_KEY` is accepted as a LEGACY fallback, for hand-written or
+pre-0.11 `.env` files. It is **not** what `recall setup` writes: the wizard writes the
+`RECALL_REASONING_EXPANSION_*` spellings, deliberately, because the bare pair is shared between
+reasoning arms. A wizard-configured install must therefore set
+`RECALL_REASONING_ANSWER_API_KEY` explicitly. Text here claimed the opposite until 2026-09-01,
+which would have sent an operator who ran the wizard into a refusal.
 
 ⚠️ The two adapters are not interchangeable by base URL. `_NativeOllamaClient` rewrites the
 path to `<base>/api/chat` and attaches no `Authorization` header, so pointing the ollama

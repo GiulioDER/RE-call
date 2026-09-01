@@ -264,11 +264,13 @@ def test_reasoning_audit_never_puts_a_model_on_the_audit_path(monkeypatch) -> No
     captured: list[object] = []
     monkeypatch.setattr(service, "reasoning_projection", lambda *a, **k: object())
     monkeypatch.setattr(service, "reasoning_proposals", lambda *a, **k: object())
-    monkeypatch.setattr(
-        service,
-        "resolve_answer_provider",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("audit resolved an answer provider")),
-        raising=False,
+    # `recall_mcp.service` does not import `resolve_answer_provider`, so the earlier
+    # `raising=False` patch of that name bound nothing and could never fire: it read as
+    # coverage while guarding air. Assert the absence directly instead — if the name is ever
+    # imported at service scope, the resolver has moved onto this module's path and the
+    # audit-path exclusion needs re-checking rather than silently continuing to pass.
+    assert not hasattr(service, "resolve_answer_provider"), (
+        "recall_mcp.service must not resolve an answer provider; the audit path runs through it"
     )
 
     def fake_reasoning_query(*_args, **kwargs):

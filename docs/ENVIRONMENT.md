@@ -100,9 +100,13 @@ OPENROUTER_API_KEY=
 # https://openrouter.ai/api/v1. Needs the `openai` extra. Note that the ollama backend cannot
 # reach a hosted endpoint by base URL alone: it rewrites the path and sends no Authorization
 # header, so a hosted model needs PROVIDER=openai, not just a different URL.
-# RECALL_REASONING_ANSWER_API_KEY=                     # REQUIRED for openai; the bare
-#                                                      # RECALL_REASONING_API_KEY that `recall
-#                                                      # setup` writes is accepted as a fallback
+# RECALL_REASONING_ANSWER_API_KEY=                     # REQUIRED for openai. The bare
+#                                                      # RECALL_REASONING_API_KEY is a LEGACY
+#                                                      # fallback for hand-written or pre-0.11
+#                                                      # files. `recall setup` does NOT write it
+#                                                      # (it writes the _EXPANSION_ spellings),
+#                                                      # so a wizard-configured install must set
+#                                                      # this variable explicitly.
 # RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS=          # optional; unset records a NULL cost
 #                                                      # rather than claiming the call was free
 

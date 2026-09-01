@@ -84,9 +84,14 @@ TOOL_SURFACE_ENV = "RECALL_MCP_TOOLS"
 class ToolRegistrar(Protocol):
     """What the `_register_*_tools` functions actually need from a server.
 
-    They use exactly one attribute, `tool`, which is why a wrapper can stand in for the server
-    without impersonating the rest of its interface. Typing them against this rather than against
-    `MCPServer` is what lets `FilteredToolRegistrar` be passed without a cast.
+    They require exactly one attribute, `tool`, which is why a wrapper can stand in for the
+    server without impersonating the rest of its interface. Typing them against this rather than
+    against `MCPServer` is what lets `FilteredToolRegistrar` be passed without a cast.
+
+    One OPTIONAL attribute is also read, via `getattr` rather than declared here: `serves(name)`,
+    which lets a tool tailor its OUTPUT to the surface (see `FilteredToolRegistrar.serves`). It
+    stays off this Protocol on purpose, so a plain `MCPServer` remains a valid registrar; a
+    registrar without it means nothing was filtered, i.e. every tool is served.
     """
 
     def tool(self, *args: Any, **kwargs: Any) -> Callable[[Any], Any]: ...
