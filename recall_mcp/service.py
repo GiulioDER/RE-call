@@ -3055,6 +3055,62 @@ def serving_json(result: object) -> str:
     return dump(indent=2, exclude=exclude)
 
 
+class InventoryEntry(BaseModel):
+    """One source the tenant holds, as a sync client needs to see it."""
+
+    source: str
+    """The source verbatim, because it is what `recall_forget` takes. Not prettified."""
+
+    sha256: str
+    """Digest of the source's own bytes, or empty for a row indexed before content hashing.
+
+    Empty is reported rather than hidden: a client must be able to tell "unchanged" from "I
+    cannot tell", and silently omitting the entry would make it look deleted.
+    """
+
+
+class InventoryResult(BaseModel):
+    """What a tenant holds, bounded."""
+
+    entries: list[InventoryEntry]
+    truncated: bool
+    """True when `limit` cut the listing.
+
+    ⛔ Load-bearing for any client that treats absence as deletion. A silently truncated listing
+    would make it forget everything past the cut.
+    """
+
+
+def memory_inventory(store: PgVectorStore, *, limit: int = 5000) -> InventoryResult:
+    """Every source this tenant holds, with the digest of its bytes, ordered and bounded.
+
+    Exists so a sync client can DIFF instead of re-uploading. Without it a client can only re-send
+    everything, which is how `recall_ingest` came to duplicate a corpus on every session, and it
+    can never notice that a file deleted locally is still being served.
+
+    ⚠️ **The digest is the RAW content hash, and that is the whole contract.** A client hashes its
+    own file and compares. An inventory keyed on anything derived from the embedder identity or the
+    context policy — which is what `PgVectorStore.source_content_hashes` coalesces to first — would
+    be perfectly well-formed and match nothing a client can compute, so every sync would re-upload
+    the entire corpus forever while appearing to work. `source_raw_hashes` is the accessor that
+    means the same thing on both stores; see `GenerationStore.source_raw_hashes`.
+
+    Ordered by source, so two calls at one `limit` return the same prefix. An unordered `LIMIT`
+    would hand a client a different subset each time and desynchronise it against its own manifest.
+    """
+    if limit < 1:
+        # Refused rather than clamped: a caller asking for nothing has made a mistake, and an
+        # empty inventory reads to a sync client as "the server holds nothing", which is the one
+        # answer that makes it re-upload everything.
+        raise ValueError("limit must be a positive integer")
+    hashes = store.source_raw_hashes()
+    ordered = sorted(hashes.items())
+    entries = [
+        InventoryEntry(source=source, sha256=digest) for source, digest in ordered[:limit]
+    ]
+    return InventoryResult(entries=entries, truncated=len(ordered) > limit)
+
+
 def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -> MemoryStatsResult:
     """Report memory size and freshness (`stale` is True when the newest chunk is older than `max_age`, default 2 days)."""
     newest = store.newest_indexed_at()

@@ -648,6 +648,20 @@ class GenerationStore(PgVectorStore):
         )
         return {str(source): str(digest) for source, digest in rows}
 
+    def source_raw_hashes(self) -> dict[str, str]:
+        """The same answer as `source_content_hashes` here, and that is the point.
+
+        The base implementation reads `source` and `metadata->>'content_hash'` from `self._table`.
+        `recall_chunks_v1` has neither column, so inheriting it raises `UndefinedColumn` the first
+        time anything asks a generation-backed store for raw hashes — and the two names otherwise
+        invite the opposite mistake, since on the LEGACY store `source_content_hashes` coalesces
+        `index_fingerprint` first and is exactly what a client must not diff against.
+
+        Overriding it makes one name mean "the digest of the bytes" on both stores, so a caller
+        does not have to know which one it holds.
+        """
+        return self.source_content_hashes()
+
     def sources_in_any_generation(self) -> frozenset[str]:
         """Every source this tenant has indexed, across ALL generations.
 

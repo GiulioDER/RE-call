@@ -36,6 +36,7 @@ def _tools(server):
 #: something a reader has to infer from a rewritten set literal.
 ORIGINAL_TOOLS = {"recall_search", "recall_index", "recall_forget", "recall_stats"}
 ALL_TOOLS = ORIGINAL_TOOLS | {
+    "recall_inventory",
     "recall_evidence",
     "recall_related",
     "recall_current_state",

@@ -83,6 +83,7 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_calibration_run` | Create a draft calibration artifact for the active generation. |
 | `recall_calibration_publish` | Publish one certified calibration artifact. Requires `recall:admin`: publication changes what the whole tenant serves. |
 | `recall_forget` | Erase indexed source material, including its staged upload files. |
+| `recall_inventory` | List every source in the caller's memory with the digest of its bytes, so a sync client can diff instead of re-uploading. Not in the `read` or `search` presets: a file listing answers no question an agent asks. |
 | `recall_stats` | Report counters and operational state. |
 
 `recall_search` and `recall_evidence` also accept an optional `locale` argument for presentation

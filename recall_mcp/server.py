@@ -73,6 +73,7 @@ from recall_mcp.service import (
     job_status,
     make_embedder,
     make_profile_embedder,
+    memory_inventory,
     memory_stats,
     publish_calibration,
     run_calibration,
@@ -2053,6 +2054,32 @@ def _register_memory_admin_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
             return await _to_thread(
                 lambda: forget_memory(store, sources, shadow, control).model_dump_json(indent=2)
             )
+
+    @mcp.tool(
+        name="recall_inventory",
+        annotations=ToolAnnotations(
+            title="List what this tenant holds",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_inventory(ctx: Context[dict, object], limit: int = 5000) -> str:
+        """List every source in memory with the digest of its bytes, so a client can diff.
+
+        For a sync client, not for an agent: it is deliberately absent from the `read` and
+        `search` presets, because a file listing costs input tokens on every turn and answers no
+        question a model asks.
+
+        Returns:
+            JSON of {entries: [{source, sha256}], truncated}. `source` is verbatim and is what
+            `recall_forget` takes. `truncated` is true when `limit` cut the listing.
+        """
+        store = _require(SCOPE_READ, ctx)
+        return await _to_thread(
+            lambda: memory_inventory(store, limit=limit).model_dump_json(indent=2)
+        )
 
     @mcp.tool(
         name="recall_stats",

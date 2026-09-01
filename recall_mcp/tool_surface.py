@@ -56,6 +56,7 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         "recall_calibration_run",
         "recall_calibration_publish",
         "recall_forget",
+        "recall_inventory",
         "recall_stats",
     }
 )
