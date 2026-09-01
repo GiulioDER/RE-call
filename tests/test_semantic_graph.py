@@ -30,6 +30,7 @@ def _run_precision_graph(
     query: str = "q",
     gap_warning: bool = False,
     max_graph_nodes: int = 32,
+    readiness=None,
 ):
     from recall_mcp.service import _expand_semantic_graph
     from recall.reasoning import (
@@ -56,7 +57,7 @@ def _run_precision_graph(
             return graph
 
         def graph_readiness(self):
-            return graph.readiness()
+            return graph.readiness() if readiness is None else readiness
 
         def supersession_all(self):
             return {}, frozenset(), {}
@@ -507,7 +508,15 @@ def test_selective_gate_refuses_when_initial_retrieval_is_sufficient():
     result = _run_precision_graph(chunks, seed_ids=("seed", "seed-2"))
     assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed", "seed-2"]
     assert result.gate_reason == "graph_gate_not_met"
-    assert dict(result.admission_rejections)["selective_gate"] == 1
+
+    # A refusal of the WHOLE expansion, not a candidate that lost. It used to land in
+    # `admission_rejections`, which put `{'selective_gate': 1}` beside
+    # `candidates_discovered: 0` and pointed a diagnostics reader at the admission criteria
+    # when the answer was that expansion never started.
+    assert dict(result.expansion_refusals)["selective_gate"] == 1
+    assert dict(result.admission_rejections) == {}
+    assert result.candidates_discovered == 0
+    assert result.candidates_rejected == 0
 
 
 def test_selective_gate_allows_expansion_for_single_seed_with_gap():
@@ -805,3 +814,82 @@ def test_semantic_graph_identities_survive_the_audit_refactors_unchanged():
         ("sg_entity_d07e2d6665b60dbf07f5c2ae", ("Postgres", "pg")),
         ("sg_entity_e927128a5cf8d0ec7d085ad1", ("beta.md",)),
     ]
+
+
+def _gated_chunks():
+    return [
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "project": ["A", "B"],
+                "relations": [{"relation": "supports", "subject": "A", "object": "B"}],
+            },
+        ),
+        Chunk("seed-2", "seed-2.md", "seed two", {"project": "A"}),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"project": "B"}),
+    ]
+
+
+def _refuse_to_project(monkeypatch):
+    """Make the semantic-graph projection fatal, so reaching it fails the test loudly.
+
+    Measured on two production tenants, this is the 3.0s and 4.0s of work that `one_hop` used to
+    do BEFORE the gate that discards it. `_store_graph` is the whole cost; the gate's two inputs
+    come from `retrieval`, which is already in hand. Asserting on latency would be a flaky way to
+    say this, so the projection is made unreachable instead: if the gate ever moves back below
+    it, this raises rather than merely getting slower.
+    """
+    import recall_mcp.service as service
+
+    def _explode(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("_store_graph ran before the gate that discards its result")
+
+    monkeypatch.setattr(service, "_store_graph", _explode)
+
+
+def test_selective_gate_refuses_before_the_projection_is_built(monkeypatch):
+    _refuse_to_project(monkeypatch)
+    result = _run_precision_graph(_gated_chunks(), seed_ids=("seed", "seed-2"))
+    assert result.gate_reason == "graph_gate_not_met"
+    assert dict(result.expansion_refusals) == {"selective_gate": 1}
+    # Nothing inspected the graph, so nothing may be reported as inspected. This used to carry
+    # the whole projection's diagnostic count on a query that never expanded.
+    assert result.diagnostics_encountered == 0
+    assert result.entities_inspected == 0
+    assert result.relations_inspected == 0
+
+
+def test_missing_trusted_seed_refuses_before_the_projection_is_built(monkeypatch):
+    _refuse_to_project(monkeypatch)
+    result = _run_precision_graph(_gated_chunks(), seed_ids=())
+    assert result.gate_reason == "no_trusted_seed"
+    assert dict(result.expansion_refusals) == {"no_trusted_seed": 1}
+
+
+def test_an_unready_graph_still_refuses_ahead_of_the_selective_gate(monkeypatch):
+    """The reordering must not let a cheap gate answer for a check it cannot make.
+
+    The readiness read stays ABOVE the seed gates: it is the cheap half, and a query that both
+    trips the gate and sits on a stale graph must keep reporting `graph_not_ready`, exactly as it
+    did when the projection ran first. Without this, moving the gate up would silently swap the
+    precedence of two refusals and report `ready` for a graph nobody looked at.
+    """
+    _refuse_to_project(monkeypatch)
+    stale = build_semantic_graph(
+        (),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+    ).readiness()
+    result = _run_precision_graph(
+        _gated_chunks(),
+        seed_ids=("seed", "seed-2"),
+        readiness=replace(stale, ready=False),
+    )
+    assert result.readiness == "GRAPH_NOT_READY"
+    assert result.gate_reason == "graph_not_ready"
+    assert dict(result.expansion_refusals) == {"graph_not_ready": 1}

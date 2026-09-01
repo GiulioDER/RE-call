@@ -121,11 +121,25 @@ class SemanticGraphExpansionResult:
     candidates_rejected: int = 0
     diagnostics_encountered: int = 0
     latency_ms: float = 0.0
-    #: Pairs of (rejection reason, count) for candidates the expansion's admission policy
-    #: refused. The reason vocabulary belongs to the graph expansion provider's admission
+    #: Pairs of (rejection reason, count) for individual CANDIDATES the expansion's admission
+    #: policy refused. The reason vocabulary belongs to the graph expansion provider's admission
     #: policy (for example "hub_entity" or "cosine_admission"); the pairs are surfaced
     #: verbatim as :attr:`ReasoningDiagnostics.graph_admission_rejections`.
+    #:
+    #: ⛔ Per candidate ONLY. A refusal of the whole expansion belongs in
+    #: :attr:`expansion_refusals`, never here. Mixing them produced
+    #: `graph_admission_rejections: {'selective_gate': 1}` beside
+    #: `graph_candidates_discovered: 0` — one candidate rejected, zero candidates discovered,
+    #: which cannot both be about candidates. A reader working out why expansion produced
+    #: nothing was pointed at the admission criteria when the answer was that expansion never
+    #: started.
     admission_rejections: tuple[tuple[str, int], ...] = ()
+    #: Pairs of (reason, count) for a refusal of the WHOLE expansion, before any candidate is
+    #: discovered: the graph was not ready, the generation did not match, retrieval left no
+    #: trusted seed, or the selective gate declined. Counted rather than made a bare flag so the
+    #: shape matches `admission_rejections` and a sweep can aggregate both the same way; in
+    #: practice at most one fires, and :attr:`gate_reason` names it.
+    expansion_refusals: tuple[tuple[str, int], ...] = ()
     gate_reason: str | None = None
     policy_fingerprint: str | None = None
 
@@ -233,6 +247,7 @@ class ReasoningDiagnostics:
     graph_diagnostics_encountered: int = 0
     graph_expansion_latency_ms: float = 0.0
     graph_admission_rejections: Mapping[str, int] = dataclass_field(default_factory=dict)
+    graph_expansion_refusals: Mapping[str, int] = dataclass_field(default_factory=dict)
     graph_gate_reason: str | None = None
     graph_policy_fingerprint: str | None = None
 
@@ -701,6 +716,12 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
             str(key): _required_int(value)
             for key, value in _mapping(
                 diagnostics_payload.get("graph_admission_rejections", {})
+            ).items()
+        },
+        graph_expansion_refusals={
+            str(key): _required_int(value)
+            for key, value in _mapping(
+                diagnostics_payload.get("graph_expansion_refusals", {})
             ).items()
         },
         graph_gate_reason=_optional_str(diagnostics_payload.get("graph_gate_reason")),
@@ -1318,6 +1339,9 @@ def _response(
             graph_expansion_latency_ms=(graph_expansion.latency_ms if graph_expansion else 0.0),
             graph_admission_rejections=(
                 dict(graph_expansion.admission_rejections) if graph_expansion else {}
+            ),
+            graph_expansion_refusals=(
+                dict(graph_expansion.expansion_refusals) if graph_expansion else {}
             ),
             graph_gate_reason=(graph_expansion.gate_reason if graph_expansion else None),
             graph_policy_fingerprint=(

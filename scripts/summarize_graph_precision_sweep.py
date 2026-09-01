@@ -38,6 +38,10 @@ def _payload_metrics(item: dict[str, object]) -> dict[str, object]:
         "graph_candidates": diagnostics.get("graph_candidates_discovered", 0),
         "graph_rejected": diagnostics.get("graph_candidates_rejected", 0),
         "graph_admission_rejections": diagnostics.get("graph_admission_rejections", {}),
+        # Separate from the line above on purpose: a refusal of the whole expansion is not a
+        # candidate that lost. Summed into one counter they read as admission criteria that
+        # need tuning, when the answer is that expansion never started.
+        "graph_expansion_refusals": diagnostics.get("graph_expansion_refusals", {}),
     }
 
 
@@ -64,8 +68,10 @@ def main() -> None:
             and (row["hub_threshold"], row["cosine_margin"]) == key
         ]
         rejections: Counter[str] = Counter()
+        refusals: Counter[str] = Counter()
         for row in setting_rows:
             rejections.update(row["graph_admission_rejections"])
+            refusals.update(row["graph_expansion_refusals"])
         settings[f"{key[0]}:{key[1]:.2f}"] = {
             "hub_threshold": key[0],
             "cosine_margin": key[1],
@@ -80,6 +86,7 @@ def main() -> None:
             "mean_graph_candidates": _metric(setting_rows, "graph_candidates"),
             "mean_graph_rejected": _metric(setting_rows, "graph_rejected"),
             "rejections": dict(sorted(rejections.items())),
+            "expansion_refusals": dict(sorted(refusals.items())),
         }
 
     report = {
