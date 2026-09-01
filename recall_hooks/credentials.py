@@ -90,7 +90,7 @@ def auth_config(config: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _keyring():
+def _keyring() -> Any:
     """The keyring module, or None. Absent is normal: it ships in the `desktop` extra."""
     try:
         import keyring  # noqa: PLC0415 - optional and deliberately lazy
@@ -261,7 +261,9 @@ def headers(config: dict[str, Any], *, now: float | None = None) -> dict[str, st
     return {"Authorization": f"Bearer {access_token(config, now=now).access_token}"}
 
 
-def print_auth_headers(config: dict[str, Any], out=None, err=None) -> int:
+def print_auth_headers(
+    config: dict[str, Any], out: Any = None, err: Any = None
+) -> int:
     """The `headersHelper` contract: JSON on stdout, and **exit 0 whatever happens**.
 
     ⛔ A non-zero exit from a headers helper makes the MCP client treat the server as broken, so an

@@ -162,6 +162,38 @@ def _save_config(config: dict[str, Any]) -> None:
             pass
 
 
+def _unsynced_notice(config: dict[str, Any]) -> str:
+    """One sentence when memos have not reached hosted memory, or "".
+
+    🔑 **This is where a silent failure stops being silent.** The hooks return 0 always and may not
+    speak, so a sync that failed has nowhere to report — except here, at the one event already
+    permitted to inject text, at zero extra cost because the config is being read anyway.
+
+    Bounded to one sentence and only when there is BOTH a recorded error and pending work, so a
+    healthy install sees nothing at all.
+    """
+    if not hosted_mode(config):
+        return ""
+    try:
+        from .hosted import read_manifest
+    except ImportError:  # pragma: no cover
+        return ""
+    manifest = read_manifest(config)
+    pending = manifest.get("pending") or {}
+    error = manifest.get("last_error") or {}
+    if not pending or not error:
+        return ""
+    remedy = {
+        "auth": "Run `recall-hooks login`.",
+        "quota": "The account's upload quota is exhausted.",
+        "refusal": "One file was refused; see the dashboard.",
+    }.get(str(error.get("kind")), "It will retry next session.")
+    return (
+        f"WARNING: {len(pending)} memo(s) from previous sessions have not reached hosted "
+        f"memory. {remedy} "
+    )
+
+
 def session_start(payload: dict[str, Any]) -> int:
     """Inject a short memory digest before the first turn.
 
@@ -174,8 +206,9 @@ def session_start(payload: dict[str, Any]) -> int:
     not start, so anything unexpected is silence and exit 0.
     """
     config = load_config()
+    stuck = _unsynced_notice(config)
     count = int(config.get("chunks", 0) or 0)
-    if not count:
+    if not count and not stuck:
         return 0
     cwd = str(payload.get("cwd", ""))
     project = Path(cwd).name if cwd else "this project"
@@ -184,7 +217,8 @@ def session_start(payload: dict[str, Any]) -> int:
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
                 "additionalContext": (
-                    f"RE-call memory is available for {project}: {count} indexed chunks. "
+                    stuck
+                    + f"RE-call memory is available for {project}: {count} indexed chunks. "
                     "Call `recall_search` before proposing an idea, forming a hypothesis, or "
                     "repeating past work, and treat an `abstained: true` result as 'no supported "
                     "answer' rather than as an empty one. This corpus is uncalibrated, so trust "
@@ -197,6 +231,52 @@ def session_start(payload: dict[str, Any]) -> int:
     return 0
 
 
+def hosted_mode(config: dict[str, Any]) -> bool:
+    """Is this a hosted config?
+
+    Explicit `mode` wins; otherwise an endpoint with no dsn means hosted. Every config on disk
+    today has a dsn and no endpoint, so it resolves local and nothing changes for anyone.
+
+    An EMPTY dsn is not a dsn, so an endpoint beside one still resolves hosted. Writing a real
+    one into a hosted config is the thing that breaks: both `_index_and_refresh` and
+    `write_time.pre_tool_use` guard on `config.get("dsn")` being truthy, so a real dsn would send
+    an older `recall_hooks` at a database while a newer one syncs — two writers, one corpus. With
+    the key absent or empty, an older client degrades to silence, which is this package's
+    established failure mode.
+    """
+    mode = str(config.get("mode", "")).strip().lower()
+    if mode in {"hosted", "local"}:
+        return mode == "hosted"
+    return bool(config.get("endpoint")) and not config.get("dsn")
+
+
+def memory_dirs(cwd: str, override: str = "") -> list[tuple[str, Path]]:
+    """Every memory store this project writes to, as `(root_id, path)`, nearest first.
+
+    ⚠️ **BOTH are returned, and that is the fix for a real divergence.** The writer has always
+    indexed `<cwd>/memory` while `prompt_time` reads
+    `~/.claude/projects/<slug>/memory`, and nothing reconciled them: content written to one was
+    invisible to the other. Both are real on machines today, so picking one silently drops whatever
+    the other holds — which is the loss these hooks exist to prevent.
+
+    The `root_id` namespaces them, because two roots with the same internal layout would otherwise
+    collide into one uploaded name and each sync would overwrite the other's file.
+    """
+    roots: list[tuple[str, Path]] = []
+    if cwd:
+        local = Path(str(cwd)) / "memory"
+        if local.is_dir():
+            roots.append(("worktree", local))
+    try:
+        from .prompt_time import find_store
+    except ImportError:  # pragma: no cover - the module ships beside this one
+        return roots
+    store = find_store(cwd, override)
+    if store is not None and store.is_dir() and all(store != path for _id, path in roots):
+        roots.append(("project", store))
+    return roots
+
+
 def _index_and_refresh(payload: dict[str, Any]) -> int:
     """Index this project's `memory/` and refresh the cached count. Never raises.
 
@@ -204,9 +284,29 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
     whatever the session wrote down searchable, and leave an accurate count behind.
     """
     config = load_config()
-    dsn = config.get("dsn")
     cwd = payload.get("cwd")
-    if not dsn or not cwd:
+    if not cwd:
+        return 0
+    if hosted_mode(config):
+        # Imported inside the branch: this event is async, so the transport's cost is never
+        # charged to a session launch, and a local-mode install never pays it at all.
+        try:
+            from .hosted import sync_memory_roots
+        except ImportError:
+            return 0
+        roots = memory_dirs(str(cwd), str(config.get("memory_root", "")))
+        if roots:
+            try:
+                sync_memory_roots(roots, config)
+            except BaseException:
+                # ⛔ `sync_memory_roots` documents that it never raises, and this catches it
+                # anyway. "Documented not to" and "cannot" are different claims, and the cost of
+                # being wrong here is a session that will not start. A test pins this by making
+                # the sync raise on purpose.
+                pass
+        return 0
+    dsn = config.get("dsn")
+    if not dsn:
         return 0
     memory_dir = Path(str(cwd)) / "memory"
     if memory_dir.is_dir():
