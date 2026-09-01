@@ -24,6 +24,13 @@ or `one_hop`, and `ReasoningBudget.max_graph_hops` accepts only the matching val
 The default is `off`, so ordinary retrieval and existing reasoning behavior do not traverse the
 semantic graph.
 
+⚠️ The semantic graph `one_hop` walks is **not** the authored supersession projection that
+`recall_reasoning_projection` and `recall_current_state` report on. They are separate structures
+with separate relation vocabularies, `supersedes` is not among the semantic kinds, and only
+`references` has rows on any live tenant. A corpus can therefore report a healthy
+`authored_edge_count` and a `graph_relations_inspected` of zero with nothing wrong. See **Two
+graphs, and which one `one_hop` walks** in `docs/REASONING_GRAPH.md` before reading either number.
+
 When enabled, trusted chunks seed exact entity mentions. Authored semantic relations select
 neighboring chunks, which are then evaluated again by the ordinary trust layer. Graph relations do
 not promote evidence, replace authored frontmatter, or allow model generated proposals to drive

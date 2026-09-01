@@ -5,6 +5,68 @@ Version: 0.1.0
 Status: Evidence Graph V1. Semantic expansion is opt in and inference is not enabled by this
 document.
 
+## Two graphs, and which one `one_hop` walks
+
+**This document describes two separate structures with two separate relation vocabularies, and
+`graph_expansion=one_hop` traverses only the second.** Read this before carrying anything from
+"Purpose" or "Schema" below over to expansion; that half of the document is about the other graph.
+
+| | Reasoning graph projection | Semantic graph (Evidence Graph V1) |
+|---|---|---|
+| Built by | `build_reasoning_graph()` / `project_store_graph()` | `build_semantic_graph()` |
+| Edges | `authored_supersedes`, `inferred_candidate_supersedes` | `SemanticRelation` over `RelationKind` |
+| Vocabulary | supersession only | `supports`, `contradicts`, `references`, `depends_on`, `caused`, `same_entity` |
+| Read by | `recall_reasoning_projection`, `recall_current_state` | `one_hop` expansion |
+| Traversed by `one_hop` | **no** | yes |
+
+Three consequences that are invisible from either half alone.
+
+**1. `supersedes` is not a semantic relation kind, so an authored supersession edge has no
+representation in the semantic graph at all.** Not "not yet connected" — not expressible.
+`RelationKind` in `recall/semantic_graph.py` does not contain it, and the production precision
+policy narrows further to `GRAPH_DIRECTIONAL_RELATIONS`, four of the six kinds.
+
+That is not a gap. Supersession is enforced **upstream**, by the trust layer, and enforcing it
+again in expansion would be the redundancy: `recall.trust.evaluate` gives a superseded memory the verdict
+`superseded`, `is_trusted` admits only `ok`, and expansion seeds exclusively from
+`is_trusted(hit)`. So a superseded document cannot seed a traversal, and every chunk expansion
+admits is sent back through the same trust layer before it becomes evidence. Supersession bounds
+the graph stage on both sides rather than being walked inside it.
+
+**2. A corpus can report a healthy `authored_edge_count` and still see
+`graph_relations_inspected: 0`, with nothing wrong.** Those two numbers count edges in the two
+different structures in the table above. This has already produced a wrong inference in the field
+— eleven authored edges, zero relations inspected, read as a mis-tuned gate. The gate was fine;
+those edges were never candidates for traversal.
+
+**3. Only `references` is produced automatically, and in practice it is the only kind with any
+rows.** There are exactly two extraction paths, and they are not equally reachable:
+
+- **Links and wikilinks** are extracted automatically, always as `references`. Every corpus that
+  is written in Markdown gets these for free.
+- **The `recall_graph` frontmatter object** can declare any of the six kinds, but only where a
+  human hand-wrote that one-line JSON. Nothing infers `supports`, `contradicts`, `depends_on`,
+  `caused` or `same_entity` from prose; V1 deliberately has no model or embedding extractor.
+
+Measured 2026-09-01 against the live serving database, **every tenant, every relation row**:
+
+```text
+ tenant_id    |  relation  |  status  | count
+--------------+------------+----------+-------
+ memory       | references | authored | 56536
+ re-call-docs | references | authored |   395
+```
+
+Zero rows of the other five kinds anywhere. So unless a corpus authors `recall_graph` relations
+deliberately, **`one_hop` is a single-relation traversal over a reference graph**, and that is the
+fact that decides whether reaching for it is worth anything. Re-measure before relying on either
+direction:
+
+```sql
+SELECT tenant_id, relation, status, count(*)
+FROM recall_graph_relations_v1 GROUP BY 1, 2, 3 ORDER BY 1, 4 DESC;
+```
+
 ## Evidence Graph V1
 
 RE-call also projects a deterministic semantic graph into PostgreSQL migration `0016`. It is a
@@ -14,7 +76,11 @@ immutable `SemanticEntity`, `SemanticMention`, `SemanticRelation`, `SemanticGrap
 
 V1 recognizes the entity kinds `person`, `project`, `service`, `file`, `decision`, `event`,
 `concept`, and `unknown`. Supported authored relations are `supports`, `contradicts`, `references`,
-`depends_on`, `caused`, and `same_entity`. Every relation has supporting chunk identifiers,
+`depends_on`, `caused`, and `same_entity` — *supported* meaning the vocabulary a `recall_graph`
+declaration may name, not the vocabulary a corpus is likely to hold. Only `references` is produced
+by any automatic extractor, and it is the only kind with rows on any live tenant; see **Two
+graphs, and which one `one_hop` walks** above. `supersedes` is deliberately absent from this
+list. Every relation has supporting chunk identifiers,
 extraction method, confidence, uncertainty, tenant and generation identity, pipeline and corpus
 fingerprints, and authored or candidate status.
 
