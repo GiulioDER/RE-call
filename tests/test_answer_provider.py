@@ -347,7 +347,7 @@ def test_without_the_extra_the_resolver_names_the_extra(monkeypatch) -> None:
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", without_openai)
-    with pytest.raises(ValueError, match="openai extra is required"):
+    with pytest.raises(ValueError, match=r'pip install "recall-rag\[openai\]"'):
         resolve_answer_provider(_openai_enabled())
 
 
@@ -366,3 +366,85 @@ def test_the_ollama_backend_needs_no_extra(monkeypatch) -> None:
     provider = resolve_answer_provider(_enabled())
     assert provider is not None
     assert "127.0.0.1" in provider.client.endpoint
+
+
+def test_the_cli_reasoning_query_supplies_the_resolved_provider_too() -> None:
+    """A facility reachable from one of two front doors is the defect this PR exists to remove.
+
+    `recall_mcp/server.py` was wired first and the CLI was not, so `recall reasoning query`
+    still returned `abstained / no_answer_provider`. A peer session hit exactly the trap that
+    predicts: verifying the integration the obvious way, from the command line, and reading a
+    working server as broken. Found by them, not by the suite, because the suite only ever
+    asserted the MCP call site.
+
+    Asserted against the source for the same reason as the server guard above: reaching this
+    body needs a live database, and the property is about the CALL.
+
+    `audit` is checked to be EXCLUDED in the same pass. Wiring the CLI by pointing every
+    reasoning subcommand at a provider would put a model on the diagnostic that exists to
+    report what the deterministic layer refuses, and no test would notice.
+    """
+    import ast
+    import pathlib
+
+    import recall.cli_commands.reasoning_cmd as reasoning_cmd
+
+    tree = ast.parse(pathlib.Path(reasoning_cmd.__file__).read_text(encoding="utf-8"))
+    calls = {
+        node.func.id: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    query = calls.get("reasoning_query")
+    assert query is not None, "reasoning_query is no longer called from the CLI"
+    keyword = next((kw for kw in query.keywords if kw.arg == "answer_provider"), None)
+    assert keyword is not None, (
+        f"reasoning_query is called at recall/cli_commands/reasoning_cmd.py:{query.lineno} "
+        "without answer_provider=, so `recall reasoning query` abstains with "
+        "no_answer_provider whatever the operator configured."
+    )
+    bound = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "resolve_answer_provider"
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert isinstance(keyword.value, ast.Name) and keyword.value.id in bound, (
+        "answer_provider= must be the name bound from resolve_answer_provider(), not a literal"
+    )
+
+    # The resolver raises ValueError on a misconfigured RECALL_REASONING_ANSWER_*, and this
+    # CLI's convention is one line on stderr and exit 2, stated in `_stored_extracted_proposals`
+    # and applied by the `--include-extracted` handler. An unwrapped call would hand the
+    # operator a traceback through the whole resolver instead, defeating the point of messages
+    # that go to the trouble of naming the variable.
+    guarded = any(
+        isinstance(node, ast.Try)
+        and any(
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Name)
+            and sub.func.id == "resolve_answer_provider"
+            for stmt in node.body
+            for sub in ast.walk(stmt)
+        )
+        and any(
+            isinstance(h.type, ast.Name) and h.type.id == "ValueError" for h in node.handlers
+        )
+        for node in ast.walk(tree)
+    )
+    assert guarded, (
+        "resolve_answer_provider() must be wrapped in try/except ValueError in the CLI, so a "
+        "misconfiguration prints one line and exits 2 like every other refusal here."
+    )
+
+    audit = calls.get("reasoning_audit")
+    assert audit is not None, "reasoning_audit is no longer called from the CLI"
+    assert not any(kw.arg == "answer_provider" for kw in audit.keywords), (
+        "reasoning_audit must not be given a provider: it reports what the deterministic "
+        "layer refuses and must not spend a model call to do it."
+    )

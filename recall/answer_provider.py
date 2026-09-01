@@ -342,7 +342,8 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> AnswerProvi
         from openai import OpenAI
     except ImportError as exc:
         raise ValueError(
-            "the openai extra is required for RECALL_REASONING_ANSWER_PROVIDER=openai"
+            "RECALL_REASONING_ANSWER_PROVIDER=openai needs the openai extra: "
+            'pip install "recall-rag[openai]"'
         ) from exc
     return OpenAICompatibleAnswerProvider(
         OpenAI(api_key=key, base_url=base_url, max_retries=0, timeout=timeout),
