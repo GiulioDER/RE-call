@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 #: Suffixes the server treats as markdown, and therefore hashes as decoded text rather than as
 #: bytes. Kept in sync with `recall/index.py`; see this module's docstring.
@@ -207,3 +208,333 @@ def plan(
         oversize=oversize,
         unchanged=unchanged,
     )
+
+
+# --------------------------------------------------------------------------- talking to a server
+#
+# Everything above decides. Everything below acts, and is deliberately separated so the decision
+# stays testable without a socket.
+
+
+class SyncError(RuntimeError):
+    """A hosted call failed, carrying the KIND so a caller knows what to do about it."""
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+
+
+def legible(error: BaseException) -> str:
+    """Flatten an exception into sentences a person can act on.
+
+    The MCP SDK runs its session in a task group, so **every** error a server raises reaches a
+    caller as `ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)` — a sentence that
+    names the plumbing and hides the cause. Without this, every hosted failure message would be
+    that string, and the classifier below would have nothing to read.
+
+    Recursive, because a group can nest. Mirrors `recall/desktop/runtime.py::_legible`, duplicated
+    for the import-cost reason in this module's docstring.
+    """
+    if isinstance(error, BaseExceptionGroup):
+        inner = [legible(sub) for sub in error.exceptions]
+        return "; ".join(part for part in inner if part) or str(error)
+    text = str(error).strip()
+    return f"{type(error).__name__}: {text}" if text else type(error).__name__
+
+
+#: Substrings that identify a failure kind, checked against the FLATTENED message. Ordered: the
+#: first match wins, and auth is first because a 401 arriving inside a quota message is still an
+#: auth problem.
+_KINDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("auth", ("401", "403", "unauthorized", "invalid_token", "autherror", "no credential")),
+    ("quota", ("quota", "budget", "rate limit", "ratelimited", "too many requests", "429")),
+    ("refusal", ("uploaderror", "duplicate file name", "must be relative", "reserved device",
+                 "exceeds the", "valueerror", "category must be")),
+    ("network", ("timeout", "timed out", "connection", "getaddrinfo", "ssl", "certificate",
+                 "unreachable", "refused")),
+)
+
+
+def classify(message: str) -> str:
+    """Which kind of failure this is, so the caller can pick a remedy rather than a guess.
+
+    The four kinds want genuinely different handling, which is the only reason to have them:
+
+    * **auth** — do not retry in a loop. A 401 after a fresh refresh is a real re-authentication,
+      and hammering it just burns the token endpoint. Surface at the next `SessionStart`.
+    * **quota** — back off for a long time. Retrying every session burns the bucket that is
+      already empty.
+    * **refusal** — surface immediately and name the file. It will never fix itself.
+    * **network** — retry next session, and stay quiet until it has failed twice, so a laptop
+      closed on a plane does not nag.
+
+    Anything unrecognised is `network`, because that is the kind whose policy (retry quietly) is
+    safe to apply to a failure nobody has classified yet.
+    """
+    lowered = message.lower()
+    for kind, markers in _KINDS:
+        if any(marker in lowered for marker in markers):
+            return kind
+    return "network"
+
+
+def call_tool(
+    endpoint: str,
+    headers: dict[str, str],
+    name: str,
+    arguments: dict,
+    *,
+    timeout: float = 120.0,
+) -> Any:
+    """Call one MCP tool over streamable-http and return its parsed result.
+
+    Imports the SDK lazily and inside the call. `SessionEnd` is the only event that reaches here,
+    and it is asynchronous, so the cost is never charged to a session launch — which is the whole
+    reason this package avoids `recall`.
+
+    Raises `SyncError` with a classified kind. Never leaks an `ExceptionGroup`.
+    """
+    import asyncio
+    import json as _json
+
+    async def _run() -> Any:
+        import httpx2
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+
+        http = httpx2.AsyncClient(headers=headers, timeout=timeout)
+        async with http, streamable_http_client(endpoint, http_client=http) as streams:
+            async with ClientSession(*streams) as session:
+                await session.initialize()
+                result = await session.call_tool(name, arguments)
+                if getattr(result, "is_error", False):
+                    pieces = getattr(result, "content", None) or []
+                    text = next(
+                        (t for t in (getattr(p, "text", None) for p in pieces) if t), str(result)
+                    )
+                    raise SyncError(classify(text), text)
+                for piece in getattr(result, "content", None) or []:
+                    text = getattr(piece, "text", None)
+                    if text is None:
+                        continue
+                    try:
+                        return _json.loads(text)
+                    except _json.JSONDecodeError:
+                        return text
+                return None
+
+    try:
+        return asyncio.run(_run())
+    except SyncError:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - flattened and classified, never re-raised raw
+        message = legible(exc)
+        raise SyncError(classify(message), message) from exc
+
+
+def remote_inventory(
+    endpoint: str, headers: dict[str, str], *, timeout: float = 60.0
+) -> dict[str, str]:
+    """What the tenant holds, as `{source: sha256}`, via `recall_inventory`.
+
+    ⚠️ A **truncated** inventory raises rather than being used. The diff treats a source absent
+    from this map as one the server does not have, so a silently short listing would re-upload the
+    tail of the corpus and, once deletion is enabled, forget it. Truncation is exactly the case the
+    tool reports for this reason.
+    """
+    payload = call_tool(endpoint, headers, "recall_inventory", {}, timeout=timeout)
+    if not isinstance(payload, dict):
+        raise SyncError("refusal", f"recall_inventory returned {type(payload).__name__}, not JSON")
+    if payload.get("truncated"):
+        raise SyncError(
+            "refusal",
+            "the inventory was truncated, so a diff against it would re-upload or forget the "
+            "tail of the corpus; raise the limit or page it",
+        )
+    entries = payload.get("entries") or []
+    return {str(e["source"]): str(e.get("sha256") or "") for e in entries if e.get("source")}
+
+
+# --------------------------------------------------------------------------- doing the sync
+#
+# ⛔ THREE RULES THIS SECTION MUST NOT BREAK.
+#
+# 1. Nothing is recorded as synced unless the server confirmed it. A cursor that runs ahead of
+#    the server is how memory disappears: the next run skips a file the server never received.
+#    ⛔ So this keeps NO local record of what is synced, and that absence is deliberate. What to
+#    upload is decided by comparing the local scan against `remote_inventory`, which is the
+#    server's own answer about what it holds. An earlier version of this file also wrote a
+#    `files` map of confirmed hashes into the manifest; nothing ever read it, and the danger was
+#    that a future reader would take it for the cursor and skip the round trip, which is exactly
+#    the failure this rule forbids. A hash the client believes and the server has never seen is
+#    worse than no hash at all.
+# 2. The memo files ARE the queue. This never deletes, moves or rewrites anything under a memory
+#    root, so a failed sync loses nothing and the next run simply tries again. A sync client that
+#    "tidies up" destroys both the corpus and its own retry.
+# 3. It never raises. `SessionEnd` must not take a session down, so every failure becomes a
+#    recorded outcome instead.
+
+
+@dataclass(frozen=True)
+class SyncOutcome:
+    kind: str          # "ok" | "auth" | "quota" | "network" | "refusal" | "noop"
+    uploaded: int = 0
+    unchanged: int = 0
+    pending: int = 0
+    message: str = ""
+
+
+def manifest_path(config: dict) -> Path:
+    """Per (endpoint, tenant), so pointing a machine at a different server starts a fresh cursor
+    rather than inheriting beliefs about a corpus that server has never seen."""
+    import hashlib as _h
+
+    key = f"{config.get('endpoint', '')}|{config.get('tenant', '')}".encode()
+    return _config_home() / f"recall-sync-{_h.sha256(key).hexdigest()[:12]}.json"
+
+
+def _config_home() -> Path:
+    import os
+
+    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(override) if override else Path.home() / ".claude"
+
+
+def read_manifest(config: dict) -> dict:
+    import json as _json
+
+    try:
+        data = _json.loads(manifest_path(config).read_text(encoding="utf-8"))
+    except (OSError, _json.JSONDecodeError):
+        return {"pending": {}}
+    if not isinstance(data, dict):
+        return {"pending": {}}
+    data.setdefault("pending", {})
+    return data
+
+
+def write_manifest(config: dict, data: dict) -> None:
+    """Atomically, and best effort. A manifest that cannot be written costs a re-upload next time,
+    which is wasteful and safe; raising here would cost a session."""
+    import json as _json
+    import os
+    import tempfile
+
+    path = manifest_path(config)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    except OSError:
+        return
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            _json.dump(data, handle, indent=1, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+
+
+def sync_memory_roots(
+    roots: list[tuple[str, Path]],
+    config: dict,
+    *,
+    limits: Limits | None = None,
+    now: float | None = None,
+) -> SyncOutcome:
+    """Upload what changed. Never raises; the outcome is returned and recorded.
+
+    The deadline is real rather than decorative. `SessionEnd` is registered async and so has NO
+    client timeout, which means a hung TLS connection leaves an orphan process alive indefinitely
+    rather than being cleaned up. Everything past the deadline stays pending, which is exactly the
+    retry mechanism.
+    """
+    import time as _time
+
+    from . import credentials as _cred
+
+    started = _time.time() if now is None else now
+    deadline = float(config.get("sync", {}).get("timeout_s", 120))
+    endpoint = str(config.get("endpoint") or "")
+    if not endpoint:
+        return SyncOutcome(kind="refusal", message="hosted config names no endpoint")
+
+    manifest = read_manifest(config)
+    try:
+        head = _cred.headers(config)
+    except Exception as exc:  # noqa: BLE001 - classified below, never raised into a session
+        message = legible(exc)
+        manifest["last_error"] = {"kind": "auth", "message": message}
+        write_manifest(config, manifest)
+        return SyncOutcome(kind="auth", message=message)
+
+    try:
+        local = scan(roots)
+        remote = remote_inventory(endpoint, head)
+        decided = plan(local, remote, limits)
+    except SyncError as exc:
+        manifest["last_error"] = {"kind": exc.kind, "message": exc.message}
+        write_manifest(config, manifest)
+        return SyncOutcome(kind=exc.kind, message=exc.message)
+
+    if not decided.upload:
+        manifest.pop("last_error", None)
+        manifest["pending"] = {}
+        write_manifest(config, manifest)
+        return SyncOutcome(kind="noop", unchanged=decided.unchanged)
+
+    import base64 as _b64
+
+    uploaded = 0
+    pending: dict[str, str] = {name: "" for batch in decided.upload for name in
+                              (c.name for c in batch)}
+    for batch in decided.upload:
+        if (_time.time() if now is None else now) - started > deadline:
+            # Out of time. Everything not yet confirmed stays pending and the next run continues.
+            break
+        files = []
+        for change in batch:
+            try:
+                files.append(
+                    {
+                        "name": change.name,
+                        "content_b64": _b64.b64encode(change.path.read_bytes()).decode("ascii"),
+                    }
+                )
+            except OSError:
+                # Vanished between the scan and the read. Not an error, and not silence: it stays
+                # out of this batch and out of `files`, so it is never recorded as synced.
+                continue
+        if not files:
+            continue
+        try:
+            call_tool(endpoint, head, "recall_ingest", {"files": files, "category": "memory"})
+        except SyncError as exc:
+            # ⛔ A quota refusal means NOTHING was ingested: the debit happens before embedding and
+            # raises. So this batch and every later one stay pending, and none of them is recorded.
+            manifest["pending"] = pending
+            manifest["last_error"] = {"kind": exc.kind, "message": exc.message}
+            write_manifest(config, manifest)
+            return SyncOutcome(
+                kind=exc.kind, uploaded=uploaded, unchanged=decided.unchanged,
+                pending=len(pending), message=exc.message,
+            )
+        # Confirmed.
+        for change in batch:
+            pending.pop(change.name, None)
+            uploaded += 1
+
+    manifest["pending"] = pending
+    if pending:
+        manifest["last_error"] = {"kind": "network", "message": "ran out of time; will resume"}
+    else:
+        manifest.pop("last_error", None)
+    write_manifest(config, manifest)
+    return SyncOutcome(
+        kind="ok" if not pending else "network",
+        uploaded=uploaded,
+        unchanged=decided.unchanged,
+        pending=len(pending),
+    )
+
