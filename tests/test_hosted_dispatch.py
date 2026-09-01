@@ -260,10 +260,8 @@ def test_no_local_cursor_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(hosted, "remote_inventory", lambda *_a, **_k: {})
     monkeypatch.setattr(hosted, "call_tool", lambda *_a, **_k: {"ok": True})
-    monkeypatch.setattr(
-        hosted, "credentials", __import__("types").SimpleNamespace(headers=lambda _c: {}),
-        raising=False,
-    )
+    # `sync_memory_roots` does `from . import credentials`, which binds on the PACKAGE, so this
+    # is the attribute that decides what the sync sends.
     import recall_hooks.credentials as _cred
 
     monkeypatch.setattr(_cred, "headers", lambda _c: {"Authorization": "Bearer x"})
