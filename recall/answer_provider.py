@@ -18,6 +18,7 @@ from typing import Protocol
 from urllib import request
 from urllib.parse import urlparse
 
+from recall.errors import RecallError
 from recall.provider_metadata import ProviderMetadata
 
 ANSWER_PROMPT_DIGEST = hashlib.sha256(b"recall-answer-provider-v1").hexdigest()
@@ -306,8 +307,18 @@ DEFAULT_ANSWER_CALLS_PER_MIN = 30.0
 ANSWER_RATE_OFF = "off"
 
 
-class AnswerRateLimited(RuntimeError):
+class AnswerRateLimited(RuntimeError, RecallError):
     """The process-wide ceiling on paid answer calls was reached.
+
+    `RuntimeError` stays the FIRST base, following `recall_mcp.limits.RateLimited`: a caller
+    already catching the builtin keeps working, and `except RecallError` starts working too.
+    `tests/test_error_hierarchy.py` requires every product exception to be in that hierarchy, and
+    it caught this one on CI after it shipped as a bare `RuntimeError`.
+
+    No `ToolError` base, unlike `RateLimited`: that class lives in the `mcp` package, which is an
+    optional extra, and this module is core library — importing it here would break a floor
+    install. It is not needed either, because this exception never reaches an MCP tool body:
+    `recall.reasoning.reason` catches it and converts it to a `ProviderFailure`.
 
     Raised from the provider, so `recall.reasoning.reason` catches it like any provider failure
     and degrades to an abstention carrying a sanitized `ProviderFailure`. That is the fail-closed
