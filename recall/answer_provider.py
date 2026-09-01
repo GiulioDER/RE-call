@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import threading
 import time
 from types import SimpleNamespace
 from typing import Protocol
@@ -64,6 +65,13 @@ class OllamaAnswerProvider:
         )
 
     def __call__(self, system: str, user: str) -> str:
+        # The process-wide spend ceiling, debited BEFORE the call so a refusal costs nothing and
+        # before the timer so a refusal is not recorded as latency. Inside the provider rather
+        # than around it: wrapping the resolver's return value changed its type and broke every
+        # caller that reads `.client` or `.revision` or asks `isinstance`, and a spend control is
+        # not worth an API break. `test_every_answer_provider_enforces_the_spend_ceiling`
+        # enumerates the exported providers so a third backend cannot quietly skip this.
+        _ANSWER_RATE_GATE.take()
         started = time.perf_counter()
         response: object | None = None
         try:
@@ -162,6 +170,13 @@ class OpenAICompatibleAnswerProvider:
         )
 
     def __call__(self, system: str, user: str) -> str:
+        # The process-wide spend ceiling, debited BEFORE the call so a refusal costs nothing and
+        # before the timer so a refusal is not recorded as latency. Inside the provider rather
+        # than around it: wrapping the resolver's return value changed its type and broke every
+        # caller that reads `.client` or `.revision` or asks `isinstance`, and a spend control is
+        # not worth an API break. `test_every_answer_provider_enforces_the_spend_ceiling`
+        # enumerates the exported providers so a third backend cannot quietly skip this.
+        _ANSWER_RATE_GATE.take()
         started = time.perf_counter()
         response: object | None = None
         try:
@@ -275,6 +290,130 @@ _DEFAULT_BASE_URLS = {
 }
 
 
+#: Ceiling on paid answer calls, per minute, PER PROCESS. Deliberately not per tenant: what this
+#: protects is one API key's spend, which is a property of the deployment rather than of whoever
+#: is asking. `recall_mcp.limits.RateLimiter` is tenant-keyed and exists only for the
+#: authenticated shape, so it cannot see the total and does not exist at all on stdio -- which is
+#: how this server actually runs. 30/min is generous for interactive use (each call is seconds of
+#: model latency) while bounding a runaway harness to something a person notices before a bill
+#: does.
+DEFAULT_ANSWER_CALLS_PER_MIN = 30.0
+
+#: The literal that disables the ceiling. A WORD, not a number, for the reason
+#: `recall_mcp.limits` gives about its own: `0` reads as both "no limit" and "nothing allowed"
+#: depending on who is looking, and that ambiguity in a SPEND control is how a cap gets removed
+#: by somebody who meant to tighten it.
+ANSWER_RATE_OFF = "off"
+
+
+class AnswerRateLimited(RuntimeError):
+    """The process-wide ceiling on paid answer calls was reached.
+
+    Raised from the provider, so `recall.reasoning.reason` catches it like any provider failure
+    and degrades to an abstention carrying a sanitized `ProviderFailure`. That is the fail-closed
+    behaviour this layer already guarantees: a refused answer, never an unsupported one. The class
+    NAME is what reaches the client, via `type(exc).__name__`, so it has to read as a diagnosis on
+    its own.
+    """
+
+
+class _AnswerRateGate:
+    """A token bucket shared by every provider this process resolves.
+
+    ⚠️ MODULE level, and that is the whole design. `resolve_answer_provider` builds a NEW provider
+    on every MCP tool call, so a bucket held on the provider instance would be refilled to
+    capacity by each call and bound precisely nothing while looking like a rate limit.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._rate: float | None = None
+        self._capacity = 0.0
+        self._tokens = 0.0
+        self._updated = 0.0
+
+    def configure(self, calls_per_min: float | None) -> None:
+        """Set the ceiling, or `None` for unlimited. Resets the bucket only on a REAL change.
+
+        The compare-and-set is inside the lock, and that is not tidiness. `resolve_answer_provider`
+        runs on every MCP tool call, and the server dispatches tool bodies to threads, so two
+        concurrent resolves can both observe the old value and both reconfigure. Each reconfigure
+        refills the bucket, which is precisely the failure this ceiling exists to prevent, and it
+        would appear only under load -- never in a test that resolves sequentially.
+        """
+        rate = None if calls_per_min is None else calls_per_min / 60.0
+        with self._lock:
+            if rate == self._rate:
+                return
+            self._rate = rate
+            self._capacity = 0.0 if calls_per_min is None else calls_per_min
+            self._tokens = self._capacity
+            self._updated = time.monotonic()
+
+    def reset_for_test(self, calls_per_min: float | None) -> None:
+        """Force a reconfigure regardless of the current value. Tests only."""
+        with self._lock:
+            self._rate = None if calls_per_min is None else calls_per_min / 60.0
+            self._capacity = 0.0 if calls_per_min is None else calls_per_min
+            self._tokens = self._capacity
+            self._updated = time.monotonic()
+
+    def take(self) -> None:
+        """Debit one call, or raise `AnswerRateLimited` naming the wait."""
+        with self._lock:
+            if self._rate is None:
+                return
+            now = time.monotonic()
+            # `max(0.0, ...)` on the delta AND on the stored timestamp, matching the reasoning in
+            # `recall_mcp.limits._Bucket`: clamping only the delta refuses one free refill and
+            # then rewinds the reference point, so the next call mints the whole rewound interval.
+            elapsed = max(0.0, now - self._updated)
+            self._updated = max(self._updated, now)
+            self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return
+            wait = (1.0 - self._tokens) / self._rate
+        raise AnswerRateLimited(
+            f"answer provider ceiling of {self._capacity:g} calls/min reached; retry in "
+            f"{wait:.1f}s, or raise RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN "
+            f"(or set it to '{ANSWER_RATE_OFF}' to remove the ceiling)"
+        )
+
+
+#: The one gate. Reset by `resolve_answer_provider` only when the configured rate CHANGES, so a
+#: per-call resolve cannot refill it -- see `_AnswerRateGate`.
+_ANSWER_RATE_GATE = _AnswerRateGate()
+_ANSWER_RATE_CONFIGURED: float | None | object = object()
+
+
+def _configure_answer_rate(raw: str) -> None:
+    """Parse and apply the ceiling, reconfiguring only on a genuine change."""
+    global _ANSWER_RATE_CONFIGURED
+    value = raw.strip().lower()
+    if value == ANSWER_RATE_OFF:
+        limit: float | None = None
+    elif not value:
+        limit = DEFAULT_ANSWER_CALLS_PER_MIN
+    else:
+        try:
+            limit = float(value)
+        except ValueError as exc:
+            raise ValueError(
+                "RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN must be a number or "
+                f"'{ANSWER_RATE_OFF}'"
+            ) from exc
+        if not math.isfinite(limit) or limit <= 0:
+            raise ValueError(
+                "RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN must be finite and positive, or "
+                f"'{ANSWER_RATE_OFF}' to remove the ceiling"
+            )
+    # No compare-and-set here: `configure` owns it, under its own lock. Doing it out here read
+    # naturally and was racy, because two concurrent resolves could both see the old value.
+    _ANSWER_RATE_GATE.configure(limit)
+    _ANSWER_RATE_CONFIGURED = limit
+
+
 def resolve_answer_provider(env: Mapping[str, str] | None = None) -> AnswerProvider | None:
     """Resolve the explicitly enabled answer provider, otherwise return ``None``.
 
@@ -365,6 +504,9 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> AnswerProvi
     # EMPTY model_revision, which `validate_cost_claim` then refuses as an unsupported cost
     # claim -- on the one backend that actually has a cost.
     revision = source.get("RECALL_REASONING_ANSWER_REVISION", "").strip() or "unpinned"
+    # Configured before either backend is built, and therefore before the optional `openai`
+    # import, so a bad ceiling reports itself rather than a missing dependency.
+    _configure_answer_rate(source.get("RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN", ""))
 
     if backend == "ollama":
         # Refused rather than ignored, symmetrically with the THINKING refusal below. Returning
@@ -533,7 +675,10 @@ class _NativeOllamaClient:
 
 
 __all__ = [
+    "ANSWER_RATE_OFF",
     "AnswerProvider",
+    "AnswerRateLimited",
+    "DEFAULT_ANSWER_CALLS_PER_MIN",
     "OllamaAnswerProvider",
     "OpenAICompatibleAnswerProvider",
     "resolve_answer_provider",

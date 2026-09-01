@@ -91,6 +91,18 @@ OPENROUTER_API_KEY=
 # RECALL_REASONING_ANSWER_TIMEOUT=60                   # seconds; empty means the default
 # RECALL_REASONING_ANSWER_MAX_TOKENS=512
 # RECALL_REASONING_ANSWER_REVISION=unpinned
+# RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN=30         # ceiling on PAID answer calls, per PROCESS
+#                                                      # (not per tenant: it guards one API key's
+#                                                      # spend, which is a property of the
+#                                                      # deployment). The word `off` removes it;
+#                                                      # 0 is refused, because `0` reads as both
+#                                                      # "no limit" and "nothing allowed". Applies
+#                                                      # to both backends and to the CLI, and is
+#                                                      # the ONLY bound on the number of paid
+#                                                      # calls: the MCP scope budget is tenant
+#                                                      # keyed and stdio has no limiter at all.
+#                                                      # Exceeding it degrades to an abstention
+#                                                      # carrying a sanitized provider failure.
 #
 # ollama: Ollama's native /api/chat endpoint, default base URL http://127.0.0.1:11434/v1.
 # RECALL_REASONING_ANSWER_THINKING=0                   # explicit boolean; the model's think

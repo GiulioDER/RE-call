@@ -796,3 +796,211 @@ def test_a_plausible_per_thousand_price_is_accepted(price: str) -> None:
     )
     assert provider is not None
     assert provider.cost_per_1k_tokens == float(price)
+
+
+# --- STAKES-001: the process-wide ceiling on paid answer calls ----------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_answer_rate_gate():
+    """Every test starts with the ceiling at its default and the bucket full.
+
+    The gate is deliberately module-level process state (see below), so without this a test that
+    exhausts it would leak into its neighbours and the failure would be attributed to whichever
+    test happened to run next.
+    """
+    from recall import answer_provider as ap
+
+    ap._ANSWER_RATE_GATE.reset_for_test(ap.DEFAULT_ANSWER_CALLS_PER_MIN)
+    ap._ANSWER_RATE_CONFIGURED = ap.DEFAULT_ANSWER_CALLS_PER_MIN
+    yield
+    ap._ANSWER_RATE_GATE.reset_for_test(ap.DEFAULT_ANSWER_CALLS_PER_MIN)
+    ap._ANSWER_RATE_CONFIGURED = ap.DEFAULT_ANSWER_CALLS_PER_MIN
+
+
+def test_the_ceiling_refuses_once_the_budget_is_spent() -> None:
+    """STAKES-001. Nothing bounded the NUMBER of paid calls before this.
+
+    `recall_reasoning_query` debits only the wide `read` bucket, whose own comment says reads are
+    cheap; and on stdio, which is how this server actually runs, no limiter object exists at all.
+    A looping harness could spend without any ceiling.
+    """
+    from recall import answer_provider as ap
+
+    ap._ANSWER_RATE_GATE.reset_for_test(2.0)
+    provider = OpenAICompatibleAnswerProvider(
+        _FakeClient(_response('{"answer": null}')), model_id="m"
+    )
+
+    provider("sys", "usr")
+    provider("sys", "usr")
+    with pytest.raises(ap.AnswerRateLimited, match="calls/min"):
+        provider("sys", "usr")
+
+
+def test_the_ceiling_is_process_wide_not_per_provider_instance() -> None:
+    """The subtlety the whole design turns on, and the way this would silently do nothing.
+
+    `resolve_answer_provider` builds a NEW provider on every MCP tool call. A bucket held on the
+    provider instance would therefore be refilled to capacity by every call and bound exactly
+    nothing, while reading like a rate limit in every review.
+    """
+    from recall import answer_provider as ap
+
+    ap._ANSWER_RATE_GATE.reset_for_test(2.0)
+
+    def fresh():
+        return OpenAICompatibleAnswerProvider(
+            _FakeClient(_response('{"answer": null}')), model_id="m"
+        )
+
+    fresh()("sys", "usr")
+    fresh()("sys", "usr")
+    with pytest.raises(ap.AnswerRateLimited):
+        fresh()("sys", "usr")
+
+
+def test_a_refusal_costs_nothing_and_is_not_recorded_as_latency() -> None:
+    """Debited BEFORE the call and before the timer: a refused call must not reach the provider."""
+    from recall import answer_provider as ap
+
+    ap._ANSWER_RATE_GATE.reset_for_test(1.0)
+    # Real token counts on the first call, so the assertion below has something to discriminate
+    # WITH. The first version compared `latency_ms`, which is 0 for both a real fake-client call
+    # and a refusal, because sub-millisecond durations truncate to zero — a tautology that let
+    # the "debit inside the try" mutant survive.
+    client = _FakeClient(
+        _response('{"answer": null}', prompt_tokens=100, completion_tokens=50)
+    )
+    provider = OpenAICompatibleAnswerProvider(client, model_id="m", cost_per_1k_tokens=1.0)
+
+    provider("sys", "usr")
+    first = provider.provider_metadata()
+    assert first.total_tokens == 150, "the first call must record real usage to compare against"
+
+    with pytest.raises(ap.AnswerRateLimited):
+        provider("sys", "usr")
+
+    assert len(client.completions.calls) == 1, "the refused call must not reach the backend"
+
+    # The other half of this test's own name. The gate sits ABOVE the timer and outside the
+    # `try`, so a refusal never reaches `_record_metadata` and cannot overwrite the accounting
+    # of the call that did happen. With the debit moved inside the `try`, the `finally` records
+    # a response of None and wipes these numbers — which is worse than cosmetic, because the
+    # tokens and cost of a call that WAS billed would be replaced by a call that never ran.
+    after = provider.provider_metadata()
+    assert after.total_tokens == 150, "a refusal must not overwrite the billed call's usage"
+    assert after.monetary_cost_usd == first.monetary_cost_usd
+
+
+def test_the_ceiling_can_be_removed_with_a_word_not_a_number() -> None:
+    """`off`, never `0`: the reasoning `recall_mcp.limits` gives about its own OFF literal.
+
+    `0` reads as both "no limit" and "nothing allowed" depending on who is looking, and that
+    ambiguity in a SPEND control is how a cap gets removed by somebody who meant to tighten it.
+    """
+    from recall import answer_provider as ap
+
+    resolve_answer_provider(_enabled(RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN="off"))
+    provider = OpenAICompatibleAnswerProvider(
+        _FakeClient(_response('{"answer": null}')), model_id="m"
+    )
+    for _ in range(int(ap.DEFAULT_ANSWER_CALLS_PER_MIN) + 5):
+        provider("sys", "usr")
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nope", "nan"], ids=["zero", "negative", "word", "nan"])
+def test_a_malformed_ceiling_is_refused_naming_the_variable(value: str) -> None:
+    """`0` is refused explicitly, so nobody can remove the cap by typing what looks like none."""
+    with pytest.raises(ValueError, match="RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN"):
+        resolve_answer_provider(
+            _enabled(RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN=value)
+        )
+
+
+def test_the_ceiling_is_configured_before_the_optional_import() -> None:
+    """A bad ceiling must report itself, not a missing dependency, on a floor install."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def without_openai(name, *args, **kwargs):
+        if name == "openai":
+            raise AssertionError("openai imported before the ceiling was validated")
+        return real_import(name, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(builtins, "__import__", without_openai)
+        with pytest.raises(ValueError, match="RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN"):
+            resolve_answer_provider(
+                _openai_enabled(RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN="-5")
+            )
+
+
+def test_every_answer_provider_enforces_the_spend_ceiling() -> None:
+    """Derived from the SOURCE, so a third backend cannot quietly skip the ceiling.
+
+    The gate lives inside each provider's `__call__` rather than in a wrapper, because wrapping
+    the resolver's return value changed its type and broke every caller that reads `.client` or
+    asks `isinstance`. The cost of that choice is that a new backend has to remember, and an
+    enumeration that must be remembered is one that will be forgotten — so this derives the list
+    instead of holding one.
+    """
+    import ast
+    import pathlib
+
+    from recall import answer_provider as ap
+
+    tree = ast.parse(pathlib.Path(ap.__file__).read_text(encoding="utf-8"))
+    providers = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name.endswith("AnswerProvider")
+    ]
+    assert providers, "no answer provider classes found; the guard lost its target"
+
+    for cls in providers:
+        call = next(
+            (n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "__call__"), None
+        )
+        assert call is not None, f"{cls.name} has no __call__"
+        gated = any(
+            isinstance(n, ast.Attribute)
+            and n.attr == "take"
+            and isinstance(n.value, ast.Name)
+            and n.value.id == "_ANSWER_RATE_GATE"
+            for n in ast.walk(call)
+        )
+        assert gated, (
+            f"{cls.name}.__call__ does not debit _ANSWER_RATE_GATE, so this backend can spend "
+            "without any ceiling"
+        )
+
+
+def test_the_ceiling_survives_the_resolver_being_called_on_every_request() -> None:
+    """The property the whole design turns on, and the way it would silently do nothing.
+
+    `recall_reasoning_query` calls `resolve_answer_provider()` on EVERY tool call. If the resolver
+    reconfigured the gate each time, the bucket would be refilled to capacity per request and the
+    ceiling would bound nothing — while still reading like a rate limit in review, and still
+    passing a test that constructs providers directly.
+
+    Mutation testing is what found the gap: deleting the `if limit != _ANSWER_RATE_CONFIGURED`
+    guard left every other ceiling test green, because none of them went through the resolver
+    twice. This one does.
+    """
+    pytest.importorskip("openai")
+    env = _openai_enabled(RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN="2")
+
+    def resolved():
+        provider = resolve_answer_provider(env)
+        assert provider is not None
+        provider.client = _FakeClient(_response('{"answer": null}'))  # type: ignore[attr-defined]
+        return provider
+
+    from recall import answer_provider as ap
+
+    resolved()("sys", "usr")
+    resolved()("sys", "usr")
+    with pytest.raises(ap.AnswerRateLimited):
+        resolved()("sys", "usr")
