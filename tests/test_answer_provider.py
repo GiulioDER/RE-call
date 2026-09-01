@@ -448,3 +448,40 @@ def test_the_cli_reasoning_query_supplies_the_resolved_provider_too() -> None:
         "reasoning_audit must not be given a provider: it reports what the deterministic "
         "layer refuses and must not spend a model call to do it."
     )
+
+
+def test_the_reasoning_tool_description_does_not_route_agents_away() -> None:
+    """The description is the only thing that decides whether an agent ever calls this tool.
+
+    Until 2026-09-01 it opened with "Existing retrieval clients should keep using
+    `recall_search` or `recall_evidence`", an UNCONDITIONAL redirect. That was honest while
+    the tool could not answer, and it survived the wiring that made it able to. A tool that
+    can answer and is never called is indistinguishable, in every metric, from one that was
+    never built, so this is pinned rather than left to the next person editing a docstring.
+
+    Read from the PUBLISHED description that build_server() hands a client, not from the
+    source, because the client's copy is the one that decides anything.
+    """
+    from recall_mcp.server import build_server
+
+    tools = {t.name: t for t in build_server()._tool_manager.list_tools()}
+    description = tools["recall_reasoning_query"].description or ""
+    assert description.strip(), "recall_reasoning_query publishes no description at all"
+
+    lowered = description.lower()
+    for redirect in ("should keep using", "should use `recall_search`", "use recall_search instead"):
+        assert redirect not in lowered, (
+            f"the description tells clients {redirect!r}, which sends every agent elsewhere "
+            "regardless of the question. Say WHEN each tool is the right one instead."
+        )
+
+    assert "prefer this over" in lowered, (
+        "the description must say when to prefer this tool, or an agent has no basis to "
+        "choose it over recall_search."
+    )
+    # The misreading that matters most in practice, and the one the session-start guidance
+    # also warns about: an abstention is 'no supported answer', never 'nothing is there'.
+    assert "abstained" in lowered and "empty" in lowered, (
+        "the description must explain that `abstained` does not mean the corpus is empty; "
+        "an agent that reads it as absence concludes the fact does not exist."
+    )

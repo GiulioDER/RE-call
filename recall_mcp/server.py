@@ -1405,7 +1405,7 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     @mcp.tool(
         name="recall_reasoning_query",
         annotations=ToolAnnotations(
-            title="Run a bounded reasoning query",
+            title="Answer from memory, respecting supersession",
             read_only_hint=True,
             destructive_hint=False,
             idempotent_hint=True,
@@ -1424,17 +1424,26 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         expand_retrieval: bool = False,
         graph_expansion: str = "off",
     ) -> str:
-        """Run explicit opt-in reasoning over trusted retrieval and a derived graph.
+        """Answer a question from memory, taking supersession and dependencies into account.
 
-        Existing retrieval clients should keep using `recall_search` or `recall_evidence`.
-        This tool is additive and returns a full reasoning response: trust state, generation
+        Prefer this over `recall_search` when the question has one CURRENT answer and the
+        corpus may still hold older versions of it: this walks the authored supersession and
+        dependency edges, so it reports the position that still stands rather than every
+        version ever written. Prefer `recall_search` or `recall_evidence` when you want the
+        matching memories themselves, or a wider pool to read and judge yourself.
+
+        Returns the full response: outcome, answer, citations, trust state, generation
         identity, proposals, trace, refusal reason, and diagnostics.
 
-        A generator is called only when the operator has enabled one:
-        `resolve_answer_provider` returns None unless `RECALL_REASONING_ANSWER_ENABLED` is
-        explicitly truthy, and without it this tool still abstains with
-        `refusal_reason="no_answer_provider"` exactly as before. Any answer stays citation
-        constrained to trusted evidence chunk ids.
+        Read two fields correctly, because misreading them is the common failure:
+
+        * `abstained` means NO SUPPORTED ANSWER. It never means the corpus is empty, and it
+          is not evidence the fact is absent. `refusal_reason` says which case it is.
+          `no_answer_provider` means this server has no generator configured, so the evidence
+          may well be there: re-ask with `recall_evidence` and read it yourself. Any other
+          reason is about the evidence, where a reworded retry is unlikely to help.
+        * Citations are trusted evidence chunk ids and nothing else. Proposals are candidates
+          for human review, never facts, and are never valid citations.
 
         Args:
             graph_expansion: `off` by default, or `one_hop` to enable deterministic semantic
