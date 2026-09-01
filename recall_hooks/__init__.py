@@ -371,11 +371,47 @@ def pre_compact(payload: dict[str, Any]) -> int:
     return _index_and_refresh(payload)
 
 
+def _auth_command(args: list[str]) -> int:
+    """The subcommands a PERSON runs, dispatched before stdin is touched.
+
+    ⛔ Two things here are load-bearing and neither is obvious.
+
+    **Before the stdin read.** Every hook EVENT is fed a JSON payload on stdin, and `main` consumes
+    it up front. `login` reads a token from stdin, so dispatching it after that read would swallow
+    the credential into a `JSONDecodeError` and then ask for a token that had already been sent.
+
+    **A missing module is an ERROR here, not silence.** Every hook event degrades to exit 0 when
+    its module will not import, because a hook that fails takes a session down. A command a person
+    typed must do the opposite: its entire purpose is to report whether they are signed in, and
+    exiting 0 without doing anything is precisely the defect this function was written to fix.
+    `recall-hooks login` was named in two user-visible messages while `main` had no such branch, so
+    it fell through, exited 0, printed nothing, and the user's sync kept failing.
+    """
+    try:
+        from . import credentials
+    except ImportError as exc:
+        print(f"recall: the hosted credential store is unavailable ({exc})", file=sys.stderr)
+        return 4
+    config = load_config()
+    if args[0] == "auth-headers":
+        return credentials.print_auth_headers(config)
+    if args[0] == "logout":
+        return credentials.logout(config)
+    return credentials.login(config, args[1:])
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Dispatch for `python -m recall_hooks <event>`, invoked by the hooks themselves."""
+    """Dispatch for `python -m recall_hooks <event>`, invoked by the hooks themselves.
+
+    Also carries the three subcommands a person runs rather than a hook: `login`, `logout` and
+    `auth-headers`. See `_auth_command` for why they are dispatched before stdin is read and why
+    they fail loudly where an event stays silent.
+    """
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         return 0
+    if args[0] in {"login", "logout", "auth-headers"}:
+        return _auth_command(args)
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):

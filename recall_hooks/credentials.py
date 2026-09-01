@@ -283,3 +283,134 @@ def print_auth_headers(
         print("{}", file=out)
         print(f"recall: credential lookup failed ({type(exc).__name__}: {exc})", file=err)
     return 0
+
+
+# --------------------------------------------------------------------------- the human commands
+#
+# ⚠️ These are the OPPOSITE of the hook events in how they fail. A hook must degrade to silence and
+# exit 0, because a hook that reports an error takes a session down. A command a person typed must
+# do the reverse: say what went wrong and exit non-zero, because its whole purpose is to tell them
+# whether they are signed in. Reusing the hooks' habit here is what produced the defect this code
+# fixes, a `login` that did not exist and returned 0.
+
+
+def login(
+    config: dict[str, Any],
+    argv: list[str] | None = None,
+    *,
+    stdin: Any = None,
+    out: Any = None,
+    err: Any = None,
+    now: float | None = None,
+) -> int:
+    """Store a refresh token and prove it works.
+
+    Exit codes are the point of this command, so they are specific: 0 stored AND verified against
+    the token endpoint, 3 stored but NOT verified, 2 nothing was stored.
+
+    ⛔ 3 is not a warning dressed as success. "Signed in" that cannot fetch a token is the same
+    false success as the missing command this replaces: the user follows the instruction, sees it
+    succeed, and their sync keeps failing. Being offline is the benign case and it still gets a 3,
+    because from here the two are indistinguishable and only one of them is safe to assume.
+    """
+    out = out or sys.stdout
+    err = err or sys.stderr
+    args = list(argv or [])
+
+    token = ""
+    if "--token" in args:
+        index = args.index("--token")
+        if index + 1 >= len(args):
+            print("recall: --token needs a value", file=err)
+            return 2
+        token = args[index + 1].strip()
+    else:
+        source = stdin if stdin is not None else sys.stdin
+        try:
+            token = source.read().strip()
+        except (OSError, ValueError):
+            token = ""
+    if not token:
+        print(
+            "recall: no token given. Paste the token from your dashboard:\n"
+            "    recall-hooks login < token.txt\n"
+            "`--token` exists for scripts and puts the credential in your shell history.",
+            file=err,
+        )
+        return 2
+
+    try:
+        auth_config(config)
+    except AuthError as exc:
+        # Storing it would be worse than refusing: nothing could ever exchange it, and the user
+        # would be told they are signed in.
+        print(f"recall: {exc}", file=err)
+        return 2
+
+    where = write_refresh_token(config, token)
+    if where == "file":
+        # 🔑 Said out loud, always. A silent downgrade from an OS keychain to a plaintext file is
+        # not a decision to make on somebody's behalf.
+        print(
+            f"recall: no OS keychain available, so the token is in {fallback_path()} "
+            "(plaintext, permissions 0600). Install the `desktop` extra for keychain storage.",
+            file=err,
+        )
+    else:
+        print("recall: token stored in the OS keychain.", file=out)
+
+    try:
+        cred = refresh(config, token, now=now)
+    except AuthError as exc:
+        print(f"recall: stored, but it could not be verified: {exc}", file=err)
+        return 3
+    except Exception as exc:  # noqa: BLE001 - offline and rejected look the same from here
+        print(
+            f"recall: stored, but it could not be verified ({type(exc).__name__}: {exc}). "
+            "If this machine is offline, the next session will try again.",
+            file=err,
+        )
+        return 3
+    store_access_token(cred)
+    print(f"recall: signed in as {_account(config)}.", file=out)
+    return 0
+
+
+def logout(config: dict[str, Any], *, out: Any = None) -> int:
+    """Remove the stored credential from every place this module puts one.
+
+    Both stores are cleared whatever the keychain says, because `write_refresh_token` falls back
+    to the file and a later install of `keyring` would otherwise leave a stale plaintext token
+    behind that nothing reads and nobody remembers.
+    """
+    out = out or sys.stdout
+    removed = []
+    account = _account(config)
+    ring = _keyring()
+    if ring is not None:
+        try:
+            ring.delete_password(KEYRING_SERVICE, account)
+            removed.append("keychain")
+        except Exception:
+            pass
+    path = fallback_path()
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(stored, dict) and account in stored:
+            del stored[account]
+            _write_private_json(path, stored)
+            removed.append(str(path))
+    except (OSError, json.JSONDecodeError):
+        pass
+    try:
+        token_cache_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+    print(
+        f"recall: removed the credential from {', '.join(removed)}."
+        if removed
+        else "recall: no stored credential to remove.",
+        file=out,
+    )
+    return 0
+

@@ -8,6 +8,7 @@ so.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -271,4 +272,66 @@ def test_no_local_cursor_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     manifest = hosted.read_manifest(HOSTED)
     assert "files" not in manifest, "a local record of what is synced must not come back"
     assert manifest["pending"] == {}
+
+
+# --------------------------------------------------------------------------- the human commands
+
+
+def test_login_is_reachable_from_the_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⛔ THE REGRESSION THIS EXISTS FOR. `recall-hooks login` was named in two user-visible
+    messages while `main` had no branch for it, so it fell through to `return 0`, printed nothing,
+    and the user's sync kept failing after they followed the instruction exactly."""
+    from recall_hooks import credentials
+
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(recall_hooks, "load_config", lambda: HOSTED)
+    def fake_login(_config, args):
+        seen["args"] = args
+        return 0
+
+    monkeypatch.setattr(credentials, "login", fake_login)
+    assert recall_hooks.main(["login", "--token", "x"]) == 0
+    assert seen["args"] == ["--token", "x"]
+
+
+def test_login_does_not_have_its_stdin_eaten_by_the_payload_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every hook EVENT is fed JSON on stdin and `main` consumes it up front. `login` reads a token
+    from stdin instead, so dispatching it after that read would swallow the credential."""
+    import io
+
+    from recall_hooks import credentials
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("rt-from-stdin"))
+    monkeypatch.setattr(recall_hooks, "load_config", lambda: HOSTED)
+    captured: dict[str, str] = {}
+
+    def fake_login(_config, _args):
+        captured["token"] = sys.stdin.read()
+        return 0
+
+    monkeypatch.setattr(credentials, "login", fake_login)
+    assert recall_hooks.main(["login"]) == 0
+    assert captured["token"] == "rt-from-stdin", "the payload read must not have consumed it"
+
+
+def test_auth_headers_is_reachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It was written, tested and unreachable: nothing dispatched to it."""
+    from recall_hooks import credentials
+
+    calls: list[str] = []
+    monkeypatch.setattr(recall_hooks, "load_config", lambda: HOSTED)
+    monkeypatch.setattr(credentials, "print_auth_headers",
+                        lambda _c: calls.append("called") or 0)
+    assert recall_hooks.main(["auth-headers"]) == 0
+    assert calls == ["called"]
+
+
+def test_an_unknown_subcommand_is_still_silent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The events keep their contract: anything unrecognised is exit 0 and no output."""
+    import io
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
+    assert recall_hooks.main(["nonsense"]) == 0
 

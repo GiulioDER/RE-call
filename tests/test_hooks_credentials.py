@@ -40,6 +40,11 @@ class FakeKeyring:
             raise RuntimeError("no Secret Service available")
         self.store[(service, account)] = value
 
+    def delete_password(self, service: str, account: str) -> None:
+        if self.broken:
+            raise RuntimeError("no Secret Service available")
+        del self.store[(service, account)]
+
 
 def _with_keyring(monkeypatch: pytest.MonkeyPatch, ring) -> None:
     monkeypatch.setattr(cred, "_keyring", lambda: ring)
@@ -240,3 +245,153 @@ def test_the_module_does_not_import_recall() -> None:
     code = "import sys, recall_hooks.credentials; print('recall' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert out.stdout.strip() == "False", out.stdout + out.stderr
+
+
+# --------------------------------------------------------------------------- login
+
+
+class _Out:
+    """A stream that remembers, so a test can assert on what a person was actually told."""
+
+    def __init__(self) -> None:
+        self.text = ""
+
+    def write(self, chunk: str) -> int:
+        self.text += chunk
+        return len(chunk)
+
+    def flush(self) -> None:
+        pass
+
+
+class _Stdin:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def read(self) -> str:
+        return self.text
+
+
+def _credential() -> cred.Credential:
+    return cred.Credential(access_token="at-1", expires_at=9e18)
+
+
+def test_login_with_no_token_refuses_and_says_how(monkeypatch: pytest.MonkeyPatch) -> None:
+    out, err = _Out(), _Out()
+    _with_keyring(monkeypatch, FakeKeyring())
+    code = cred.login(CONFIG, [], stdin=_Stdin("  \n"), out=out, err=err)
+    assert code == 2
+    assert "recall-hooks login" in err.text
+    assert "shell history" in err.text, "the --token hazard is named where it is offered"
+
+
+def test_login_stores_nothing_when_the_config_cannot_exchange_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ Refusing must actually refuse. Storing a token that nothing can exchange, and reporting
+    success, is the same false success as the missing command this replaces."""
+    ring = FakeKeyring()
+    _with_keyring(monkeypatch, ring)
+    out, err = _Out(), _Out()
+    code = cred.login({"dsn": "postgresql://x/y"}, [], stdin=_Stdin("rt-1"), out=out, err=err)
+    assert code == 2
+    assert ring.store == {}
+    assert cred.read_refresh_token({"dsn": "postgresql://x/y"}) is None
+    assert not cred.fallback_path().exists()
+
+
+def test_login_stores_and_verifies(monkeypatch: pytest.MonkeyPatch) -> None:
+    ring = FakeKeyring()
+    _with_keyring(monkeypatch, ring)
+    monkeypatch.setattr(cred, "refresh", lambda *_a, **_k: _credential())
+    out, err = _Out(), _Out()
+    assert cred.login(CONFIG, [], stdin=_Stdin("rt-1\n"), out=out, err=err) == 0
+    assert cred.read_refresh_token(CONFIG) == "rt-1"
+    assert cred.cached_access_token() is not None, "the access token is cached, not re-fetched"
+    assert "signed in" in out.text
+
+
+def test_a_token_that_cannot_be_verified_is_kept_but_does_not_exit_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """3, not 0 and not 1. The token is kept because being offline is the benign case and the next
+    session should retry; the exit code is non-zero because from here offline and revoked look
+    identical and only one of them is safe to call success."""
+    _with_keyring(monkeypatch, FakeKeyring())
+
+    def unreachable(*_a, **_k):
+        raise OSError("getaddrinfo failed")
+
+    monkeypatch.setattr(cred, "refresh", unreachable)
+    out, err = _Out(), _Out()
+    assert cred.login(CONFIG, [], stdin=_Stdin("rt-1"), out=out, err=err) == 3
+    assert cred.read_refresh_token(CONFIG) == "rt-1", "kept, so the next session can retry"
+    assert "could not be verified" in err.text
+
+
+def test_a_rejected_token_is_also_three(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_keyring(monkeypatch, FakeKeyring())
+
+    def rejected(*_a, **_k):
+        raise cred.AuthError("invalid_grant")
+
+    monkeypatch.setattr(cred, "refresh", rejected)
+    out, err = _Out(), _Out()
+    assert cred.login(CONFIG, [], stdin=_Stdin("rt-1"), out=out, err=err) == 3
+    assert "invalid_grant" in err.text
+
+
+def test_the_plaintext_fallback_is_announced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """🔑 A silent downgrade from a keychain to a plaintext file is not a decision to make on
+    somebody's behalf, so it is said out loud even on the success path."""
+    _with_keyring(monkeypatch, None)
+    monkeypatch.setattr(cred, "refresh", lambda *_a, **_k: _credential())
+    out, err = _Out(), _Out()
+    assert cred.login(CONFIG, [], stdin=_Stdin("rt-1"), out=out, err=err) == 0
+    assert "plaintext" in err.text
+    assert str(cred.fallback_path()) in err.text
+
+
+def test_token_flag_needs_a_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_keyring(monkeypatch, FakeKeyring())
+    out, err = _Out(), _Out()
+    assert cred.login(CONFIG, ["--token"], stdin=_Stdin(""), out=out, err=err) == 2
+
+
+def test_token_flag_does_not_read_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    ring = FakeKeyring()
+    _with_keyring(monkeypatch, ring)
+    monkeypatch.setattr(cred, "refresh", lambda *_a, **_k: _credential())
+    out, err = _Out(), _Out()
+    assert cred.login(CONFIG, ["--token", "rt-flag"], stdin=_Stdin("rt-stdin"),
+                      out=out, err=err) == 0
+    assert cred.read_refresh_token(CONFIG) == "rt-flag"
+
+
+# --------------------------------------------------------------------------- logout
+
+
+def test_logout_clears_both_stores_and_the_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both, whatever the keychain says. `write_refresh_token` falls back to the file, so a later
+    install of `keyring` would otherwise leave a stale plaintext token nobody remembers."""
+    ring = FakeKeyring()
+    _with_keyring(monkeypatch, None)
+    cred.write_refresh_token(CONFIG, "rt-file")     # lands in the plaintext fallback
+    _with_keyring(monkeypatch, ring)
+    cred.write_refresh_token(CONFIG, "rt-ring")     # and in the keychain
+    cred.store_access_token(_credential())
+    assert cred.token_cache_path().exists()
+
+    out = _Out()
+    assert cred.logout(CONFIG, out=out) == 0
+    assert cred.read_refresh_token(CONFIG) is None
+    assert ring.store == {}
+    assert not cred.token_cache_path().exists()
+
+
+def test_logout_with_nothing_stored_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_keyring(monkeypatch, FakeKeyring())
+    out = _Out()
+    assert cred.logout(CONFIG, out=out) == 0
+    assert "no stored credential" in out.text
+
