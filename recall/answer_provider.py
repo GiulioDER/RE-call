@@ -299,14 +299,29 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> AnswerProvi
         raise ValueError(
             "RECALL_REASONING_ANSWER_MODEL is required when the answer provider is enabled"
         )
+    # The legacy bare names are read as a TRIO (key, base URL, timeout), matching
+    # `resolve_expansion_provider`. Taking the legacy KEY while ignoring the legacy BASE URL was
+    # the dangerous half-measure: a pre-0.11 config naming a private gateway kept its key and
+    # silently acquired the OpenRouter default, so the credential AND the retrieved evidence went
+    # to a third party the operator never named. Read both or neither.
+    #
+    # Ollama keeps its loopback default and does not read the bare base URL: the bare family is
+    # the hosted OpenAI-compatible arm's, and pointing the Ollama transport at it would rebuild
+    # the exact `<base>/api/chat` mismatch documented below.
+    legacy_base_url = (
+        source.get("RECALL_REASONING_BASE_URL", "").strip() if backend == "openai" else ""
+    )
     base_url = (
         source.get("RECALL_REASONING_ANSWER_BASE_URL", "").strip()
+        or legacy_base_url
         or _DEFAULT_BASE_URLS[backend]
     )
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("RECALL_REASONING_ANSWER_BASE_URL must be an absolute http(s) URL")
-    raw_timeout = source.get("RECALL_REASONING_ANSWER_TIMEOUT", "").strip()
+    raw_timeout = source.get("RECALL_REASONING_ANSWER_TIMEOUT", "").strip() or (
+        source.get("RECALL_REASONING_TIMEOUT", "").strip() if backend == "openai" else ""
+    )
     if not raw_timeout:
         # Empty means unset: .env templates ship the key valueless, matching recall/profiles.py.
         raw_timeout = "60"
@@ -345,6 +360,18 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> AnswerProvi
     revision = source.get("RECALL_REASONING_ANSWER_REVISION", "").strip() or "unpinned"
 
     if backend == "ollama":
+        # Refused rather than ignored, symmetrically with the THINKING refusal below. Returning
+        # here without reading these left an operator who set a price or a key believing they
+        # had configured something, which is the failure mode this whole change exists to
+        # remove. `_ANSWER_KEY` is excluded from the check on purpose: it is legitimately
+        # present in a shared .env for the other reasoning arm.
+        for openai_only in ("RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS",):
+            if source.get(openai_only, "").strip():
+                raise ValueError(
+                    f"{openai_only} is an openai-backend setting and cannot be used with "
+                    "RECALL_REASONING_ANSWER_PROVIDER=ollama, where inference is local and "
+                    "the recorded cost is always 0.0"
+                )
         return OllamaAnswerProvider(
             _NativeOllamaClient(base_url, timeout=timeout),
             model_id=model,
@@ -379,6 +406,18 @@ def resolve_answer_provider(env: Mapping[str, str] | None = None) -> AnswerProvi
         raise ValueError(
             "RECALL_REASONING_ANSWER_API_KEY (or the legacy RECALL_REASONING_API_KEY) is "
             "required when RECALL_REASONING_ANSWER_PROVIDER=openai"
+        )
+    # The shared validation above accepts `http` because the OLLAMA default is loopback. This
+    # backend is the first to attach an `Authorization: Bearer` header to that URL, so a
+    # copy-pasted or downgraded `http://` endpoint would put the operator's key on the wire in
+    # cleartext. Loopback stays allowed: it is how a local gateway or a test double is reached,
+    # and it never leaves the machine.
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" and host not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError(
+            "RECALL_REASONING_ANSWER_BASE_URL must use https for a non-loopback host when "
+            "RECALL_REASONING_ANSWER_PROVIDER=openai, because the API key is sent with every "
+            f"request (got {parsed.scheme!r} for host {host!r})"
         )
     raw_cost = source.get("RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS", "").strip()
     cost: float | None = None

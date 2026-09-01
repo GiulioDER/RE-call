@@ -657,3 +657,112 @@ def test_an_empty_revision_means_unset_not_empty() -> None:
     provider = resolve_answer_provider(_enabled(RECALL_REASONING_ANSWER_REVISION="   "))
     assert provider is not None
     assert provider.revision == "unpinned"
+
+
+# --- deferred findings, second pass -------------------------------------------------------
+
+
+def test_the_legacy_bare_base_url_is_honoured_beside_the_legacy_bare_key() -> None:
+    """ENV-001. Taking the legacy KEY while ignoring the legacy BASE URL is the dangerous half.
+
+    A pre-0.11 `.env` naming a private gateway kept its `RECALL_REASONING_API_KEY` and silently
+    acquired the OpenRouter default, so the credential AND the retrieved evidence went to a
+    third party the operator never named. The sibling `resolve_expansion_provider` reads the
+    bare key, base URL and timeout as a matched trio; this one took only the key.
+    """
+    pytest.importorskip("openai")
+    provider = resolve_answer_provider(
+        _enabled(
+            RECALL_REASONING_ANSWER_PROVIDER="openai",
+            RECALL_REASONING_API_KEY="sk-private",
+            RECALL_REASONING_BASE_URL="https://gateway.internal.example/v1",
+            RECALL_REASONING_TIMEOUT="12",
+        )
+    )
+    assert provider is not None
+    assert "gateway.internal.example" in str(provider.client.base_url), (
+        "a legacy private gateway must not be silently replaced by the OpenRouter default"
+    )
+    assert "openrouter" not in str(provider.client.base_url)
+    # The TRIO, not just the URL: without this the timeout half of the fix is unguarded, which
+    # is how a half-applied legacy fallback would pass review a second time.
+    assert provider.client.timeout == 12.0, "the legacy timeout is part of the same trio"
+
+
+def test_the_infixed_base_url_still_beats_the_legacy_one() -> None:
+    """Precedence must stay preferred-over-legacy, matching the key and the sibling resolver."""
+    pytest.importorskip("openai")
+    provider = resolve_answer_provider(
+        _openai_enabled(
+            RECALL_REASONING_ANSWER_BASE_URL="https://preferred.example/v1",
+            RECALL_REASONING_BASE_URL="https://legacy.example/v1",
+        )
+    )
+    assert provider is not None
+    assert "preferred.example" in str(provider.client.base_url)
+
+
+def test_the_ollama_backend_ignores_the_bare_hosted_base_url() -> None:
+    """The bare family belongs to the hosted arm; feeding it to Ollama rebuilds the path bug.
+
+    `_NativeOllamaClient` rewrites the path to `<base>/api/chat`, so honouring a hosted base URL
+    here would produce exactly the unauthenticated POST-to-a-missing-path this module warns
+    about. Ollama keeps its loopback default.
+    """
+    provider = resolve_answer_provider(
+        _enabled(RECALL_REASONING_BASE_URL="https://openrouter.ai/api/v1")
+    )
+    assert provider is not None
+    assert "127.0.0.1" in provider.client.endpoint
+
+
+def test_a_hosted_endpoint_refuses_plaintext_http_because_it_carries_the_key() -> None:
+    """SEC-002. This backend is the first to attach `Authorization: Bearer` to the base URL.
+
+    The shared validation accepts `http` because the OLLAMA default is loopback. A copy-pasted
+    or downgraded `http://` hosted endpoint would put the operator's key on the wire in
+    cleartext, and nothing would say so.
+    """
+    with pytest.raises(ValueError, match="https"):
+        resolve_answer_provider(
+            _openai_enabled(RECALL_REASONING_ANSWER_BASE_URL="http://api.example.com/v1")
+        )
+
+
+@pytest.mark.parametrize(
+    "url", ["http://localhost:8000/v1", "http://127.0.0.1:8000/v1"], ids=["localhost", "loopback"]
+)
+def test_a_loopback_hosted_endpoint_may_still_use_http(url: str) -> None:
+    """Loopback never leaves the machine, and is how a local gateway or a test double is reached.
+
+    Without this the https rule would break every local OpenAI-compatible server, which is a
+    real and legitimate configuration.
+    """
+    pytest.importorskip("openai")
+    provider = resolve_answer_provider(
+        _openai_enabled(RECALL_REASONING_ANSWER_BASE_URL=url)
+    )
+    assert provider is not None
+
+
+def test_an_openai_only_setting_is_refused_under_ollama_rather_than_ignored() -> None:
+    """BUG-006/ENV-003. The mirror image of the THINKING refusal, which this file already has.
+
+    The ollama branch returned before the cost was ever read, so an operator who configured a
+    per-1k price got `monetary_cost_usd=0.0` and no indication their setting did nothing.
+    Silently ignoring configuration is the exact failure mode this module refuses elsewhere.
+    """
+    with pytest.raises(ValueError, match="RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS"):
+        resolve_answer_provider(_enabled(RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS="0.5"))
+
+
+def test_a_shared_api_key_does_not_block_the_ollama_backend() -> None:
+    """The key is deliberately NOT in the refused set: a shared .env carries it for another arm.
+
+    Refusing it would break every installation that runs expansion and answering side by side,
+    which is the ordinary case the legacy fallback exists to serve.
+    """
+    provider = resolve_answer_provider(
+        _enabled(RECALL_REASONING_API_KEY="sk-for-the-expansion-arm")
+    )
+    assert provider is not None

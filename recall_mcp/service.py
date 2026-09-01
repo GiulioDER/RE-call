@@ -2556,7 +2556,11 @@ def reasoning_query(
     budget = ReasoningBudget(
         max_steps=max_steps,
         max_graph_nodes=max_graph_nodes,
-        max_model_calls=0,
+        # Exactly one model call when a generator is supplied, and zero otherwise. This used to
+        # be a hard 0 while the answer provider ran unchecked, so the budget said one thing and
+        # the run did another. One is the honest ceiling: `reason` invokes the answer provider
+        # at most once, and retrieval expansion is separately gated by its own opt-in.
+        max_model_calls=1 if answer_provider is not None else 0,
         max_evidence_tokens=max_evidence_tokens,
         max_graph_hops=1 if graph_expansion == "one_hop" else 0,
     )

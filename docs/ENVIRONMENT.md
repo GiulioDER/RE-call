@@ -108,7 +108,19 @@ OPENROUTER_API_KEY=
 #                                                      # so a wizard-configured install must set
 #                                                      # this variable explicitly.
 # RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS=          # optional; unset records a NULL cost
-#                                                      # rather than claiming the call was free
+#                                                      # rather than claiming the call was free.
+#                                                      # REFUSED under PROVIDER=ollama, where
+#                                                      # inference is local and cost is 0.0.
+#
+# For PROVIDER=openai the bare legacy RECALL_REASONING_BASE_URL and RECALL_REASONING_TIMEOUT are
+# accepted as fallbacks alongside the legacy key, as a matched TRIO. Taking only the legacy key
+# meant a pre-0.11 config naming a private gateway kept its credential and silently acquired the
+# OpenRouter default, sending both the key and the retrieved evidence to a third party.
+#
+# A non-loopback RECALL_REASONING_ANSWER_BASE_URL must use https under PROVIDER=openai: this is
+# the first backend to attach an Authorization header to that URL, so plaintext http would put
+# the key on the wire. Loopback (localhost / 127.0.0.1 / ::1) may still use http, which is how a
+# local OpenAI-compatible gateway is reached.
 
 # --- Which tools the MCP server serves ---
 # Unset serves all 18, which is the historical behaviour. Every tool definition is re-sent on
