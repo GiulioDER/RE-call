@@ -4273,7 +4273,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2" },
     { name = "pyjwt", extras = ["crypto"], marker = "extra == 'dev'", specifier = ">=2.10.1,<3" },
     { name = "pyjwt", extras = ["crypto"], marker = "extra == 'mcp'", specifier = ">=2.10.1,<3" },
-    { name = "pypdf", marker = "extra == 'documents'", specifier = ">=5.0" },
+    { name = "pypdf", marker = "extra == 'documents'", specifier = ">=5.0,<7" },
     { name = "pyside6", marker = "extra == 'desktop'", specifier = ">=6.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5" },
