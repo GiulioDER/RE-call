@@ -35,6 +35,12 @@ updates:
     # guard refused them, and they were dropped rather than capping a published library's
     # dependencies purely to silence a weekly PR.
     #
+    # 🔁 Half of that is superseded 2026-09-02: `pypdf` WAS capped, deliberately, at `<7`, with
+    # the reasoning written beside the pin in pyproject.toml — its extracted text feeds chunking,
+    # so a major changes corpus content silently rather than raising. That is a cap earned on its
+    # merits, which is the sanctioned route; what stays refused is capping something merely to
+    # quieten it. `boto3` remains uncapped and un-ignored, and its PRs still arrive.
+    #
     # ⚠️ Assume a rule here also suppresses SECURITY PRs for that dependency. Recorded as
     # UNCONFIRMED: GitHub's options reference says ignored dependencies are filtered out after
     # the allow step but does not spell out the security path, and nobody has watched it here.
@@ -84,6 +90,17 @@ updates:
       # is effectively TOTAL. Delete it if the cap is ever lifted, or the silence changes meaning
       # without anything being edited — which is exactly the inversion this file warns about.
       - dependency-name: "transformers"
+        update-types:
+          - "version-update:semver-patch"
+          - "version-update:semver-minor"
+
+      # pypdf: capped `<7` (2026-09-02). Extracted TEXT is the output, so it feeds chunking and
+      # decides what the corpus contains; a major that changes layout or whitespace handling does
+      # not raise, it re-chunks every PDF-derived document and moves embeddings nothing
+      # re-verifies. A major is therefore a re-index-and-compare, not a resolver decision.
+      # ⚠️ Same interaction as transformers: `<7` already blocks the major, so while that cap
+      # stands this rule is effectively TOTAL. Delete it in the same change that lifts the cap.
+      - dependency-name: "pypdf"
         update-types:
           - "version-update:semver-patch"
           - "version-update:semver-minor"

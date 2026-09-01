@@ -83,7 +83,14 @@ fastembed = ["fastembed>=0.3,<1"]
 agent-ab = ["scipy>=1.11"]
 # Native extraction for PDF, Office, spreadsheets, presentations, HTML, and tables.
 documents = [
-    "pypdf>=5.0",
+    # pypdf is capped at the major ON PURPOSE, and the reason is silence rather than breakage.
+    # Its output is extracted TEXT, which feeds chunking and therefore what the corpus contains:
+    # a major that changes layout handling or whitespace does not raise, it quietly re-chunks
+    # every PDF-derived document and moves embeddings that nothing re-verifies. So a major is a
+    # re-index-and-compare, not a resolver decision. Capped 2026-09-02 as a deliberate guard, NOT
+    # on evidence of a specific break; 6.16.1 resolves unchanged under it. `.github/dependabot.yml`
+    # carries the matching ignore rule and must lose it in the same change if this cap is lifted.
+    "pypdf>=5.0,<7",
     "pdfplumber>=0.11",
     "python-docx>=1.1",
     "openpyxl>=3.1",
