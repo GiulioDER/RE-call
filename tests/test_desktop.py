@@ -274,6 +274,15 @@ def test_the_same_relative_path_twice_is_still_refused() -> None:
         "a/.../b.md",
         "notes/trailing./x.md",
         "notes/trailing /x.md",
+        # Illegal on Windows. Accepting them on Linux would make the two platforms disagree about
+        # what a valid upload is, and the Windows failure would be an OSError from write_bytes.
+        "notes/a:b.md",
+        "notes/a|b.md",
+        "notes/a?b.md",
+        "notes/a*b.md",
+        "notes/a<b>.md",
+        'notes/a"b.md',
+        "notes/bell\x07.md",
     ],
 )
 def test_an_unsafe_upload_name_is_refused(name: str) -> None:

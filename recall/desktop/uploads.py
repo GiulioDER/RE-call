@@ -28,6 +28,13 @@ class UploadError(ValueError, RecallError):
 #: chain, and so a path stays inside the filesystem's own limits on every platform.
 _MAX_UPLOAD_DEPTH = 8
 
+#: Characters Windows cannot put in a filename. `/` and `\\` are absent because they are handled
+#: as separators before this is consulted. Refused on every platform for the same reason the
+#: reserved names are: a Linux server that accepts a name a Windows one cannot store makes the two
+#: disagree about what a valid upload is, and the Windows failure would arrive as an OSError from
+#: inside `write_bytes` rather than as an UploadError at the boundary.
+_ILLEGAL_NAME_CHARS = frozenset('<>:"|?*') | {chr(code) for code in range(32)}
+
 #: Windows refuses these as filenames whatever the extension, and a server staging a hostile name
 #: on Windows would fail deep inside `write_bytes` rather than at the boundary. Checked on every
 #: platform so a Linux server and a Windows one accept exactly the same uploads.
@@ -93,6 +100,12 @@ def _safe_relative_name(raw: str) -> str:
             )
         if part.split(".", 1)[0].lower() in _RESERVED_WINDOWS_NAMES:
             raise UploadError(f"upload name uses a reserved device name in {raw!r}")
+        illegal = sorted(_ILLEGAL_NAME_CHARS.intersection(part))
+        if illegal:
+            raise UploadError(
+                f"upload name contains {illegal[0]!r}, which cannot be stored on every "
+                f"supported platform, in {raw!r}"
+            )
     return "/".join(parts)
 
 
