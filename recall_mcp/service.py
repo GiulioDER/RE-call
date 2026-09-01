@@ -2119,11 +2119,23 @@ def _expand_semantic_graph(
         ).encode("utf-8")
     ).hexdigest()
     rejections: dict[str, int] = {}
+    refusals: dict[str, int] = {}
     semantic_diagnostic_count = 0
 
     def reject(reason: str, count: int = 1) -> None:
+        """Refuse one CANDIDATE. Never a whole expansion: see `refuse`."""
         if count > 0:
             rejections[reason] = rejections.get(reason, 0) + count
+
+    def refuse(reason: str) -> None:
+        """Refuse the WHOLE expansion, before any candidate exists.
+
+        Kept apart from `reject` because the two answer different questions and were being
+        counted as one. `admission_rejections: {'selective_gate': 1}` beside
+        `candidates_discovered: 0` reads as a candidate that was evaluated and turned away, and
+        points a reader at the admission criteria; the truth is that expansion never started.
+        """
+        refusals[reason] = refusals.get(reason, 0) + 1
 
     def finish(
         *,
@@ -2136,6 +2148,7 @@ def _expand_semantic_graph(
     ) -> SemanticGraphExpansionResult:
         latency_ms = round((time.perf_counter() - started) * 1000.0, 3)
         rejection_items = tuple(sorted(rejections.items()))
+        refusal_items = tuple(sorted(refusals.items()))
         METRICS.increment("recall_graph_query_total")
         METRICS.increment("recall_graph_expansion_total")
         METRICS.increment("recall_graph_candidates_total", value=candidates)
@@ -2147,6 +2160,10 @@ def _expand_semantic_graph(
         METRICS.increment("recall_graph_policy_total", policy=policy_fingerprint[:16])
         if gate_reason is not None:
             METRICS.increment("recall_graph_gate_refused_total", reason=gate_reason)
+        for refusal_reason, count in refusal_items:
+            METRICS.increment(
+                "recall_graph_expansion_refused_total", value=count, reason=refusal_reason
+            )
         for rejection_reason, count in rejection_items:
             metric = (
                 "recall_graph_relations_rejected_total"
@@ -2166,16 +2183,54 @@ def _expand_semantic_graph(
             diagnostics_encountered=semantic_diagnostic_count,
             latency_ms=latency_ms,
             admission_rejections=rejection_items,
+            expansion_refusals=refusal_items,
             gate_reason=gate_reason,
             policy_fingerprint=policy_fingerprint,
         )
 
     readiness_reader = getattr(store, "graph_readiness", None)
     readiness = readiness_reader() if callable(readiness_reader) else None
+    if readiness is not None and not readiness.ready:
+        refuse("graph_not_ready")
+        return finish(
+            result=retrieval,
+            readiness="GRAPH_NOT_READY",
+            gate_reason="graph_not_ready",
+        )
+
+    # ⛔ THE SEED GATES RUN BEFORE THE PROJECTION, AND THAT ORDER IS THE POINT.
+    #
+    # Both of their inputs come from `retrieval`, which is already in hand, while
+    # `_store_graph` is a full semantic-graph projection: measured at 3.0s and 4.0s on two
+    # production tenants for queries that then tripped the gate and threw the result away.
+    # Evidence was byte-identical to `graph_expansion=off` across six queries, so that was
+    # three to four seconds bought nothing. The selective gate trips whenever retrieval already
+    # returned two or more trusted seeds without a gap warning, which is the COMMON case, so
+    # this was most `one_hop` queries rather than an edge.
+    #
+    # The readiness read stays above it. It is the cheap half, it decides a question the gate
+    # cannot answer, and refusing on a stale graph before looking at seeds keeps
+    # `graph_not_ready` ahead of `graph_gate_not_met` exactly as before.
+    trusted_seed_ids = {hit.chunk.id for hit in retrieval.hits if is_trusted(hit)}
+    if not trusted_seed_ids:
+        refuse("no_trusted_seed")
+        return finish(
+            result=retrieval,
+            readiness="ready",
+            gate_reason="no_trusted_seed",
+        )
+    if use_selective_gate and len(trusted_seed_ids) >= 2 and not retrieval.gap_warning:
+        refuse("selective_gate")
+        return finish(
+            result=retrieval,
+            readiness="ready",
+            gate_reason="graph_gate_not_met",
+        )
+
     graph = _store_graph(store, include_text=True)
     semantic = graph.semantic_graph
-    if semantic is None or (readiness is not None and not readiness.ready):
-        reject("graph_not_ready")
+    if semantic is None:
+        refuse("graph_not_ready")
         return finish(
             result=retrieval,
             readiness="GRAPH_NOT_READY",
@@ -2187,7 +2242,7 @@ def _expand_semantic_graph(
         and graph.generation_id
         and retrieval.generation_id != graph.generation_id
     ):
-        reject("generation_mismatch")
+        refuse("generation_mismatch")
         return finish(
             result=retrieval,
             readiness="GRAPH_NOT_READY",
@@ -2208,22 +2263,6 @@ def _expand_semantic_graph(
             ),
         )
         graph = replace(graph, semantic_graph=semantic)
-
-    trusted_seed_ids = {hit.chunk.id for hit in retrieval.hits if is_trusted(hit)}
-    if not trusted_seed_ids:
-        reject("no_trusted_seed")
-        return finish(
-            result=retrieval,
-            readiness="ready",
-            gate_reason="no_trusted_seed",
-        )
-    if use_selective_gate and len(trusted_seed_ids) >= 2 and not retrieval.gap_warning:
-        reject("selective_gate")
-        return finish(
-            result=retrieval,
-            readiness="ready",
-            gate_reason="graph_gate_not_met",
-        )
 
     mentions_by_chunk: dict[str, set[str]] = {}
     chunks_by_entity: dict[str, set[str]] = {}

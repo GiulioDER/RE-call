@@ -780,6 +780,7 @@ def test_graph_precision_diagnostics_round_trip_as_additive_fields() -> None:
         diagnostics=replace(
             response.diagnostics,
             graph_admission_rejections={"hub_entity": 2, "cosine_admission": 1},
+            graph_expansion_refusals={"selective_gate": 1},
             graph_gate_reason="graph_gate_not_met",
             graph_policy_fingerprint="f" * 64,
         ),
@@ -789,6 +790,9 @@ def test_graph_precision_diagnostics_round_trip_as_additive_fields() -> None:
         "hub_entity": 2,
         "cosine_admission": 1,
     }
+    # The two counters survive the round trip SEPARATELY. Folded into one they read as three
+    # candidates rejected when only two were ever evaluated.
+    assert decoded.diagnostics.graph_expansion_refusals == {"selective_gate": 1}
     assert decoded.diagnostics.graph_gate_reason == "graph_gate_not_met"
     assert decoded.diagnostics.graph_policy_fingerprint == "f" * 64
 
