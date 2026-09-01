@@ -201,6 +201,113 @@ def test_duplicate_upload_names_are_refused_not_last_writer_wins() -> None:
         )
 
 
+def test_a_nested_upload_name_keeps_its_directories() -> None:
+    """A relative path survives staging instead of collapsing to its basename.
+
+    `stage_uploads` used to take `Path(name).name`, which is safe but lossy. Two consequences,
+    both of which block any client syncing a real memory directory:
+
+    * `notes/a.md` and `archive/a.md` in one upload both became `a.md`, so the second tripped the
+      duplicate-name refusal and the WHOLE upload failed, permanently, for any tree with
+      subdirectories;
+    * the staged layout stopped matching the caller's, so `Indexer.index_path`'s relative name
+      (and therefore `metadata->>'file'`) was a basename rather than a logical path.
+    """
+    payload = base64.b64encode(b"nested").decode("ascii")
+    other = base64.b64encode(b"sibling").decode("ascii")
+    _job, staged, total = stage_uploads(
+        "acme",
+        [
+            {"name": "notes/a.md", "content_b64": payload},
+            {"name": "archive/a.md", "content_b64": other},
+        ],
+    )
+    assert (staged / "notes" / "a.md").read_bytes() == b"nested"
+    assert (staged / "archive" / "a.md").read_bytes() == b"sibling"
+    assert total == len(b"nested") + len(b"sibling")
+
+
+def test_a_backslash_separated_name_is_normalised_not_flattened() -> None:
+    """A Windows client sends `notes\\a.md`; it must land at `notes/a.md`, not as one filename.
+
+    Left unhandled, the whole string is a single component on POSIX, so the server would create a
+    file literally named `notes\\a.md` and the two sides would disagree about what is stored.
+    """
+    payload = base64.b64encode(b"win").decode("ascii")
+    _job, staged, _total = stage_uploads(
+        "acme", [{"name": "notes\\a.md", "content_b64": payload}]
+    )
+    assert (staged / "notes" / "a.md").read_bytes() == b"win"
+
+
+def test_the_same_relative_path_twice_is_still_refused() -> None:
+    """De-duplication keys on the relative path, which is strictly narrower than the basename."""
+    payload = base64.b64encode(b"one").decode("ascii")
+    with pytest.raises(UploadError, match="duplicate"):
+        stage_uploads(
+            "acme",
+            [
+                {"name": "notes/memo.md", "content_b64": payload},
+                {"name": "notes/memo.md", "content_b64": payload},
+            ],
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../escape.md",
+        "notes/../../escape.md",
+        "/etc/passwd",
+        "C:/Windows/system32/cfg",
+        "C:\\Windows\\cfg",
+        "\\\\server\\share\\x.md",
+        "notes/\x00null.md",
+        "a/b/c/d/e/f/g/h/i/too-deep.md",
+        "notes/",
+        ".",
+        "..",
+        "",
+        # Windows strips trailing dots and spaces, so each of these becomes something other than
+        # what it says. `.. ` is a traversal that the exact-`..` check does not see.
+        "notes/.. /x.md",
+        "a/.../b.md",
+        "notes/trailing./x.md",
+        "notes/trailing /x.md",
+    ],
+)
+def test_an_unsafe_upload_name_is_refused(name: str) -> None:
+    """Accepting directories must not have re-opened traversal.
+
+    The old basename collapse made every one of these harmless by throwing the path away. Keeping
+    the path means each has to be refused ON PURPOSE, so this is the guard that replaces the
+    accident. Refusal rather than sanitisation: silently rewriting a caller's name stages content
+    under a path they neither asked for nor can predict, and the client's manifest would then
+    disagree with the server about what is stored.
+    """
+    payload = base64.b64encode(b"x").decode("ascii")
+    with pytest.raises(UploadError):
+        stage_uploads("acme", [{"name": name, "content_b64": payload}])
+
+
+def test_a_refused_nested_upload_leaves_no_directories_behind() -> None:
+    """Cleanup removes directories the batch created, not only its files."""
+    root = Path(os.environ["RECALL_INDEX_ROOT"]).resolve()
+    good = base64.b64encode(b"kept?").decode("ascii")
+    tenant_root = root / "uploads" / "acme"
+    before = set(tenant_root.glob("*")) if tenant_root.exists() else set()
+    with pytest.raises(UploadError):
+        stage_uploads(
+            "acme",
+            [
+                {"name": "deep/nest/first.md", "content_b64": good},
+                {"name": "deep/nest/second.md", "content_b64": "not-base64!!"},
+            ],
+        )
+    after = set(tenant_root.glob("*")) if tenant_root.exists() else set()
+    assert after == before, "the refused job's staging directory survived the refusal"
+
+
 def test_an_oversized_entry_is_refused_before_it_is_decoded() -> None:
     """The encoded length bounds the decoded size, so the cap fires without materialising it."""
     oversized = "A" * (68 * 1024 * 1024)  # decodes to ~51 MiB, over the 50 MiB cap

@@ -23,6 +23,79 @@ class UploadError(ValueError, RecallError):
     """Raised when a desktop upload is malformed or exceeds its safety limits."""
 
 
+#: Deepest relative path a staged upload may carry. A memory directory is organised by hand, so
+#: eight levels is generous; the cap exists so a hostile name cannot force an unbounded mkdir
+#: chain, and so a path stays inside the filesystem's own limits on every platform.
+_MAX_UPLOAD_DEPTH = 8
+
+#: Windows refuses these as filenames whatever the extension, and a server staging a hostile name
+#: on Windows would fail deep inside `write_bytes` rather than at the boundary. Checked on every
+#: platform so a Linux server and a Windows one accept exactly the same uploads.
+_RESERVED_WINDOWS_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{d}" for d in "123456789"}
+    | {f"lpt{d}" for d in "123456789"}
+)
+
+
+def _safe_relative_name(raw: str) -> str:
+    """A caller-supplied upload name as a safe relative POSIX path, or raise `UploadError`.
+
+    This replaced `Path(raw).name`, which was safe and lossy: it made traversal impossible by
+    throwing the directories away, and in doing so made `notes/a.md` and `archive/a.md` collide
+    into one `a.md` — so any upload from a tree with subdirectories tripped the duplicate-name
+    refusal and failed as a whole, permanently.
+
+    Keeping the path means every hazard the basename collapse used to absorb now has to be refused
+    deliberately. It **refuses rather than sanitises**, because a silently rewritten name stages
+    content under a path the caller never asked for, and a sync client's manifest would then
+    disagree with the server about what is stored, which is a divergence nothing would report.
+    """
+    if not isinstance(raw, str) or not raw:
+        raise UploadError("every uploaded file needs name and content_b64")
+    if "\x00" in raw:
+        raise UploadError("upload name contains a NUL byte")
+    # A Windows client sends `notes\a.md`. On POSIX that is one component, so normalise before
+    # anything else looks at the parts, or the checks below would inspect the wrong shape and the
+    # server would create a file whose name contains a separator.
+    candidate = raw.replace("\\", "/")
+    if candidate.startswith("/"):
+        raise UploadError(f"upload name must be relative, got {raw!r}")
+    # `C:/x` is absolute on Windows and a plain relative path on POSIX, so it cannot be left to
+    # `PurePath` to classify: the same manifest must be accepted or refused identically on both.
+    head = candidate.split("/", 1)[0]
+    if len(head) == 2 and head[1] == ":" and head[0].isalpha():
+        raise UploadError(f"upload name must not carry a drive letter, got {raw!r}")
+    parts = [part for part in candidate.split("/") if part not in ("", ".")]
+    if not parts:
+        raise UploadError(f"upload name names no file, got {raw!r}")
+    if any(part == ".." for part in parts):
+        raise UploadError(f"upload name must not traverse upwards, got {raw!r}")
+    if candidate.endswith("/"):
+        raise UploadError(f"upload name must name a file, not a directory, got {raw!r}")
+    if len(parts) > _MAX_UPLOAD_DEPTH:
+        raise UploadError(
+            f"upload name is deeper than {_MAX_UPLOAD_DEPTH} levels, got {raw!r}"
+        )
+    for part in parts:
+        if len(part.encode("utf-8")) > 255:
+            raise UploadError(f"upload name component is longer than 255 bytes in {raw!r}")
+        # ⛔ Windows silently strips trailing dots and spaces from a path component, so `.. `
+        # becomes `..` AFTER the traversal check above has already accepted it, and `x.` becomes
+        # a different file than the caller named. Found by trying it: `notes/.. /x.md` passed
+        # every check here and then died inside `write_bytes` with an uncaught FileNotFoundError,
+        # which is not an UploadError and so escapes every caller that handles refusals.
+        # Refuse the shape rather than trusting the resolve() check to catch its consequences.
+        if part.rstrip(" .") != part:
+            raise UploadError(
+                f"upload name component ends with a dot or space, which Windows strips, "
+                f"in {raw!r}"
+            )
+        if part.split(".", 1)[0].lower() in _RESERVED_WINDOWS_NAMES:
+            raise UploadError(f"upload name uses a reserved device name in {raw!r}")
+    return "/".join(parts)
+
+
 def _tenant_uploads_root(tenant: str) -> Path:
     """Where one tenant's staged uploads live. The single source of this path.
 
@@ -106,13 +179,14 @@ def stage_uploads(tenant: str, files: list[dict[str, str]]) -> tuple[str, Path, 
     root.mkdir(parents=True, exist_ok=True)
     try:
         for item in files:
-            name = Path(item.get("name", "")).name
             encoded = item.get("content_b64", "")
-            if not name or not encoded:
+            if not encoded:
                 raise UploadError("every uploaded file needs name and content_b64")
+            name = _safe_relative_name(item.get("name", ""))
             if name in seen:
                 # Two entries with one name would silently drop the first from the
-                # indexed set; refuse rather than guess which one was meant.
+                # indexed set; refuse rather than guess which one was meant. Keyed on the
+                # relative path, so two files that merely share a basename no longer collide.
                 raise UploadError(f"duplicate file name {name!r} in one upload")
             seen.add(name)
             # Refuse an oversized entry before materialising it: base64 encodes 3
@@ -128,7 +202,14 @@ def stage_uploads(tenant: str, files: list[dict[str, str]]) -> tuple[str, Path, 
             total += len(data)
             if total > _MAX_TOTAL_BYTES:
                 raise UploadError(_OVERSIZE_MSG)
-            (root / name).write_bytes(data)
+            target = root / name
+            # Belt and braces after normalisation: `_safe_relative_name` has already refused
+            # every traversal shape, so this can only fire if that function is weakened. It is
+            # cheap, and it is the check that would notice.
+            if not target.resolve().is_relative_to(root.resolve()):
+                raise UploadError(f"upload name escapes the staging root: {name!r}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
     except BaseException:
         discard_staging(root)
         raise
