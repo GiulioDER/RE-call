@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field as dataclass_field, fields, is_dataclass
+from dataclasses import dataclass, field as dataclass_field, fields, is_dataclass, replace
 import time
 from datetime import datetime
 from enum import Enum
@@ -534,6 +534,17 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             graph_expansion=graph_expansion,
         )
 
+    # NOT gated on `request.budget.max_model_calls`, deliberately, and this is a contract
+    # statement rather than an oversight. `ReasoningBudget.max_model_calls` is documented as the
+    # ceiling "compared against the caller supplied `model_calls_used`": it bounds the PLANNER,
+    # and a caller accounts for calls it makes itself. Enforcing it here instead was tried
+    # during the 2026-09-01 audit and failed nine library tests that pass an answer provider
+    # with the default zero budget -- i.e. the existing contract is deliberate and widely
+    # relied on, not an accident.
+    #
+    # What WAS a defect, and is fixed, is the accounting: the call is now counted into
+    # `budget_used.model_calls` by `_budget_used`, so a run that spent money can no longer
+    # report zero. Changing the ceiling's MEANING is a public API decision, not an audit repair.
     system, user = render_evidence_prompt(bundle)
     try:
         provider_output = request.providers.answer_provider(system, user)
@@ -1203,6 +1214,33 @@ def _check_member_identity(
         raise ReasoningValidationError(f"{kind} {member_id} generation_id does not match graph")
 
 
+def _budget_used(
+    plan: "ReasoningPlan | None", generator_invoked: bool
+) -> ReasoningBudgetUsage | None:
+    """Budget counters for the response, INCLUDING the answer call.
+
+    `plan.budget_used.model_calls` counts only what the PLANNER spent, which is retrieval
+    expansion. The answer provider is invoked after planning, so a run that called a paid hosted
+    model reported `model_calls: 0` — a spend that happened and was recorded nowhere. An
+    unbounded spend that reports itself is recoverable; an unreported one is not.
+
+    `generator_invoked` is exactly the fact needed, and every exit of `reason` already routes
+    through `_response` carrying it, so this cannot drift out of step with the call.
+    """
+    existing = plan.budget_used if plan is not None else None
+    if not generator_invoked:
+        return existing
+    if existing is None:
+        # A policy that answers without planning (`evidence_assembly`) produces no usage record
+        # at all, so there was nowhere for the spend to be reported. Synthesise one rather than
+        # returning None: zeros are ACCURATE for a run with no planner, and "no record" is
+        # indistinguishable from "no spend" precisely where a paid call just happened.
+        return ReasoningBudgetUsage(
+            steps=0, graph_nodes=0, model_calls=1, evidence_tokens=0, wall_time_ms=0
+        )
+    return replace(existing, model_calls=existing.model_calls + 1)
+
+
 def _response(
     *,
     request: ReasoningRequest,
@@ -1263,7 +1301,7 @@ def _response(
         diagnostics=ReasoningDiagnostics(
             latency_ms=max(0, int((time.perf_counter() - started) * 1000)),
             budget=request.budget,
-            budget_used=plan.budget_used if plan is not None else None,
+            budget_used=_budget_used(plan, generator_invoked),
             retrieval_stage_ms=bundle_stage_ms(retrieval),
             generator_invoked=generator_invoked,
             citations_normalized=citations_normalized,

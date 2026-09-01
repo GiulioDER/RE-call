@@ -99,6 +99,7 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
     calibration = None
 
     embedder = _make_embedder(args.embedder)
+    from recall.answer_provider import resolve_answer_provider
     from recall.generation_store import GenerationStore
     from recall_mcp.service import (
         reasoning_audit,
@@ -142,6 +143,22 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
             return
 
         if args.reasoning_cmd in {"query", "trace"}:
+            # Resolved here as well as in `recall_mcp/server.py`, because a facility reachable
+            # from exactly one of two front doors is the defect this whole change exists to
+            # remove: anyone verifying the wiring the obvious way, from the CLI, would read
+            # `no_answer_provider` and conclude the integration does not work. `trace` shares
+            # this call on purpose, so an exported trace describes the same run `query` makes.
+            # `audit` deliberately does NOT, matching the MCP server: it reports what the
+            # deterministic layer refuses and must not spend a model call to do it.
+            try:
+                answer_provider = resolve_answer_provider()
+            except ValueError as exc:
+                # One line and exit 2, matching `--include-extracted` above and every other
+                # refusal in this CLI. Left raw, a typo in RECALL_REASONING_ANSWER_* would
+                # hand the operator a traceback through the whole resolver, which is the
+                # opposite of what those carefully variable-naming messages are FOR.
+                print(f"recall reasoning: {exc}", file=sys.stderr)
+                raise SystemExit(2) from exc
             response = reasoning_query(
                 store,
                 embedder,
@@ -152,6 +169,7 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
                 max_steps=args.max_steps,
                 max_graph_nodes=args.max_graph_nodes,
                 max_evidence_tokens=args.max_evidence_tokens,
+                answer_provider=answer_provider,
                 policy=_reasoning_policy,
                 calibration=_reasoning_calibration,
             )

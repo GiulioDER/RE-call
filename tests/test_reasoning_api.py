@@ -1197,3 +1197,94 @@ def test_full_expansion_with_depth_and_model_round_reports_two_rounds() -> None:
     assert trace is not None
     assert trace.rounds == 2
     assert response.outcome == "answered"
+
+
+def test_a_run_that_called_the_generator_reports_that_model_call() -> None:
+    """STAKES-002. A billed run must not report zero model calls.
+
+    `plan.budget_used.model_calls` counts only what the PLANNER spent, which is retrieval
+    expansion. The answer provider runs AFTER planning, so a query that invoked a paid hosted
+    model reported `model_calls: 0` — a spend that happened and was recorded nowhere. An
+    unbounded spend that reports itself is recoverable; an unreported one is not.
+
+    Deliberately NOT paired with enforcement. `ReasoningBudget.max_model_calls` is documented as
+    the ceiling "compared against the caller supplied `model_calls_used`": it bounds the planner,
+    and callers account for their own calls. Gating the answer call on it was tried during the
+    2026-09-01 audit and failed nine tests in this file, which is evidence the existing contract
+    is relied on rather than accidental. Changing what the ceiling MEANS is a public API
+    decision; counting a call that happened is a bug fix.
+    """
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+    request = _request(
+        _result(_hit(chunk)),
+        answer=lambda _system, _user: {
+            "answer": "Ada owns rollout.",
+            "citations": ["c1"],
+            "insufficient_evidence": False,
+        },
+    )
+
+    response = reason(request)
+
+    assert response.outcome == "answered"
+    assert response.diagnostics.generator_invoked is True
+    used = response.diagnostics.budget_used
+    assert used is not None
+    assert used.model_calls >= 1, (
+        "the answer provider was invoked, so the run spent a model call and must say so"
+    )
+
+
+def test_a_planned_run_adds_the_generator_call_to_what_the_planner_spent() -> None:
+    """The branch the first version of this guard could not reach, and the SHIPPED one.
+
+    With no planner, `budget_used` is synthesised; with one, the count must be ADDED to the
+    planner's own. `proposal_assisted` is the mode `recall_mcp/service.py` and the CLI both
+    default to, so this is the path a real MCP query takes. Mutation testing caught the gap:
+    deleting the `+ 1` left the no-planner test green, because that test never reaches it.
+    """
+    old_chunk = _chunk("old", "rollout_v1.md", "decision: rollout owner. Ada owns it.")
+    new_chunk = _chunk("new", "rollout_v2.md", "decision: rollout owner. Bea owns it.")
+    graph = build_reasoning_graph(
+        [old_chunk, new_chunk],
+        tenant_id="acme",
+        generation_id="gen_1",
+        pipeline_fingerprint="pipe-a",
+        corpus_fingerprint="corpus-a",
+        include_text=True,
+    )
+    request = _request(
+        _result(_hit(old_chunk)),
+        policy=ReasoningPolicy(name="proposal_assisted"),
+        graph=graph,
+        answer=lambda _system, _user: {
+            "answer": "Ada owns it.",
+            "citations": ["old"],
+            "insufficient_evidence": False,
+        },
+    )
+
+    response = reason(request)
+
+    assert response.diagnostics.generator_invoked is True
+    used = response.diagnostics.budget_used
+    assert used is not None, "a planned run must carry a usage record"
+    assert used.steps >= 1, "the planner ran, so this is the ADD branch not the synthesise one"
+    assert used.model_calls >= 1, "the generator call must be added to the planner's spend"
+
+
+def test_a_run_that_abstained_reports_no_model_call() -> None:
+    """The control for the test above: the counter must track the CALL, not the outcome.
+
+    Without this, incrementing unconditionally would also pass, and the counter would be a
+    constant rather than a measurement.
+    """
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+    request = _request(_result(_hit(chunk)))  # no answer provider at all
+
+    response = reason(request)
+
+    assert response.diagnostics.generator_invoked is False
+    used = response.diagnostics.budget_used
+    if used is not None:
+        assert used.model_calls == 0

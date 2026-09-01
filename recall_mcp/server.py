@@ -21,6 +21,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 
+from recall.answer_provider import resolve_answer_provider
 from recall.calibration import load_for as calibration_load_for
 from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
@@ -1112,7 +1113,52 @@ class _ToolDeps:
     current_tenant: Callable[[dict], str | None]
 
 
+def _answer_backend_configured() -> bool:
+    """Whether this deployment can actually produce an answer, not merely offer the tool.
+
+    Used ONLY to decide whether search advice may recommend `recall_reasoning_query`. A
+    misconfigured backend counts as "cannot answer": the tool itself still raises when called,
+    naming the offending variable, so nothing is hidden -- but advice must never promise an
+    answer that the configuration makes impossible.
+
+    Deliberately swallows EVERY exception rather than letting one escape. This runs at server
+    REGISTRATION, so anything raised here takes down the whole server -- including retrieval,
+    which does not use this setting at all. That would be a worse regression than the one this
+    function exists to fix.
+
+    `except Exception`, not `except ValueError`, and the breadth is the point: the resolver
+    raises ValueError for its own validation, but it also CONSTRUCTS a third-party SDK client,
+    and what that raises for a hostile base URL or a malformed key is not this module's contract
+    to predict. Nothing is hidden by the breadth: `recall_reasoning_query` resolves again on
+    every call and surfaces the real error there, naming the offending variable. This is a
+    boolean probe, and a probe that can crash its caller is not a probe.
+    """
+    try:
+        return resolve_answer_provider() is not None
+    except Exception:
+        return False
+
+
 def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
+    # Resolved ONCE at registration, because neither input can change within a server process:
+    # the tool surface is fixed at start, and so is the environment. Asking per call would
+    # re-read both on every search for an answer that cannot move, and the provider half costs a
+    # measured ~27ms because it builds an HTTP client.
+    #
+    # BOTH halves are required before search advice may name the reasoning tool, and gating on
+    # the first alone was a regression rather than a no-op. `serves` answers "does this server
+    # publish the tool", which is independent of whether an answer backend is configured. With
+    # the tool published and RECALL_REASONING_ANSWER_* unset -- the DEFAULT upgrade path -- the
+    # note fired, the agent followed it, and `recall_reasoning_query` returned
+    # `abstained / no_answer_provider`. Worse, it fired on exactly the two signals where the
+    # agent is CLOSEST to the right answer (a non-gap abstention, a superseded match), so an
+    # agent that would have re-read the hits spent its next turn on a dead end instead.
+    #
+    # An unfiltered registrar has no `serves`, and that means every tool is registered, hence
+    # the True default for that half; the provider half is what stops it failing open.
+    _serves = getattr(mcp, "serves", None)
+    reasoning_served = _serves("recall_reasoning_query") if callable(_serves) else True
+    reasoning_can_answer = reasoning_served and _answer_backend_configured()
     _require = deps.require
     _state = deps.state
 
@@ -1199,6 +1245,7 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                     include_related=include_related,
                     related_relation=related_relation,
                     related_max_items=related_max_items,
+                    reasoning_available=reasoning_can_answer,
                 )
             )
             if locale is None:
@@ -1404,7 +1451,7 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     @mcp.tool(
         name="recall_reasoning_query",
         annotations=ToolAnnotations(
-            title="Run a bounded reasoning query",
+            title="Answer from memory, respecting supersession",
             read_only_hint=True,
             destructive_hint=False,
             idempotent_hint=True,
@@ -1423,12 +1470,26 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         expand_retrieval: bool = False,
         graph_expansion: str = "off",
     ) -> str:
-        """Run explicit opt-in reasoning over trusted retrieval and a derived graph.
+        """Answer a question from memory, taking supersession and dependencies into account.
 
-        Existing retrieval clients should keep using `recall_search` or `recall_evidence`.
-        This tool is additive and returns a full reasoning response: trust state, generation
-        identity, proposals, trace, refusal reason, and diagnostics. It does not call a generator,
-        so an answer is returned only if a future server explicitly wires an answer provider.
+        Prefer this over `recall_search` when the question has one CURRENT answer and the
+        corpus may still hold older versions of it: this walks the authored supersession and
+        dependency edges, so it reports the position that still stands rather than every
+        version ever written. Prefer `recall_search` or `recall_evidence` when you want the
+        matching memories themselves, or a wider pool to read and judge yourself.
+
+        Returns the full response: outcome, answer, citations, trust state, generation
+        identity, proposals, trace, refusal reason, and diagnostics.
+
+        Read two fields correctly, because misreading them is the common failure:
+
+        * `abstained` means NO SUPPORTED ANSWER. It never means the corpus is empty, and it
+          is not evidence the fact is absent. `refusal_reason` says which case it is.
+          `no_answer_provider` means this server has no generator configured, so the evidence
+          may well be there: re-ask with `recall_evidence` and read it yourself. Any other
+          reason is about the evidence, where a reworded retry is unlikely to help.
+        * Citations are trusted evidence chunk ids and nothing else. Proposals are candidates
+          for human review, never facts, and are never valid citations.
 
         Args:
             graph_expansion: `off` by default, or `one_hop` to enable deterministic semantic
@@ -1436,6 +1497,10 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
+        # Resolved per call rather than at server start, matching `resolve_expansion_provider`:
+        # the environment is the configuration surface, and a misconfiguration should name
+        # itself on the tool that reads it rather than refusing to start the whole server.
+        answer_provider = resolve_answer_provider()
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_query"):
             return await _to_thread(
                 lambda: json.dumps(
@@ -1451,6 +1516,7 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                         max_evidence_tokens=max_evidence_tokens,
                         expand_retrieval=expand_retrieval,
                         graph_expansion=graph_expansion.replace("-", "_"),
+                        answer_provider=answer_provider,
                         policy=TRUST_POLICY,
                     ).to_dict(),
                     indent=2,

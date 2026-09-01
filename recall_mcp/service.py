@@ -84,6 +84,7 @@ from recall.related import RelatedEvidenceResult, trusted_related
 from recall.reasoning import (
     GenerationSelection,
     REASONING_API_VERSION,
+    ReasoningAnswerProvider,
     ReasoningDiagnostics,
     ReasoningGraphProvider,
     ReasoningPolicy,
@@ -1165,6 +1166,7 @@ def search_memory(
     related_relation: str = "source",
     related_max_items: int = 3,
     dependency_mode: str | None = None,
+    reasoning_available: bool = False,
 ) -> SearchResult:
     """Run a trust-evaluated hybrid search and format it into actionable self-recall guidance.
 
@@ -1305,6 +1307,22 @@ def search_memory(
             f"{len(hits)} relevant memory hit(s). Consult before re-proposing: if a closed "
             "decision or falsified hypothesis appears here, do not re-litigate it."
         )
+    # `gap_warning` gates BOTH branches, not just the abstention one. Low-scoring hits that also
+    # carry a supersession edge are a corpus gap AND `superseded`, so an `elif` inside the guard
+    # appended "resolves which of these versions still stands" to advice whose own first line
+    # reads "Memory probably has no answer to this (corpus gap)" — contradictory, and routing on
+    # the one signal documented as excluded. Reachable, and missed by two gap tests that happened
+    # to use corpora with no supersession edges.
+    #
+    # Excluding a gap is the point of the rule: when the corpus genuinely lacks an answer there is
+    # nothing for reasoning to resolve, and routing spends a model call to reach the same
+    # abstention. Routing on EVERY search would make the note worthless too, since advice that
+    # appears on every result is advice an agent learns to skip.
+    if reasoning_available and not result.gap_warning:
+        if result.abstained:
+            advice += REASONING_BLOCKED_NOTE
+        elif superseded:
+            advice += REASONING_SUPERSEDED_NOTE
     if not result.calibrated:
         advice += UNCALIBRATED_NOTE
     if result.staleness.stale:
@@ -1371,6 +1389,27 @@ UNCALIBRATED_NOTE = (
     "calibration for this exact tenant and generation before treating it as certified."
 )
 STALE_INDEX_NOTE = " NOTE: the memory index is stale — consider re-indexing."
+
+#: Routing from retrieval into reasoning. Measured 2026-08-27 across 112 agent sessions with
+#: memory available (`docs/preregistrations/2026-08-27-tool-definition-context-cost.md`): agents
+#: called ONE tool, `recall_search`, 139 times, and never invoked the other 17. So the only place
+#: a recommendation reaches an agent is inside the result of the tool it already calls, which is
+#: what these two notes are.
+#:
+#: They are appended ONLY on the two signals reasoning can actually act on, never on every search:
+#: a blocked-but-present candidate, and a superseded match. A corpus gap is deliberately excluded,
+#: because reasoning over evidence that does not exist cannot help and would spend a model call to
+#: say so. Text is library-authored and contains no corpus bytes, for the same injection reason
+#: the advice field is built this way at all.
+REASONING_BLOCKED_NOTE = (
+    " NEXT: `recall_reasoning_query` walks supersession and dependency edges and may resolve "
+    "which version still stands; it cites only trusted chunk ids, and abstains rather than "
+    "guessing."
+)
+REASONING_SUPERSEDED_NOTE = (
+    " NEXT: `recall_reasoning_query` resolves which of these versions still stands, and cites "
+    "the chunk ids it used."
+)
 
 
 def _advice_suffixes(advice: str, bundle: EvidenceBundle) -> str:
@@ -2502,13 +2541,26 @@ def reasoning_query(
     max_evidence_tokens: int = 2048,
     expand_retrieval: bool = False,
     graph_expansion: str = "off",
+    answer_provider: ReasoningAnswerProvider | None = None,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
 ) -> ReasoningResponse:
+    """Run one bounded reasoning query.
+
+    `answer_provider` is passed in rather than resolved here, and defaults to None so every
+    existing caller keeps abstaining with `refusal_reason="no_answer_provider"`. Resolving it
+    inside this function would put a model on `reasoning_audit`'s path too, which exists to
+    report what the deterministic layer refuses and must not spend a model call to do it.
+    """
+
     budget = ReasoningBudget(
         max_steps=max_steps,
         max_graph_nodes=max_graph_nodes,
-        max_model_calls=0,
+        # Exactly one model call when a generator is supplied, and zero otherwise. This used to
+        # be a hard 0 while the answer provider ran unchecked, so the budget said one thing and
+        # the run did another. One is the honest ceiling: `reason` invokes the answer provider
+        # at most once, and retrieval expansion is separately gated by its own opt-in.
+        max_model_calls=1 if answer_provider is not None else 0,
         max_evidence_tokens=max_evidence_tokens,
         max_graph_hops=1 if graph_expansion == "one_hop" else 0,
     )
@@ -2604,6 +2656,7 @@ def reasoning_query(
                 expansion_provider=expansion_provider,
                 expansion_retriever=expansion_retriever_port,
                 graph_expansion_provider=graph_expansion_provider,
+                answer_provider=answer_provider,
             ),
             policy=reasoning_policy,
             budget=budget,
