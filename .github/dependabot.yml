@@ -26,6 +26,21 @@ updates:
     # A rule here is a claim about a cap that exists. If a cap is ever lifted in pyproject.toml,
     # delete its rule in the SAME change — a stale ignore silently withholds real updates, which
     # is the worse failure of the two.
+    #
+    # ⚠️ That invariant is ENFORCED, not merely stated: `tests/test_dependabot_ignores_match_pins.py`
+    # fails the build for any name listed here whose pyproject.toml declarations carry no upper
+    # bound. So a dependency cannot be quietened just because its PRs are tiresome — cap it on
+    # purpose with the reasoning written down, or leave it alone. Learned 2026-09-01 by trying
+    # the other thing: ignores for `boto3` (`>=1.35`) and `pypdf` (`>=5.0`) were written, the
+    # guard refused them, and they were dropped rather than capping a published library's
+    # dependencies purely to silence a weekly PR.
+    #
+    # ⚠️ Assume a rule here also suppresses SECURITY PRs for that dependency. Recorded as
+    # UNCONFIRMED: GitHub's options reference says ignored dependencies are filtered out after
+    # the allow step but does not spell out the security path, and nobody has watched it here.
+    # Assume suppressed, because that is the failing direction. The compensating control does not
+    # depend on the answer: the `audit` job runs pip-audit over the resolved dependency set, so a
+    # vulnerability is still DETECTED in CI even when no pull request arrives.
     ignore:
       # mem0ai: pinned EXACTLY, and the only one of the three whose bump PR goes GREEN — the
       # competitive benchmark is never installed in CI, so no test can fail on it. That is what
@@ -40,10 +55,38 @@ updates:
       # 413. The project pins the pre-0.16 baseline explicitly in pyproject.toml; adopting any new
       # 0.16 rules is a targeted cleanup, not a side effect of resolving the newest linter.
       # Patches within 0.16.x still arrive; minor and major do not.
+      #
+      # 🔁 `semver-patch` added 2026-09-01, on evidence rather than principle, so the sentence
+      # directly above is now wrong and is left in place to show what was believed. #569 was
+      # `0.16.3 -> 0.16.5`, a PATCH, and it went RED on `ruff check`. A patch can move this
+      # linter's enabled rule set, so the `<0.17` cap is only honoured if patches are held too.
+      # All three types are listed, which is exhaustive; kept spelled out rather than collapsed
+      # to a bare `dependency-name` (the mem0ai form) because the pin is `<0.17`, not `==`, and a
+      # bare name would claim a stricter cap than pyproject.toml carries.
       - dependency-name: "ruff"
         update-types:
+          - "version-update:semver-patch"
           - "version-update:semver-minor"
           - "version-update:semver-major"
+
+      # mcp: pinned EXACTLY (`mcp==2.1.0`) in three separate extras, so every bump is a pin edit
+      # in three places, and a protocol library is one where a wire-format change is not a
+      # routine upgrade. Patch and minor are held; a MAJOR still opens a PR, which is the moment
+      # this is worth a person's attention.
+      - dependency-name: "mcp"
+        update-types:
+          - "version-update:semver-patch"
+          - "version-update:semver-minor"
+
+      # transformers: capped `<6`. Tokenizer and model behaviour moves between minors and this is
+      # the sparse/reranker path, so a bump is a re-measure rather than a resolver decision.
+      # ⚠️ Note the interaction: `<6` already blocks the major, so while that cap stands this rule
+      # is effectively TOTAL. Delete it if the cap is ever lifted, or the silence changes meaning
+      # without anything being edited — which is exactly the inversion this file warns about.
+      - dependency-name: "transformers"
+        update-types:
+          - "version-update:semver-patch"
+          - "version-update:semver-minor"
 
   # This half is proven: the first batch (#41-#43) bumped checkout, setup-python and setup-uv,
   # and merged green.
