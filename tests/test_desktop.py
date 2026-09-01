@@ -317,6 +317,88 @@ def test_a_refused_nested_upload_leaves_no_directories_behind() -> None:
     assert after == before, "the refused job's staging directory survived the refusal"
 
 
+def test_a_stable_job_key_supersedes_rather_than_accumulating() -> None:
+    """The same name uploaded twice lands on one path, so the second content replaces the first.
+
+    This is the fix for the defect measured 2026-09-01: the identical 25-file corpus uploaded
+    twice took a tenant from 584 to 1752 chunks. Every upload staged into a fresh `uuid4`
+    directory, the manifest keys objects on the staged file's URI, so the same document became two
+    objects and BOTH answered — a changed memo never superseded its predecessor. Keying the
+    destination on a stable job key is what lets `_carry_forward` see the same URI twice and take
+    its re-stamp branch.
+    """
+    first = base64.b64encode(b"version one").decode("ascii")
+    second = base64.b64encode(b"version two").decode("ascii")
+
+    _j1, root1, _t1 = stage_uploads(
+        "stable-supersede", [{"name": "notes/memo.md", "content_b64": first}], job_key="sync-memory"
+    )
+    _j2, root2, _t2 = stage_uploads(
+        "stable-supersede", [{"name": "notes/memo.md", "content_b64": second}], job_key="sync-memory"
+    )
+
+    assert root1 == root2, "a stable job key must resolve to one destination across calls"
+    assert (root2 / "notes" / "memo.md").read_bytes() == b"version two"
+    staged = sorted(path.name for path in root2.rglob("*") if path.is_file())
+    assert staged == ["memo.md"], f"the superseded copy survived: {staged}"
+
+
+def test_a_stable_job_key_keeps_the_union_of_uploads() -> None:
+    """A file the second upload did not mention is still there, so a client may send only a diff."""
+    a = base64.b64encode(b"a").decode("ascii")
+    b = base64.b64encode(b"b").decode("ascii")
+    _j1, _r1, _t1 = stage_uploads(
+        "stable-union", [{"name": "one.md", "content_b64": a}], job_key="sync-memory"
+    )
+    _j2, root, _t2 = stage_uploads(
+        "stable-union", [{"name": "two.md", "content_b64": b}], job_key="sync-memory"
+    )
+    assert (root / "one.md").read_bytes() == b"a"
+    assert (root / "two.md").read_bytes() == b"b"
+
+
+def test_a_refused_upload_leaves_a_stable_tree_untouched() -> None:
+    """Nothing reaches the stable tree unless the whole batch decoded.
+
+    The working directory is fresh on every call precisely so that the refusal path can delete it
+    without ever being able to reach a live tree.
+    """
+    good = base64.b64encode(b"kept").decode("ascii")
+    _j, root, _t = stage_uploads(
+        "stable-refused", [{"name": "keep.md", "content_b64": good}], job_key="sync-memory"
+    )
+    before = sorted(path.name for path in root.rglob("*") if path.is_file())
+    with pytest.raises(UploadError):
+        stage_uploads(
+            "stable-refused",
+            [
+                {"name": "new.md", "content_b64": good},
+                {"name": "bad.md", "content_b64": "not-base64!!"},
+            ],
+            job_key="sync-memory",
+        )
+    after = sorted(path.name for path in root.rglob("*") if path.is_file())
+    assert after == before, f"a refused batch changed the stable tree: {before} -> {after}"
+
+
+def test_no_working_directory_survives_a_stable_upload() -> None:
+    """The spent working directory is removed, or the next manifest names both copies of a file."""
+    payload = base64.b64encode(b"x").decode("ascii")
+    _j, root, _t = stage_uploads(
+        "stable-solo", [{"name": "only.md", "content_b64": payload}], job_key="sync-memory"
+    )
+    siblings = [path.name for path in root.parent.iterdir() if path.is_dir()]
+    assert siblings == ["sync-memory"], f"a working directory was left behind: {siblings}"
+
+
+@pytest.mark.parametrize("key", ["../escape", "a/b", "/abs", "", "..", "nul"])
+def test_an_unsafe_job_key_is_refused(key: str) -> None:
+    """A job key names a directory that persists, so it is validated at least as hard as a name."""
+    payload = base64.b64encode(b"x").decode("ascii")
+    with pytest.raises(UploadError):
+        stage_uploads("acme", [{"name": "a.md", "content_b64": payload}], job_key=key)
+
+
 def test_an_oversized_entry_is_refused_before_it_is_decoded() -> None:
     """The encoded length bounds the decoded size, so the cap fires without materialising it."""
     oversized = "A" * (68 * 1024 * 1024)  # decodes to ~51 MiB, over the 50 MiB cap

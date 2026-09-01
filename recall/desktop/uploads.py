@@ -173,7 +173,39 @@ def discard_staging(root: Path) -> None:
     shutil.rmtree(root, ignore_errors=True)
 
 
-def stage_uploads(tenant: str, files: list[dict[str, str]]) -> tuple[str, Path, int]:
+def _safe_job_key(raw: str) -> str:
+    """A stable staging directory name, or raise `UploadError`.
+
+    One component, validated with the same rules as an upload name so a key can never climb out
+    of the tenant's uploads root or name something a filesystem cannot hold.
+    """
+    key = _safe_relative_name(raw)
+    if "/" in key:
+        raise UploadError(f"job key must be a single directory name, got {raw!r}")
+    return key
+
+
+def _promote_staged(work: Path, stable: Path) -> None:
+    """Move a completed job's files onto the stable tree, replacing what they supersede.
+
+    Runs only after every file has decoded and been written, so a refused upload never reaches
+    here and the stable tree is untouched by it. `os.replace` is atomic per file, so a reader that
+    races this sees either the old bytes or the new ones, never a partial write.
+
+    ⚠️ It is NOT atomic across files. A failure midway leaves some files updated and some not,
+    which is recoverable rather than corrupt: every file still holds one valid version, and the
+    caller raises before a generation is built, so nothing is served from the half-updated tree.
+    The next upload converges it.
+    """
+    for source in sorted(path for path in work.rglob("*") if path.is_file()):
+        target = stable / source.relative_to(work)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(source, target)
+
+
+def stage_uploads(
+    tenant: str, files: list[dict[str, str]], *, job_key: str | None = None
+) -> tuple[str, Path, int]:
     """Decode a bounded upload into the configured server-side staging root.
 
     Returns (job_id, staging_root, total_bytes). The byte total is what the caller
@@ -182,10 +214,33 @@ def stage_uploads(tenant: str, files: list[dict[str, str]]) -> tuple[str, Path, 
 
     On any refusal the job's staging directory is removed, so a rejected upload
     never leaves partial files behind for a later index run to pick up.
+
+    `job_key` names a STABLE destination under the tenant's uploads root. Without it every call
+    stages into a fresh `uuid4` directory, which is what made a re-upload accumulate rather than
+    supersede: the manifest keys objects on the staged file's URI, so the same document uploaded
+    twice produced two objects, both indexed and both answering, and `_carry_forward`'s re-stamp
+    branch could never fire because it never saw the same URI twice. Measured 2026-09-01: the
+    identical 25-file corpus uploaded twice took a tenant from 584 chunks to 1752.
+
+    With `job_key` the same logical file lands on the same path every time, so an unchanged file
+    is carried forward untouched and a CHANGED one is re-stamped in place — which is how a
+    superseded memo stops answering.
+
+    Files are still decoded into a fresh working directory first and only moved onto the stable
+    tree once the whole batch has succeeded, so a refused upload leaves the stable tree exactly as
+    it found it.
     """
     if not files or len(files) > 500:
         raise UploadError("files must contain between 1 and 500 entries")
+    # `is not None`, NOT truthiness: an empty job key is a caller asking for a stable
+    # destination and getting the name wrong, and falling back to the accumulating path
+    # would answer that with the exact defect this argument exists to remove, silently.
+    stable = (
+        _tenant_uploads_root(tenant) / _safe_job_key(job_key) if job_key is not None else None
+    )
     job_id = uuid.uuid4().hex
+    # Always a fresh working directory, even when a stable destination was asked for: it is what
+    # makes `discard_staging` on refusal safe, since it can never delete a live tree.
     root = _tenant_uploads_root(tenant) / job_id
     total = 0
     seen: set[str] = set()
@@ -226,4 +281,12 @@ def stage_uploads(tenant: str, files: list[dict[str, str]]) -> tuple[str, Path, 
     except BaseException:
         discard_staging(root)
         raise
-    return job_id, root, total
+    if stable is None:
+        return job_id, root, total
+    try:
+        _promote_staged(root, stable)
+    finally:
+        # The working directory is spent either way. Leaving it would make the next build's
+        # manifest name both copies of every file it did manage to move.
+        discard_staging(root)
+    return job_id, stable, total
