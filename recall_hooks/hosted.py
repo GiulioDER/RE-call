@@ -207,3 +207,148 @@ def plan(
         oversize=oversize,
         unchanged=unchanged,
     )
+
+
+# --------------------------------------------------------------------------- talking to a server
+#
+# Everything above decides. Everything below acts, and is deliberately separated so the decision
+# stays testable without a socket.
+
+
+class SyncError(RuntimeError):
+    """A hosted call failed, carrying the KIND so a caller knows what to do about it."""
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+
+
+def legible(error: BaseException) -> str:
+    """Flatten an exception into sentences a person can act on.
+
+    The MCP SDK runs its session in a task group, so **every** error a server raises reaches a
+    caller as `ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)` — a sentence that
+    names the plumbing and hides the cause. Without this, every hosted failure message would be
+    that string, and the classifier below would have nothing to read.
+
+    Recursive, because a group can nest. Mirrors `recall/desktop/runtime.py::_legible`, duplicated
+    for the import-cost reason in this module's docstring.
+    """
+    if isinstance(error, BaseExceptionGroup):
+        inner = [legible(sub) for sub in error.exceptions]
+        return "; ".join(part for part in inner if part) or str(error)
+    text = str(error).strip()
+    return f"{type(error).__name__}: {text}" if text else type(error).__name__
+
+
+#: Substrings that identify a failure kind, checked against the FLATTENED message. Ordered: the
+#: first match wins, and auth is first because a 401 arriving inside a quota message is still an
+#: auth problem.
+_KINDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("auth", ("401", "403", "unauthorized", "invalid_token", "autherror", "no credential")),
+    ("quota", ("quota", "budget", "rate limit", "ratelimited", "too many requests", "429")),
+    ("refusal", ("uploaderror", "duplicate file name", "must be relative", "reserved device",
+                 "exceeds the", "valueerror", "category must be")),
+    ("network", ("timeout", "timed out", "connection", "getaddrinfo", "ssl", "certificate",
+                 "unreachable", "refused")),
+)
+
+
+def classify(message: str) -> str:
+    """Which kind of failure this is, so the caller can pick a remedy rather than a guess.
+
+    The four kinds want genuinely different handling, which is the only reason to have them:
+
+    * **auth** — do not retry in a loop. A 401 after a fresh refresh is a real re-authentication,
+      and hammering it just burns the token endpoint. Surface at the next `SessionStart`.
+    * **quota** — back off for a long time. Retrying every session burns the bucket that is
+      already empty.
+    * **refusal** — surface immediately and name the file. It will never fix itself.
+    * **network** — retry next session, and stay quiet until it has failed twice, so a laptop
+      closed on a plane does not nag.
+
+    Anything unrecognised is `network`, because that is the kind whose policy (retry quietly) is
+    safe to apply to a failure nobody has classified yet.
+    """
+    lowered = message.lower()
+    for kind, markers in _KINDS:
+        if any(marker in lowered for marker in markers):
+            return kind
+    return "network"
+
+
+def call_tool(
+    endpoint: str,
+    headers: dict[str, str],
+    name: str,
+    arguments: dict,
+    *,
+    timeout: float = 120.0,
+):
+    """Call one MCP tool over streamable-http and return its parsed result.
+
+    Imports the SDK lazily and inside the call. `SessionEnd` is the only event that reaches here,
+    and it is asynchronous, so the cost is never charged to a session launch — which is the whole
+    reason this package avoids `recall`.
+
+    Raises `SyncError` with a classified kind. Never leaks an `ExceptionGroup`.
+    """
+    import asyncio
+    import json as _json
+
+    async def _run():
+        import httpx2
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+
+        http = httpx2.AsyncClient(headers=headers, timeout=timeout)
+        async with http, streamable_http_client(endpoint, http_client=http) as streams:
+            async with ClientSession(*streams) as session:
+                await session.initialize()
+                result = await session.call_tool(name, arguments)
+                if getattr(result, "is_error", False):
+                    pieces = getattr(result, "content", None) or []
+                    text = next(
+                        (t for t in (getattr(p, "text", None) for p in pieces) if t), str(result)
+                    )
+                    raise SyncError(classify(text), text)
+                for piece in getattr(result, "content", None) or []:
+                    text = getattr(piece, "text", None)
+                    if text is None:
+                        continue
+                    try:
+                        return _json.loads(text)
+                    except _json.JSONDecodeError:
+                        return text
+                return None
+
+    try:
+        return asyncio.run(_run())
+    except SyncError:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - flattened and classified, never re-raised raw
+        message = legible(exc)
+        raise SyncError(classify(message), message) from exc
+
+
+def remote_inventory(endpoint: str, headers: dict[str, str], *, timeout: float = 60.0):
+    """What the tenant holds, as `{source: sha256}`, via `recall_inventory`.
+
+    ⚠️ A **truncated** inventory raises rather than being used. The diff treats a source absent
+    from this map as one the server does not have, so a silently short listing would re-upload the
+    tail of the corpus and, once deletion is enabled, forget it. Truncation is exactly the case the
+    tool reports for this reason.
+    """
+    payload = call_tool(endpoint, headers, "recall_inventory", {}, timeout=timeout)
+    if not isinstance(payload, dict):
+        raise SyncError("refusal", f"recall_inventory returned {type(payload).__name__}, not JSON")
+    if payload.get("truncated"):
+        raise SyncError(
+            "refusal",
+            "the inventory was truncated, so a diff against it would re-upload or forget the "
+            "tail of the corpus; raise the limit or page it",
+        )
+    entries = payload.get("entries") or []
+    return {str(e["source"]): str(e.get("sha256") or "") for e in entries if e.get("source")}
+

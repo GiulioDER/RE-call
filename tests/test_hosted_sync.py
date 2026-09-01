@@ -9,6 +9,7 @@ raises: every sync would upload the entire corpus while appearing to work.
 from __future__ import annotations
 
 import hashlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -287,3 +288,127 @@ def test_the_client_digest_equals_what_the_server_stores(tmp_path: Path) -> None
             f"{server_hash[:12]}. A client hashing this way would re-upload the whole corpus "
             f"on every sync and never report a problem."
         )
+
+
+# --------------------------------------------------------------------- flattening and classifying
+
+
+def test_a_task_group_error_is_flattened_to_the_cause() -> None:
+    """The SDK runs its session in a task group, so EVERY server error arrives wrapped.
+
+    Unflattened, every hosted failure message is "unhandled errors in a TaskGroup (1
+    sub-exception)" — a sentence that names the plumbing, hides the cause, and leaves the
+    classifier nothing to read. This was met for real while driving a server by hand.
+    """
+    from recall_hooks.hosted import legible
+
+    wrapped = BaseExceptionGroup("unhandled errors in a TaskGroup", [ValueError("the real cause")])
+    assert legible(wrapped) == "ValueError: the real cause"
+
+
+def test_nested_groups_are_flattened_too() -> None:
+    from recall_hooks.hosted import legible
+
+    inner = BaseExceptionGroup("inner", [KeyError("k")])
+    outer = BaseExceptionGroup("outer", [inner, ValueError("v")])
+    flat = legible(outer)
+    assert "KeyError" in flat and "ValueError: v" in flat
+    assert "TaskGroup" not in flat
+
+
+@pytest.mark.parametrize(
+    ("message", "kind"),
+    [
+        ("HTTPStatusError: 401 Unauthorized", "auth"),
+        ("invalid_token: Authentication required", "auth"),
+        ("AuthError: no credential; run `recall-hooks login`", "auth"),
+        ("RateLimited: index_bytes budget exhausted for tenant", "quota"),
+        ("429 Too Many Requests", "quota"),
+        ("UploadError: duplicate file name 'a.md' in one upload", "refusal"),
+        ("UploadError: upload exceeds the 50 MiB request limit", "refusal"),
+        ("ValueError: category must be documents, code, or memory", "refusal"),
+        ("ConnectTimeout: timed out", "network"),
+        ("gaierror: getaddrinfo failed", "network"),
+        ("SSLCertVerificationError: certificate verify failed", "network"),
+    ],
+)
+def test_each_failure_is_classified_by_the_remedy_it_needs(message: str, kind: str) -> None:
+    """The four kinds exist because they want genuinely different handling.
+
+    auth must not retry in a loop, quota must back off for a long time, refusal must be surfaced
+    immediately and name the file, network should retry quietly. Classifying wrongly means
+    applying the wrong one, which is worse than not classifying at all.
+    """
+    from recall_hooks.hosted import classify
+
+    assert classify(message) == kind
+
+
+def test_an_unrecognised_failure_is_treated_as_network() -> None:
+    """Because retry-quietly is the policy that is safe to apply to something nobody has
+    classified yet — unlike surfacing it loudly or backing off for an hour."""
+    from recall_hooks.hosted import classify
+
+    assert classify("SomethingNobodyPredicted: a novel disaster") == "network"
+
+
+def test_auth_wins_over_quota_when_a_message_mentions_both() -> None:
+    """A 401 arriving inside a quota-shaped message is still an authentication problem, and the
+    remedies differ: signing in again versus waiting an hour."""
+    from recall_hooks.hosted import classify
+
+    assert classify("401 Unauthorized while checking the index_bytes budget") == "auth"
+
+
+# --------------------------------------------------------------------------- inventory guard
+
+
+def test_a_truncated_inventory_is_refused_rather_than_diffed(monkeypatch) -> None:
+    """⛔ The diff reads "absent from the inventory" as "the server does not have it".
+
+    A silently short listing would therefore re-upload the tail of the corpus and, once deletion
+    is enabled, forget it. The tool reports truncation for exactly this reason, so using a
+    truncated listing is the one thing this wrapper must not do.
+    """
+    from recall_hooks import hosted
+
+    monkeypatch.setattr(
+        hosted, "call_tool",
+        lambda *a, **k: {"entries": [{"source": "s", "sha256": "h"}], "truncated": True},
+    )
+    with pytest.raises(hosted.SyncError) as caught:
+        hosted.remote_inventory("https://e/mcp", {})
+    assert caught.value.kind == "refusal"
+    assert "truncated" in str(caught.value)
+
+
+def test_an_inventory_becomes_a_source_to_digest_map(monkeypatch) -> None:
+    from recall_hooks import hosted
+
+    monkeypatch.setattr(
+        hosted, "call_tool",
+        lambda *a, **k: {
+            "entries": [{"source": "file:///s/a.md", "sha256": "aaa"},
+                        {"source": "file:///s/b.md", "sha256": ""}],
+            "truncated": False,
+        },
+    )
+    got = hosted.remote_inventory("https://e/mcp", {})
+    assert got == {"file:///s/a.md": "aaa", "file:///s/b.md": ""}
+
+
+def test_the_transport_is_not_imported_until_it_is_used() -> None:
+    """`mcp` and `httpx2` are heavy, and only the async SessionEnd path ever reaches them.
+
+    Paying that import at module scope would charge every session launch for a code path most
+    sessions never take, which is the cost this whole package exists to avoid.
+    """
+    import subprocess
+
+    code = (
+        "import sys, recall_hooks.hosted; "
+        "print(all(m not in sys.modules for m in ('recall', 'mcp', 'httpx2')))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert out.stdout.strip() == "True", out.stdout + out.stderr
+
