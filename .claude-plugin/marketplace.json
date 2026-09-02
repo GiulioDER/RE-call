@@ -10,7 +10,7 @@
       "name": "recall",
       "source": "./plugin",
       "description": "Memory that abstains instead of guessing. Searches your project's own notes and decisions, marks a retracted claim as superseded, and refuses when nothing clears the threshold.",
-      "version": "0.11.0",
+      "version": "0.12.0",
       "category": "memory",
       "tags": ["memory", "rag", "retrieval", "postgresql", "pgvector"],
       "author": {

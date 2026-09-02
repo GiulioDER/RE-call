@@ -1,6 +1,6 @@
 {
   "name": "recall",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "RE-call project memory with abstention, shared front matter, and lifecycle hooks for Codex.",
   "author": {
     "name": "Giulio D'Erme",

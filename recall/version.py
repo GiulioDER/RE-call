@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 #: Bumped by scripts/bump_version.py on every release. Keep the tuple in step: several
 #: callers compare it rather than parsing the string.

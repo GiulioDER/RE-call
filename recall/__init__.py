@@ -121,7 +121,7 @@ from recall.reasoning_proposals import (
     proposal_to_graph_edge,
 )
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 __all__ = sorted([
     "AnswerEnvelope",
