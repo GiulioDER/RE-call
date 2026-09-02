@@ -182,6 +182,14 @@ def _unsynced_notice(config: dict[str, Any]) -> str:
     pending = manifest.get("pending") or {}
     error = manifest.get("last_error") or {}
     withheld = manifest.get("withheld") or {}
+    screen_error = str(manifest.get("screen_error") or "")
+    if screen_error:
+        # Not the same sentence as a withheld memo, and not a smaller version of it. Nothing was
+        # uploaded, and the reason has nothing to do with the contents of anybody's memos.
+        return (
+            f"WARNING: no memos were uploaded because the credential screen could not run "
+            f"({screen_error}). This is a broken install rather than a problem with your notes. "
+        )
     if withheld:
         # 🔑 Reported whether or not anything else went wrong, and FIRST. A withheld file is the
         # one outcome here that needs a person rather than a retry: nothing about the next session

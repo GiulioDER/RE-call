@@ -366,3 +366,18 @@ def test_a_clean_install_still_says_nothing_extra() -> None:
     _manifest(HOSTED, {"pending": {}, "withheld": {}})
     assert recall_hooks._unsynced_notice(HOSTED) == ""
 
+
+
+def test_a_broken_screen_is_not_reported_as_a_memo_holding_a_credential() -> None:
+    """⛔ Two different facts need two different sentences.
+
+    The first version reported a screen that failed to LOAD as one withheld file named `*`, which
+    rendered as "1 memo(s) were NOT uploaded because they look like they contain a live
+    credential". Specific, alarming, and false: the memo was fine and the guard did not start.
+    """
+    _manifest(HOSTED, {"pending": {}, "withheld": {},
+                       "screen_error": "the credential screen could not be loaded (no module)"})
+    notice = recall_hooks._unsynced_notice(HOSTED)
+    assert "credential screen could not run" in notice
+    assert "broken install" in notice
+    assert "look like they contain" not in notice
