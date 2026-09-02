@@ -106,3 +106,60 @@ crash recovery, and whether a long-lived helper is acceptable for the supported 
 Artifact: `results/write_time_connection_reuse_20260828T151400Z.json`. Re-measure with the command
 under **Re-measure** after opening the documented VPS2 tunnel. The two invalid artifacts remain
 retained and are not included in any rate.
+
+## Correction appended 2026-08-28 by review. Nothing above is edited
+
+Three defects in the run recorded above. Every number in the tables is left exactly as it was
+written, and this section is appended rather than merged into them, because a record that gets
+corrected in place stops being evidence of what was believed at the time.
+
+**The caveat is here because the number is here.** The integration record beside this one had
+already found the first defect and written it down there. That is the wrong place: a reader who
+opens this file to find the figure sees a table ending in "confirmed" and no reason to look
+further.
+
+### 1. The run is not the frozen population, so it is not registered evidence
+
+The artifact reports `payload_count: 10` and `repetitions: 3`, which is 30 requests per arm drawn
+from **ten** distinct payloads. The frozen record above specifies 30 payloads sent three times,
+which is ninety requests per arm from thirty payloads. So "30 of 30 pairs" counts request pairs,
+not the registered payload population, and validity endpoint 4 refuses the interpretation. The
+decision rule is therefore not satisfied by this run, whatever the latency shows, and a new
+committed preregistration is required before any performance figure is published.
+
+### 2. The reported medians are the upper-middle value of an even sample, not the median
+
+Thirty samples have no middle element, and the two summary rows took the sixteenth rather than the
+mean of the fifteenth and sixteenth. Recomputed from the same artifact, with the reported value
+beside it:
+
+| quantity | as reported above | conventional median |
+|---|---:|---:|
+| cold, 30 requests | 3,706 ms | 3,695.1 ms |
+| relay, all 30 requests | 568 ms | 529.7 ms |
+| relay, after the first request, 29 requests | 491 ms | 491.2 ms |
+
+The third row is odd-sized, so it was already the median and is unchanged. Note the direction of
+the error: the convention **understated** the relay, because it picked the upper of the two middle
+relay samples while the two middle cold samples were 22 ms apart. The all-request reduction is 85.7
+percent on conventional medians against the 84.7 percent recorded above, and the steady-state 86.7
+percent is unchanged.
+
+### 3. The artifact stays untracked, for a stronger reason than "parked"
+
+Every row in it carries the `hits` the query returned, which is verbatim text from the private
+memory corpus. It cannot be committed to a public repository, so the numbers here can never be made
+reachable by tracking the file. Recompute them instead, from an artifact produced by the
+**Re-measure** command above:
+
+```bash
+python -c "import json,statistics,sys; d=json.load(open(sys.argv[1])); print({k: round(statistics.median([r['elapsed_ms'] for r in d[k]]),1) for k in ('cold','relay')}, d['payload_count'], d['repetitions'])" results/<artifact>.json
+```
+
+### What survives all three
+
+The direction and the cause, which is what the integration was argued from: **connection and
+process setup, not the query, is the dominant cost against a remote corpus**, and a helper that
+outlives one tool call removes it. That claim is supported by a first request of 3,005 ms against a
+steady state under 500 ms in the same arm, which is a within-arm comparison and does not depend on
+the payload count. The magnitude against the cold arm does depend on it, and is not claimed here.
