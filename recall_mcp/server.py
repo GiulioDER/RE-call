@@ -17,6 +17,7 @@ from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
@@ -32,7 +33,7 @@ from recall.observability import METRICS, configure_logging, get_logger
 from recall._env import env_is_production, truthy
 from recall.scope import Scope
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore, redacted_dsn
-from recall.trust_policy import TrustPolicy
+from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall_mcp.auth import (
     SCOPE_ADMIN,
     SCOPE_FORGET,
@@ -171,6 +172,21 @@ def _read_int_env(name: str, default: int, *, min_value: int, max_value: int | N
     return value
 
 
+def _read_bool_env(name: str, default: bool) -> bool:
+    """Read a boolean environment knob and reject typos instead of silently choosing a mode."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(
+        f"{name}={raw!r} is not a boolean; expected one of 1, 0, true, false, yes, no, on, off"
+    )
+
+
 TRANSPORT: Transport = _read_transport()
 #: Bind address for the HTTP transports. Exposed as RECALL_* so wrappers can set the same
 #: prefix used by every other knob in this server before `mcp.run` starts the listener.
@@ -178,6 +194,7 @@ TRANSPORT: Transport = _read_transport()
 #: not something they inherit.
 HTTP_HOST = os.environ.get("RECALL_HOST", "127.0.0.1")
 HTTP_PORT = _read_int_env("RECALL_PORT", 8000, min_value=1, max_value=65535)
+MCP_STATELESS_HTTP = _read_bool_env("RECALL_MCP_STATELESS", TRANSPORT in HTTP_TRANSPORTS)
 EMBEDDER_NAME = os.environ.get("RECALL_EMBEDDER", "fastembed")
 #: Connections the server keeps open. This bounds concurrent in-flight tool calls at the database,
 #: which is where the real limit is — more worker threads than connections just queue on the pool.
@@ -1140,6 +1157,12 @@ def _answer_backend_configured() -> bool:
         return False
 
 
+def _tool_error_for_trust_refusal(refusal: TrustRefusal) -> ToolError:
+    """Keep the stable refusal payload visible through MCP's anticipated error channel."""
+    payload = {"error": "trust_refusal", **refusal.to_dict()}
+    return ToolError(json.dumps(payload, sort_keys=True))
+
+
 def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     # Resolved ONCE at registration, because neither input can change within a server process:
     # the tool surface is fixed at start, and so is the environment. Asking per call would
@@ -1233,22 +1256,25 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="search"):
-            result = await _to_thread(
-                lambda: search_memory(
-                    store,
-                    state["embedder"],
-                    query,
-                    source=source,
-                    scope=_tool_scope(folder, facet),
-                    k=k,
-                    policy=TRUST_POLICY,
-                    explain=explain,
-                    include_related=include_related,
-                    related_relation=related_relation,
-                    related_max_items=related_max_items,
-                    reasoning_available=reasoning_can_answer,
+            try:
+                result = await _to_thread(
+                    lambda: search_memory(
+                        store,
+                        state["embedder"],
+                        query,
+                        source=source,
+                        scope=_tool_scope(folder, facet),
+                        k=k,
+                        policy=TRUST_POLICY,
+                        explain=explain,
+                        include_related=include_related,
+                        related_relation=related_relation,
+                        related_max_items=related_max_items,
+                        reasoning_available=reasoning_can_answer,
+                    )
                 )
-            )
+            except TrustRefusal as exc:
+                raise _tool_error_for_trust_refusal(exc) from exc
             if locale is None:
                 return _serving_json(result)
             return await _translation_to_thread(
@@ -1335,22 +1361,25 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="evidence"):
-            result = await _to_thread(
-                lambda: evidence_memory(
-                    store,
-                    state["embedder"],
-                    query,
-                    source=source,
-                    scope=_tool_scope(folder, facet),
-                    k=k,
-                    max_items=max_items,
-                    policy=TRUST_POLICY,
-                    explain=explain,
-                    include_related=include_related,
-                    related_relation=related_relation,
-                    related_max_items=related_max_items,
+            try:
+                result = await _to_thread(
+                    lambda: evidence_memory(
+                        store,
+                        state["embedder"],
+                        query,
+                        source=source,
+                        scope=_tool_scope(folder, facet),
+                        k=k,
+                        max_items=max_items,
+                        policy=TRUST_POLICY,
+                        explain=explain,
+                        include_related=include_related,
+                        related_relation=related_relation,
+                        related_max_items=related_max_items,
+                    )
                 )
-            )
+            except TrustRefusal as exc:
+                raise _tool_error_for_trust_refusal(exc) from exc
             if locale is None:
                 return _serving_json(result)
             return await _translation_to_thread(
@@ -2245,6 +2274,7 @@ def main() -> None:
             transport="streamable-http",
             host=HTTP_HOST,
             port=HTTP_PORT,
+            stateless_http=MCP_STATELESS_HTTP,
             transport_security=security,
         )
 

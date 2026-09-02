@@ -74,19 +74,17 @@ MIN_PIECE_DIVISOR = 8
 #: Chunks accumulated before a batch is embedded and written. Bounds peak memory to
 #: roughly one batch of chunks plus their vectors, instead of the whole corpus, and
 #: makes progress visible in the database while a long index is still running.
-DEFAULT_BATCH_CHUNKS = 512
+DEFAULT_BATCH_CHUNKS = 64
 #: Machine-wide override for the above, read per-Indexer so a host can bound EVERY embedding run
 #: on it without every caller having to pass the argument.
 #:
 #: ⛔ This is the knob that exists. `RECALL_FASTEMBED_BATCH` is named as the fix in more than one
 #: operational note on this project and is read NOWHERE in this package: exporting it is a no-op,
-#: and the run it was supposed to protect died anyway. The default of 512 chunks reaches fastembed,
-#: which then embeds 256 at a time, and fastembed pads a batch to its LONGEST member — bge-large at
-#: sequence 512 costs `batch x 16 heads x 512 x 512 x 4 bytes` for the attention scores alone, so
-#: one long chunk in that batch asks onnxruntime for 4.3 GB and it refuses PARTWAY THROUGH, after
-#: some stores are already written. Measured 2026-08-22 on this project's memory corpus: the
-#: 987-memo store died at a 2.44 GB request while the 211-memo one completed, and 64 chunks per
-#: batch survived the longest documents in the corpus.
+#: and the run it was supposed to protect died anyway. The default of 64 keeps the outer batch
+#: bounded before fastembed performs its own batching and pads to the LONGEST member. Measured
+#: 2026-08-22 on this project's memory corpus: the 987-memo store died at a 2.44 GB request while
+#: the 211-memo one completed, and 64 chunks per batch survived the longest documents in the
+#: corpus.
 ENV_BATCH_CHUNKS = "RECALL_INDEX_BATCH_CHUNKS"
 #: Refuse to prune when a single run would delete at least this fraction of the sources already
 #: indexed under the root. Re-indexing deletes rows for files that are gone from disk, which is
@@ -150,6 +148,21 @@ def _batch_chunks_from_env() -> int:
         _log.warning("ignoring out-of-range %s=%r (expected >= 1)", ENV_BATCH_CHUNKS, raw)
         return DEFAULT_BATCH_CHUNKS
     return value
+
+
+def _looks_like_allocation_failure(exc: BaseException) -> bool:
+    """Recognise backend allocation failures without relabelling ordinary embedder errors."""
+    messages: list[str] = []
+    current: BaseException | None = exc
+    while current is not None:
+        messages.append(str(current).lower())
+        current = current.__cause__ or current.__context__
+    text = " ".join(messages)
+    return (
+        "out of memory" in text
+        or "bad allocation" in text
+        or ("allocat" in text and ("memory" in text or "buffer" in text))
+    )
 
 
 class PruneGuardTripped(RuntimeError, RecallError):
@@ -1065,16 +1078,24 @@ class Indexer:
             return 0
         # Embed BEFORE touching the store: if embedding fails, this batch's old rows stay
         # intact. With a cache, unchanged chunk text is served from cache and never re-embedded.
-        embeddings = (
-            embed_with_cache(
-                self._embedder,
-                embedding_texts if embedding_texts is not None else [c.text for c in chunks],
-                self._cache,
-                purpose="passage",
+        try:
+            embeddings = (
+                embed_with_cache(
+                    self._embedder,
+                    embedding_texts if embedding_texts is not None else [c.text for c in chunks],
+                    self._cache,
+                    purpose="passage",
+                )
+                if chunks
+                else []
             )
-            if chunks
-            else []
-        )
+        except Exception as exc:
+            if _looks_like_allocation_failure(exc):
+                raise RuntimeError(
+                    "embedding batch allocation failed; reduce "
+                    f"{ENV_BATCH_CHUNKS} (currently {self._batch_chunks}) and retry"
+                ) from exc
+            raise
         if self._shadow is None:
             self._store.replace_sources(sources, chunks, embeddings)
             return self._write_sparse(chunks)

@@ -115,6 +115,7 @@ def test_streamable_http_run_passes_transport_security(monkeypatch):
 
     monkeypatch.setattr(server, "mcp", FakeServer())
     monkeypatch.setattr(server, "TRANSPORT", "streamable-http")
+    monkeypatch.setattr(server, "MCP_STATELESS_HTTP", True)
     monkeypatch.setattr(server, "HTTP_HOST", "0.0.0.0")
     monkeypatch.setattr(server, "HTTP_PORT", 9000)
     monkeypatch.setenv("RECALL_AUTH_RESOURCE_URL", "https://recall.example.com")
@@ -124,9 +125,35 @@ def test_streamable_http_run_passes_transport_security(monkeypatch):
     assert calls["transport"] == "streamable-http"
     assert calls["host"] == "0.0.0.0"
     assert calls["port"] == 9000
+    assert calls["stateless_http"] is True
     assert calls["transport_security"].enable_dns_rebinding_protection is True
     assert calls["transport_security"].allowed_hosts == ["recall.example.com"]
     assert calls["transport_security"].allowed_origins == ["https://recall.example.com"]
+
+
+@pytest.mark.parametrize("raw", ["maybe", "2", "truth"])
+def test_invalid_stateless_http_setting_is_rejected(monkeypatch, raw):
+    with monkeypatch.context() as context:
+        context.setenv("RECALL_MCP_STATELESS", raw)
+        with pytest.raises(ValueError, match="RECALL_MCP_STATELESS=.*boolean"):
+            server._read_bool_env("RECALL_MCP_STATELESS", True)
+
+
+def test_streamable_http_can_opt_back_into_stateful_sessions(monkeypatch):
+    calls = {}
+
+    class FakeServer:
+        def run(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setattr(server, "mcp", FakeServer())
+    monkeypatch.setattr(server, "TRANSPORT", "streamable-http")
+    monkeypatch.setattr(server, "MCP_STATELESS_HTTP", False)
+    monkeypatch.setenv("RECALL_AUTH_RESOURCE_URL", "https://recall.example.com")
+
+    server.main()
+
+    assert calls["stateless_http"] is False
 
 
 # ---------------------------------------------------------------------------------------------
