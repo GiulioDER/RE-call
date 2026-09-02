@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import io
 
+import recall
+
 from recall.codex import install_codex_integration
 
 
@@ -13,6 +15,7 @@ def test_codex_plugin_bundle_has_manifest_hooks_and_shared_skills() -> None:
     assert root is not None
     manifest = json.loads((root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert manifest["name"] == "recall"
+    assert manifest["version"] == recall.__version__
     assert manifest["skills"] == "./skills/"
     assert manifest["mcpServers"] == "./.mcp.json"
     assert json.loads((root / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["recall"]

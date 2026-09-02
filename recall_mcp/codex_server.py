@@ -29,13 +29,22 @@ def main() -> int:
     # The installer-owned file is the source of truth. Codex inherits the user's environment, which
     # may contain stale RECALL_* values from another project; set these explicitly or the server can
     # silently serve the wrong corpus.
-    os.environ["RECALL_SERVING_DSN"] = str(document["dsn"])
-    os.environ["RECALL_TENANT"] = str(document.get("tenant", "default"))
-    os.environ["RECALL_EMBEDDER"] = str(document.get("embedder", "fastembed"))
-    os.environ["RECALL_TABLE"] = str(document.get("table", "chunks"))
-    from recall_mcp.server import main as server_main
+    keys = ("RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_EMBEDDER", "RECALL_TABLE")
+    previous = {key: os.environ.get(key) for key in keys}
+    try:
+        os.environ["RECALL_SERVING_DSN"] = str(document["dsn"])
+        os.environ["RECALL_TENANT"] = str(document.get("tenant", "default"))
+        os.environ["RECALL_EMBEDDER"] = str(document.get("embedder", "fastembed"))
+        os.environ["RECALL_TABLE"] = str(document.get("table", "chunks"))
+        from recall_mcp.server import main as server_main
 
-    server_main()
+        server_main()
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
     return 0
 
 
