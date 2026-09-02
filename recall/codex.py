@@ -84,7 +84,7 @@ def _installation_lock(path: Path) -> Iterator[None]:
     handle = lock_path.open("a+b")
     try:
         if os.name == "nt":
-            import msvcrt
+            msvcrt = importlib.import_module("msvcrt")
 
             handle.seek(0)
             handle.write(b"0")
@@ -97,7 +97,7 @@ def _installation_lock(path: Path) -> Iterator[None]:
         yield
     finally:
         if os.name == "nt":
-            import msvcrt
+            msvcrt = importlib.import_module("msvcrt")
 
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
