@@ -92,6 +92,7 @@ docs/_*_2x.png
 # checkout by `scripts/session-mcp.sh` from a secrets file that lives outside the tree, so the
 # tokens have no path into a commit even by accident. `.mcp.json.example` is the committed shape.
 .mcp.json
+!codex-plugin/.mcp.json
 
 # Scratch renders and previews from driving the desktop UI and the docs figure generators, named
 # with a leading `.tmp_` by convention and never shipped. Measured 2026-08-19: 25 were sitting

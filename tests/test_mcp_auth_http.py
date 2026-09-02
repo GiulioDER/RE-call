@@ -66,6 +66,7 @@ def live_server(tmp_path_factory, unprivileged_dsn):
         ),
         encoding="utf-8",
     )
+    tokens.chmod(0o600)
     port = _free_port()
     env = {
         **os.environ,

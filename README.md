@@ -422,12 +422,16 @@ Operational safety notes:
 ## MCP
 
 **On Claude Code, the plugin does all of this for you**, including the hooks and a skill that
-teaches Claude when to search:
+teaches Claude when to search. On Codex, `recall setup` detects the client and installs the
+equivalent Codex plugin, MCP server, skills, and memory-enforcing lifecycle hooks automatically:
 
 ```
 /plugin marketplace add GiulioDER/RE-call
 /plugin install recall@re-call
 ```
+
+See [the Codex integration guide](docs/CODEX_RECALL_INTEGRATION.md) for the Codex bundle layout,
+automatic-install behavior, and shared memo front matter contract.
 
 It asks for a DSN, a table, a tenant and a trust mode, and keeps the DSN in your OS keychain rather
 than in `settings.json`. You still need a database first, which is what `recall quickstart` above is

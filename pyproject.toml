@@ -184,6 +184,8 @@ recall-mcp = "recall_mcp.server:main"
 # A console script is placed beside `recall` and `recall-mcp` by the same installer, so if one of
 # those resolves this one does too.
 recall-hooks = "recall_hooks:main"
+recall-codex-hooks = "recall_hooks.codex:main"
+recall-codex-mcp = "recall_mcp.codex_server:main"
 recall-desktop = "recall.desktop.main:main"
 # The graphical installer. A separate script rather than a flag on `recall-desktop`, because the
 # person who needs it does not have an install yet and therefore has nothing for that app to open.
@@ -236,6 +238,10 @@ exclude = [
 # checkout's copy winning so an editable install tests what it is editing.
 [tool.hatch.build.targets.wheel.force-include]
 "plugin/skills" = "recall/_skills"
+"codex-plugin/.codex-plugin" = "recall/_codex_plugin/.codex-plugin"
+"codex-plugin/hooks" = "recall/_codex_plugin/hooks"
+"codex-plugin/.mcp.json" = "recall/_codex_plugin/.mcp.json"
+"codex-plugin/skills" = "recall/_codex_plugin/skills"
 
 [tool.pytest.ini_options]
 # `pytest-timeout` was a declared dependency with nothing configuring it, which made it inert:

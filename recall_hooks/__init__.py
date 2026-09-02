@@ -49,6 +49,20 @@ WRITE_TIME_CONNECTION_MODES = ("cold", "relay")
 
 
 def claude_config_home() -> Path:
+    raw_hook_home = os.environ.get("RECALL_HOOK_CONFIG_HOME", "").strip()
+    if raw_hook_home:
+        return Path(raw_hook_home).expanduser()
+    raw = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".claude"
+
+
+def project_config_home() -> Path:
+    """Return the Claude project-memory home, independent of hook config storage."""
+    raw = os.environ.get("RECALL_PROJECT_CONFIG_HOME", "").strip()
+    if raw:
+        return Path(raw).expanduser()
     raw = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
     if raw:
         return Path(raw).expanduser()
@@ -295,14 +309,19 @@ def memory_dirs(cwd: str, override: str = "") -> list[tuple[str, Path]]:
     roots: list[tuple[str, Path]] = []
     if cwd:
         local = Path(str(cwd)) / "memory"
-        if local.is_dir():
+        if local.is_dir() and not local.is_symlink():
             roots.append(("worktree", local))
     try:
         from .prompt_time import find_store
     except ImportError:  # pragma: no cover - the module ships beside this one
         return roots
     store = find_store(cwd, override)
-    if store is not None and store.is_dir() and all(store != path for _id, path in roots):
+    if (
+        store is not None
+        and store.is_dir()
+        and not store.is_symlink()
+        and all(store != path for _id, path in roots)
+    ):
         roots.append(("project", store))
     return roots
 

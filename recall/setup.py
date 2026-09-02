@@ -23,10 +23,11 @@ from recall.claude_code import (
     register_mcp_server,
     user_skill_dir,
 )
+from recall.codex import codex_code_detected, install_codex_integration
 from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 from recall.seed import plan_seed, seed_corpus
-from recall.store import scrub_dsn_secrets
+from recall.store import DEFAULT_TABLE, scrub_dsn_secrets
 from recall._env import env_is_production
 
 SETUP_BEGIN = "# recall setup begin"
@@ -1407,7 +1408,9 @@ def run_setup_wizard(
     # Only offered when there is a client on this machine to wire up: asking someone to register
     # an MCP server with a program they do not have is noise dressed up as a choice.
     claude_detected = claude_code_detected()
+    codex_detected = codex_code_detected()
     claude_wiring_requested = False
+    codex_wiring_requested = False
     write_time_requested = True
     prompt_time_requested = True
     if claude_detected:
@@ -1415,6 +1418,13 @@ def run_setup_wizard(
             input_fn,
             print_fn,
             "Register the recall MCP server with Claude Code and install session hooks?",
+            default=True,
+        )
+    if codex_detected:
+        codex_wiring_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            "Register the recall MCP server with Codex and install its plugin and session hooks?",
             default=True,
         )
     # Asked separately because it is the only hook on the critical path of every tool call, and
@@ -1534,12 +1544,33 @@ def run_setup_wizard(
                 "Register it by hand with the block in docs/USING_WITH_CLAUDE.md."
             )
 
+    def _run_codex_wiring() -> None:
+        """Install Codex's personal marketplace entry and user-level hooks, best effort."""
+        try:
+            install_codex_integration(
+                dsn=dsn,
+                tenant="default",
+                embedder=embedder.value,
+                table=table or DEFAULT_TABLE,
+                write_time=write_time_requested,
+                prompt_time=prompt_time_requested,
+                print_fn=print_fn,
+            )
+            print_fn(
+                "Codex is wired up. Restart Codex so it refreshes the personal marketplace and "
+                "loads the RE-call plugin."
+            )
+        except Exception as exc:
+            print_fn(f"Could not wire up Codex: {_safe_error(exc, dsn)}")
+
     def _run_seed() -> None:
         seed_corpus(
             dsn=dsn,
             embedder_name=embedder.value,
             plan=seed_plan,
             env=cloud_keys,
+            tenant="default",
+            table=table or DEFAULT_TABLE,
             print_fn=print_fn,
         )
 
@@ -1590,6 +1621,8 @@ def run_setup_wizard(
             _run_seed()
         if claude_wiring_requested:
             _run_claude_wiring()
+        if codex_wiring_requested:
+            _run_codex_wiring()
         # The plugin guidance is truly last, so the install lines are the note left on screen
         # when the wizard exits, where they can be typed into Claude Code next.
         _run_plugin_step()

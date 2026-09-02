@@ -25,7 +25,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from collections.abc import Iterator
-from typing import Any, Callable, Protocol, TypedDict, cast
+from typing import Any, Callable, Mapping, Protocol, TypedDict, cast
 
 from . import claude_config_home, load_config
 
@@ -138,7 +138,7 @@ def _state_lock(path: Path, deadline: float | None = None) -> Iterator[None]:
             pass
 
 
-def _atomic_write(path: Path, document: dict[str, Any]) -> None:
+def _atomic_write(path: Path, document: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         path.parent.chmod(0o700)
