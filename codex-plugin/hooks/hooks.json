@@ -1,0 +1,72 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "recall-codex-hooks",
+            "args": ["session-start"],
+            "timeout": 15,
+            "statusMessage": "Recalling project memory"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|BashOutput",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "recall-codex-hooks",
+            "args": ["pre-tool-use"],
+            "timeout": 5,
+            "statusMessage": "Checking memory before writing"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "recall-codex-hooks",
+            "args": ["user-prompt-submit"],
+            "timeout": 10,
+            "statusMessage": "Searching project memory"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "recall-codex-hooks",
+            "args": ["pre-compact"],
+            "async": true,
+            "statusMessage": "Saving memory before compaction"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "recall-codex-hooks",
+            "args": ["session-end"],
+            "timeout": 3,
+            "statusMessage": "Indexing session into recall"
+          }
+        ]
+      }
+    ]
+  }
+}

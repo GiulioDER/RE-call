@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "recall": {
+      "command": "recall-codex-mcp"
+    }
+  }
+}

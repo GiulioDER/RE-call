@@ -1,4 +1,5 @@
 ---
+name: keep-memory-current
 description: Load this project's memory when you start, and write back what you learned before you stop. Use at the beginning of a work session, when finishing a task or about to end a session, after debugging something non-obvious, after a decision that took argument to reach, and whenever you catch yourself thinking "I should remember this". Also use when a memory turns out to be wrong.
 ---
 

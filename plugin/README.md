@@ -1,17 +1,29 @@
-# RE-call for Claude Code
+# RE-call for Claude Code and Codex
 
 Memory that abstains instead of guessing. This plugin gives Claude Code a searchable store of your
 project's own notes and decisions, where a retracted claim comes back marked `superseded` and a
 question the corpus cannot answer is refused rather than answered from the nearest neighbour.
 
-## Install
+## Install for Claude Code
 
-**Install the package first.** This plugin is a client, not an engine: its MCP server and its three
-hooks are the console scripts `recall-mcp` and `recall-hooks`, invoked by bare name. A plugin
+**Install the package first.** This plugin is a client, not an engine: its MCP server and its
+hooks are the console scripts `recall-mcp` and `recall-hooks`, invoked by bare name. The plugin
+delegates to the same `recall_hooks` implementation used by Claude Code. A plugin
 manifest is written once and shipped to every machine, so it cannot name your interpreter, and
 without those scripts on `PATH` the server simply fails to spawn. Claude Code reports that as
 absent tools, which is also what a missing config, an unreachable database and pending migrations
 look like.
+
+## Install for Codex
+
+Install the Python package and run `recall setup` from the project. When Codex is detected, the
+wizard automatically installs the Codex plugin bundle, registers its MCP server, and merges the
+same lifecycle hooks into `CODEX_HOME/hooks.json`. Restart Codex after setup. The Codex bundle uses
+`recall-codex-mcp` and `recall-codex-hooks`; Claude's bundle continues to use `recall-mcp` and
+`recall-hooks`, while both call the same memory and front matter implementation.
+
+See [the Codex integration guide](../docs/CODEX_RECALL_INTEGRATION.md) for manual installation,
+verification, and the shared durable memo contract.
 
 ```bash
 pip install "recall-rag[fastembed]"

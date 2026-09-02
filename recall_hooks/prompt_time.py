@@ -85,7 +85,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from . import claude_config_home, load_config
+from . import load_config, project_config_home
 
 #: The four hub and sub-index files. They are pointers to memos rather than memos, they repeat
 #: every memo's hook line, and in the first prototype they out-scored the memos they point at.
@@ -217,14 +217,14 @@ def find_store(cwd: str, override: str = "") -> Path | None:
         return candidate if candidate.is_dir() else None
     if not cwd:
         return None
-    projects = claude_config_home() / "projects"
+    projects = project_config_home() / "projects"
     try:
         here = Path(cwd).resolve()
     except OSError:
         return None
     for directory in (here, *here.parents):
         store = projects / project_slug(directory) / "memory"
-        if store.is_dir():
+        if store.is_dir() and not store.is_symlink():
             return store
     return None
 
@@ -235,6 +235,8 @@ def load_memos(store: Path) -> list[tuple[str, str, list[str]]]:
     memos: list[tuple[str, str, list[str]]] = []
     for path in sorted(store.glob("*.md")):
         if path.stem in INDEX_STEMS:
+            continue
+        if path.is_symlink() or not path.is_file():
             continue
         try:
             raw = path.read_text(encoding="utf-8", errors="replace")

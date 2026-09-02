@@ -44,6 +44,7 @@ def no_machine_dependent_prompts(monkeypatch):
     detection back on would grow an extra prompt here and never under an installed wheel.
     """
     monkeypatch.setattr("recall.setup.claude_code_detected", lambda: False)
+    monkeypatch.setattr("recall.setup.codex_code_detected", lambda: False)
     monkeypatch.setattr("recall.setup.plugin_skill_sources", lambda: {})
     monkeypatch.setattr(
         "recall.setup.plan_seed",

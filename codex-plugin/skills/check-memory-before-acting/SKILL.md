@@ -29,15 +29,6 @@ a tree configured for LF, which is exactly what the memo warns about.
 ⛔ **You cannot look up a hazard you do not know exists.** That is not a reason to skip the search.
 It is the reason to search for the *hazard* rather than the *task*.
 
-This guidance has since been measured directly (run `agent-ab-skill-001`, 54 pairs, 2026-08-23,
-against the one-sentence baseline above): searching before acting went from half of sessions to
-**every session**, and the governing memo reached the agent in **0.674** of sessions against the
-baseline's 0.319 (p = 0.0006). The honest half of the result: the gain came from *searching at
-all*, not from better queries. The hit rate among sessions that searched moved only 0.600 to 0.674
-(not significant), and on the hardest task every session still asked in goal vocabulary and missed.
-So follow the recipe below deliberately; the reflex it corrects is strong enough to survive being
-told about it.
-
 ## How to search
 
 You cannot name a symptom you have not hit yet. What you can always name is the **operations** you
@@ -51,10 +42,6 @@ the task into its operations, and search for each operation plus its failure:
 - Not "add a dependency" but "dependency breaks the build", "lockfile conflict", "version pin".
 - Not "deploy the service" but "deploy failed", "migration locked the table", "rollback".
 
-The first example is the recorded miss above, solved: "version bump" appears nowhere in the memo,
-but "a file edited by a python script" is its title. The goal's vocabulary is unique to your task;
-the operations' vocabulary is shared with whoever paid for the memo.
-
 Two or three short searches with different words beat one long one. Symptom words, error text and
 file names retrieve well; a sentence describing your plan does not.
 
@@ -62,7 +49,7 @@ file names retrieve well; a sentence describing your plan does not.
 
 The moment that matters is **before your first file edit or state-changing command in a task**, not
 after something breaks. A search after the failure can only explain it; a search before the first
-write is the only one that can prevent it. In particular:
+write is the only way to prevent it. In particular:
 
 - Before a command that changes state: a build, a migration, a deploy, a release, a force push.
 - Before choosing a library, a pattern or an approach, where the project may have tried one and
@@ -77,20 +64,16 @@ write is the only one that can prevent it. In particular:
 
 - **`ok`**: a live claim. Use it.
 - **`superseded`**: a claim that was retracted, carrying a pointer to what replaced it. Follow the
-  pointer. **Do not act on a superseded hit**, and do not treat it as a disagreement to resolve
-  yourself: the corpus is telling you the newer document won.
-- **`low_confidence`** and an **abstention**: the store is saying it does not know. Treat that as
-  no answer, not as a weak yes. It is not evidence that no memo exists, only that this query did
-  not find one, so try the hazard's vocabulary before concluding the corpus is silent.
-- **`DEGRADED:INDEX_NOT_READY`** on every result means the corpus has no calibration fitted to it,
-  so its threshold is a placeholder rather than a measurement. Weigh its verdicts accordingly and
-  mention it if a decision turns on one.
+  pointer. **Do not act on a superseded hit**: the corpus is telling you the newer document won.
+- **`low_confidence`** and an abstention: the store is saying it does not know. Treat it as no
+  answer, not as a weak yes.
+- **`DEGRADED:INDEX_NOT_READY`** means the corpus has no fitted calibration; weigh its verdicts
+  accordingly and mention it if a decision turns on one.
 
 ## What not to do
 
 - Do not paste secrets, credentials or customer data into a search.
-- Do not treat memory as authoritative over the code in front of you. A memo records what was true
-  when it was written; the repository records what is true now. **When they disagree, the code
-  wins and the memo is worth correcting.**
-- Do not search once, find nothing, and conclude the project has no opinion. That is the exact
-  failure measured above.
+- Do not treat memory as authoritative over the code in front of you. When they disagree, the code
+  wins and the memo is worth correcting.
+- Do not search once, find nothing, and conclude the project has no opinion. Try the hazard's
+  vocabulary before concluding the corpus is silent.

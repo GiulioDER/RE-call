@@ -1,0 +1,24 @@
+{
+  "name": "recall",
+  "version": "0.11.0",
+  "description": "RE-call project memory with abstention, shared front matter, and lifecycle hooks for Codex.",
+  "author": {
+    "name": "Giulio D'Erme",
+    "url": "https://github.com/GiulioDER"
+  },
+  "homepage": "https://giulioder.github.io/RE-call/",
+  "repository": "https://github.com/GiulioDER/RE-call",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "rag", "retrieval", "agent-memory", "pgvector", "postgresql"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "RE-call",
+    "shortDescription": "Project memory that abstains instead of guessing",
+    "longDescription": "Search project memory before acting, preserve shared memo front matter, and refresh the corpus across Codex sessions.",
+    "developerName": "Giulio D'Erme",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": "Use RE-call memory before repeating prior work, proposing an idea, or writing a durable project memo."
+  }
+}
