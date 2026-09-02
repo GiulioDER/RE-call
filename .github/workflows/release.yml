@@ -106,6 +106,8 @@ jobs:
           cd "$(mktemp -d)"   # away from the source tree, so nothing resolves by accident
           python -c "import recall, recall_mcp; from recall.trust import trusted_search; print(recall.__name__, 'ok')"
           recall --help > /dev/null
+          recall-hooks --help > /dev/null
+          python -m recall_hooks write-time-relay --state "$(mktemp).json"
           # BOTH console scripts. `recall-enterprise` was dropped from [project.scripts] by a bad
           # merge and nothing noticed: the module still imported and no test failed, so a release
           # would have shipped a wheel whose upgrade REMOVED the command the enterprise runbook

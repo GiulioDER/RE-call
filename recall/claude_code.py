@@ -65,7 +65,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from recall.atomic_write import atomic_write_bytes
-from recall_hooks import claude_config_home, config_path as hook_config_path, refresh_stats
+from recall_hooks import (
+    WRITE_TIME_CONNECTION_MODES,
+    claude_config_home,
+    config_path as hook_config_path,
+    refresh_stats,
+)
 
 #: The MCP server name registered with the client. Also the name `claude mcp get` is probed with.
 SERVER_NAME = "recall"
@@ -580,6 +585,8 @@ def install_hooks(
     tenant: str = "default",
     embedder: str = "fastembed",
     write_time: bool = True,
+    write_time_connection_mode: str = "relay",
+    project_root: Path | None = None,
     prompt_time: bool = True,
     python_executable: str | None = None,
     path: Path | None = None,
@@ -587,12 +594,29 @@ def install_hooks(
 ) -> None:
     """Write the hook config, then merge the hook entries into the client's settings.
 
+    `write_time` controls the `PreToolUse` memo injection. It defaults to on, and the ENTRY is
+    installed either way: the handler reads `write_time.enabled` from its own config, so turning
+    it off is a config edit rather than a settings-file surgery the user has to repeat. That also
+    means a user who disables it keeps a working `recall hooks upgrade`.
+
+    Args:
+        write_time_connection_mode: `relay` (the default) keeps one database connection per
+            session. `cold` preserves the process-per-call path. Any other value is rejected so
+            an installation cannot silently select a different latency and lifecycle contract.
+        project_root: Project directory allowed to use this hook configuration. It defaults to
+            the current working directory and is stored as an absolute path. ⛔ There is ONE hook
+            config per machine, so this is not a per-project setting: installing in a second
+            project rewrites it, and write-time retrieval then returns nothing in the first. The
+            install prints the root for that reason.
     `write_time` controls the `PreToolUse` memo injection and `prompt_time` the `UserPromptSubmit`
     one. Both default to on, and both ENTRIES are installed either way: each handler reads its own
     `enabled` flag from the hook config, so turning one off is a config edit rather than a
     settings-file surgery the user has to repeat. That also means a user who disables one keeps a
     working `recall hooks upgrade`.
     """
+    if write_time_connection_mode not in WRITE_TIME_CONNECTION_MODES:
+        raise ValueError("write_time_connection_mode must be 'cold' or 'relay'")
+    root = (project_root or Path.cwd()).resolve()
     target = path or settings_path()
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -601,6 +625,8 @@ def install_hooks(
         tenant=tenant,
         embedder=embedder,
         write_time=write_time,
+        write_time_connection_mode=write_time_connection_mode,
+        project_root=root,
         prompt_time=prompt_time,
     )
 
@@ -612,10 +638,17 @@ def install_hooks(
 
     entries = hook_entries(python_executable)
     _write_json(target, merge_hooks(settings, entries))
-    # Named from the entries rather than spelled out. The old wording said "SessionStart and
-    # SessionEnd" and had been wrong through two additions, which is what a hand-written list of
-    # what the code just did always becomes.
     print_fn(f"Installed {', '.join(entries)} hooks in {target}")
+    if write_time:
+        # ⛔ Say which project the write-time hook is bound to, because there is exactly ONE hook
+        # config for the machine and installing in a second project MOVES this root. The hook then
+        # returns nothing for every event in the first project, silently and by design: it must
+        # never speak up during a tool call. The install is the only moment where the change can be
+        # stated, so it is stated here rather than left to be discovered.
+        print_fn(
+            f"Write-time memory search is bound to {root}. It is the only project it answers in, "
+            "and installing in another one moves it."
+        )
 
 
 def uninstall(
@@ -656,6 +689,12 @@ def uninstall(
         _write_json(target, settings)
         print_fn(f"Removed recall hooks from {target}")
 
+    try:
+        from recall_hooks.relay import stop_all
+
+        stop_all()
+    except Exception:
+        pass
     hook_config_path().unlink(missing_ok=True)
 
     config_file = client_config_path()
@@ -694,6 +733,8 @@ def _write_hook_config(
     embedder: str,
     table: str = "chunks",
     write_time: bool = True,
+    write_time_connection_mode: str = "relay",
+    project_root: Path | None = None,
     prompt_time: bool = True,
 ) -> None:
     path = hook_config_path()
@@ -704,11 +745,19 @@ def _write_hook_config(
         "embedder": embedder,
         "table": table,
         "chunks": 0,
+        "project_root": str((project_root or Path.cwd()).resolve()),
         # Written explicitly even when true, so the file SAYS what the session will do. An absent
         # block also means enabled (an upgraded config predating the feature should get it), and
         # the difference between "absent" and "absent because someone chose it" is exactly what a
         # user reads this file to find out.
-        "write_time": {"enabled": bool(write_time)},
+        "write_time": {
+            "enabled": bool(write_time),
+            "connection_mode": (
+                write_time_connection_mode
+                if write_time_connection_mode in WRITE_TIME_CONNECTION_MODES
+                else "cold"
+            ),
+        },
         # Same contract as `write_time`, and it is worth stating why both blocks exist rather than
         # one switch: they answer different questions from different text, so a user who finds one
         # useful and the other noisy needs to be able to say so. `write_time` queries the corpus

@@ -44,12 +44,8 @@ MARKETPLACE = REPO / ".claude-plugin" / "marketplace.json"
 #: differ: the installer knows the machine's interpreter and the plugin cannot.
 EXPECTED_HOOKS = {
     "SessionStart": "session-start",
-    # The write-time hook. The plugin declared the other three and not this one, so a plugin
-    # user and a `recall setup` user got different hooks from the same release, and the gap
-    # ran toward the plugin doing less.
     "PreToolUse": "pre-tool-use",
     # The prompt-time hook, added at the same time as the installer's, deliberately in the same
-    # change. The entry above is the record of what happens otherwise.
     "UserPromptSubmit": "user-prompt-submit",
     "PreCompact": "pre-compact",
     "SessionEnd": "session-end",

@@ -6,7 +6,7 @@ question the corpus cannot answer is refused rather than answered from the neare
 
 ## Install
 
-**Install the package first.** This plugin is a client, not an engine: its MCP server and its three
+**Install the package first.** This plugin is a client, not an engine: its MCP server and its four
 hooks are the console scripts `recall-mcp` and `recall-hooks`, invoked by bare name. A plugin
 manifest is written once and shipped to every machine, so it cannot name your interpreter, and
 without those scripts on `PATH` the server simply fails to spawn. Claude Code reports that as

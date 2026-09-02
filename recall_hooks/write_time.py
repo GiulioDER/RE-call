@@ -74,7 +74,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import claude_config_home, load_config
+from . import WRITE_TIME_CONNECTION_MODES, claude_config_home, load_config
 
 #: Matches `recall_mcp.service.MAX_QUERY_CHARS`. The server refuses a longer query rather than
 #: truncating it, so truncating here is the difference between a hit and a refusal.
@@ -102,9 +102,11 @@ COOLDOWN_NAME = "recall-hook-write-time-cooldown"
 def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
     """The `write_time` block of the hook config, with defaults.
 
-    Absent means ENABLED, because the installer writes the block and an older config that predates
-    it should still get the feature it was upgraded for. `enabled: false` is the way to turn it
-    off, and it is honoured everywhere.
+    Absent means ENABLED for a project-bound configuration, because the installer writes the block
+    and an older config that predates it should still get the feature it was upgraded for.
+    `enabled: false` is the way to turn it off, and it is honoured everywhere. A legacy config
+    without ``project_root`` is rejected by the write-time boundary until it is reinstalled, since
+    there is no safe way to identify which project owns its DSN and tenant.
     """
 
     config = load_config() if config is None else config
@@ -112,6 +114,12 @@ def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
     block = block if isinstance(block, dict) else {}
     return {
         "enabled": bool(block.get("enabled", True)),
+        # Older configs retain the measured process-per-call behavior. The installer writes
+        # ``relay`` explicitly for new installs, making the rollout reversible by editing one
+        # config value rather than changing the client hook again.
+        "connection_mode": block.get("connection_mode", "cold")
+        if block.get("connection_mode") in WRITE_TIME_CONNECTION_MODES
+        else "cold",
         "k": int(block.get("k", TOP_K)),
         "min_chars": int(block.get("min_chars", MIN_QUERY_CHARS)),
         "connect_timeout": float(block.get("connect_timeout", 2.0)),
@@ -157,6 +165,23 @@ def _clear_cooldown() -> None:
         pass
 
 
+def _event_is_in_configured_project(config: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """Keep a user-level hook from applying one project's corpus to another project's event."""
+
+    configured = config.get("project_root")
+    event_cwd = payload.get("cwd")
+    if not isinstance(configured, str) or not configured.strip():
+        return False
+    if not isinstance(event_cwd, str) or not event_cwd.strip():
+        return False
+    try:
+        root = Path(configured).expanduser().resolve()
+        cwd = Path(event_cwd).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return cwd == root or root in cwd.parents
+
+
 def payload_of(tool_name: str, tool_input: dict[str, Any]) -> str:
     """The text the agent is about to write, which is the query.
 
@@ -177,6 +202,37 @@ def payload_of(tool_name: str, tool_input: dict[str, Any]) -> str:
     return ""
 
 
+def _search_connection(
+    connection: Any,
+    query: str,
+    config: dict[str, Any],
+    options: dict[str, Any],
+) -> list[tuple[str, str, float]]:
+    """Run the lexical query on an already-open connection.
+
+    This is kept separate from :func:`search` so a benchmark relay can amortize connection setup
+    without creating a second SQL implementation. The caller owns the connection lifecycle.
+    """
+
+    terms = " | ".join(sorted({t.lower() for t in TOKEN_RE.findall(query[:MAX_QUERY_CHARS])})[:200])
+    if not terms:
+        return []
+    tenant = str(config.get("tenant", "default"))
+    rows = connection.execute(
+        "SELECT source_uri, text, ts_rank(tsv, to_tsquery('english', %s)) AS rank "
+        "FROM recall_chunks_v1 "
+        "WHERE tenant_id = %s "
+        "  AND generation_id = ("
+        "        SELECT generation_id FROM recall_generations "
+        "        WHERE tenant_id = %s AND state = 'active' "
+        "        ORDER BY created_at DESC LIMIT 1) "
+        "  AND tsv @@ to_tsquery('english', %s) "
+        "ORDER BY rank DESC LIMIT %s",
+        (terms, tenant, tenant, terms, int(options["k"])),
+    ).fetchall()
+    return [(Path(str(uri)).name, str(text), float(rank)) for uri, text, rank in rows]
+
+
 def search(query: str, config: dict[str, Any], options: dict[str, Any]) -> list[tuple[str, str, float]]:
     """`(source name, chunk text, ts_rank)` for the lexical leg, by SQL. No model is loaded.
 
@@ -188,10 +244,6 @@ def search(query: str, config: dict[str, Any], options: dict[str, Any]) -> list[
 
     import psycopg
 
-    terms = " | ".join(sorted({t.lower() for t in TOKEN_RE.findall(query[:MAX_QUERY_CHARS])})[:200])
-    if not terms:
-        return []
-    tenant = str(config.get("tenant", "default"))
     # ⚠️ ONE round trip, deliberately. Measured against a corpus on another host: three round
     # trips cost a median of 2.54s per tool call, against ~1.0s for a corpus on the same machine,
     # and the difference is almost entirely latency rather than work. The statement timeout rides
@@ -208,19 +260,7 @@ def search(query: str, config: dict[str, Any], options: dict[str, Any]) -> list[
         connect_timeout=options["connect_timeout"],
         options="-c statement_timeout=5s",
     ) as conn:
-        rows = conn.execute(
-            "SELECT source_uri, text, ts_rank(tsv, to_tsquery('english', %s)) AS rank "
-            "FROM recall_chunks_v1 "
-            "WHERE tenant_id = %s "
-            "  AND generation_id = ("
-            "        SELECT generation_id FROM recall_generations "
-            "        WHERE tenant_id = %s AND state = 'active' "
-            "        ORDER BY created_at DESC LIMIT 1) "
-            "  AND tsv @@ to_tsquery('english', %s) "
-            "ORDER BY rank DESC LIMIT %s",
-            (terms, tenant, tenant, terms, int(options["k"])),
-        ).fetchall()
-    return [(Path(str(uri)).name, str(text), float(rank)) for uri, text, rank in rows]
+        return _search_connection(conn, query, config, options)
 
 
 def render(hits: list[tuple[str, str, float]]) -> str:
@@ -255,6 +295,8 @@ def pre_tool_use(payload: dict[str, Any]) -> int:
         # Unconfigured is silent BY DESIGN: a checkout that has not run the installer must behave
         # exactly as it would without this hook.
         return 0
+    if not _event_is_in_configured_project(config, payload):
+        return 0
     options = settings(config)
     if not options["enabled"]:
         return 0
@@ -266,7 +308,16 @@ def pre_tool_use(payload: dict[str, Any]) -> int:
         return 0
 
     try:
-        hits = search(query, config, options)
+        if options["connection_mode"] == "relay":
+            session_id = str(payload.get("session_id") or "")
+            if session_id:
+                from .relay import search as relay_search
+
+                hits = relay_search(session_id, query[:MAX_QUERY_CHARS], config, options)
+            else:
+                hits = search(query, config, options)
+        else:
+            hits = search(query, config, options)
     except Exception:  # noqa: BLE001 - a retrieval failure must never break the session
         # Any failure to reach the corpus starts the cooldown, not only a timeout: a wrong DSN, a
         # revoked role and a stopped container all cost the same wall clock on every tool call,
@@ -294,4 +345,3 @@ __all__ = [
     "search",
     "settings",
 ]
-

@@ -288,6 +288,20 @@ Three properties are deliberate and worth knowing before you edit them:
 - **`PreCompact` never blocks.** Exit code 2 on that event *blocks compaction*, so every path
   returns 0 and the handler runs `async`. A memory tool must not be able to wedge a session whose
   context window is already full.
+- **`PreToolUse` is additive and project-scoped.** It never denies a tool call, uses the configured
+  project's `cwd` boundary, and falls back silently when the event belongs to another project.
+
+  ⛔ **There is one hook config per machine, so it answers in exactly one project at a time.**
+  `~/.claude/recall-hook.json` holds a single `project_root`, and the hook returns nothing for any
+  event whose `cwd` falls outside it. Running the installer in a second project **moves** that root,
+  and write-time search then does nothing in the first one. There is no error and no log line, by
+  design: a hook that runs before every tool call must never speak up. The install prints the root
+  it bound to, and that line is the only announcement you get.
+
+  A config predating this field is treated the same way as one belonging to another project, and
+  gets no write-time search until it is reinstalled. That is deliberate: without a recorded root
+  there is no way to tell which project's corpus its DSN and tenant belong to, and answering a write
+  in project B out of project A's memory is the failure this boundary exists to stop.
 - **They run out of `recall_hooks`, not `recall`.** Importing the `recall` package costs about a
   second, and a session-start hook pays that on every launch.
 
