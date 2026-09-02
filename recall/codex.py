@@ -7,6 +7,7 @@ and fail-open behaviour remain in :mod:`recall_hooks`.
 from __future__ import annotations
 
 import json
+import importlib
 import os
 import shutil
 import sys
@@ -91,9 +92,8 @@ def _installation_lock(path: Path) -> Iterator[None]:
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
         else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
+            fcntl = importlib.import_module("fcntl")
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         yield
     finally:
         if os.name == "nt":
@@ -102,9 +102,8 @@ def _installation_lock(path: Path) -> Iterator[None]:
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+            fcntl = importlib.import_module("fcntl")
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         handle.close()
 
 
