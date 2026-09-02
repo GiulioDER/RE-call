@@ -335,3 +335,34 @@ def test_an_unknown_subcommand_is_still_silent(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
     assert recall_hooks.main(["nonsense"]) == 0
 
+
+# --------------------------------------------------------------------------- withheld, at SessionStart
+
+
+def test_a_withheld_memo_is_reported_and_names_the_remedy() -> None:
+    """A withheld file is the one outcome here that a retry cannot fix. Nothing about the next
+    session changes it, and the memo is simply absent from the corpus until a person acts."""
+    _manifest(HOSTED, {"pending": {}, "withheld": {"worktree/a.md": ["line 3: an AWS access key id"]}})
+    notice = recall_hooks._unsynced_notice(HOSTED)
+    assert "1 memo(s) were NOT uploaded" in notice
+    assert "worktree/a.md" in notice
+    assert "Nothing was modified on disk" in notice
+
+
+def test_withheld_is_reported_even_when_a_sync_error_is_also_recorded() -> None:
+    """Reported FIRST and unconditionally. An auth failure will clear itself on the next session;
+    a credential in a memo will not."""
+    _manifest(HOSTED, {
+        "pending": {"b.md": ""},
+        "last_error": {"kind": "auth", "message": "401"},
+        "withheld": {"worktree/a.md": ["line 3: a private key"]},
+    })
+    notice = recall_hooks._unsynced_notice(HOSTED)
+    assert notice.startswith("WARNING:")
+    assert "NOT uploaded" in notice
+
+
+def test_a_clean_install_still_says_nothing_extra() -> None:
+    _manifest(HOSTED, {"pending": {}, "withheld": {}})
+    assert recall_hooks._unsynced_notice(HOSTED) == ""
+

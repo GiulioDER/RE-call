@@ -181,6 +181,18 @@ def _unsynced_notice(config: dict[str, Any]) -> str:
     manifest = read_manifest(config)
     pending = manifest.get("pending") or {}
     error = manifest.get("last_error") or {}
+    withheld = manifest.get("withheld") or {}
+    if withheld:
+        # 🔑 Reported whether or not anything else went wrong, and FIRST. A withheld file is the
+        # one outcome here that needs a person rather than a retry: nothing about the next session
+        # will change it, and the file is silently absent from the corpus until somebody acts.
+        names = ", ".join(sorted(withheld)[:3])
+        more = f" and {len(withheld) - 3} more" if len(withheld) > 3 else ""
+        return (
+            f"WARNING: {len(withheld)} memo(s) were NOT uploaded because they look like they "
+            f"contain a live credential ({names}{more}). Nothing was modified on disk. Remove the "
+            "credential, or move the file out of the memory directory. "
+        )
     if not pending or not error:
         return ""
     remedy = {
