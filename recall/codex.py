@@ -12,7 +12,8 @@ import shutil
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from collections.abc import Iterator
+from typing import Any, Callable, cast
 
 from recall.atomic_write import atomic_write_bytes
 
@@ -75,7 +76,7 @@ def _copy_plugin(source: Path, destination: Path) -> None:
 
 
 @contextmanager
-def _installation_lock(path: Path):
+def _installation_lock(path: Path) -> Iterator[None]:
     """Serialize installer merges without adding a platform-specific dependency."""
     lock_path = path.with_name(f"{path.name}.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,7 +93,7 @@ def _installation_lock(path: Path):
         else:
             import fcntl
 
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
         yield
     finally:
         if os.name == "nt":
@@ -103,7 +104,7 @@ def _installation_lock(path: Path):
         else:
             import fcntl
 
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
         handle.close()
 
 
@@ -123,7 +124,7 @@ def _marketplace_document(path: Path) -> dict[str, Any]:
     plugins = value.get("plugins", [])
     if not isinstance(plugins, list):
         raise ValueError(f"Codex marketplace {path} has a non-list plugins field")
-    return value
+    return cast(dict[str, Any], value)
 
 
 def _update_marketplace(path: Path, plugin_path: Path) -> None:
@@ -248,7 +249,7 @@ def _merge_hooks(settings: dict[str, Any], entries: dict[str, list[dict[str, Any
             if handlers:
                 kept.append({**group, "hooks": handlers})
         hooks[event] = [*kept, *groups]
-    return merged
+    return cast(dict[str, Any], merged)
 
 
 def install_codex_integration(
