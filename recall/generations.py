@@ -20,9 +20,11 @@ from psycopg.types.json import Jsonb
 
 from recall.document import parse_document
 from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextual_passages
-from recall.embeddings import Embedder, embed_passages, embedding_profile, embedding_profile_id
+from recall.cache import embed_with_cache, open_default_cache
+from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
 from recall.extraction import ExtractedDocument, chunk_extracted_document
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
+from recall.dependency_invalidation import build_dependency_projection, write_dependency_projection
 from recall.lineage import (
     GenerationState,
     IndexManifestV1,
@@ -146,6 +148,74 @@ class ErasureResult:
 _MARKDOWN_MEDIA_TYPES = frozenset({"text/markdown", "text/x-markdown"})
 _BODY_RULE_VERSION_KEY = "body_rule_version"
 _BODY_RULE_VERSION = "frontmatter-pairing-2026-08-11"
+
+#: Version of what this build DERIVES from a document, as opposed to what the document says.
+#:
+#: `_BODY_RULE_VERSION` above solved one instance of a general problem and its docstring states
+#: the general form exactly: reuse is keyed on tenant, URI, sha256 and pipeline fingerprint, and
+#: none of those moves when the code that reads a document changes, so a parser change is
+#: "stale forever" for every source whose bytes are unchanged. That guard was scoped to the
+#: frontmatter PAIRING rule alone.
+#:
+#: Recognising `type:` as a retrieval facet was the second instance, and it landed on 0.3% of a
+#: 10,155-chunk corpus: only the 40 chunks whose files happened to change were re-derived, and a
+#: `--force` rebuild could never fix the rest, because force builds a new GENERATION and reuse is
+#: per SOURCE. Measured 2026-08-29 on the memory tenant.
+#:
+#: So this is the general term the precedent lacked: bump it whenever a change alters the
+#: metadata derived from an UNCHANGED document, and every source is re-derived exactly once.
+#: `_reuse_source` requires it unconditionally, so chunks written before it existed carry no
+#: value, never match, and are rebuilt on the next generation.
+_METADATA_RULE_VERSION_KEY = "metadata_rule_version"
+_METADATA_RULE_VERSION = "relative-file-paths-2026-08-29"
+
+
+def manifest_relative_paths(manifest: "IndexManifestV1") -> dict[str, str]:
+    """``{uri: path relative to the manifest's common directory}``, for chunk `file` metadata.
+
+    A manifest carries no root, so the root is DERIVED: the longest directory prefix shared by
+    every object in it. That is well defined for `file://` and `s3://` alike and needs no new
+    configuration, and for a single-object manifest it degenerates to the object's own directory,
+    leaving `file` as the bare name it has always been.
+
+    ⛔ Why this exists at all. `file` used to be `PurePosixPath(uri).name`, the BASENAME, while the
+    `Indexer` path stores `path.relative_to(root).as_posix()`. Two build paths, two meanings for
+    one caller-facing field, and the production path was the lossy one. It made
+    `recall.scope`'s folder dimension silently empty in production: every chunk looked as though
+    it sat at the corpus root, so `folder=recall` matched nothing and returned zero hits, which a
+    caller cannot distinguish from a corpus with no answer. Measured 2026-08-29 on the memory
+    tenant: 0 of 31 controls retained under an oracle folder scope that should have retained all
+    of them.
+
+    Objects that do not share a scheme and netloc have no meaningful common root, so they fall
+    back to the basename rather than to an invented one.
+    """
+    parts = [urlsplit(entry.uri) for entry in manifest.objects]
+    if not parts:
+        return {}
+    origins = {(part.scheme, part.netloc) for part in parts}
+    names = {entry.uri: PurePosixPath(urlsplit(entry.uri).path).name for entry in manifest.objects}
+    if len(origins) != 1:
+        return names
+
+    directories = [PurePosixPath(part.path).parent.parts for part in parts]
+    shared: list[str] = []
+    for segments in zip(*directories):
+        if len(set(segments)) != 1:
+            break
+        shared.append(segments[0])
+    prefix = PurePosixPath(*shared) if shared else None
+    if prefix is None:
+        return names
+
+    relative: dict[str, str] = {}
+    for entry, part in zip(manifest.objects, parts):
+        path = PurePosixPath(part.path)
+        try:
+            relative[entry.uri] = path.relative_to(prefix).as_posix()
+        except ValueError:  # pragma: no cover - guarded by the shared-prefix computation above
+            relative[entry.uri] = path.name
+    return relative
 
 
 def _body_rule_changed(media_type: str, text: str) -> bool:
@@ -615,6 +685,9 @@ class GenerationManager:
             "ON g.tenant_id = c.tenant_id AND g.generation_id = c.generation_id "
             "WHERE c.tenant_id = %s AND c.source_uri = %s AND c.source_sha256 = %s "
             "AND (%s OR c.metadata ->> %s = %s) "
+            # Unconditional, unlike the body rule term above: a chunk written before this stamp
+            # existed carries no value, so it never matches and is re-derived once.
+            "AND c.metadata ->> %s = %s "
             "AND g.pipeline_fingerprint = %s AND g.state IN ('active', 'ready', 'retired') "
             "ORDER BY g.activated_at DESC NULLS LAST, g.created_at DESC LIMIT 1",
             (
@@ -624,6 +697,8 @@ class GenerationManager:
                 require_body_rule_version is None,
                 _BODY_RULE_VERSION_KEY,
                 require_body_rule_version,
+                _METADATA_RULE_VERSION_KEY,
+                _METADATA_RULE_VERSION,
                 pipeline_fingerprint,
             ),
         ).fetchone()
@@ -632,10 +707,12 @@ class GenerationManager:
         copied = conn.execute(
             "INSERT INTO recall_chunks_v1 "
             "(tenant_id, generation_id, chunk_id, source_uri, object_version_id, "
-            "source_sha256, chunk_ordinal, text, metadata, embedding, indexed_at, tsv) "
+            "source_sha256, chunk_ordinal, text, metadata, embedding, indexed_at, "
+            "first_indexed_at, tsv) "
             "SELECT tenant_id, %s, chunk_id, source_uri, %s, source_sha256, chunk_ordinal, "
             "text, metadata || jsonb_build_object('reused_from_generation', generation_id), "
-            "embedding, clock_timestamp(), tsv FROM recall_chunks_v1 "
+            "embedding, clock_timestamp(), COALESCE(first_indexed_at, indexed_at), tsv "
+            "FROM recall_chunks_v1 "
             "WHERE tenant_id = %s AND generation_id = %s AND source_uri = %s",
             (
                 generation_id,
@@ -694,7 +771,14 @@ class GenerationManager:
     ) -> BuildStats:
         chunks_written = reused_objects = reused_chunks = tombstoned = empty = 0
         indexed_sources: list[str] = []
+        # Opened INSIDE the try and closed in `finally`, so a failed build still releases the file
+        # and still keeps whatever it managed to embed: a build that dies half way through is
+        # exactly the one whose retry should not pay for the first half twice. Inside rather than
+        # above because everything above the try is outside the handler that marks the generation
+        # failed, and a generation left in `building` forever is a worse failure than a lost cache.
+        cache = None
         try:
+            cache = open_default_cache()
             with self._connect() as conn:
                 record = self._require_generation(conn, generation_id)
                 if record.state != GenerationState.BUILDING:
@@ -729,6 +813,7 @@ class GenerationManager:
             if not isinstance(fts_language, str):
                 raise GenerationError("pipeline FTS language is malformed")
 
+            relative_paths = manifest_relative_paths(manifest)
             for entry in manifest.objects:
                 verified = reader.fetch(entry)
                 try:
@@ -777,6 +862,9 @@ class GenerationManager:
                 # Stamped here, after frontmatter has been read and before any chunk is built,
                 # so every chunk of every document carries it and no document can override it.
                 metadata = with_provenance(metadata, provenance or {})
+                # After `with_provenance` for the same reason it exists: a document must not be
+                # able to declare its own derivation version and thereby win reuse it should lose.
+                metadata[_METADATA_RULE_VERSION_KEY] = _METADATA_RULE_VERSION
                 piece_metadata: list[dict[str, Any]] = []
                 has_structured_tables = (
                     entry.media_type not in _MARKDOWN_MEDIA_TYPES
@@ -845,7 +933,7 @@ class GenerationManager:
                                     if body_rule_changed
                                     else {}
                                 ),
-                                "file": PurePosixPath(entry.uri).name,
+                                "file": relative_paths[entry.uri],
                                 "ord": ordinal,
                                 "content_hash": entry.sha256,
                                 "object_version_id": entry.version_id,
@@ -875,7 +963,19 @@ class GenerationManager:
                 # text, and a generation built with the wrong one is the right width, scores in
                 # range, and silently retrieves worse. Falls back to `embed` for an embedder
                 # that only implements the symmetric interface.
-                embeddings = embed_passages(embedder, embedding_texts)
+                #
+                # Through the content-addressed cache, which is what makes this path affordable
+                # to re-run. `_reuse_source` above already carries chunks forward when nothing
+                # about a source changed, but it is keyed on the PIPELINE FINGERPRINT: bump a
+                # derivation rule, a chunker version or a context mode and every source loses
+                # reuse and is re-embedded, including the ones whose chunk text came out
+                # byte-identical. The cache is keyed on the text and the embedder identity, so
+                # it covers exactly that case, plus a first build after `generation gc` has
+                # pruned the generations reuse would have read, and a `--force` rebuild of an
+                # unchanged corpus. With the cache disabled this is `embed_passages`, verbatim.
+                embeddings = embed_with_cache(
+                    embedder, embedding_texts, cache, purpose="passage"
+                )
                 with self._connect() as conn, conn.transaction():
                     self._source_lock(conn, self.tenant_id, entry.uri)
                     if self._is_tombstoned(conn, entry.uri):
@@ -910,6 +1010,15 @@ class GenerationManager:
                     )
                     for row in rows
                 ]
+                asserted_at_rows = conn.execute(
+                    "SELECT source_uri, min(COALESCE(first_indexed_at, indexed_at)) "
+                    "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+                    "GROUP BY source_uri",
+                    (self.tenant_id, generation_id),
+                ).fetchall()
+                asserted_at_by_source = {
+                    str(row[0]): row[1] for row in asserted_at_rows
+                }
                 try:
                     semantic_graph = build_semantic_graph(
                         graph_chunks,
@@ -919,6 +1028,14 @@ class GenerationManager:
                         corpus_fingerprint=current.corpus_fingerprint,
                     )
                     write_semantic_graph(conn, semantic_graph)
+                    dependency_projection = build_dependency_projection(
+                        graph_chunks,
+                        tenant_id=self.tenant_id,
+                        generation_id=generation_id,
+                        asserted_at_by_source=asserted_at_by_source,
+                        corpus_fingerprint=current.corpus_fingerprint,
+                    )
+                    write_dependency_projection(conn, dependency_projection)
                 except BaseException:
                     METRICS.increment("recall_graph_build_failure_total")
                     METRICS.observe(
@@ -939,6 +1056,12 @@ class GenerationManager:
                 "empty_objects": empty,
                 "indexed_sources": sorted(indexed_sources),
                 "semantic_graph": _semantic_graph_marker(semantic_graph),
+                "dependency_projection": {
+                    "projection_id": dependency_projection.projection_id,
+                    "edge_count": len(dependency_projection.edges),
+                    "diagnostic_count": len(dependency_projection.diagnostics),
+                    "ready": True,
+                },
             }
             with self._connect() as conn, conn.transaction():
                 current = self._require_generation(conn, generation_id, lock=True)
@@ -970,6 +1093,11 @@ class GenerationManager:
             except InvalidGenerationTransition:
                 pass
             raise
+        finally:
+            if cache is not None:
+                METRICS.increment("recall_embedding_cache_hits_total", cache.hits)
+                METRICS.increment("recall_embedding_cache_misses_total", cache.misses)
+                cache.close()
 
     def fail(self, generation_id: str, reason: str) -> None:
         with self._connect() as conn, conn.transaction():
@@ -1091,6 +1219,13 @@ class GenerationManager:
                 "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
                 (self.tenant_id, generation_id),
             ).fetchall()
+            asserted_at_rows = conn.execute(
+                "SELECT source_uri, min(COALESCE(first_indexed_at, indexed_at)) "
+                "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+                "GROUP BY source_uri",
+                (self.tenant_id, generation_id),
+            ).fetchall()
+            asserted_at_by_source = {str(item[0]): item[1] for item in asserted_at_rows}
             graph = build_semantic_graph(
                 [
                     Chunk(
@@ -1111,7 +1246,29 @@ class GenerationManager:
                 or graph_marker.get("graph_fingerprint") != graph.fingerprint
             ):
                 raise GenerationError("generation semantic graph fingerprint mismatch")
+            dependency_projection = build_dependency_projection(
+                [
+                    Chunk(
+                        str(item[0]),
+                        str(item[1]),
+                        str(item[2]),
+                        item[3] if isinstance(item[3], dict) else {},
+                    )
+                    for item in graph_rows
+                ],
+                tenant_id=self.tenant_id,
+                generation_id=generation_id,
+                asserted_at_by_source=asserted_at_by_source,
+                corpus_fingerprint=current.corpus_fingerprint,
+            )
+            write_dependency_projection(conn, dependency_projection)
             summary.update({"validated_sources": len(actual), "validated_chunks": chunks})
+            summary["dependency_projection"] = {
+                "projection_id": dependency_projection.projection_id,
+                "edge_count": len(dependency_projection.edges),
+                "diagnostic_count": len(dependency_projection.diagnostics),
+                "ready": True,
+            }
             conn.execute(
                 "UPDATE recall_generations SET state = 'ready', ready_at = clock_timestamp(), "
                 "validation_summary = %s WHERE tenant_id = %s AND generation_id = %s",
@@ -1196,6 +1353,13 @@ class GenerationManager:
                 "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
                 (self.tenant_id, generation_id),
             ).fetchall()
+            asserted_at_rows = conn.execute(
+                "SELECT source_uri, min(COALESCE(first_indexed_at, indexed_at)) "
+                "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+                "GROUP BY source_uri",
+                (self.tenant_id, generation_id),
+            ).fetchall()
+            asserted_at_by_source = {str(item[0]): item[1] for item in asserted_at_rows}
             graph_started = time.perf_counter()
             try:
                 graph = build_semantic_graph(
@@ -1214,6 +1378,22 @@ class GenerationManager:
                     corpus_fingerprint=current.corpus_fingerprint,
                 )
                 write_semantic_graph(conn, graph)
+                dependency_projection = build_dependency_projection(
+                    [
+                        Chunk(
+                            str(row[0]),
+                            str(row[1]),
+                            str(row[2]),
+                            row[3] if isinstance(row[3], dict) else {},
+                        )
+                        for row in rows
+                    ],
+                    tenant_id=self.tenant_id,
+                    generation_id=generation_id,
+                    asserted_at_by_source=asserted_at_by_source,
+                    corpus_fingerprint=current.corpus_fingerprint,
+                )
+                write_dependency_projection(conn, dependency_projection)
             except BaseException:
                 METRICS.increment("recall_graph_build_failure_total")
                 METRICS.observe(
@@ -1232,6 +1412,12 @@ class GenerationManager:
             ).fetchone()
             summary = dict(summary_row[0]) if summary_row and isinstance(summary_row[0], Mapping) else {}
             summary["semantic_graph"] = _semantic_graph_marker(graph)
+            summary["dependency_projection"] = {
+                "projection_id": dependency_projection.projection_id,
+                "edge_count": len(dependency_projection.edges),
+                "diagnostic_count": len(dependency_projection.diagnostics),
+                "ready": True,
+            }
             conn.execute(
                 "UPDATE recall_generations SET validation_summary = %s "
                 "WHERE tenant_id = %s AND generation_id = %s",

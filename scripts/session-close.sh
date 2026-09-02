@@ -167,11 +167,16 @@ docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null \
     | sed 's/^/  /' || printf '  none running\n'
 printf '  Another session may be mid-run against these. Remove them only if you know otherwise.\n'
 
-# A pre-registration left at "predicted, not yet measured" is the one artefact that rots into a
-# falsehood if nobody comes back to it: the prediction stays, the result never lands, and the next
-# reader cannot tell an abandoned experiment from a pending one.
-if [ -d "$ROOT/docs/preregistrations" ]; then
-    pending="$(grep -rl "Status:.*predicted, not yet measured" "$ROOT/docs/preregistrations" 2>/dev/null)"
+# A pre-registration left unresolved is the one artefact that rots into a falsehood if nobody comes
+# back to it: the prediction stays, the result never lands, and the next reader cannot tell an
+# abandoned experiment from a pending one.
+#
+# The rule for "unresolved" lives in `scripts/prereg-pending.sh`, which is where its tests point.
+# It is NOT "contains 'predicted, not yet measured'": a result is appended beneath the prediction
+# and the prediction is never edited, so that string survives in every completed record and the old
+# grep flagged 37 of 37 when 7 were pending.
+if [ -x "$ROOT/scripts/prereg-pending.sh" ] || [ -f "$ROOT/scripts/prereg-pending.sh" ]; then
+    pending="$(bash "$ROOT/scripts/prereg-pending.sh" "$ROOT/docs/preregistrations" 2>/dev/null || true)"
     if [ -n "$pending" ]; then
         say "Pre-registrations still unmeasured"
         printf '%s\n' "$pending" | sed "s|^$ROOT/||; s/^/  /"

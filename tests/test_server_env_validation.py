@@ -37,13 +37,18 @@ def test_import_succeeds_with_valid_env():
     assert r.returncode == 0, r.stderr
 
 
-@pytest.mark.parametrize("var", ["RECALL_PORT", "RECALL_POOL_SIZE", "RECALL_STATEMENT_TIMEOUT_MS"])
+@pytest.mark.parametrize(
+    "var", ["RECALL_PORT", "RECALL_POOL_SIZE", "RECALL_STATEMENT_TIMEOUT_MS", "RECALL_MCP_STATELESS"]
+)
 def test_non_int_knob_is_rejected_with_a_named_message(var):
     r = _import_server_with(**{var: "not-an-int"})
     assert r.returncode != 0, f"{var}=not-an-int should fail import"
     # Not just any ValueError: the message must name the variable (the pre-fix int() error says
     # only "invalid literal for int() with base 10: 'not-an-int'").
-    assert f"{var}=" in r.stderr and "is not an integer" in r.stderr, r.stderr[-600:]
+    if var == "RECALL_MCP_STATELESS":
+        assert f"{var}=" in r.stderr and "is not a boolean" in r.stderr, r.stderr[-600:]
+    else:
+        assert f"{var}=" in r.stderr and "is not an integer" in r.stderr, r.stderr[-600:]
 
 
 @pytest.mark.parametrize(
@@ -69,6 +74,43 @@ def test_transport_security_settings_follow_resource_url():
     assert settings.allowed_origins == ["https://recall.example.com:8443"]
 
 
+def test_benchmark_generation_pin_requires_explicit_unauthenticated_stdio_mode():
+    assert server.benchmark_generation_setting(
+        "gen_old",
+        benchmark_pin=True,
+        generation_mode=True,
+        authenticated=False,
+    ) == "gen_old"
+
+    with pytest.raises(RuntimeError, match="RECALL_BENCHMARK_PIN=1"):
+        server.benchmark_generation_setting(
+            "gen_old",
+            benchmark_pin=False,
+            generation_mode=True,
+            authenticated=False,
+        )
+    with pytest.raises(RuntimeError, match="unauthenticated"):
+        server.benchmark_generation_setting(
+            "gen_old",
+            benchmark_pin=True,
+            generation_mode=True,
+            authenticated=True,
+        )
+    with pytest.raises(RuntimeError, match="stdio"):
+        server.benchmark_generation_setting(
+            "gen_old",
+            benchmark_pin=True,
+            generation_mode=False,
+            authenticated=False,
+        )
+
+
+def test_empty_benchmark_generation_pin_is_ignored():
+    assert server.benchmark_generation_setting(
+        "  ", benchmark_pin=False, generation_mode=False, authenticated=True
+    ) is None
+
+
 def test_streamable_http_run_passes_transport_security(monkeypatch):
     calls = {}
 
@@ -78,6 +120,7 @@ def test_streamable_http_run_passes_transport_security(monkeypatch):
 
     monkeypatch.setattr(server, "mcp", FakeServer())
     monkeypatch.setattr(server, "TRANSPORT", "streamable-http")
+    monkeypatch.setattr(server, "MCP_STATELESS_HTTP", True)
     monkeypatch.setattr(server, "HTTP_HOST", "0.0.0.0")
     monkeypatch.setattr(server, "HTTP_PORT", 9000)
     monkeypatch.setenv("RECALL_AUTH_RESOURCE_URL", "https://recall.example.com")
@@ -87,9 +130,35 @@ def test_streamable_http_run_passes_transport_security(monkeypatch):
     assert calls["transport"] == "streamable-http"
     assert calls["host"] == "0.0.0.0"
     assert calls["port"] == 9000
+    assert calls["stateless_http"] is True
     assert calls["transport_security"].enable_dns_rebinding_protection is True
     assert calls["transport_security"].allowed_hosts == ["recall.example.com"]
     assert calls["transport_security"].allowed_origins == ["https://recall.example.com"]
+
+
+@pytest.mark.parametrize("raw", ["maybe", "2", "truth"])
+def test_invalid_stateless_http_setting_is_rejected(monkeypatch, raw):
+    with monkeypatch.context() as context:
+        context.setenv("RECALL_MCP_STATELESS", raw)
+        with pytest.raises(ValueError, match="RECALL_MCP_STATELESS=.*boolean"):
+            server._read_bool_env("RECALL_MCP_STATELESS", True)
+
+
+def test_streamable_http_can_opt_back_into_stateful_sessions(monkeypatch):
+    calls = {}
+
+    class FakeServer:
+        def run(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setattr(server, "mcp", FakeServer())
+    monkeypatch.setattr(server, "TRANSPORT", "streamable-http")
+    monkeypatch.setattr(server, "MCP_STATELESS_HTTP", False)
+    monkeypatch.setenv("RECALL_AUTH_RESOURCE_URL", "https://recall.example.com")
+
+    server.main()
+
+    assert calls["stateless_http"] is False
 
 
 # ---------------------------------------------------------------------------------------------

@@ -5,9 +5,11 @@ Status: approved, not yet implemented
 
 ## Problem
 
-RE-call's model of truth is authored frontmatter, and exactly three keys are recognised
-(`recall/frontmatter.py:21`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
-those and nothing else.
+RE-call's model of truth is authored frontmatter, and three keys carry VALIDITY
+(`recall/frontmatter.py:23`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
+those and nothing else. The parser also recognises `recall_graph` and the `type` facet, and
+neither is a truth claim: see `docs/TRUTH_EXTRACTION_DESIGN.md` for why that distinction is the
+thing keeping this paragraph true as the parser grows.
 
 The extraction work being built upstream produces `contradicts` and `same_entity` relations. Those
 have nowhere to land. Frontmatter recognises three keys, and adding two more would put a machine's
@@ -16,7 +18,7 @@ inference into the same namespace a human authors, where the trust layer reads i
 ## The hazard this design exists to prevent
 
 `content_hash` is computed over the file's content: for markdown, over the DECODED TEXT
-(`recall/index.py:759`), and for everything else over the raw bytes (`recall/index.py:761`). Writing
+(`recall/index.py:772`), and for everything else over the raw bytes (`recall/index.py:774`). Writing
 a block changes both, so the file re-indexes either way.
 
 ⚠️ The markdown branch is worth stating precisely, because "raw bytes" is the natural assumption and
@@ -36,7 +38,7 @@ document as evidence. That is the whole design.
 
 Not a preference. `structure_chunks` computes offsets with `body.find(text, ...)`
 (`recall/context.py:197`). If `human_body` is a strict prefix of `body`, every offset is identical
-with or without the block, so `text_start` / `text_end` (`recall/index.py:879`) are invariant.
+with or without the block, so `text_start` / `text_end` (`recall/index.py:894`) are invariant.
 Prepending shifts every offset in every chunk of every file that gains a block.
 
 End placement also keeps the block out of `document_title` (`recall/context.py:159`), which reads
@@ -93,7 +95,7 @@ copy in the body is a second source of truth that can disagree with the first.
 
 **`status` vocabulary is closed:** `open | adopted | closed | superseded | rejected | abandoned`.
 It deliberately excludes `deprecated` and `obsolete`, which are in `CLOSURE_MARKERS`
-(`recall/lint.py:47`) and would make the machine block trip the linter built to find prose closure.
+(`recall/lint.py:51`) and would make the machine block trip the linter built to find prose closure.
 Both normalise to `superseded` on the render path.
 
 **Entries are sorted by `(head, value)`**, so a re-render is byte identical and a re-run never
@@ -122,7 +124,7 @@ overwrite what a human wrote.
 ### `content_hash` is left alone
 
 A block write should re-index that file. Chunk text is byte identical because `_pack` strips every
-block (`recall/index.py:236`), so embeddings serve from cache (`recall/cache.py:85`); the cost is
+block (`recall/index.py:249`), so embeddings serve from cache (`recall/cache.py:400`); the cost is
 one `replace_sources`. Chunk ids and graph node ids are unaffected, which keeps evidence ids, and
 therefore proposal ids, stable across a write.
 
@@ -157,7 +159,7 @@ every block, so chunk text is whitespace-invariant at block boundaries either wa
 
 **That is true of the prefix invariant only, not of the chunker contract.** Every body is now
 rstripped, block or not — the no-fence branch's `.rstrip()` runs unconditionally. It is free for
-`chunk_text` and `chunk_code` today only because `_pack` (`recall/index.py:236`) strips each block
+`chunk_text` and `chunk_code` today only because `_pack` (`recall/index.py:249`) strips each block
 before chunking, so a chunker that itself preserved trailing whitespace would never see the
 difference. A future chunker that preserves trailing whitespace would silently change its output
 for the entire corpus the day it lands, not just for files with a block. And in
@@ -197,9 +199,9 @@ isolation.
 
 | Site | Note |
 |---|---|
-| `recall/index.py:926` | `contextual_passages(raw, body, ...)` keeps taking the unstripped `raw` for `document_title`, which reads frontmatter and the first H1 — both above the block. The `body` argument becomes `human_body`. |
-| `recall/generations.py:814` | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused under `RECALL_ENV=production` via `env_is_production` (`recall/cli_commands/index_search.py:253`) <!-- cite-anchor: env_is_production -->, so hooking only the index path leaves the one build path that runs in production uncovered. |
-| `recall/lint.py:193` | The only reader of `derived_text`. |
+| `recall/index.py:941` | `contextual_passages(raw, body, ...)` keeps taking the unstripped `raw` for `document_title`, which reads frontmatter and the first H1 — both above the block. The `body` argument becomes `human_body`. |
+| `recall/generations.py:902` | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused under `RECALL_ENV=production` via `env_is_production` (`recall/cli_commands/index_search.py:289`) <!-- cite-anchor: env_is_production -->, so hooking only the index path leaves the one build path that runs in production uncovered. |
+| `recall/lint.py:198` | The only reader of `derived_text`. |
 | `recall/check.py:53` | `_ANY_REF` over the body would otherwise hand the author the machine's own values back as `supersedes:` candidates. |
 | `recall/semantic_lint.py:126` | Fixes the `is_closed_decision` collision: `_DECISION_STATUS` matches `status:\s*superseded`, which is exactly the shape of the block's own `status:` entry. This module reaches the corpus twice — here, and via `Indexer.index_path` at `:138`, which the `index.py` site covers. |
 
@@ -363,5 +365,5 @@ before the writer lands, not a cost to defer past it.
   (`reviewed_promotion_is_trusted_metadata`, `recall/promotion.py:186`).
 - The planner never calls a model; `max_model_calls` defaults to 0. Extraction runs on the ingest
   path, never the query path.
-- Proposal ids are content hashes and `recall/reasoning_proposals/_providers.py:86` recomputes them,
+- Proposal ids are content hashes and `recall/reasoning_proposals/_providers.py:87` recomputes them,
   raising on mismatch. The model supplies semantics only; the library computes ids.

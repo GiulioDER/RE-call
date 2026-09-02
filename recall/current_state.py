@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, Protocol
 
+from recall.dependency_invalidation import (
+    MAX_INVALIDATION_CHAIN,
+    DependencyProjection,
+    build_dependency_projection,
+)
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
 from recall.store import EdgeCandidates
@@ -21,11 +26,13 @@ CurrentState = Literal[
     "superseded",
     "expired",
     "not_yet_valid",
+    "not_yet_known",
     "ambiguous",
     "invalid",
+    "dependency_invalidated",
 ]
 
-CURRENT_STATE_SCHEMA_VERSION = 1
+CURRENT_STATE_SCHEMA_VERSION = 2
 MAX_CURRENT_STATE_RECORDS = 1000
 
 
@@ -50,6 +57,10 @@ class CurrentStateRecord:
     valid_from: datetime | None = None
     valid_until: datetime | None = None
     diagnostics: tuple[str, ...] = ()
+    base_state: str | None = None
+    authority: str = "unknown"
+    dependencies: tuple[str, ...] = ()
+    invalidation_chain: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -64,6 +75,8 @@ class CurrentStateProjection:
     corpus_fingerprint: str | None
     as_of: datetime
     records: tuple[CurrentStateRecord, ...]
+    dependency_projection: DependencyProjection | None = None
+    known_as_of: datetime | None = None
 
 
 def _utc(value: datetime) -> datetime:
@@ -115,6 +128,8 @@ def _record(
     as_of: datetime,
     tenant_id: str,
     generation_id: str,
+    known_as_of: datetime | None = None,
+    asserted_at: datetime | None = None,
 ) -> CurrentStateRecord:
     chunk_ids = tuple(sorted(chunk.id for chunk in chunks))
     diagnostics: list[str] = []
@@ -145,6 +160,12 @@ def _record(
             diagnostics.append("unresolved_supersession_reference")
         if diagnostics:
             state = "ambiguous"
+        elif (
+            known_as_of is not None
+            and asserted_at is not None
+            and _utc(asserted_at) > known_as_of
+        ):
+            state = "not_yet_known"
         elif chain:
             state = "superseded"
         elif valid_from is not None and as_of < _utc(valid_from):
@@ -173,12 +194,14 @@ def _record(
         valid_from=valid_from,
         valid_until=valid_until,
         diagnostics=tuple(sorted(set(diagnostics))),
+        base_state=state,
     )
 
 
 def project_current_state(
     store: StateStore,
     as_of: datetime | None = None,
+    known_as_of: datetime | None = None,
     source: str | None = None,
     max_records: int | None = None,
 ) -> CurrentStateProjection:
@@ -198,28 +221,38 @@ def project_current_state(
     snapshot = getattr(store, "snapshot", None)
     if callable(snapshot):
         with snapshot() as generation_id:
-            return _project(store, instant, source, str(generation_id), max_records)
+            return _project(
+                store, instant, known_as_of, source, str(generation_id), max_records
+            )
     generation_id = str(getattr(store, "generation_id", "legacy"))
-    return _project(store, instant, source, generation_id, max_records)
+    return _project(store, instant, known_as_of, source, generation_id, max_records)
 
 
 def _project(
     store: StateStore,
     as_of: datetime,
+    known_as_of: datetime | None,
     source: str | None,
     generation_id: str,
     max_records: int | None,
 ) -> CurrentStateProjection:
     chunks_by_source: dict[str, list[Chunk]] = {}
-    for chunk in store.iter_chunks():
+    asserted_at_by_source: dict[str, datetime | None] = {}
+    timed_reader = getattr(store, "iter_chunks_with_times", None)
+    if callable(timed_reader):
+        chunk_rows = timed_reader()
+    else:
+        chunk_rows = ((chunk, None) for chunk in store.iter_chunks())
+    for chunk, asserted_at in chunk_rows:
         key = _file(chunk)
-        if source is None or key == source or chunk.source == source:
-            if max_records is not None and key not in chunks_by_source:
-                if len(chunks_by_source) >= max_records:
-                    raise ValueError("current state projection exceeds max_records")
-            chunks_by_source.setdefault(key, []).append(chunk)
+        chunks_by_source.setdefault(key, []).append(chunk)
+        previous = asserted_at_by_source.get(key)
+        if key not in asserted_at_by_source or (
+            asserted_at is not None and (previous is None or asserted_at < previous)
+        ):
+            asserted_at_by_source[key] = asserted_at
     _edges, unresolved, candidates = store.supersession_all()
-    records = tuple(
+    all_records = tuple(
         _record(
             key,
             chunks,
@@ -228,17 +261,98 @@ def _project(
             as_of,
             str(store.tenant),
             generation_id,
+            None if known_as_of is None else _utc(known_as_of),
+            asserted_at_by_source.get(key),
         )
         for key, chunks in sorted(chunks_by_source.items())
     )
     binding_reader = getattr(store, "generation_binding", None)
     binding = binding_reader() if callable(binding_reader) else {}
+    dependency_projection = build_dependency_projection(
+        [chunk for chunks in chunks_by_source.values() for chunk in chunks],
+        tenant_id=str(store.tenant),
+        generation_id=generation_id,
+        base_states={record.source: record.state for record in all_records},
+        as_of=as_of,
+        known_as_of=known_as_of,
+        asserted_at_by_source=asserted_at_by_source,
+        corpus_fingerprint=binding.get("corpus_fingerprint"),
+    )
+    records_list: list[CurrentStateRecord] = []
+    for record in all_records:
+        if source is not None and record.source != source and not any(
+            chunk.source == source for chunk in chunks_by_source[record.source]
+        ):
+            continue
+        if max_records is not None and len(records_list) >= max_records:
+            raise ValueError("current state projection exceeds max_records")
+        reason = dependency_projection.reason_for(record.source)
+        diagnostics = record.diagnostics
+        state: CurrentState = record.state
+        invalidation_chain: tuple[str, ...] = ()
+        if reason is not None:
+            invalidation_chain = reason.bounded_path(MAX_INVALIDATION_CHAIN)
+            diagnostics = tuple(sorted(set(diagnostics + ("dependency_invalidated",))))
+            # Only a CURRENT document is relabelled. Every other state already carries a reason
+            # not to trust the document, and each of those reasons is more specific than this
+            # one: `superseded` tells the reader to go and read the successor, while
+            # `ambiguous` and `invalid` are FAIL-CLOSED verdicts meaning "this projection cannot
+            # be trusted about this source at all".
+            #
+            # Overwriting them was the original behaviour and it is the dangerous direction:
+            # replacing "we cannot parse this document's supersession metadata" with "a
+            # dependency of it was invalidated" swaps an admission of ignorance for a confident,
+            # specific and WRONG explanation, and the reader acts on the explanation. It also
+            # silently defeated the two guarantees named in
+            # `test_current_state_fails_closed_on_multiple_live_successors` and
+            # `test_current_state_fails_closed_on_malformed_supersession_metadata`.
+            #
+            # Nothing is lost by narrowing it: the diagnostic and the invalidation chain are
+            # recorded above unconditionally, so a superseded document whose dependency also
+            # failed still reports both facts, with the more actionable one as its state.
+            if state == "current":
+                state = "dependency_invalidated"
+        authority = dependency_projection.authorities.get(record.source, "unknown")
+        dependencies = dependency_projection.dependencies.get(record.source, ())
+        state_id = "state_" + canonical_sha256(
+            {
+                "schema_version": CURRENT_STATE_SCHEMA_VERSION,
+                "tenant_id": str(store.tenant),
+                "generation_id": generation_id,
+                "source": record.source,
+                "state": state,
+                "base_state": record.base_state,
+                "authority": authority,
+                "dependencies": dependencies,
+                "invalidation_chain": invalidation_chain,
+                "as_of": as_of.isoformat(),
+            }
+        )[:24]
+        records_list.append(
+            CurrentStateRecord(
+                state_id=state_id,
+                source=record.source,
+                state=state,
+                chunk_ids=record.chunk_ids,
+                successor_chain=record.successor_chain,
+                valid_from=record.valid_from,
+                valid_until=record.valid_until,
+                diagnostics=diagnostics,
+                base_state=record.base_state,
+                authority=authority,
+                dependencies=dependencies,
+                invalidation_chain=invalidation_chain,
+            )
+        )
+    records = tuple(records_list)
     payload = {
         "schema_version": CURRENT_STATE_SCHEMA_VERSION,
         "tenant_id": str(store.tenant),
         "generation_id": generation_id,
         "as_of": as_of.isoformat(),
+        "known_as_of": _utc(known_as_of).isoformat() if known_as_of else None,
         "records": [record.state_id for record in records],
+        "dependency_projection_id": dependency_projection.projection_id,
     }
     return CurrentStateProjection(
         schema_version=CURRENT_STATE_SCHEMA_VERSION,
@@ -249,6 +363,8 @@ def _project(
         corpus_fingerprint=binding.get("corpus_fingerprint"),
         as_of=as_of,
         records=records,
+        dependency_projection=dependency_projection,
+        known_as_of=_utc(known_as_of) if known_as_of is not None else None,
     )
 
 

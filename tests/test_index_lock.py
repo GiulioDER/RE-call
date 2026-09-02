@@ -207,6 +207,7 @@ def test_the_lock_is_released_when_the_process_dies(store):
 
 def test_the_batch_default_is_unchanged_when_the_host_says_nothing(monkeypatch):
     monkeypatch.delenv(ENV_BATCH_CHUNKS, raising=False)
+    assert DEFAULT_BATCH_CHUNKS == 64
     assert _batch_chunks_from_env() == DEFAULT_BATCH_CHUNKS
 
 

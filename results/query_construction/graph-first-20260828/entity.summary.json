@@ -1,0 +1,542 @@
+{
+  "artifact": "RE-call graph-first retrieval benchmark",
+  "mode": "entity",
+  "rows": 46,
+  "rows_detail": [
+    {
+      "task_id": "ts-false-zero-search#r1",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-false-zero-search#r2",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-false-zero-search#r3",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-false-zero-search#r4",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-false-zero-search#r5",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-false-zero-search#r6",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-lf-rewrite#r1",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 1,
+      "new_trusted_items": 0,
+      "retrieval_calls": 2,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-lf-rewrite#r2",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 1,
+      "new_trusted_items": 0,
+      "retrieval_calls": 2,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-lf-rewrite#r3",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 1,
+      "new_trusted_items": 5,
+      "retrieval_calls": 2,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-lf-rewrite#r4",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 1,
+      "new_trusted_items": 0,
+      "retrieval_calls": 2,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-lf-rewrite#r5",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 1,
+      "new_trusted_items": 0,
+      "retrieval_calls": 2,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-lf-rewrite#r6",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 1,
+      "new_trusted_items": 0,
+      "retrieval_calls": 2,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-worktree-import#r1",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-worktree-import#r2",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-worktree-import#r3",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-worktree-import#r4",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-worktree-import#r5",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-worktree-import#r6",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-raise-on-missing#r1",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-raise-on-missing#r2",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 1,
+      "new_trusted_items": 0,
+      "retrieval_calls": 2,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-raise-on-missing#r3",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-raise-on-missing#r4",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-raise-on-missing#r5",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-raise-on-missing#r6",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-bounded-runner#r1",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 1,
+      "new_trusted_items": 0,
+      "retrieval_calls": 2,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-bounded-runner#r2",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 1,
+      "new_trusted_items": 0,
+      "retrieval_calls": 2,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-bounded-runner#r3",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 1,
+      "new_trusted_items": 0,
+      "retrieval_calls": 2,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-bounded-runner#r4",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 1,
+      "new_trusted_items": 0,
+      "retrieval_calls": 2,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-bounded-runner#r5",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-bounded-runner#r6",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 1,
+      "new_trusted_items": 0,
+      "retrieval_calls": 2,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-sample-covers-tail#r1",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-sample-covers-tail#r2",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-sample-covers-tail#r3",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-sample-covers-tail#r4",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-sample-covers-tail#r5",
+      "gold_class": "miss",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-sample-covers-tail#r6",
+      "gold_class": "control",
+      "baseline_recovered": false,
+      "recovered": false,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-separator-canary#r1",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-separator-canary#r2",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-separator-canary#r3",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-separator-canary#r4",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-separator-canary#r5",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-separator-canary#r6",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-autouse-tmp-path#r1",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-autouse-tmp-path#r2",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-autouse-tmp-path#r3",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    },
+    {
+      "task_id": "ts-autouse-tmp-path#r4",
+      "gold_class": "control",
+      "baseline_recovered": true,
+      "recovered": true,
+      "candidate_count": 0,
+      "new_trusted_items": 0,
+      "retrieval_calls": 1,
+      "graph_readiness": "ready",
+      "graph_reason": null
+    }
+  ],
+  "by_class": {
+    "miss": {
+      "rows": 15,
+      "baseline_recovered": 0,
+      "recovered": 0,
+      "candidate_activation": 7,
+      "new_trusted_items": 5
+    },
+    "control": {
+      "rows": 31,
+      "baseline_recovered": 17,
+      "recovered": 17,
+      "candidate_activation": 5,
+      "new_trusted_items": 0
+    }
+  },
+  "miss_rescues": 0,
+  "control_retention": 17,
+  "diagnostics": {
+    "status": {
+      "complete": 46
+    },
+    "graph_readiness": {
+      "ready": 46
+    },
+    "candidate_queries": 12,
+    "new_trusted_items": 5,
+    "retrieval_calls": 58
+  }
+}

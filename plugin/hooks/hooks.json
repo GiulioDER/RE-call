@@ -7,23 +7,11 @@
           {
             "type": "command",
             "command": "recall-hooks",
-            "args": ["session-start"],
+            "args": [
+              "session-start"
+            ],
             "timeout": 15,
             "statusMessage": "Recalling project memory"
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "matcher": "manual|auto",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "recall-hooks",
-            "args": ["pre-compact"],
-            "async": true,
-            "statusMessage": "Saving memory before compaction"
           }
         ]
       }
@@ -35,9 +23,42 @@
           {
             "type": "command",
             "command": "recall-hooks",
-            "args": ["pre-tool-use"],
+            "args": [
+              "pre-tool-use"
+            ],
             "timeout": 5,
-            "statusMessage": "Searching project memory before the write"
+            "statusMessage": "Checking memory before writing"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "recall-hooks",
+            "args": [
+              "user-prompt-submit"
+            ],
+            "timeout": 10,
+            "statusMessage": "Searching project memory"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "recall-hooks",
+            "args": [
+              "pre-compact"
+            ],
+            "async": true,
+            "statusMessage": "Saving memory before compaction"
           }
         ]
       }
@@ -49,7 +70,9 @@
           {
             "type": "command",
             "command": "recall-hooks",
-            "args": ["session-end"],
+            "args": [
+              "session-end"
+            ],
             "async": true,
             "statusMessage": "Indexing session into recall"
           }

@@ -16,11 +16,10 @@ from typing import Callable, Literal, Sequence
 from recall.calibration import Calibration, from_samples, save
 from recall.claude_code import (
     PLUGIN_INSTALL_LINES,
-    SKILL_NAME,
     claude_code_detected,
     install_hooks,
-    install_user_skill,
-    plugin_skill_source,
+    install_user_skills,
+    plugin_skill_sources,
     register_mcp_server,
     user_skill_dir,
 )
@@ -811,11 +810,13 @@ def _reasoning_interview(
 ) -> dict[str, str]:
     """Ask yes or no, then provider, then model. Returns the keys to write.
 
-    Always returns `RECALL_REASONING`, so that switched off and never configured stay
-    distinguishable in the file. `cloud_keys` may gain a provider key the user supplies here,
-    which is why it is taken as a mutable dict rather than a mapping.
+    Always returns `RECALL_REASONING_EXPANSION`, so that switched off and never configured stay
+    distinguishable in the file. That flag, not a bare `RECALL_REASONING`, is the one the runtime
+    reads (`recall.reasoning_expansion.resolve_expansion_provider`). `cloud_keys` may gain a
+    provider key the user supplies here, which is why it is taken as a mutable dict rather than a
+    mapping.
     """
-    off = {"RECALL_REASONING": "0"}
+    off = {"RECALL_REASONING_EXPANSION": "0"}
     if not _ask_yes_no(
         input_fn, print_fn, "Enable the optional reasoning arm?", default=False
     ):
@@ -882,11 +883,15 @@ def _reasoning_interview(
         print_fn(f"Could not reach {model}: {failure}")
         print_fn("Writing the settings anyway. Correct them in .env and try again.")
 
+    # The `_EXPANSION_` spellings, not the bare ones. Both resolve, because the resolver reads
+    # the bare names as a legacy fallback, but the bare pair is SHARED with the setup wizard's
+    # other reasoning arms: a user who configures a local answer arm and later enables expansion
+    # would otherwise have the expansion client silently inherit that arm's endpoint and key.
     return {
-        "RECALL_REASONING": "1",
-        "RECALL_REASONING_MODEL": model,
-        "RECALL_REASONING_BASE_URL": base_url,
-        "RECALL_REASONING_API_KEY": api_key,
+        "RECALL_REASONING_EXPANSION": "1",
+        "RECALL_REASONING_EXPANSION_MODEL": model,
+        "RECALL_REASONING_EXPANSION_BASE_URL": base_url,
+        "RECALL_REASONING_EXPANSION_API_KEY": api_key,
     }
 
 
@@ -1151,6 +1156,7 @@ def index_memory_directory(
     try:
         from recall.context import context_policy_for_profile
         from recall.embeddings import embedding_profile_id
+        from recall.cache import default_cache
         from recall.index import Indexer, chunk_text
         from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
 
@@ -1162,13 +1168,15 @@ def index_memory_directory(
             tenant=tenant or DEFAULT_TENANT,
         ) as store:
             store.check_schema()
-            indexer = Indexer(
-                store,
-                embedder,
-                chunker=chunk_text,
-                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-            )
-            stats = indexer.index_path(memory_dir, glob="**/*.md")
+            with default_cache() as cache:
+                indexer = Indexer(
+                    store,
+                    embedder,
+                    chunker=chunk_text,
+                    cache=cache,
+                    context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                )
+                stats = indexer.index_path(memory_dir, glob="**/*.md")
     except Exception as exc:  # best effort: scaffolded files must survive even if this fails
         print_fn(
             f"Could not auto-index {memory_dir}: {_safe_error(exc, dsn)} — run "
@@ -1401,6 +1409,7 @@ def run_setup_wizard(
     claude_detected = claude_code_detected()
     claude_wiring_requested = False
     write_time_requested = True
+    prompt_time_requested = True
     if claude_detected:
         claude_wiring_requested = _ask_yes_no(
             input_fn,
@@ -1422,6 +1431,22 @@ def run_setup_wizard(
             "  Measured benefit: 6 task rescues against 1 regression, p = 0.125, not significant.",
             default=True,
         )
+        # Asked for the same reason as the one above, and the reason binds HARDER here: this hook
+        # runs before every turn and there is no A/B behind it at all. Declining the write-time
+        # hook is not an answer to this one, and vice versa: that hook queries the corpus over the
+        # network with the DRAFT text, which is what reaches a hazard memo, while this reads local
+        # memo files with the user's own words, which is what reaches a decision already made.
+        # Stating the cost and the absence of evidence before accepting a default is the standard
+        # the question above set.
+        prompt_time_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            "Search project memory with each prompt, before Claude answers?\n"
+            "  Adds about 0.4 seconds per turn and names up to three prior records; it reads\n"
+            "  local memo files, so it needs no database and no network.\n"
+            "  Benefit UNMEASURED: no A/B, unlike the hook above.",
+            default=True,
+        )
 
     # The plugin step's only question. The guidance itself is print-only and needs no consent,
     # but copying the skill writes into the user's own `~/.claude/skills`, which every project's
@@ -1430,13 +1455,16 @@ def run_setup_wizard(
     # snapshot for people who want the skill without the plugin. The offer only exists where the
     # source file does: an installed wheel does not carry `plugin/`, and there the guidance says
     # the plugin is how the skill arrives.
-    skill_source = plugin_skill_source() if claude_detected else None
+    skill_sources = plugin_skill_sources() if claude_detected else {}
     skill_copy_requested = False
-    if skill_source is not None:
+    if skill_sources:
+        # Named in the prompt rather than counted: "copy 2 skills" tells the user nothing
+        # about what is about to appear in their config directory.
+        listed = ", ".join(sorted(skill_sources))
         skill_copy_requested = _ask_yes_no(
             input_fn,
             print_fn,
-            f"Copy the {SKILL_NAME} skill into {user_skill_dir()} for a user-level install?",
+            f"Copy the {listed} skill(s) into {user_skill_dir()} for a user-level install?",
             default=False,
         )
 
@@ -1488,9 +1516,14 @@ def run_setup_wizard(
             # event whose `cwd` is outside the root recorded in it. A default of `Path.cwd()` makes
             # the omission invisible here only because the wizard happens to run from the root it
             # just resolved; the moment those differ, write-time retrieval fails closed everywhere.
-            install_hooks(dsn=dsn, embedder=embedder.value,
-                          write_time=write_time_requested, project_root=project_root,
-                          print_fn=print_fn)
+            install_hooks(
+                dsn=dsn,
+                embedder=embedder.value,
+                write_time=write_time_requested,
+                prompt_time=prompt_time_requested,
+                project_root=project_root,
+                print_fn=print_fn,
+            )
             print_fn(
                 "Claude Code is wired up. The tools appear in the NEXT session, not this one: "
                 "the client reads its server list at startup."
@@ -1521,23 +1554,23 @@ def run_setup_wizard(
             return
         print_fn(
             "The RE-call plugin for Claude Code bundles the MCP server, the session hooks and "
-            f"the {SKILL_NAME} skill. Install it from inside Claude Code with:"
+            "the skills. Install it from inside Claude Code with:"
         )
         for line in PLUGIN_INSTALL_LINES:
             print_fn(f"  {line}")
-        if skill_source is None:
+        if not skill_sources:
             print_fn(
-                f"The {SKILL_NAME} skill ships inside that plugin; installing it is how a pip "
-                "install of recall gets the skill."
+                "The skills ship inside that plugin; installing it is how this install gets them."
             )
         elif skill_copy_requested:
-            try:
-                install_user_skill(skill_source, print_fn=print_fn)
-            except Exception as exc:
+            # Reports per skill and never raises, so one failure cannot cost the others. What it
+            # RETURNS is what gets reported, because a silent zero must not read as success.
+            installed = install_user_skills(skill_sources, print_fn=print_fn)
+            missing = sorted(set(skill_sources) - set(installed))
+            if missing:
                 print_fn(
-                    f"Could not copy the skill: {exc}\n"
-                    f"Copy {skill_source} into {user_skill_dir() / SKILL_NAME} by hand, or "
-                    "install the plugin with the lines above."
+                    f"Not installed: {', '.join(missing)}. Copy them into {user_skill_dir()} "
+                    "by hand, or install the plugin with the lines above."
                 )
 
     def _run_post_setup() -> None:

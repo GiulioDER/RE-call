@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
-from typing import get_args
 
-from recall.reasoning_proposals.types import InferenceProposal, ProposalStatus, ProposedRelation
+from recall.reasoning_proposals.types import (
+    PROPOSAL_STATUSES,
+    InferenceProposal,
+    ProposalStatus,
+    ProposedRelation,
+)
 
-_VALID_STATUSES: frozenset[str] = frozenset(get_args(ProposalStatus))
+_VALID_STATUSES: frozenset[str] = frozenset(PROPOSAL_STATUSES)
 
 #: Statuses that count as the provider ASSERTING a relation, and so are scored.
 ASSERTED_STATUSES: tuple[ProposalStatus, ...] = ("candidate",)

@@ -437,6 +437,12 @@ jobs:
       - name: session-serving.sh
         run: bash scripts/session_serving_tests.sh
 
+      # `session-corpus.sh` is the report a session OPENS with, and it had no test until
+      # 2026-08-31. ssh is stubbed, so this needs no host, no database and no network. It runs
+      # here rather than beside the Windows session hooks only because its sibling above does.
+      - name: session-corpus.sh
+        run: bash scripts/session_corpus_tests.sh
+
       # The process table is a fixture and the killer is a log, so this one needs no Claude, no
       # ssh and no VPS2. What it pins is which pids a close selects, on a machine where the same
       # MCP command line belongs to more than one agent.
@@ -447,6 +453,16 @@ jobs:
       # process tables are fixtures and the killer is a log; nothing here reaches VPS2.
       - name: session_mcp_sweep.py
         run: python scripts/session_mcp_sweep_tests.py
+
+      # Which pre-registrations session-close calls unfinished. Fixtures only: no repository files
+      # are read, so it does not care what state docs/preregistrations is in.
+      #
+      # This job runs a HARDCODED list, which is worth knowing when adding a guard: a new
+      # `*_tests.sh` under scripts/ is not picked up, the job still passes, and the guard is
+      # untested on any machine but its author's. That is how the very bug this suite covers got
+      # in, so the step is added here in the same change as the test.
+      - name: prereg-pending.sh
+        run: bash scripts/prereg_pending_tests.sh
 
   # Documentation citations, which rot faster than anything else in this repository: one commit
   # (79a0d6ed) shifted recall/index.py by 26 lines and broke 23 `path:line` references across five

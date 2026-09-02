@@ -20,10 +20,11 @@ from typing import TYPE_CHECKING, Any
 _AUTH_ENV_PREFIXES = ("RECALL_AUTH_", "RECALL_OIDC_")
 
 #: Variables that break the IMPORT without carrying an auth-shaped name. The last three are not auth
-#: at all: `recall_mcp/server.py` parses them into module constants via `_read_int_env` at import, so
-#: `RECALL_PORT=99999`, `RECALL_POOL_SIZE=0` or `RECALL_STATEMENT_TIMEOUT_MS=abc` each raise
-#: `ValueError` during collection and take the same five modules to zero tests run. The transport was
-#: simply the first one anyone tripped over; the failure CLASS is "read at import", not "auth".
+#: at all: `recall_mcp/server.py` parses them into module constants at import, so `RECALL_PORT=99999`,
+#: `RECALL_POOL_SIZE=0`, `RECALL_STATEMENT_TIMEOUT_MS=abc` or an invalid `RECALL_MCP_STATELESS` each
+#: raise `ValueError` during collection and take the same five modules to zero tests run. The
+#: transport was simply the first one anyone tripped over; the failure CLASS is "read at import", not
+#: "auth".
 #: `RECALL_TRUST_MODE` is the odd one out and the most important to clear. Every other key here
 #: announces itself by raising during collection. This one does not: exported as `development` it
 #: makes `recall_mcp.server.TRUST_POLICY` relaxed at import, and the suite then runs green against a
@@ -37,6 +38,7 @@ _IMPORT_TIME_ENV_EXACT = (
     "RECALL_PORT",
     "RECALL_POOL_SIZE",
     "RECALL_STATEMENT_TIMEOUT_MS",
+    "RECALL_MCP_STATELESS",
     "RECALL_TRUST_MODE",
 )
 
@@ -618,6 +620,28 @@ def _confine_index_root(_suite_index_root, monkeypatch) -> Iterator[None]:
     after this fixture.
     """
     monkeypatch.setenv("RECALL_INDEX_ROOT", str(_suite_index_root))
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _disable_shared_embedding_cache(monkeypatch) -> Iterator[None]:
+    """Switch the shared embedding cache OFF for EVERY test, for two independent reasons.
+
+    The first is isolation of the machine: unset, `recall.cache.default_cache_path` resolves to the
+    operator's own platform cache directory, so a suite that indexes anything would write into the
+    file a real corpus is served from and evict its entries.
+
+    The second is isolation of the tests from each other. The cache is content-addressed and
+    process-independent BY DESIGN, which is exactly what makes it a hidden channel between tests: a
+    test that counts what an embedder was asked to embed would see a different count depending on
+    which tests ran before it, in which order, in which worker. That is the class of failure that
+    only ever reproduces on someone else's machine.
+
+    Autouse and off, rather than autouse and redirected to a tmp path, because off is the state
+    every existing test was written against. A test that wants the cache sets `RECALL_EMBED_CACHE`
+    to a `tmp_path` of its own and wins, since `monkeypatch.setenv` in a test body runs after this.
+    """
+    monkeypatch.setenv("RECALL_EMBED_CACHE", "0")
     yield
 
 

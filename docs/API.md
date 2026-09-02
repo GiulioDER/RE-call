@@ -43,6 +43,7 @@ removal.
 | `recall index` | Index a markdown corpus. |
 | `recall forget` | Permanently erase indexed sources; the right-to-erasure path. |
 | `recall search` | Query an indexed corpus through the trust layer. |
+| `recall scopes` | List the folders or facets a search can be filtered by, with their sizes. |
 | `recall reasoning` | Inspect projections (`projection`), proposals (`proposals`), queries (`query`), traces (`trace`), audits (`audit`), and opt-in reasoning without changing ordinary retrieval behavior. |
 | `recall graph` | Inspect or rebuild the deterministic Evidence Graph V1 (`rebuild`) without changing chunks or generation identity. |
 | `recall extract` | Extract structured truth claims from memo prose (`run`, `show`). Reads only; writes nothing. Off unless `RECALL_TRUTH_EXTRACTION=1`. |
@@ -70,6 +71,7 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `graph_expansion` to `one_hop` to enable Evidence Graph V1. Precision admission diagnostics and a policy fingerprint are additive response fields. Legacy `expand_retrieval` remains available when configured. |
 | `recall_query_construction_challenge` | Start or continue bounded query construction with an original-model challenge, deterministic candidate controls, and generation-bound trusted retrieval. |
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
+| `recall_graph_first_retrieval` | Probe deterministic graph-derived query seeds before ordinary trusted retrieval; graph output remains proposal data. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
 | `recall_rewrite_plan` | Report which key a proposal would declare, in which file. Writes nothing. |
 | `recall_reasoning_audit` | Report reasoning integration state and diagnostics. |
@@ -81,6 +83,7 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_calibration_run` | Create a draft calibration artifact for the active generation. |
 | `recall_calibration_publish` | Publish one certified calibration artifact. Requires `recall:admin`: publication changes what the whole tenant serves. |
 | `recall_forget` | Erase indexed source material, including its staged upload files. |
+| `recall_inventory` | List every source in the caller's memory with the digest of its bytes, so a sync client can diff instead of re-uploading. Not in the `read` or `search` presets: a file listing answers no question an agent asks. |
 | `recall_stats` | Report counters and operational state. |
 
 `recall_search` and `recall_evidence` also accept an optional `locale` argument for presentation

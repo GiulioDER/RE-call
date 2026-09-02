@@ -7,6 +7,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+from recall.cache import default_cache
 from recall.context import context_policy_for_profile
 from recall.embeddings import embedding_profile_id
 from recall.index import (
@@ -19,6 +20,7 @@ from recall.index import (
 )
 from recall.index_lock import ConcurrentIndex
 from recall.retriever import DocumentExpansionPolicy
+from recall.scope import Scope
 from recall.store import PgVectorStore
 from recall.trust import terminal_safe, trusted_search
 from recall.trust_policy import TrustRefusal
@@ -75,7 +77,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="chunks to embed per batch. Bounds the embedder's peak allocation: fastembed pads a "
              "batch to its longest member, so a large batch of long chunks asks onnxruntime for "
              "gigabytes and fails PARTWAY THROUGH a run. Defaults to RECALL_INDEX_BATCH_CHUNKS if "
-             "the host sets one, else 512.",
+             "the host sets one, else 64.",
     )
     p_index.add_argument(
         "--allow-prune",
@@ -158,6 +160,40 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="for relational queries, rerun calibrated retrieval inside the top source documents "
         "and assemble evidence in document order",
     )
+    p_search.add_argument(
+        "--folder",
+        help="restrict the search to one folder of the corpus and everything beneath it, named "
+        "as it appears in a hit's `file` provenance (`python`, `python/lib`). `/` means the "
+        "corpus root only. ⚠️ This is a HARD filter: a memo outside it is not ranked low, it is "
+        "absent, so an over-narrow folder looks exactly like a corpus with no answer.",
+    )
+    p_search.add_argument(
+        "--facet",
+        help="restrict the search to documents declaring this `type:` in their frontmatter "
+        "(feedback, project, reference, user). Case-insensitive. ⚠️ The facet is read at INDEX "
+        "time, so a corpus indexed before this existed carries none and every facet filter "
+        "returns nothing until it is rebuilt.",
+    )
+    p_scopes = sub.add_parser(
+        "scopes",
+        help="list the folders or facets you can filter a search by",
+        description=(
+            "Print what --folder and --facet can be given for this corpus, with the number of "
+            "chunks and documents behind each. Read-only and cheap: no embedder, no query, no "
+            "vectors. Run it before guessing a scope, because a scope that does not exist "
+            "returns an empty result and an empty result is also what a corpus with no answer "
+            "returns."
+        ),
+    )
+    p_scopes.set_defaults(_opens_db=True, func=_cmd_scopes)
+    p_scopes.add_argument(
+        "--dimension",
+        choices=("folder", "facet"),
+        default="folder",
+        help="folder = where the file sits (from its `file` provenance); facet = the `type:` its "
+        "frontmatter declares. Default: folder.",
+    )
+
     p_search.add_argument(
         "--locale",
         help="optional presentation language for an additive localized display; canonical text "
@@ -264,25 +300,30 @@ def _cmd_index(args: argparse.Namespace) -> None:
         # cannot have one added afterwards, and the run that skips it is always the run nobody
         # was watching.
         commit = None if args.no_commit_stamp else head_commit(args.path)
-        indexer = Indexer(
-            store,
-            embedder,
-            chunker=chunker,
-            context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-            allow_prune=args.allow_prune,
-            project=args.project,
-            indexed_commit=commit,
-            batch_chunks=args.batch_chunks,
-        )
-        try:
-            stats = indexer.index_path(args.path, glob=args.glob)
-        except PruneGuardTripped as exc:
-            # The message carries the recovery instructions; a traceback would bury them.
-            raise SystemExit(str(exc)) from exc
-        except ConcurrentIndex as exc:
-            # Same reasoning: this is an expected outcome of two sessions closing at once,
-            # not a defect, and its message names the holder and what to do about it.
-            raise SystemExit(str(exc)) from exc
+        # Cached by default: re-indexing a corpus is the common case, most of a corpus is
+        # unchanged between runs, and an unchanged chunk has one right vector. `RECALL_EMBED_CACHE`
+        # names another path or switches it off; see `recall.cache.default_cache_path`.
+        with default_cache() as cache:
+            indexer = Indexer(
+                store,
+                embedder,
+                chunker=chunker,
+                cache=cache,
+                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                allow_prune=args.allow_prune,
+                project=args.project,
+                indexed_commit=commit,
+                batch_chunks=args.batch_chunks,
+            )
+            try:
+                stats = indexer.index_path(args.path, glob=args.glob)
+            except PruneGuardTripped as exc:
+                # The message carries the recovery instructions; a traceback would bury them.
+                raise SystemExit(str(exc)) from exc
+            except ConcurrentIndex as exc:
+                # Same reasoning: this is an expected outcome of two sessions closing at once,
+                # not a defect, and its message names the holder and what to do about it.
+                raise SystemExit(str(exc)) from exc
         # `files` counts what was RE-indexed, not what is in the index, so an unchanged
         # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown
         # beside it. `deleted` matters more: pruning is the destructive half of `index`, and
@@ -448,6 +489,56 @@ def refusal_message(exc: TrustRefusal) -> str:
     return "\n".join(lines)
 
 
+def _cmd_scopes(args: argparse.Namespace) -> None:
+    embedder = _make_embedder(args.embedder)
+    if env_is_production():
+        from recall.generation_store import GenerationStore
+
+        store_context: PgVectorStore = GenerationStore(
+            args.dsn, embedder.dim, tenant=args.tenant
+        )
+    else:
+        store_context = PgVectorStore(
+            args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
+        )
+    with store_context as store:
+        store.check_schema()
+        rows = store.scope_inventory(args.dimension)
+        undeclared = store.scope_undeclared_count(args.dimension)
+
+    label = "folder" if args.dimension == "folder" else "facet"
+    if not rows:
+        print(f"no {label} values in this corpus")
+    else:
+        width = max(len(value) if value else len("(root)") for value, _c, _d in rows)
+        print(f"{label:<{width}}  {'chunks':>7}  {'docs':>5}")
+        for value, chunks, documents in rows:
+            # The root folder's value is the empty string, which prints as nothing and reads as a
+            # rendering bug. Named, so the listing shows every value it counted.
+            shown = value if value else "(root)"
+            print(f"{shown:<{width}}  {chunks:>7}  {documents:>5}")
+    if undeclared:
+        # Stated as its own line, never as a row: "no facet" is not a facet, and a corpus indexed
+        # before facets were read looks identical to one whose authors declare none. A large
+        # number here beside an empty listing means the corpus needs rebuilding, not re-authoring.
+        print(f"\n{undeclared} chunk(s) declare no {label} and no --{label} filter will match them")
+
+
+def _search_scope(args: argparse.Namespace) -> Scope | None:
+    """`--folder` / `--facet` as a `Scope`, or None when neither was given.
+
+    `getattr` rather than direct access: this helper is reached from more than one parser, and a
+    parser that has not declared the flags should search the whole corpus rather than raise.
+    None, not `Scope()`, so an unscoped search takes the identical path it took before scoping
+    existed instead of one that merely renders to the same SQL.
+    """
+    folder = getattr(args, "folder", None)
+    facet = getattr(args, "facet", None)
+    if folder is None and facet is None:
+        return None
+    return Scope(folder=folder, facet=facet)
+
+
 def _cmd_search(args: argparse.Namespace) -> None:
     embedder = _make_embedder(args.embedder)
     # ⚠️ Deliberately NOT `load_for(embedder.name)`, and a bug audit talked me into that once.
@@ -504,6 +595,7 @@ def _cmd_search(args: argparse.Namespace) -> None:
                 # library before any of this command's own guards were reached. Clamped at
                 # the source; the clamp in `_print_evidence` stays as defence in depth.
                 k=max(1, args.k),
+                scope=_search_scope(args),
                 calibration=_search_calibration,
                 entailment=entail_judge,
                 policy=_search_policy,

@@ -20,9 +20,10 @@ from pathlib import Path
 from statistics import quantiles
 from typing import TYPE_CHECKING
 
+from recall.atomic_write import atomic_write_bytes
 from recall.observability import get_logger
 
-if TYPE_CHECKING:  # `recall.embeddings` imports this module, so the runtime import would cycle
+if TYPE_CHECKING:  # annotation only: keeps the heavy embeddings module out of import time here
     from recall.embeddings import EmbeddingProfile
 
 DEFAULT_SCALE = 0.05
@@ -34,6 +35,8 @@ _log = get_logger("calibration")
 
 #: Quantiles bounding the gap: the answerable floor and the unanswerable ceiling. Both are
 #: deliberately not the extremes — one outlier on either side must not define the boundary.
+#: That holds once a class reaches MIN_CALIBRATION_SAMPLES: below it a 5% tail excludes
+#: nothing, so each side collapses onto its own extreme.
 ANSWERABLE_FLOOR_Q = 0.05
 UNANSWERABLE_CEILING_Q = 0.95
 
@@ -78,8 +81,16 @@ def separability(answerable: list[float], unanswerable: list[float]) -> float | 
     """
     if not answerable or not unanswerable:
         return None
-    wins = sum(1 for a in answerable for u in unanswerable if a > u)
-    ties = sum(1 for a in answerable for u in unanswerable if a == u)
+    # One pass over the cross product: a win and a tie are disjoint outcomes of the same pairwise
+    # comparison, so the second sweep doubled the work for identical integer counts.
+    wins = 0
+    ties = 0
+    for a in answerable:
+        for u in unanswerable:
+            if a > u:
+                wins += 1
+            elif a == u:
+                ties += 1
     return (wins + 0.5 * ties) / (len(answerable) * len(unanswerable))
 
 
@@ -125,7 +136,23 @@ def separability_interval(
 
 
 def _quantile(sorted_values: list[float], q: float) -> float:
+    """Lower-tail quantile: the index excludes ``int(q * n)`` samples from the bottom."""
     return sorted_values[min(len(sorted_values) - 1, int(q * len(sorted_values)))]
+
+
+def _upper_quantile(sorted_values: list[float], q: float) -> float:
+    """Upper-tail quantile, the mirror image of `_quantile`.
+
+    Excludes ``int((1 - q) * n)`` samples from the TOP, exactly as `_quantile` excludes
+    ``int(q * n)`` from the bottom (verified numerically to match for n in 5..100). The naive
+    ``int(q * n)`` index is NOT that mirror: at n <= 20 it lands on the last index, so a q95
+    ceiling was the sample maximum at exactly MIN_CALIBRATION_SAMPLES and one outlier defined
+    the boundary, contradicting the invariant stated above. The ``ceil(q * n) - 1`` form used
+    elsewhere in this repository does not fix it here, because floating point makes
+    ``ceil(0.95 * 20) - 1`` still reach the last index.
+    """
+    n = len(sorted_values)
+    return sorted_values[max(0, n - 1 - int((1 - q) * n))]
 
 
 def best_threshold(answerable: list[float], unanswerable: list[float]) -> float:
@@ -164,12 +191,16 @@ def best_threshold(answerable: list[float], unanswerable: list[float]) -> float:
         return 0.5
     a = sorted(answerable)
     u = sorted(unanswerable)
-    if not a:  # only negatives: sit just above their ceiling
-        return math.floor(_quantile(u, UNANSWERABLE_CEILING_Q) * 1000) / 1000
+    if not a:
+        # Only negatives: one 0.001 grid step strictly ABOVE their ceiling (clamped to 1.0).
+        # Serving confirms at score >= threshold (see recall.trust), so a threshold placed ON
+        # the ceiling would confirm every sample sitting exactly there.
+        return min(1.0, math.floor(_upper_quantile(u, UNANSWERABLE_CEILING_Q) * 1000) / 1000
+                   + 0.001)
     floor = _quantile(a, ANSWERABLE_FLOOR_Q)
     if not u:
         return math.floor(floor * 1000) / 1000
-    ceiling = _quantile(u, UNANSWERABLE_CEILING_Q)
+    ceiling = _upper_quantile(u, UNANSWERABLE_CEILING_Q)
     # Overlapping distributions still bisect: the midpoint splits the overlap instead of
     # collapsing onto one class, which is the least-bad boundary when no clean gap exists.
     # Round DOWN so rounding can only ever make the guard more permissive, never silently
@@ -322,7 +353,19 @@ def from_samples(embedder: str, answerable: list[float], unanswerable: list[floa
 
 
 def _resolve_path(path: str | Path | None) -> Path:
-    return Path(path or os.environ.get(ENV_VAR) or DEFAULT_PATH)
+    """Map the configured location to the ONE concrete file both writer and reader use.
+
+    A single normalization on purpose: `save` used to map an existing directory to
+    ``dir/DEFAULT_PATH`` and apply ``expanduser().resolve()`` while the load path used the raw
+    string, so RECALL_CALIBRATION pointing at a directory (or at a ``~`` path) wrote one file
+    and read another, permanently serving the uncalibrated fallback. Normalizing here makes the
+    two agree by construction, and keeps `load_for`'s cache keys stable, since they are the
+    resolved path.
+    """
+    p = Path(path or os.environ.get(ENV_VAR) or DEFAULT_PATH).expanduser()
+    if p.is_dir():
+        p = p / DEFAULT_PATH
+    return p.resolve()
 
 
 #: JSON key holding `EmbeddingProfile.fingerprint()` — the SHA256 over the COMPLETE immutable
@@ -331,13 +374,8 @@ def _resolve_path(path: str | Path | None) -> Path:
 PROFILE_FINGERPRINT_KEY = "profile_fingerprint"
 
 
-def save(cal: Calibration, path: str | Path | None = None) -> Path:
-    """Write the calibration JSON; returns the path written."""
-    p = _resolve_path(path)
-    if p.exists() and p.is_dir():
-        p = p / DEFAULT_PATH
-    p = p.expanduser().resolve()
-    p.parent.mkdir(parents=True, exist_ok=True)
+def _payload(cal: Calibration) -> dict:
+    """The complete JSON payload for `cal`, built once so every writer writes the same thing."""
     # The diagnosis travels WITH the threshold. A calibration.json that records "separability
     # 0.75, not certified" explains itself to whoever finds it months later; one carrying only a
     # number cannot be told apart from a working one.
@@ -356,8 +394,20 @@ def save(cal: Calibration, path: str | Path | None = None) -> Path:
     if cal.certified is not None:
         payload["certified"] = cal.certified
         payload["certification_reason"] = cal.certification_reason
-    p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return payload
+
+
+def _write_payload(payload: dict, path: str | Path | None) -> Path:
+    """One atomic write: a crash mid-save leaves the previous file intact, never a truncation."""
+    p = _resolve_path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(p, json.dumps(payload, indent=2).encode("utf-8"))
     return p
+
+
+def save(cal: Calibration, path: str | Path | None = None) -> Path:
+    """Write the calibration JSON; returns the path written."""
+    return _write_payload(_payload(cal), path)
 
 
 #: (path, embedder) -> (content digest, Calibration|None). See `load_for` for why this exists,
@@ -486,11 +536,13 @@ def save_for_profile(
             f"calibration is for embedder {cal.embedder!r} but the profile is "
             f"{profile.profile_id!r}; the file would claim two different owners"
         )
-    written = save(cal, path)
-    payload = json.loads(written.read_text(encoding="utf-8"))
+    # Built once, fingerprint included, and written in a SINGLE atomic write. The old shape
+    # (save, then read back, then rewrite with the fingerprint) left a fingerprint-less file on
+    # disk between the two writes, and a crash there left a file `load_for_profile` permanently
+    # refuses.
+    payload = _payload(cal)
     payload[PROFILE_FINGERPRINT_KEY] = profile.fingerprint()
-    written.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return written
+    return _write_payload(payload, path)
 
 
 def load_for_profile(

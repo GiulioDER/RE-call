@@ -70,14 +70,20 @@ can never be retrieved beside your real memory from the same database.
 **An MCP server** exposing `recall_search` and the rest of the tool surface, so Claude can query
 memory as a tool.
 
-**Four hooks**, which are no-ops until `recall setup` has run, and fail open in every case:
+**Five hooks**, which are no-ops until `recall setup` has run, and fail open in every case:
 
 | Event | What it does |
 |---|---|
 | `SessionStart` | Injects a short digest of project memory before the first turn |
-| `PreToolUse` | Searches memory with the draft text before a write or shell command |
+| `UserPromptSubmit` | Searches the project's memo files with your prompt and names prior records that bear on it |
+| `PreToolUse` | Searches memory with the text Claude is about to write, on every write |
 | `PreCompact` | Saves memory before a compaction discards the detail behind it |
 | `SessionEnd` | Indexes the session so the next one can find it |
+
+The two retrieval hooks answer different questions and are separately switchable in
+`~/.claude/recall-hook.json` (`write_time.enabled`, `prompt_time.enabled`). `PreToolUse` uses the
+draft text, which is what reaches a hazard; `UserPromptSubmit` uses your words, which is what
+reaches a decision the project already made.
 
 **A skill**, `check-memory-before-acting`, which teaches Claude *when* to search and, more
 importantly, *how*. That second half is not decoration: measured over 54 paired sessions, the

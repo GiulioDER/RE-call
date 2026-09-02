@@ -166,6 +166,58 @@ def _save_config(config: dict[str, Any]) -> None:
             pass
 
 
+def _unsynced_notice(config: dict[str, Any]) -> str:
+    """One sentence when memos have not reached hosted memory, or "".
+
+    🔑 **This is where a silent failure stops being silent.** The hooks return 0 always and may not
+    speak, so a sync that failed has nowhere to report — except here, at the one event already
+    permitted to inject text, at zero extra cost because the config is being read anyway.
+
+    Bounded to one sentence and only when there is BOTH a recorded error and pending work, so a
+    healthy install sees nothing at all.
+    """
+    if not hosted_mode(config):
+        return ""
+    try:
+        from .hosted import read_manifest
+    except ImportError:  # pragma: no cover
+        return ""
+    manifest = read_manifest(config)
+    pending = manifest.get("pending") or {}
+    error = manifest.get("last_error") or {}
+    withheld = manifest.get("withheld") or {}
+    screen_error = str(manifest.get("screen_error") or "")
+    if screen_error:
+        # Not the same sentence as a withheld memo, and not a smaller version of it. Nothing was
+        # uploaded, and the reason has nothing to do with the contents of anybody's memos.
+        return (
+            f"WARNING: no memos were uploaded because the credential screen could not run "
+            f"({screen_error}). This is a broken install rather than a problem with your notes. "
+        )
+    if withheld:
+        # 🔑 Reported whether or not anything else went wrong, and FIRST. A withheld file is the
+        # one outcome here that needs a person rather than a retry: nothing about the next session
+        # will change it, and the file is silently absent from the corpus until somebody acts.
+        names = ", ".join(sorted(withheld)[:3])
+        more = f" and {len(withheld) - 3} more" if len(withheld) > 3 else ""
+        return (
+            f"WARNING: {len(withheld)} memo(s) were NOT uploaded because they look like they "
+            f"contain a live credential ({names}{more}). Nothing was modified on disk. Remove the "
+            "credential, or move the file out of the memory directory. "
+        )
+    if not pending or not error:
+        return ""
+    remedy = {
+        "auth": "Run `recall-hooks login`.",
+        "quota": "The account's upload quota is exhausted.",
+        "refusal": "One file was refused; see the dashboard.",
+    }.get(str(error.get("kind")), "It will retry next session.")
+    return (
+        f"WARNING: {len(pending)} memo(s) from previous sessions have not reached hosted "
+        f"memory. {remedy} "
+    )
+
+
 def session_start(payload: dict[str, Any]) -> int:
     """Inject a short memory digest before the first turn.
 
@@ -178,27 +230,81 @@ def session_start(payload: dict[str, Any]) -> int:
     not start, so anything unexpected is silence and exit 0.
     """
     config = load_config()
+    stuck = _unsynced_notice(config)
     count = int(config.get("chunks", 0) or 0)
-    if not count:
+    if not count and not stuck:
         return 0
     cwd = str(payload.get("cwd", ""))
     project = Path(cwd).name if cwd else "this project"
+    # ⚠️ The digest is dropped when the count is zero, and that is the common hosted case rather
+    # than an edge one: nothing refreshes `chunks` in hosted mode, so it stays 0. Emitting
+    # "memory is available: 0 indexed chunks. Call `recall_search`" NEXT TO a warning that memos
+    # never arrived tells the model to search a corpus this hook just said is missing content.
+    digest = (
+        f"RE-call memory is available for {project}: {count} indexed chunks. "
+        "Call `recall_search` before proposing an idea, forming a hypothesis, or "
+        "repeating past work, and treat an `abstained: true` result as 'no supported "
+        "answer' rather than as an empty one. This corpus is uncalibrated, so trust "
+        "thresholds are defaults rather than fitted to it."
+        if count
+        else ""
+    )
     json.dump(
         {
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
-                "additionalContext": (
-                    f"RE-call memory is available for {project}: {count} indexed chunks. "
-                    "Call `recall_search` before proposing an idea, forming a hypothesis, or "
-                    "repeating past work, and treat an `abstained: true` result as 'no supported "
-                    "answer' rather than as an empty one. This corpus is uncalibrated, so trust "
-                    "thresholds are defaults rather than fitted to it."
-                ),
+                "additionalContext": stuck + digest,
             }
         },
         sys.stdout,
     )
     return 0
+
+
+def hosted_mode(config: dict[str, Any]) -> bool:
+    """Is this a hosted config?
+
+    Explicit `mode` wins; otherwise an endpoint with no dsn means hosted. Every config on disk
+    today has a dsn and no endpoint, so it resolves local and nothing changes for anyone.
+
+    An EMPTY dsn is not a dsn, so an endpoint beside one still resolves hosted. Writing a real
+    one into a hosted config is the thing that breaks: both `_index_and_refresh` and
+    `write_time.pre_tool_use` guard on `config.get("dsn")` being truthy, so a real dsn would send
+    an older `recall_hooks` at a database while a newer one syncs — two writers, one corpus. With
+    the key absent or empty, an older client degrades to silence, which is this package's
+    established failure mode.
+    """
+    mode = str(config.get("mode", "")).strip().lower()
+    if mode in {"hosted", "local"}:
+        return mode == "hosted"
+    return bool(config.get("endpoint")) and not config.get("dsn")
+
+
+def memory_dirs(cwd: str, override: str = "") -> list[tuple[str, Path]]:
+    """Every memory store this project writes to, as `(root_id, path)`, nearest first.
+
+    ⚠️ **BOTH are returned, and that is the fix for a real divergence.** The writer has always
+    indexed `<cwd>/memory` while `prompt_time` reads
+    `~/.claude/projects/<slug>/memory`, and nothing reconciled them: content written to one was
+    invisible to the other. Both are real on machines today, so picking one silently drops whatever
+    the other holds — which is the loss these hooks exist to prevent.
+
+    The `root_id` namespaces them, because two roots with the same internal layout would otherwise
+    collide into one uploaded name and each sync would overwrite the other's file.
+    """
+    roots: list[tuple[str, Path]] = []
+    if cwd:
+        local = Path(str(cwd)) / "memory"
+        if local.is_dir():
+            roots.append(("worktree", local))
+    try:
+        from .prompt_time import find_store
+    except ImportError:  # pragma: no cover - the module ships beside this one
+        return roots
+    store = find_store(cwd, override)
+    if store is not None and store.is_dir() and all(store != path for _id, path in roots):
+        roots.append(("project", store))
+    return roots
 
 
 def _index_and_refresh(payload: dict[str, Any]) -> int:
@@ -208,9 +314,37 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
     whatever the session wrote down searchable, and leave an accurate count behind.
     """
     config = load_config()
-    dsn = config.get("dsn")
     cwd = payload.get("cwd")
-    if not dsn or not cwd:
+    if not cwd:
+        return 0
+    if hosted_mode(config):
+        # Imported inside the branch: this event is async, so the transport's cost is never
+        # charged to a session launch, and a local-mode install never pays it at all.
+        try:
+            from .hosted import sync_memory_roots
+        except ImportError:
+            return 0
+        roots = memory_dirs(str(cwd), str(config.get("memory_root", "")))
+        if roots:
+            try:
+                sync_memory_roots(roots, config)
+            except (KeyboardInterrupt, SystemExit):
+                # The user or the runtime asked this process to stop. Honour it.
+                raise
+            except BaseException:
+                # ⛔ `sync_memory_roots` documents that it never raises, and this catches it
+                # anyway. "Documented not to" and "cannot" are different claims, and the cost of
+                # being wrong here is a session that will not start. A test pins this by making
+                # the sync raise on purpose.
+                #
+                # BaseException rather than Exception because the transport runs an anyio event
+                # loop, and a cancelled scope raises `asyncio.CancelledError`, which is NOT an
+                # Exception. Catching only Exception would let precisely the timeout case
+                # through.
+                pass
+        return 0
+    dsn = config.get("dsn")
+    if not dsn:
         return 0
     memory_dir = Path(str(cwd)) / "memory"
     if memory_dir.is_dir():
@@ -267,11 +401,47 @@ def pre_compact(payload: dict[str, Any]) -> int:
     return _index_and_refresh(payload)
 
 
+def _auth_command(args: list[str]) -> int:
+    """The subcommands a PERSON runs, dispatched before stdin is touched.
+
+    ⛔ Two things here are load-bearing and neither is obvious.
+
+    **Before the stdin read.** Every hook EVENT is fed a JSON payload on stdin, and `main` consumes
+    it up front. `login` reads a token from stdin, so dispatching it after that read would swallow
+    the credential into a `JSONDecodeError` and then ask for a token that had already been sent.
+
+    **A missing module is an ERROR here, not silence.** Every hook event degrades to exit 0 when
+    its module will not import, because a hook that fails takes a session down. A command a person
+    typed must do the opposite: its entire purpose is to report whether they are signed in, and
+    exiting 0 without doing anything is precisely the defect this function was written to fix.
+    `recall-hooks login` was named in two user-visible messages while `main` had no such branch, so
+    it fell through, exited 0, printed nothing, and the user's sync kept failing.
+    """
+    try:
+        from . import credentials
+    except ImportError as exc:
+        print(f"recall: the hosted credential store is unavailable ({exc})", file=sys.stderr)
+        return 4
+    config = load_config()
+    if args[0] == "auth-headers":
+        return credentials.print_auth_headers(config)
+    if args[0] == "logout":
+        return credentials.logout(config)
+    return credentials.login(config, args[1:])
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Dispatch for `python -m recall_hooks <event>`, invoked by the hooks themselves."""
+    """Dispatch for `python -m recall_hooks <event>`, invoked by the hooks themselves.
+
+    Also carries the three subcommands a person runs rather than a hook: `login`, `logout` and
+    `auth-headers`. See `_auth_command` for why they are dispatched before stdin is read and why
+    they fail loudly where an event stays silent.
+    """
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         return 0
+    if args[0] in {"login", "logout", "auth-headers"}:
+        return _auth_command(args)
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
@@ -284,17 +454,36 @@ def main(argv: list[str] | None = None) -> int:
         return session_end(payload)
     if args[0] == "pre-compact":
         return pre_compact(payload)
+    # ⛔ The per-event imports are GUARDED, and not for tidiness. `python -m recall_hooks` puts
+    # the current directory ahead of everything on `sys.path`, so a session whose cwd is a
+    # checkout of this repository runs THAT checkout's copy of this package, whichever branch it
+    # happens to be on. A branch predating one of these modules then raises `ImportError` out of
+    # the hook on every prompt or every tool call. An older install must degrade to the behaviour
+    # it had before the feature existed, which is silence.
+    #
+    # The deterministic fix belongs at the call site rather than here: invoke with `-P`, which
+    # stops the cwd being prepended, and point `PYTHONPATH` at the copy you mean to run.
     if args[0] == "pre-tool-use":
         # Imported HERE, not at module scope. This dispatch is shared with SessionStart, whose
         # whole design is that it imports nothing it does not need, and `write_time` is only
         # reached on its own event.
-        from .write_time import pre_tool_use
-
+        try:
+            from .write_time import pre_tool_use
+        except ImportError:
+            return 0
         return pre_tool_use(payload)
     if args[0] == "write-time-relay":
         from .relay import main as relay_main
 
         return relay_main(args[1:])
+    if args[0] == "user-prompt-submit":
+        # Same reason as above. `prompt_time` imports `math` and `re` and touches the filesystem;
+        # SessionStart pays for neither.
+        try:
+            from .prompt_time import user_prompt_submit
+        except ImportError:
+            return 0
+        return user_prompt_submit(payload)
     return 0
 
 

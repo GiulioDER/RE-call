@@ -75,6 +75,7 @@ class EvidenceItem:
     cosine: float
     confidence: float
     verdict: Literal["ok"] = "ok"
+    authority: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -174,9 +175,13 @@ def _encode(data: dict[str, object]) -> str:
     Escaping both angle brackets to their ``\\uXXXX`` form is still valid JSON and parses back to
     the identical string, so the evidence is unchanged for a consumer that parses the payload and
     inert for one that scans it for the closing tag.
+
+    The ampersand is escaped the same way for parity with the other prompt boundaries in this
+    package (query_construction.py and reasoning_expansion.py), so every boundary neutralises
+    the same three characters and an entity-decoding consumer sees no markup either.
     """
     encoded = json.dumps(data, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
-    return encoded.replace("<", "\\u003c").replace(">", "\\u003e")
+    return encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 
 def _user_message(query: str, items: tuple[EvidenceItem, ...]) -> str:
@@ -275,6 +280,7 @@ def build_evidence_bundle(
             valid_until=hit.validity.valid_until,
             cosine=hit.cosine,
             confidence=hit.confidence,
+            authority=hit.authority,
         )
         if policy.max_tokens is not None:
             # Allocated INSIDE the branch that reads it. Both shipped callers leave `max_tokens`
